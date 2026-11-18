@@ -1,13 +1,20 @@
 # Configuration
 
-A shared `paqvilo.config.yml` (the catalogue) connects source exports, live environments and local
-runtimes. Create one with [project scaffolding](project-scaffold.md), or edit it in the
-[setup workspace](setup.md) with `paqvilo setup --open`. Unknown catalogue keys are rejected.
+A shared `paqvilo.config.yml` (the catalogue) connects source exports, live environments and local runtimes. Create one
+with [project scaffolding](project-scaffold.md), or edit it in the [setup workspace](setup.md) with
+`paqvilo setup --open`. Unknown catalogue keys are rejected (`Unknown setting sites.portal.bogus`), and a file that is
+not valid YAML is refused by position, without its content, for example
+`paqvilo.config.yml is not valid YAML (BAD_INDENT at line 3, column 1). Fix the file.`
 
 ## Select a catalogue
 
-Commands use `--config <file>`, else `paqvilo.config.yml` in the working directory, else the bundled
-example. The bundled live URL is an inert placeholder.
+Commands use `--config <file>`, else `paqvilo.config.yml` in the working directory. Without either, a command refuses
+with `No catalogue: <folder>/paqvilo.config.yml does not exist. Run in the folder that holds paqvilo.config.yml, or pass
+--config <catalogue>.`, and a `--config` file that does not exist with `--config file not found: <file>. Pass an
+existing file.` (only `mirage status` and `stop` still select the runtimes recorded for a removed catalogue). A
+`--source <export>` or Mirage `--project <file>` run without `--site` needs no catalogue: it takes the site defaults
+of the toolkit's bundled example (whose live URL is an inert placeholder) and keeps `.env`, personal settings and
+`.paqvilo/` state in the working directory. `paqvilo setup` has no bundled fallback.
 
 ```yaml
 sourceRoot: ./sources
@@ -28,11 +35,12 @@ sites:
       dataPacks:
         - id: sample-data
           module: ./pack/pack.mjs
-      preset: sample-data
+      preset: sample-data-empty
       presetMode: bootstrap
 ```
 
-The pack and preset are project-owned examples; register only modules you trust.
+The pack and preset are project-owned examples (`paqvilo init --pack sample-data` generates this pack with its empty
+preset); register only modules you trust. A preset is found only when its pack's `matches()` accepts the export.
 
 | Path                                              | Resolved from                                      |
 | ------------------------------------------------- | -------------------------------------------------- |
@@ -41,17 +49,17 @@ The pack and preset are project-owned examples; register only modules you trust.
 | Pack modules, `mirage.project`, local head assets | Catalogue directory                                |
 | `--repo`                                          | Invoking working directory; overrides `sourceRoot` |
 | `PAQVILO_REPO`                                    | Catalogue directory; overrides `sourceRoot`        |
+| `PAQVILO_<SITE>_SOURCE`                           | Catalogue directory                                |
 | Paths inside a standalone Mirage project          | That project file's directory                      |
 
-`--source` selects an export folder directly. Live Lense Inspect reads the selected Solution roots
-without starting Mirage or loading pack code; missing managed metadata is reported.
+`--source` selects an export folder directly. Live Lense Inspect reads the selected Solution roots without starting
+Mirage or loading pack code; missing managed metadata is reported.
 
-A site with no `source`, no `environments` and a `mirage.runtime.kind` of `model-driven` or
-`dataverse-api` is a Mirage-only site. `init --check` asks it for neither an environment nor an export;
-`lense list` lists it; `lense doctor` runs only its Mirage checks; `mirage dev|start|stop --site <id>`
-run it, and `--portals all` starts and stops it beside the portals without adding it to the Lense
-selector. `mirage init` writes no project file for it. Lense commands that need a portal target refuse
-it (`mirage_only_site`).
+A site with no `source`, no `environments` and a `mirage.runtime.kind` of `model-driven` or `dataverse-api` is a
+Mirage-only site. `init --check` asks it for neither an environment nor an export; `lense list` lists it; `lense doctor`
+runs only its Mirage checks; `mirage dev|start|stop --site <id>` run it, and `--portals all` starts and stops it beside
+the portals without adding it to the Lense selector. `mirage init` writes no project file for it. Lense commands that
+need a portal target refuse it (`mirage_only_site`).
 
 ## Personal settings and worktrees
 
@@ -63,10 +71,9 @@ Settings resolve in this order, highest first:
 4. `paqvilo.config.local.yml` beside that catalogue (same format as the catalogue).
 5. The shared catalogue.
 
-Keep `paqvilo.config.local.yml`, `.env` and `.paqvilo/` ignored. `paqvilo lense use [site] [env]`
-writes the selection to `.env`; `paqvilo lense list --settings` shows every setting and its origin;
-`paqvilo lense list --json` exposes resolved paths under `resolved` (programmatic:
-[`resolveCatalogue`](public-api.md#resolve-editor-paths)).
+Keep `paqvilo.config.local.yml`, `.env` and `.paqvilo/` ignored. `paqvilo lense use [site] [env]` writes the selection
+to `.env`; `paqvilo lense list --settings` shows every setting and its origin; `paqvilo lense list --json` exposes
+resolved paths under `resolved` (programmatic: [`resolveCatalogue`](public-api.md#resolve-editor-paths)).
 
 | Variable                                                | Meaning                                                                                                            |
 | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
@@ -86,21 +93,20 @@ writes the selection to `.env`; `paqvilo lense list --settings` shows every sett
 | `PAQVILO_SOURCE_MAPS`                                   | `false` serves Lense overlays without debugger metadata                                                            |
 | `PAQVILO_<SITE>_SOURCE`, `PAQVILO_<SITE>_ENV_<NAME>`    | Override a site's export folder, or add an environment URL; an undeclared `<SITE>` adds a site                     |
 
-`<SITE>` is the site name in upper case with `-` written as `_`; `<NAME>` becomes a lower-case
-environment name with `_` as `-`. Any other `PAQVILO_*` variable in `.env` or the shell is an error,
-except the tool variables read directly by scripts (such as `PAQVILO_DEBUG` and `PAQVILO_KEEP_TEMP`).
-Boolean values accept `true/false`, `1/0`, `yes/no` and `on/off`.
+`<SITE>` is the site name in upper case with `-` written as `_`; `<NAME>` becomes a lower-case environment name with `_`
+as `-`. An undeclared `<SITE>` adds a site named in lower case (`PAQVILO_MY_SITE_SOURCE` adds `my_site`). Any other
+`PAQVILO_*` variable in `.env` or the shell is an error, except the tool variables read directly by scripts (such as
+`PAQVILO_DEBUG` and `PAQVILO_KEEP_TEMP`). Boolean values accept `true/false`, `1/0`, `yes/no` and `on/off`.
 
-Linked worktrees do not inherit another checkout's `.env`. Keep the catalogue, its local file and
-`.env` in a shared external folder, select it with `--config`, and point `PAQVILO_REPO` (or `--repo`)
-at the current worktree. Refresh generated editor paths with `paqvilo init --refresh-editor` after
-changing checkouts. Sign-in state is never copied between worktrees.
+Linked worktrees do not inherit another checkout's `.env`. Keep the catalogue, its local file and `.env` in a shared
+external folder, select it with `--config`, and point `PAQVILO_REPO` (or `--repo`) at the current worktree. Refresh
+generated editor paths with `paqvilo init --refresh-editor` after changing checkouts. Sign-in state is never copied
+between worktrees.
 
-Browser profiles keep identities separate. `browser.profile` cannot be combined with
-`browser.userDataDir`; `browser.profileDirectory` requires `browser.userDataDir`; `browser.cdpUrl`
-cannot be combined with any of them. An attached CDP browser stays user-owned: clear an inherited
-`browser.debugPort` with `null`, `PAQVILO_DEBUG_PORT=0` or `dev --debug-port 0`, and attach your
-debugger to that browser's own endpoint.
+Browser profiles keep identities separate. `browser.profile` cannot be combined with `browser.userDataDir`;
+`browser.profileDirectory` requires `browser.userDataDir`; `browser.cdpUrl` cannot be combined with any of them. An
+attached CDP browser stays user-owned: clear an inherited `browser.debugPort` with `null`, `PAQVILO_DEBUG_PORT=0` or
+`dev --debug-port 0`, and attach your debugger to that browser's own endpoint.
 
 ## Lense catalogue settings
 
@@ -121,9 +127,9 @@ Top level:
 | `editor`         | `code`              | Command that opens a file from the panel                                       |
 | `sourceMaps`     | `true`              | Debugger metadata on Lense overlays (Mirage has its own `mirage.sourceMaps`)   |
 
-`browser`: `channel` (`msedge`), `headless` (`false`), `profileDir` (`.paqvilo/profiles`), `profile`,
-`userDataDir`, `profileDirectory`, `cdpUrl` (`http`, `https`, `ws` or `wss`), `debugPort` (0 or `null`
-= off) and `bypassCSP` (`false`). The last six default to `null`/`false`.
+`browser`: `channel` (`msedge`), `headless` (`false`), `profileDir` (`.paqvilo/profiles`), `profile`, `userDataDir`,
+`profileDirectory`, `cdpUrl` (`http`, `https`, `ws` or `wss`), `debugPort` (0 or `null` = off) and `bypassCSP`
+(`false`). The last six default to `null`/`false`.
 
 Site keys (also accepted under `defaults` where noted above):
 
@@ -143,34 +149,33 @@ Site keys (also accepted under `defaults` where noted above):
 | `routes`                               | `[]`              | `{ url, file \| dir \| passthrough: true }`: URL glob (`*` one segment, `**` any depth) to a local file, a folder, or the online site   |
 | `mirage`                               |                   | [Local runtime options](#local-runtime-options)                                                                                         |
 
-A route that matches but finds no local file falls through to the automatic mapping. Markup patches
-do not execute Liquid; inspect applied resources and unmatched patches after refreshing.
+A route that matches but finds no local file falls through to the automatic mapping. Markup patches do not execute
+Liquid; inspect applied resources and unmatched patches after refreshing.
 
 ## Local runtime options
 
-`defaults.mirage` holds shared Mirage defaults and `sites.<id>.mirage` overrides them. Restart
-running previews after changing them.
+`defaults.mirage` holds shared Mirage defaults and `sites.<id>.mirage` overrides them. Restart running previews after
+changing them.
 
 A model-driven app or an API without Power Pages runs from a version 2 Mirage project with
-`runtime: { kind: model-driven }` or `{ kind: dataverse-api }`, `solutions` and optional `dataPacks`;
-it needs no `portals` or reference origin. `runtime.defaultApp` applies only to a model-driven surface.
-`simulation.level` is `dry-run`, `simulation` or `deep`. `modelDriven: { trustedExtensions: true }`
-runs [form scripts, commands and PCF controls](../mirage/docs/model-driven-customizations.md). See the
+`runtime: { kind: model-driven }` or `{ kind: dataverse-api }`, `solutions` and optional `dataPacks`; it needs no
+`portals` or reference origin. `runtime.defaultApp` applies only to a model-driven surface. `simulation.level` is
+`dry-run`, `simulation` or `deep`. `modelDriven: { trustedExtensions: true }` runs
+[form scripts, commands and PCF controls](../mirage/docs/model-driven-customizations.md). See the
 [standalone example](../mirage/docs/standalone-organization.md) and the
 [pack data ownership contract](../mirage/docs/simulation-levels.md).
 
 ### Settings table
 
-Every Mirage setting is one row of `MIRAGE_SETTINGS` in `mirage/lib/config-keys.mjs`; the catalogue
-and project key lists and every runtime option assembly derive from it. Scopes: `catalogue`
-(`sites.<id>.mirage`, `defaults.mirage`), `project` (top level of a Mirage project file) and `portal`
-(a project portal entry). When several scopes set a key, portal wins over project, which wins over
-the catalogue site; `dataPacks` is read from the catalogue alone (project packs arrive through the
-project summary), and `platform`, `deploymentProfiles`, `confinePortalPages`, `externalAssets` and
-`externalFrameOrigins` put the catalogue site first. A project wins only for keys it sets. A key whose
-contract module has not registered its validator is accepted as an object and reported as
-`CONFIG_KEY_PARSER_PENDING`. Version 1 project files report unknown keys as
-`PROJECT_CONFIG_KEY_UNKNOWN`; version 2 files reject them.
+Every Mirage setting is one row of `MIRAGE_SETTINGS` in `mirage/lib/config-keys.mjs`; the catalogue and project key
+lists and every runtime option assembly derive from it. Scopes: `catalogue` (`sites.<id>.mirage`, `defaults.mirage`),
+`project` (top level of a Mirage project file) and `portal` (a project portal entry). When several scopes set a key,
+portal wins over project, which wins over the catalogue site; `dataPacks` is read from the catalogue alone (project
+packs arrive through the project summary), and `platform`, `deploymentProfiles`, `confinePortalPages`, `externalAssets`
+and `externalFrameOrigins` put the catalogue site first. A project wins only for keys it sets. A key whose contract
+module has not registered its validator is accepted as an object and reported as `CONFIG_KEY_PARSER_PENDING`. A
+version 1 project file still loads with an unknown key, which `mirage inspect` and the runtime's startup diagnostics
+report as a `PROJECT_CONFIG_KEY_UNKNOWN` warning; a version 2 file is refused.
 
 <!-- settings-table: generated from MIRAGE_SETTINGS (mirage/lib/config-keys.mjs) -->
 
@@ -188,7 +193,7 @@ contract module has not registered its validator is accepted as an object and re
 | `confinePortalPages`   | catalogue, project, portal | Confine portal pages with a content security policy.                                                                                                                                                                           |
 | `externalAssets`       | catalogue, project, portal | Allow external assets in confined pages.                                                                                                                                                                                       |
 | `externalFrameOrigins` | catalogue, project, portal | Origins confined pages may frame.                                                                                                                                                                                              |
-| `observed`             | catalogue, portal          | [Observed platform behavior](#observed-platform-behavior) with its evidence.                                                                                                                                                   |
+| `observed`             | catalogue, portal          | [Observed platform behaviour](#observed-platform-behaviour) with its evidence.                                                                                                                                                 |
 | `dataModel`            | catalogue, portal          | Power Pages data model of the export (`standard` or `enhanced`), only when the export does not record it. Unrelated to deployment profiles of the same names.                                                                  |
 | `compat`               | catalogue                  | Local compatibility adapters; [below](#local-assets-and-compatibility).                                                                                                                                                        |
 | `head`                 | catalogue                  | Local head stylesheets and scripts; [below](#local-assets-and-compatibility).                                                                                                                                                  |
@@ -225,74 +230,75 @@ mirage:
     scripts: [./local/flags.js]
 ```
 
-Head files must stay inside the catalogue directory after resolving symlinks. They are served under
-`/_sim-local/head/` before platform and authored scripts, and doctor, status and page diagnostics mark
-them local-only; exports are never edited.
+Head files must stay inside the catalogue directory after resolving symlinks. They are served under `/_sim-local/head/`
+before platform and authored scripts, and doctor, status and page diagnostics mark them local-only; exports are never
+edited.
 
-`compat` booleans: `footerSpacing`, `dateFormat`, `dateTimePicker`, `bootstrapPlugins`,
-`jqueryUiDialog`, `jqueryUiWidgets`, `blockUi`, `entityGrid`, `platformApp` and `webForms`. `false`
-removes that fallback from toolkit injection and local platform bundles; authored and captured scripts
-keep their own behavior. See [platform resources](../mirage/docs/platform-resources.md) for shell capture.
+`compat` booleans: `footerSpacing`, `dateFormat`, `dateTimePicker`, `bootstrapPlugins`, `jqueryUiDialog`,
+`jqueryUiWidgets`, `blockUi`, `entityGrid`, `platformApp` and `webForms`. `false` removes that fallback from toolkit
+injection and local platform bundles; authored and captured scripts keep their own behaviour. See
+[platform resources](../mirage/docs/platform-resources.md) for shell capture.
 
-## Observed platform behavior
+## Observed platform behaviour
 
-`observed` records behavior an export does not contain. Every observation needs an `evidence`
-reference from the site being modeled; do not copy another site's observations. Omitted settings keep
-their defaults. Observations do not grant access, execute CLR assemblies or prove whole-response parity.
-The table lists common keys; the full set is validated in `mirage/lib/project-config.mjs`, and the
-form, Liquid, query and plug-in contracts live in the [Mirage reference](../mirage/docs/README.md).
+`observed` records behaviour an export does not contain. Every observation needs an `evidence` reference from the site
+being modelled; do not copy another site's observations. Omitted settings keep their defaults. Observations do not grant
+access, execute CLR assemblies or prove whole-response parity. The table lists common keys; the full set is validated in
+`mirage/lib/project-config.mjs`, and the form, Liquid, query and plug-in contracts live in the
+[Mirage reference](../mirage/docs/README.md).
 
-| Convention                               | Settings                                                                                                                                                                                                                                               |
-| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Sign-in and site visibility              | `loginPath`: site-relative fallback when the export omits the login setting. `siteVisibility: private` shows the private-site banner.                                                                                                                  |
-| Microsoft Entra authority                | `azureAdAuthority`: one tenant's authority when the exported AzureAD setting is absent; shared aliases and placeholders are rejected.                                                                                                                  |
-| Portal-created row identity              | `portalApplicationUser`, `portalApplicationUserId`: the application's display name and systemuser GUID.                                                                                                                                                |
-| List OData feeds                         | `listODataFeeds: removed` (default) or `served`.                                                                                                                                                                                                       |
-| Web API dates                            | `webApiDateParsing: month-first` and optional `webApiTwoDigitYearMax`; [date input contracts](../mirage/docs/dataverse-parity.md#observed-portal-culture-parsed-dates).                                                                                |
-| Web API errors                           | `webApiErrorDetails: odata-wrapper` selects stable reader messages. `webApiErrorStacks: response-template` also needs exact trusted pack templates; [data packs](../mirage/docs/data-packs.md).                                                        |
-| Dataverse HTTP reader errors             | `dataverseErrorStacks: response-template` (default `diagnostic`) needs separately registered pack `dataverseErrorTemplates`; [data packs](../mirage/docs/data-packs.md).                                                                               |
-| Dataverse FetchXML attribute diagnostics | `dataverseAttributeErrorContexts`: entity logical name to `{ organizationIndex, metadataId? }`. An exported `MetadataId` wins over `metadataId`. Only genuine missing-attribute errors use it.                                                         |
-| Captured metadata epoch                  | `webApiGlobalMetadataVersion`: numeric epoch shared by CSDL ETags and record annotations while source metadata is unchanged; a local metadata change switches to one synthesized epoch, row edits do not.                                              |
-| Portal write responses                   | `webApiWriteResponse: portal-classic`: POST/PATCH entity identifiers on the portal origin and `/api/data/v9.1/`, no Content-Type on 204. Default `local`.                                                                                              |
-| Portal record JSON                       | `webApiReadResponse: jsonnet-indented`: successful record GETs indented by two spaces with CRLF and primary identifiers first. Default `local`.                                                                                                        |
-| Web API request bodies                   | `webApiRequestBody: portal-classic`: single-layer decoding of a JSON object string. Default `strict` rejects primitive roots. Table, row, field and private-property guards always apply; the native forbidden-field transport bypass is not emulated. |
-| Page-query validation                    | `requestValidation: aspnet-query`: rejects dangerous decoded GET query values before Liquid; does not scan API JSON, form bodies or cookies.                                                                                                           |
-| Page error presentation                  | `pageErrorPresentation: generic-error`: the generic GET-query error page only.                                                                                                                                                                         |
-| Form submission errors                   | `formSubmissionErrorMarkup: paragraph` when the host reads `#MessagePanel p`; default `inline`. Message text stays escaped in JSON and postback errors.                                                                                                |
-| Exported SDK facts                       | `sdkMessages`: exported message GUID to `{ name, evidence }`; `pluginSources`: C# type name to `{ path, evidence }`, inside the source or project root.                                                                                                |
+| Convention                               | Settings                                                                                                                                                                                                                                                 |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Sign-in and site visibility              | `loginPath`: site-relative fallback when the export omits the login setting. `siteVisibility: private` shows the private-site banner.                                                                                                                    |
+| Microsoft Entra authority                | `azureAdAuthority`: one tenant's authority when the exported AzureAD setting is absent; shared aliases and placeholders are rejected.                                                                                                                    |
+| Portal-created row identity              | `portalApplicationUser`, `portalApplicationUserId`: the application's display name and systemuser GUID.                                                                                                                                                  |
+| List OData feeds                         | `listODataFeeds: removed` (default) or `served`.                                                                                                                                                                                                         |
+| Web API dates                            | `webApiDateParsing: month-first` and optional `webApiTwoDigitYearMax`; [date input contracts](../mirage/docs/dataverse-parity.md#observed-portal-culture-parsed-dates).                                                                                  |
+| Web API errors                           | `webApiErrorDetails: odata-wrapper` selects stable reader messages. `webApiErrorStacks: response-template` also needs exact trusted pack templates; [data packs](../mirage/docs/data-packs.md).                                                          |
+| Dataverse HTTP reader errors             | `dataverseErrorStacks: response-template` (default `diagnostic`) needs separately registered pack `dataverseErrorTemplates`; [data packs](../mirage/docs/data-packs.md).                                                                                 |
+| Dataverse FetchXML attribute diagnostics | `dataverseAttributeErrorContexts`: entity logical name to `{ organizationIndex, metadataId? }`. An exported `MetadataId` wins over `metadataId`. Only genuine missing-attribute errors use it.                                                           |
+| Captured metadata epoch                  | `webApiGlobalMetadataVersion`: numeric epoch shared by CSDL ETags and record annotations while source metadata is unchanged; a local metadata change switches to one synthesized epoch, row edits do not.                                                |
+| Portal write responses                   | `webApiWriteResponse: portal-classic`: POST/PATCH entity identifiers on the portal origin and `/api/data/v9.1/`, no Content-Type on 204. Default `local`.                                                                                                |
+| Portal record JSON                       | `webApiReadResponse: jsonnet-indented`: successful record GETs indented by two spaces with CRLF and primary identifiers first. Default `local`.                                                                                                          |
+| Web API request bodies                   | `webApiRequestBody: portal-classic`: single-layer decoding of a JSON object string. Default `strict` rejects primitive roots. Table, row, field and private-property guards always apply; the native forbidden-field transport bypass is not emulated.   |
+| Page-query validation                    | `requestValidation: aspnet-query`: rejects dangerous decoded GET query values before Liquid; does not scan API JSON, form bodies or cookies.                                                                                                             |
+| Page error presentation                  | `pageErrorPresentation: generic-error`: the generic GET-query error page only.                                                                                                                                                                           |
+| Form submission errors                   | `formSubmissionErrorMarkup: paragraph` when the host reads `#MessagePanel p`; default `inline`. Message text stays escaped in JSON and postback errors.                                                                                                  |
+| Exported SDK facts                       | `sdkMessages`: exported message GUID to `{ name, evidence }`; `pluginSources`: C# type name to `{ path, evidence, root? }`; a relative `root` resolves against the project file's folder, in catalogue settings against `sourceRoot` (the default root). |
 
 ## State and several sites
 
-`portals: all` makes every configured target available in one browser; origins activate on visit and
-`--site` selects the first. It cannot be combined with `--url`, `--source`, `PAQVILO_URL` or
-`PAQVILO_SOURCE`, two targets may not share an origin, and `caution` environments are left out unless
-selected or `includeCaution: true`. `--portals selected` limits lifecycle operations to one site.
+`portals: all` makes every configured target available in one browser; origins activate on visit and `--site` selects
+the first. It cannot be combined with `--url`, `--source`, `PAQVILO_URL` or `PAQVILO_SOURCE`, two targets may not share
+an origin, and `caution` environments are left out unless selected or `includeCaution: true`. `--portals selected`
+limits lifecycle operations to one site.
 
-Each Mirage site has its own port, state file and session cookie; use distinct fixed ports or `0`.
-Port, state, preset and Solution CLI overrides apply to the selected site.
+Each Mirage site has its own port, state file and session cookie; use distinct fixed ports or `0`. Port, state, preset
+and Solution CLI overrides apply to the selected site.
 
-Runtime discovery, logs and generated projects live under `.paqvilo/` beside the catalogue; a
-standalone `--project` uses its own directory, and direct Mirage commands accept `--state-dir`. Use
-the same scope for `mirage status` and `mirage stop`. For a background runtime, run the stop command
-`mirage start` prints: it keeps the catalogue/project and the port and state selectors.
+Runtime discovery, logs and generated projects live under `.paqvilo/` beside the catalogue; a standalone `--project`
+uses its own directory, and `mirage serve`, `render`, `capture-stylesheets` and `capture-snippet-composition` accept
+`--state-dir`. For a background runtime, run the stop command `mirage start` prints; which runtimes `mirage status` and
+`mirage stop` select is described in [Mirage in the Lense browser](../mirage/docs/toolkit-integration.md).
 
-Visitors of one runtime have independent cookies but share configuration and records. Independent
-scenarios need separate state files or persona contexts; see
-[concurrent testing](public-api.md#test-many-visitors-concurrently) and
+Visitors of one runtime have independent cookies but share configuration and records. Independent scenarios need
+separate state files or persona contexts; see [concurrent testing](public-api.md#test-many-visitors-concurrently) and
 [state storage](../mirage/docs/state-storage.md).
 
 ## Standalone Mirage projects
 
-A version 2 Mirage project file contains `defaultPortal`, `portals`, `solutions`, `references` and
-`dataPacks`, plus the project-scope settings above. Portals are
-`{ id, path, origin?, solutions?, reference?, deploymentProfile?, observed?, dataModel? }`, Solutions
-`{ id, path }`, references `{ id, origin, default? }`. Paths are project-relative and each portal has
-its own state. References select context; they authorize no network reads or writes. Solutions layer
-in dependency order unless `solutionOrder: explicit`.
+A version 2 Mirage project file contains `defaultPortal`, `portals`, `solutions`, `references` and `dataPacks`, plus the
+project-scope settings above. Portals are
+`{ id, path, origin?, solutions?, reference?, deploymentProfile?, observed?, dataModel? }`, Solutions `{ id, path }`,
+references `{ id, origin, default? }`. Paths are project-relative and each portal has its own state. References select
+context; they authorize no network reads or writes. Solutions layer in dependency order unless
+`solutionOrder: explicit`.
 
-The startup preset comes from `--preset`, else the project, else the catalogue site, and applies when
-the runtime is served (`mirage serve`, `mirage dev`); other commands apply a preset only when
-`--preset` is passed.
+The startup preset comes from `--preset`, else the project, else the catalogue site, and applies when the runtime is
+served (`mirage serve`, `mirage dev`); other commands apply a preset only when `--preset` is passed. `mirage dev` and
+`mirage start` with `--project` take catalogue-only site settings such as `personaContexts` from the site `--site`
+selects, else from the site whose `mirage.project` is that file; `--config` alone selects no site
+([persona contexts](../mirage/docs/persona-catalog.md#isolated-contexts-and-scenarios)).
 
-Use the catalogue for ordinary project development; the standalone form suits embedded tools and
-repeatable runtime inputs. See [bootstrap and sources](../mirage/docs/bootstrap-and-sources.md).
+Use the catalogue for ordinary project development; the standalone form suits embedded tools and repeatable runtime
+inputs. See [bootstrap and sources](../mirage/docs/bootstrap-and-sources.md).

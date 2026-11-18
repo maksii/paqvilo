@@ -104,8 +104,8 @@ Every client object is bounded: reading a member that is not listed below throws
 
 - `pageType: 'dashboard'` opens one of the app's Solution dashboards by `dashboardId` (or the first), and rejects with
   `DashboardPageUnsupported` when the sources hold none.
-- `pageType: 'custom'` (`name`, optional `entityName` and GUID `recordId`) opens the headless host of the Canvas app with
-  that logical name ([Canvas apps](canvas-apps.md)).
+- `pageType: 'custom'` (`name`, optional `entityName` and GUID `recordId`) opens the headless host of the Canvas app
+  with that logical name ([Canvas apps](canvas-apps.md)).
 - Record inputs keep `formId`, `tabName` and create defaults; a named visible tab is selected and focused, an
   unavailable tab is an error, and a `formId` outside the loaded main forms is refused with `FormUnavailable`.
   Existing-record navigation ignores create defaults.
@@ -141,13 +141,13 @@ Every client object is bounded: reading a member that is not listed below throws
 | 1               | A function (GET with `@p1…` aliases; entity parameters become `@odata.id` references, enumerations use their `typeName`) |
 | 2               | `Create`, `Retrieve`, `Update`, `Delete`, `Associate` or `Disassociate`                                                  |
 
-The organization's Web API answers as the selected staff user (the local administrator when none is selected), so
-custom APIs, custom actions and the standard messages it implements behave as through the Dataverse API, also when its
-listener is off. The response has `ok`, `status`, `statusText`, `headers`, `url`, `json()` and `text()`. A failure
-rejects with `message`, `status` and, for Dataverse codes, `errorCode`; an undeclared operation rejects with its 404.
-`executeMultiple` (1–1000 requests) runs top-level requests in order; a nested array is one `$batch` change set that commits or rolls back
-together and rejects with the failing request's error. Requests go to `POST /_apps/api/webapi` (see
-[routes](model-driven-apps.md#routes)).
+The organization's Web API answers as the selected staff user (the local administrator when none is selected), so custom
+APIs, custom actions and the standard messages it implements behave as through the Dataverse API, also when its listener
+is off. The response has `ok`, `status`, `statusText`, `headers`, `url`, `json()` and `text()`. A failure rejects with
+`message`, `status` and, for Dataverse codes, `errorCode`; an undeclared operation rejects with its 404.
+`executeMultiple` (1–1000 requests) runs top-level requests in order; a nested array is one `$batch` change set that
+commits or rolls back together and rejects with the failing request's error. Requests go to `POST /_apps/api/webapi`
+(see [routes](model-driven-apps.md#routes)).
 
 ## Staff context
 
@@ -165,15 +165,17 @@ The PCF context (`userSettings`, `formatting`) and `Xrm.Utility.getGlobalContext
 
 A staff user reads and updates its own row at `/api/data/v9.2/usersettingscollection(<systemuserid>)` (GET, and PATCH
 of `uilanguageid`, `localeid`, `timezonecode`, the format columns and `transactioncurrencyid@odata.bind`); another
-user's row answers 403. The row lives in the private runtime table `usersettings`, and seeded rows win on reset. Without
-a readable staff session, scripts and components get the anonymous context: no user or roles, language 1033, UTC, no
-currency and no formatting information.
+user's row answers 403. Page scripts reach it with `Xrm.WebApi.retrieveRecord` and `updateRecord` on `usersettings`, or
+`Xrm.WebApi.execute` `Retrieve` and `Update`; other organization tables that the Solution does not import stay out of
+reach. The row lives in the private runtime table `usersettings`, and seeded rows win on reset.
+Without a readable staff session, scripts and components get the anonymous context: no user or roles, language 1033,
+UTC, no currency and no formatting information.
 
 ## Page markers and the Web API on the app address
 
-Like a native app, the shell marks what tools such as Lense X-ray read: each form section, field (container
-`data-id="<control>"`, control `data-id="<control>.fieldControl-<type>"`), tab (`tablist-<tab>`), subgrid
-(`dataSetRoot_<control>`) and each grid header and cell with its column name.
+The shell marks what tools such as Lense X-ray read: each form section, field (container `data-id="<control>"`,
+control `data-id="<control>.fieldControl-<type>"`), tab (`tablist-<tab>`), subgrid (`dataSetRoot_<control>`) and each
+grid header and cell with its column name.
 
 Pages of the app (`/main.aspx` and `/_apps/`, by same-origin referrer) may `GET` and `HEAD` `/api/data/v9.x/` on the
 apps address as the staff user (or local administrator), through the same in-process Web API as `Xrm.WebApi`. Other

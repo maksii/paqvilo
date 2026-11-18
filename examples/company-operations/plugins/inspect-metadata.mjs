@@ -1,6 +1,15 @@
-import { connectionPath } from './registration.mjs';
 import { loadConnection, connectedClient } from '../../../lense/dataverse/index.mjs';
-const connection = await loadConnection(connectionPath());
+import { cli } from '../cli.mjs';
+import { connectionHelp, defaultConnection } from '../paths.mjs';
+const { values } = cli(
+  `Usage: node examples/company-operations/plugins/inspect-metadata.mjs [--connection FILE]
+
+Run from the toolkit checkout. Reads solution component types and ChainNode privileges from the live environment.
+
+${connectionHelp('  --connection FILE  ')}`,
+  { connection: { type: 'string' } },
+);
+const connection = await loadConnection(values.connection ?? defaultConnection);
 const c = connectedClient(connection);
 await c.verify(connection.organisationId);
 const r = await c.get(

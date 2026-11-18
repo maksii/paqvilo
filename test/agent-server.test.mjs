@@ -87,7 +87,7 @@ async function fixture(t, options = {}) {
     panel: options.panel === false ? undefined : panel,
     stop: () => stops++,
     options,
-    runtime: { watching: true, debugPort: null },
+    runtime: { watching: true, debugPort: options.debugPort ?? null },
   });
   // Registered before any assertion, so a failed discovery check still closes the server and removes its state.
   ownedFixture(t).add(async () => {
@@ -162,6 +162,12 @@ test('agent discovery is local and authenticated; browser origins and forged hos
   assert.equal(paused.overlay.disabledSources.length, 200);
   assert.equal(paused.truncated.disabledSources, true);
   assert.equal((await fx.call('/v1/evaluate', { expression: 'fetch("/write")' })).status, 404);
+});
+
+test('session status reports the debugger port without claiming to know whether a debugger is attached', async (t) => {
+  const fx = await fixture(t, { debugPort: 9333 });
+  const state = await (await fx.call('/v1/session')).json();
+  assert.deepEqual(state.debugger, { port: 9333 });
 });
 
 // @test-kind security: event history redacts URL values and secrets and captures only portal tabs

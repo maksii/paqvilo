@@ -10,7 +10,7 @@ tests belong to the separate project, never to the toolkit. Mirage itself ships 
 Loading a module executes its JavaScript, so packs are never discovered: register each one explicitly in
 `sites.<id>.mirage.dataPacks`, `defaults.mirage.dataPacks`, a Mirage project's `dataPacks`, or with `--pack-module`.
 Catalogue modules resolve from the catalogue directory and project modules from the project file. Embedded callers pass
-modules to `createSimulator({ dataPacks })`, `createSimulator({ packs })` or `discoverPacks({ explicit })`. The
+modules or loaded packs as described in [public API](../../docs/public-api.md#bind-project-packs-once). The
 [project starter](../../examples/project/README.md) contains a complete pack.
 
 ```js
@@ -41,19 +41,16 @@ export default {
 | `name`, `description`                             | Required non-empty strings.                                                                                                                                                       |
 | `matches({ portal })`                             | Required. The pack is active for a portal only when it returns exactly `true`. Without a portal (standalone runtime) every registered pack is active and `matches` is not called. |
 | `presets({ portal, metadata, options })`          | Required, unless the pack declares `configurationPresets` and contributes no data presets.                                                                                        |
-| `generators`                                      | Optional object of functions (`data generate --pack`).                                                                                                                            |
-| `personas`, `plugins`                             | Optional arrays: legacy persona list and declarative plugin rules.                                                                                                                |
+| `generators`                                      | Optional object of functions. Mirage validates the shape but never calls them; `data generate` uses `dataset`.                                                                    |
+| `personas`, `plugins`                             | Optional arrays: legacy persona list and declarative plug-in rules.                                                                                                               |
 | `personaCatalog`                                  | Optional data property; see [persona catalogues](persona-catalog.md).                                                                                                             |
 | `dataFiles`                                       | Optional data property: writable DATA files; see [simulation levels](simulation-levels.md).                                                                                       |
 | `configurationPresets`                            | Optional; see [pack configuration presets](#pack-configuration-presets).                                                                                                          |
 | `webApiErrorTemplates`, `dataverseErrorTemplates` | Optional data properties; see [captured error templates](#captured-error-templates).                                                                                              |
-| `dataset`, `profiles`, `parity`                   | Optional dataset helper, generator profiles and project parity fixtures.                                                                                                          |
+| `dataset`, `profiles`, `parity`                   | Optional: `dataset({ profile, seed, counts })` returns the fragment `data generate` merges; `profiles` (an object) limits accepted `--profile` names; project parity fixtures.    |
 
-Every other key is a [recognised export](#recognised-exports) or produces a `PACK_EXPORT_UNKNOWN` diagnostic.
-
-In `simulation` and `deep` levels, writes persist only to declared `dataFiles`; a preset alone owns no file, and a
-write to a business table without an owner fails with `SimulationDataTargetRequired`. `dry-run` keeps edits in memory. See
-[simulation levels](simulation-levels.md) and [standalone organization](standalone-organization.md).
+Every other key is a [recognized export](#recognized-exports) or produces a `PACK_EXPORT_UNKNOWN` diagnostic. A preset
+owns no file: where writes persist depends on the [simulation level](simulation-levels.md) and the pack's `dataFiles`.
 
 ## Presets
 
@@ -71,10 +68,10 @@ that creates a registry cycle; generators may import runtime utilities lazily.
 `createOwned({ records })` must return synchronously (an `async` factory or a returned promise is rejected as a preset
 that did not load an object) and must return a new private plain body on every call; do not keep or reuse its rows,
 arrays, mappings or other mutable objects after returning. When a runtime applies the preset, `records` is that
-runtime's store and [`records.table()` streams rows](state-storage.md#paged-record-storage) into paged record storage; a read without a
-store (a direct `library[id]` preview) gets ordinary arrays. The toolkit then adopts the body without cloning a second
-copy. Each application builds a fresh body, so use deterministic IDs and a seed when reapplication must reproduce the
-same data. A direct `library[id]` read memoizes a separate preview; editing it does not edit the factory.
+runtime's store and [`records.table()` streams rows](state-storage.md#paged-record-storage) into paged record storage; a
+read without a store (a direct `library[id]` preview) gets ordinary arrays. The toolkit then adopts the body without
+cloning a second copy. Each application builds a fresh body, so use deterministic IDs and a seed when reapplication must
+reproduce the same data. A direct `library[id]` read memoizes a separate preview; editing it does not edit the factory.
 
 ```js
 presets() {
@@ -87,14 +84,14 @@ presets() {
 }
 ```
 
-A project test that constructs a `DataStore` directly owns its record storage: a store with a state file keeps
-streamed records in `<state file>.records`, and one without creates a `paqvilo-record-state-*` directory in the
-operating system's temporary directory. Call `store.close()` (alias `store.closeRecordStorage()`) when done; it closes
-every record session and removes that directory. If a session fails to close, the call throws, keeps the remaining
-files and can be retried. `createSimulator()` and the offline `data` commands close their own stores.
+A project test that constructs a `DataStore` directly owns its record storage: a store with a state file keeps streamed
+records in `<state file>.records`, and one without creates a `paqvilo-record-state-*` directory in the operating
+system's temporary directory. Call `store.close()` (alias `store.closeRecordStorage()`) when done; it closes every
+record session and removes that directory. If a session fails to close, the call throws, keeps the remaining files and
+can be retried. `createSimulator()` and the offline `data` commands close their own stores.
 
-Applying a business-data preset to a portal keeps the organization-owned tables, staff grants, credentials and
-imported schema it does not mention; explicit table or mapping entries replace their targets.
+Applying a business-data preset to a portal keeps the organization-owned tables, staff grants, credentials and imported
+schema it does not mention; explicit table or mapping entries replace their targets.
 
 ### Web-role assignments in a preset
 
@@ -106,8 +103,8 @@ The contact must exist in the resulting data. Role names resolve exactly (case-s
 the selected portal export; a missing or duplicate name rejects the preset. The list replaces the runtime's explicit
 contact-role assignments (`[]` clears them; omitting the key keeps them). The lower-level `contactRoles` takes
 `{ contactId, roleId }` pairs; `personaRoles` wins when both are present. Assignments still pass through exported table
-permissions and the automatic authenticated and anonymous roles, and never change live memberships or a catalogue's
-role tags.
+permissions and the automatic authenticated and anonymous roles, and never change live memberships or a catalogue's role
+tags.
 
 ## Generate data offline
 
@@ -116,19 +113,30 @@ paqvilo mirage data scaffold --source ./portal-export --solution-root ./solution
 paqvilo mirage data generate --pack customer-demo --pack-module ./pack/pack.mjs --profile deep --state .paqvilo/state.json
 ```
 
-`data scaffold` needs no pack: `smoke` creates minimal rows and `dev` fills writable columns from metadata,
-deterministically (IDs and links included). Review its summary, schema violations and dangling lookups. `data generate`
-runs a pack generator; repeatable `--count NAME=N` passes validated non-negative integers as `counts`, whose names and
-meaning belong to your generator. `--rows` belongs to `scaffold`; `--pack`, `--count` and
-`--materialize-persona-memberships` belong to `generate`; a misplaced option fails.
+`data scaffold` needs no pack: `smoke` (the default) creates minimal rows and `dev` fills writable columns from
+metadata, deterministically (IDs and links included); `--rows N` sets the rows per table. Review its `report`: rows per
+table, generated memberships and `unresolvedRequiredLookups` (required lookups it could not fill). Tables without
+Solution metadata are listed under `referencedWithoutMetadata` and get no rows. The portal and Solution roots resolve as for `mirage serve`: `--source`, a `--project` portal (its own roots),
+or the catalogue site (`--site`, else the catalogue's default site); roots come from `--solution-root`, else the site's
+`mirage.solutionRoots`, else unpacked Solutions discovered next to the portal.
+
+`data generate` loads packs from `--pack-module`, the `--project` file's `dataPacks` and, with `--config` or `--site`,
+the catalogue site's `dataPacks` (`--config` alone selects the default site). It calls the pack's
+`dataset({ profile, seed, counts })` (`--profile` is optional and defaults to `deep`; a name outside the pack's
+`profiles` fails) and merges the returned fragment into a copy of `--state`, written to `--out` (default: `--state`);
+`scaffold` writes its state the same way. Repeatable `--count NAME=N` passes validated non-negative integers as
+`counts`, whose names and meaning belong to your pack. `--rows` belongs to `scaffold`; `--pack`, `--pack-module`,
+`--count` and `--materialize-persona-memberships` belong to `generate`; a misplaced option fails. A single-value option
+given twice fails (`--state may be given only once`).
 
 Additive generation leaves memberships and the configured identity unchanged. A dataset fragment may declare
-`personaRoles: [{ contactId, roles }]`; apply them with `data generate --materialize-persona-memberships` and a portal
-selected by `--source`, `--site` or `--project` (plus `--portal`), or with
+`personaRoles: [{ contactId, roles }]`; apply them with `data generate --materialize-persona-memberships` (the portal
+resolves as for `data scaffold`), or with
 `mergeDataset(state, fragment, { materializePersonaMemberships: true, portal })`, where `portal` is an `importPortal()`
-result. Roles resolve exactly against active web roles of that export, and each contact must be active in the merged
-data; otherwise nothing is written. Only the fragment's memberships are appended, deduplicated by contact and role
-(`addedMemberships` counts them; repeating adds zero). Base-preset descriptors are not materialized.
+result. Roles resolve exactly against active web roles of that export, and each contact must be supplied by the fragment
+(or its base preset) and be active in the merged data; otherwise nothing is written. Only the fragment's memberships are
+appended, deduplicated by contact and role (`addedMemberships` counts them; repeating adds zero). Base-preset
+descriptors are not materialized.
 
 Fragments and base presets are objects with object `mappings`, arrays of row objects per table and an optional array of
 permission objects; malformed shapes and extra positional arguments fail before state changes. Primary-key overlap and
@@ -144,15 +152,17 @@ packs that matched its portal (`discoverPacks` returns them as `packs.registries
 `runWithPackRegistries(packs.registries, fn)` from `lib/extensions.mjs`). The same footer class, notification query or
 operator name from two matched packs is an error.
 
-Direct imports of `registerExpressionOperators` and `registerShellConventions` from
-`paqvilo/mirage/lib/extensions.mjs` still register process-wide for the life of the process and are visible in every
-runtime; a pack's own operator wins over such a registration with the same name, and two such registrations cannot claim
-one operator. They have no per-runtime disposal, so use pack exports.
+Direct imports of `registerExpressionOperators` and `registerShellConventions` from `paqvilo/mirage/lib/extensions.mjs`
+register process-wide for the life of the process and are visible in every runtime; a pack's own operator wins over such
+a registration with the same name, and two such registrations cannot claim one operator. They have no per-runtime
+disposal, so use pack exports.
 
 `shell.headerNotificationQuery` names a web template that owns all audience and visibility rules and returns
 `{ "notifications": [{ "notificationText": "Local notice", "severity": "info", "visible": true }] }`. Severity is
 `success`, `danger`, `warning` or `info`; only visible rows count. Text is bounded plain text, HTML-escaped. Invalid
-rows produce `HEADER_NOTIFICATION_QUERY_INVALID` and are omitted.
+rows produce `HEADER_NOTIFICATION_QUERY_INVALID` and are omitted. The query renders only for a signed-in visitor and
+only when the site's shell profile (from `mirage capture-shell`) observed the header notifications; without a matching
+template in the export the page reports `HEADER_NOTIFICATION_QUERY_MISSING`.
 
 ### Authenticated local endpoint writes
 
@@ -171,8 +181,9 @@ An endpoint gains write capabilities with a `writes` declaration and mutation me
 }
 ```
 
-- The request must come from a signed-in portal visitor with the portal's `__RequestVerificationToken`; anonymous,
-  wrong-token and live-provider requests are refused before the handler.
+- The request must come from a signed-in portal visitor with the portal's `__RequestVerificationToken` header; anonymous
+  (401 `AuthenticationRequired`), wrong-token (403) and live-provider (409 `LocalRuntimeRequired`) requests are refused
+  before the handler. Refusals answer JSON `{ "error": { "code", "message" } }`.
 - `writes({ body, match, identity })` returns 1 to 100 targets: `entity`, `operation` (`create`, `update`, `delete`),
   `id` for update and delete, optional `ifMatch` / `ifNoneMatch`, and `values` to preauthorize a scoped create. Every
   target is permission-checked first; undeclared targets are refused. Elastic and virtual tables are refused because
@@ -180,14 +191,14 @@ An endpoint gains write capabilities with a `writes` declaration and mutation me
 - The handler receives `body`, `url`, `match`, `identity`, `read`, `error` and one `transaction(work)` call, and no raw
   response writer. Inside `work`, `records.create(entity, values)`, `update(entity, id, values)`, `remove(entity, id)`
   and the permission-scoped `read(entity, id)` share one transaction that keeps authorization, field security, plug-ins,
-  audit stamps, events and concurrency checks. Mutators return only the primary key; use `read` for row data.
-  Capabilities expire when `work` ends. Any failed operation rolls back the whole unit, even if the handler catches it.
-  The JSON result is sent only after commit.
+  audit stamps, events and concurrency checks. Mutators return only the primary key (`{ x_itemid }`); use `read` for row
+  data. Capabilities expire when `work` ends. Any failed operation rolls back the whole unit, even if the handler
+  catches it. The JSON result is sent only after commit.
 - Limits: 8 MiB payload, 1 MiB result and 1 MiB receipt, 100 CRUD operations per unit.
 - An optional `Idempotency-Key` (1 to 128 letters, digits, `_`, `.`, `-`) identifies a request per runtime, pack,
   endpoint and contact. A repeat with the same method, path, query and body returns the committed result after current
-  permission checks; different input answers 409 `IdempotencyConflict`. The latest 128 receipts persist with local
-  state. Nothing retries a pack mutation automatically.
+  permission checks; different input answers 409 (`Idempotency key was used for another request.`). The latest 128
+  receipts persist with local state. Nothing retries a pack mutation automatically.
 
 ## Operation providers
 
@@ -247,11 +258,11 @@ definitions, duplicate operation IDs and parameters sharing a name across locati
 percent-encoded JSON pointers resolve; external references are not fetched. Before a provider runs, calls are checked
 for required parameters, types, `enum`, required and additional properties, string length and pattern (lengths in
 Unicode characters), numeric bounds, array size and items, object property counts and `allOf`. `oneOf`, `anyOf`, `not`,
-`patternProperties`, `dependencies`, `uniqueItems: true`, `multipleOf`, malformed constraints, unresolved references
-and unknown operations fail with `OperationUnsupported`; other keywords and response schemas are not validated.
-Flattened flow body properties (`body/property`) are accepted, but not mixed with a direct body or overlapping paths. A
-definition without an implementation answers 501 `ConnectorNotSimulated` to code apps. Definitions supply no
-behaviour, credentials or network access.
+`patternProperties`, `dependencies`, `uniqueItems: true`, `multipleOf`, malformed constraints, unresolved references and
+unknown operations fail with `OperationUnsupported`; other keywords and response schemas are not validated. Flattened
+flow body properties (`body/property`) are accepted, but not mixed with a direct body or overlapping paths. A definition
+without an implementation answers 501 `ConnectorNotSimulated` to code apps. Definitions supply no behaviour, credentials
+or network access.
 
 ### Plug-ins
 
@@ -261,7 +272,8 @@ including steps registered through the Dataverse API (see
 [project extensions](../../docs/project-extensions.md#plug-in-type-handlers)). Both receive the operation's
 `sharedVariables` (a `pluginTypes` handler also as `context.SharedVariables`). Create checks the table-level grant
 before pack handlers run; stages 10 and 20 run before declarative rules, and row-scoped Create permission is checked
-before stage 40, so rules may establish the parent link. See [plug-in contracts and rollback](dataverse-plugins.md#model-a-write).
+before stage 40, so rules may establish the parent link. See
+[plug-in contracts and rollback](dataverse-plugins.md#model-a-write).
 
 Standard PCF controls come from Solution manifests, not packs; see [code components](code-components.md).
 
@@ -269,14 +281,14 @@ Standard PCF controls come from Solution manifests, not packs; see [code compone
 
 These capabilities reproduce an explicitly captured error-message suffix; the project keeps the captures and
 comparisons, and verifies them for the site's source, version and method before exporting templates. Defaults stay
-diagnostic, and a missing descriptor never falls back to another method or target. Templates change error text only:
-not successful writes, permissions, SDK or flow errors.
+diagnostic, and a missing descriptor never falls back to another method or target. Templates change error text only: not
+successful writes, permissions, SDK or flow errors.
 
 - `webApiErrorTemplates: { version: 1, evidence, templates }` for the portal Web API. Each template has an evidenced
   `method` (`POST` or `PATCH`), a value-free `descriptor` (reader `kind`, relevant Edm types or JSON node kinds), an
-  exact CRLF `suffix`, `suffixSha256`, `capturedSourceSha256` and `qualifiedVariationSha256`. It applies only with
-  site evidence, `observed.webApiErrorDetails: "odata-wrapper"`, `observed.webApiErrorStacks: "response-template"` and
-  source `Webapi/error/innererror` enabling the inner message.
+  exact CRLF `suffix`, `suffixSha256`, `capturedSourceSha256` and `qualifiedVariationSha256`. It applies only with site
+  evidence, `observed.webApiErrorDetails: "odata-wrapper"`, `observed.webApiErrorStacks: "response-template"` and source
+  `Webapi/error/innererror` enabling the inner message.
 - `dataverseErrorTemplates` for `/api/data/v9.x/`, with `observed.dataverseErrorStacks: "response-template"`: the same
   fields, a `POST`, `PATCH` or `PUT` method and a descriptor with `target: "record" | "operation"`. Keys cannot contain
   case identifiers, submitted literals, schema names or routes.
@@ -286,18 +298,18 @@ rejected.
 
 ## OData property order
 
-A table mapping may supply `odataPropertyOrder`: a dense array of 1 to 4096 unique structural property names taken
-from that table's independently captured CSDL `EntityType` (lookups by HTTP name, such as `_sample_owner_value`). It
-orders generated CSDL properties and projected Web API rows, including expanded entities; annotations precede their
-property and navigation links follow their value. It only reorders admitted properties: it cannot add columns, bypass a
+A table mapping may supply `odataPropertyOrder`: a dense array of 1 to 4096 unique structural property names taken from
+that table's independently captured CSDL `EntityType` (lookups by HTTP name, such as `_sample_owner_value`). It orders
+generated CSDL properties and projected Web API rows, including expanded entities; annotations precede their property
+and navigation links follow their value. It only reorders admitted properties: it cannot add columns, bypass a
 projection or change SDK attribute order, and unlisted properties keep the metadata order. Keep its source and hash in
 project evidence.
 
-## Recognised exports
+## Recognized exports
 
-`PACK_EXPORTS` in `mirage/lib/pack-exports.mjs` is the one registry. `validatePack` checks every recognised export when
-the pack loads and returns a frozen snapshot, so readers see the validated values; a recognised export must be a plain
-data property (a getter is refused). Two matched packs with the same normalised key fail with
+`PACK_EXPORTS` in `mirage/lib/pack-exports.mjs` is the one registry. `validatePack` checks every recognized export when
+the pack loads and returns a frozen snapshot, so readers see the validated values; a recognized export must be a plain
+data property (a getter is refused). Two matched packs with the same normalized key fail with
 `Ambiguous <export> registration for <key> in packs <a> and <b>`. `collectPackExport(packs, name)` returns a Map of key
 to `{ value, pack }`; `packProvides(packs)` lists `{ pack, export, key }`.
 
@@ -324,9 +336,10 @@ to `{ value, pack }`; `packProvides(packs)` lists `{ pack, export, key }`.
 | `powerFx`                                                                                                              | `adapter` (one adapter per runtime)                             | error                   |
 | `capabilities`                                                                                                         | capability name (array) or map key                              | error                   |
 
-Provider exports are validated by their owning modules (`registerPackExport(name, { check, key?, entries?, collide? })`),
-which `mirage/lib/provider-modules.mjs` loads on the configuration path. An export whose owning module has not loaded
-is shape-checked only and reported as `PACK_EXPORT_PENDING`. `storageProviders` and
+Provider exports are validated by their owning modules
+(`registerPackExport(name, { check, key?, entries?, collide? })`), which `mirage/lib/provider-modules.mjs` loads on the
+configuration path. An export whose owning module has not loaded (a project test that imports only
+`paqvilo/mirage/packs`) is shape-checked only and reported as `PACK_EXPORT_PENDING`. `storageProviders` and
 `messageProviders` map names to factories ([storage](storage-providers.md#pack-storage-providers),
 [messaging](messaging-and-outbox.md)); `outboxHandlers` maps names to functions; `serviceFixtures` see
 [service fixtures](service-fixtures.md); `powerFx` see [canvas apps](canvas-apps.md); the Dataverse column, rule,
@@ -336,13 +349,19 @@ hierarchy, transition and virtual-table exports see [Dataverse contract modules]
 
 Flow extension exports (both contract level):
 
-- `flowActions`: `{ [actionType]: async ({ type, inputs }, context) => outputs }` (`flow-actions.mjs`). Adds a flow action type (it cannot replace a built-in or provider-backed type). Inputs are resolved; the call is journalled like a connector action; an `outputs.statusCode` of 400 or above fails the action.
-- `flowTriggers`: `{ [connectorId]: { [operationId]: { subscribe(ctx), unsubscribe?(ctx), poll?(ctx) } } }` (`flow-triggers.mjs`). Hosts a connector webhook or polling trigger. `ctx` carries `processId`, `operationKey`, `connectorId`, `operationId`, the trigger `parameters`, `clock` and `fire(body)`, which starts a tracked run; `unsubscribe` and `poll` also receive the `subscription` value `subscribe` returned; `poll` answers an array of trigger bodies. See [operations](operations.md#execution-boundary).
+- `flowActions`: `{ [actionType]: async ({ type, inputs }, context) => outputs }` (`flow-actions.mjs`). Adds a flow
+  action type (it cannot replace a built-in or provider-backed type). Inputs are resolved; the call is journalled like a
+  connector action; an `outputs.statusCode` of 400 or above fails the action.
+- `flowTriggers`: `{ [connectorId]: { [operationId]: { subscribe(ctx), unsubscribe?(ctx), poll?(ctx) } } }`
+  (`flow-triggers.mjs`). Hosts a connector webhook or polling trigger. `ctx` carries `processId`, `operationKey`,
+  `connectorId`, `operationId`, the trigger `parameters`, `clock` and `fire(body)`, which starts a tracked run;
+  `unsubscribe` and `poll` also receive the `subscription` value `subscribe` returned; `poll` answers an array of
+  trigger bodies. See [operations](operations.md#execution-boundary).
 
 `virtualTables` declares tables virtual, optionally with `fallback: 'local'`; see
 [Dataverse contract modules](dataverse-contract-modules.md#virtual-providers).
 
-Any other key is a `PACK_EXPORT_UNKNOWN` warning (a typo such as `customAPIs` stays visible); the pack still loads.
+An unknown key (a typo such as `customAPIs`) is a `PACK_EXPORT_UNKNOWN` warning and the pack still loads.
 `discoverPacks` returns the diagnostics as `packs.diagnostics`; `validatePackExports(pack, { strict: true })` throws
 instead.
 
@@ -360,11 +379,11 @@ presets: () => ({ sample: { name: 'Sample data', tables: {}, configurationPreset
 ```
 
 Entries follow the saved-experiment rules ([configuration experiments](configuration-experiments.md)): setting and
-snippet values are strings or `null`; roles, access rules and prototype keys are forbidden. An invalid entry or duplicate
-ID is a `PACK_CONFIGURATION_PRESET_INVALID` diagnostic. Valid entries are listed beside built-in and saved presets as
-read-only, marked with their pack. IDs must be unique across packs, built-ins and saved presets, so use a pack prefix;
-when a pack adopts a saved preset's ID the pack entry applies, and the saved copy stays visible with a collision warning
-until you delete it.
+snippet values are strings or `null`; roles, access rules and prototype keys are forbidden. An invalid entry or
+duplicate ID is a `PACK_CONFIGURATION_PRESET_INVALID` diagnostic. Valid entries are listed beside built-in and saved
+presets as read-only, marked with their pack. IDs must be unique across packs, built-ins and saved presets, so use a
+pack prefix; when a pack adopts a saved preset's ID the pack entry applies, and the saved copy stays visible with a
+collision warning until you delete it.
 
 - Applying a data preset (`POST /__sim/api/presets/<id>/apply`) keeps current overrides unless the body is
   `{ "applyConfiguration": true }`, which applies the linked configuration atomically with the data. At startup
@@ -373,8 +392,8 @@ until you delete it.
 - Status reports `activeConfigurationPreset` (ID, source and digest), which audit entries and acceptance evidence keep
   without snippet values. A manual override edit clears it.
 - Lazy data presets declare `configurationPreset` on the descriptor so listings and preflight stay inexpensive.
-- `configurationPresetDiagnostics(pack, { portal, metadata })` from `paqvilo/mirage/packs` checks a pack in project
-  tests; diagnostics carry IDs and messages, never override values.
+- `configurationPresetDiagnostics(packOrPacks, { portal, metadata, options })` from `paqvilo/mirage/packs` checks packs
+  in project tests without generating lazy data; diagnostics carry IDs and messages, never override values.
 
 ## Schema-directed pack datasets
 
@@ -406,7 +425,7 @@ types, bounds, lengths, choices and defaults; optional columns are omitted unles
 with no `systemuser` or `team` rows in `existing` stays unset (Dataverse assigns the caller). Unsupported required types
 fail with table and column context.
 
-| Rule `kind` | Inputs                               | Behavior                                                                              |
+| Rule `kind` | Inputs                               | Behaviour                                                                             |
 | ----------- | ------------------------------------ | ------------------------------------------------------------------------------------- |
 | `constant`  | `value`                              | Repeat a typed value.                                                                 |
 | `one-of`    | `values`, optional `mode`            | Cycle through values, or select deterministically with `mode: 'random'`.              |
@@ -420,9 +439,9 @@ fail with table and column context.
   fragment; constant or one-of lookup values are `{ id, logical_name }` and must resolve. Row identities are reserved
   before columns are filled, so required cycles and self-lookups resolve. Seeded selection does not depend on input
   ordering.
-- Active alternate keys are checked across generated and existing rows, and `mergeDataset` checks the final rows
-  against the state's keys (base preset rows included). Null or empty key members and inactive keys do not enforce
-  uniqueness. Text compares `CI_AI` by default; pass `collation: 'CI_AS'` when the receiving `settings.collation` is
+- Active alternate keys are checked across generated and existing rows, and `mergeDataset` checks the final rows against
+  the state's keys (base preset rows included). Null or empty key members and inactive keys do not enforce uniqueness.
+  Text compares `CI_AI` by default; pass `collation: 'CI_AS'` when the receiving `settings.collation` is
   accent-sensitive. Equivalent datetime and numeric values collide consistently with runtime writes.
 - Matching primary keys keep existing rows, so repeating a fragment is idempotent.
 - Rules reject unknown, primary, derived and non-creatable columns, and candidate values are checked against metadata
@@ -433,8 +452,8 @@ fail with table and column context.
 ### Remap identities
 
 `remapDatasetIdentities(fragment, { schema, identities, existing? })` substitutes explicit primary-key GUIDs in a
-row-only fragment and rewrites lookups to them, so a project fixture can move between chosen identity sets. It
-discovers and transfers nothing.
+row-only fragment and rewrites lookups to them, so a project fixture can move between chosen identity sets. It discovers
+and transfers nothing.
 
 ```js
 const { fragment: remapped, report } = remapDatasetIdentities(fragment, {
@@ -448,11 +467,11 @@ const { fragment: remapped, report } = remapDatasetIdentities(fragment, {
   intersect columns) from `schema.targets` and relationship metadata. GUID-looking text is not a relationship. A
   polymorphic lookup must name its target through a typed reference or logical-name annotation.
 - Substitutions apply once and simultaneously; keep the original fragment instead of remapping output again.
-- Refused before any result: duplicate destinations or source aliases, primary-key collisions, rewritten lookups
-  without a destination row, conflicting aliases, and nonempty permissions, persona roles, persona catalogues,
-  configuration or plug-in sections (rebuild those against the new identities yourself).
-- `report` counts `remappedRows`, `remappedLookups`, `unverifiedLookups` (untouched references the input cannot
-  resolve) and `unusedIdentities`; zero unverified does not validate schema, security or keys.
+- Refused before any result: duplicate destinations or source aliases, primary-key collisions, rewritten lookups without
+  a destination row, conflicting aliases, and nonempty permissions, persona roles, persona catalogues, configuration or
+  plug-in sections (rebuild those against the new identities yourself).
+- `report` counts `remappedRows`, `remappedLookups`, `unverifiedLookups` (untouched references the input cannot resolve)
+  and `unusedIdentities`; zero unverified does not validate schema, security or keys.
 - Limits: 100,000 fragment plus existing rows, 100,000 substitutions and a 1,000,000-unit work budget.
 
 ### Population and relationship coverage
@@ -460,8 +479,8 @@ const { fragment: remapped, report } = remapDatasetIdentities(fragment, {
 `summarizeDataset({ schema, tables, existing })` reports, per column, rows that are missing, null, empty or populated
 (`false` and `0` count as populated); choice-option coverage; lookups that resolve, dangle, are invalid or ambiguous (a
 polymorphic scalar GUID without a target stays ambiguous); and missing, invalid or duplicate IDs. It contains metadata
-names and option codes only, never row values. Coverage does not prove a native write succeeds. Limits: 100,000
-selected plus existing rows, 10,000 columns and two million column inspections.
+names and option codes only, never row values. Coverage does not prove a native write succeeds. Limits: 100,000 selected
+plus existing rows, 10,000 columns and two million column inspections.
 
 ### Project-owned TypeScript declarations
 

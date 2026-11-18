@@ -244,36 +244,12 @@ export function mountPersonaPicker(root, report, { filters = {}, onSelect, onFil
     if (button.dataset.personaChoose) choosePersona(button.dataset.personaChoose);
   });
   const form = root.closest('form');
+  // The choice is remembered as the form is sent: the page that answers the sign-in is not the sign-in page.
   form?.addEventListener('submit', (event) => {
     if (mode !== 'signin') return;
-    let key = null;
-    if (event.submitter?.name === 'personaKey') key = event.submitter.value;
-    else if (event.submitter?.name === 'contactId') key = `@contact:${event.submitter.value}`;
-    if (key)
-      try {
-        sessionStorage.setItem(
-          'paqvilo:pending-persona',
-          JSON.stringify({ key, contactId: byKey.get(key)?.contactId, at: Date.now() }),
-        );
-      } catch {
-        /* optional preference */
-      }
+    if (event.submitter?.name === 'personaKey') rememberPersona(report, event.submitter.value);
+    else if (event.submitter?.name === 'contactId') rememberPersona(report, '@contact:' + event.submitter.value);
   });
-  try {
-    const pending = JSON.parse(sessionStorage.getItem('paqvilo:pending-persona') ?? 'null');
-    if (
-      pending &&
-      Date.now() - pending.at < 300000 &&
-      report.session?.signedIn &&
-      report.session.contactId === pending.contactId
-    ) {
-      rememberPersona(report, pending.key);
-      preferences.recent = read(storageKey(report)).recent;
-      sessionStorage.removeItem('paqvilo:pending-persona');
-    }
-  } catch {
-    /* optional preference */
-  }
   shortcuts();
   syncControls();
   update();

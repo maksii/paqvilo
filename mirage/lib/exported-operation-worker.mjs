@@ -123,5 +123,10 @@ try {
   parentPort.postMessage({ kind: 'result', raw });
 } catch (error) {
   answered();
-  parentPort.postMessage({ kind: 'failure', message: String(error.message).slice(0, 1000) });
+  // A vm limit stop is reported as such, so the host never classifies a timeout by its message text.
+  parentPort.postMessage({
+    kind: 'failure',
+    timeout: error?.code === 'ERR_SCRIPT_EXECUTION_TIMEOUT',
+    message: String(error?.message).slice(0, 1000),
+  });
 }

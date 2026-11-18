@@ -1,5 +1,5 @@
 // @test-kind contract: Paqvilo's tracing and activity design (docs/design/tracing.md)
-// Tracing of service endpoint deliveries (D-R3-5, DV-A-5, DV-A-15, DV-C-7): a web hook POST is an http-out span that, at
+// Tracing of service endpoint deliveries (D-R3-5): a web hook POST is an http-out span that, at
 // level full, carries the RemoteExecutionContext it sent and the receiver's answer on every drive (the asynchronous
 // pipeline, after commit, and the synchronous I/O bridge); a Service Bus queue or topic send is a `webhook` span with
 // transport 'servicebus'; TriggerServiceEndpointCheck is an http-out span; a secret span names its vault and secret, never

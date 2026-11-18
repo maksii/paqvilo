@@ -239,3 +239,68 @@ test('standalone catalogue scope survives inferred/explicit runtime dispatch ind
   assert.equal(invalid.status, 1, invalid.stdout + invalid.stderr);
   assert.match(JSON.parse(invalid.stdout).error.message, /Unknown Mirage configuration 'not-configured'/);
 });
+
+// @test-kind contract: stop selects the runtimes recorded for a removed catalogue exactly as status lists them
+test('a removed catalogue still stops the runtime recorded for it, as status lists it', async (t) => {
+  const work = await workspace(t);
+  const config = path.join(work.directory, 'removed catalogue', 'paqvilo.config.yml');
+  await work.writeCatalogue(config);
+  const started = await work.start(['--config', config, '--site', 'first', '--port', '0']);
+  await fs.rename(config, config + '.away');
+  const listed = await work.run(['mirage', 'status', '--config', config, '--json']);
+  assert.equal(listed.status, 0, listed.stdout + listed.stderr);
+  assert.deepEqual(
+    JSON.parse(listed.stdout).sessions.map(({ pid }) => pid),
+    [started.pid],
+  );
+  // The printed command's own --state and --port narrow the selection: another listener port selects nothing.
+  const other = await work.run([
+    'mirage',
+    'stop',
+    '--config',
+    config,
+    '--site',
+    'first',
+    '--port',
+    String(Number(listenerPort(started.url)) + 1),
+    '--json',
+  ]);
+  assert.equal(other.status, 0, other.stdout + other.stderr);
+  assert.deepEqual(JSON.parse(other.stdout).stopped, []);
+  await alive(started);
+  const stop = await work.run(['mirage', 'stop', '--config', config, '--site', 'first', '--json']);
+  assert.equal(stop.status, 0, stop.stdout + stop.stderr);
+  const report = JSON.parse(stop.stdout);
+  assert.deepEqual(
+    report.stopped.map(({ pid, url }) => [pid, url]),
+    [[started.pid, started.url]],
+  );
+  assert.match(report.message, /^Stopped 1 toolkit-owned Mirage session\(s\) for the removed catalogue /);
+  await stopped(started);
+});
+
+// @test-kind contract: a runtime without an ownership record is labelled foreground and named by stop, never signalled
+test('stop names a foreground runtime that status lists and leaves it running', async (t) => {
+  const work = await workspace(t);
+  const config = path.join(work.directory, 'foreground', 'paqvilo.config.yml');
+  await work.writeCatalogue(config);
+  const started = await work.start(['--config', config, '--site', 'first', '--port', '0']);
+  // A foreground `mirage serve` publishes its discovery record and no ownership record: drop the record start wrote.
+  const paths = miragePaths({ stateDir: path.join(path.dirname(config), '.paqvilo') });
+  await fs.writeFile(paths.ownershipFile, JSON.stringify({ version: 1, sessions: [] }));
+  const listed = await work.run(['mirage', 'status', '--config', config, '--site', 'first']);
+  assert.equal(listed.status, 0, listed.stdout + listed.stderr);
+  assert.match(listed.stdout, /^ready · foreground {2}\[first\] {2}http:/m);
+  for (const json of [false, true]) {
+    const stop = await work.run(['mirage', 'stop', '--config', config, '--site', 'first', ...(json ? ['--json'] : [])]);
+    assert.equal(stop.status, 0, stop.stdout + stop.stderr);
+    const sentence = `1 foreground runtime is not stopped by stop: ${started.url} (pid ${started.pid}); press Ctrl+C in its terminal.`;
+    if (json) {
+      const report = JSON.parse(stop.stdout);
+      assert.deepEqual(report.stopped, []);
+      assert.deepEqual(report.foreground, [{ pid: started.pid, url: started.url }]);
+      assert.ok(report.message.endsWith(sentence), report.message);
+    } else assert.ok(stop.stdout.includes(sentence), stop.stdout);
+  }
+  await alive(started);
+});

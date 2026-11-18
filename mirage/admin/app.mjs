@@ -150,7 +150,7 @@ const docs = () => state?.docs ?? state?.status?.docs ?? statusExtra?.docs ?? {}
 const docOf = (path) => (path ? kit.docLink(path, docs()) : undefined);
 const helpKey = (key) => `help-${String(key).replace(/[^a-z0-9-]+/gi, '-')}`;
 /** Help from help-content (`<view>.<panel>`): its first sentence, with the details and doc link behind an (i) tooltip. */
-// D-M-6: a section's help is one (i) that the shell places next to the section heading (render()); no visible sentence.
+// a section's help is one (i) that the shell places next to the section heading (render()); no visible sentence.
 const panelHelp = (key, title) =>
   HELP[key]
     ? `<span class="ui-help-inline" data-panel-help>${kit.info({
@@ -661,7 +661,7 @@ function sliceRows(key, items, options) {
   settings.page = result.page;
   return { ...result, settings };
 }
-/** The search box above a hand-built table (D-M-8): shown once the table has more than one page or a search. */
+/** The search box above a hand-built table: shown once the table has more than one page or a search. */
 function tableBar(key, total, pages, { search = true } = {}) {
   const settings = browserFor(key);
   if (!search || (total <= kit.PAGE_SIZES[0] && !settings.search && settings.page <= 1)) return '';
@@ -674,14 +674,14 @@ function tableFoot(key, total, pages) {
 }
 /** A paged kit table keyed by `key` (rows carry `data-table="key"`). */
 // Ten rows or fewer need no search box or pager (the kit pages longer lists).
-// D-M-8: the shared data table; columns with `sortKey` (and optional `sortValue`) sort client-side.
+// the shared data table; columns with `sortKey` (and optional `sortValue`) sort client-side.
 const pagedTable = (key, items, spec) => {
   const settings = browserFor(key);
   const columns = kit.sortable(spec.columns);
   const sorted = kit.sortItems(kit.filterItems(items, columns, settings.filters), columns, settings.sort);
   return kit.dataTable({
     id: key,
-    // D-M-11: every table has its search box, its column filters and the bottom controls bar.
+    // every table has its search box, its column filters and the bottom controls bar.
     filters: settings.filters ?? {},
     ...spec,
     columns,
@@ -733,7 +733,7 @@ async function loadRecords() {
           page: settings.page,
           pageSize: settings.size,
           search: filter,
-          // The runtime sorts the whole table before paging (D-M-8 sortable headers).
+          // The runtime sorts the whole table before paging (sortable headers).
           ...(settings.sort ? { sort: settings.sort.key, order: settings.sort.order } : {}),
         }),
     );
@@ -1073,7 +1073,7 @@ const preferredEntity = (names) => {
 // eyebrow its sidebar group, so the page names where a link landed; the guide intro is the one description, and
 // `description` shows only for a view without a help entry.
 const viewLabel = (id) => views.find((view) => view.id === id)?.label ?? id;
-// D-M-7: no title block. The breadcrumb names the page; the hidden H1 keeps the focus target; "How this works" is
+// no title block. The breadcrumb names the page; the hidden H1 keeps the focus target; "How this works" is
 // the (i) after the breadcrumb; the view's actions (and its Filters toggle) are one toolbar row above the content.
 const heading = (description, action = '', options = {}) =>
   kit.pageChrome({
@@ -1093,7 +1093,7 @@ const EFFECTS = {
  * The ordered steps of a view: each links to the panel that does it (`#view?panel=key`), says what happens and
  * whether it changes local data (`effect`: data, browser or read).
  */
-// D-M-6: a step reads as its link and effect; what it does is its tooltip and (i), not a visible sentence.
+// a step reads as its link and effect; what it does is its tooltip and (i), not a visible sentence.
 const steps = (key, items) => {
   const rows = items
     .map(({ label, href, detail, effect }) => {
@@ -1108,7 +1108,7 @@ const steps = (key, items) => {
   return `<ol class="sim-steps" data-steps="${escape(key)}" aria-label="Steps">${rows}</ol>`;
 };
 /** Actions side by side with what each does and whether it changes local data (`[[buttonHtml, detail, effect]]`). */
-// D-M-6: each action is its button and its effect badge; what it does is behind the (i).
+// each action is its button and its effect badge; what it does is behind the (i).
 const actionList = (rows) => {
   const items = rows
     .map(([button, detail, effect]) => {
@@ -1597,7 +1597,7 @@ function refresh({ announce = false } = {}) {
   return refreshInFlight;
 }
 
-/** Key/value facts as a definition grid (D-M-6): rows `[label, valueHtml, tip, actionHtml]`; the tip is an (i). */
+/** Key/value facts as a definition grid: rows `[label, valueHtml, tip, actionHtml]`; the tip is an (i). */
 const facts = (rows) =>
   `<dl class="ui-kv ui-facts">${rows
     .filter(Boolean)
@@ -1903,7 +1903,7 @@ function records() {
   const routeNoticeText = routeNotice ? `<div class="notice warning">${escape(routeNotice)}</div>` : '';
   const recordsBody = recordsBodyFor(selectedEntity, all, rows, page, columns, idColumn);
   return (
-    // D-M-10/D-M-11: one toolbar line with the table switcher, the record search (any column; summary-mode workspaces
+    // one toolbar line with the table switcher, the record search (any column; summary-mode workspaces
     // search on the runtime), Create and, for more than ten tables, Filters with the table finder; the count and paging
     // are under the table.
     heading(
@@ -2033,10 +2033,10 @@ function pluginOperation(item, index) {
       .map((file) => `<p class="data-line"><span class="data-label">Metadata</span> <code>${escape(file)}</code></p>`)
       .join('')}${codeSourceNotice}
     <form id="operation-form-${index}" data-operation-key="${escape(item.key)}" class="form-grid">
-      <div><label for="operation-mode-${index}">Local behavior</label><select id="operation-mode-${index}" name="mode"${disabled}>${modes.map(([mode, label]) => `<option value="${mode}"${value.mode === mode ? ' selected' : ''}${(mode === 'handler' && !item.registered) || (mode === 'clr' && !item.clrAvailable) ? ' disabled' : ''}>${label}</option>`).join('')}</select></div>
+      <div><label for="operation-mode-${index}">Local behaviour</label><select id="operation-mode-${index}" name="mode"${disabled}>${modes.map(([mode, label]) => `<option value="${mode}"${value.mode === mode ? ' selected' : ''}${(mode === 'handler' && !item.registered) || (mode === 'clr' && !item.clrAvailable) ? ' disabled' : ''}>${label}</option>`).join('')}</select></div>
       <div><label for="operation-status-${index}">Mock result status</label><input id="operation-status-${index}" name="status" type="number" min="200" max="599" value="${escape(value.status ?? 200)}"${disabled}><p class="note field-help">400 or above rejects the write and rolls back the local transaction.</p></div>
       <div><label for="operation-body-${index}">Mock result (JSON)</label><textarea id="operation-body-${index}" name="body" class="code-editor" rows="6" spellcheck="false"${disabled}>${escape(json(value.body ?? {}))}</textarea><p class="note field-help">${escape(mockHelp)} Use {"error":{"message":"Rejected"}} to reject explicitly.</p></div>
-      <div class="toolbar"><button class="button primary" type="submit"${disabled}>Save local behavior</button>${item.configuration ? `<button class="button" type="button" data-operation-reset="${escape(item.key)}">Use source default</button>` : ''}</div>
+      <div class="toolbar"><button class="button primary" type="submit"${disabled}>Save local behaviour</button>${item.configuration ? `<button class="button" type="button" data-operation-reset="${escape(item.key)}">Use source default</button>` : ''}</div>
     </form>${item.clrProvenance ? lazyJson('Original CLR assembly and SDK provenance', item.clrProvenance) : ''}<p class="note field-help">CLR mode executes the explicitly trusted original DLL in a separate local process. JavaScript handlers and mocks remain models. Top-level PreValidation SDK writes commit independently; PreOperation/PostOperation and nested PreValidation join their caller transaction. Read observers cannot write through the SDK bridge; backend calls require a separate project security profile. Traces, skips and failures appear in Diagnostics. This is trusted code execution, not a security sandbox.</p></section>`;
 }
 
@@ -2063,7 +2063,7 @@ function operationPanel(item, index) {
   const resetButton = item.configuration
     ? `<button class="button" type="button" data-operation-reset="${escape(item.key)}">Use source default</button>`
     : '';
-  return `<section class="panel section-gap"><div class="panel-heading"><h2>${escape(item.name)}</h2>${badge(item.kind)}${badge(item.mode)}</div><p class="muted">${consumerText}</p>${sourceLine}${item.contract ? lazyJson('Input schema and exported actions', item.contract) : ''}<form id="operation-form-${index}" data-operation-key="${escape(item.key)}" class="form-grid"><div><label for="operation-mode-${index}">Local behavior</label><select id="operation-mode-${index}" name="mode"${disabled}>${[
+  return `<section class="panel section-gap"><div class="panel-heading"><h2>${escape(item.name)}</h2>${badge(item.kind)}${badge(item.mode)}</div><p class="muted">${consumerText}</p>${sourceLine}${item.contract ? lazyJson('Input schema and exported actions', item.contract) : ''}<form id="operation-form-${index}" data-operation-key="${escape(item.key)}" class="form-grid"><div><label for="operation-mode-${index}">Local behaviour</label><select id="operation-mode-${index}" name="mode"${disabled}>${[
     ['placeholder', 'Placeholder (501)'],
     ['disabled', 'Disabled locally'],
     ['mock', 'Configured response'],
@@ -2076,7 +2076,7 @@ function operationPanel(item, index) {
     )
     .join(
       '',
-    )}</select></div><div><label for="operation-status-${index}">Mock response status</label><input id="operation-status-${index}" name="status" type="number" min="200" max="599" value="${escape(value.status ?? 200)}"${disabled}><p class="note field-help">Server logic uses its native success envelope; status 400 or above simulates failure.</p></div><div><label for="operation-body-${index}">Mock response body (JSON)</label><textarea id="operation-body-${index}" name="body" class="code-editor" rows="6" spellcheck="false"${disabled}>${escape(json(Object.hasOwn(value, 'body') ? value.body : {}))}</textarea></div>${cloudFlowFields}<div class="toolbar"><button class="button primary" type="submit"${disabled}>Save local behavior</button>${resetButton}</div></form><p class="note field-help">Exported web-role grants still apply. A mock response does not test the flow's business logic or connector behavior.</p></section>`;
+    )}</select></div><div><label for="operation-status-${index}">Mock response status</label><input id="operation-status-${index}" name="status" type="number" min="200" max="599" value="${escape(value.status ?? 200)}"${disabled}><p class="note field-help">Server logic uses its native success envelope; status 400 or above simulates failure.</p></div><div><label for="operation-body-${index}">Mock response body (JSON)</label><textarea id="operation-body-${index}" name="body" class="code-editor" rows="6" spellcheck="false"${disabled}>${escape(json(Object.hasOwn(value, 'body') ? value.body : {}))}</textarea></div>${cloudFlowFields}<div class="toolbar"><button class="button primary" type="submit"${disabled}>Save local behaviour</button>${resetButton}</div></form><p class="note field-help">Exported web-role grants still apply. A mock response does not test the flow's business logic or connector behaviour.</p></section>`;
 }
 let selectedOperation = '',
   standaloneOperations = [];
@@ -2124,8 +2124,8 @@ function operations() {
   const position = new Map(items.map((item, index) => [item.key, index]));
   const selected = items.find((item) => item.key === selectedOperation);
   return (
-    // The operations list starts under the toolbar (D-M-7); the modes legend is the (i) of its column.
-    // The list's search box and Filters sit in the toolbar row, so the first row stays right under it (D-M-7, D-M-11).
+    // The operations list starts under the toolbar; the modes legend is the (i) of its column.
+    // The list's search box and Filters sit in the toolbar row, so the first row stays right under it.
     heading(
       'Server logic, flows and plugin registrations discovered from the selected portal and solution exports. Local choices stay in simulator state.',
       kit.tableSearch('operations', browserFor('operations').search) +
@@ -2670,7 +2670,7 @@ function access() {
     ? `<fieldset class="role-picker" id="identity-role-choices"><legend>Available web roles</legend><p class="note field-help">Select imported role names, then save the identity. These roles affect local simulation; the connected browser retains its own live permissions.</p>${filterBox('identity-role-choices', roleNames.length, 'Filter web roles')}${roleItems}</fieldset>`
     : '';
   return (
-    heading('Test portal behavior for the current contact, account, and web roles.') +
+    heading('Test portal behaviour for the current contact, account, and web roles.') +
     steps('access', [
       {
         label: 'Sign in as a test person',
@@ -4981,7 +4981,7 @@ async function saveConfig(patch, { form } = {}) {
   }
 });
 
-// ---- Page chrome (D-M-7): the view's (i) sits after the breadcrumb; section (i)s join their heading; filter drawers
+// ---- Page chrome: the view's (i) sits after the breadcrumb; section (i)s join their heading; filter drawers
 // open from their toolbar toggle and stay open across re-renders (by id, not in the address).
 const openDrawers = new Set();
 /** The heading (h2/h3) of the panel heading right before `node`, if there is one. */
@@ -5008,7 +5008,7 @@ const helpAfter = (heading) => {
   return next?.matches?.('.ui-help-inline, .ui-note') ? next.querySelector('.ui-info-pop') : null;
 };
 /**
- * DV-N4d-1: an (i) after a legend would sit on a line of its own (the legend is drawn in the fieldset's border), so it
+ * an (i) after a legend would sit on a line of its own (the legend is drawn in the fieldset's border), so it
  * goes inside the legend; the fieldset keeps the legend's text, without the (i), as its name.
  */
 let legendTexts = 0;
@@ -5031,7 +5031,7 @@ const labelOf = (help) => {
     : field?.querySelector?.(':scope > :is(input, select, textarea)');
   return (
     (control?.id && field?.querySelector?.(`label[for="${CSS.escape(control.id)}"]`)) ||
-    // DV-N4e-1: a label bound to another control is not this control's label (the record search has none: its (i)
+    // a label bound to another control is not this control's label (the record search has none: its (i)
     // stays beside it).
     field?.querySelector?.(control?.id ? ':scope > label:not([for])' : ':scope > label') ||
     null
@@ -5072,7 +5072,7 @@ function attachSectionHelp(help) {
   else heading.after(help);
 }
 /**
- * Notes (`p.note`, D-M-6): the explanatory text of a panel or field behind an (i) (links inside stay usable: the
+ * Notes (`p.note`): the explanatory text of a panel or field behind an (i) (links inside stay usable: the
  * popover stays open while focus is inside it). A field's note sits next to its label; a panel's note joins the panel
  * heading's (i), or becomes it (after the heading element, so the heading's accessible name stays its title).
  */
@@ -5103,7 +5103,7 @@ function placeChrome() {
   for (const drawer of $('#content').querySelectorAll('.ui-filter-drawer'))
     setDrawer(drawer.id, openDrawers.has(drawer.id));
 }
-/** A table's column-filter drawer sits beside the page like the page's own (D-M-11), open as it was. */
+/** A table's column-filter drawer sits beside the page like the page's own, open as it was. */
 function placeTableDrawers(root) {
   for (const drawer of root.querySelectorAll('.ui-data-table > .ui-filter-drawer')) {
     $('#content').append(drawer);
@@ -5150,7 +5150,7 @@ function handleTableSortClick(event) {
 }
 
 function handleTableUnfilterClick(event) {
-  // A table's filter chip removes its column filter; Clear all removes every one (D-M-11).
+  // A table's filter chip removes its column filter; Clear all removes every one.
   const unfilter = event.target.closest?.('[data-table-unfilter]');
   if (!unfilter) return false;
   const settings = browserFor(unfilter.dataset.tableUnfilter);
@@ -5185,7 +5185,7 @@ function closeDrawersOutsideClick(event) {
 document.addEventListener('keydown', (event) => {
   const drawer = event.key === 'Escape' && event.target.closest?.('.ui-filter-drawer');
   if (drawer) setDrawer(drawer.id, false, { focus: true });
-  // Shared tables (D-M-8): ↑/↓ move to the same control of the previous/next row; Enter on a row opens it.
+  // Shared tables: ↑/↓ move to the same control of the previous/next row; Enter on a row opens it.
   const row = event.target.closest?.('.ui-data-table tbody tr');
   if (!row || event.defaultPrevented || event.target.matches('input, select, textarea')) return;
   if (event.key === 'Enter' && event.target === row) {
@@ -5846,7 +5846,7 @@ function dashboardModule() {
     // The trace stats of the banner's errors and p95 (hosts that serve /trace), and whether the tiles show graphs.
     stats = null,
     expanded = false,
-    // The tile graphs while expanded (DV-N4c-5): stats-route timelines per tile and findings over time.
+    // The tile graphs while expanded: stats-route timelines per tile and findings over time.
     timelines = null;
   const history = []; // ring of earlier activity snapshots, oldest first (sparklines)
   // The open drawer's nodes and the node payload they show: a poll re-render re-attaches them unchanged, so
@@ -6077,7 +6077,7 @@ function dashboardModule() {
           icons,
           parts: { guide: false },
           arrangement: 'health',
-          // The hero carries the page's action (D-M-11).
+          // The hero carries the page's action.
           actions: REFRESH_NOW,
           stats,
           expanded,

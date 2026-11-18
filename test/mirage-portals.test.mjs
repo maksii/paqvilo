@@ -46,6 +46,13 @@ function runCli(...args) {
   );
 }
 const json = (result) => JSON.parse(result.stdout);
+/** The arguments after `mirage stop` of a readable single-line stop hint whose arguments need no quoting. */
+function readableStopArguments(hint) {
+  assert.doesNotMatch(hint, /^node -e |[\r\n'"]/, hint);
+  const at = hint.indexOf(' mirage stop ');
+  assert.ok(at > 0, hint);
+  return hint.slice(at + ' mirage stop '.length).split(' ');
+}
 
 /**
  * A fixture portal in a folder of its own. Solution discovery looks at the sibling folders of the
@@ -221,6 +228,32 @@ test('mirage with portals=all starts one runtime per site, labels them in status
       assert.equal(report.remaining.length, 0);
     }
   }
+});
+
+// @test-kind contract: a start of one site that launches every catalogue portal prints one readable stop for them all
+test('mirage start of one site with portals=all prints one readable stop command that stops every started portal', async (t) => {
+  const { config, run } = await allPortalsCatalogue(t);
+  const started = await run('mirage', 'start', '--config', config, '--site', 'classic', '--json');
+  let printed = null;
+  try {
+    assert.equal(started.status, 0, started.stdout + started.stderr);
+    printed = readableStopArguments(json(started).stop);
+    assert.deepEqual(printed.slice(-4), ['--site', 'classic', '--portals', 'all']);
+    assert.deepEqual(printed.slice(0, 2), ['--config', config]);
+  } finally {
+    const stopped = await run('mirage', 'stop', ...(printed ?? ['--config', config]), '--json');
+    assert.equal(stopped.status, 0, stopped.stdout + stopped.stderr);
+    if (started.status === 0)
+      assert.deepEqual(
+        json(stopped)
+          .stopped.map((item) => item.pid)
+          .sort(),
+        json(started)
+          .portals.map((item) => item.pid)
+          .sort(),
+      );
+  }
+  assert.equal(json(started).portals.length, 2);
 });
 
 test('the dev selection offers one local target per running Mirage first, the selected site opening first, then the live targets', async (t) => {
@@ -449,14 +482,38 @@ test('a project with several portals starts one runtime per portal on consecutiv
       ['classic', '0'],
       ['enhanced', '0'],
     ]);
-    assert.match(json(started).stop, /^node -e /);
-    const status = json(await run('mirage', 'status', '--config', config, '--json')).sessions;
+    // The project selection without --portal selects both runtimes: one readable command stops them (finally below).
+    const shared = readableStopArguments(json(started).stop);
+    assert.deepEqual(shared.slice(-2), ['--project', projectFile]);
+    assert.equal(shared.includes('--portal'), false);
+    // status selects as stop does: the project's runtimes with the selectors that started them.
+    const status = json(await run('mirage', 'status', '--config', config, '--project', projectFile, '--json')).sessions;
     assert.deepEqual(
       portals.map((item) => status.find((session) => session.pid === item.pid)?.portal),
       ['classic', 'enhanced'],
     );
+    // The catalogue site alone selects the runtime serving its source; the other is reported outside the selection.
+    const site = json(await run('mirage', 'status', '--config', config, '--json'));
+    const enhanced = portals.find((item) => item.site === 'enhanced').pid;
+    assert.equal(
+      site.sessions.some((session) => session.pid === enhanced),
+      false,
+    );
+    assert.match(site.others.find((other) => other.pid === enhanced).status, /mirage status --project /);
   } finally {
-    const stopped = await run('mirage', 'stop', '--config', config, '--project', projectFile, '--json');
+    // The printed command when it is readable (asserted above); a failed assertion still stops by the selectors.
+    let printed = null;
+    try {
+      printed = readableStopArguments(json(started).stop);
+    } catch {
+      /* not started, or not readable */
+    }
+    const stopped = await run(
+      'mirage',
+      'stop',
+      ...(printed ?? ['--config', config, '--project', projectFile]),
+      '--json',
+    );
     assert.equal(stopped.status, 0, stopped.stdout + stopped.stderr);
     if (started?.status === 0)
       assert.deepEqual(

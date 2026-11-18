@@ -16,9 +16,10 @@ solutions:
     path: ./solutions/Example
 ```
 
-In a toolkit catalogue, put `modelDriven` under the target's `mirage` settings, or use **Project setup → Runtime → Run
-trusted Solution extensions**; save and restart. Trust is off by default and a Solution import never grants it. Trusted
-code runs in the local app with access to its session: review it like any project dependency.
+In a toolkit catalogue, put `modelDriven` under the target's `mirage` settings, or use **Project setup → What to run →
+Run your own scripts and controls inside model-driven apps**; save and restart. Trust is off by default and a Solution
+import never grants it. Trusted code runs in the local app with access to its session: review it like any project
+dependency.
 
 ```sh
 paqvilo mirage inspect --project mirage.project.yml --json
@@ -31,7 +32,7 @@ optional static check of authored JavaScript, see [web resource lint](model-driv
 
 ## What runs
 
-| Exported component                          | Local behavior                                                                                                 |
+| Exported component                          | Local behaviour                                                                                                |
 | ------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
 | Main form XML                               | Tabs, sections, fields, labels, supported related grids and controls                                           |
 | JavaScript web resources                    | Declared local files load in exported form-library order; no remote lookup or expression evaluation            |
@@ -53,7 +54,7 @@ missing execution context means off, and invalid tokens mean off.
 
 - Web resource names come from the exported `Name` and `FileName`; a matching file name alone grants nothing. Only
   declared resources get local URLs (`/_apps/resources/`, `/_apps/controls/`), served uncached from the app's
-  allowlist. Missing files and malformed definitions appear in the client extension diagnostics of the app catalogue
+  allowlist. Missing files and malformed definitions appear in `clientExtensions.diagnostics` of the app catalogue
   (`GET /_apps/api`). Source changes reload through the Solution watcher.
 - Unpacked web resource bodies are read only when a declared JavaScript or stylesheet references them. Across the
   selected sources and retained PCF assets, import is bounded to 256 MiB of content, 10,000 entries and 256 layers,
@@ -77,11 +78,13 @@ modelDriven:
   `Other/Customizations.xml` layout. Paths resolve from the project or catalogue file (programmatic options from the
   working directory). `solutions`/`solutionRoots` still supply schema, apps, forms and views; client sources replace
   client discovery in those layers, and later declared resources override earlier ones.
-- An entry named `<Library>@<version>.js` is a PCF platform library, served under `/_apps/controls/platform/`; a
-  misnamed `.js` entry reports `MODEL_PCF_PLATFORM_LIBRARY_INVALID`. A list of only library files imports only those.
+- A `clientSources` entry that is a `.js` file named `<Library>@<version>.js` is a PCF platform library, served under
+  `/_apps/controls/platform/`; a misnamed `.js` entry reports `MODEL_PCF_PLATFORM_LIBRARY_INVALID`. A list of only
+  library files imports only those.
 - Omitting `clientSources` keeps ordinary Solution discovery; `[]` imports no client extensions. Selecting sources
-  grants no trust. A missing source disables the whole client catalogue with `MODEL_CLIENT_SOURCE_INVALID`. Missing or
-  escaping dependencies are reported and never served. Watchers include the client sources.
+  grants no trust. An entry that does not exist or is not a directory or ZIP file disables the whole client catalogue
+  with `MODEL_CLIENT_SOURCE_INVALID`, whose message names the entry's path. Missing or escaping dependencies are
+  reported and never served. Watchers include the client sources.
 - A named PCF declaration supersedes an earlier one even if it is invalid; the earlier executable never comes back. An
   unreadable PCF identity disables the PCF catalogue with `PCF_IDENTITY_UNRESOLVED`; web resources stay available.
 - These settings and budgets govern only the model-driven client catalogue. Power Pages Liquid and native-form PCF use
@@ -94,8 +97,8 @@ resources the manifest declares; Form XML must contain the exported desktop cust
 not a substitute for the bundle. Mirage resolves the declared constructor, registration or exact classic export, never
 an unrelated global.
 
-One admission rule, shared with the Power Pages host (`pcfAdmission` in `mirage/lib/code-components.mjs`), classifies a
-control as a `standard` field, a `standard` dataset or `virtual`.
+One admission rule, shared with the Power Pages host (`pcfAdmission` in `mirage/lib/model-driven/pcf-runtime.mjs`),
+classifies a control as a `standard` field, a `standard` dataset or `virtual`.
 
 - **Dataset controls** bound to a form subgrid (`<data-set>` in the desktop `customControl`) get a DataSet over the
   subgrid view, narrowed to the parent record: `records`, `sortedRecordIds`, `columns`, `getFormattedValue`, paging
@@ -105,11 +108,14 @@ control as a `standard` field, a `standard` dataset or `virtual`.
   reason. Table home grids keep the standard grid. After `context.mode.trackContainerResize(true)` in `init`,
   `allocatedWidth` is the container width from the first `updateView` (height stays `-1`), and width changes call
   `updateView` with `layout` in `updatedProperties`; disabling tracking, destruction or a failed render restores `-1`
-  and stops observing, as in the
-  [sizing contract](https://learn.microsoft.com/en-us/power-apps/developer/component-framework/reference/mode/trackcontainerresize).
+  and stops observing (see the documented [sizing
+  contract](https://learn.microsoft.com/en-us/power-apps/developer/component-framework/reference/mode/trackcontainerresize)).
 - **Virtual (React) controls** run only when the project supplies every declared platform library plus ReactDOM of
   the declared React version as `clientSources` files (for example `React@16.14.0.js`, `ReactDOM@16.14.0.js`). Mirage
   ships no React or Fluent; without them the control shows `PCF_VIRTUAL_UNSUPPORTED` with the missing files.
+- Bundles must be production builds (`npm run build -- --buildMode production`). The local app serves scripts under
+  `script-src 'self'`, so a development build that loads its modules with `eval` is refused and the control shows
+  `The local bundle did not register <constructor>.`
 - Field and dataset components get the staff context and its formatting, and per-column `security` (`secured` true for
   field-secured columns). Outputs are checked against the bound property and the record pipeline. Components declaring
   required WebAPI use the local staff adapter; other required unimplemented features prevent execution. Unimplemented
@@ -125,7 +131,7 @@ unimplemented platform commands. A disabled command shows its reason.
 For each app, check grid navigation, create/edit/reopen, form load/change/save, validation cancellation, a command
 action and a PCF output reaching the saved row. Repeat a denied operation as a restricted staff user. Check the
 disabled trust state, missing dependencies, browser errors and navigation cleanup, and compare native and local
-screenshots at the same viewport. Importing a component or receiving HTTP 200 does not prove its behavior ran.
+screenshots at the same viewport. Importing a component or receiving HTTP 200 does not prove its behaviour ran.
 
 ## Preview the same code with Lense
 
@@ -140,15 +146,16 @@ Lense overlays code in its own browser session; the app still uses its online en
 commands and script-triggered record operations change live data. Use an isolated test Solution and records.
 
 **Event registration inventory.** The offline `inspect` report has `clientEvents`: per exported form, the entity, form
-identity and name, event and handler order, `handlerUniqueId`, attribute, activation flags, library and function names,
-context flag and source references, from the exported
-[FormXml event declarations](https://learn.microsoft.com/en-us/dynamics365/customerengagement/on-premises/developer/customize-dev/form-xml-schema?view=op-9-1).
+identity and name, event and handler order, `handlerId` (the exported `handlerUniqueId`), attribute, activation flags, library and function names,
+context flag and source references, from the exported [FormXml event
+declarations](https://learn.microsoft.com/en-us/dynamics365/customerengagement/on-premises/developer/customize-dev/form-xml-schema?view=op-9-1).
 An available script does not prove its function exists or ran; connected-organization registrations are not read.
 
 - Pages hold at most 100 entries within 128 KiB, with `complete`, `truncated`, diagnostics and `nextCursorToken`.
   Continue with `--event-cursor '<clientEvents.nextCursorToken>'` on the same command; the cursor is bound to the
   inventory revision and filters, so changed forms, resources, language or parameter inclusion need a restart.
-  Oversized rows are omitted with `truncated: true`; a page can be empty with a continuation. Follow every continuation
+  `truncated` is true on every page with a continuation and when oversized rows are omitted; a page can be empty with
+  a continuation. Follow every continuation
   before calling the inventory complete.
 - Parameter literals are omitted unless `--include-event-parameters` is given on every page; keep that output private.
 - The library API `createModelDrivenMetadataIndex(imported).eventRegistrations(request)` in
@@ -170,7 +177,7 @@ bundle paths vary, so bind the paths you observe:
 Inspect lists declared resources and unbound controls offline; dev records applied responses and unmatched requests
 (query values omitted). Saving a selected source reloads the owned app tab. Native apps cache web resources and PCF
 constructors, so a reload may make no request to intercept: confirm current-revision application and the actual
-handler, constructor or ribbon behavior after a save. Mirage loads local resources directly and has no such cache.
+handler, constructor or ribbon behaviour after a save. Mirage loads local resources directly and has no such cache.
 
 ### Inspect and debug the live app
 
@@ -212,9 +219,9 @@ resource map can admit a physical source-map sidecar:
 `sourceMap.file` is relative to the script's directory and must stay inside it after resolving symlinks; map and source
 names are simple relative paths. Only the sidecar URL is served, never original sources: embed `sourcesContent` in a
 version 3 map to debug them. Indexed maps and a nonempty `sourceRoot` are refused. Invalid maps report
-`MODEL_SOURCE_MAP_INVALID` and the bundle still runs; generated maps over 16 MiB per asset or 64 MiB per overlay revision
-are omitted with `MODEL_SOURCE_MAP_LIMIT`. Each script has at most one sidecar, and sidecar requests do not count as
-resource applications. Confirm the served map and a bound breakpoint before claiming original-source debugging.
+`MODEL_SOURCE_MAP_INVALID` and the bundle still runs; generated maps over 16 MiB per asset or 64 MiB per overlay
+revision are omitted with `MODEL_SOURCE_MAP_LIMIT`. Mirage applies the same budget per asset and per runtime to the maps it generates. Each script has at most one sidecar, and sidecar requests do not
+count as resource applications. Confirm the served map and a bound breakpoint before claiming original-source debugging.
 
 Mirage itself adds file-backed maps to the scripts, styles and PCF bundles it serves; set the project setting
 `sourceMaps: false` to turn that off.

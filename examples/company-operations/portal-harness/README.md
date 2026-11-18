@@ -19,9 +19,12 @@ node portal-harness/deploy.mjs --config .paqvilo/portal-harness/deploy-config.js
 Run from `examples/company-operations`.
 
 - `compile.mjs` builds the query plans and escaped Liquid partials from the stress catalogue (base catalogue if absent)
-  into `.paqvilo/portal-harness/generated/` and prints the case count, template count and manifest hash.
-- `deploy.mjs` writes native `powerpagecomponents` through the saved application connection; run it only against a
-  site you are authorized to change. Its JSON config:
+  into `.paqvilo/portal-harness/generated/` (`manifest.json`, `templates.json`) and prints the number of read-case plans
+  (37), templates (128) and the manifest hash. Deploy regenerates the same files with live IDs and metadata, so after a
+  deploy `generated/manifest.json` is the deployed manifest until the next `compile.mjs` overwrites it; copy it
+  elsewhere under `.paqvilo/` if a later step (such as `portal-security/qualification-plan.mjs`) needs it.
+- `deploy.mjs` writes native `powerpagecomponents` through the saved application connection; it has no read-only plan
+  mode, so every run writes. Run it only against a site you are authorized to change. Its JSON config:
 
   | Key                                    | Meaning                                                                                                      |
   | -------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
@@ -53,8 +56,8 @@ Generated manifests, resolved GUIDs, deployment configs, rollback content and ob
 - **Oracle.** Expected visibility comes from the intended permission graph per persona across the 21 business and
   reference tables plus the authored collision scenarios, labelled separately from observed results. Administrator SDK
   results are never used as a persona oracle.
-- **CRUD.** Recorder probe CRUD always; with the guards installed, isolated A/B canary name changes with verification and
-  restoration on 18 tables, and disposable Stock-equipment Create/Read/Delete with scoped Account and Room bindings.
+- **CRUD.** Recorder probe CRUD always; with the guards installed, isolated A/B canary name changes with verification
+  and restoration on 18 tables, and disposable Stock-equipment Create/Read/Delete with scoped Account and Room bindings.
   Projections, principals, lifecycle fields, standard currencies and baseline records stay protected. Other Create and
   Delete cases report Blocked until their dependencies exist. An unexpectedly accepted write fails the assertion and is
   restored; failed cleanup keeps residual IDs and restoration payloads.
@@ -66,9 +69,9 @@ Generated manifests, resolved GUIDs, deployment configs, rollback content and ob
 - **Large filters.** Non-aggregate fixture filters whose encoded FetchXML exceeds 3,500 characters are split into
   disjoint ID sets, run identically in both lanes and merged keeping multiplicity. Aggregate and distinct queries keep
   their shape.
-- **Artifacts.** A versioned UTF-8 base64 envelope with original byte length and SHA-256, plus a checksum per stored part,
-  so portal URL rewriting cannot alter captured bodies. Exceeding the transport budget records incomplete persistence
-  before any oversized write.
+- **Artifacts.** A versioned UTF-8 base64 envelope with original byte length and SHA-256, plus a checksum per stored
+  part, so portal URL rewriting cannot alter captured bodies. Exceeding the transport budget records incomplete
+  persistence before any oversized write.
 - **History.** Own-run history with row additions, removals, field, outcome and error changes. Regression comparison
   requires the same actor, dataset, roles and manifest; anything else is diagnostic only.
 
@@ -92,17 +95,32 @@ node --test portal-harness/test.mjs portal-harness/parity.test.mjs
 node --test portal-harness/browser.test.mjs
 ```
 
-Both use invented loopback data. The browser test checks typed XML parsing, escaping, canonical API parity, operation
-intent, artifact persistence and incomplete backend status; it is not signed-in live qualification.
+Run from `examples/company-operations`. Both use invented loopback data. The browser test checks typed XML parsing,
+escaping, canonical API parity, operation intent, artifact persistence and incomplete backend status; it is not
+signed-in live qualification.
 
 ## Compare with Mirage
 
-These read private files only and make no native requests.
+Run from `examples/company-operations`. These read private files only and make no native requests; relative paths
+resolve from the working directory.
 
-- `node portal-harness/compare-parity.mjs <native-run.json> <mirage-run.json> [private-report.json]`: Compare a native and a Mirage run summary (report default `.paqvilo/portal-harness/mirage-parity.json`; exit code 1 unless equal). Actor, roles, dataset, manifest, source and configuration must match, and both runs must bind permission, membership and data snapshot hashes with `evidenceQualification` flags from independently verified readbacks. Rows compare as multisets; queries keep predicates, projections, ordering, joins and identity literals, normalizing only formatting and generated aliases.
-- `node portal-harness/replay-parity.mjs <private-job.json>`: Replay saved authored pages through Mirage. The job names `schema`, `catalogue`, `manifest`, `nativeComponents` (an explicit native readback), `baselineOverlay`, `stressOverlay`, `snapshots` and `output`. Optional `variants` binds each run to `baseline`, `stress`, `safe-secondary-subtree-disabled` or `parent-only-disabled-negative-fault`; optional `observedProfiles` supplies evidenced site behaviour per variant (the inactive-parent fault needs `tablePermissionOrphans: "unrestricted"`).
-- `node portal-harness/mirage-campaign-replay.mjs --job <private-job.json>`: Replay frozen native captures through the original exported CLR assemblies, the Mirage Web API handler and the frozen Liquid templates.
-- `node portal-harness/mirage-replay-shards.mjs --job <private-job.json> --workers <1..10>`: The same replay across up to ten Node processes, each with its own state, SDK cache, CLR host pool and receipts; the parent verifies every child result before writing the aggregate receipt.
+- `node portal-harness/compare-parity.mjs <native-run.json> <mirage-run.json> [private-report.json]` compares a native
+  and a Mirage run summary (report default `.paqvilo/portal-harness/mirage-parity.json`; exit code 1 unless equal).
+  Actor, roles, dataset, manifest, source and configuration must match, and both runs must bind permission, membership
+  and data snapshot hashes with `evidenceQualification` flags from independently verified readbacks. Rows compare as
+  multisets; queries keep predicates, projections, ordering, joins and identity literals, normalizing only formatting
+  and generated aliases.
+- `node portal-harness/replay-parity.mjs <private-job.json>` replays saved authored pages through Mirage. The job names
+  `schema`, `catalogue`, `manifest`, `nativeComponents` (an explicit native readback), `baselineOverlay`,
+  `stressOverlay`, `snapshots` (a folder of `live*.json` run files) and `output`. Optional `variants` binds each run ID
+  to `baseline`, `stress`, `safe-secondary-subtree-disabled` or `parent-only-disabled-negative-fault`; optional
+  `observedProfiles` supplies evidenced site behaviour per variant (the inactive-parent fault needs
+  `tablePermissionOrphans: "unrestricted"`).
+- `node portal-harness/mirage-campaign-replay.mjs --job <private-job.json>` replays frozen native captures through the
+  original exported CLR assemblies, the Mirage Web API handler and the frozen Liquid templates.
+- `node portal-harness/mirage-replay-shards.mjs --job <private-job.json> --workers <1..10>` runs the same replay across
+  up to ten Node processes, each with its own state, SDK cache, CLR host pool and receipts; the parent verifies every
+  child result before writing the aggregate receipt.
 
 Jobs, overlays, native sources, captures and outputs contain Contact, query and recording data: keep them under
 `.paqvilo/`.
@@ -116,7 +134,8 @@ A schema-version 1 job for `mirage-campaign-replay.mjs` declares absolute `outpu
 `registrationAfter`, `siteBefore` and `siteAfter`; `overlay` is optional; cell inputs override common ones.
 
 - Assembly receipts need matching installed and exported hashes with `allMatch: true`; build-only receipts are not
-  enough. Backendless cells also need a frozen `context` input. Service profiles are explicit local backend grants.
+  enough. A capture without a recorded portal-call plug-in context (backendless) needs a frozen caller profile in the
+  job's `context` property. Service profiles are explicit local backend grants.
 - The worker derives the signed-in identity from the frozen Contact, account, same-site memberships and default roles,
   and requires stable native data, versions, memberships, graph, registration and site source receipts. It fingerprints
   the toolkit and project runtime source around every cell, archives the exact input and source bytes, saves immutable
@@ -160,6 +179,11 @@ the existing authenticated Contact, clearing both portal caches on each change. 
 
 ## Other modules
 
+- `node portal-harness/native-prototype.mjs <private-config.json>` captures one native signed-in R09 read through the
+  live page, which saves its run history in Dataverse; `native-batch-prototype.mjs` is the per-batch worker that
+  `native-campaign.mjs` starts. Both act on the live site named in the private configuration; authorized environments
+  only. The remaining `native-*`, `mirage-*-replay`, `batch-capture` and
+  `odata-probes` files are libraries for the native and replay tools above.
 - `query-drop-probes.mjs` prepares templates that use a FetchXML tag with no property access, `.xml` only,
   `.results` only and both, for admitted and limit-failing queries.
 - `metadata-envelope.mjs` reads `RetrieveTimestamp()` and bounded `RetrieveMetadataChanges` through a supplied Dataverse

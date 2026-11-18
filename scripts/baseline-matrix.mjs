@@ -9,7 +9,7 @@
 //   node scripts/baseline-matrix.mjs --out <matrix.json> [--manifest examples/project/baseline/site-manifest.json] [--project <project.json>]
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { parseArgs } from 'node:util';
+import { parseOptions } from '../lense/cli-options.mjs';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -1170,16 +1170,29 @@ export function buildMatrix(manifest, project = {}) {
   };
 }
 
+const USAGE = `Usage: node scripts/baseline-matrix.mjs --out <matrix.json> [--manifest <site-manifest.json>] [--project <project.json>]
+Writes the baseline scenario matrix generated from the fixture site manifest (creating the --out folder if needed).`;
+
 async function main() {
-  const { values } = parseArgs({
-    options: { out: { type: 'string' }, manifest: { type: 'string' }, project: { type: 'string' } },
+  const { values } = parseOptions({
+    args: process.argv.slice(2),
+    options: {
+      out: { type: 'string' },
+      manifest: { type: 'string' },
+      project: { type: 'string' },
+      help: { type: 'boolean', short: 'h' },
+    },
+    strict: true,
+    allowPositionals: false,
   });
-  if (!values.out) throw new Error('--out is required');
+  if (values.help) return console.log(USAGE);
+  if (!values.out) throw new Error(`--out is required.\n${USAGE}`);
   const manifest = JSON.parse(
     await fs.readFile(values.manifest ?? path.join(root, 'examples/project/baseline/site-manifest.json'), 'utf8'),
   );
   const project = values.project ? JSON.parse(await fs.readFile(values.project, 'utf8')) : {};
   const matrix = buildMatrix(manifest, project);
+  await fs.mkdir(path.dirname(path.resolve(values.out)), { recursive: true });
   await fs.writeFile(values.out, JSON.stringify(matrix, null, 2) + '\n');
   const by = {};
   for (const item of matrix.scenarios) by[item.component] = (by[item.component] ?? 0) + 1;

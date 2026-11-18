@@ -12,9 +12,9 @@ sample dataset on each start; ordinary development keeps its local state.
 
 Inspect `paqvilo.config.yml`, `portal/`, `solution/`, `code-solution/`, `metadata/`
 and `pack/` before making changes. `pack/pack.mjs` explicitly registers the sample's
-presets, contact role assignments and plugin models. Persona catalogue descriptions
-do not grant access. Derive behavior from these sources and metadata; document
-site-specific observations with evidence rather than assuming platform behavior.
+presets, contact role assignments and plug-in models. Persona catalogue descriptions
+do not grant access. Derive behaviour from these sources and metadata; document
+site-specific observations with evidence rather than assuming platform behaviour.
 
 After an edit, inspect the rendered page, affected resources and diagnostics, then
 run the relevant project tests. A save or sign-in redirect is not proof that a

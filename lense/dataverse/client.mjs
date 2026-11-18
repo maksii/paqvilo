@@ -1,5 +1,6 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import { environmentOrigin, tokenProvider } from './connection.mjs';
+import { requiredArgument } from '../../mirage/lib/required-argument.mjs';
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]']);
 const READ_RETRY_STATUSES = new Set([429, 503]);
@@ -48,17 +49,28 @@ function fetchSignal(timeoutMs, signal) {
   return signal ? AbortSignal.any([timeout, signal]) : timeout;
 }
 
+// An Int64 beyond 2^53 keeps its digits as text; a plain parse would round it.
+const exactInteger = (_key, value, context) =>
+  typeof value === 'number' && !Number.isSafeInteger(value) && /^-?\d+$/.test(context?.source ?? '')
+    ? context.source
+    : value;
+
 export class DataverseClient {
-  constructor({
-    environmentUrl,
-    token,
-    fetchImpl = fetch,
-    allowLoopback = false,
-    timeoutMs = 30_000,
-    mutationTimeoutMs = 180_000,
-    signal,
-    sleep = (ms, waitSignal) => delay(ms, undefined, { signal: waitSignal }),
-  }) {
+  constructor(
+    {
+      environmentUrl,
+      token,
+      fetchImpl = fetch,
+      allowLoopback = false,
+      timeoutMs = 30_000,
+      mutationTimeoutMs = 180_000,
+      signal,
+      sleep = (ms, waitSignal) => delay(ms, undefined, { signal: waitSignal }),
+    } = requiredArgument(
+      'new DataverseClient({ environmentUrl, token })',
+      'an options object with environmentUrl and token',
+    ),
+  ) {
     const url = new URL(environmentUrl);
     const testOrigin = allowLoopback && url.protocol === 'http:' && isLoopbackOrigin(url);
     this.origin = testOrigin ? url.origin : environmentOrigin(environmentUrl);
@@ -143,7 +155,7 @@ export class DataverseClient {
     let data;
     try {
       const text = await response.text();
-      data = text ? JSON.parse(text) : null;
+      data = text ? JSON.parse(text, exactInteger) : null;
     } catch {
       // A 2xx header does not make an interrupted mutation response retryable.
       throw responseFailure();
@@ -191,7 +203,10 @@ export class DataverseClient {
   }
 }
 
-export function connectedClient(connection, { allowLoopback = false } = {}) {
+export function connectedClient(
+  connection = requiredArgument('connectedClient(connection)', 'a connection loaded with loadConnection'),
+  { allowLoopback = false } = {},
+) {
   return new DataverseClient({
     environmentUrl: connection.environmentUrl,
     token: tokenProvider(connection, { allowLoopback }),

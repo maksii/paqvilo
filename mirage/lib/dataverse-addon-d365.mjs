@@ -10,7 +10,7 @@ import { DataError } from './data-error.mjs';
 import { argsOf, idOf, registerAddon } from './dataverse-addon-common.mjs';
 import { readMessageRecords } from './dataverse-message-context.mjs';
 import { fromBulkDeleteJson, toFetchXml } from './dataverse-soap-query.mjs';
-import { privilegeDeniedError, privilegeName } from './dataverse-security.mjs';
+import { privilegeName } from './dataverse-security.mjs';
 import { parseXmlDocument } from './fetchxml-engine.mjs';
 
 const key = (value) => String(value ?? '').toLowerCase();
@@ -70,7 +70,9 @@ function operations(api) {
   const write = (fn) => api.change(() => store.transact(fn, { isolated: true }));
   const need = (c, logical, right) => {
     const privilege = privilegeName(right, api.principals.privilegeNoun(logical));
-    if (!(api.principals.privileges(c.user).get(privilege) > 0)) throw privilegeDeniedError(c.user, privilege, logical); // NOSONAR: operand can be NaN or undefined, the negated test differs
+    // A missing privilege reads undefined: only a positive depth grants it.
+    const granted = api.principals.privileges(c.user).get(privilege) > 0;
+    if (!granted) throw api.principals.deniedError(c.user, privilege, logical);
   };
   // The handler another module registered (Book, InstantiateTemplate, SendEmail), called with a context of its own.
   const handlerOf = (name, binding = 'unbound', entity) => {
@@ -371,4 +373,20 @@ function install(api) {
   for (const op of operations(api)) registerAddon(api, op);
 }
 
-export const EXTENSION = { name: 'dataverse-addon-d365', install };
+/** Capability record for the capability registry; dataverse-extensions.mjs adds the operations install registered. */
+function describe() {
+  return {
+    name: 'dataverse-addon-d365',
+    version: 1,
+    kind: 'dataverse-extension',
+    level: 'contract',
+    reason:
+      'Store-backed stand-ins for Sales, Marketing and Service messages whose results, state mapping and absent-table answers are guesses (module header).',
+    requires: [],
+    principal: 'caller',
+    stateOwner: 'store',
+    lifecycle: 'per-request',
+  };
+}
+
+export const EXTENSION = { name: 'dataverse-addon-d365', install, describe };

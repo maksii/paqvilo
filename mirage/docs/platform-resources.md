@@ -13,7 +13,7 @@ platform style, and PCF styles remain a placeholder. Doctor, Mirage status and a
 entity-form pages keep their style diagnostics. Captured styles replace every fallback, and exported column widths and
 styles still control the authored layout. None of this establishes visual parity with a deployed site.
 
-- **Modals and quick views.** Full-width, borderless frames 700px high, matching the structural rule of the public
+- **Modals and quick views.** Full-width, borderless frames 700px high, taken from the structural rule of the public
   preform stylesheet. Both documents include exported root styles, native container wrappers and local head
   additions; captured stylesheet links win over duplicate exported links. Quick view frames follow lookup changes, and
   clearing one blanks its frame and removes it from the tab order.
@@ -21,9 +21,10 @@ styles still control the authored layout. None of this establishes visual parity
   work with Bootstrap 3 and 5.
 - **Calendar.** Month, week and year layouts of the platform client's markup, including event spans, date badges and
   narrow viewports. A captured native calendar stylesheet wins; the fallback does not repair invalid event data.
-- **Label markup.** Power Pages renders presentation markup in authored field, section and subgrid labels, so Mirage
-  keeps sanitized markup there (scripts, event handlers and inline styles removed; record values stay encoded). A site
-  observed to encode subgrid labels sets `mirage.observed: { subgridLabelMarkup: encoded, evidence: "<where you observed it>" }`.
+- **Label markup.** Mirage keeps sanitized presentation markup in authored field, section and subgrid labels (scripts,
+  event handlers and inline styles removed; record values stay encoded), a local model of how Power Pages renders them.
+  A site observed to encode subgrid labels sets
+  `mirage.observed: { subgridLabelMarkup: encoded, evidence: "<where you observed it>" }`.
 - **Bootstrap stylesheet.** A `Head/Bootstrap` content snippet wins. Otherwise the layout links the site's
   `bootstrap.min.css` web file when the home page has one, else the platform's `/css/bootstrap.min.css`. A site
   observed to differ sets `observed.bootstrapStylesheet: platform | web-file` with evidence.
@@ -40,10 +41,15 @@ paqvilo mirage capture-shell --config ./paqvilo.config.yml --site my-site --env 
 paqvilo mirage capture-shell --config ./paqvilo.config.yml --site my-site --cdp http://127.0.0.1:9222 --path /
 ```
 
-- **Browser.** Without `--cdp`, capture owns an anonymous temporary guest browser on the configured channel and removes
-  its profile afterwards. Guest mode avoids the operating-system profile sign-in Edge can perform even with a fresh
-  profile ([implicit sign-in policy](https://learn.microsoft.com/en-us/deployedge/microsoft-edge-policies/implicitsigninenabled)).
-  Non-loopback CDP, external paths and caution environments are refused.
+- **Browser.** Without `--cdp`, capture launches an anonymous headless browser on the configured channel with a
+  temporary profile and removes the profile afterwards. On Windows it disables Edge's implicit sign-in
+  (`msImplicitSignin`), which otherwise signs even a fresh profile into the operating-system account ([implicit sign-in
+  policy](https://learn.microsoft.com/en-us/deployedge/microsoft-edge-policies/implicitsigninenabled)). A private site
+  therefore needs `--cdp`: anonymously, its sign-in redirect fails the capture with `Local runtime request failed (401):
+The connected browser must complete portal sign-in.` Non-loopback CDP (`CDP must be a loopback URL without
+credentials, path or query`), external paths and caution environments are refused; a `caution` environment stops with
+  `Shell capture refuses caution environments` before anything is read, with or without `--cdp`. When nothing answers
+  at `--cdp`, capture fails with `Could not connect to the loopback browser debugging endpoint`.
 - **Several sites.** `--all` (not combinable with `--env`) captures every site with a configured Mirage port, or only
   `--site`, once per state file, using each safe default environment or the one a matching runtime already uses; other
   environments sharing that state are listed as skipped. A site's failure keeps its sanitized message, HTTP status and
@@ -63,8 +69,9 @@ paqvilo mirage capture-shell --config ./paqvilo.config.yml --site my-site --cdp 
 
 ## Read the result
 
-Capture prints a JSON report with the capture date and origin, the applied state, captured resources, missing
-directly referenced head stylesheets, failure codes and paths, and diagnostics.
+Capture prints a JSON report with one `reports` entry per captured site and the `skipped` environments. Each entry
+holds the applied shell profile (its `platformStyles` record the capture date, origin and missing directly referenced
+head stylesheets), captured resources, failure codes and paths, diagnostics, and `applied`, `ready` and `complete`.
 Blocking failures come first (in JSON and in the human summary on stderr, which `--json` suppresses).
 
 - Exit zero means every selected shell is `applied` and `ready` without blocking failures. `complete` is stricter and
@@ -84,15 +91,28 @@ Blocking failures come first (in JSON and in the human summary on stderr, which 
 
 ## Single observations
 
-Two narrower read-only captures use the same connected browser (`--cdp`, required) and print a JSON report; exit 1
-when the capture fails. Neither accepts `--preset`.
+Two narrower read-only captures use the same connected browser (`--cdp`, required) on a `--site`/`--env` whose origin is
+HTTPS, and print a JSON report; exit 1 when the capture fails. Both refuse `--preset`, and both stop with "Could not
+connect to the loopback browser debugging endpoint" when nothing answers at `--cdp`.
 
 - `mirage capture-stylesheets --stylesheet <path>` (repeatable, 1–32 paths) records the native bytes of an exported
   static `.css` web file. Each path must map to exactly one exported stylesheet, without query or fragment, and the
   native response must be HTTP 200 with a CSS content type; failures use `OBSERVED_STYLESHEET_*` codes.
 - `mirage capture-snippet-composition --path <page> --parent-snippet <name> --child-snippet <name>` records how the
-  native page composes two exported content snippets. The page must answer HTTP 200 HTML (at most 5 MB, not a
-  sign-in redirect) and contain exactly one matching composition; page HTML is not stored.
+  native page composes two exported content snippets. Both snippets must be static (no Liquid); the parent has one
+  root element, and the child is one `<button>` with an `id` that the native page renders as the last element of that
+  root. A missing or Liquid snippet fails with `SNIPPET_COMPOSITION_INVALID` before the page is read. The page must
+  answer HTTP 200 HTML (at most 5 MB) and contain exactly one matching composition; a sign-in redirect stops with
+  `LIVE_BRIDGE` (`The connected browser must complete portal sign-in.`), a served sign-in page with
+  `Composition observation reached the portal sign-in page; choose the page that shows both snippets.`, any other
+  status with `Composition observation requires an HTTP 200 HTML page.` On success the report's `profile` names both
+  snippets, their source hashes, the origin and the page, `observation.provider` is `native-page-html` and
+  `applied: true` means the profile was saved to the site's state; page HTML is not stored. A pair whose child is not such a button fails with
+  `SNIPPET_COMPOSITION_INVALID`, for example `Observed action must be an existing exported button.` When the served HTML
+  holds no match, capture opens the page in the connected browser (GET and HEAD only) and waits up to 10 seconds for
+  the child under the parent root; without it, the capture fails with `SNIPPET_COMPOSITION_INVALID`
+  (`The page did not render the parent snippet with the exported action within 10 seconds; …`), followed by the
+  reasons the served HTML did not match.
 
 A source web file can differ from a managed or deployed platform resource: choose the behaviour through exported
 settings or a per-site observation with evidence, and use version and source fingerprints to tell implementation

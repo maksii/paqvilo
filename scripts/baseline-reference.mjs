@@ -12,7 +12,7 @@
 //   node scripts/baseline-reference.mjs --evidence <dir> --matrix <matrix.json> [--label live] [--reasons <json>] [--out mirage/docs/baseline/reference.md]
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { parseArgs } from 'node:util';
+import { parseOptions } from '../lense/cli-options.mjs';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'parse5';
 import { emailMatches, replaceEmails } from '../mirage/lib/text-scanning.mjs';
@@ -382,17 +382,25 @@ function appendReferenceSection(lines, key, entries, byPath, reasons) {
   lines.push('');
 }
 
+const USAGE = `Usage: node scripts/baseline-reference.mjs --evidence <dir> --matrix <matrix.json> [--label live] [--reasons <json>] [--out mirage/docs/baseline/reference.md]
+Writes the offline native component reference from captured live evidence.`;
+
 async function main() {
-  const { values } = parseArgs({
+  const { values } = parseOptions({
+    args: process.argv.slice(2),
     options: {
       evidence: { type: 'string' },
       matrix: { type: 'string' },
       label: { type: 'string' },
       out: { type: 'string' },
       reasons: { type: 'string' },
+      help: { type: 'boolean', short: 'h' },
     },
+    strict: true,
+    allowPositionals: false,
   });
-  if (!values.evidence || !values.matrix) throw new Error('--evidence and --matrix are required');
+  if (values.help) return console.log(USAGE);
+  if (!values.evidence || !values.matrix) throw new Error(`--evidence and --matrix are required.\n${USAGE}`);
   const label = values.label ?? 'live';
   const matrix = JSON.parse(await fs.readFile(values.matrix, 'utf8'));
   const manifest = await readJson(path.join(root, 'examples/project/baseline/site-manifest.json'), { records: [] });
@@ -430,6 +438,7 @@ async function main() {
     throw new Error(
       `The reference still names ${left.length} id(s), host(s) or e-mail address(es) after redaction (first starts "${left[0].slice(0, 6)}"); extend redact().`,
     );
+  await fs.mkdir(path.dirname(path.resolve(out)), { recursive: true });
   await fs.writeFile(out, document);
   console.log(
     JSON.stringify({

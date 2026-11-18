@@ -228,7 +228,7 @@ test('failed source reload keeps the applied runtime and a later valid reload re
     file = path.join(root, 'Home.webpage.yml'),
     source = await fs.readFile(file, 'utf8');
   await fs.rm(file);
-  await assert.rejects(app.reload(), { code: 'PORTAL_SOURCE_EMPTY', message: /^No portal pages were recognised in / });
+  await assert.rejects(app.reload(), { code: 'PORTAL_SOURCE_EMPTY', message: /^No portal pages were recognized in / });
   assert.equal(app.state().status.sourceFingerprint, before.status.sourceFingerprint);
   assert.equal(app.state().status.revision, before.status.revision);
   assert.match(await (await fetch(app.url)).text(), /Invented runtime audit/);

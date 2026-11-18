@@ -1,6 +1,7 @@
 // @test-kind tooling: scripts/check-test-tags.mjs enforces docs/test-kinds.md on changed test files
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
@@ -68,6 +69,22 @@ test('file and per-test kinds resolve per region and reject untagged or malforme
     /unknown kind/,
   );
   assert.match(parseTestKinds('// @test-kind parity\ntest("x", () => {});').errors[0], /malformed/);
+});
+
+test('a short tag reason is reported with the right article for its kind', () => {
+  const errorOf = (tag) => parseTestKinds(`// @test-kind ${tag}\ntest("x", () => {});`).errors[0];
+  assert.equal(errorOf('parity: short'), 'line 1: parity needs an evidence source');
+  assert.equal(errorOf('contract: short'), 'line 1: contract needs a reason');
+});
+
+test('file mode words its summary for the named files, not as changed files', () => {
+  const script = fileURLToPath(new URL('../scripts/check-test-tags.mjs', import.meta.url));
+  const result = spawnSync(process.execPath, [script, 'test/check-test-tags.test.mjs'], {
+    encoding: 'utf8',
+    windowsHide: true,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'Test kinds valid for 1 named test file(s).\n');
 });
 
 test('a tag on an indented test covers only that test', () => {

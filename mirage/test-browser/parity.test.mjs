@@ -151,6 +151,11 @@ test('parity verifies exact pixels and DOM, rejects mismatches/sign-in/runtime i
           '<body>',
           '<body><div id="paqvilo-panel" style="position:fixed;top:0;right:0;width:60px;height:60px;background:#f00">panel</div>',
         );
+      // Markup only the local runtime adds: provenance annotations and an injected toolkit element.
+      if (local && mode === 'toolkit-markup')
+        html = body
+          .replace('<h1>', '<h1 data-paqvilo-source="proof:node" data-sim-local-only="true">')
+          .replace('</body>', '<img hidden alt="" data-paqvilo-frame-ready src="/frame-ready"></body>');
       if (mode === 'signredirect') {
         if (!req.url.startsWith('/signin/')) {
           res
@@ -290,6 +295,11 @@ test('parity verifies exact pixels and DOM, rejects mismatches/sign-in/runtime i
   result = await verify('toolkit-panel');
   assert.equal(result.passed, true, JSON.stringify(result.differences));
   assert.equal(result.pixels.different, 0);
+  // Toolkit-owned attributes and injected elements are not part of the compared semantic DOM.
+  mode = 'toolkit-markup';
+  result = await verify('toolkit-markup');
+  assert.equal(result.passed, true, JSON.stringify(result.differences));
+  assert.equal(result.local.semanticDomSha256, result.live.semanticDomSha256);
   mode = 'session-marker';
   result = await verify('session-marker', {
     sessionStorageSeeds: { contactCookiesAccepted: 'true' },

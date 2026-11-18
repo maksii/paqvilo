@@ -1,3 +1,4 @@
+import { requiredArgument } from './required-argument.mjs';
 import { portalField as field } from './importer.mjs';
 import { applyPlatformConfig } from './platform-config.mjs';
 import { bootstrapPresetLibrary } from './presets.mjs';
@@ -102,7 +103,10 @@ function addImportedPermission(record, { ensure, roles, permissions, importDiagn
  * layers (`metadata` = importSolutionData result) when available, otherwise from the
  * documented Dataverse catalogue or the entity-set pluralization fallback (inferred).
  */
-export function initialState(portal, { origin, packs, metadata, platform } = {}) {
+export function initialState(
+  portal = requiredArgument('initialState(portal)', 'a portal (the importPortal result)'),
+  { origin, packs, metadata, platform } = {},
+) {
   const mappings = {};
   const tables = {};
   const permissions = [];

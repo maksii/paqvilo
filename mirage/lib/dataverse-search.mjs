@@ -746,5 +746,21 @@ function install(api) {
   );
 }
 
-export const EXTENSION = { name: 'dataverse-search', install };
+/** Capability record for the capability registry; dataverse-extensions.mjs adds the operations install registered. */
+function describe() {
+  return {
+    name: 'dataverse-search',
+    version: 1,
+    kind: 'dataverse-extension',
+    level: 'contract',
+    reason:
+      'A token match over the indexed columns, not the Dataverse index: no Lucene syntax, fuzzy matching, boosting or proximity; the score is the matched-term count.',
+    requires: [],
+    principal: 'caller',
+    stateOwner: 'store',
+    lifecycle: 'per-request',
+  };
+}
+
+export const EXTENSION = { name: 'dataverse-search', install, describe };
 export { tokens as searchTokens };

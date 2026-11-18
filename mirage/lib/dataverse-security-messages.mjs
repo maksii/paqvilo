@@ -16,7 +16,6 @@ import {
   grantAccess,
   ownerColumns,
   ownershipOf,
-  privilegeDeniedError,
   privilegeName,
   revokeAccess,
   seedTablePrivileges,
@@ -375,7 +374,9 @@ function operations(api) {
   // this one and never finish. A throw discards the working copy.
   const write = (fn) => api.change(() => store.transact(fn, { isolated: true }));
   const need = (c, privilege, entity) => {
-    if (!(api.principals.privileges(c.user).get(privilege) > 0)) throw privilegeDeniedError(c.user, privilege, entity); // NOSONAR: operand can be NaN or undefined, the negated test differs
+    // A missing privilege reads undefined: only a positive depth grants it.
+    const granted = api.principals.privileges(c.user).get(privilege) > 0;
+    if (!granted) throw api.principals.deniedError(c.user, privilege, entity);
   };
   // A complex response carries its Web API context, as the other Dataverse modules' function responses do.
   const respond = (c, name, body) => ({
@@ -990,3 +991,36 @@ export {
   systemuserByAad,
   csdlOf,
 };
+
+/** Capability record for the capability registry; dataverse-extensions.mjs adds the operations install registered. */
+export function describe() {
+  return {
+    name: 'dataverse-security-messages',
+    version: 1,
+    kind: 'dataverse-extension',
+    level: 'behaviour',
+    reason:
+      'Role privileges, team membership, privilege and share lookups and the business unit hierarchy run against the security model.',
+    operations: [
+      {
+        name: 'RetrieveUserPrivilegeByPrivilegeId',
+        level: 'contract',
+        reason: 'No test in mirage/test exercises it.',
+      },
+      {
+        name: 'RetrieveUserSetOfPrivilegesByNames',
+        level: 'contract',
+        reason: 'No test in mirage/test exercises it.',
+      },
+      {
+        name: 'RetrieveUserSetOfPrivilegesByIds',
+        level: 'contract',
+        reason: 'No test in mirage/test exercises it.',
+      },
+    ],
+    requires: [],
+    principal: 'caller',
+    stateOwner: 'store',
+    lifecycle: 'per-request',
+  };
+}

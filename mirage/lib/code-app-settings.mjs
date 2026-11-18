@@ -43,8 +43,7 @@ function relativeCodeAppPath(at, field, text, base) {
 function validateDevServerShape(dev, at) {
   if (!dev || typeof dev !== 'object' || Array.isArray(dev)) throw new Error(`${at}.devServer must be an object`);
   for (const key of Object.keys(dev))
-    if (!['command', 'cwd', 'env', 'timeoutMs'].includes(key))
-      throw new Error(`${at}.devServer.${key} is not a supported setting`);
+    if (!['command', 'cwd', 'env', 'timeoutMs'].includes(key)) throw new Error(`Unknown ${at}.devServer key '${key}'`);
 }
 // A NUL or a line break cannot survive the launcher's command line, so each one is refused in every element.
 const UNSAFE_COMMAND_CHARACTERS = ['\0', '\r', '\n'];
@@ -57,7 +56,9 @@ function validateDevServerCommand(command, at) {
     !command[0].trim() ||
     command.some((value) => typeof value !== 'string' || unsafeCommandElement(value))
   )
-    throw new Error(`${at}.devServer.command must be a nonempty array of nonempty strings`);
+    throw new Error(
+      `${at}.devServer.command must be a nonempty array of strings whose first element is not blank and none contains NUL or a line break`,
+    );
 }
 function validateDevServerEnv(env, at) {
   if (
@@ -67,7 +68,7 @@ function validateDevServerEnv(env, at) {
         !key || key.includes('=') || key.includes('\0') || typeof value !== 'string' || value.includes('\0'),
     )
   )
-    throw new Error(`${at}.devServer.env must map environment names to strings`);
+    throw new Error(`${at}.devServer.env must map environment names (without = or NUL) to strings without NUL`);
   return { ...env };
 }
 function validateDevServerTimeout(timeoutMs, at) {
@@ -87,13 +88,12 @@ function validateDevServer(dev, at, relative) {
 function validateCodeAppEntry(entry, index, label, names) {
   const at = `${label}[${index}]`;
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error(`${at} must be an object`);
-  for (const key of Object.keys(entry))
-    if (!CODE_APP_KEYS.has(key)) throw new Error(`${at}.${key} is not a supported setting`);
+  for (const key of Object.keys(entry)) if (!CODE_APP_KEYS.has(key)) throw new Error(`Unknown ${at} key '${key}'`);
   // The name is a URL segment under /_apps/code/<name>/.
   if (typeof entry.name !== 'string' || !NAME.test(entry.name))
-    throw new Error(`${at}.name must be 1-64 letters, digits or hyphens`);
+    throw new Error(`${at}.name must be 1-64 letters, digits or hyphens, starting with a letter or digit`);
   const key = entry.name.toLowerCase();
-  if (names.has(key)) throw new Error(`${at}.name '${entry.name}' is not unique`);
+  if (names.has(key)) throw new Error(`${at}.name '${entry.name}' is not unique (names are compared ignoring case)`);
   names.add(key);
   const relative = (field, text, base) => relativeCodeAppPath(at, field, text, base);
   const app = {
@@ -104,7 +104,7 @@ function validateCodeAppEntry(entry, index, label, names) {
   if (entry.devServer != null) app.devServer = validateDevServer(entry.devServer, at, relative);
   if (entry.localAppUrl != null) {
     if (!codeAppLocalUrl(entry.localAppUrl))
-      throw new Error(`${at}.localAppUrl must be a loopback http(s) URL without credentials`);
+      throw new Error(`${at}.localAppUrl must be a loopback http(s) URL without credentials or fragment`);
     app.localAppUrl = entry.localAppUrl;
   }
   return app;

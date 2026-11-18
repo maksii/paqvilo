@@ -190,7 +190,7 @@
   }
 }
 
-/* The open activity: one card per block (D-M-6), the Why line first. */
+/* The open activity: one card per block, the Why line first. */
 .ui-activity-detail {
   margin: 0 0 12px;
   padding: 12px 16px;
@@ -341,7 +341,7 @@
   font-size: 13px;
 }
 
-/* Phone width (D-M-6: first row in the top quarter): the tabs become one select, the actions keep one row with
+/* Phone width (first row in the top quarter): the tabs become one select, the actions keep one row with
    symbols instead of words, and the Live status shows only while it says something. */
 .ui-narrow,
 .ui-activity-tabselect {
@@ -438,7 +438,7 @@
     display: none;
   }
 }
-/* The quick search sits in the toolbar row before Filters (D-M-11); on a phone it takes a compact row of its own. */
+/* The quick search sits in the toolbar row before Filters; on a phone it takes a compact row of its own. */
 .ui-activity-search {
   width: 10em;
   min-width: 0;

@@ -42,7 +42,7 @@
     </header>
     <main id="main" class="wrap guide">
       <div class="guide-head">
-        <p class="eyebrow">THE GUIDE · PAQVILO 0.9.7</p>
+        <p class="eyebrow">THE GUIDE · PAQVILO 0.9.8</p>
         <h1>From one command<br />to <em>your own portal.</em></h1>
         <p class="lead">
           A walkthrough you can follow on your own machine. Start the demo portal, work on it from VS Code, take the
@@ -56,7 +56,7 @@
           page is the path through it.
         </p>
         <p class="small">
-          Commands and guidance target 0.9.7. Recordings retained from the 0.9.6 guide may show earlier labels,
+          Commands and guidance target 0.9.8. Some recordings come from earlier versions and may show different labels,
           candidate order or source line numbers.
         </p>
       </div>
@@ -319,7 +319,7 @@ npm --version</code></pre>
                 <details>
                   <summary>Scaffold your project</summary>
                   <div class="cmd">
-                    <pre><code>npx paqvilo@^0.9.8 init ./my-portal-project --name my-portal-project --site portal
+                    <pre><code>npx paqvilo@^0.9.8 init ./my-portal-project
 cd my-portal-project
 npm run setup</code></pre>
                   </div>
@@ -796,7 +796,7 @@ npx --no-install paqvilo --help</code></pre>
                 </p>
                 <p>
                   <b class="tag">You see</b> Outlines on the page: green for controls, blue for form and view
-                  containers, amber for source markup. The click selects the link instead of following it. Colors show
+                  containers, amber for source markup. The click selects the link instead of following it. Colours show
                   layers rather than certainty. Read <b>Owner</b> and <b>Local source</b> separately: each can be
                   <b>Exact</b>, <b>Candidate</b>, <b>Conflicting</b>, <b>Unavailable</b> or <b>Stale</b>. An exact owner
                   can have unavailable source. <b>Enclosing components</b>, <b>Context</b>, <b>Alternatives</b> and
@@ -838,7 +838,7 @@ npx --no-install paqvilo --help</code></pre>
                   <a href="https://github.com/maksii/paqvilo/blob/main/docs/lense.md#selection-evidence"
                     >selection evidence reference</a
                   >
-                  for limits and source-opening behavior.
+                  for limits and source-opening behaviour.
                 </p>
               </div>
             </div>
@@ -1353,7 +1353,7 @@ configurationPresets: [{ id: 'example-entra', name: 'Simulated Microsoft Entra s
                 <p>
                   <b class="tag">Why</b> In <code>/_sim/</code>, <b>Backend operations</b> lists
                   <code>paqvilo-estimate</code> with its source, <code>portal/server-logic/paqvilo-estimate.js</code>,
-                  and <b>Local behavior</b> set to <b>Trusted project handler</b>: the pack's handler runs the exported
+                  and <b>Local behaviour</b> set to <b>Trusted project handler</b>: the pack's handler runs the exported
                   code against local data (<code
                     >serverLogics: { 'paqvilo-estimate': ({ runExportedServerLogic }) =&gt; runExportedServerLogic()
                     }</code
@@ -1380,8 +1380,8 @@ configurationPresets: [{ id: 'example-entra', name: 'Simulated Microsoft Entra s
               </figure>
               <div class="walk">
                 <p>
-                  <b class="tag">Do</b> Set <b>Local behavior</b> to <b>Configured response</b>, change
-                  <code>total</code> in the mock body to <code>999</code>, click <b>Save local behavior</b>, then
+                  <b class="tag">Do</b> Set <b>Local behaviour</b> to <b>Configured response</b>, change
+                  <code>total</code> in the mock body to <code>999</code>, click <b>Save local behaviour</b>, then
                   <b>Calculate on server</b> again on Extended.
                 </p>
                 <p>
@@ -1393,11 +1393,11 @@ configurationPresets: [{ id: 'example-entra', name: 'Simulated Microsoft Entra s
               <div class="table-wrap">
                 <table class="grid-table">
                   <caption class="sr-only">
-                    Local behavior choices
+                    Local behaviour choices
                   </caption>
                   <thead>
                     <tr>
-                      <th scope="col">Local behavior</th>
+                      <th scope="col">Local behaviour</th>
                       <th scope="col">What happens</th>
                     </tr>
                   </thead>
@@ -1669,7 +1669,7 @@ export const pluginSteps = { 'b4700000-0000-4000-8000-370000000100': validateAcc
                 <p>
                   <b class="tag">Why</b> Without <code>--connection</code>, <code>plan</code> makes no network request;
                   <code>--out</code> keeps the complete Web API payloads under the ignored <code>.paqvilo/</code>. With
-                  an authorised connection, <code>dataverse apply</code> verifies the organisation, preflights every
+                  an authorized connection, <code>dataverse apply</code> verifies the organization, preflights every
                   component and creates them in order. It is additive (it never deletes or overwrites definitions) and
                   journals progress so a rerun can continue. <code>export</code> writes an unmanaged ZIP that PAC
                   unpacks into the folder you add next.
@@ -2009,7 +2009,7 @@ git log --oneline -2</code></pre>
               <div class="walk">
                 <p><b class="tag">Do</b></p>
                 <div class="cmd">
-                  <pre><code>npx paqvilo@^0.9.8 init ./my-portal-project --name my-portal-project --site portal
+                  <pre><code>npx paqvilo@^0.9.8 init ./my-portal-project
 cd my-portal-project
 npm run setup</code></pre>
                 </div>
@@ -2272,13 +2272,13 @@ npm run setup</code></pre>
                         <details>
                           <summary><code>observed</code></summary>
                           <p>
-                            Records behavior unavailable from exports, such as sign-in path, Web API conventions or SDK
+                            Records behaviour unavailable from exports, such as sign-in path, Web API conventions or SDK
                             message names. Every observation needs an <code>evidence</code> reference from the site
                             being modeled; do not copy another site's observations.
                           </p>
                           <a
-                            href="https://github.com/maksii/paqvilo/blob/main/docs/configuration.md#observed-platform-behavior"
-                            >Observed platform behavior ↗</a
+                            href="https://github.com/maksii/paqvilo/blob/main/docs/configuration.md#observed-platform-behaviour"
+                            >Observed platform behaviour ↗</a
                           >
                         </details>
                         <details>
@@ -3478,9 +3478,9 @@ npx paqvilo lense agent screenshot --session ./.paqvilo/agents/&lt;session&gt;.j
           <!-- ===================================================== reference -->
           <section class="chapter" id="extend" aria-labelledby="extend-title">
             <p class="number">REFERENCE / EXTEND</p>
-            <h2 id="extend-title">Business behavior<br />stays in your project.</h2>
+            <h2 id="extend-title">Business behaviour<br />stays in your project.</h2>
             <p class="intro">
-              Keep your portal and its business behavior in a separate repository. Install Paqvilo as a dependency,
+              Keep your portal and its business behaviour in a separate repository. Install Paqvilo as a dependency,
               register your pack and run your own tests from that project.
             </p>
             <div class="cards">

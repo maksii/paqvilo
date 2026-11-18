@@ -66,6 +66,9 @@ async function fixture(t) {
   return { page, data, report };
 }
 async function pick(page, locator) {
+  // The details card opens beside the previous pick and can sit over the next element: clear that selection first.
+  const clear = page.locator('#paqvilo-xray').getByRole('button', { name: 'Clear selection' });
+  if (await clear.isVisible()) await clear.click();
   const rect = await locator.boundingBox();
   assert.ok(rect);
   await page.mouse.click(rect.x + rect.width / 2, rect.y + rect.height / 2);

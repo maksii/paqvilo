@@ -1,5 +1,6 @@
 // Ownership of managed components: components of a managed solution are not edited or deleted directly; a customizable
 // one takes an unmanaged layer on top; uninstall removes them.
+// @test-kind contract: Paqvilo's own managed-layer ownership model; no recorded platform capture backs these assertions
 import test, { before } from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -173,6 +174,35 @@ test('a managed column that is not customizable refuses PUT', async (t) => {
   );
   assert.equal(put.status, 400);
   assert.equal(put.json.error.code, '0x80047008');
+});
+
+// @test-kind contract: the archive's table-level IsCustomizable governs a PUT on the managed table as it does for a column
+test('a managed table that is not customizable refuses PUT with 0x80047008', async (t) => {
+  const locked = zipOf(
+    readSolutionZip(zip).map((entry) => ({
+      name: entry.name,
+      data: Buffer.from(
+        entry.xml != null
+          ? entry.xml.replace(/(<entity Name="fx_widget">)/i, '$1<IsCustomizable>0</IsCustomizable>')
+          : entry.read(),
+      ),
+    })),
+  );
+  const dst = await server(t);
+  assert.equal(
+    (await dst.request('POST', '/ImportSolution', { CustomizationFile: locked.toString('base64') })).status,
+    204,
+  );
+  const put = await dst.request('PUT', "/EntityDefinitions(LogicalName='fx_widget')", tableBody('fx_widget'));
+  assert.equal(put.status, 400, JSON.stringify(put.json));
+  assert.equal(put.json.error.code, '0x80047008');
+  assert.equal(put.json.error.message, 'The specified entity fx_widget is not customizable');
+  // The customizable table of the unchanged archive takes the same PUT.
+  const { dst: open } = await managedImport(t);
+  assert.equal(
+    (await open.request('PUT', "/EntityDefinitions(LogicalName='fx_widget')", tableBody('fx_widget'))).status,
+    204,
+  );
 });
 
 test('a table created outside a managed solution reports IsManaged false and is deletable', async (t) => {

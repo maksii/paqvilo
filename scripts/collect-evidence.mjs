@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
+import { answerHelp } from './script-help.mjs';
 
 // Round evidence carries the writing run in its name (`multipart.run-<pid>.json`), so lanes running at once never
 // write the same file.
@@ -305,6 +306,13 @@ export function collectSyntheticEvidence(stateDir) {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  answerHelp(process.argv.slice(2), {
+    name: 'collect-evidence',
+    usage: `Usage: npm run ci:evidence   (node scripts/collect-evidence.mjs)
+Moves the known synthetic test outputs (fixture diagnostics, canvas baseline, round evidence) out of .paqvilo into a
+new .paqvilo/ci-evidence-<id> directory for CI upload, never the rest of the state directory. Offline. Takes no
+options; --help prints this help.`,
+  });
   const result = collectSyntheticEvidence(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../.paqvilo'));
   console.log(`Collected ${result.files.length} synthetic evidence files in ${result.output}`);
 }

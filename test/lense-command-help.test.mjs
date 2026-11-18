@@ -93,3 +93,13 @@ test('public model-driven help describes dev session duration and JSON reports w
   }
   assert.deepEqual(fs.readdirSync(cwd), []);
 });
+
+test('model-driven help without an action names dev as the default action', async (t) => {
+  const cwd = tempDirSync('paqvilo-model-driven-help-');
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const result = await boundedCommand(t, process.execPath, [bin, 'lense', 'model-driven', '--help'], { cwd, env });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^Usage: paqvilo lense model-driven inspect\|dev \[options\] \(default: dev\)$/m);
+  const dev = await boundedCommand(t, process.execPath, [bin, 'lense', 'model-driven', 'dev', '--help'], { cwd, env });
+  assert.doesNotMatch(dev.stdout, /\(default: dev\)/);
+});

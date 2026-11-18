@@ -552,7 +552,9 @@ export async function startAgentServer({
     id,
     session: { ...discovery, token: undefined },
     readiness: { browser: true, watcher: Boolean(runtime.watching), stopping: stopped },
-    debugger: { port: runtime.debugPort ?? null, attached: false },
+    // CDP lists no clients, and target `attached` flags include Paqvilo's own connection, so an external
+    // debugger's presence cannot be reported truthfully: report only the port.
+    debugger: { port: runtime.debugPort ?? null },
   });
   const tabAccess = () => ({
     portalPageCount: pageList().length,

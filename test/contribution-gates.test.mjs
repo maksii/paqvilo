@@ -1649,6 +1649,17 @@ test('every third-party workflow action is allowed by the repository admin polic
   );
 });
 
+test('the repository admin plan takes the description and homepage from package.json', () => {
+  const script = fileURLToPath(new URL('../scripts/github-admin.mjs', import.meta.url));
+  // Plan mode only: without --apply the script prints its plan and calls no GitHub API.
+  const result = spawnSync(process.execPath, [script], { encoding: 'utf8', windowsHide: true });
+  assert.equal(result.status, 0, result.stderr);
+  const plan = JSON.parse(result.stdout);
+  const packageJson = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.equal(plan.settings.description, packageJson.description);
+  assert.equal(plan.settings.homepage, packageJson.homepage);
+});
+
 test('the new hosted runner label remains linted and Windows npm script arguments use bash', () => {
   const config = YAML.parse(fs.readFileSync(new URL('../.github/actionlint.yaml', import.meta.url), 'utf8'));
   assert.deepEqual(config, { 'self-hosted-runner': { labels: ['ubuntu-26.04'] } });

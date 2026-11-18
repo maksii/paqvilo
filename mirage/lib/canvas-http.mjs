@@ -1,4 +1,4 @@
-import { canvasViewport } from './canvas-runtime.mjs';
+import { CANVAS_ACTIONS, canvasViewport, unknownCanvasActionMessage } from './canvas-runtime.mjs';
 import { canvasRenderingGaps } from './canvas-rendering.mjs';
 import { canvasSourceCoverageGaps } from './canvas-source.mjs';
 import { CANVAS_ASSETS, canvasAssetUrls } from './canvas-assets.mjs';
@@ -26,6 +26,9 @@ const PLAYER_BANNER =
 const INVENTORY_BANNER = 'Canvas apps are inventoried only on this host; nothing is executed';
 const CSP =
   "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; media-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'";
+// The actions the driver API dispatches: the instance lifecycle here, every other one through the runtime's act().
+const LIFECYCLE_ACTIONS = Object.freeze(['start', 'reset']);
+const DRIVER_ACTIONS = Object.freeze([...LIFECYCLE_ACTIONS, ...CANVAS_ACTIONS]);
 const BODY_LIMIT = 64 * 1024;
 const IMAGE_BODY_LIMIT = 1_500_000;
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']); // NOSONAR: version string or loopback address, not a network target
@@ -397,6 +400,17 @@ export function createCanvasHandler({
       );
     return { kind: caller.kind, principalId: caller.principalId };
   };
+  // A driver action for the app's current source revision that the driver API dispatches.
+  const checkDriverAction = (app, action) => {
+    if (action.sourceRevision !== undefined && action.sourceRevision !== app.source.revision)
+      throw failure(
+        409,
+        'CanvasSourceChanged',
+        'The app source changed. Reload the player and explicitly start its new revision.',
+      );
+    if (!DRIVER_ACTIONS.includes(action.action))
+      throw failure(400, 'CanvasActionInvalid', unknownCanvasActionMessage(action.action, DRIVER_ACTIONS));
+  };
   async function api(req, res, app) {
     traces?.current()?.set({ app: app.uniqueName });
     if (!runtime)
@@ -423,13 +437,8 @@ export function createCanvasHandler({
     }
     const { form, csrf: token, action } = await readForm(req);
     if (!csrf() || !tokenAccepted(token)) throw failure(403, 'CsrfRequired', 'Missing simulator CSRF token.');
-    if (action.sourceRevision !== undefined && action.sourceRevision !== app.source.revision)
-      throw failure(
-        409,
-        'CanvasSourceChanged',
-        'The app source changed. Reload the player and explicitly start its new revision.',
-      );
-    if (action.action === 'reset' || action.action === 'start') {
+    checkDriverAction(app, action);
+    if (LIFECYCLE_ACTIONS.includes(action.action)) {
       // Launch parameters (Param) of a new instance: a record of text values; a running instance keeps its own (parameter
       // values do not change until the app reloads), so a page that passes new ones resets first.
       const parameters = launchParameters(action);

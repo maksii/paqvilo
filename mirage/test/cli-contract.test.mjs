@@ -6,7 +6,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { MIRAGE_CORE_COMMANDS, MIRAGE_TOOLS } from '../tool-registry.mjs';
+import { MIRAGE_CORE_COMMANDS, MIRAGE_DATA_USAGE, MIRAGE_TOOLS, mirageToolHelp } from '../tool-registry.mjs';
 import { assertReportOutput } from '../lib/report-output.mjs';
 import { runMirageCommand } from '../cli-command.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
@@ -254,7 +254,7 @@ test('explicit source selectors and data flags are validated before source reads
     const message = JSON.parse(result.stdout).error.message;
     assert.match(
       message,
-      /--portal selects|either --project or --source|supported only by data generate|exactly one action/,
+      /--portal selects|either --project or --source|supported only by data generate|data takes one action: generate or scaffold/,
     );
     assert.doesNotMatch(message, /ENOENT|portal extract/);
     assert.equal(result.stderr, '');
@@ -520,4 +520,30 @@ test('render-sweep refuses a symbolic link at summary.json into the sources befo
 test('render-sweep refuses a symbolic link at render-sweep.txt into the sources before writing any report', async () => {
   const result = await assertSweepRefusesSourceLink('render-sweep.txt');
   assert.equal(result.status, 2);
+});
+
+test('tool usage errors show the paqvilo mirage form that mirage --help prints, never a node mirage/ path', async () => {
+  for (const name of ['query-inventory', 'liquid-conformance']) {
+    const result = run(`mirage/${name}.mjs`);
+    assert.ok(result.status > 0, name);
+    assert.ok(result.stderr.includes(mirageToolHelp(name).trimEnd()), `${name}: ${result.stderr}`);
+    assert.doesNotMatch(result.stderr, /node mirage\//);
+  }
+  const help = run('mirage/bootstrap-report.mjs', '--help');
+  assert.equal(help.stdout, mirageToolHelp('bootstrap-report'));
+  const data = await runMirage('data', 'bogus');
+  assert.equal(data.status, 1);
+  // An unknown data action is one line naming it and the valid ones; the usage is for --help.
+  assert.equal(
+    data.stderr.trim(),
+    'Unknown data action "bogus"; use generate or scaffold. Run paqvilo mirage data --help for options.',
+  );
+  // No action is named as missing, in the same form; a positional was not given.
+  const bare = await runMirage('data');
+  assert.equal(bare.status, 1);
+  assert.equal(
+    bare.stderr.trim(),
+    'Missing data action; use generate or scaffold. Run paqvilo mirage data --help for options.',
+  );
+  assert.ok((await runMirage('--help')).stdout.includes(`  ${MIRAGE_DATA_USAGE}\n`));
 });

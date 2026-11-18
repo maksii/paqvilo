@@ -92,10 +92,11 @@ export async function verifyModelDrivenIdentity({ origin, token, objectId, reque
     const url = new URL(`/api/data/v${version[1]}.${version[2]}/systemusers`, origin);
     url.search = new URLSearchParams({
       $select: 'azureactivedirectoryobjectid,fullname',
-      $filter: `azureactivedirectoryobjectid eq ${objectId} and isdisabled eq false and applicationid eq null`,
+      $filter: `azureactivedirectoryobjectid eq ${objectId} and isdisabled eq false`,
       $top: '2',
     }).toString();
-    const response = await fetch(url, {
+    // The native app wraps fetch and reads its first argument as a string; a URL object fails inside that wrapper.
+    const response = await fetch(url.href, {
       credentials: 'same-origin',
       redirect: 'error',
       signal: controller.signal,

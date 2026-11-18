@@ -1,10 +1,13 @@
 # Liquid and portal rendering
 
-Mirage parses and renders Liquid the way Power Pages does on top of DotLiquid: platform tags and filters, portal
-objects, snippets and settings, page and template relationships, FetchXML result drops, permissions, errors and
-whitespace. Shopify Liquid is not the target. Where a deployment is known to differ from the DotLiquid default, a site
-can select the observed behavior with [`observed` settings](#site-observations). A local fallback for an unsupported
-service is a diagnostic, not proof that the service behaves the same online.
+Mirage parses and renders Liquid with Power Pages' DotLiquid-based engine as its target, not Shopify Liquid: platform
+tags and filters, portal objects, snippets and settings, page and template relationships, FetchXML result drops,
+permissions, errors and whitespace. Only the cases recorded in the `liquid-render` replay surface
+(`mirage/test/parity/cases/liquid-render`, see [test kinds](../../docs/test-kinds.md#replay-cases)) are proven against
+native Power Pages output; other behaviour is a model of DotLiquid, the Adxstudio Liquid layer and Microsoft's
+documentation. Where a deployment is known to differ from the DotLiquid default, a site can select the observed
+behaviour with [`observed` settings](#site-observations). A local fallback for an unsupported service is a diagnostic,
+not proof that the service behaves the same online.
 
 ## Check sources
 
@@ -14,13 +17,15 @@ paqvilo mirage render-sweep --site <site> --persona all --out .paqvilo/sweep
 paqvilo mirage inspect --source <export> --json
 ```
 
-- `liquid-inventory` lists Liquid constructs and diagnostics in the export (static coverage). Add
-  `--include-inactive --sources` to include inactive and unselected export sources.
-- `render-sweep` renders the local pages for each persona (local rendering coverage).
+- `liquid-inventory` lists Liquid constructs and diagnostics in the export (static coverage). `--include-inactive`
+  also scans inactive records; `--sources` adds a per-source list (`sourceList`) with each source's tag and output
+  counts.
+- `render-sweep` renders the local pages for each persona (local rendering coverage). With `--site`, only an HTTPS
+  environment URL is passed to the runtime as the site's live origin; a loopback `http` environment URL is not.
 - `inspect` (or `--project`) reports `liquidSyntax`: syntax diagnostics for active templates, page HTML, JavaScript and
   CSS, snippets, basic form and list JavaScript and advanced form step JavaScript, including language variants.
   `templateCount`/`parsePassed` count templates; `sourceCount`/`sourceParsePassed` count nonempty source fields. It
-  does not run scripts or prove include resolution, data coverage or browser behavior.
+  does not run scripts or prove include resolution, data coverage or browser behaviour.
 
 None of these establishes live parity; compare with a reference as described in
 [reference parity evidence](parity-evidence.md).
@@ -34,10 +39,10 @@ spacing.
 
 ## Site observations
 
-Set these in the site's `observed` block together with `observed.evidence` naming where you observed the behavior.
+Set these in the site's `observed` block together with `observed.evidence` naming where you observed the behaviour.
 Omitting a setting keeps the default.
 
-| Setting                         | Default      | Observed value and behavior                                                                                                                                                                                                                                                                                                                          |
+| Setting                         | Default      | Observed value and behaviour                                                                                                                                                                                                                                                                                                                         |
 | ------------------------------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `liquidEscapeOnce`              | `dotliquid`  | `passthrough`: `escape_once` returns its input unchanged                                                                                                                                                                                                                                                                                             |
 | `liquidStripHtmlScriptText`     | `remove`     | `preserve`: `strip_html` keeps script element text                                                                                                                                                                                                                                                                                                   |
@@ -99,8 +104,8 @@ current page's ancestor chain, so sibling routes sharing a URL prefix are not an
   `?id=`, and is empty without a marker. The fragment is the first matching value, cut at 200 characters, with each
   matching word in `<em>` and escaped segment by segment.
 - Parameters read: `query`, `filter` (`+column:value` and `-column:value` only; others answer 501
-  `PORTAL_SEARCH_FILTER_UNSUPPORTED`), `logical_names`, `page` and `page_size` (default 10). Every page of each
-  indexed view is read, so `approximate_total_hits` counts the matching rows the visitor may read.
+  `PORTAL_SEARCH_FILTER_UNSUPPORTED`), `logical_names`, `page` and `page_size` (default 10, at most 1000). Every page of
+  each indexed view is read, so `approximate_total_hits` counts the matching rows the visitor may read.
 - Matching is token matching (any term, `term*` prefixes; the score is the number of matched terms), not Dataverse
   relevance search: Lucene operators, fuzzy and proximity are ignored, and `Search/Query` weights are not applied
   (`PORTAL_SEARCH_QUERY_WEIGHTS_IGNORED`).
@@ -110,13 +115,13 @@ current page's ancestor chain, so sibling routes sharing a URL prefix are not an
 
 ## Error pages
 
-`pageErrorPresentation: generic-error` replaces the simulator diagnostic for an HTTP 500
-`PAGE_QUERY_REQUEST_VALIDATION` GET page-query rejection (raised only with `observed.requestValidation: aspnet-query`,
-which rejects dangerous decoded query values before Liquid runs) with the generic title and heading, a fresh local Error ID in
-square brackets and the fixed rejection message. Other errors, methods and API responses are unchanged. It does not
-reproduce native CSS, scripts, opaque identifiers or exact HTML, and custom `Portal Generic Error` snippets are not used
-(on the platform, Liquid in that snippet is not evaluated;
-[error log](https://learn.microsoft.com/en-us/power-pages/admin/view-portal-error-log)).
+`pageErrorPresentation: generic-error` replaces the simulator diagnostic for an HTTP 500 `PAGE_QUERY_REQUEST_VALIDATION`
+GET page-query rejection (raised only with `observed.requestValidation: aspnet-query`, which rejects dangerous decoded
+query values before Liquid runs) with the generic title and heading, a fresh local Error ID in square brackets and the
+fixed rejection message. Other errors, methods and API responses are unchanged. It does not reproduce native CSS,
+scripts, opaque identifiers or exact HTML, and custom `Portal Generic Error` snippets are not used (on the platform,
+Liquid in that snippet is not evaluated; [error
+log](https://learn.microsoft.com/en-us/power-pages/admin/view-portal-error-log)).
 
 ## Golden-liquid conformance
 
@@ -128,8 +133,16 @@ download the version pinned in `mirage/lib/liquid-conformance-rules.json`.
 paqvilo mirage liquid-conformance --suite <golden_liquid.json> --markdown --out .paqvilo/liquid-conformance.md
 ```
 
-Options: `--rules FILE` (default `mirage/lib/liquid-conformance-rules.json`), `--json` or `--markdown`, `--out FILE`,
-`--timeout MS`. The report is informational; the command fails only when the suite or rules cannot be read.
+Options: `--rules FILE` (default `mirage/lib/liquid-conformance-rules.json`), `--json` or `--markdown` (default: a
+plain-text summary; passing both is a usage error), `--out FILE` (default standard output; never the suite or rules
+file; its parent folder is created), `--timeout MS` (per case, default 5000). The report is informational: the command
+exits 0 when cases differ and exits 2 only for invalid options or when the suite, rules or output file cannot be read
+or written.
+
+A rules file has `suite` (the pinned source), `reasons` (key → evidence text) and `rules`, each
+`{ match: { name } | { tag }, category, reason, dotliquid? }`: a name rule wins over a tag rule, `reason` is a key of
+`reasons` or literal text, and `dotliquid` records the reference output per DotLiquid build (`master`, `2.0.385`,
+`2.0.64`), as `{ output }` or `{ error }`.
 
 | Category               | Meaning                                                                                                    |
 | ---------------------- | ---------------------------------------------------------------------------------------------------------- |
@@ -137,7 +150,9 @@ Options: `--rules FILE` (default `mirage/lib/liquid-conformance-rules.json`), `-
 | `dotliquid-divergence` | Mirage renders what DotLiquid (or the filter Power Pages registers over it) renders, unlike Shopify Liquid |
 | `engine-gap`           | Mirage differs from DotLiquid; a differing case without a rule lands here too                              |
 
-Rules whose cases now pass are listed as stale. The default rules compare the public suite with DotLiquid, not with a
-live site. Each case runs with its own data and partials, empty portal settings and objects, and an invalid case passes
-when any Liquid error is raised. For portal context or exact error text, write a renderer test or record a reference
-comparison; reduce an engine issue to a synthetic test in `mirage/test/`.
+Name rules that match no differing case are listed as stale (`staleRules`), split into rules whose case now passes
+(`passingRules`) and rules whose case is absent from the suite (`missingRules`); an unused tag rule is not reported. The
+default rules compare the public suite with DotLiquid, not with a live site. Each case runs with its own data and
+partials, empty portal settings and objects, and an invalid case passes when any Liquid error is raised. For portal
+context or exact error text, write a renderer test or record a reference comparison; reduce an engine issue to a
+synthetic test in `mirage/test/`.

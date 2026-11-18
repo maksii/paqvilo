@@ -1,6 +1,8 @@
 import fs from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
+import { paqviloCommand } from './command-hint.mjs';
 import { writeScaffold } from './scaffold.mjs';
 import { editorFiles } from './project-editor.mjs';
 import { identifier } from './config-schema.mjs';
@@ -152,7 +154,7 @@ function projectScripts({ sites, packs, vscode }) {
       nodeMajor: metadata.engines.node.match(/\d+/)[0],
       editorStep: vscode
         ? 'Run `npm run editor:refresh` after configuration changes; inspect any script proposals and edited-file alternatives.'
-        : 'Editor generation is disabled; use `paqvilo init --refresh-editor --workspace-only` if you want an ignored workspace file.',
+        : 'Editor generation is disabled; use `npx --no-install paqvilo init --refresh-editor --workspace-only` if you want an ignored workspace file.',
     }),
     'AGENTS.md': await template('AGENTS.md', { name, docs }),
     'tools/bootstrap.mjs': await template('bootstrap.mjs.template'),
@@ -212,24 +214,48 @@ function projectScripts({ sites, packs, vscode }) {
     Object.assign(files, editorFiles({ name, sites, browser, sourceRoot: webRoot, scripts }));
   }
   const report = await writeScaffold(directory, files, { intoExisting: options.intoExisting });
+  const next = nextSteps(report, scripts, vscode);
   return {
     schemaVersion: 1,
     ok: true,
     ...report,
     ...(options.intoExisting
       ? {
-          adoption:
-            'Files were added without merging existing package/configuration. Run paqvilo init --ready to review integration diagnostics.',
+          adoption: `Files were added without merging existing package/configuration. Run ${next.ready} to review integration diagnostics.`,
         }
       : {}),
-    next: [
-      'npm run setup',
-      'npm run configure',
-      ...(vscode ? ['npm run editor:refresh'] : []),
-      'npm run check:scaffold',
-      'npm run check:project',
-      'npm run validate',
-      'npm run validate:configured',
-    ],
+    next: next.steps,
   };
+}
+
+/**
+ * The next steps, run from the project folder. A generated script is named only when the project's package.json holds
+ * it unchanged (an existing package.json is kept); otherwise its paqvilo command is spelled out, and a composite script
+ * the project lacks is left out (init --ready reports it as missing).
+ */
+function nextSteps(report, scripts, vscode) {
+  let kept = scripts;
+  if (report.skipped.includes('package.json'))
+    try {
+      kept = JSON.parse(readFileSync(path.join(report.directory, 'package.json'), 'utf8')).scripts ?? {};
+    } catch {
+      kept = {};
+    }
+  const step = (name, command, extra = []) =>
+    kept[name] === scripts[name]
+      ? `npm run ${name}`
+      : command && paqviloCommand(command, { extra, cwd: report.directory });
+  const ready = step('check:project', ['init', '--ready']);
+  const steps = [
+    // tools/bootstrap.mjs runs only under npm run setup; without that script, the setup check alone.
+    kept.setup === scripts.setup ? 'npm run setup' : step('check:setup', ['doctor', '--setup']),
+    step('configure', ['setup'], ['--open']),
+    // Editor refresh needs the scaffold's own package.json.
+    vscode && step('editor:refresh'),
+    step('check:scaffold', ['init', '--check']),
+    ready,
+    step('validate'),
+    step('validate:configured'),
+  ].filter(Boolean);
+  return { ready, steps };
 }

@@ -2,6 +2,7 @@
 //   runStorageContract(test, async (t) => myProvider(t), { skip: ['sas'] });
 // makeProvider(t) returns a fresh, empty provider and registers its own cleanup with t.after().
 // Every case drives the provider through guardProvider(), the same wrapper the storage router uses.
+import { requiredArgument } from '../lib/required-argument.mjs';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { ProviderError, guardProvider } from '../lib/storage-provider.mjs';
@@ -43,8 +44,8 @@ const providerError = (code) => (error) => {
 
 // clock.now() (epoch ms) sets the SAS expiries, so a provider built on a fixed clock passes the same way as one on wall time.
 export function runStorageContract(
-  test,
-  makeProvider,
+  test = requiredArgument('runStorageContract(test, makeProvider)', 'the node:test test function'),
+  makeProvider = requiredArgument('runStorageContract(test, makeProvider)', 'a storage provider factory'),
   { skip = [], label = 'storage contract', clock = systemClock } = {},
 ) {
   for (const name of skip)

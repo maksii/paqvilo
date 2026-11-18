@@ -1,3 +1,4 @@
+import { requiredArgument } from './required-argument.mjs';
 import { isDeepStrictEqual } from 'node:util';
 import { seedPresetBody } from './solution-schema.mjs';
 import { validatePersonaCatalog } from './persona-catalog.mjs';
@@ -58,7 +59,12 @@ const bodyKeys = [
 const isCompactDescriptor = (preset) => preset?.builtin === true && !bodyKeys.some((key) => hasOwn(preset, key));
 
 /** Refresh generated library entries; explicitly edited presets and mappings remain authoritative. */
-/* NOSONAR */ export function resolvePreset(state, name, generatedPresets = builtinPresets, context) {
+/* NOSONAR */ export function resolvePreset(
+  state = requiredArgument('resolvePreset(state, name)', 'a runtime state'),
+  name,
+  generatedPresets = builtinPresets,
+  context,
+) {
   const copySaved = (value) => cloneStateData(value, { forkTables: Boolean(context?.records) });
   const saved = hasOwn(state.presets, name) ? state.presets[name] : undefined;
   const generatedHas = hasOwn(generatedPresets, name);

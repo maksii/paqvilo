@@ -262,11 +262,37 @@ export async function prerequisiteReadiness({
   };
 }
 
+/**
+ * A node:util parseArgs refusal as one line naming the option, without Node's positional-argument advice. This script
+ * runs before dependencies are installed and is copied standalone, so it cannot import the toolkit's option helpers.
+ */
+function parseArgsMessage(error) {
+  const unknown = /^Unknown option '([^']*)'/.exec(error.message);
+  if (unknown) return `Unknown option ${unknown[1]}`;
+  return error.message
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join(' ');
+}
+
 function readOptions() {
   try {
-    const { values: options } = parseArgs({
-      options: { check: { type: 'boolean' }, json: { type: 'boolean' }, browser: { type: 'string' } },
-    });
+    let options;
+    try {
+      ({ values: options } = parseArgs({
+        options: {
+          check: { type: 'boolean' },
+          json: { type: 'boolean' },
+          browser: { type: 'string' },
+          help: { type: 'boolean', short: 'h' },
+        },
+      }));
+    } catch (error) {
+      if (error.code?.startsWith('ERR_PARSE_ARGS_')) error.message = `${parseArgsMessage(error)} (see --help)`;
+      throw error;
+    }
+    if (options.help) return { options };
     if (options.json && !options.check)
       throw new Error('--json requires --check so machine-readable setup never installs dependencies');
     if (options.browser && !['msedge', 'chrome', 'chromium'].includes(options.browser))
@@ -420,6 +446,15 @@ async function main() {
   const parsed = readOptions();
   if (parsed.error) return 1;
   const { options } = parsed;
+  if (options.help) {
+    console.log(`Usage: node scripts/ensure-dependencies.mjs [--check] [--json] [--browser msedge|chrome|chromium]
+  (no option)        install the locked dependencies of every package when they are missing or stale (npm run setup)
+  --check            only report readiness offline; installs nothing
+  --json             print the readiness report as JSON (requires --check)
+  --browser <name>   also check that msedge, chrome or chromium is installed
+  --help             print this help`);
+    return 0;
+  }
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
   const result = dependencyReadiness(root);
   verifyResolvedDependencies(root, result);

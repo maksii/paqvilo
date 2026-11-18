@@ -707,3 +707,93 @@ test('an in-process mirage command reads the catalogue of the working directory 
   const { code, stderr } = await invoke(['inspect', '--site', 'invented', '--json'], directory);
   assert.equal(code, 0, stderr);
 });
+
+// @test-kind contract: serve without --port uses the catalogue site's mirage.port, as the lifecycle commands do (docs/cli.md)
+test("CLI: catalogue serve without --port listens on the site's mirage.port", async (t) => {
+  const directory = await fixture(t, {
+    'portal/web-pages/home/Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\n',
+    'portal/web-pages/home/Home.webpage.copy.html': '<h1>Local home</h1>',
+    // Port 0 (any free port) tells the configured port from the 8787 default without needing a fixed free port.
+    'paqvilo.config.yml':
+      'sourceRoot: .\nsites:\n  local:\n    source: portal\n    environments: { local: http://127.0.0.1:8787 }\n    mirage:\n      port: 0\n',
+  });
+  const { child, completion, output, started } = await startServe(t, directory, [
+    '--config',
+    path.join(directory, 'paqvilo.config.yml'),
+    '--site',
+    'local',
+    '--state',
+    'state.json',
+    '--no-watch',
+    '--json',
+  ]);
+  assert.notEqual(new URL(started.url).port, '8787');
+  assert.equal((await fetch(started.url)).status, 200);
+  child.stdin.end('stop\n');
+  const { code, error } = await within(
+    completion,
+    HANG_GUARD_MS,
+    () => `CLI did not stop. stdout: ${output.stdout}\nstderr: ${output.stderr}`,
+  );
+  if (error) throw error;
+  assert.equal(code, 0, output.stderr);
+});
+
+// @test-kind contract: docs/configuration.md path rules: a relative --state names a file from the working directory, while discovery of a standalone --project lives under that project's own directory
+test('CLI: serve --project resolves --state from the working directory and discovery from the project directory', async (t) => {
+  const directory = await fixture(t, {
+    '.paqvilo/mirage/invented.project.yml':
+      'version: 2\nruntime:\n  kind: dataverse-api\ndataverse:\n  enabled: true\n  port: 0\n  tls: false\n',
+  });
+  const { child, completion, output, started } = await startServe(t, directory, [
+    '--project',
+    path.join('.paqvilo', 'mirage', 'invented.project.yml'),
+    '--port',
+    '0',
+    '--state',
+    path.join('local', 'state.json'),
+    '--no-watch',
+  ]);
+  assert.equal(
+    started.discovery,
+    path.join(directory, '.paqvilo', 'mirage', '.paqvilo', 'simulator', `session-${started.pid}.json`),
+  );
+  await fs.stat(started.discovery);
+  child.stdin.end('stop\n');
+  const { code, error } = await within(
+    completion,
+    HANG_GUARD_MS,
+    () => `CLI did not stop. stdout: ${output.stdout}\nstderr: ${output.stderr}`,
+  );
+  if (error) throw error;
+  assert.equal(code, 0, output.stderr);
+  // The state file is where the invocation named it, not under the project file's directory.
+  await fs.stat(path.join(directory, 'local', 'state.json'));
+  await assert.rejects(fs.stat(path.join(directory, '.paqvilo', 'mirage', 'local')), { code: 'ENOENT' });
+});
+
+// @test-kind contract: serve --project with --config --site (as lense start --project passes them) applies the catalogue site's persona settings to every project portal
+test('CLI: serve --project with --config --site applies the catalogue site persona settings', async (t) => {
+  const directory = await fixture(t, {
+    'portal/Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\n',
+    'portal/Home.webpage.copy.html': '<h1>Local home</h1>',
+    'project.json': JSON.stringify({ version: 1, portals: [{ id: 'main', path: './portal' }], solutions: [] }),
+    'paqvilo.config.yml':
+      'sourceRoot: .\nsites:\n  lab:\n    source: portal\n    defaultEnv: local\n    environments:\n      local: http://127.0.0.1:1\n    mirage:\n      personaContexts: { maxInstances: 2 }\n',
+  });
+  const { child, completion, started } = await startServe(t, directory, [
+    '--project',
+    path.join(directory, 'project.json'),
+    '--config',
+    path.join(directory, 'paqvilo.config.yml'),
+    '--site',
+    'lab',
+    '--port',
+    '0',
+    '--no-watch',
+  ]);
+  const runtimes = await (await fetch(`${started.portals[0].url}/__sim/api/persona-runtimes`)).json();
+  assert.equal(runtimes.maxInstances, 2);
+  child.stdin.end('stop\n');
+  await within(completion, HANG_GUARD_MS, () => 'CLI did not stop.');
+});

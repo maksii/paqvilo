@@ -177,7 +177,8 @@ test('All settings creates a project from what to run and the found exports, and
   assert.notEqual(Number(new URL(website).port), blocked.port);
   assert.equal(blocked.occupied.listening, true);
   assert.equal((await fetch(website)).status, 200);
-  assert.match(await run.innerText(), /Dataverse Web API for your scripts and tests/);
+  // The address is listed once a status read of the preview has answered; a busy preview answers a later read.
+  await run.getByText(/Dataverse Web API for your scripts and tests/).waitFor();
   await run.getByRole('button', { name: 'Stop' }).click();
   await run.getByRole('button', { name: 'Start preview' }).waitFor();
   assert.deepEqual(errors, []);

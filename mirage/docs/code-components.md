@@ -1,10 +1,11 @@
 # PCF code components on Power Pages
 
 Mirage hosts standard PCF code components on local Power Pages pages and native forms. It loads the code, styles and
-strings declared in exported Solution control manifests. `paqvilo mirage inspect` connects each component reference to
-its manifest, resources, native FormXml binding and literal dataset sources. Model-driven hosting is described in
-[PCF inputs and limits](model-driven-customizations.md#pcf-inputs-and-limits); both hosts use the same admission rule
-(`pcfAdmission` in `mirage/lib/code-components.mjs`).
+strings declared in exported Solution control manifests. The Lense panel's **Inspect** view
+([Lense](../../docs/lense.md)) connects each component reference on the page to its manifest, resources, native FormXml
+binding and literal dataset sources; `paqvilo mirage inspect` does not list components. Model-driven hosting is
+described in [PCF inputs and limits](model-driven-customizations.md#pcf-inputs-and-limits); both hosts use the same
+admission rule (`pcfAdmission` in `mirage/lib/model-driven/pcf-runtime.mjs`).
 
 ## Page components
 
@@ -35,8 +36,8 @@ The bridge supports single-field bindings, keeps the original form input and val
 with native save and script updates. Inspect shows the FormXml, bound column, attribute metadata, form factor and
 enablement evidence. Type groups use the exported FormXml parameter type; an unresolved group of incompatible types is
 a diagnostic, not the first declaration. Bound parameters carry the available column name, label, required level,
-length, numeric bounds and precision, format, date behavior, targets, options and defaults; missing metadata is
-omitted. Date outputs keep the native form's seven fractional digits and date/time behavior.
+length, numeric bounds and precision, format, date behaviour, targets, options and defaults; missing metadata is
+omitted. Date outputs keep the native form's seven fractional digits and date/time behaviour.
 
 ## Manifest feature declarations
 
@@ -75,11 +76,12 @@ omit functions. Validation finishes before values apply; a later component or in
 
 ## Limits
 
-- Native list and subgrid PCF hosting is not implemented; diagnostics keep the native grid fallback.
+- Native list and subgrid PCF hosting is not implemented: a list or subgrid configured with a dataset code component
+  renders the native grid and reports `PCF_NATIVE_DATASET_UNSUPPORTED`.
 - Virtual (React) controls and declared platform libraries are refused with `PCF_VIRTUAL_UNSUPPORTED`: the Power Pages
   host supplies no platform libraries.
 - Dataset aliases, aggregates, advanced operators and navigation without an exported portal binding are limited or
   unsupported. SDK file and image APIs and writable `EntityRecord` APIs are not supplied.
 - Diagnostics name missing manifests, resources, mappings and unsupported property bindings. Compare important
-  behavior with an authorized live portal; see [platform resources](platform-resources.md) and
+  behaviour with an authorized live portal; see [platform resources](platform-resources.md) and
   [coverage](../../docs/coverage.md).

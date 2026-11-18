@@ -5,9 +5,10 @@ setup navigation. It renders the apps, sitemaps, forms and views of the selected
 organization. It is a development host, not the licensed Unified Interface client: anything not listed here is
 unavailable, and unavailable features say so instead of pretending to succeed.
 
-- On the Power Pages host, **Mirage Site Manager** is always present. Its Website, Content and Security navigation
-  follows the export's data model (`mspp_*` tables for the enhanced model, `adx_*` for standard exports) and shows only
-  the selected website and locally created configuration, not the connected organization.
+- On the Power Pages host, **Mirage Site Manager** is present whenever the model-driven surface is on (see
+  [Routes](#routes)). Its Website, Content and Security navigation follows the export's data model (`mspp_*` tables
+  for the enhanced model, `adx_*` for standard exports) and shows only the selected website and locally created
+  configuration, not the connected organization.
 - The [standalone model-driven runtime](standalone-organization.md) imports Solution apps without a portal. Configure
   its surface, default app (`runtime.defaultApp`) and [simulation level](simulation-levels.md) in `/_setup/`; restart
   to apply.
@@ -122,29 +123,41 @@ SiteMap entries that are not tables carry a code: `MD_NAV_WEBRESOURCE` (`$webres
 
 Each sitemap dashboard is a preflight row `model-driven:dashboard/<app>/<subarea>`: `satisfied` when every component
 renders, otherwise `unsupported` with `MD_DASHBOARD_COMPONENT_UNSUPPORTED` (naming the components) or `MD_NAV_DASHBOARD`
-(no definition). A dashboard an app hosts never reports `DASHBOARD_NOT_RENDERED`. The capability record
-`model-driven:dashboard` describes the host.
+(no definition). A dashboard an app hosts also sets the level of its Solution component: when every component renders,
+its `modules` entry `dashboard:<Name>` is `behaviour` and it has no requirement row; otherwise the entry stays
+`inventory` and its `dashboard:<name>` row is `unsupported`, both with `MD_DASHBOARD_COMPONENT_UNSUPPORTED`. Only a
+dashboard no app hosts keeps `DASHBOARD_NOT_RENDERED`. The capability
+record `model-driven:dashboard` describes the host.
 
 ## Routes
 
 `modelDriven.enabled: false` (catalogue `mirage.modelDriven`, or the project key) turns the model-driven surface off
-on both hosts: its routes are not served, status `links.modelDriven` is `null` and the dashboard node
-`host:model-driven` is `disabled`. The organization and its Web API are unaffected.
+on both hosts: its routes are not served (`/main.aspx` answers 404), status `links.modelDriven` is `null` and
+`capabilities.modelDriven` is `false`, and the dashboard node `host:model-driven` is `disabled`. The organization and
+its Web API are unaffected.
 
 The `/_apps/` prefix is reserved. Both hosts mount the canvas (`/_apps/canvas/`) and code app (`/_apps/code/<name>/`)
-surfaces before the model-driven handler, which answers 404 for any other unknown `/_apps/*` path. Solution scripts,
-styles and PCF bundles are served from `/_apps/resources/` and `/_apps/controls/`, only from the app's allowlist.
+surfaces before the model-driven handler, which answers 404 for any other unknown `/_apps/*` path. Only declared
+Solution web resources and PCF bundles are served, from `/_apps/resources/<hash>` and `/_apps/controls/` (the URLs are
+in `clientExtensions` of `GET /_apps/api`): images always, scripts, styles and HTML pages only with
+`modelDriven.trustedExtensions` ([customizations](model-driven-customizations.md#web-resources-and-client-sources)).
+An undeclared file, a name instead of the hashed URL, an XML, XSL, ICO or RESX web resource, an untrusted script or a
+query (except `?data=` on an HTML page) answers 404 `Trusted client asset not found.`; a method other than `GET` or
+`HEAD` answers 405.
 
 `POST /_apps/api/webapi` serves [`Xrm.WebApi.execute`](model-driven-client-api.md#xrmwebapiexecute) wherever the
 model-driven surface runs: the Power Pages host and the standalone `model-driven` runtime. A standalone
 `dataverse-api` runtime answers 404. On the Power Pages host the route is on the apps address; a browser request on the
 portal address is redirected (navigation) or refused with `AppsOriginRequired`. The route is admin-adjacent: it runs
 any Web API request (CSRF-checked with the apps token) as the selected staff user, or as the local administrator when
-no staff cookie is set; any other principal gets 401 `StaffPrincipalUnavailable`. Both hosts list it in status
-`adminAdjacentRoutes`.
+no staff cookie is set; a staff cookie that is not valid for this runtime or names a disabled, application or
+non-interactive user gets 401 `StaffPrincipalUnavailable`. Other methods get 405 and a request
+without the `x-sim-csrf` token 403. While the model-driven surface is on, both hosts list it and `/_apps/api/offline` in
+status `adminAdjacentRoutes`; a disabled surface lists none.
 
 On the apps address, pages of the app (same-origin referrer `/main.aspx` or `/_apps/`) may `GET` and `HEAD`
-`/api/data/v9.x/`; see [the Web API on the app address](model-driven-client-api.md#page-markers-and-the-web-api-on-the-app-address).
+`/api/data/v9.x/`; see [the Web API on the app
+address](model-driven-client-api.md#page-markers-and-the-web-api-on-the-app-address).
 
 ## Architecture
 

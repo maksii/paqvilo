@@ -1,9 +1,19 @@
 // Offline, read-only timing of real toolkit paths. No browser, portal requests or source edits.
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { parseArgs } from 'node:util';
 import { performance } from 'node:perf_hooks';
 import { loadConfig } from '../lense/config.mjs';
+import { parseOptions } from '../lense/cli-options.mjs';
+import { answerHelp } from './script-help.mjs';
+
+answerHelp(process.argv.slice(2), {
+  name: 'benchmark',
+  options: ['--site', '--config', '--samples', '--implementation', '--json', '--progress'],
+  usage: `Usage: npm run benchmark -- --site <site> [--config <file>] [--samples 1..20] [--json] [--progress]
+Offline, read-only startup and unchanged-save timings; no browser, portal requests or source edits. --progress reports
+completed work phases on stderr. --implementation <src-directory> compares a saved implementation. Disk cache and
+concurrent work affect results.`,
+});
 
 const round = (n) => Math.round(n * 100) / 100;
 const summarize = (samples) => {
@@ -16,7 +26,7 @@ const summarize = (samples) => {
 };
 
 try {
-  const { values } = parseArgs({
+  const { values } = parseOptions({
     options: {
       site: { type: 'string' },
       config: { type: 'string' },

@@ -25,7 +25,7 @@ import {
   runPluginPhase,
 } from '../lib/exported-plugins.mjs';
 import { install as installStandard } from '../lib/dataverse-standard.mjs';
-import { createPrincipals, ensureSecurityModel, uuidV5 } from '../lib/dataverse-security.mjs';
+import { createPrincipals, ensureSecurityModel, privilegeDeniedError, uuidV5 } from '../lib/dataverse-security.mjs';
 import { createRecordHandlers, createRecordHooks } from '../lib/dataverse-records.mjs';
 import { createChangeLog } from '../lib/dataverse-changes.mjs';
 import { createOperationRegistry } from '../lib/dataverse-operations.mjs';
@@ -710,6 +710,7 @@ describe('plug-in registration: unit rules and mirror shape', () => {
       principals: {
         roles: () => roles.map((name) => ({ name })),
         privileges: () => new Map(privileges.map((name) => [name, 1])),
+        deniedError: privilegeDeniedError,
       },
     };
     await install(api);
@@ -1430,6 +1431,22 @@ describe('plug-in registration: assembly content and plug-in types', () => {
     const bare = { content: SIGNED };
     await run('pluginassembly', 'create', bare);
     assert.equal(bare.name, 'Contoso.Signed');
+  });
+
+  // @test-kind contract: the isolation refusal names the assembly by its content identity, or "unknown", never "undefined"
+  it('the isolation-mode refusal of a content-only create names the identity its content carries', async () => {
+    const { run } = await registry();
+    await assert.rejects(run('pluginassembly', 'create', { content: SIGNED, isolationmode: 1 }), (error) =>
+      error.message.startsWith(
+        `Action failed for assembly 'Contoso.Signed, Version=1.2.3.4, Culture=en-US, PublicKeyToken=${tokenOf(fakePublicKey)}': No publisher is found`,
+      ),
+    );
+    await assert.rejects(
+      run('pluginassembly', 'create', { isolationmode: 1 }),
+      (error) =>
+        error.message ===
+        "Action failed for assembly 'unknown, Version=unknown, Culture=neutral, PublicKeyToken=null': No publisher is found, assembly must be registered in isolation.",
+    );
   });
 
   it('content that declares no plug-in or workflow activity, or is not an assembly, is refused with 0x8004418b', async () => {

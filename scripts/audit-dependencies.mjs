@@ -26,65 +26,15 @@ export const auditedProjects = Object.freeze([
   'examples/project/components/pcf-field-types',
   'examples/project/components/pcf-web-api-control',
 ]);
-// Accepted findings (user decision 2026-10-31): GHSA-g3hv-75wg-m249 (minimatch <11.0.1) in the dev-only lint copy that
-// eslint-plugin-import-x 4.17.1 needs, since minimatch 11 removed its makeRe import; lint globs come from this repository.
-// The other lint packages are overridden to minimatch 11 (package.json). An entry stops matching, and the audit fails,
-// when import-x changes version or anything else depends on the vulnerable copy.
-const accepted = [
-  {
-    project: '.',
-    advisory: 'https://github.com/advisories/GHSA-g3hv-75wg-m249',
-    dependency: 'minimatch',
-    node: 'node_modules/minimatch',
-    via: { name: 'eslint-plugin-import-x', version: '4.17.1' },
-  },
-];
-// The packages whose installed dependency on `name` resolves to the hoisted node_modules/<name>.
-const dependentsOfHoisted = (lockfile, name) =>
-  Object.entries(lockfile.packages ?? {})
-    .filter(([location, entry]) => {
-      if (!entry.dependencies?.[name] && !entry.devDependencies?.[name]) return false;
-      const prefix = location ? `${location}/` : '';
-      const nested = `${prefix}node_modules/${name}`;
-      return !lockfile.packages[nested];
-    })
-    .map(([location, entry]) => ({ location, version: entry.version }));
-export function acceptedFinding(project, name, finding, report, lockfile) {
-  const advisories = (vulnerable) =>
-    (report.vulnerabilities[vulnerable]?.via ?? []).filter((via) => typeof via === 'object').map((via) => via.url);
-  return accepted.some((entry) => {
-    if (entry.project !== project) return false;
-    const dependents = dependentsOfHoisted(lockfile, entry.dependency);
-    const onlyVia =
-      dependents.length === 1 &&
-      dependents[0].location === `node_modules/${entry.via.name}` &&
-      dependents[0].version === entry.via.version;
-    const exact =
-      JSON.stringify(report.vulnerabilities[entry.dependency]?.nodes) === JSON.stringify([entry.node]) &&
-      JSON.stringify(advisories(entry.dependency)) === JSON.stringify([entry.advisory]);
-    if (!onlyVia || !exact) return false;
-    if (name === entry.dependency) return true;
-    // The dependent itself is reported only through that dependency.
-    return name === entry.via.name && JSON.stringify(finding.via) === JSON.stringify([entry.dependency]);
-  });
-}
-function findingDisposition(historical, riskAccepted) {
-  if (riskAccepted) return ' temporarily risk accepted (not fixed)';
-  if (historical) return ' accepted';
-  return '';
-}
-
-function findingsFailAudit(project, report, status, evidence, { now, error }) {
-  const lockfile = JSON.parse(evidence.lock);
-  const temporary = temporaryRiskAcceptance(project, report, status, evidence, { now });
+function findingsFailAudit(project, report, status, evidence, { now, riskPolicy, error }) {
+  const temporary = temporaryRiskAcceptance(project, report, status, evidence, { now, policy: riskPolicy });
   if (temporary.accepted) error(`${project}: ${temporary.message}`);
   else error(`${project}: temporary risk acceptance not applicable: ${temporary.reason}`);
   let failed = false;
   for (const [name, finding] of Object.entries(report.vulnerabilities ?? {})) {
-    const historical = acceptedFinding(project, name, finding, report, lockfile);
     const riskAccepted = temporary.accepted && temporary.names.includes(name);
-    if (!historical && !riskAccepted) failed = true;
-    error(`${project}: ${name} (${finding.severity})${findingDisposition(historical, riskAccepted)}`);
+    if (!riskAccepted) failed = true;
+    error(`${project}: ${name} (${finding.severity})${riskAccepted ? ' temporarily risk accepted (not fixed)' : ''}`);
   }
   return failed;
 }
@@ -96,6 +46,7 @@ export function auditProject(
     rootDirectory = root,
     runAudit = runNpmAudit,
     now = Date.now,
+    riskPolicy,
     log = console.log,
     error = console.error,
     signal,
@@ -111,11 +62,11 @@ export function auditProject(
     maxBuffer: 8 * 1024 * 1024,
     ...(signal ? { signal } : {}),
   });
-  const inspect = (value) => inspectAuditResult(project, value, { rootDirectory, before, now, log, error });
+  const inspect = (value) => inspectAuditResult(project, value, { rootDirectory, before, now, riskPolicy, log, error });
   return result && typeof result.then === 'function' ? result.then(inspect) : inspect(result);
 }
 
-function inspectAuditResult(project, result, { rootDirectory, before, now, log, error }) {
+function inspectAuditResult(project, result, { rootDirectory, before, now, riskPolicy, log, error }) {
   if (result.error) throw result.error;
   if (result.signal) throw new Error(`Dependency audit was interrupted for ${project}.`);
   let report;
@@ -132,11 +83,11 @@ function inspectAuditResult(project, result, { rootDirectory, before, now, log, 
     throw new Error(`Dependency inputs changed during audit for ${project}.`);
   const counts = report.metadata.vulnerabilities;
   log(`${project}: ${JSON.stringify(counts)}`);
-  if (counts.total === 0 && matchesApprovedRiskInputs(project, evidence))
+  if (counts.total === 0 && matchesApprovedRiskInputs(project, evidence, riskPolicy))
     throw new Error(
       `The unchanged approved dependency graph in ${project} returned zero advisory findings; this report change requires re-evaluation.`,
     );
-  if (counts.total > 0) return findingsFailAudit(project, report, result.status, evidence, { now, error });
+  if (counts.total > 0) return findingsFailAudit(project, report, result.status, evidence, { now, riskPolicy, error });
   return false;
 }
 
@@ -168,7 +119,20 @@ export function auditAllProjects(cli, options = {}) {
   return visit(0, false);
 }
 
-async function main() {
+async function main(args) {
+  if (args.length === 1 && ['--help', '-h'].includes(args[0])) {
+    console.log(`Usage: node scripts/audit-dependencies.mjs
+Runs npm audit (contacts the npm registry) for each audited project and fails on findings outside the time-limited
+risk acceptance in scripts/dependency-risk-acceptance.json. Takes no options; --help prints this help.
+See docs/dependency-upgrades.md.`);
+    return;
+  }
+  if (args.length) {
+    // Any other argument list, --help beside another argument included, is refused: it never skips the audit silently.
+    console.error(`audit-dependencies: unexpected arguments ${args.join(' ')}; it takes no options (see --help).`);
+    process.exitCode = 1;
+    return;
+  }
   const cli = npmCliPath();
   if (!fs.existsSync(cli)) throw new Error('Run npm run audit:dependencies.');
   const controller = new AbortController();
@@ -184,4 +148,4 @@ async function main() {
   }
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) await main();
+if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) await main(process.argv.slice(2));

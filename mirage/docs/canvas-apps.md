@@ -19,9 +19,9 @@ node bin/paqvilo.mjs mirage dev --config <catalogue> --site <site> --debug-port 
 ```
 
 Or `paqvilo mirage serve --project <project-file>`. Then select a staff user in `/_sim/` on the administration address
-(`adminUrl`), open `/_apps/canvas/` on the apps address (`appsUrl`), choose an app and press Start. The app list and
-player use the administration shell and the browser's color scheme; the app stage keeps the app's own colors. The
-Source column and the player's origin line name each app's source.
+(`adminUrl`), open `/_apps/canvas/` on the apps address (`appsUrl`), choose an app and press **Start the app**. The
+app list and player use the administration shell and the browser's colour scheme; the app stage keeps the app's own
+colours. The Source column and the player's origin line name each app's source.
 
 - **Identity.** The app runs as the selected staff user. On a Power Pages host an enhanced-authorization visitor must
   map to a Dataverse user; anonymous and standard-authorization visitors get `401 CanvasPrincipalRequired`. A cloud
@@ -41,7 +41,7 @@ Source column and the player's origin line name each app's source.
   segment; an `.msapp` file's is its file name without `.msapp`. Of two sources with the same unique name, the first
   listed is served and the other reports `CANVAS_SOURCE_DUPLICATE`.
 
-## Supported local behavior
+## Supported local behaviour
 
 | Area             | Coverage                                                                                                                                                                  | Limits                                                                                                          |
 | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
@@ -81,7 +81,7 @@ Source column and the player's origin line name each app's source.
 
 Canvas component definitions expand per instance with qualified child names, `Self`/`Parent`/`ThisComponent`
 bindings, data input/output properties, local state and `AccessAppScope` restrictions. Enhanced function, action and
-event properties keep typed arguments, optional defaults and behavior scope. `Reset(component)` runs OnReset;
+event properties keep typed arguments, optional defaults and behaviour scope. `Reset(component)` runs OnReset;
 exported `RaiseOnReset` inputs trigger it after a settled action, with bounded feedback detection. Exact intra-chain
 event order is not reproduced. Missing, recursive or excessive expansions and unsupported contracts are diagnosed;
 unknown legacy directions are warned about.
@@ -90,18 +90,18 @@ PCF requires `canvas.codeComponents: true` and the exact exported Solution manif
 standard controls get `init`/`updateView`/`getOutputs`/`destroy`, typed property bindings, outputs and declared events.
 A virtual control also needs its platform libraries as `<Library>@<version>.js` files in `modelDriven.clientSources`
 (see [PCF inputs and limits](model-driven-customizations.md#pcf-inputs-and-limits)); there is no CDN fallback. Refusals
-use `CANVAS_PCF_*` codes: `CANVAS_PCF_TRUST_REQUIRED`, `CANVAS_PCF_MANIFEST_UNAVAILABLE`, `CANVAS_PCF_DATASET_UNSUPPORTED`
-(dataset controls and the Canvas WebAPI are not available), `CANVAS_PCF_FEATURE_UNSUPPORTED`,
-`CANVAS_PCF_PROPERTY_UNSUPPORTED`, `CANVAS_PCF_DEFAULT_UNSUPPORTED`, `CANVAS_PCF_RESOURCE_UNAVAILABLE` and
-`CANVAS_PCF_EVENT_UNSUPPORTED`. A manifest `pfx-default-value` applies only without an authored binding; unresolved
-Studio `%...%` placeholders refuse. Localization and binary resource services are incomplete. Admission runs code you
-chose to trust; it does not prove native package equivalence.
+use `CANVAS_PCF_*` codes: `CANVAS_PCF_TRUST_REQUIRED`, `CANVAS_PCF_MANIFEST_UNAVAILABLE`,
+`CANVAS_PCF_DATASET_UNSUPPORTED` (dataset controls and the Canvas WebAPI are not available),
+`CANVAS_PCF_FEATURE_UNSUPPORTED`, `CANVAS_PCF_PROPERTY_UNSUPPORTED`, `CANVAS_PCF_DEFAULT_UNSUPPORTED`,
+`CANVAS_PCF_RESOURCE_UNAVAILABLE` and `CANVAS_PCF_EVENT_UNSUPPORTED`. A manifest `pfx-default-value` applies only
+without an authored binding; unresolved Studio `%...%` placeholders refuse. Localization and binary resource services
+are incomplete. Admission runs code you chose to trust; it does not prove native package equivalence.
 
 ## Formulas and data
 
-- Properties evaluate lazily with dependency invalidation; cycles report `CANVAS_FORMULA_CYCLE`. Behavior formulas run
+- Properties evaluate lazily with dependency invalidation; cycles report `CANVAS_FORMULA_CYCLE`. Behaviour formulas run
   through one serialized action queue. Component functions share its journal, so connector replay does not repeat
-  local side effects or random calls. `RGBA`, `ColorValue` and `ColorFade` return CSS color values. Blank or
+  local side effects or random calls. `RGBA`, `ColorValue` and `ColorFade` return CSS colour values. Blank or
   comment-only formulas evaluate blank; invalid formulas error.
 - Table sources bind only to configured local providers under the caller's permissions. A declared but unavailable
   table reports `CANVAS_DATASOURCE_UNAVAILABLE`; no provider is invented. Collections from legacy source stay local.
@@ -113,8 +113,8 @@ chose to trust; it does not prove native package equivalence.
   columns are a local `{Value: label, Id: number}` approximation. `DataSourceInfo` reads exported metadata and the
   caller's permissions.
 - Delegable Dataverse queries push down; other queries read up to 500 rows with a delegation warning. This is not
-  native delegation behavior. Connector actions need a configured local implementation; cloud connectors never run. One
-  behavior formula may wait for at most 50 connector answers.
+  native delegation behaviour. Connector actions need a configured local implementation; cloud connectors never run. One
+  behaviour formula may wait for at most 50 connector answers.
 
 ## Debugging and routes
 
@@ -124,7 +124,7 @@ headless action forms. There is no Power Fx step debugger or Studio editor; use 
 Playwright/CDP to the debug port. A failed action can return a snapshot with earlier effects: check its errors and HTTP
 status, not only the screen.
 
-| Route                          | Behavior                                                                             |
+| Route                          | Behaviour                                                                            |
 | ------------------------------ | ------------------------------------------------------------------------------------ |
 | `GET /_apps/canvas/`           | App list; JSON with `Accept: application/json`                                       |
 | `GET /_apps/canvas/<app>`      | Player; `?view=inspect` for headless inspection                                      |
@@ -134,25 +134,28 @@ status, not only the screen.
 
 `POST` needs a principal and the apps token in `x-sim-csrf` (or a form's `_csrf` field); the administration token is
 also accepted. Actions: `start`, `reset` (optional parameters and viewport), `select`, `input`, `text`, `navigate`,
-`back`, `run`, `evaluate`, `refresh`, `resize`, `gallery-window`, `tick`, `media`, `add-media`, `codecomponent` and
-`codecomponent-event`; fields are validated in `mirage/lib/canvas-http.mjs` and `canvas-runtime.mjs`. Use `tick` to
-advance time instead of waiting. Bodies are limited to 64 KiB, except `add-media` (1 MiB decoded image). Responses are
-`no-store`, same-origin assets are bounded, SVG assets are sandboxed and source HTML never becomes executable markup.
+`back`, `run`, `evaluate`, `refresh`, `resize`, `search` (a ComboBox's `SearchText`), `gallery-window`, `tick`, `media`,
+`add-media`, `codecomponent` and `codecomponent-event`; fields are validated in `mirage/lib/canvas-http.mjs` and
+`canvas-runtime.mjs`. An unknown action answers `400 CanvasActionInvalid`, whose message lists every accepted action.
+Use `tick` to advance time instead of waiting. Bodies are limited to 64 KiB, except `add-media` (1 MiB decoded image).
+Responses are `no-store`, same-origin assets are bounded, SVG assets are sandboxed and source HTML never becomes
+executable markup.
 
 A trusted pointer or key press in the player starts its own trace activity, linked to the page load; see
 [request tracing](tracing.md#what-joins-and-what-starts-a-new-trace).
 
-**Preflight.** `canvas:app/<name>` covers hosted behavior. Incomplete YAML or schema, unresolved name collisions and
+**Preflight.** `canvas:app/<name>` covers hosted behaviour. Incomplete YAML or schema, unresolved name collisions and
 missing component contracts block complete coverage even when some screens play. Live preflight uses prepared
 component and PCF admission; static inventory cannot prove PCF admission. `canvas:rendering` stays at contract level
 and lists visual approximations. A satisfied verdict covers the local contract, not native fidelity.
 
 ## Power Fx
 
-Mirage's interpreter (`mirage/lib/power-fx.mjs`) implements the documented grammar (operators, `;` chaining, `As`,
+Mirage's interpreter (`mirage/lib/power-fx.mjs`, functions in `power-fx-functions.mjs`) implements the grammar listed
+in its header comment (operators, `;` chaining, `As`,
 `With`, records, tables, string interpolation, `[@Name]` disambiguation), typed values (number, text, Boolean, date,
 time and date/time with time zones, GUID, records, tables, blank, error values with `ErrorKind` codes, untyped values
-from `ParseJSON`) and the functions of the formula-column reference plus the table, behavior and text functions that
+from `ParseJSON`) and the functions of the formula-column reference plus the table, behaviour and text functions that
 Functions, low-code plug-ins and Canvas apps use.
 
 - An unknown function answers 400 `PowerFxFunctionUnsupported`; connector functions are not part of the engine.
@@ -181,7 +184,7 @@ Functions, low-code plug-ins and Canvas apps use.
   `check`/`checkSync`, checking fails with `POWERFX_CHECK_NOT_IMPLEMENTED`.
 - The same entry point backs `ExecuteFxExpression` (`api.fxEvaluator`), formula columns
   ([Dataverse](dataverse-parity.md)), Dataverse Functions and automated low-code plug-ins
-  ([Dataverse plugins](dataverse-plugins.md)). `describeCustomApis(api)` describes those as `function:<uniquename>` and
+  ([Dataverse plug-ins](dataverse-plugins.md)). `describeCustomApis(api)` describes those as `function:<uniquename>` and
   `automated:<uniquename>`: `behaviour` while an evaluator answers, `contract` with the engine disabled.
   `powerFxRequirements(store, powerFx)` adds a `power-fx:evaluator` preflight row per such operation only when the
   engine is disabled and no adapter is registered, so `--strict` blocks.
@@ -192,7 +195,7 @@ The optional [PAC differential check](power-fx-oracle.md) compares a fixed corpu
 
 ```sh
 node --test mirage/test/canvas*.test.mjs mirage/test/power-fx*.test.mjs
-node --test --import=./test/browser-bootstrap.mjs --test-concurrency=1 test-browser/canvas*.test.mjs
+node --test --import=./test/browser-bootstrap.mjs --test-concurrency=1 test-browser/canvas*.test.mjs mirage/test-browser/canvas*.test.mjs
 npm run validate
 ```
 

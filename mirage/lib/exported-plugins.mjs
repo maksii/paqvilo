@@ -20,6 +20,7 @@ import { DataError } from './data-error.mjs';
 import { uploadedClrRuntime } from './plugin-uploaded.mjs';
 import { conditionsOf, publishedRules } from './dataverse-duplicate-rules.mjs';
 import { parseSolutionXml } from './solution-xml.mjs';
+import { requiredArgument } from './required-argument.mjs';
 import {
   clrContext,
   deleteExecutionUser,
@@ -151,6 +152,20 @@ const numeric = (value) =>
     () => (Number.isInteger(Number(value)) ? Number(value) : null),
   );
 const error = (message, code = 'LocalPluginInvalid', status = 400) => new DataError(message, status, code);
+// A handler's own local refusal (a promise answer or an unusable result) raised in its step, not one that already passed a
+// step's fault handling (pluginFrame): it answers like the handler's exception, keeping its local code for in-process callers.
+const LOCAL_HANDLER_FAULTS = new Set(['LocalPluginAsyncHandler', 'LocalPluginInvalid']);
+const localHandlerFault = (cause) =>
+  cause instanceof DataError && LOCAL_HANDLER_FAULTS.has(cause.code) && !Object.hasOwn(cause, 'pluginFrame');
+// The error a step's failure surfaces as. Only a JavaScript handler's own failure becomes the plug-in fault; a plug-in type
+// handler's (typed) exception is always the InvalidPluginExecutionException fault.
+function handlerFailure(cause, item, stage, depth, typed) {
+  if (item.mode !== 'handler') return cause;
+  if (localHandlerFault(cause))
+    return Object.assign(pluginFault(cause, item, stage, depth, typed), { code: cause.code });
+  if (cause instanceof DataError) return cause;
+  return pluginFault(cause, item, stage, depth, typed || cause?.pluginFault === 'InvalidPluginExecutionException');
+}
 const stages = { 10: 'PreValidation', 20: 'PreOperation', 40: 'PostOperation' };
 
 function pluginStepEventHandlerOnly(step, serviceEndpointId, handlerType, handlerId) {
@@ -310,7 +325,9 @@ function appendRootPluginTypes(root, types) {
 }
 
 /** Facts only. Configuration values are not indexed or exposed; DLLs and .NET code are never read or executed. */
-export function parsePluginDocument(xml) {
+export function parsePluginDocument(
+  xml = requiredArgument('parsePluginDocument(xml)', 'the text of an exported plug-in XML document'),
+) {
   const root = parseSolutionXml(xml);
   const { messages, messageFilters } = pluginMessageFacts(root);
   const { assemblies, types } = pluginAssemblyFacts(root),
@@ -548,7 +565,7 @@ function pluginExecutionIssue(step) {
 
 function pluginPipelineIssue(step, customApi) {
   if (!step.message)
-    return 'The SDK message name is not exported. Add evidence-backed observed.sdkMessages or exported SDK message metadata; the step label is not used to guess behavior.';
+    return 'The SDK message name is not exported. Add evidence-backed observed.sdkMessages or exported SDK message metadata; the step label is not used to guess behaviour.';
   const inert = pluginStepInert(step);
   if (!inert && !pluginMessageHasPipeline(step)) return 'This message has no configured local execution pipeline.';
   if (step.unfiltered === true && (step.entity || step.messageFilterId))
@@ -2941,10 +2958,7 @@ function copyBulkParentFrame(phaseFrame, bulkParent, asyncExecution) {
       } catch (cause) {
         const depth = stepDepth();
         // A plug-in type handler's exception surfaces as the documented fault; the write rolls back with the throw.
-        const failure =
-          cause instanceof DataError || item.mode !== 'handler'
-            ? cause
-            : pluginFault(cause, item, stage, depth, typed || cause?.pluginFault === 'InvalidPluginExecutionException');
+        const failure = handlerFailure(cause, item, stage, depth, typed);
         if (executed) journal(failure);
         // The run's trace lines, for an asynchronous job's failure message (plugin-async.mjs jobFailure).
         if (failure && typeof failure === 'object' && !Object.hasOwn(failure, 'pluginTraces'))

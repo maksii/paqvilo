@@ -1,7 +1,9 @@
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
+import { threadId } from 'node:worker_threads';
 import { randomUUID, createHash } from 'node:crypto';
-import { constants } from 'node:fs';
+import { constants, readFileSync } from 'node:fs';
 import { writeJsonStream } from './state-stream.mjs';
 import { DataError } from './data-error.mjs';
 import { renameThroughSharingHoldsAsync } from './record-file-lease.mjs';
@@ -67,6 +69,299 @@ async function currentDigest(file, io) {
 const failure = (message, code = 'PackDataConflict', status = 409) =>
   Object.assign(new DataError(message, status, code), { persistenceFailure: true });
 const companion = (file, token, suffix) => `${file}.paqvilo-${token}.${suffix}`;
+
+// ---- writer locks: `<file>.lock`, taken by pack publication here and by state file saves (data.mjs)
+/*
+ * A lock is created whole (written to a staged companion, then hard-linked into place) and records its owner as JSON:
+ * { owner: "<pid>:<nonce>", pid, thread, host, ticks?, processStartedAt, createdAt, toolkit }. `host` is the operating
+ * system and machine name (`lockHost`); `ticks` (Linux) is the owner's start in clock ticks since boot. An older
+ * toolkit's lock holds only `<pid>:<nonce>`: it names no host, so it is never judged stale here.
+ *
+ * A lock taken on this host is stale once its owner has ended: no process has its number (`process.kill(pid, 0)`
+ * answers ESRCH; EPERM means one runs), the number is this thread's own and the thread holds no lock with that nonce,
+ * or (Linux) the live process with that number started at another clock tick. No clock or age is compared: a live
+ * owner is never reclaimed however long it writes. Residual case: off Linux, an unrelated process that reuses a dead
+ * owner's number keeps that lock held (a conflict naming the process) until the process ends.
+ *
+ * A stale lock is reclaimed under a guard, itself a writer lock on `<lock>.paqvilo-<owner nonce>.reclaim`: only one
+ * reclaimer per stale owner proceeds, and since no later lock records that nonce, the lock it removes is the one it
+ * judged. It first discards the dead owner's unpublished `<file>.paqvilo-<nonce>.tmp`/`.bak` companions.
+ */
+const lockHost = () => `${process.platform}/${os.hostname()}`;
+// Lock nonces this thread holds, counted; shared by every copy of this module loaded in the thread.
+const heldNonces = (globalThis[Symbol.for('paqvilo.writerLockNonces')] ??= new Map());
+const nonceOf = (owner) => owner.slice(owner.indexOf(':') + 1);
+const hold = (owner) => heldNonces.set(nonceOf(owner), (heldNonces.get(nonceOf(owner)) ?? 0) + 1);
+// One owner's record text, the same in every lock of its set, while that owner holds any.
+const ownerTexts = new Map();
+const drop = (owner) => {
+  const count = (heldNonces.get(nonceOf(owner)) ?? 1) - 1;
+  if (count > 0) heldNonces.set(nonceOf(owner), count);
+  else {
+    heldNonces.delete(nonceOf(owner));
+    ownerTexts.delete(owner);
+  }
+};
+const LOCK_OWNER = /^([1-9]\d*):([a-f\d-]{36})$/i;
+// Hard links unavailable on this file system (FAT/exFAT, some network shares): the lock is then written in place.
+const LINK_UNSUPPORTED = new Set(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EISDIR', 'EXDEV', 'EMLINK']);
+let toolkitVersion, ownTicks;
+const toolkit = () =>
+  (toolkitVersion ??= JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version);
+async function startTicks(pid) {
+  if (process.platform !== 'linux') return null;
+  try {
+    const stat = await fs.readFile(`/proc/${pid}/stat`, 'utf8');
+    return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19] || null;
+  } catch {
+    return null;
+  }
+}
+/** A new owner token for writer locks, `<pid>:<nonce>`. */
+const newLockOwner = () => `${process.pid}:${randomUUID()}`;
+/** The companion a lock owner writes beside `file` (`<file>.paqvilo-<nonce>.<suffix>`), which a reclaim discards. */
+export const lockCompanion = (file, owner, suffix) => companion(file, nonceOf(owner), suffix);
+
+function lockRecord(text) {
+  let value;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  const match = LOCK_OWNER.exec(value?.owner ?? '');
+  return match && Number(match[1]) === value.pid && typeof value.host === 'string' ? value : null;
+}
+async function ownerEnded(record) {
+  if (record.pid === process.pid && record.thread === threadId) return !heldNonces.has(nonceOf(record.owner));
+  try {
+    process.kill(record.pid, 0);
+  } catch (error) {
+    return error.code === 'ESRCH';
+  }
+  if (!record.ticks) return false;
+  const ticks = await startTicks(record.pid);
+  return ticks !== null && ticks !== record.ticks;
+}
+const readLockText = (io, read) => read ?? ((name) => io.readFile(name, 'utf8'));
+async function removedFile(file, io) {
+  try {
+    await io.unlink(file);
+    return true;
+  } catch (error) {
+    if (error.code === 'ENOENT') return false;
+    throw error;
+  }
+}
+async function createLock(name, owner, io) {
+  ownTicks ??= startTicks('self');
+  const ticks = await ownTicks;
+  if (!ownerTexts.has(owner))
+    ownerTexts.set(
+      owner,
+      JSON.stringify({
+        owner,
+        pid: process.pid,
+        thread: threadId,
+        host: lockHost(),
+        ...(ticks ? { ticks } : {}),
+        processStartedAt: new Date(Date.now() - process.uptime() * 1000).toISOString(),
+        createdAt: new Date().toISOString(),
+        toolkit: toolkit(),
+      }),
+    );
+  const text = ownerTexts.get(owner);
+  // A writer stopped while writing leaves at most this staged file, never a lock that names no owner.
+  const staged = lockCompanion(name, owner, 'owner');
+  await io.writeFile(staged, text, { flag: 'wx', mode: 0o600 });
+  try {
+    await io.link(staged, name);
+  } catch (error) {
+    if (error.code === 'EEXIST') return null;
+    if (!LINK_UNSUPPORTED.has(error.code)) throw error;
+    try {
+      await io.writeFile(name, text, { flag: 'wx', mode: 0o600 });
+    } catch (error_) {
+      if (error_.code === 'EEXIST') return null;
+      throw error_;
+    }
+  } finally {
+    await io.rm(staged, { force: true });
+  }
+  return text;
+}
+
+async function readOptional(readText, file) {
+  try {
+    return await readText(file);
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+/** `{ record }` of a lock whose owner has ended, else `{ busy }`. */
+async function judgeLock(name, text, journalOwner) {
+  const record =
+    lockRecord(text) ??
+    (journalOwner && text === journalOwner
+      ? { owner: text, pid: Number(text.split(':')[0]), thread: null, host: lockHost() }
+      : null);
+  if (journalOwner && record?.owner !== journalOwner)
+    throw failure('A pack lock is not owned by the interrupted journal.', 'PersistenceRecoveryRequired');
+  if (!record) return { busy: { kind: 'unidentified', lock: name } };
+  if (record.host !== lockHost()) return { busy: { kind: 'foreign', lock: name, record } };
+  if (!(await ownerEnded(record))) return { busy: { kind: 'live', lock: name, record } };
+  return { record };
+}
+/** Removes an ended owner's files beside `file`; without a journal it published nothing, a journal's recovery needs them. */
+async function discardLeftovers(file, nonce, journalOwner, io) {
+  const name = `${file}.lock`;
+  const leftovers = journalOwner
+    ? [companion(name, nonce, 'owner')]
+    : [companion(file, nonce, 'tmp'), companion(file, nonce, 'bak'), companion(name, nonce, 'owner')];
+  const discarded = [];
+  for (const leftover of leftovers) if (await removedFile(leftover, io)) discarded.push(leftover);
+  return discarded;
+}
+
+/**
+ * Judges `<file>.lock` and reclaims it when its owner has ended (and `reclaim` allows it). Returns `{ free }` (no
+ * lock), `{ changed }` (another lock replaced it meanwhile), `{ reclaimed }` (the diagnostic, also passed to
+ * `onReclaim`) or `{ busy: { kind, lock, record } }` with kind `live`, `reclaiming`, `foreign`, `unidentified` or
+ * `ended` (stale, but not reclaimable here). `journalOwner` accepts an older toolkit's lock naming that owner.
+ */
+async function reclaimWriterLock(file, { io = fs, read, onReclaim, reclaim = true, journalOwner } = {}) {
+  const name = `${file}.lock`,
+    readText = readLockText(io, read);
+  const text = await readOptional(readText, name);
+  if (text === null) return { free: true };
+  const { record, busy } = await judgeLock(name, text, journalOwner);
+  if (busy) return { busy };
+  if (!reclaim) return { busy: { kind: 'ended', lock: name, record } };
+  const nonce = nonceOf(record.owner),
+    guardFile = companion(name, nonce, 'reclaim');
+  const guard = await takeWriterLock(guardFile, { io, read, onReclaim });
+  if (guard.busy) return { busy: { kind: 'reclaiming', lock: name, record: guard.busy.record } };
+  try {
+    if ((await readOptional(readText, name)) !== text) return { changed: true };
+    const discarded = await discardLeftovers(file, nonce, journalOwner, io);
+    await io.unlink(name);
+    const reclaimed = {
+      code: 'WRITER_LOCK_RECLAIMED',
+      severity: 'warning',
+      message:
+        `Reclaimed ${name} from process ${record.pid}, which ended without releasing it` +
+        (discarded.length ? `; discarded its unpublished ${discarded.join(', ')}.` : '.'),
+      lock: name,
+      ownerPid: record.pid,
+      ...(record.createdAt ? { ownerCreatedAt: record.createdAt } : {}),
+      ...(record.toolkit ? { ownerToolkit: record.toolkit } : {}),
+      discarded,
+    };
+    onReclaim?.(reclaimed);
+    return { reclaimed };
+  } finally {
+    await releaseWriterLock(guardFile, guard, { io, read });
+  }
+}
+
+/**
+ * Startup recovery of `<file>.lock`: reclaims it when its writer has ended, then removes what ended writers left beside
+ * it without a lock: a staged lock record (stopped before the link) and a reclaim guard (stopped after its reclaim).
+ * Live, foreign and unidentified locks are left for the first write to report.
+ */
+export async function recoverWriterLock(file, { io = fs, read, onReclaim, reclaim = true } = {}) {
+  await reclaimWriterLock(file, { io, read, onReclaim, reclaim });
+  const directory = path.dirname(file),
+    prefix = `${path.basename(file)}.lock.paqvilo-`,
+    readText = readLockText(io, read);
+  let names;
+  try {
+    names = await io.readdir(directory);
+  } catch (error) {
+    if (error.code === 'ENOENT') return;
+    throw error;
+  }
+  for (const name of names.filter((entry) => entry.startsWith(prefix))) {
+    const leftover = path.join(directory, name);
+    if (name.endsWith('.reclaim.lock'))
+      await reclaimWriterLock(leftover.slice(0, -'.lock'.length), { io, read, onReclaim });
+    else if (name.endsWith('.owner')) await removeStagedRecord(file, leftover, readText, io, onReclaim);
+  }
+}
+/** Removes a staged lock record whose writer ended before linking it as the lock. */
+async function removeStagedRecord(file, staged, readText, io, onReclaim) {
+  const text = await readOptional(readText, staged);
+  const record = text === null ? null : lockRecord(text);
+  if (record?.host !== lockHost() || !(await ownerEnded(record))) return;
+  if (await removedFile(staged, io))
+    onReclaim?.({
+      code: 'WRITER_LOCK_RECLAIMED',
+      severity: 'warning',
+      message: `Removed ${staged}, a lock record staged by process ${record.pid}, which ended before taking the lock.`,
+      lock: `${file}.lock`,
+      ownerPid: record.pid,
+      discarded: [staged],
+    });
+}
+
+/**
+ * Takes `<file>.lock` for `owner`, reclaiming a stale lock first (unless `reclaim` is false). Returns `{ owner, text }`
+ * for releaseWriterLock, or `{ busy }` (writerLockBusyMessage says what it means).
+ */
+export async function takeWriterLock(file, { owner = newLockOwner(), io = fs, read, onReclaim, reclaim = true } = {}) {
+  const name = `${file}.lock`;
+  hold(owner);
+  try {
+    for (;;) {
+      const text = await createLock(name, owner, io);
+      if (text) return { owner, text };
+      const found = await reclaimWriterLock(file, { io, read, onReclaim, reclaim });
+      if (found.busy) {
+        drop(owner);
+        return found;
+      }
+    }
+  } catch (error) {
+    drop(owner);
+    throw error;
+  }
+}
+
+/** Removes `<file>.lock` when it still holds what takeWriterLock wrote. */
+export async function releaseWriterLock(file, taken, { io = fs, read } = {}) {
+  const name = `${file}.lock`;
+  try {
+    if ((await readLockText(io, read)(name)) === taken.text) await io.unlink(name);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  } finally {
+    drop(taken.owner);
+  }
+}
+
+/** One line for a lock takeWriterLock found busy: who holds it and what to do. `journal`: a publication is pending. */
+export function writerLockBusyMessage({ kind, lock, record, journal = false }) {
+  const file = lock.slice(0, -'.lock'.length);
+  const remove = journal
+    ? `delete ${lock} and restart: the pending transaction journal then completes or rolls back the publication`
+    : `delete ${lock} and its leftover ${file}.*.tmp and ${file}.paqvilo-*.bak files, then retry`;
+  switch (kind) {
+    case 'live':
+      return `A writer owns ${lock}: process ${record.pid} on this host is still running; retry after it finishes.`;
+    case 'reclaiming': {
+      const recoverer = record ? 'process ' + record.pid : 'another process';
+      return `${lock} is being recovered by ${recoverer}; retry after it finishes.`;
+    }
+    case 'foreign':
+      return `A writer on ${record.host} owns ${lock} (process ${record.pid}); this host cannot tell whether it still runs. If no Mirage runtime on ${record.host} uses these files, delete ${lock} and retry.`;
+    case 'ended':
+      return `${lock} belongs to process ${record.pid}, which has ended, but the pending transaction journal does not name it, so it is not reclaimed automatically. If no Mirage runtime uses these files, ${remove}.`;
+    default:
+      return `${lock} does not name an owner this toolkit can check (an older toolkit's lock, or one interrupted while it was created). If no Mirage runtime uses these files, ${remove}.`;
+  }
+}
+
 async function durableWrite(file, value, io) {
   const handle = await io.open(file, 'wx', 0o600);
   let failed;
@@ -172,71 +467,65 @@ async function durableWrite(file, value, io) {
   await io.unlink(journalFile);
 }
 
+/** With a pending journal, only the locks of the exact owner it names are reclaimed, once every one of them is checked. */
 /* NOSONAR: preserve transaction and recovery await boundaries */ async function reclaimJournalLocks(
   journalFile,
   files,
   io,
+  onReclaim,
 ) {
   const journal = await readJournal(journalFile, new Set(files), io);
   if (journal?.version !== 2) return;
-  const pid = Number(journal.lockOwner.split(':')[0]);
-  try {
-    process.kill(pid, 0);
-    return;
-  } catch (error) {
-    if (error.code !== 'ESRCH') return;
+  const read = (name) => readDeclaredFile(name, io, 'utf8');
+  const judged = [];
+  for (const file of journal.lockFiles) {
+    const found = await reclaimWriterLock(file, { io, read, reclaim: false, journalOwner: journal.lockOwner });
+    if (found.busy?.kind !== 'ended' && !found.free) return;
+    if (found.busy) judged.push(file);
   }
-  const names = journal.lockFiles.map((file) => `${file}.lock`),
-    stale = [];
-  for (const name of names) {
-    try {
-      if ((await readDeclaredFile(name, io, 'utf8')) !== journal.lockOwner)
-        throw failure('A pack lock is not owned by the interrupted journal.', 'PersistenceRecoveryRequired');
-      stale.push(name);
-    } catch (error) {
-      if (error.code !== 'ENOENT') throw error;
-    }
-  }
-  for (const name of stale) {
-    if ((await readDeclaredFile(name, io, 'utf8')) !== journal.lockOwner)
+  for (const file of judged) {
+    const found = await reclaimWriterLock(file, { io, read, onReclaim, journalOwner: journal.lockOwner });
+    if (found.busy || found.changed)
       throw failure('A pack lock changed before recovery.', 'PersistenceRecoveryRequired');
-    await io.unlink(name);
   }
 }
 
-/* NOSONAR: preserve transaction and recovery await boundaries */ async function locks(files, io, journalFile) {
-  if (journalFile) await reclaimJournalLocks(journalFile, files, io);
-  const token = `${process.pid}:${randomUUID()}`,
+async function journalPending(journalFile, io) {
+  try {
+    await io.access(journalFile);
+    return true;
+  } catch (error) {
+    if (error.code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+/* NOSONAR: preserve transaction and recovery await boundaries */ async function locks(
+  files,
+  io,
+  journalFile,
+  onReclaim,
+) {
+  // A dead writer's lock is reclaimed through its journal when one is pending, else from the lock's own record.
+  const journal = Boolean(journalFile) && (await journalPending(journalFile, io));
+  if (journal) await reclaimJournalLocks(journalFile, files, io, onReclaim);
+  const owner = newLockOwner(),
+    read = (name) => readDeclaredFile(name, io, 'utf8'),
     owned = [];
   const release = async () => {
-    for (const file of /* NOSONAR */ owned.reverse()) {
+    for (const taken of /* NOSONAR */ owned.reverse()) {
       // NOSONAR: retain in-place receiver mutation and ordering
-      try {
-        if ((await readDeclaredFile(file, io, 'utf8')) === token) await io.unlink(file);
-      } catch (error) {
-        if (error.code !== 'ENOENT') throw error;
-      }
+      await releaseWriterLock(taken.file, taken, { io, read });
     }
   };
   try {
     for (const file of [...files]./* NOSONAR */ sort()) {
       // NOSONAR: preserve default coercion and UTF-16 sort order
-      const name = `${file}.lock`;
-      let handle;
-      try {
-        handle = await io.open(name, 'wx', 0o600);
-      } catch (error) {
-        if (error.code === 'EEXIST') throw failure(`A writer owns ${name}; finish it before retrying.`);
-        throw error;
-      }
-      owned.push(name);
-      try {
-        await handle.writeFile(token);
-      } finally {
-        await handle.close();
-      }
+      const taken = await takeWriterLock(file, { owner, io, read, onReclaim, reclaim: !journal });
+      if (taken.busy) throw failure(writerLockBusyMessage({ ...taken.busy, journal }));
+      owned.push({ ...taken, file });
     }
-    release.owner = token;
+    release.owner = owner;
     return release;
   } catch (error) {
     await release();
@@ -244,19 +533,19 @@ async function durableWrite(file, value, io) {
   }
 }
 
-export async function recoverTransactionalFiles({ journalFile, files, io = fs }) {
-  try {
-    await io.access(journalFile);
-  } catch (error) {
-    if (error.code === 'ENOENT') return;
-    throw error;
+/** Startup recovery: completes or rolls back a pending journal, and reclaims the locks of writers that have ended. */
+export async function recoverTransactionalFiles({ journalFile, files, io = fs, onReclaim }) {
+  if (await journalPending(journalFile, io)) {
+    const release = await locks(files, io, journalFile, onReclaim);
+    try {
+      await recover(journalFile, new Set(files), io);
+    } finally {
+      await release();
+    }
   }
-  const release = await locks(files, io, journalFile);
-  try {
-    await recover(journalFile, new Set(files), io);
-  } finally {
-    await release();
-  }
+  // A live, foreign or unidentified lock is left as it is: the first write reports it.
+  const read = (name) => readDeclaredFile(name, io, 'utf8');
+  for (const file of files) await recoverWriterLock(file, { io, read, onReclaim });
 }
 
 /** Locked compare-and-swap publication with rollback and an on-disk recovery
@@ -268,6 +557,7 @@ export async function recoverTransactionalFiles({ journalFile, files, io = fs })
   io = fs,
   verify = async () => {},
   allowedFiles = entries.map((entry) => entry.file),
+  onReclaim,
 }) {
   if (!entries.length) return [];
   const files = entries.map((entry) => entry.file);
@@ -275,8 +565,9 @@ export async function recoverTransactionalFiles({ journalFile, files, io = fs })
     throw failure('A transaction names the same data file twice.', 'InvalidPackData', 400);
   await io.mkdir(path.dirname(journalFile), { recursive: true });
   const lockFiles = [...new Set(allowedFiles)].sort(); // NOSONAR: preserve default coercion and UTF-16 sort order
-  const release = await locks(lockFiles, io, journalFile);
-  const token = randomUUID(),
+  const release = await locks(lockFiles, io, journalFile, onReclaim);
+  // Companions carry the lock owner's nonce, so a reclaim of this writer's locks finds exactly its leftovers.
+  const token = nonceOf(release.owner),
     prepared = [];
   let journalWritten = false,
     committed = false;

@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { digest } from './manifest.mjs';
 import { privateJson } from './connection.mjs';
+import { requiredArgument } from '../../mirage/lib/required-argument.mjs';
 
 const identifier = /^[a-z][a-z0-9_]*$/i,
   guid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -41,7 +42,7 @@ const subtractRows = (left, right) => {
     return false;
   });
 };
-export function validateCatalogue(input) {
+export function validateCatalogue(input = requiredArgument('validateCatalogue(catalogue)', 'a data catalogue object')) {
   const c = structuredClone(input);
   ensure(
     c.schemaVersion === 1 && c.datasetId && c.version && Number.isFinite(Date.parse(c.clock)),
@@ -164,7 +165,7 @@ function validateQueries(items, tables) {
     queryIds.add(q.id);
   }
 }
-export async function readCatalogue(file) {
+export async function readCatalogue(file = requiredArgument('readCatalogue(file)', 'a data catalogue file path')) {
   return validateCatalogue(JSON.parse(await fs.readFile(file, 'utf8')));
 }
 
@@ -374,7 +375,10 @@ function businessKeyFields(record, key, ctx) {
   });
   return fields.every((field) => field?.[1] != null) ? fields : null;
 }
-export async function planData(input, { client } = {}) {
+export async function planData(
+  input = requiredArgument('planData(catalogue, { client })', 'a data catalogue object'),
+  { client } = {},
+) {
   const c = validateCatalogue(input);
   if (!client)
     return {
@@ -389,7 +393,10 @@ export async function planData(input, { client } = {}) {
     };
   return planWithContext(await context(c, client));
 }
-export async function applyData(input, { client, expectedOrganisationId, journalFile, onProgress = () => {} }) {
+export async function applyData(
+  input = requiredArgument('applyData(catalogue, { client, journalFile })', 'a data catalogue object'),
+  { client, expectedOrganisationId, journalFile, onProgress = () => {} },
+) {
   const identity = await client.verify(expectedOrganisationId),
     ctx = await context(input, client),
     plan = await planWithContext(ctx);
@@ -466,7 +473,12 @@ export async function applyData(input, { client, expectedOrganisationId, journal
         }
         return added ? `linked:${added}` : 'exists';
       });
-    journal.state = 'Created';
+    // The outcome, not the operation: Created when a row was created, Linked when only links/associations were
+    // written, Unchanged when every row and association already existed.
+    const statuses = journal.entries.map((entry) => entry.status);
+    if (statuses.includes('created')) journal.state = 'Created';
+    else if (statuses.some((status) => status.startsWith('linked'))) journal.state = 'Linked';
+    else journal.state = 'Unchanged';
     journal.finishedAt = new Date().toISOString();
     if (journalFile) await privateJson(journalFile, journal);
     return journal;
@@ -477,7 +489,10 @@ export async function applyData(input, { client, expectedOrganisationId, journal
     throw error;
   }
 }
-export async function compareData(input, { client }) {
+export async function compareData(
+  input = requiredArgument('compareData(catalogue, { client })', 'a data catalogue object'),
+  { client },
+) {
   const ctx = await context(input, client),
     records = [],
     associations = [];
@@ -519,7 +534,10 @@ function pageFetchXml(xml, page, count, cookie) {
     return `<fetch${attrs.replace(/(?<!\s)\s+(?:page|count|paging-cookie)\s*=\s*(?:"[^"]*"|'[^']*')/gi, '')} page="${page}" count="${count}"${cookieAttr}>`;
   });
 }
-export async function retrieveFetchXml(client, { entitySet, fetchXml, pageSize = 50, maxPages = 2000 }) {
+export async function retrieveFetchXml(
+  client = requiredArgument('retrieveFetchXml(client, { entitySet, fetchXml })', 'a Dataverse client'),
+  { entitySet, fetchXml, pageSize = 50, maxPages = 2000 },
+) {
   const rows = [],
     pages = [];
   let cookie;
@@ -544,7 +562,10 @@ export async function retrieveFetchXml(client, { entitySet, fetchXml, pageSize =
   }
   throw new Error('FetchXML page bound exceeded.');
 }
-export async function runDataQueries(input, { client }) {
+export async function runDataQueries(
+  input = requiredArgument('runDataQueries(catalogue, { client })', 'a data catalogue object'),
+  { client },
+) {
   const ctx = await context(input, client),
     results = [];
   const resolve = (value) =>

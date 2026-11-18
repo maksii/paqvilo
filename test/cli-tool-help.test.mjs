@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { MIRAGE_TOOLS, mirageToolHelp } from '../mirage/tool-registry.mjs';
+import { MIRAGE_TOOLS, MIRAGE_TOOL_USAGE_EXIT, mirageToolHelp } from '../mirage/tool-registry.mjs';
 import { parseToolArgs, parseToolHelp } from '../mirage/tool-options.mjs';
 import { boundedCommand, COMMAND_HANG_GUARD_MS } from './helpers/bounded-command.mjs';
 import { operationBudget, countOperations } from './helpers/operation-budget.mjs';
@@ -12,15 +12,17 @@ import { tempDirSync } from './fixture.mjs';
 
 const bin = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 const guard = new URL('./cli-help-guard.mjs', import.meta.url).href;
-// Derive argument types independently from public help, rather than importing private parser tables.
-const documentedOptions = (name) => [
-  ...new Map(
-    [...MIRAGE_TOOLS[name].matchAll(/--([\w-]+)(?: ([^\s\]]+))?/g)].map((match) => [
-      match[1],
-      /^[\w/]/.test(match[2] ?? ''),
-    ]),
-  ).entries(),
-];
+// Derive argument types independently from public help, rather than importing private parser tables: [name, takes a
+// value, repeatable (help marks it `...`)].
+const documentedOptions = (name) =>
+  [
+    ...new Map(
+      [...MIRAGE_TOOLS[name].matchAll(/--([\w-]+)(?: ([^\s\]]+))?( \.\.\.|\]\.\.\.)?/g)].map((match) => [
+        match[1],
+        [/^[\w/]/.test(match[2] ?? ''), Boolean(match[3])],
+      ]),
+    ).entries(),
+  ].map(([key, [string, repeatable]]) => [key, string, repeatable]);
 const examples = {
   'bootstrap-report': ['--config', 'missing.yml', '--solution-root', 'one', '--solution-root', 'two', '--all-fields'],
   'render-sweep': ['--source', 'missing', '--solution-root', 'one', '--solution-root', 'two', '--strict'],
@@ -66,9 +68,11 @@ const helpFlags = (name, args) => [
   [...args, '--help', '--json'],
   [
     '--help',
-    ...documentedOptions(name).flatMap(([key, string]) =>
-      string ? ['--' + key, 'missing-one', '--' + key, 'missing-two'] : ['--' + key],
-    ),
+    // Every documented option: a repeatable one twice, a single-value one once (a repeat is refused).
+    ...documentedOptions(name).flatMap(([key, string, repeatable]) => {
+      if (!string) return ['--' + key];
+      return repeatable ? ['--' + key, 'missing-one', '--' + key, 'missing-two'] : ['--' + key, 'missing-one'];
+    }),
   ],
 ];
 const malformedFlags = (name) => {
@@ -149,10 +153,19 @@ test(
       Object.keys(MIRAGE_TOOLS).map(async (name) => {
         for (const flags of malformedFlags(name)) {
           const result = await run(name, ['--json', ...flags]);
-          assert.equal(result.status, 1, `${name} ${flags.join(' ')}: ${result.stdout} ${result.stderr}`);
+          // With --help as without it, the tool's own argument-error exit code.
+          assert.equal(
+            result.status,
+            MIRAGE_TOOL_USAGE_EXIT[name] ?? 1,
+            `${name} ${flags.join(' ')}: ${result.stdout} ${result.stderr}`,
+          );
           const output = JSON.parse(result.stdout);
           assert.equal(output.ok, false);
-          assert.equal(output.error.code, 'INVALID_ARGUMENT');
+          // An unknown option is unsupported_option in every command; other help-time refusals INVALID_ARGUMENT.
+          assert.equal(
+            output.error.code,
+            flags[0] === '--invented-invalid-option' ? 'unsupported_option' : 'INVALID_ARGUMENT',
+          );
           assert.match(
             output.error.message,
             /Unknown option|Unexpected|requires a value|argument .*missing|ambiguous/i,

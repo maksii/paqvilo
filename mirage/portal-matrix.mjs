@@ -52,7 +52,7 @@ import { decodeXml } from './lib/xml-text.mjs';
  * browser. Runtimes bind to loopback on free ports with temporary state that is removed
  * afterwards. Parse caches live in the output directory. Generic: no data pack is required.
  */
-import { parseToolArgs, toolOptionsHelp } from './tool-options.mjs';
+import { assertToolPaths, parseToolArgs, toolOptionsHelp } from './tool-options.mjs';
 import { assertProjectOutput } from './lib/project-output.mjs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -1651,6 +1651,13 @@ async function scaffoldStage(target, context) {
       state: stateFile,
       ...(context.limit ? { limit: context.limit } : {}),
       ...(context.pathPrefix ? { pathPrefix: context.pathPrefix } : {}),
+    }).catch((error) => {
+      if (error.code !== 'PERSONA_CONTACT_UNAVAILABLE') throw error;
+      throw new Error(
+        `scaffold persona '${persona}' cannot sign in: coverage contact ${result.coverage.contactId} is not an active ` +
+          "local contact in the sweep's state (a startup preset with presetMode always replaces the scaffolded rows). " +
+          "Set the site's presetMode to bootstrap, or pass --scaffold-personas anonymous.",
+      );
     });
     for (const run of sweep.runs ?? []) runs.push({ ...run, persona: `scaffold ${persona}` });
   }
@@ -2127,7 +2134,8 @@ const cell = (value) =>
   value === undefined || value === null || value === ''
     ? '–'
     : String(value)
-        .replace(/[&<>\\|`[\]]/g, (char) => `&#${char.codePointAt(0)};`)
+        // Markdown text (terminal and matrix.md): a Markdown backslash escape, readable as plain text, not an HTML entity.
+        .replace(/[&<>\\|`[\]]/g, (char) => `\\${char}`)
         .replace(/\r?\n/g, ' ');
 const statuses = (byStatus) =>
   byStatus && Object.keys(byStatus).length
@@ -2302,7 +2310,7 @@ function appendMatrixFindings(matrix, portals, lines) {
                 .join(', ') || 'none',
           ),
           stageMetric('import')(
-            'unrecognised component types',
+            'unrecognized component types',
             (p) =>
               (p.import?.comparison?.unrecognizedComponentTypes ?? [])
                 .map((item) => {
@@ -2707,6 +2715,8 @@ export function parseArgs(argv) {
 
 async function main(argv = process.argv.slice(2)) {
   const options = parseArgs(argv);
+  // Input files are checked after the option conflicts parseArgs reports (parseArgs stays a pure option parser).
+  if (!options.help) assertToolPaths('portal-matrix', options);
   const usage = `Usage: paqvilo mirage portal-matrix ${toolOptionsHelp('portal-matrix')}`;
   if (options.help) {
     console.log(usage);
@@ -2726,6 +2736,12 @@ async function main(argv = process.argv.slice(2)) {
       ? JSON.stringify(matrix, null, 2)
       : `${formatMatrix(matrix)}\nWritten: ${path.join(path.resolve(options.out), 'matrix.md')}`,
   );
+  if (matrix.problems.length)
+    console.error(
+      `[portal-matrix] ${matrix.problems.length} problem(s), listed under Findings and in problems` +
+        `${options.strict ? '' : ' (--strict exits 1 on them)'}:\n` +
+        matrix.problems.map((item) => `  ${item.portal} ${item.stage}: ${item.problem}`).join('\n'),
+    );
   return options.strict && matrix.problems.length ? 1 : 0;
 }
 

@@ -1,6 +1,7 @@
 # Coverage
 
-**Lense** previews local resources against a live Power Pages backend. **Mirage** renders exported sources with local data and supported platform adapters. Use this matrix to choose the workflow for a change.
+**Lense** previews local resources against a live Power Pages backend. **Mirage** renders exported sources with local
+data and supported platform adapters. Use this matrix to choose the workflow for a change.
 
 | Area                              | Lense                                                                                                                                 | Mirage                                                                                                                                                     |
 | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -13,20 +14,32 @@
 | Web API and FetchXML              | Use the online backend; Inspect maps observed entity sets using Solution metadata                                                     | Supported CRUD, queries, relationships and permission checks against local tables                                                                          |
 | Web roles and table permissions   | Inspect exported rules; live effective access remains unknown                                                                         | Evaluate configured roles and supported permission scopes for the local identity                                                                           |
 | Server logic and cloud flows      | Execute online; server-side edits need deployment                                                                                     | Supported exported request/row-trigger flows and basic actions, JSON mocks, explicitly enabled server code and trusted project providers                   |
-| Dataverse plugins                 | Execute online; Inspect links exported steps, types, assemblies and mapped C# sources                                                 | Supported read/write stages, mocks, trusted handlers and explicitly configured original CLR execution on Windows; unsupported contracts retain diagnostics |
+| Dataverse plug-ins                | Execute online; Inspect links exported steps, types, assemblies and mapped C# sources                                                 | Supported read/write stages, mocks, trusted handlers and explicitly configured original CLR execution on Windows; unsupported contracts retain diagnostics |
 | Identity and data                 | Portal sign-in and live Dataverse                                                                                                     | Separate local personas, generated rows or registered project data packs                                                                                   |
 | Deployment                        | Separate PAC/site deployment process                                                                                                  | Separate PAC/site deployment process; demo includes deployable sources and archives                                                                        |
 
 ## What determines coverage?
 
-A portal export identifies pages, templates, assets and access rules. Unpacked Solution sources add forms, views, fields and component manifests. Missing managed metadata and dynamic references can leave a binding unresolved. Inspect labels exported references and observed browser elements separately.
+A portal export identifies pages, templates, assets and access rules. Unpacked Solution sources add forms, views, fields
+and component manifests. Missing managed metadata and dynamic references can leave a binding unresolved. Inspect labels
+exported references and observed browser elements separately.
 
-Mirage supports selected platform contracts, not every Power Pages feature. Code-site (`.powerpages-site`) exports are imported, but SPA builds use their own tooling. PCF dataset hosting requires an explicit Liquid table/view binding. Native list/subgrid PCF hosting is diagnosed and falls back to the native grid. React/virtual controls, platform libraries, advanced dataset operators and record navigation remain unsupported. External connectors, custom APIs and unsupported flow actions need a project provider or a local mock. A successful local scenario does not establish complete platform parity.
+Mirage supports selected platform contracts, not every Power Pages feature. Code-site (`.powerpages-site`) exports are
+imported, but SPA builds use their own tooling. PCF dataset hosting requires an explicit Liquid table/view binding.
+Native list/subgrid PCF hosting is diagnosed and falls back to the native grid. React/virtual controls, platform
+libraries, advanced dataset operators and record navigation remain unsupported. External connectors, custom APIs and
+unsupported flow actions need a project provider or a local mock. A successful local scenario does not establish
+complete platform parity.
 
-For details, read [forms and lists](../mirage/docs/forms-lists-parity.md), [PCF](../mirage/docs/code-components.md), [operations](../mirage/docs/operations.md), [plugins](../mirage/docs/dataverse-plugins.md), [Dataverse](../mirage/docs/dataverse-parity.md) and [parity evidence](../mirage/docs/parity-evidence.md). Add business-specific behavior through [project extensions](project-extensions.md).
+For details, read [forms and lists](../mirage/docs/forms-lists-parity.md), [PCF](../mirage/docs/code-components.md),
+[operations](../mirage/docs/operations.md), [plug-ins](../mirage/docs/dataverse-plugins.md),
+[Dataverse](../mirage/docs/dataverse-parity.md) and [parity evidence](../mirage/docs/parity-evidence.md). Add
+business-specific behaviour through [project extensions](project-extensions.md).
 
 ## How to validate a change
 
-In Lense, check the rendered page, applied resources, unmatched patches and failed requests after refresh. `lense audit --all --strict` measures source classification; it does not prove a browser applied every change.
+In Lense, check the rendered page, applied resources, unmatched patches and failed requests after refresh.
+`lense audit --all --strict` measures source classification; it does not prove a browser applied every change.
 
-In Mirage, verify your persona, permission scope, saved records and operation results. Use your project's acceptance tests for repeatable business scenarios, then validate the deployed result in an authorized live environment.
+In Mirage, verify your persona, permission scope, saved records and operation results. Use your project's acceptance
+tests for repeatable business scenarios, then validate the deployed result in an authorized live environment.

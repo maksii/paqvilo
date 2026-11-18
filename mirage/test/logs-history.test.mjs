@@ -46,6 +46,8 @@ test('mirage.logs: retain defaults to 2000, accepts 0..50000 and refuses anythin
   assert.deepEqual(parseSetting('logs', { retain: 50000 }), { retain: 50000 });
   for (const value of [{ retain: -1 }, { retain: 50001 }, { retain: 1.5 }, { retain: '10' }, { keep: 1 }, 'all'])
     assert.throws(() => logSettings(value), /logs/, JSON.stringify(value));
+  // An unknown member uses the settings contracts' one unknown-key wording.
+  assert.throws(() => logSettings({ keep: 1 }), /^Error: Unknown logs key 'keep'$/);
 });
 
 test('the history holds the startup lines, recorded before anyone subscribed', async () => {
@@ -136,6 +138,17 @@ test('a plugin rule is a rule event on its span and a plugin line from the same 
     (item) => item.result === 'rejected',
   );
   assert.deepEqual([line.level, line.outcome, line.error.message], ['error', 'rejected', 'A name is required.']);
+});
+
+// @test-kind contract: the /__sim/events allow-list row (mirage/docs/sim-administration.md) serves GET and HEAD
+test('a HEAD of the event stream answers its headers and ends without joining a channel', async () => {
+  const { sim } = await sharedRuntime();
+  for (const path of ['/__sim/events', '/__sim/events?channels=logs,trace']) {
+    const response = await fetch(sim.url + path, { method: 'HEAD' });
+    assert.equal(response.status, 200, path);
+    assert.equal(response.headers.get('content-type'), 'text/event-stream', path);
+    assert.equal(await response.text(), '', path);
+  }
 });
 
 test('the logs channel sends the same lines live; its connected frame names the latest retained sequence', async () => {

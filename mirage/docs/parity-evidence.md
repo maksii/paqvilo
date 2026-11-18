@@ -17,19 +17,51 @@ paqvilo mirage parity-suite --config <catalogue> --site <site> --env <env> --cdp
 ```
 
 Each reference tool takes the loopback debugging endpoint of the signed-in browser (`--cdp`) and the reference origin
-(`--origin`, or the catalogue site):
+(`--origin`; `parity-suite` can take it from the catalogue site instead). `parity-suite`'s anonymous core scenarios
+run in the runner's own headless browser, with or without `--cdp` (`--anonymous-browser owned`, the default);
+signed-in comparisons come from scenarios that packs or `--scenarios` add, so a catalogue without them lists only core
+scenarios. A `--scenarios` file replaces the core set unless `--core` is also given. `parity-suite --list --config
+<catalogue> --site <site>` prints each scenario's ID, tags and title, tab-separated; `--only` takes those IDs, and an
+unknown ID is refused with exit status 2 before any browser or network work. Argument and path errors (for example
+`Missing --out.` with the usage, or `--scenarios file not found: <path>. Pass an existing file.`) print verbatim with
+exit status 1.
 
-| Command            | What it does                                                                                                                                                                                                                                                                                                                                              |
-| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `parity-suite`     | Route, persona and scenario comparison of a local runtime (`--local`, `--source` or `--site`) with the reference; writes reports under `--out`.                                                                                                                                                                                                           |
-| `reference-parity` | `--plan FILE` is a list of read contracts (`id`, `path`, `kind`, `fields`, `expectedStatus`, `expectedCount`, `prefer`, `statusOnly`); each is fetched with GET from the reference and from `--local` as a local visitor (`--local-contact`, `--local-role`, `--local-configured-persona`). Writes `reference-parity.json`; exit 1 when a contract fails. |
-| `verify`           | Compares one page (`--path`, default `/`) by semantic DOM and screenshot pixels; writes `report.json`, the DOM files and `difference.png` under `--output`.                                                                                                                                                                                               |
-| `enrich-reference` | Reads 1 to 100 paged, non-aggregate FetchXML table queries (`pageSize` at most 5000, `maxPages` at most 100, `mode` `merge` or `replace`, each table once) from the reference into a `--state` file. The runtime using that state must be stopped.                                                                                                        |
-| `baseline-suite`   | The native component baseline; see its [runbook](baseline/rerun.md).                                                                                                                                                                                                                                                                                      |
+A scenarios file is a version 1 plan: `scenarios` entries with `id`, `kind` (such as `page-text`, `page-dom`,
+`api-json` or `liquid-probe`), `identity` (`signed-in` or `anonymous`), `path`, `tags` and `title`, and an optional
+`persona` with a `probe` (`path`, `selector`, default `#userroles`) and `accessChecks` (`path`, `rolesAny`). Signed-in
+scenarios need `--cdp` and a local contact: `--persona-contact` or `persona.contactId` names a contact in the local
+state, otherwise the run stops with `Persona mirroring needs a local synthetic contact`. With a `persona`, the run reads
+the rendered `{{ user.roles }}` value from the probe element, segments it against the exported web-role names, checks
+each access path, then signs the local contact in with those roles; the report's `persona` records the roles,
+`accessChecks`, `consistent` and the local session (`session: override`).
 
-Start the browser with a free debug port and confirm it in the Lense agent status. Plans and route guards reject
-writes and forbidden actions, but navigating and reading the environment still needs authorization. Bearer tokens and
-credentials are never stored; query values are redacted in reports.
+| Command            | What it does                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `parity-suite`     | Route, persona and scenario comparison of a local runtime (`--local`, `--source` or `--site`) with the reference; writes reports under `--out`.                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `reference-parity` | `--plan FILE` is a list of read contracts (`id`, `path`, `kind` `json` or `text`, `collection`, `fields`, `unordered`, `expectedStatus` (default 200), `expectedCount`, `prefer` (`odata.maxpagesize=N` only), `statusOnly`); each is fetched with GET from the reference and from `--local` as a local visitor (`--local-contact`, `--local-role`, `--local-configured-persona`). Writes `reference-parity.json` under `--output`; exit 1 when a contract fails.                                                                                            |
+| `verify`           | Compares one page (`--path`, default `/`) by semantic DOM and screenshot pixels; writes `report.json`, `live.png`, `local.png`, the DOM files and `difference.png` under `--output` and prints the report; exit 1 unless it passes. A failure is one line in `differences`; a longer message is kept in `error.txt`.                                                                                                                                                                                                                                         |
+| `enrich-reference` | `--plan FILE` is a JSON array of 1 to 100 `{ entity, fetchXml, pageSize?, maxPages?, mode? }` reads: non-aggregate FetchXML without `top`, each table once, `pageSize` at most 5000 (default 5000), `maxPages` at most 100 (default 10), `mode` `merge` (default) or `replace`. Rows are read from the reference into the existing `--state` file; the runtime using that state must be stopped. A read that needs more than `maxPages` pages fails with `FetchXML continuation exceeded the bounded page limit.`; filter the FetchXML to the rows you need. |
+| `baseline-suite`   | The native component baseline; see its [runbook](baseline/rerun.md).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+
+Use a signed-in Lense `dev` session started with `--no-overrides` and a free `--debug-port`, and confirm the port in
+`agent status`. Without `--no-overrides` Lense also overlays local sources on the tabs the tools open (its log lists
+local files for those pages), so the reference is no longer the site as served; `acceptance` navigation steps still
+read the document status (HTTP 200) through such a session. Lense repairs the first document of each new tab with one
+GET, so a reference page can list aborted requests (`net::ERR_ABORTED`) from that first load. When nothing answers at
+`--cdp`, every tool reports `Could not connect to the loopback browser debugging endpoint. Confirm its port and
+availability.`: `reference-parity` and `enrich-reference` stop with it, `verify` writes it as its one `differences` line
+and `acceptance` as its report's `error`; all exit 1. `acceptance --cdp` accepts only loopback `http:` and `ws:` URLs:
+another scheme is refused with `Use a loopback browser debugging endpoint.` and a non-loopback host with `Local
+simulator and browser debugging addresses must use loopback without credentials.`; `verify` refuses both with `Browser
+debugging endpoint must be loopback without credentials.` A private reference answers the
+anonymous core scenarios with its sign-in redirect (HTTP 302) while Mirage renders the page, so they report
+runtime-gap deltas, not parity. Plans and route guards reject writes and forbidden actions, but navigating and reading
+the environment still needs authorization. `verify` lists refused writes in `live.blockedWrites` (for example a
+native telemetry POST) and `acceptance` in `blockedRequests` and `writes`. Direct reads (stylesheets, snippet pages,
+`reference-parity` contracts, `enrich-reference` pages and the antiforgery token from `/_layout/tokenhtml`) use the
+browser's cookies but no page, so they appear in neither the Lense agent events nor the browser's network log; pages a
+tool opens appear in the agent events as new pages. Bearer tokens and credentials are never stored; query values are
+redacted in reports.
 
 - **Tab control.** While the reference driver holds a tab, every new tab or popup in that browser starts under its
   control until released. Pages opened by its tabs, and their popups, are held read-only; every other tab is released
@@ -49,7 +81,7 @@ credentials are never stored; query values are redacted in reports.
 Reports separate passes, expected differences, skipped or incomplete observations, source or deployment differences
 and runtime gaps, and record persona and session, source baseline, runtime fingerprint, reference context and
 diagnostics. A deployed commit is never inferred. A source inventory, a successful import, a sign-in page or a local
-screenshot is not coverage. Cite the project's retained comparison when you claim a behavior matches live.
+screenshot is not coverage. Cite the project's retained comparison when you claim a behaviour matches live.
 
 Compare like with like:
 
@@ -89,9 +121,9 @@ result exactly.
 | `captureCodeAppContextCacheContract(api)`             | Identity of the resolved context object; restores its query mutation                                                                                                                                     |
 | `captureWebApiInputContract(input)`                   | Typed-input and binding cases sent through a supplied request adapter                                                                                                                                    |
 
-`webApiInputContractCases()` returns the invented `{ id, field, value }` cases that `captureWebApiInputContract` sends as
-PATCH bodies; `webApiScalarReaderCases()` returns invented `[field, literal, expected error text]` tuples for the OData
-scalar reader's conversion errors.
+`webApiInputContractCases()` returns the invented `{ id, field, value }` cases that `captureWebApiInputContract` sends
+as PATCH bodies; `webApiScalarReaderCases()` returns invented `[field, literal, expected error text]` tuples for the
+OData scalar reader's conversion errors.
 
 - Keep new-form defaults distinct from saved-record baselines. Getter results do not show which columns were
   submitted: qualifying save modes needs a separate authorized disposable-record flow that checks server readbacks and
@@ -102,11 +134,11 @@ scalar reader's conversion errors.
   back, require HTTP 200 and all output markers, repeat the native page load and compare literal fragments; keep
   include-template context and site `observed` settings in local replay. A sign-in response, missing marker or failed
   readback is a failed capture.
-- A pure Power Fx evaluator does not establish Canvas player behavior. SDK runs against an invented bridge prove SDK
-  behavior only; native code app context needs a published-player capture.
+- A pure Power Fx evaluator does not establish Canvas player behaviour. SDK runs against an invented bridge prove SDK
+  behaviour only; native code app context needs a published-player capture.
 - For Web API cases keep portal and Dataverse routes, identity, permissions and pipeline hooks explicit; inspect
   response bodies and independent persistence readbacks, and isolate recording-hook failures before treating them as
-  platform behavior.
+  platform behaviour.
 - Restore or document owned components, close only the tabs and runtimes the recorder started, and keep raw captures,
   plans, screenshots, environment identities and restoration journals in the project's ignored evidence directory.
   Public fixtures use invented schemas and values. A `parity` tag needs replay cases built from these captures.

@@ -2,15 +2,15 @@
 
 Two administration pages change platform and portal configuration for one runtime, without touching source files:
 
-- `/_sim/#platform` (**Platform rules**): each control's administration classification, Microsoft reference, source
-  and effective values, instance override and local coverage.
+- `/_sim/#platform` (**Platform rules**): each control's administration classification, Microsoft reference, source and
+  effective values, instance override and local coverage.
 - `/_sim/#overrides` (**Settings & snippet overrides**): exported and effective site settings and content snippets side
   by side; edit, add, remove or reset. Values stay strings (`False`, `True` and empty included); `null` removes the
   effective value. A snippet override covers every request language, and reset restores each source translation.
 
 Changes are held in the runtime's state (persisted when it has a state file), survive source reloads and rebuild local
-rendering and API policy at once. They never configure a Dataverse organization. To set values in configuration
-instead, use the `platform` setting ([configuration](../../docs/configuration.md)).
+rendering and API policy at once. They never configure a Dataverse organization. To set values in configuration instead,
+use the `platform` setting ([configuration](../../docs/configuration.md)).
 
 ## Settings catalogue
 
@@ -31,19 +31,24 @@ controls come only from overrides and defaults.
 | `FetchLinkDepth` (32), `FetchJoinRowLimit` (250,000)                                                                                                                          | **Simulator safety bounds**, not organization settings. Exceeding one is an error, never truncated data.                                                                                                                                                                                                                                             |
 
 No blocked-extension list is invented for an unknown environment: supply the organization row or an override. Raising a
-budget changes only what Mirage evaluates with its own permission and query model; it is not evidence about a real
-site.
+budget changes only what Mirage evaluates with its own permission and query model; it is not evidence about a real site.
 
 ## Presets and concurrent instances
 
-Both pages share configuration presets: save the current overrides, apply a preset, export or import its JSON, or
-delete a saved one. A preset replaces only platform settings and site setting/snippet overrides; data, identities, web
-roles, page access rules and backend-operation choices stay. Built-ins: **Source defaults**, **Simulated support
-increase (30)** and **Disable exported Web API tables** (table names derived from the current export). Applying a
-preset is a local experiment, not proof that a support change was approved. Importing a preset does not apply it.
+Both pages share configuration presets: save the current overrides, apply a preset, export or import its JSON, or delete
+a saved one. A configuration preset replaces only platform settings and site setting/snippet overrides; data,
+identities, web roles, page access rules and backend-operation choices stay. Built-ins: **Source defaults**
+(`source-defaults`, clears every override), **Simulated support increase (30)** (`expanded-query-budget`) and **Disable
+exported Web API tables** (`webapi-disabled`, table names derived from the current export). Packs add read-only
+configuration presets ([data packs](data-packs.md#pack-configuration-presets)). Applying a preset is a local experiment,
+not proof that a support change was approved. Importing a preset does not apply it.
 
-Run independent experiments as separate runtimes with their own state files and ports; never point two runtimes at
-one writable state file:
+Configuration presets are separate from data presets, which replace business data and follow the simulation level
+([data presets](sim-administration.md#data-presets)). A data preset that names a configuration preset applies it too
+when started with `--apply-configuration` or applied with `{ "applyConfiguration": true }`.
+
+Run independent experiments as separate runtimes with their own state files and ports (an override on one does not reach
+the other); never point two runtimes at one writable state file:
 
 ```sh
 npx --no-install paqvilo mirage serve --source ./portal-export --state ./.paqvilo/base.json --port 4311
@@ -56,19 +61,21 @@ Embedded runtimes without a state file keep their overrides in memory until they
 
 Under `/_sim/api` (alias `/__sim/api`) on the loopback administration origin:
 
-| Route                                       | Operation                                                                                                            |
-| ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `GET /platform-settings`                    | Catalogue, effective values, origins and coverage                                                                    |
-| `PATCH /platform-settings`                  | Merge validated named instance overrides                                                                             |
-| `DELETE /platform-settings/{key}`           | Restore the source or default value of one control                                                                   |
-| `GET /experiments`, `GET /experiments/{id}` | Configuration presets                                                                                                |
-| `POST /experiments`                         | Save or import `{ id, name, platformOverrides, portalOverrides }`; `portalOverrides` holds `settings` and `snippets` |
-| `POST /experiments/{id}/apply`              | Apply a preset without replacing business data                                                                       |
-| `DELETE /experiments/{id}`                  | Delete a saved preset; built-ins are protected                                                                       |
+| Route                                       | Operation                                                                                                                          |
+| ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /platform-settings`                    | Catalogue, effective values, origins and coverage                                                                                  |
+| `PATCH /platform-settings`                  | Merge validated named instance overrides                                                                                           |
+| `DELETE /platform-settings/{key}`           | Restore the source or default value of one control                                                                                 |
+| `GET /experiments`, `GET /experiments/{id}` | Configuration presets (404 `Experiment not found.`)                                                                                |
+| `POST /experiments`                         | Save or import `{ id, name, description?, platformOverrides, portalOverrides }`; `portalOverrides` holds `settings` and `snippets` |
+| `POST /experiments/{id}/apply`              | Apply a preset without replacing business data; answers `{ "applied": "<id>" }`                                                    |
+| `DELETE /experiments/{id}`                  | Delete a saved preset; built-in and pack presets are protected (403)                                                               |
 
-Mutations need the administration token in `x-sim-csrf`. Unknown controls, invalid types or ranges, prototype keys and
-invalid imports are rejected before anything persists. Individual site values use the `portal-settings` and
-`portal-snippets` routes, where `DELETE` resets an override and a `null` PATCH removes the effective value.
+Mutations need the administration token in `x-sim-csrf`. Unknown controls, invalid types or ranges and prototype keys
+answer 400 `InvalidPlatformSetting`, other keys in an import 400 `InvalidExperimentPreset`, and a site value that is not
+a string or `null` 400 `InvalidPortalOverride`, before anything persists. Saving an existing id answers 409; a runtime
+holds at most 100 saved presets (413 after that). Individual site values use the `portal-settings` and `portal-snippets`
+routes, where `DELETE` resets an override and a `null` PATCH removes the effective value.
 
 `connectRuntime` from `paqvilo/mirage/testing` wraps these routes with the token: `platformSettings`,
 `setPlatformSettings`, `resetPlatformSetting`, `siteSettings`, `setSiteSetting`, `resetSiteSetting`, `setSnippet`,

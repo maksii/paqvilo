@@ -449,7 +449,9 @@ export function validateReleaseFiles(files) {
     /^examples\/company-operations\/portal-harness\/(?:README\.md|(?:browser|parity)\.test\.mjs)$/,
     /^examples\/company-operations\/portal-harness\/(?:compile|core|deploy|runtime|test|browser-test|live-test|readiness|parity|compare-parity|replay|replay-parity)\.mjs$/,
     /^examples\/company-operations\/plugins\/(?:README\.md|LabPublicSigning\.snk|(?:registrations|secure-provisioning)\.json)$/,
-    /^examples\/company-operations\/plugins\/test\/(?:collector|registration)\.test\.mjs$/,
+    /^examples\/company-operations\/plugins\/test\/(?:collector|registration|deploy-plan|plugin-build)\.test\.mjs$/,
+    /^examples\/company-operations\/(?:cli|paths)\.mjs$/,
+    /^examples\/company-operations\/test\/(?:cli|format-json|forms-membership|generated-files)\.test\.mjs$/,
     /^examples\/company-operations\/plugins\/(?:deploy|registration|inspect-metadata|inspect-trace|verify-live|upload-assemblies|prepare-registration|provision-owner-team|inspect-operation-errors|update-guard-config|audit-evidence|audit-installation)\.mjs$/,
     /^examples\/company-operations\/plugins\/(?:PipelineTests|QueryObservation|Tests)\/(?:[A-Za-z]+\.(?:cs|csproj)|packages\.lock\.json)$/,
     /^examples\/company-operations\/plugins\/Shared\/(?:Lab|Recording)\.cs$/,
@@ -489,7 +491,7 @@ export function validateReleaseFiles(files) {
     /^lense\/setup\/[a-z0-9-]+\.(?:html|css)$/,
     /^docs\/[a-z0-9-]+\.md$/,
     /^docs\/baseline\/[a-z0-9-]+\.md$/,
-    /^examples\/project\/(?:README\.md|package\.json|paqvilo\.config\.yml|gitignore\.template)$/,
+    /^examples\/project\/(?:README\.md|package\.json|paqvilo\.config\.yml|gitignore\.template|cli\.mjs)$/,
     /^examples\/project\/(?:pack|test)\/[a-z0-9.-]+\.mjs$/,
     /^examples\/project\/portal\/[a-zA-Z0-9./_-]+\.(?:yml|html|css|js)$/,
     /^examples\/project\/baseline\/[a-z0-9-]+\.(?:mjs|json)$/,
@@ -685,6 +687,17 @@ function checkLockConsistency(root) {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const [arg] = process.argv.slice(2);
+  if (arg === '--help' || arg === '-h') {
+    console.log(`Usage: npm run release:check   (node scripts/release-check.mjs under npm)
+Checks lockfile consistency, package metadata, editor tasks, the npm pack --dry-run file allowlist and the shipped
+documentation links. Takes no options; --help prints this help.`);
+    process.exit(0);
+  }
+  if (arg) {
+    console.error(`Release check failed: unknown option ${arg}; it takes no options (see --help).`);
+    process.exit(1);
+  }
   try {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
     checkLockConsistency(root);

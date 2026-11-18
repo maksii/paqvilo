@@ -140,7 +140,7 @@ async function runNativeBatch(page, input) {
   };
 }
 
-async function main() {
+async function main(configFile) {
   const [
     { loadConnection, connectedClient },
     { openNativeBrowser },
@@ -162,7 +162,7 @@ async function main() {
     import('./native-registry.mjs'),
     import('./native-history.mjs'),
   ]);
-  const config = JSON.parse(await readFile(process.argv[2], 'utf8'));
+  const config = JSON.parse(await readFile(configFile, 'utf8'));
   const load = async (file) => JSON.parse(await readFile(file, 'utf8'));
   const deployment = await load(config.deployment),
     manifest = await load(config.manifest);
@@ -501,4 +501,17 @@ async function main() {
   }
 }
 
-if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) await main();
+if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
+  const { cli } = await import('../cli.mjs');
+  const {
+    positionals: [file],
+  } = cli(
+    `Usage: node portal-harness/native-batch-prototype.mjs <private-config.json>
+
+Run from examples/company-operations (native-campaign.mjs starts it per batch). Reads and writes the live site named
+by the private configuration; authorized environments only. A relative path resolves from the working directory.`,
+    {},
+    { positionals: 1 },
+  );
+  await main(file);
+}

@@ -13,7 +13,7 @@ import { DataError } from './data-error.mjs';
  * year starts on; FiscalPeriodType 2000-2004 splits the year into 1, 2, 4 or 12 periods of
  * 12, 6, 3 or 1 months, or into 28-day periods; a fiscal year is numbered by the calendar
  * year it starts in; periods are numbered from 1 at the year's start; date bounds are
- * half-open [start, end). Deliberate differences, documented in docs/dataverse-parity.md
+ * half-open [start, end). Deliberate differences, documented in mirage/docs/dataverse-parity.md
  * ("Fiscal calendar"):
  * - a date on a period's first day belongs to that period (Sql4Cds compares periodEnd < date
  *   and counts the first day of each period in the previous one);

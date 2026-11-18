@@ -313,14 +313,19 @@ export class GitBaseline {
     } catch (err) {
       this.#unavailable(err);
       // A repository without commits has no baseline yet (not a broken ref): callers skip baseline checks with a note.
+      let inRepository = false;
       try {
-        this.unborn =
-          git(this.sourceDir, ['rev-parse', '--is-inside-work-tree']).trim() === 'true' &&
-          !git(this.sourceDir, ['rev-list', '--all', '--max-count=1']).trim();
+        const worktree = git(this.sourceDir, ['rev-parse', '--is-inside-work-tree']).trim() === 'true';
+        inRepository = true;
+        this.unborn = worktree && !git(this.sourceDir, ['rev-list', '--all', '--max-count=1']).trim();
+        if (this.unborn) this.error = `Cannot read baseline ${this.spec}: the repository has no commits yet`;
       } catch (error) {
         this.unborn = false;
         // Without an answer the folder may be a repository before its first commit; say so instead of the ref error.
         if (!gitAnswered(error)) this.#unavailable(error);
+        // rev-parse failing with an answer is Git saying the folder is in no repository: name that, not the command.
+        else if (!inRepository)
+          this.error = `Cannot read baseline ${this.spec}: not a Git repository; baseline comparison skipped`;
       }
     }
   }

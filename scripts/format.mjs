@@ -6,6 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import * as prettier from 'prettier';
 import { readLocalFileSync } from '../lense/local-file.mjs';
+import { answerHelp } from './script-help.mjs';
 
 const cli = fileURLToPath(import.meta.resolve('prettier/bin/prettier.cjs'));
 export async function formatProject(directory) {
@@ -45,6 +46,12 @@ export async function formatProject(directory) {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  answerHelp(process.argv.slice(2), {
+    name: 'format',
+    usage: `Usage: npm run format   (node scripts/format.mjs)
+Rewrites every file Prettier reports as unformatted in this checkout, staging each through .paqvilo/format and
+refusing source links. Offline. Takes no options; --help prints this help.`,
+  });
   const count = await formatProject(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'));
   console.log(`Prettier formatted ${count} file${count === 1 ? '' : 's'}.`);
 }

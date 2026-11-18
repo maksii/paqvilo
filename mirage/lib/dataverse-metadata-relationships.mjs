@@ -98,7 +98,13 @@ export function assertNotManaged(api, kind, logical, name, label) {
   const solution =
     (api.store.state.tables?.solution ?? []).find((row) => lower(row.solutionid) === lower(owner))?.uniquename ?? owner;
   const noun =
-    { entity: 'Entity', attribute: 'Attribute', relationship: 'Relationship', key: 'EntityKey' }[kind] ?? kind;
+    {
+      entity: 'Entity',
+      attribute: 'Attribute',
+      relationship: 'Relationship',
+      key: 'EntityKey',
+      optionset: 'OptionSet',
+    }[kind] ?? kind;
   // InvalidDeleteOnProtectedComponent; the HTTP status and the solution name in the text are guesses.
   throw new DataError(
     `You cannot delete ${noun} ${label}. Deletion cannot be performed when ${noun} is managed (solution ${solution}).`,
@@ -140,6 +146,8 @@ export function projectManagedFlags(api) {
   };
   for (const [logical, mapping] of Object.entries(state.mappings ?? {}))
     projectMappingManagedFlags(state, logical, mapping, has, mark);
+  for (const [name, set] of Object.entries(state.dataverse?.globalOptionSets ?? {}))
+    if (set && typeof set === 'object') mark(set, has('optionset', name));
 }
 
 function projectMappingManagedFlags(state, logical, mapping, has, mark) {
@@ -777,6 +785,7 @@ function updateGlobalSet(api, c, key) {
 
 function deleteGlobalSet(api, key) {
   const set = setByKey(api, key);
+  assertNotManaged(api, 'optionset', set.name, null, set.name);
   const users = boundFields(api, set.name).map(([logical, attr]) => `${logical}.${attr}`);
   if (users.length) throw bad(`Global option set ${set.name} is used by ${users.join(', ')}.`);
   dropGlobalSet(api, set.name);
@@ -1034,4 +1043,19 @@ export function metadataWriteOperations(api) {
     op('InsertStatusValue', 'prvWriteAttribute', (c) => insertStatus(api, c)),
     op('UpdateStateValue', 'prvWriteAttribute', (c) => updateState(api, c)),
   ];
+}
+
+/** Capability record for the capability registry; dataverse-extensions.mjs adds the operations install registered. */
+export function describe() {
+  return {
+    name: 'dataverse-metadata-relationships',
+    version: 1,
+    kind: 'dataverse-extension',
+    level: 'behaviour',
+    reason: 'Relationship, lookup and option set metadata writes, each in one store transaction under its privilege.',
+    requires: [],
+    principal: 'caller',
+    stateOwner: 'store',
+    lifecycle: 'per-request',
+  };
 }

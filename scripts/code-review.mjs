@@ -515,8 +515,17 @@ function reviewedReason(item) {
 
 async function main() {
   const args = process.argv.slice(2);
-  if (args.some((arg) => !['--write-baseline', '--check'].includes(arg)))
-    throw new Error('Use --check or --write-baseline.');
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log(`Usage: node scripts/code-review.mjs [--check | --write-baseline]
+  --check            run the dead-code and clone review and fail on findings missing from
+                     scripts/code-review-baseline.json (the default)
+  --write-baseline   rewrite scripts/code-review-baseline.json from the current findings
+  --help             print this help
+Findings are written to .paqvilo/code-review/. See docs/code-review.md.`);
+    return;
+  }
+  const unknown = args.find((arg) => !['--write-baseline', '--check'].includes(arg));
+  if (unknown) throw new Error(`Unknown option ${unknown}; use --check or --write-baseline (see --help).`);
   const output = path.join(root, '.paqvilo/code-review');
   fs.mkdirSync(output, { recursive: true });
   const findings = [];

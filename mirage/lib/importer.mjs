@@ -14,6 +14,7 @@ import { portalLanguage } from './portal-languages.mjs';
 import { detectSourceDialect, unrecognisedSourceMessage } from './source-dialect.mjs';
 import { platformChangeDiagnostics } from './platform-changes.mjs';
 import { createHash } from 'node:crypto';
+import { requiredArgument } from './required-argument.mjs';
 const sourceRevisionOf = (text) => createHash('sha256').update(text, 'utf8').digest('hex');
 
 const execFileAsync = promisify(execFile);
@@ -359,7 +360,7 @@ function prioritizeUrlClaims(entries, kind, diagnostics) {
  * a DATA_MODEL_ASSUMED diagnostic (code sites require it).
  */
 /* NOSONAR: single-pass routine, splitting it would change shared state */ export async function importPortal(
-  sourceDir,
+  sourceDir = requiredArgument('importPortal(sourceDir, options)', 'a portal source directory'),
   {
     languageId,
     lcid = 1033,

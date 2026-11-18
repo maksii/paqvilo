@@ -4,32 +4,42 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { buildBlueprint } from './blueprint.mjs';
 import {
+  assertHarnessManifest,
   buildQualificationDomain,
   scopeHierarchyVariantDomain,
   requiredNativeWitnesses,
 } from './qualification-domain.mjs';
+import { cli, UsageError } from '../cli.mjs';
 
 const project = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const args = process.argv.slice(2);
-const option = (name) => {
-  const index = args.indexOf(name);
-  return index < 0 ? undefined : args[index + 1];
-};
+const { values: options } = cli(
+  `Usage: node examples/company-operations/portal-security/qualification-plan.mjs --manifest FILE [--witnesses FILE] [--out FILE]
+
+Plans the role qualification campaign offline; performs no native mutations.
+
+  --manifest FILE   exact deployed harness manifest (portal-harness/compile.mjs writes it to the example's
+                    .paqvilo/portal-harness/generated/manifest.json), not the Dataverse dataverse/manifest.json
+  --witnesses FILE  map of the five required native witness names to frozen private snapshot paths
+  --out FILE        plan file under an ignored .paqvilo (default: the example's .paqvilo/portal-security)
+Relative paths resolve from the working directory.`,
+  { manifest: { type: 'string' }, witnesses: { type: 'string' }, out: { type: 'string' } },
+);
 const read = async (file) => JSON.parse(await readFile(file, 'utf8'));
-const manifestFile = option('--manifest');
+const manifestFile = options.manifest;
 if (!manifestFile)
-  throw new Error('Provide the exact deployed harness --manifest. This planner performs no native mutations.');
+  throw new UsageError('Provide the exact deployed harness --manifest. This planner performs no native mutations.');
 const output = path.resolve(
-  option('--out') ?? path.join(project, '.paqvilo/portal-security/qualification-' + Date.now() + '.json'),
+  options.out ?? path.join(project, '.paqvilo/portal-security/qualification-' + Date.now() + '.json'),
 );
 if (!output.split(path.sep).includes('.paqvilo'))
-  throw new Error('Store campaign input/evidence metadata under ignored .paqvilo.');
+  throw new UsageError('Store campaign input/evidence metadata under ignored .paqvilo.');
 const [schema, catalogue, manifest] = await Promise.all([
   read(path.join(project, 'dataverse/manifest.json')),
   read(path.join(project, 'data/stress-catalogue.json')),
   read(manifestFile),
 ]);
-const witnessFiles = option('--witnesses') ? await read(option('--witnesses')) : {};
+assertHarnessManifest(manifest);
+const witnessFiles = options.witnesses ? await read(options.witnesses) : {};
 if (
   !witnessFiles ||
   typeof witnessFiles !== 'object' ||

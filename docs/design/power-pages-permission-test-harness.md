@@ -1,13 +1,19 @@
 # Company Operations example: permission harness
 
 Design of the single-page permission harness for the [Company Operations model](company-operations-demo.md), with
-backend evidence from the [plug-in observations](dataverse-plugin-observation.md). Commands, deployment and replay tools
-are in the [harness guide](../../examples/company-operations/portal-harness/README.md).
+backend evidence from the [plug-in observations](dataverse-plugin-observation.md). Commands, deployment, run behaviour
+and replay tools are in the [harness guide](../../examples/company-operations/portal-harness/README.md); the permission
+graph and its deployment are in the [portal security
+guide](../../examples/company-operations/portal-security/README.md).
 
 The page compares Liquid and portal Web API results for the signed-in Contact, optionally runs prepared CRUD, and saves
 observations in Dataverse. Run it only against an explicitly authorized fixture environment. A completed run is not a
 permission pass: only the independent scenario oracle decides. The **Persistent history and disposable probe schema**
 section is parsed by `prepare-schema.mjs`; keep its heading and table rows exact.
+
+Status: implemented in `examples/company-operations/portal-harness` and covered offline by its loopback tests, except
+where a paragraph is marked **Proposed**. Native results exist only for environments where the harness was deployed and
+run.
 
 ## Platform facts and parity contract
 
@@ -15,8 +21,8 @@ section is parsed by `prepare-schema.mjs`; keep its heading and table rows exact
   captured separately from the authored query and is not a response document
   ([Liquid FetchXML](https://learn.microsoft.com/en-us/power-pages/configure/liquid/template-tags)).
 - The portal Web API accepts FetchXML through `/_api/<entity-set>?fetchXml=<encoded>`
-  ([read operations](https://learn.microsoft.com/en-us/power-pages/configure/read-operations)). The strict lane sends the
-  same logical FetchXML as Liquid; OData forms are additional variants, never replacements.
+  ([read operations](https://learn.microsoft.com/en-us/power-pages/configure/read-operations)). The strict lane sends
+  the same logical FetchXML as Liquid; OData forms are additional variants, never replacements.
 - The Web API exposes no equivalent of Liquid's rewritten XML, so its diagnostics record `effectiveFetchXml=null` and
   `effectiveXmlAvailability="not-exposed"`. Plug-in `PluginReceivedQuery` artifacts are labelled separately; they are
   neither an API field, nor Liquid XML, nor SQL. Never feed Liquid's rewritten query into the API lane.
@@ -25,7 +31,8 @@ section is parsed by `prepare-schema.mjs`; keep its heading and table rows exact
 - Exact comparison means equal canonical rows, row identities, ID sets and counts for the same query, user, dataset and
   phase. Raw envelopes, status text, formatted labels, ETags, generated aliases and permission XML may differ and are
   recorded, not hidden. Web API field exposure and column permissions can produce genuine differences from Liquid; those
-  cases are classified separately ([Web API settings](https://learn.microsoft.com/en-us/power-pages/configure/web-api-overview)).
+  cases are classified separately ([Web API
+  settings](https://learn.microsoft.com/en-us/power-pages/configure/web-api-overview)).
 
 ## Page, routes and components
 
@@ -39,30 +46,32 @@ visibility comes only from the twelve roles and scoped access rows.
 | Web template               | `CO Permission Lab Shell`: current Contact and roles, controls, result containers, inline script and query manifest. No business results are inserted. |
 | Web page and page template | `CO Permission Lab Liquid Data`, `/permission-lab/liquid/`, without the site header and footer.                                                        |
 | Web template               | `CO Permission Lab Liquid Dispatcher`, MIME `application/xml`: checks the runner, suite version and allowlisted case, then includes the case partial.  |
-| Case web templates         | `CO Query R01` to `CO Query R36`, generated from the same plans as the API lane.                                                                       |
+| Case web templates         | `CO Query <case>`, one per read case or URL fragment, CRUD readback and S01 case, generated from the same plans as the API lane.                       |
 | Website configuration      | Page access rules, the permission blueprint, recorder permissions and explicit `Webapi/<table>/enabled` and `/fields` settings.                        |
 
 A page template without the site header and footer lets a web template control the whole response and MIME type, which
-gives a clean machine-readable endpoint
-([web templates](https://learn.microsoft.com/en-us/power-pages/configure/web-templates)). Liquid transport is a typed
-XML envelope built with documented `xml_escape`, not an assumed JSON serializer; the browser parses it with DOMParser
-and both lanes share one renderer and normalizer. Displayed XML and record content are escaped text, never `innerHTML`.
+gives a clean machine-readable endpoint ([web
+templates](https://learn.microsoft.com/en-us/power-pages/configure/web-templates)). Liquid transport is a typed XML
+envelope built with documented `xml_escape`, not an assumed JSON serializer; the browser parses it with DOMParser and
+both lanes share one renderer and normalizer. Displayed XML and record content are escaped text, never `innerHTML`.
 
 The API lane's business data comes only from `/_api` calls, never from the Liquid result or a privileged backend. Liquid
 supplies the identity bootstrap and its own read lane and performs no business writes.
 
 ## Liquid response contract
 
-One case per endpoint request, so a bad query does not destroy the suite. The dispatcher accepts only `suiteVersion`,
-`caseId`, `page`, a paging continuation and `operationId`; it loads that operation through the Contact's own
-permissions and validates its run, owner, lane, page and markers before executing. Actor and roles come from `user`,
-never from parameters. There is no free-form FetchXML or OData editor.
+One case per endpoint request, so a bad query does not destroy the suite. The dispatcher reads only the `suiteVersion`
+and `operationId` query parameters. It loads that `pqvd_testoperation` through the Contact's own permissions, checks the
+owning run (runner, suite version, manifest hash), the Liquid lane, the stamped markers, attempt 1 and page 1 to 20,
+and takes case, root table, variant and page from the operation record. Actor and roles come from `user`, never from
+parameters. There is no free-form FetchXML or OData editor.
 
 ```liquid
 {% fetchxml visibility_query %}{{ authored_xml }}{% endfetchxml %}
-<co-test-response version="1">
-  <summary case-id="R09" operation-id="{{ operation_id | xml_escape }}" record-count="{{ visibility_query.results.entities.size }}"></summary>
-  <records>{% for record in visibility_query.results.entities %}<record>...</record>{% endfor %}</records>
+<co-test-response version="1" outcome="success|query-error" case-id="R09" operation-id="..." contact-id="..." dataset-version="...">
+  <roles><role>...</role></roles>
+  <records><record><field name="..." type="..." null="false">...</field></record></records>
+  <paging more="..." total="..." limited="..."><cookie>...</cookie></paging>
   <diagnostics>
     <authored-fetchxml>{{ authored_xml | xml_escape }}</authored-fetchxml>
     <effective-fetchxml>{{ visibility_query.xml | xml_escape }}</effective-fetchxml>
@@ -79,16 +88,20 @@ tags inside Liquid FetchXML. Local-only extensions such as `permission_granted` 
 Use exported entity-set and navigation names (for example `pqvd_employmenttermrecords`) and explicit
 `Webapi/<table>/fields` lists generated from each case's selected, filtered, ordered and written fields; never `*`.
 Access-role principals, identity-provider columns and schema administration fields stay out of write lists. Read-only
-and grant tables may be API-enabled for negative C/U/D probes: enabling a table grants nothing, and a field-configuration
-denial is not a table-permission denial. Website configuration tables are never exposed.
+and grant tables may be API-enabled for negative C/U/D probes: enabling a table grants nothing, and a
+field-configuration denial is not a table-permission denial. Website configuration tables are never exposed.
 
 Requests use `shell.getTokenDeferred()` and the `__RequestVerificationToken` header; tokens, cookies and authorization
 headers are never persisted. A successful POST returns the new GUID in the `entityid` header; without it the commit is
-recorded as unknown ([write operations](https://learn.microsoft.com/en-us/power-pages/configure/write-update-delete-operations)).
+recorded as unknown ([write
+operations](https://learn.microsoft.com/en-us/power-pages/configure/write-update-delete-operations)).
 
-Preflight checks session identity, support-table API configuration, history Create/Read/Update, field exposure,
-manifest version, fixture aliases and role mappings. It never tests business writes to decide whether to skip them.
-Missing reference privileges (Currency, Vendor) are recorded as a configuration defect; never add Global access.
+Before creating a run the page requires a signed-in Contact with `CO Test Runner` and the deploy-time `operationGuard`
+readiness flag; the other readiness flags (durable collector, scalar updates, equipment canaries, plug-in profiles)
+come from the deploy configuration and gate those parts of the run. **Proposed:** a live preflight of support-table API
+configuration, history Create/Read/Update, field exposure, fixture aliases and role mappings. A preflight never tests
+business writes to decide whether to skip them, and missing reference privileges (Currency, Vendor) are a configuration
+defect, never a reason to add Global access.
 
 ## Thirty-six paired read cases
 
@@ -124,7 +137,7 @@ never from either engine.
 | R24 | Known outside-scope GUID / `pqvd_equipment`                 | No data disclosure; absence of data is compared alongside original outcome/status.                                                                                                                         |
 | R25 | Company–membership–engagement join / `pqvd_orgcontact`      | Explicit linked engagement GUID alias; canonical tuple identity, not root-only deduplication.                                                                                                              |
 | R26 | Access-to-Account N:N join / `pqvd_accesspermission`        | Grant/Account GUID tuples and distinct variants; inspect emitted permission XML.                                                                                                                           |
-| R27 | Deep Finding through workforce / `pqvd_finding`             | Minimal Finding query evaluated through the declared eleven-node permission tree; full provenance blueprint and authorised endpoint IDs. A fully explicit reverse-chain join is a separate stress variant. |
+| R27 | Deep Finding through workforce / `pqvd_finding`             | Minimal Finding query evaluated through the declared eleven-node permission tree; full provenance blueprint and authorized endpoint IDs. A fully explicit reverse-chain join is a separate stress variant. |
 | R28 | Foreign deep Finding / `pqvd_finding`                       | Same deep shape against the other company's canary ID; no endpoint disclosure.                                                                                                                             |
 | R29 | Secondary equipment-to-service path / `pqvd_servicerequest` | Same relevant service IDs reached by the secondary path; differences in scope remain explicit.                                                                                                             |
 | R30 | Equipment-finance inner/outer joins / `pqvd_equipment`      | Equipment/finance GUID tuples, outer-null preservation and no private-cost disclosure to denied roles.                                                                                                     |
@@ -144,24 +157,25 @@ status from a FetchXML collection filtered to the same ID; both are recorded. Fe
 recursively to `$expand`, and an OData failure never falls back silently.
 
 **Join budget.** Dataverse documents a default limit of fifteen link entities per FetchXML query, which Microsoft
-support can raise per organization ([join limits](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/fetchxml/join-tables)).
-Record the budget as scenario provenance and the authored, Liquid-exposed and plug-in stage join counts. A link or URL
-error is distinct from denied data, and a query can be rejected before any plug-in runs.
+support can raise per organization ([join
+limits](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/fetchxml/join-tables)). Record the budget
+as scenario provenance and the authored, Liquid-exposed and plug-in stage join counts. A link or URL error is distinct
+from denied data, and a query can be rejected before any plug-in runs.
 
 **Deep variant.** The baseline IT persona has both the workforce and equipment-service routes, so permission expansion
-pushes its deep reads over the default budget from Checklist onwards (`0x8004430d`). That is an expected outcome, not a
-defect to work around. The single-route variant deactivates the six-node secondary subtree, leaves the eleven-node path
-intact and restores it afterwards; it changes stock-service eligibility, so every run records it, and it is restored
-before collision and stress tests.
-
-**Never deactivate only a parent permission.** With a parent inactive and its descendants active, both lanes can return
-every fixture row of the descendant tables and agree with each other while both fail the oracle. Deployment rejects
-active children beneath inactive parents.
+pushes its deep reads over the default budget from Checklist onwards (`0x8004430d`, observed live). That is an expected
+outcome, not a defect to work around. The single-route variant (the
+[deep-chain variant](../../examples/company-operations/portal-security/README.md#deep-chain-variant)) deactivates the
+six-node secondary subtree, leaves the eleven-node path intact and restores it afterwards; it changes stock-service
+eligibility, so every run records it, and it is restored before collision and stress tests. Deactivating only a parent
+permission is never a variant: it broadens access ([portal security
+guide](../../examples/company-operations/portal-security/README.md#deploy)), and a run on such a graph is negative
+security evidence only.
 
 **Long URLs.** Portals can reject long encoded query strings before Dataverse sees them. Non-aggregate, non-distinct
-queries whose encoded FetchXML exceeds 3,500 characters are split into disjoint root-GUID sets, identically in both
-lanes, each fragment with its own operation; merges keep duplicate multiplicity. S01 uses compact filters so URL
-rejection cannot hide the link-limit boundary.
+queries whose encoded FetchXML exceeds 3,500 characters are split into disjoint root-GUID sets of at most 16 IDs,
+identically in both lanes, each fragment with its own operation; merges keep duplicate multiplicity. S01 uses compact
+filters so URL rejection cannot hide the link-limit boundary.
 
 ## Normalization and verdicts
 
@@ -176,8 +190,8 @@ incomplete, unsupported, or identity/dataset drift. A result both lanes share ca
 returns empty and the API denies the table, both outcomes are kept and strict parity is not reported. A network, parse
 or query error never becomes an empty array; a sign-in redirect is session loss.
 
-Authored-query hashes agree after removing only the reserved marker guard; physical hashes, submitted, Liquid and plug-in
-artifacts are kept raw. XML diagnostics do not prove which role granted a row.
+Authored-query hashes agree after removing only the reserved marker guard; physical hashes, submitted, Liquid and
+plug-in artifacts are kept raw. XML diagnostics do not prove which role granted a row.
 
 ## Operation correlation
 
@@ -200,17 +214,18 @@ Default page size 50, at most 20 pages per case; R33 uses five rows per page. Co
 metadata or same-origin `nextLink` only; completion is never concluded from the first page, and hitting the bound with
 more records remaining is incomplete. Advertised totals are reported separately from returned rows.
 
-There is no snapshot spanning the two lanes: nothing else may modify the fixture during a run, and a change of identity,
-role snapshot or fixture mid-run stops writes and marks drift. Unique markers and `cache: no-store` avoid browser reuse
-but do not guarantee bypassing portal caches; the harness never clears the whole portal cache automatically
-([server-side caching](https://learn.microsoft.com/en-us/power-pages/admin/clear-server-side-cache)). Each request
-records status, MIME type, duration, original error and a classified cause; a 400/403/404 alone does not identify the
-permission layer.
+There is no snapshot spanning the two lanes: nothing else may modify the fixture during a run. A Liquid response whose
+Contact, dataset version or case intent differs from the shell's is a lane error (drift), never data. Unique markers
+and `cache: no-store` avoid browser reuse but do not guarantee bypassing portal caches; the harness never clears the
+whole portal cache automatically ([server-side
+caching](https://learn.microsoft.com/en-us/power-pages/admin/clear-server-side-cache)). Requests refuse redirects and
+anything outside `/_api/` and the Liquid endpoint, so a sign-in redirect is an error. Each page records HTTP status,
+duration and the original error and raw body; a 400/403/404 alone does not identify the permission layer.
 
 ## Bulk CRUD
 
-The CRUD matrix covers the 21 read roots and all four operations. GET runs in both lanes; POST, PATCH and DELETE use only
-the Web API. A role without a privilege still gets a valid prepared negative request; nothing is granted to make a
+The CRUD matrix covers the 21 read roots and all four operations. GET runs in both lanes; POST, PATCH and DELETE use
+only the Web API. A role without a privilege still gets a valid prepared negative request; nothing is granted to make a
 control pass. The catalogue's `crudFixtures` declare per table the valid payloads, allowed bindings, isolated same-scope
 and foreign canary targets, expected outcomes and dependencies; a missing payload or dependency is Blocked coverage,
 never a pass.
@@ -227,7 +242,7 @@ that need maintained roots, projections or invariants are Blocked until those se
 
 ## Persistent history and disposable probe schema
 
-`PaqviloPermissionTestSupport` depends on Core and holds three organisation-owned tables outside the read cases, so
+`PaqviloPermissionTestSupport` depends on Core and holds three organization-owned tables outside the read cases, so
 saving a result never changes their counts. All Time columns are UserLocal; attempts, pages and parts start at 1.
 
 | Table / entity set                     | Columns                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | Keys and relationships                                                                                                                                                                       |
@@ -251,11 +266,11 @@ Global choices, values from 183270000 upwards:
 | `pqvd_artifactkind` | Summary, AuthoredXml, EffectiveXml, Request, RawResponse, CanonicalResult, Comparison, Identity, Cleanup |
 | `pqvd_verdict`      | Pass, Fail, Incomplete, Unsupported, NotApplicable                                                       |
 
-An observation key is the SHA-256 of the stable case/variant/phase/operation/target/attempt/page tuple, distinct from
-the content hash. Client artifacts are stored as a versioned JSON envelope (`application/vnd.paqvilo.artifact+json`)
+An observation key is the SHA-256 of the operation GUID, page number and observation kind, distinct from the content
+hash. Client artifacts are stored as a versioned JSON envelope (`application/vnd.paqvilo.artifact+json`)
 holding UTF-8 base64, the original content type, byte length and SHA-256, because the portal can rewrite raw HTTP
 context URIs that arrive as plain text. The envelope is chunked at Unicode-safe boundaries into parts of at most
-128,000 UTF-16 code units, each with its own checksum in `pqvd_payloadhash`; reassembly verifies every part and the full
+240,000 UTF-16 code units, each with its own checksum in `pqvd_payloadhash`; reassembly verifies every part and the full
 artifact. An artifact counts as persisted only when all parts are acknowledged. Exceeding the run's transport budget
 (default 20 MiB) is incomplete coverage, never silent truncation
 ([text limits](https://learn.microsoft.com/en-us/power-apps/maker/data-platform/types-of-fields)).
@@ -265,33 +280,36 @@ probe trigger columns; the base support solution stays importable without them.
 
 ## History permissions and integrity
 
-`CO Test Runner` rights are listed in the [portal security guide](../../examples/company-operations/portal-security/README.md);
+`CO Test Runner` rights are listed in the
+[portal security guide](../../examples/company-operations/portal-security/README.md);
 none are Global and none write business data. Own-Contact Self Read deliberately adds the recorder's Contact to R02.
 Binding guards reject moving an observation or probe between runs or actors.
 
 Client-written history is a regression record, not tamper-proof audit: a user who can write their history can alter it,
 and hashes detect corruption, not dishonest authorship. The collector supplies separately protected server events but
-does not attest client roles or Contact claims. Comparison covers one Contact's own runs; cross-person comparison needs a
-separately authorized backend export, never a company-level parent or Global Read.
+does not attest client roles or Contact claims. Comparison covers one Contact's own runs; cross-person comparison needs
+a separately authorized backend export, never a company-level parent or Global Read.
 
-Persistence retries check the unique run/observation/artifact/part key before resending an uncertain POST (client
-idempotency, not portal upsert). Save failures leave a visible unsaved queue and export; results are not stored in
-`localStorage`. Resume retries missing artifact work under the existing operation or a read under a new operation, and
-never repeats uncertain mutations.
+A failed part write is recorded as a persistence error and leaves the run Incomplete; it is not retried. The current
+run can always be exported as JSON from the page; nothing is stored in `localStorage`. **Proposed:** retries that check
+the unique run/observation/artifact/part key before resending an uncertain POST (client idempotency, not portal upsert),
+and resume of missing artifact work under the existing operation, never repeating uncertain mutations.
 
 ## History comparison
 
-A new run is compared with a selected prior run by suite version, case, variant, phase and scenario, requiring by default
-the same Contact, dataset version, normalizer and role/grant fingerprint; role-change comparisons show configuration
-deltas instead of regressions. Durations, timestamps, generated canary and operation GUIDs are excluded from semantic
-equality but kept as diagnostics. Missing XML is not an empty XML document.
+A new run can name a prior own run as its baseline. The prior run's dataset version, role snapshot and manifest hash
+must equal the current ones; otherwise the comparison reports identity/dataset drift instead of a regression. Every
+stored part's checksum and part sequence are verified before the prior canonical rows are decoded and compared per case
+and lane, with row additions, removals, field, outcome and error changes. Durations, timestamps and generated GUIDs are
+diagnostics, not semantic equality. Missing XML is not an empty XML document.
 
 ## Source5 binding cohort
 
-Run after the Source4 lease is restored, with `allowOwnedEquipmentLookupTests` enabled only for this cohort. Equipment
-Append rebinds a Stock canary to a second Room in the same Building and Account; Equipment AppendTo binds an owned CRUD
-probe to the equipment through the optional lookup. The SDK-created intent uses case `PORTAL-EQUIPMENT-APPEND` with
-variant `TARGET:<equipment GUID>;ROOM:<Room GUID>`, or `PORTAL-EQUIPMENT-APPENDTO` with
+The optional Source5 cohort runs in the native qualification campaign
+(`portal-security/qualification-native-adapters.mjs`) after the Source4 lease is restored. Equipment Append rebinds a
+Stock canary to a second Room in the same Building and Account; Equipment AppendTo binds an owned CRUD probe to the
+equipment through the optional lookup. The SDK-created intent uses case `PORTAL-EQUIPMENT-APPEND` with variant
+`TARGET:<equipment GUID>;ROOM:<Room GUID>`, or `PORTAL-EQUIPMENT-APPENDTO` with
 `TARGET:<Probe GUID>;EQUIPMENT:<Equipment GUID>`; direct equipment CRUD keeps `PORTAL-EQUIPMENT-CRUD` and
 `TARGET:<equipment GUID>`. Counterparts come from actual owned fixture bindings, never from client-writable fields.
 Missing source rights, target rights, fields, invariants and server context stay distinct outcomes.

@@ -43,8 +43,8 @@ relationships and code components behind them, which Inspect links to and Mirage
 
 Liquid can choose components dynamically, exports can omit managed metadata, and a static reference may belong to a
 branch that did not render. Inspect does not infer missing bindings, a deployed revision or a live user's effective
-permission. Add the missing sources, use **Refresh inspection**, and read the [selection evidence](lense.md#selection-evidence)
-states.
+permission. Add the missing sources, use **Refresh inspection**, and read the
+[selection evidence](lense.md#selection-evidence) states.
 
 ## What if a component works online but differs locally?
 
@@ -54,5 +54,5 @@ missing metadata can need a mock or a [project extension](project-extensions.md)
 ## Does Mirage execute my Dataverse plug-in DLL?
 
 Not by default. Mirage imports the assembly, type and step registrations and runs trusted project handlers, mocks or
-visible placeholders that report the skipped logic. On Windows, an explicitly configured original-assembly mode can run a
-trusted plug-in DLL locally. See [plug-in simulation](../mirage/docs/dataverse-plugins.md).
+visible placeholders that report the skipped logic. On Windows, an explicitly configured original-assembly mode can run
+a trusted plug-in DLL locally. See [plug-in simulation](../mirage/docs/dataverse-plugins.md).

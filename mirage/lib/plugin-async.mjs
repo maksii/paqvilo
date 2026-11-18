@@ -22,7 +22,7 @@ import { DataError } from './data-error.mjs';
 
 // Each run gets its own request context: the starting request's correlation (carried by the committed event, else the chain)
 // as the parent, mode async, the writer as principal; a plug-in trace log and nested events then carry that correlation.
-// The human facts of an asynchronous step finding (D-M-2 Findings): the step's display name, the table and a sentence.
+// The human facts of an asynchronous step finding (Findings): the step's display name, the table and a sentence.
 const stepFacts = (item, itemId, event, outcome) => {
   const name = item?.name ?? itemId;
   const onEntity = event?.entity ? ` on ${event.entity}` : '';

@@ -9,6 +9,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createSimulator } from '../server.mjs';
 import { loadProjectConfig, projectSummary } from '../lib/project-config.mjs';
 import { writeSolutionAssetEntries } from '../lib/dataverse-solution-assets.mjs';
+import { dataverseHostStatus } from '../lib/dataverse-settings.mjs';
 import { readLocalFile } from '../../lense/local-file.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
@@ -429,6 +430,18 @@ test('standalone project CLI forwards organization platform settings into the ac
   const xml =
     '<fetch><entity name="x_item"><link-entity name="x_item" alias="a" from="x_itemid" to="x_itemid"/><link-entity name="x_item" alias="b" from="x_itemid" to="x_itemid"/></entity></fetch>';
   assert.equal((await org('GET', '/x_items?fetchXml=' + encodeURIComponent(xml))).status, 400);
+});
+
+// @test-kind contract: both hosts build the admin Dataverse status from dataverseHostStatus, so the standalone runtime reports the certificate as the Power Pages host does
+test('standalone Dataverse status has the Power Pages host shape, certificate included', async (t) => {
+  const { sim } = await fixture(t, {
+    runtime: { kind: 'dataverse-api' },
+    dataverse: { enabled: true, tls: true, tds: { enabled: false } },
+  });
+  const listing = await body(await fetch(sim.url + '/_sim/api/dataverse'));
+  for (const key of Object.keys(dataverseHostStatus({}, {}, {}))) assert.ok(Object.hasOwn(listing, key), key);
+  assert.match(listing.certificateFingerprint, /^[0-9A-F]{2}(:[0-9A-F]{2})+$/i);
+  assert.equal(listing.organizationAvailable, true);
 });
 
 for (const kind of ['dataverse-api', 'model-driven'])

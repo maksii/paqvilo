@@ -11,7 +11,7 @@ function credentialFree(value, label, depth = 0) {
   if (!isMap(value)) return;
   for (const [key, item] of Object.entries(value)) {
     if (CREDENTIAL.test(key) && typeof item === 'string' && !CONNECTION_REFERENCE.test(item))
-      throw new Error(`${label}.${key} must not hold a credential; use an env:NAME or variable: reference`);
+      throw new Error(`${label}.${key} must not hold a credential; use an env:NAME or variable:NAME reference`);
     credentialFree(item, `${label}.${key}`, depth + 1);
   }
 }
@@ -82,8 +82,7 @@ function validateConnectionSettings(entry, at) {
   const settings = entry.settings ?? {};
   if (!isMap(settings)) throw new Error(`${at}.settings must be an object`);
   for (const key of Object.keys(settings))
-    if (!['rewrites', 'auth', 'parameters'].includes(key))
-      throw new Error(`${at}.settings.${key} is not a connection setting`);
+    if (!['rewrites', 'auth', 'parameters'].includes(key)) throw new Error(`Unknown ${at}.settings key '${key}'`);
   validateConnectionAuth(at, settings.auth);
   validateConnectionParameters(at, settings.parameters);
   validateConnectionRewrites(at, settings.rewrites ?? {});
@@ -102,7 +101,7 @@ function validateConnectionSettings(entry, at) {
     if (!isMap(entry)) throw new Error(`${at} must be an object`);
     for (const key of Object.keys(entry))
       if (!['connector', 'provider', 'principal', 'evidence', 'settings'].includes(key))
-        throw new Error(`${at}.${key} is not a connection setting`);
+        throw new Error(`Unknown ${at} key '${key}'`);
     if (
       entry.connector !== undefined &&
       (typeof entry.connector !== 'string' || !/^[\w.-]{1,250}$/.test(entry.connector))
@@ -114,7 +113,8 @@ function validateConnectionSettings(entry, at) {
       );
     validateConnectionPrincipalAndEvidence(entry, at);
     const settings = validateConnectionSettings(entry, at);
-    credentialFree({ principal: entry.principal, evidence: entry.evidence, parameters: settings.parameters }, at);
+    credentialFree({ principal: entry.principal, evidence: entry.evidence }, at);
+    credentialFree(settings.parameters, `${at}.settings.parameters`);
     result[id] = structuredClone(entry);
   }
   return result;

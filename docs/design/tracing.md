@@ -1,9 +1,10 @@
 # Tracing: how it is built
 
-Contributor notes for Mirage's causal tracing: the decisions every hook site follows, the store contract and the cost
-budget. What users see (span kinds, attributes, routes, filters, CLI, settings, redaction) is in
+Status: implemented. Contributor notes for Mirage's causal tracing: the decisions every hook site follows, the store
+contract and the cost budget. What users see (span kinds, attributes, routes, filters, CLI, settings, redaction) is in
 [request tracing](../../mirage/docs/tracing.md); this document does not repeat it. Code and tests cite the decisions
-below by number ("decision 4") or by id (`D-R3-6`, `D-M-4`).
+below by number ("decision 4") or by their stable id in the heading (`D-R3-6`), the [Monitor](#monitor) design as
+`D-M-4`, and the sections [Span model](#span-model) and [Store contract](#store-contract) by name.
 
 ## Decisions
 
@@ -37,7 +38,7 @@ persisted; after a restart a job starts a new root.
 
 ### 5. Workers carry no context
 
-CLR SDK calls are dispatched on the main thread inside the plugin-step span, so they nest through the span stack.
+CLR SDK calls are dispatched on the main thread inside the `plugin-step` span, so they nest through the span stack.
 
 ### 6. Loopback HTTP joins the trace
 
@@ -151,7 +152,7 @@ Liquid reads are `retrieve` or `retrievemultiple` with `source`. Flow Dataverse 
 
 A root records `query` (values redacted), `contentType`, `contentLength` and at `full` the capped body. A form submit
 opens a `form` span above its Dataverse operation. Upload and download spans carry the file column, name and size, and
-file and binary values are summarised, never copied. Plug-in step spans expose the shared variables at `full`.
+file and binary values are summarized, never copied. Plug-in step spans expose the shared variables at `full`.
 
 ### 22. Sign-in and visitors (D-R3-12, D-R2-13)
 
@@ -179,7 +180,7 @@ which every span it fails records. Why: the page shows a generic message; the tr
 
 ### 26. Images and context per registration (D-R3-20)
 
-At `full` a plugin-step input holds the registered images (alias and attribute filter, never the whole row) and the
+At `full` a `plugin-step` input holds the registered images (alias and attribute filter, never the whole row) and the
 execution context. The CLR host fills the same shape and adds the IPluginExecutionContext4 per-record image sets
 (`preImagesCollection`, `postImagesCollection`); a JavaScript CreateMultiple/UpdateMultiple step adds its per-target
 sets.
@@ -206,17 +207,17 @@ at `full`; its Dataverse calls carry `caller: 'canvas'`.
 
 ### 31. Loop iterations are action executions (D-R3-30)
 
-Each "Apply to each" or "Do until" iteration keeps its `flow-action` spans (attribute `iteration`), as the platform's run
-history does; the loop span carries `iterations` and, at `full`, only the collection size. This is the one exception to
-"no per-row spans"; `spansPerTrace` and the overflow handle bound it.
+Each "Apply to each" or "Do until" iteration keeps its `flow-action` spans (attribute `iteration`), as the platform's
+run history does; the loop span carries `iterations` and, at `full`, only the collection size. This is the one exception
+to "no per-row spans"; `spansPerTrace` and the overflow handle bound it.
 
 ### 32. An activity fails with any of its steps
 
-`failed` is true when the root or any step ended `error` or `denied` (except decision 33). `result` is `running` while a
-span runs; for a failed activity the root's own `error` or `denied`, else `error` when a step ended `error`, else
-`denied`; otherwise the root's status. `status` stays the root's own. Why: a form save refused by a plug-in behind an
-HTTP 200 must read as failed. Consequence: `hasErrors` and `result` filter the activity on every route; `status=error`
-selects single steps.
+`failed` is true when the root or any step ended `error` or `denied`, except a browser probe (decision 33). `result` is
+`running` while a span runs; for a failed activity the root's own `error` or `denied`, else `error` when a step ended
+`error`, else `denied`; otherwise the root's status. `status` stays the root's own. Why: a form save refused by a
+plug-in behind an HTTP 200 must read as failed. Consequence: `hasErrors` and `result` filter the activity on every
+route; `status=error` selects single steps.
 
 ### 33. Browser probes are traced, not failures
 
@@ -251,10 +252,17 @@ need a deterministic point after which files and frames are observable, without 
 `SPAN_STATUSES` is `ok`, `error`, `denied`, `cancelled`, `running`. `statusFromHttp` maps 401/403 to `denied`, other
 400+ to `error`. `cancelled` is neither error nor denial and counts in no summary counter.
 
-## Store contract
+## Span model
 
-The span record and trace summary shapes are in the [reference](../../mirage/docs/tracing.md#what-each-span-records).
-`SPAN_KINDS` (exported, frozen) is the closed kind vocabulary; a hook site uses one of them.
+The vocabularies are closed and exported frozen from `trace-store.mjs`: `SPAN_KINDS` (kinds), `SPAN_STATUSES`
+(decision 37) and `TRACE_HOSTS` (`origin.host` values); the `kind`, `status` and `host` filters refuse anything else,
+and a hook site uses one of them. `operation` is lowercased and canonical on every layer (decision 20). The span record,
+the trace summary, what each kind is opened by and the root of each host are in the reference:
+[what is traced](../../mirage/docs/tracing.md#what-is-traced),
+[what each span records](../../mirage/docs/tracing.md#what-each-span-records) and
+[roots and hosts](../../mirage/docs/tracing.md#roots-and-hosts).
+
+## Store contract
 
 ```js
 import {
@@ -272,28 +280,28 @@ import {
 const traces = createTraceStore({
   settings, // a mirage.trace value (validated again by traceSettings)
   stateDirectory, // string | () => string | null, read only when a trace is persisted
-  entityNames, // name -> the logical and entity set names a table filter stands for (DV-N4-2)
+  entityNames, // name -> the logical and entity set names a table filter stands for
   now, // wall clock that dates spans (default Date.now)
   elapsed, // monotonic clock for durations (default performance.now; an injected now is used for both)
 });
 ```
 
-| Member                                                               | Contract                                                                                                                                            |
-| -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `enabled`                                                            | `false` at level `off`.                                                                                                                             |
-| `start(args)`                                                        | A `Span`; the shared no-op span at `off`; the trace's overflow handle once it holds `spansPerTrace` spans.                                          |
-| `run(span, fn)`, `wrap(args, fn)`                                    | Run `fn` with `span` current; `wrap` also ends the span, or fails it on a throw or rejection and rethrows.                                          |
-| `detached(fn)`                                                       | Runs `fn` outside every current span (`als.exit`); the request context is unchanged, so wrap in `runWithRequest(null, …)` too when needed.          |
-| `current()`                                                          | The current span or overflow handle, else the retained span the request context names, else `null`.                                                 |
-| `headers(span)`, `fromHeaders(headers)`                              | Decision 6. `fromHeaders` returns `{ traceId, parentSpanId, links? }`, ids lowercased, non-UUIDs `null`.                                            |
-| `remember(key, ids)`, `recall(key)`, `link(spanId, link)`            | Decision 4 registry (10,000 most recently used keys); `link` adds a link to a retained span, running or ended, and re-persists it.                  |
-| `query`, `spans`, `tree`, `span`, `ancestry`, `stats`, `export`      | The reads behind the routes. Id filters accept 8+ hexadecimal prefixes (DV-N4-3).                                                                   |
-| `subscribe(listener, { payloads, flush, events, traceId })`          | Frozen copies, made only while a listener exists, once per copy kind; a throwing listener is ignored.                                               |
-| `settings()`, `configure(partial)`, `status()`, `clear()`, `flush()` | `configure` validates through `mergeTraceSettings` and evicts at once when `traces` shrinks; `clear` also empties the registry.                     |
-| `track(cancel)`, `close()`                                           | Register an open body capture's cancel function; `close()` cancels them all. The organization host closes the store it created, after its runtimes. |
+| Member                                                               | Contract                                                                                                                                               |
+| -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `enabled`                                                            | `false` at level `off`.                                                                                                                                |
+| `start(args)`                                                        | A `Span`; the shared no-op span at `off`; the trace's overflow handle once it holds `spansPerTrace` spans.                                             |
+| `run(span, fn)`, `wrap(args, fn)`                                    | Run `fn` with `span` current; `wrap` also ends the span, or fails it on a throw or rejection and rethrows.                                             |
+| `detached(fn)`                                                       | Runs `fn` outside every current span (`als.exit`); the request context is unchanged, so wrap in `runWithRequest(null, …)` too when needed.             |
+| `current()`                                                          | The current span or overflow handle, else the retained span the request context names, else the overflow handle of a full trace it names, else `null`. |
+| `headers(span)`, `fromHeaders(headers)`                              | Decision 6. `fromHeaders` returns `{ traceId, parentSpanId, links? }`, ids lowercased, non-UUIDs `null`.                                               |
+| `remember(key, ids)`, `recall(key)`, `link(spanId, link)`            | Decision 4 registry (10,000 most recently used keys); `link` adds a link to a retained span, running or ended, and re-persists it.                     |
+| `query`, `spans`, `tree`, `span`, `ancestry`, `stats`, `export`      | The reads behind the routes. Id filters accept 8+ hexadecimal prefixes.                                                                                |
+| `subscribe(listener, { payloads, flush, events, traceId })`          | Frozen copies, made only while a listener exists, once per copy kind; a throwing listener is ignored.                                                  |
+| `settings()`, `configure(partial)`, `status()`, `clear()`, `flush()` | `configure` validates through `mergeTraceSettings` and evicts at once when `traces` shrinks; `clear` also empties the registry.                        |
+| `track(cancel)`, `close()`                                           | Register an open body capture's cancel function; `close()` cancels them all. The organization host closes the store it created, after its runtimes.    |
 
-`checkTraceFilters(filters)` throws what `query` would (the CLI uses it before connecting). `simulator.trace` is the read
-and settings subset (`traceMethods` in `organization-host.mjs`); instrumentation members stay on `host.traces`.
+`checkTraceFilters(filters)` throws what `query` would (the CLI uses it before connecting). `simulator.trace` is the
+read and settings subset (`traceMethods` in `organization-host.mjs`); instrumentation members stay on `host.traces`.
 
 **Parent resolution.** An explicit `parentSpanId` or `traceId` (even `null`) disables the ambient fallback; else the
 current span of `run`; else the request context; else a new root. A retained parent decides the trace. An unknown parent
@@ -302,27 +310,29 @@ returns its overflow handle.
 
 **Overflow handle.** `enabled === false`, `traceId` the full trace, `spanId === null`, every method inert; each refused
 span counts in `droppedSpans`. `run(handle, fn)` makes it current so children are refused in the same trace instead of
-starting new ones; `headers(handle)` sends the trace id only; a remembered handle recalls `{ traceId, spanId: null }`.
+starting new ones; `headers(handle)` sends `X-Trace-Id` (and `X-Sim-Trace-Id` when the trace's root names an audit
+entry), never a span id; a remembered handle recalls `{ traceId, spanId: null }`.
 The level-`off` no-op span is a different, shared handle with `traceId: null`.
 
 **Span methods** chain and are inert on the no-op span and an overflow handle: `event`, `set`, `setName`, `setActor`,
 `setEntity`, `setStatus`, `setError`, `setInput`, `output`, `end({ status, error, attributes })` (idempotent; explicit
-status wins, then `setStatus`, then `error` when an error is set, else `ok`) and `fail(error)` (`denied` for 401/403 or a
-code containing "denied"). An error keeps `code`, `message`, scalar facts (`status`, `type`, `action`, `parameter`,
-`pluginType`, `step`, `stage`, `depth`, `rolledBack`), redacted `details` and one level of `cause`; a `traceError` object
-replaces it (decision 25).
+status wins, then `setStatus`, then `error` when an error is set, else `ok`) and `fail(error)` (`denied` for 401/403 or
+a code containing "denied"). An error keeps `code`, `message`, scalar facts (`status`, `type`, `action`, `parameter`,
+`pluginType`, `step`, `stage`, `depth`, `rolledBack`), redacted `details` and one level of `cause`; a `traceError`
+object replaces it (decision 25).
 
 **Other behaviours.** A trace the LRU evicts while it runs emits `trace-end` with `evicted: true` at once and persists
 twice. A flow-run wait timer is not detached: its resume opens the flow-run span with the ids recalled from
-`flow-run:<runId>`. A commit with no current span records nothing. `recordHttpError` sets status and error while the span
-runs, so a reader sees the failure before it ends.
+`flow-run:<runId>`. A commit with no current span records nothing. `recordHttpError` sets status and error while the
+span runs, so a reader sees the failure before it ends.
 
 **Redaction** (`redactPayload(value, limitBytes)` → `{ value, bytes }`): credential-named keys compared without
-separators (`sas`, `sig` and `invitation` as whole keys, `secretName` exempt), `{ key, value }` pairs judged by `key`,
-file and binary values summarised with SHA-256 (base64 means whole 4-character groups with mixed case and a digit, `+`
-or `/`, so text and hex stay), strings through `auditText` (`audit-log.mjs`, shared with the audit log), at most 1000
-items per array or object, nesting past 16 levels `'[depth limit]'`, cycles `'[circular]'`, and JSON over the limit
-`{ truncated: true, bytes, preview }`. Thunks must return synchronously; one that throws records `{ captureError }`.
+separators (`sas`, `sig` and `invitation` as whole keys, `invitationcode` anywhere, `secretName` exempt),
+`{ key, value }` pairs judged by `key`, file and binary values summarized with SHA-256 (base64 means whole 4-character
+groups with mixed case and a digit, `+` or `/`, so text and hex stay), strings through `auditText` (`audit-log.mjs`,
+shared with the audit log), at most 1000 items per array or object, nesting past 16 levels `'[depth limit]'`, cycles
+`'[circular]'`, and JSON over the limit `{ truncated: true, bytes, preview }`. Thunks must return synchronously; one
+that throws records `{ captureError }`.
 
 ## Host helpers
 
@@ -359,10 +369,10 @@ await traces.run(span, () => runWithRequest(context, () => handle(req, res)));
 Use `wrap` for a contained unit and name the record as soon as it exists (`span.setEntity(logical, row.id)`). Use
 `start` + `run` + `end` when the end happens elsewhere; `fail(error)` in the `catch` and rethrow. Open a `plugin-stage`
 only when steps matched, one `bulk` per message, one `part` per `$batch` request. Async job parenting: the staging span
-lives beside the committed event (a WeakMap, never inside `asyncoperation.data`), is remembered under `job:<id>` once the
-commit saved, and the runner starts its `job` span with the recalled ids (`committed-work.mjs` `stage` and `traceJob`).
-Flow actions cross generator awaits, so start each action span with an explicit `parentSpanId`. Never pass a resolved
-secret as input, output, attribute or event text.
+lives beside the committed event (a WeakMap, never inside `asyncoperation.data`), is remembered under `job:<id>` once
+the commit saved, and the runner starts its `job` span with the recalled ids (`committed-work.mjs` `stage` and
+`traceJob`). Flow actions cross generator awaits, so start each action span with an explicit `parentSpanId`. Never pass
+a resolved secret as input, output, attribute or event text.
 
 ## Performance contract
 
@@ -381,37 +391,38 @@ cached search text. Tests never assert speed.
 ## Surfaces
 
 `_sim` routes and the `trace` SSE channel: `mirage/lib/sim-trace-routes.mjs` (`createTraceRoutes`,
-`createTraceChannel`), mounted by both hosts. Activity reads (logs, render sources, bundle): `mirage/lib/sim-activity.mjs`.
-CLI: `mirage/trace.mjs`. Testing client: `mirage/testing/runtime.mjs`. View: `mirage/admin/view-activity.mjs`. User-facing
-behaviour of each is in the [reference](../../mirage/docs/tracing.md#api).
+`createTraceChannel`), mounted by both hosts. Activity reads (logs, render sources, bundle):
+`mirage/lib/sim-activity.mjs`.
+CLI: `mirage/trace.mjs`. Testing client: `mirage/testing/runtime.mjs`. View: `mirage/admin/view-activity.mjs`.
+User-facing behaviour of each is in the [reference](../../mirage/docs/tracing.md#api).
 
 ## Monitor
 
 The `_sim` Monitor reads one spine, the trace store, and links facts that are not spans to it by `traceId`. The data
-side (D-M-4) links; it does not merge.
+side (D-M-4) links; it does not merge. The routes named below are documented in
+[activity and trace routes](../../mirage/docs/sim-administration.md#activity-and-trace-routes).
 
 1. **Audit and trace link both ways.** The audit ledger stays its own ledger (it records at level `off` and backs
-   `connectRuntime().audit` and the acceptance proofs). `auditId` is an exact span filter; `GET /_sim/api/audit` takes
-   `traceId` as one id or a comma list of at most 200 (more is 400 `InvalidAuditFilter`), so a page of activities joins
-   its entries in one call.
-2. **`X-Sim-Trace-Id` is an audit id, permanently.** Response headers keep their meaning. Inbound, `fromHeaders` resolves
-   it through an index of retained spans that carry `auditId`, and the Power Pages host also through the audit ledger,
-   whose entry keeps `traceId` and `spanId` after eviction. An unknown audit id is ignored; it never becomes a trace id.
-   Why: existing clients echo it.
-3. **The log stream has a server-side history.** A ring of `mirage.logs.retain` lines (default 2000, 0 to 50000)
-   whether or not anyone listens; each line has `sequence`, `traceId` and `spanId` (the current span, `null` outside
-   one); `startup` lines cover each startup phase. `GET /_sim/api/logs?since=&limit=&type=&traceId=`; a client merges the
-   SSE `connected` sequence with the history.
-4. **A declarative plugin rule is a span event.** `DataStore.applyPlugins` reports each matching rule once through
+   `connectRuntime().audit` and the acceptance proofs). `auditId` is an exact span filter; `GET /_sim/api/audit` takes a
+   bounded comma list of trace ids, so a page of activities joins its entries in one call.
+2. **`X-Sim-Trace-Id` is an audit id, permanently.** Response headers keep their meaning. Inbound, `fromHeaders`
+   resolves it through an index of retained spans that carry `auditId`, and the Power Pages host also through the audit
+   ledger, whose entry keeps `traceId` and `spanId` after eviction. An unknown audit id is ignored; it never becomes a
+   trace id. Why: existing clients echo it.
+3. **The log stream has a server-side history.** A ring of `mirage.logs.retain` lines kept whether or not anyone
+   listens; each line has `sequence`, `traceId` and `spanId` (the current span, `null` outside one); `startup` lines
+   cover each startup phase. A client merges the SSE `connected` sequence with `GET /_sim/api/logs`.
+4. **A declarative plug-in rule is a span event.** `DataStore.applyPlugins` reports each matching rule once through
    `ruleEvaluated`: a `rule` event on the current span, then the host's `onRuleEvaluated` hook writes the `plugin` log
    line. Why: one source of truth, and no store snapshot per write. Level `off` costs one property read per rule.
 5. **Findings name their trace.** A diagnostic recorded while a span is current carries `traceId` and `spanId`; a
    request's error handler names the request root explicitly. `GET /_sim/api/diagnostics?traceId=` narrows both lists.
 6. **Request rings and flow runs name their trace.** The portal request ring has `traceId`, the Dataverse listener ring
    `traceId` and `spanId`; both stay level-independent. A flow run view has `traceId` and `traceSpanId` from the
-   registry; a resume the registry does not know is remembered as the run's span (decision 7 still holds).
-7. **Render sources resolve on request.** `GET /_sim/api/render-sources?refs=<id>,…` (at most 100) maps
-   `render-template` `attributes.sourceRefId` to the source file and line, listing unknown ids under `missing`.
+   registry; a resume the registry does not know is remembered as the run's span. No trace id enters the state
+   (decision 7).
+7. **Render sources resolve on request.** `GET /_sim/api/render-sources` maps `render-template`
+   `attributes.sourceRefId` to the source file and line on request, not while rendering.
 8. **The trace channel filters in the store.** Clients are grouped by `events` and `traceId` filter, each group holding
    one store subscription, so a frame type no client wants is never copied.
 9. **One export bundle.** One NDJSON stream rather than an archive, because the repository has no dependency-free zip

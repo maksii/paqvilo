@@ -1,7 +1,7 @@
 # Dataverse Web API: design decisions
 
-Contributor notes for the simulated Dataverse organization. Settings, endpoints, supported messages and limits are in
-[Dataverse Web API simulation](../../mirage/docs/dataverse-api.md).
+Status: implemented. Contributor notes for the simulated Dataverse organization. Settings, endpoints, supported messages
+and limits are in [Dataverse Web API simulation](../../mirage/docs/dataverse-api.md).
 
 ## Separate loopback listeners
 
@@ -25,9 +25,10 @@ origin:
 - **Ownership and audit columns come from the Dataverse layer** (the `systemColumns` write option), not from the store's
   defaults, so portal writes are unaffected.
 - **Secrets never reach disk or logs in plain form.** Client secrets come from named environment variables or are
-  generated and shown once, and are stored as salted SHA-256 hashes. Tokens, authorization codes and refresh tokens live
-  in memory only, so tokens from an earlier process fail verification and SDKs re-acquire them. Snapshots strip passwords
-  and secret hashes; the request log never records `Authorization` or bodies.
+  generated and shown once; client secrets and user passwords are stored as salted scrypt hashes (`hashSecret`; a salted
+  SHA-256 hash already in a state file is verified, never written). Tokens, authorization codes and refresh tokens live
+  in memory only, so tokens from an earlier process fail verification and SDKs re-acquire them. The request log records
+  method, path, status, timing, caller IDs and trace ids, never `Authorization` or bodies.
 - **Security principals are ordinary rows** (`organization`, `businessunit`, `systemuser`, `team`, `role`, `privilege`
   and their intersect tables) with user-configured mappings, so a Solution re-import never drops them. Default
   identifiers are deterministic (`uuidV5` from the organization id), so fixtures can quote them.
@@ -35,7 +36,9 @@ origin:
 
 ## Module map
 
-All modules are flat files in `mirage/lib/` (the release allowlist is `mirage/lib/[a-z0-9-]+.mjs`).
+The Dataverse modules are flat files in `mirage/lib/`: the release allowlist accepts
+`mirage/lib/[a-z0-9-]+.(mjs|js|css|json)` and lists subfolder files explicitly. The table names the entry points;
+related `dataverse-*.mjs` modules hold individual message families.
 
 | Module                   | Owns                                                                                                            |
 | ------------------------ | --------------------------------------------------------------------------------------------------------------- |
@@ -52,5 +55,6 @@ All modules are flat files in `mirage/lib/` (the release allowlist is `mirage/li
 | `dataverse-settings.mjs` | Validation and defaults of the `dataverse` settings section.                                                    |
 | `dataverse-admin.mjs`    | The `/_sim/api/dataverse/*` administration endpoints.                                                           |
 
-`mirage/server.mjs` starts and stops the listeners and reports them in status. Tests in `mirage/test/dataverse-*.test.mjs`
-use invented schemas over loopback; real-client gates are in `mirage/test-sdk/`.
+`composeOrganizationHost` (`mirage/lib/organization-host.mjs`) starts and stops the listeners, and `mirage/server.mjs`
+reports them in status. Tests in
+`mirage/test/dataverse-*.test.mjs` use invented schemas over loopback; real-client gates are in `mirage/test-sdk/`.

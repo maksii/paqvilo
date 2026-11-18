@@ -670,7 +670,7 @@ test('page confinement groups its exceptions under one toggle that is saved with
   assert.equal(await toggle.isChecked(), false, 'local pages are not confined by default');
   assert.deepEqual([await assets.isDisabled(), await frames.isDisabled()], [true, true]);
   assert.match(await page.locator('#confinement-options').getAttribute('class'), /is-off/);
-  // The explanation is behind the (i) of the confinement options (D-M-6).
+  // The explanation is behind the (i) of the confinement options.
   await page
     .getByText('These apply only while local pages are confined to loopback.', { exact: true })
     .waitFor({ state: 'attached' });

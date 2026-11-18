@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { CORPUS, compareResults, parsePacResults, runOracle } from '../test-support/power-fx-oracle.mjs';
 import { makeTemporaryDirectorySync } from '../testing/owned-fixture.mjs';
 
@@ -184,4 +185,32 @@ test('scientific PAC numeric output is parsed without double rounding', () => {
   assert.throws(() => parsePacResults(Buffer.from('>> x\n1E+999\n'), [{ id: 'float', expression: 'x' }]), {
     code: 'PacOutputInvalid',
   });
+});
+
+test('the oracle command answers --help with its usage and exit 0 without running PAC', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const script = new URL('../../scripts/power-fx-oracle.mjs', import.meta.url);
+  for (const flag of ['--help', '-h']) {
+    const result = spawnSync(process.execPath, [fileURLToPath(script), flag], { encoding: 'utf8', windowsHide: true });
+    assert.equal(result.status, 0, result.stdout);
+    assert.equal(result.stdout.trim(), 'Usage: node scripts/power-fx-oracle.mjs [--pac path/to/pac.exe]');
+  }
+});
+
+test('the oracle command names the offending argument, also beside --help, and refuses a repeated --pac', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const script = fileURLToPath(new URL('../../scripts/power-fx-oracle.mjs', import.meta.url));
+  for (const [args, problem] of [
+    [['--help', '--foo'], 'unknown option --foo'],
+    [['--foo'], 'unknown option --foo'],
+    [['--pac', 'a.exe', '--pac', 'b.exe'], '--pac may be given only once'],
+    [['--pac'], '--pac needs one path'],
+  ]) {
+    const result = spawnSync(process.execPath, [script, ...args], { encoding: 'utf8', windowsHide: true });
+    assert.equal(result.status, 1, result.stdout);
+    assert.deepEqual(JSON.parse(result.stdout).error, {
+      code: 'OracleArgumentsInvalid',
+      message: `${problem}. Usage: node scripts/power-fx-oracle.mjs [--pac path/to/pac.exe]`,
+    });
+  }
 });

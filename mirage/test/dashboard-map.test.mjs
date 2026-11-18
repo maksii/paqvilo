@@ -653,7 +653,7 @@ test('Health KPI tiles link into Activity with the matching filter and name what
   assert.match(tile('webApi'), />Dataverse Web API<.*the organization API, not the portal&#39;s \/_api/s);
   assert.match(tile('plugins'), />Plug-in step runs<.*exported plug-in steps, not plugin rules/s);
   assert.match(tile('diagnostics'), />Findings</);
-  // DV-N4-8 / DV-N4b-3: the tile says on hover how it relates to Activity › Stats (either can be the higher number).
+  // the tile says on hover how it relates to Activity › Stats (either can be the higher number).
   assert.match(
     tile('plugins'),
     /title="Total since this runtime started, on every host, including runs whose activity is no longer kept\. Activity › Stats counts the steps of the kept activities that match its filters \(a run can be several steps\), so either number can be the higher one\."/,
@@ -668,7 +668,7 @@ test('Health KPI tiles link into Activity with the matching filter and name what
   assert.doesNotMatch(html, /What is happening|dashboard-activity|Render &amp; diagnostics/);
 });
 
-test('Health arrangement (D-M-9, D-M-11): the hero with readiness and key numbers, Key numbers and System map cards', () => {
+test('Health arrangement: the hero with readiness and key numbers, Key numbers and System map cards', () => {
   const { nodes, edges } = large();
   const payload = {
     runtime: {
@@ -700,7 +700,7 @@ test('Health arrangement (D-M-9, D-M-11): the hero with readiness and key number
     map = html.indexOf('data-ui-section="health:map"');
   assert.ok(banner >= 0 && banner < tiles && tiles < map, 'hero, then the Key numbers card, then the map card');
   assert.doesNotMatch(html, /dm-banner/, 'the plain banner card is gone');
-  // D-M-11: the hero carries the page action; the tiles card is titled like the map card; the legend is behind an (i).
+  // the hero carries the page action; the tiles card is titled like the map card; the legend is behind an (i).
   assert.match(
     html.slice(banner, tiles),
     /<div class="dm-hero-actions"><button[^>]*data-dashboard-refresh>Refresh now/,
@@ -711,7 +711,7 @@ test('Health arrangement (D-M-9, D-M-11): the hero with readiness and key number
   );
   assert.match(
     html.slice(map),
-    // DV-N4e-2: one (i) for the map: what it shows, then the legend under its own heading.
+    // one (i) for the map: what it shows, then the legend under its own heading.
     /<div class="ui-section-help"><span class="ui-info is-end dm-legend-info"><button type="button" class="ui-info-button" aria-label="About the system map and its legend">i<\/button><span class="ui-info-pop" role="tooltip"><span class="ui-info-text">Six layers[^<]*<\/span><strong class="dm-legend-head">Legend<\/strong><ul class="dm-legend-list"[^>]*>[\s\S]*?<\/span><\/span><\/div>/,
   );
   assert.doesNotMatch(html.slice(map), /<details class="dm-legend"/);
@@ -751,7 +751,7 @@ test('Health arrangement (D-M-9, D-M-11): the hero with readiness and key number
   assert.match(html, /data-ui-section="health:map" open>/);
 });
 
-// DV-N4c-5: Expand shows the stats-route timeline of each tile and findings over time, or says why there is none.
+// Expand shows the stats-route timeline of each tile and findings over time, or says why there is none.
 test('Health tile graphs are timelines since start, and a tile without one states the reason', () => {
   const from = Date.parse('2026-10-22T10:00:00Z');
   const range = timelineRange('2026-10-22T10:00:00Z', from + 23 * 60_000);

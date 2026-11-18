@@ -1,11 +1,14 @@
+import { requiredArgument } from './lib/required-argument.mjs';
 import fs from 'node:fs/promises';
 import pathModule from 'node:path';
 import { createHash } from 'node:crypto';
-import { chromium } from 'playwright-core';
 import { PNG } from 'pngjs';
 import pixelmatch from 'pixelmatch';
 import { fileURLToPath } from 'node:url';
 import { parseToolArgs } from './tool-options.mjs';
+import { localUnreachable } from './lib/local-state-fetch.mjs';
+import { connectLoopbackBrowser, stripAnsi } from './lib/live.mjs';
+import { TOOLKIT_MARKUP } from './lib/render-provenance.mjs';
 
 const sha = (value) => createHash('sha256').update(value).digest('hex');
 const loopback = (hostname) => ['127.0.0.1', 'localhost', '[::1]'].includes(hostname);
@@ -29,6 +32,14 @@ const safeMessage = (value) =>
       /\b(password|(?:access|id|refresh)[_-]?token|client[_-]?secret|authorization|cookie|credential)\s*[:=]\s*[^\s,;]+/gi,
       '$1=[redacted]',
     );
+// Playwright errors carry ANSI colour codes and a multi-line call log: the report and the console get the first line
+// without escapes; the whole redacted text goes to the output directory (artifacts.error).
+const plainMessage = (value) => safeMessage(stripAnsi(value));
+const failureLine = (detail) =>
+  detail
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean) ?? 'Verification failed.';
 const signInPath = (url) => /\/(?:signin|login|account\/login|authorize|oauth2)(?:[/?]|$)/i.test(url.pathname);
 const routeUrl = (base, route) => {
   if (!route?.startsWith('/') || route.startsWith('//') || route.includes('\\'))
@@ -38,7 +49,10 @@ const routeUrl = (base, route) => {
   return target;
 };
 
-function semanticDocument({ localOrigin, liveOrigin }) {
+function semanticDocument({ localOrigin, liveOrigin, toolkit }) {
+  // Markup only the toolkit adds (render-provenance.mjs TOOLKIT_MARKUP) is not part of the semantic DOM.
+  const toolkitAttribute = new RegExp(toolkit.attributePattern, 'i');
+  const toolkitElement = new RegExp(toolkit.elementPattern, 'i');
   const normalize = (value) => value.replaceAll(localOrigin, '@portal').replaceAll(liveOrigin, '@portal');
   const sensitiveName =
     /(?:password|(?:access|id|refresh)[_-]?token|client[_-]?secret|authorization|cookie|credential|nonce|verificationtoken)/i;
@@ -71,11 +85,15 @@ function semanticDocument({ localOrigin, liveOrigin }) {
       node.nodeType !== Node.ELEMENT_NODE ||
       ['SCRIPT', 'STYLE', 'LINK', 'META'].includes(node.tagName) ||
       // The toolkit dev panel host is injected into overlaid portal tabs only.
-      node.id === 'paqvilo-panel'
+      node.id === 'paqvilo-panel' ||
+      [...node.attributes].some(
+        (attr) => toolkitElement.test(attr.name) && !toolkit.annotations.includes(attr.name.toLowerCase()),
+      )
     )
       return null;
     const attrs = Object.fromEntries(
       [...node.attributes]
+        .filter((attr) => !toolkitAttribute.test(attr.name))
         .sort((a, b) => a.name.localeCompare(b.name))
         .map((attr) => [attr.name, attribute(node, attr)]),
     );
@@ -396,7 +414,7 @@ async function capturePage(label, target, options) {
     );
   observation.emptyPage =
     !bodyText.trim() && (await page.locator('body img,body canvas,body svg,body iframe').count()) === 0;
-  const semantic = await page.evaluate(semanticDocument, { localOrigin, liveOrigin });
+  const semantic = await page.evaluate(semanticDocument, { localOrigin, liveOrigin, toolkit: TOOLKIT_MARKUP });
   const semanticText = JSON.stringify(semantic, null, 2);
   observation.semanticDomSha256 = sha(semanticText);
   observation.htmlSha256 = sha(await page.content());
@@ -531,21 +549,23 @@ function isRelevantOrigin(value, relevantOrigins) {
 }
 
 /** Read-only, strict observed comparison. Owns only two new pages in the attached identity. */
-export async function verifyParity({
-  localUrl,
-  origin,
-  cdpUrl,
-  path = '/',
-  outputDir,
-  viewport = { width: 1440, height: 1000 },
-  timeout = 30_000,
-  // Bounds the post-load readiness waits (required selectors, fonts, network idle) separately from the page load.
-  readinessTimeout = Math.min(timeout, 5000),
-  settleMs = 500,
-  allowLoopbackLive = false,
-  sessionStorageSeeds = {},
-  requiredSelectors = [],
-} = {}) {
+export async function verifyParity(
+  {
+    localUrl,
+    origin,
+    cdpUrl,
+    path = '/',
+    outputDir,
+    viewport = { width: 1440, height: 1000 },
+    timeout = 30_000,
+    // Bounds the post-load readiness waits (required selectors, fonts, network idle) separately from the page load.
+    readinessTimeout = Math.min(timeout, 5000),
+    settleMs = 500,
+    allowLoopbackLive = false,
+    sessionStorageSeeds = {},
+    requiredSelectors = [],
+  } = requiredArgument('verifyParity(options)', 'an options object with localUrl, origin, cdpUrl and outputDir'),
+) {
   const validated = validateParityInputs({
     localUrl,
     origin,
@@ -593,13 +613,11 @@ export async function verifyParity({
   let browser;
   const pages = [];
   try {
-    const stateResponse = await fetch(new URL('/__sim/api/state', local.origin), {
-      signal: AbortSignal.timeout(timeout),
-    });
+    const stateResponse = await fetchLocalState(local.origin, timeout);
     if (!stateResponse.ok) throw new Error('Local simulator state is unavailable; rendering mode cannot be verified.');
     const simulatorState = await stateResponse.json();
     recordInitialSimulatorState(result, simulatorState);
-    browser = await chromium.connectOverCDP(cdp.href, { timeout });
+    browser = await connectLoopbackBrowser(cdp.href, { timeout });
     const contexts = browser.contexts();
     if (contexts.length !== 1) throw new Error('Verification requires exactly one connected browser identity.');
     const context = contexts[0];
@@ -644,15 +662,19 @@ export async function verifyParity({
     if (result.local.semanticDomSha256 !== result.live.semanticDomSha256)
       result.differences.push('Semantic DOM differs.');
     recordObservationDifferences(result);
-    const finalStateResponse = await fetch(new URL('/__sim/api/state', local.origin), {
-      signal: AbortSignal.timeout(timeout),
-    });
+    const finalStateResponse = await fetchLocalState(local.origin, timeout);
     if (!finalStateResponse.ok) throw new Error('Local simulator state became unavailable during verification.');
     const finalState = await finalStateResponse.json();
     recordFinalSimulatorState(result, finalState, localTarget);
     result.passed = result.verified = result.differences.length === 0;
   } catch (error) {
-    result.differences.push(safeMessage(error.message));
+    const detail = plainMessage(error.message);
+    const line = failureLine(detail);
+    result.differences.push(line);
+    if (detail.trim() !== line) {
+      result.artifacts.error = pathModule.join(outputDir, 'error.txt');
+      await fs.writeFile(result.artifacts.error, detail.trim() + '\n');
+    }
   } finally {
     for (const page of pages) await page.close().catch(() => {});
     await browser?.close().catch(() => {});
@@ -660,6 +682,16 @@ export async function verifyParity({
     await fs.writeFile(result.artifacts.report, JSON.stringify(result, null, 2));
   }
   return result;
+}
+
+/** The local simulator state; a refused or silent --local origin is named instead of reported as "fetch failed". */
+async function fetchLocalState(origin, timeout) {
+  try {
+    return await fetch(new URL('/__sim/api/state', origin), { signal: AbortSignal.timeout(timeout) });
+  } catch (error) {
+    if (error.name === 'TimeoutError' || error instanceof TypeError) throw localUnreachable(origin, error, timeout);
+    throw error;
+  }
 }
 
 if (process.argv[1] && pathModule.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
@@ -675,7 +707,7 @@ if (process.argv[1] && pathModule.resolve(process.argv[1]) === fileURLToPath(imp
     console.log(JSON.stringify(report, null, 2));
     process.exitCode = report.passed ? 0 : 1;
   } catch (error) {
-    console.error(safeMessage(error.message));
+    console.error(failureLine(plainMessage(error.message)));
     process.exitCode = 1;
   }
 }

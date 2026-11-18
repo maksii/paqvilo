@@ -251,6 +251,9 @@ function xrayBrowserImpl(data) {
     pointer = { x: 0, y: 0 },
     drag = null,
     disposed = false;
+  // cardMoved: the person dragged or docked the card, so it stays where they put it until the next pick.
+  let cardMoved = false,
+    cardPlacement = '';
   let oneShot = false,
     candidateLimit = false,
     pickGesture = false,
@@ -2008,13 +2011,8 @@ function xrayBrowserImpl(data) {
       return;
     }
     const identity = identify(selected, getSelectionScope(selected));
-    if (selectedRect.left + selectedRect.width > innerWidth - 434 && selectedRect.left < innerWidth - 12) {
-      card.style.left = '12px';
-      card.style.right = 'auto';
-    } else {
-      card.style.left = 'auto';
-      card.style.right = '12px';
-    }
+    // A new pick places the card next to it again, also after the person moved the card for an earlier one.
+    if (!preserve) cardMoved = false;
     card.innerHTML = `<div class="cardhead"><div class="grow"><div class="eyebrow">${esc(identity.kind)}</div><div class="title">${esc(identity.title)}</div>${renderInspectionEvidence(identity.evidence, { part: 'headline' })}</div><button data-action="dock" title="Move details to the other side" aria-label="Move details">⇄</button><button data-action="clear" aria-label="Clear selection">×</button></div><div class="content">${selected.localName === 'iframe' ? '<p class=note>Frame boundary · accessible same-origin controls can be selected directly; cross-origin and sandbox restrictions remain in force. Open an inaccessible inner document in its own tab for control details.</p><button data-action="frame-open">Open frame in new tab</button>' : ''}${sourcesHtml(selected)}<details class="ancestry"><summary>Element & ancestry</summary><div class="mono element-label">${esc(label(selected))}</div><p class="note">Select an enclosing element to inspect its source. [ and ] cycle overlapping elements.</p>${lineage(
       selected,
     )
@@ -2037,6 +2035,50 @@ function xrayBrowserImpl(data) {
       [...card.querySelectorAll('button,summary,select,input,a[href]')]
         .find((item) => Object.entries(focused).every(([key, value]) => item.dataset[key] === value))
         ?.focus({ preventScroll: true });
+    placeCard(selectedRect, !preserve);
+  };
+  // The details card opens beside the selected element: right of it, else left, else below, else above, inside the
+  // viewport and under the toolbar, so it never covers the element when any side has room. It follows the element on
+  // scroll and resize; an element larger than every free side gets the card on the side with the most room.
+  const placeCard = (rect, force = false) => {
+    if (!rect || card.hidden || cardMoved || drag) return;
+    // A clipped visible rectangle carries only its origin and size.
+    const right = rect.left + rect.width,
+      below = rect.top + rect.height;
+    const key = `${rect.left},${rect.top},${rect.width},${rect.height},${innerWidth},${innerHeight}`;
+    if (!force && key === cardPlacement) return;
+    cardPlacement = key;
+    const gap = 8,
+      top = Math.min(64, Math.max(gap, innerHeight / 4)),
+      // The legend sits along the bottom edge; the card stays above it.
+      bottom = innerHeight - 44,
+      width = Math.min(410, innerWidth - 2 * gap);
+    card.style.width = width + 'px';
+    card.style.right = 'auto';
+    card.style.bottom = 'auto';
+    card.style.maxHeight = '';
+    const height = Math.min(card.scrollHeight || card.offsetHeight, bottom - top);
+    const clamp = (value, low, high) => Math.max(low, Math.min(value, Math.max(low, high)));
+    const sides = [
+      { room: innerWidth - gap - right - gap, need: width, x: right + gap, y: null },
+      { room: rect.left - gap - gap, need: width, x: rect.left - gap - width, y: null },
+      { room: bottom - below - gap, need: Math.min(height, 160), x: null, y: below + gap },
+      { room: rect.top - gap - top, need: Math.min(height, 160), x: null, y: null },
+    ];
+    const side = sides.find((item) => item.room >= item.need) ?? [...sides].sort((a, b) => b.room - a.room)[0];
+    if (side.x === null) {
+      card.style.left = clamp(rect.left, gap, innerWidth - gap - width) + 'px';
+      card.style.maxHeight = Math.max(160, side.room) + 'px';
+      // Above the element the card hangs from its bottom edge, so a card shorter than the room stays next to it.
+      if (side === sides[2]) card.style.top = clamp(side.y, top, bottom - 160) + 'px';
+      else {
+        card.style.top = 'auto';
+        card.style.bottom = innerHeight - Math.max(top + 160, rect.top - gap) + 'px';
+      }
+    } else {
+      card.style.left = clamp(side.x, gap, innerWidth - gap - width) + 'px';
+      card.style.top = clamp(rect.top, top, bottom - height) + 'px';
+    }
   };
   // Rectangles live outside portal layout. Clip to each scroll container without changing its CSS.
   /* NOSONAR: single-pass routine, splitting it would change shared state */ function visibleRect(node) {
@@ -2361,6 +2403,7 @@ function xrayBrowserImpl(data) {
       }
     backgroundMarks.replaceChildren(background);
     updateMark(selectedMark, selected, '#76f1df');
+    if (selected) placeCard(visibleRect(selected));
     let formContext = null;
     for (const anchor of selectionAnchors.get(selected) ?? []) {
       if (
@@ -2576,7 +2619,11 @@ function xrayBrowserImpl(data) {
           attributeFilter: identityAttributes,
         });
   };
-  const select = (node) => {
+  // A logical-name label that Lense added to a model-driven field stands for that field: picking or hovering it
+  // inspects the field it was added to, not the label itself.
+  const annotated = (node) => node?.closest?.('[data-paq-model-logical-name]')?.parentElement ?? node;
+  const select = (picked) => {
+    const node = annotated(picked);
     if (!node || own(node)) return;
     const rect = visibleRect(node),
       cardRect = rect ?? node.getBoundingClientRect();
@@ -2746,11 +2793,12 @@ function xrayBrowserImpl(data) {
         card.style.top = Math.max(74, Math.min(innerHeight - card.offsetHeight - 8, event.clientY - drag.y)) + 'px';
         card.style.right = 'auto';
         card.style.bottom = 'auto';
+        cardMoved = true;
         return;
       }
       const node = event.composedPath().find((item) => item?.nodeType === 1);
       if (own(node) && !node?.classList?.contains('shield')) return;
-      hover = node?.classList?.contains('shield') ? underPointer(event.clientX, event.clientY) : node;
+      hover = annotated(node?.classList?.contains('shield') ? underPointer(event.clientX, event.clientY) : node);
       if (own(hover)) hover = null;
       schedule();
     },
@@ -2823,10 +2871,8 @@ function xrayBrowserImpl(data) {
   listenViews(
     'resize',
     () => {
-      card.style.left = '';
-      card.style.top = '';
-      card.style.right = '';
-      card.style.bottom = '';
+      cardMoved = false;
+      cardPlacement = '';
       needsScan = true;
       schedule();
     },
@@ -3079,8 +3125,8 @@ function xrayBrowserImpl(data) {
     }
     if (action === 'dock') {
       const r = card.getBoundingClientRect();
-      card.style.left = r.left > innerWidth / 2 ? '20px' : 'auto';
-      card.style.right = r.left > innerWidth / 2 ? 'auto' : '20px';
+      card.style.left = r.left > innerWidth / 2 ? '20px' : innerWidth - 20 - r.width + 'px';
+      cardMoved = true;
     }
     if (action === 'copy') {
       // The message belongs to the selection the button was pressed for: another element can be picked while the

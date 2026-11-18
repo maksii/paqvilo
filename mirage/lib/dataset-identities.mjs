@@ -2,6 +2,7 @@
 // never from table prefixes, display labels or GUID-looking business text.
 import { guidKey } from './dataverse-values.mjs';
 import { fieldDefinition } from './solution-schema.mjs';
+import { requiredArgument } from './required-argument.mjs';
 
 const own = (value, key) => (Object.hasOwn(value, key) ? value[key] : undefined);
 const object = (value) => value && [Object.prototype, null].includes(Object.getPrototypeOf(value));
@@ -248,7 +249,10 @@ function rewriteResultTable(state, table, rows) {
 }
 
 /** Remap explicit row IDs and metadata-backed references; return a cloned fragment and a count-only report. */
-export function remapDatasetIdentities(fragment, { schema, identities, existing = {} } = {}) {
+export function remapDatasetIdentities(
+  fragment = requiredArgument('remapDatasetIdentities(fragment, options)', 'a dataset fragment'),
+  { schema, identities, existing = {} } = {},
+) {
   if (
     !object(fragment) ||
     !object(fragment.tables) ||

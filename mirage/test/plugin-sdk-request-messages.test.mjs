@@ -103,3 +103,14 @@ test('SDK PublishXml, RetrieveTeamPrivileges and InitializeFrom run synchronousl
   });
   assert.ok(Object.hasOwn(initialized.results, 'Entity'));
 });
+
+test('Web API PublishXml and PublishAllXml run the steps registered on Publish and PublishAll, as the SDK requests do', async (t) => {
+  const f = await fixture(t, [step(1, 'Publish', 20, null), step(2, 'PublishAll', 40, null)]);
+  const published = await f.request('POST', '/PublishXml', {
+    ParameterXml: '<importexportxml><entities /></importexportxml>',
+  });
+  assert.equal(published.status, 204, await published.text());
+  const all = await f.request('POST', '/PublishAllXml', {});
+  assert.equal(all.status, 204, await all.text());
+  assert.deepEqual(f.seen, ['Publish/20:ParameterXml', 'PublishAll/40:']);
+});

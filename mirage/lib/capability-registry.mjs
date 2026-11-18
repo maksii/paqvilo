@@ -174,6 +174,26 @@ export const packCapabilityRecords = (packs = []) =>
     );
   });
 
+/**
+ * The capability record of an organization module on `api`: its describe(api) (dataverse-extensions.mjs adds the
+ * operations its install registered and the add-on levels on that api), else an honest inventory-level record. The one
+ * computation behind both the registry's fromExtensions and the organization host's registry.
+ */
+export function describeExtension(entry, api = undefined) {
+  return (
+    entry.describe?.(api) ?? {
+      name: entry.name,
+      kind: 'organization-module',
+      level: 'inventory',
+      operations: [],
+      requires: [],
+      principal: 'none',
+      stateOwner: 'unknown',
+      lifecycle: { install: true, reset: Boolean(entry.reset), close: Boolean(entry.close) },
+    }
+  );
+}
+
 export function createCapabilityRegistry({ runtime } = {}) {
   const records = new Map();
   const candidates = () =>
@@ -201,22 +221,9 @@ export function createCapabilityRegistry({ runtime } = {}) {
     addAll(list = []) {
       return list.map((record) => registry.add(record));
     },
-    /** EXTENSIONS entries: describe() when present, else an honest inventory-level record. */
-    fromExtensions(list = []) {
-      return list.map((entry) =>
-        registry.add(
-          entry.describe?.() ?? {
-            name: entry.name,
-            kind: 'organization-module',
-            level: 'inventory',
-            operations: [],
-            requires: [],
-            principal: 'none',
-            stateOwner: 'unknown',
-            lifecycle: { install: true, reset: Boolean(entry.reset), close: Boolean(entry.close) },
-          },
-        ),
-      );
+    /** EXTENSIONS entries as describeExtension records for `api` (the organization they were installed on). */
+    fromExtensions(list = [], api = undefined) {
+      return list.map((entry) => registry.add(describeExtension(entry, api)));
     },
     /** operation-catalogue and plugin-catalogue items; an unsupported item stays at inventory with its reason. */
     fromOperations(items = []) {

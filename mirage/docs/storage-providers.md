@@ -1,7 +1,7 @@
 # Storage providers
 
-File bytes (Dataverse file and image columns, note and email attachment bodies, portal web files, portal attachments
-and SharePoint documents) go through one small storage contract instead of the state file. The state keeps only keys.
+File bytes (Dataverse file and image columns, note and email attachment bodies, portal web files, portal attachments and
+SharePoint documents) go through one small storage contract instead of the state file. The state keeps only keys.
 
 | Provider                    | Module                              | What it is                                                                                   |
 | --------------------------- | ----------------------------------- | -------------------------------------------------------------------------------------------- |
@@ -11,9 +11,9 @@ and SharePoint documents) go through one small storage contract instead of the s
 | `pack:<packId>/<name>`      | your pack's `storageProviders`      | Your implementation, checked by the shared contract suite.                                   |
 | Azure Storage, other clouds | none                                | Refused: every endpoint must be loopback.                                                    |
 
-`mirage/lib/storage-provider.mjs` holds the contract (`ProviderError`, `validateKey`, `assertProvider`,
-`guardProvider`, `createStorageRouter`, `STORAGE_OPERATIONS`); `storageSettings` validates the configuration;
-`runStorageContract` and `STORAGE_CONTRACT_CASES` come from `paqvilo/mirage/testing`.
+`mirage/lib/storage-provider.mjs` holds the contract (`ProviderError`, `validateKey`, `assertProvider`, `guardProvider`,
+`createStorageRouter`, `STORAGE_OPERATIONS`); `storageSettings` validates the configuration; `runStorageContract` and
+`STORAGE_CONTRACT_CASES` come from `paqvilo/mirage/testing`.
 
 ## Contract
 
@@ -40,31 +40,31 @@ window, and `signal` aborts the work when the probe ends, after which `preflight
 
 **Errors** are `ProviderError` (a `DataError`) with `code`, HTTP `status`, the `provider` id and an optional
 `diagnostic`: `NotFound` 404, `PreconditionFailed` 412, `Conflict` 409 (`ifNoneMatch: '*'` on an existing object),
-`TooLarge` 413, `InvalidKey` 400, `InvalidRange` 416, `Unavailable` 503, `Unauthorized` 401, `Unsupported` 501.
-Messages never contain a URL query, SAS signature, connection string or rejected key.
+`TooLarge` 413, `InvalidKey` 400, `InvalidRange` 416, `Unavailable` 503, `Unauthorized` 401, `Unsupported` 501. Messages
+never contain a URL query, SAS signature, connection string or rejected key.
 
-**Keys** match `[a-z0-9][a-z0-9-_./]{0,1023}` after lower-casing, with no leading `/` or `\`, no NUL and no `..`, `.`
-or empty segment. `guardProvider` validates keys and list prefixes before the implementation sees them, answers
-`Unsupported` for undeclared operations and maps connection failures to `Unavailable`; the router and the contract
-suite always go through it.
+**Keys** match `[a-z0-9][a-z0-9-_./]{0,1023}` after lower-casing, with no leading `/` or `\`, no NUL and no `..`, `.` or
+empty segment. `guardProvider` validates keys and list prefixes before the implementation sees them, answers
+`Unsupported` for undeclared operations and maps connection failures to `Unavailable`; the router and the contract suite
+always go through it.
 
 ## Local disk and in memory
 
 `local-disk` keeps immutable content-addressed bytes in `objects/<sha256>` and an `index.json` of key → metadata.
-Uploads stream to `tmp/` while hashing and are renamed into place; the index is written to a synced temporary file
-and renamed. Blocks stage under `staging/`. Every path derives from digests or generated ids and is checked against
-the root; objects are opened with `O_NOFOLLOW` where available. Unreferenced bytes are removed when their last key
-goes; `compact()` removes leftovers. SAS URLs are HMAC-SHA256 signed with a per-process secret under
-`/_sas/storage/<id>/`. Its preflight is ready once the root opens.
+Uploads stream to `tmp/` while hashing and are renamed into place; the index is written to a synced temporary file and
+renamed. Blocks stage under `staging/`. Every path derives from digests or generated ids and is checked against the
+root; objects are opened with `O_NOFOLLOW` where available. Unreferenced bytes are removed when their last key goes;
+`compact()` removes leftovers. SAS URLs are HMAC-SHA256 signed with a per-process secret under `/_sas/storage/<id>/`.
+Its preflight is ready once the root opens.
 
 The in-memory provider loses its bytes on restart. A runtime without a state directory (`dry-run`, or no state file)
 creates every `local-disk` id, `local` included, as an in-memory provider under the same id, so every default route
-stays ready. Every persistent level (`simulation`, `deep`, or no level) uses local disk under
-`<stateDirectory>/blobs`, and the simulation report lists that directory as a target.
+stays ready. Every persistent level (`simulation`, `deep`, or no level) uses local disk under `<stateDirectory>/blobs`,
+and the simulation report lists that directory as a target.
 
-At `simulation` and `deep`, a note or attachment body of a table that a pack DATA file owns stays inline (base64) in
-the DATA row up to 64 KiB of decoded bytes, so a committed DATA file reads on another machine; a larger body and every
-file or image column lives in `<stateDirectory>/blobs`, and the row keeps only its internal `__blobkey`.
+At `simulation` and `deep`, a note or attachment body of a table that a pack DATA file owns stays inline (base64) in the
+DATA row up to 64 KiB of decoded bytes, so a committed DATA file reads on another machine; a larger body and every file
+or image column lives in `<stateDirectory>/blobs`, and the row keeps only its internal `__blobkey`.
 
 ## Routes
 
@@ -92,8 +92,8 @@ install option, else `api.providers.storage`; both hosts pass one.
 | Note and attachment bodies (`annotations`)                 | `annotations/<rowId>/<n>`, `n` grows per body | the row with a null body, its `filename`, `mimetype`, `filesize` and `__blobkey` |
 
 - **Writes.** Uploads (`PATCH`, chunked, block messages, SAS) stage blocks in the provider and commit them, so a block
-  upload is never joined in memory. Image values and note bodies on record writes are put in a `beforeWrite` hook;
-  only canonical base64 moves. `MaxUploadFileSize` is checked first.
+  upload is never joined in memory. Image values and note bodies on record writes are put in a `beforeWrite` hook; only
+  canonical base64 moves. `MaxUploadFileSize` is checked first.
 - **Reads.** Downloads, ranges and `DownloadBlock` read from the provider. A response that selects an image or note body
   reads it in the `project` hook, so Web API and SOAP answers are unchanged; `__blobkey` never appears in a response.
   `GetFileSasUrl` answers the provider's `sas()` URL.
@@ -124,10 +124,10 @@ install option, else `api.providers.storage`; both hosts pass one.
 - **Cloud attachments.** With `FileStorage/CloudStorageAccount` set, a form attachment is put as
   `attachments/<uuid>/<file name>` before the record write, and the note is the placeholder `<name>.txt` whose body is
   `{ Name, Type, Size, Url }` with the provider key as `Url`. A failed save deletes the object again.
-- **Staged uploads.** `/_api/file/InitializeFileUpload/note` and `/_api/file/UploadFileBlock/note` stage blocks on
-  route `annotations` under `staged/<id>`; the form save reads and deletes the object. The pending-upload list is
-  process-local: at most 50 uploads, each for one hour, and a restart discards it. Blocks of an abandoned upload stay
-  in the provider's staging area.
+- **Staged uploads.** `/_api/file/InitializeFileUpload/note` and `/_api/file/UploadFileBlock/note` stage blocks on route
+  `annotations` under `staged/<id>`; the form save reads and deletes the object. The pending-upload list is
+  process-local: at most 50 uploads, each for one hour, and a restart discards it. Blocks of an abandoned upload stay in
+  the provider's staging area.
 
 ## Configuration keys
 
@@ -139,12 +139,7 @@ providers:
   storage:
     local: { kind: local-disk, root: blobs } # root resolves under the state directory
     emulator:
-      {
-        kind: azurite,
-        connectionString: env:PAQVILO_AZURITE_CONNECTION,
-        container: paqvilo-attachments,
-        start: external,
-      }
+      { kind: azurite, connectionString: env:AZURITE_CONNECTION, container: paqvilo-attachments, start: external }
   routes:
     portalCloudAttachments: emulator
 ```
@@ -154,8 +149,8 @@ providers:
 | `storage.<id>`                  | id matches `[a-z][a-z0-9-]{0,63}`; `local` (`local-disk`) always exists                                                   |
 | `storage.<id>.kind`             | `local-disk`, `azurite` or `pack:<packId>/<name>`; keys are strict per kind                                               |
 | `storage.<id>.root`             | `local-disk` only; must stay inside the runtime's private state directory (checked the same way by the offline preflight) |
-| `storage.<id>.connectionString` | `azurite`; `env:NAME` only, a literal is rejected and never echoed                                                        |
-| `storage.<id>.container`        | `azurite`; Blob container name rules, default `paqvilo`                                                                   |
+| `storage.<id>.connectionString` | `azurite` (required) and pack kinds; `env:NAME` only, a literal is rejected and never echoed                              |
+| `storage.<id>.container`        | `azurite` (default `paqvilo`) and pack kinds; Blob container name rules                                                   |
 | `storage.<id>.start`            | `azurite`; `external` only                                                                                                |
 | `storage.<id>.timeoutMs`        | `azurite`; per request until the response headers arrive, 100 to 600000, default 30000                                    |
 | `storage.<id>.options`          | pack kinds; a plain object passed to the factory                                                                          |
@@ -171,10 +166,10 @@ same composition rules ([messaging and outbox](messaging-and-outbox.md#configura
   open connections on first use. A factory that throws, returns a promise or returns an invalid provider fails host
   start with `PROVIDER_FACTORY_FAILED` naming the pack.
 - `own(resource)` registers something the factory opened (an object with optional `settle()` and `close()`). When
-  composition fails, Mirage settles and closes, in reverse creation order, the instances created before the failure,
-  the rejected instance (a promise once it resolves) and every owned resource. A rejected instance is never returned.
-- A declared entry with no factory stays not ready: its routes answer `PROVIDER_NOT_READY`, `PROVIDER_NOT_REGISTERED`
-  is reported and preflight lists `provider:storage/<id>` as missing.
+  composition fails, Mirage settles and closes, in reverse creation order, the instances created before the failure, the
+  rejected instance (a promise once it resolves) and every owned resource. A rejected instance is never returned.
+- A declared entry with no factory stays not ready: its routes answer `PROVIDER_NOT_READY`, `PROVIDER_NOT_REGISTERED` is
+  reported and preflight lists `provider:storage/<id>` as missing.
 - The host settles and closes providers in reverse creation order. Each provider is attempted separately; failures
   aggregate into `PROVIDER_SETTLE_FAILED` or `PROVIDER_CLOSE_FAILED`, and the next close retries only the providers
   whose close failed, without settling them again.
@@ -186,7 +181,8 @@ Core implements the contract against Azurite's Blob REST API with native `fetch`
 (`x-ms-version: 2021-08-06`), with no dependency. Paqvilo never starts Azurite; run it yourself, for example
 `npx azurite --location .paqvilo/azurite`. Every `azurite` entry is created by core; a pack factory is not consulted.
 
-- **Connection string.** `env:NAME` is read once when the host composes providers. Accepted forms:
+- **Connection string.** `env:NAME` is read once when the host composes providers. Choose a name without the `PAQVILO_`
+  prefix: the toolkit refuses any `PAQVILO_` variable it does not know (`Unknown setting <NAME>`, exit 2). Accepted forms:
   `UseDevelopmentStorage=true` (the documented `devstoreaccount1` at `http://127.0.0.1:10000/devstoreaccount1`) and
   `AccountName=…;AccountKey=…;BlobEndpoint=…`. A non-loopback endpoint is refused without network
   (`PROVIDER_NOT_LOOPBACK`). The account key never leaves the provider's memory.
@@ -194,9 +190,9 @@ Core implements the contract against Azurite's Blob REST API with native `fetch`
   (`PROVIDER_CONNECTION_STRING_INVALID`, `PROVIDER_ENDPOINT_INVALID`) or non-loopback makes it `contract`, and every
   operation answers 503 `Unavailable` with that reason. A request without response headers within `timeoutMs` answers
   `Unavailable` (`PROVIDER_UNREACHABLE`); a streamed download is not cut off after its headers.
-- **Mapping.** `put` is Put Blob up to 4 MiB, else 4 MiB Put Block calls and Put Block List; `put` with `blockId` is
-  Put Block and `commit` Put Block List; `get` is Get Blob with `x-ms-range`; `head` Get Blob Properties; `delete`
-  Delete Blob; `list` List Blobs. The container is created on first write, and again once if a write answers
+- **Mapping.** `put` is Put Blob up to 4 MiB, else 4 MiB Put Block calls and Put Block List; `put` with `blockId` is Put
+  Block and `commit` Put Block List; `get` is Get Blob with `x-ms-range`; `head` Get Blob Properties; `delete` Delete
+  Blob; `list` List Blobs. The container is created on first write, and again once if a write answers
   `ContainerNotFound` (an in-memory Azurite restarted). `sas()` returns a service SAS that addresses Azurite directly.
 - **Errors** map by status with `x-ms-error-code` as the diagnostic: 404 → `NotFound` (`PreconditionFailed` for a
   conditional write), 412 → `PreconditionFailed` (`Conflict` for `If-None-Match: *`), 409 → `Conflict`, 416 →
@@ -228,8 +224,7 @@ runStorageContract(
 ```
 
 `makeProvider(t)` returns a fresh, empty provider; the `clock` option (default the system clock) sets SAS expiries.
-`STORAGE_CONTRACT_CASES` names the cases (round trip, ranges, conditions, block commit, paging, SAS, key rejection, a
-20 MiB stream, unavailability, preflight settling and more). Skip a case only when the provider does not declare its
-operation. Core runs
-the suite against local disk, in-memory storage and the Azurite client (against the test-only Shared Key-verifying fake
-`mirage/testing/azurite-fake.mjs`).
+`STORAGE_CONTRACT_CASES` names the cases (round trip, ranges, conditions, block commit, paging, SAS, key rejection, a 20
+MiB stream, unavailability, preflight settling and more). Skip a case only when the provider does not declare its
+operation. Core runs the suite against local disk, in-memory storage and the Azurite client (against the test-only
+Shared Key-verifying fake `mirage/testing/azurite-fake.mjs`).

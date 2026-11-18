@@ -99,7 +99,7 @@ test('a refused template export names its pack once', () => {
   Object.defineProperty(p, 'webApiErrorTemplates', { get: capability });
   assert.throws(
     () => validatePack(p),
-    (error) => error.message === 'Data pack data pack: webApiErrorTemplates must be an explicit data property',
+    (error) => error.message === 'Data pack: webApiErrorTemplates must be an explicit data property',
   );
 });
 test('default, SDK errors, disabled innererror, unsupported descriptors and reader mode stay untouched', () => {

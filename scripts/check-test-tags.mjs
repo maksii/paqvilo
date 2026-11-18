@@ -132,7 +132,7 @@ export function parseTestKinds(text) {
     const reason = body[2].trim();
     const minimum = kinds.some((kind) => EVIDENCE_KINDS.has(kind)) ? 20 : 8;
     if (reason.length < minimum)
-      errors.push(`line ${index + 1}: ${kinds.join('+')} needs a ${minimum > 8 ? 'evidence source' : 'reason'}`);
+      errors.push(`line ${index + 1}: ${kinds.join('+')} needs ${minimum > 8 ? 'an evidence source' : 'a reason'}`);
     // A tag directly above a test declaration (other comment lines may sit between) is per-test.
     let next = index + 1;
     while (next < lines.length && /^\s*(?:\/\/|$)/.test(lines[next])) next++;
@@ -523,11 +523,53 @@ export function check({ files, newText, oldText, diffOf = () => '', legacy = new
   return failures;
 }
 
+const USAGE = `Usage: node scripts/check-test-tags.mjs <mode>
+  --staged         check the index against HEAD (pre-commit hook)
+  --base <rev>     check HEAD against its merge base with <rev>
+  --event          check the GitHub pull_request/push range named by GITHUB_EVENT_PATH (CI)
+  --report         print counts per kind and replay cases; never fails
+  <file...>        check the tag syntax of the named files only (no parity protection)
+  --help           print this help
+See docs/test-kinds.md.`;
+
+class UsageError extends Error {}
+
+// Refuses a malformed command line before git or the event file is read.
+function validateArgs(args) {
+  const flag = args.find((arg) => arg.startsWith('-'));
+  if (flag && !['--staged', '--base', '--event', '--report'].includes(args[0]))
+    throw new UsageError(`unknown option ${flag}`);
+  if (args[0] === '--base' && (!args[1] || args[1].startsWith('-')))
+    throw new UsageError('--base needs a revision, for example --base origin/main');
+  if (args[0] === '--event' && !process.env.GITHUB_EVENT_PATH)
+    throw new UsageError(
+      '--event reads the GitHub event named by GITHUB_EVENT_PATH, which is not set; use --base <rev> locally',
+    );
+  const missing = flag ? [] : args.filter((file) => workingText(file) === null);
+  if (missing.length) throw new UsageError(`file not found: ${missing.join(', ')}`);
+}
+
+function readEvent(file) {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (error) {
+    const problem = error.code === 'ENOENT' ? 'file not found' : error.message;
+    throw new UsageError(`cannot read the GitHub event at GITHUB_EVENT_PATH ${file} (${problem})`);
+  }
+}
+
 function run(args) {
+  if (args[0] === '--help' || args[0] === '-h') {
+    console.log(USAGE);
+    return 0;
+  }
+  validateArgs(args);
   if (args[0] === '--report') {
     return reportKinds();
   }
   let options;
+  // Diff modes check the files a change touched; file mode checks the files named on the command line.
+  let scope = 'changed';
   if (args[0] === '--staged') {
     options = {
       files: git(['diff', '--cached', '--name-only', '--diff-filter=AMD', '--no-renames', '-z'])
@@ -541,7 +583,7 @@ function run(args) {
     let base = args[1],
       head = 'HEAD';
     if (args[0] === '--event') {
-      const event = JSON.parse(fs.readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'));
+      const event = readEvent(process.env.GITHUB_EVENT_PATH);
       base = event.pull_request?.base.sha ?? event.before;
       head = event.pull_request?.head.sha ?? process.env.GITHUB_SHA ?? 'HEAD';
       if (!base || /^0+$/.test(base)) {
@@ -559,7 +601,12 @@ function run(args) {
       diffOf: (file) => git(['diff', '-U0', '--no-renames', mergeBase, head, '--', file]),
     };
   } else {
+    if (args.length === 0) {
+      console.log('No files named, so nothing was checked. Pass test files, --staged, --base <ref> or --report.');
+      return 0;
+    }
     options = { files: args, newText: workingText };
+    scope = 'named';
   }
   const failures = check({ ...options, legacy: legacyFiles(options.newText) });
   for (const failure of failures) console.error(failure);
@@ -570,7 +617,7 @@ function run(args) {
   const testFiles = options.files.filter((file) =>
     isTestFile(file, () => [options.newText(file), options.oldText?.(file)]),
   );
-  console.log(`Test kinds valid for ${testFiles.length} changed test file(s).`);
+  console.log(`Test kinds valid for ${testFiles.length} ${scope} test file(s).`);
   return 0;
 }
 
@@ -595,5 +642,18 @@ function reportKinds() {
   return 0;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))
-  process.exitCode = run(process.argv.slice(2));
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try {
+    process.exitCode = run(process.argv.slice(2));
+  } catch (error) {
+    // Usage mistakes and git or event-file failures are one line; a bug elsewhere keeps its stack.
+    if (!(error instanceof UsageError) && !error.message.startsWith('git ')) throw error;
+    const message = error.message
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .join('; ');
+    console.error(`check-test-tags: ${message}${error instanceof UsageError ? ' (see --help)' : ''}`);
+    process.exitCode = 1;
+  }
+}

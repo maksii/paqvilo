@@ -1117,7 +1117,7 @@ span.ui-status-dot {
     min-width: 16em;
   }
   /* Beside the list the waterfall labels take over half of the narrower column, and a name wraps instead of being cut,
-     so sibling spans stay distinguishable; the bar scales to the remaining width (DV-Y8-6). */
+     so sibling spans stay distinguishable; the bar scales to the remaining width. */
   .ui-trace-side .ui-waterfall-row {
     grid-template-columns: minmax(0, 55%) minmax(80px, 1fr) 84px;
   }
@@ -1507,7 +1507,7 @@ span.ui-status-dot {
   }
 }
 /*
- * DV-N4c-2: on a wide screen Data records and Platform settings fit their frame. Records share the width evenly and
+ * on a wide screen Data records and Platform settings fit their frame. Records share the width evenly and
  * cut long values (the full value is the cell's title); platform settings wrap their text and override controls.
  */
 @media (min-width: 761px) {
@@ -1538,7 +1538,7 @@ span.ui-status-dot {
   }
 }
 
-/* ---- Page chrome (D-M-7): no title block; one toolbar row, then the content. */
+/* ---- Page chrome: no title block; one toolbar row, then the content. */
 .ui-page-chrome {
   display: grid;
   gap: 8px;
@@ -1616,7 +1616,7 @@ span.ui-status-dot {
     padding-right: 380px;
   }
 }
-/* Section help is an (i) next to the heading, never a sentence under it (D-M-6). */
+/* Section help is an (i) next to the heading, never a sentence under it. */
 .ui-help-inline {
   display: inline-flex;
   margin: 0 0 0 6px;
@@ -1644,7 +1644,7 @@ span.ui-status-dot {
   padding-block: 2px;
   font-size: 13px;
 }
-/* ---- dataTable (D-M-8): bar above, sortable sticky header, row dividers and hover, controls bar below. */
+/* ---- dataTable: bar above, sortable sticky header, row dividers and hover, controls bar below. */
 .ui-data-table {
   margin: 0 0 16px;
 }
@@ -1758,7 +1758,7 @@ th[aria-sort='descending'] .ui-sort-mark {
 }
 
 /*
- * DV-N4d-1: a title keeps its (i) on its line. A heading followed by its (i) leaves room for it, so a long title wraps
+ * a title keeps its (i) on its line. A heading followed by its (i) leaves room for it, so a long title wraps
  * with the (i) beside its last line; a legend holds its (i); on a phone a panel heading's button wraps under the title
  * instead of squeezing it.
  */
@@ -1779,7 +1779,7 @@ legend > .ui-note {
   }
 }
 
-/* D-M-11 table parity: the bar's Filters sits after the search box; chips of a table's column filters under its bar;
+/* Table parity: the bar's Filters sits after the search box; chips of a table's column filters under its bar;
    the record search in the Data records toolbar row. */
 .ui-data-table > .ui-chips {
   margin: 0 0 8px;

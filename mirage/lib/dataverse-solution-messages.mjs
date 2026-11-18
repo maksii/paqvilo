@@ -1312,8 +1312,10 @@ function restoreLayer(api, ctx, layer) {
   const key = `LogicalName='${layer.logical}'`;
   const body = layerStack(layer).at(-1).body;
   if (layer.kind === 'attribute') {
-    delete api.store.state.mappings[layer.logical].fields[layer.name];
-    createColumn(c, key, structuredClone(body));
+    const fields = api.store.state.mappings[layer.logical].fields;
+    const primary = fields[layer.name]?.columnMetadata?.isPrimaryName === true;
+    delete fields[layer.name];
+    createColumn(c, key, structuredClone(body), { primary });
   } else updateTable(c, key, structuredClone(body));
   layer.activeOnTop = false;
   layer.seq = lastMetadataSeq(api);

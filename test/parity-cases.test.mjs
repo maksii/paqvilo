@@ -298,6 +298,156 @@ test('build: with existing and revise, the case is replaced and one history entr
   assert.deepEqual(file.history, [revise]);
 });
 
+test('build: the revision-required error carries a code and the change names for callers to reword', () => {
+  const captures = [rawCapture('run-1', BASE_RESULTS), rawCapture('run-2', BASE_RESULTS)];
+  const existing = buildParityCases({ surface: SURFACE, suite: SUITE, oracle: ORACLE, captures });
+  const changed = outputsWith({ add: { output: { kind: 'number', value: 4 } } });
+  const next = [rawCapture('run-3', changed), rawCapture('run-4', changed)];
+  assert.throws(() => buildParityCases({ surface: SURFACE, suite: SUITE, oracle: ORACLE, captures: next, existing }), {
+    code: 'PARITY_REVISION_REQUIRED',
+    changes: ['case add'],
+  });
+});
+
+// Captures of one `stamp` case: `at` is the run-specific value, `value` the behaviour.
+function stampCaptures(id, rows) {
+  return rows.map(([run, value, at, extra]) =>
+    rawCapture(run, [{ id, input: { expression: 'stamp' }, output: { value, at, ...extra } }]),
+  );
+}
+
+test('build: a first build records only the pointers its own captures differ at', () => {
+  const file = buildParityCases({
+    surface: SURFACE,
+    suite: SUITE,
+    oracle: ORACLE,
+    captures: stampCaptures('stamp', [
+      ['run-1', 7, 't1'],
+      ['run-2', 7, 't2'],
+    ]),
+  });
+  assert.deepEqual(file.cases[0].volatile, ['/at']);
+  assert.deepEqual(file.cases[0].output, { value: 7, at: '<volatile>' });
+});
+
+test('build: a revision keeps a volatile pointer that earlier captures proved, though the new captures agree', () => {
+  const existing = buildParityCases({
+    surface: SURFACE,
+    suite: SUITE,
+    oracle: ORACLE,
+    captures: stampCaptures('stamp', [
+      ['run-1', 7, 't1'],
+      ['run-2', 7, 't2'],
+    ]),
+  });
+  const next = stampCaptures('stamp', [
+    ['run-5', 8, 't1'],
+    ['run-6', 8, 't1'],
+  ]);
+  const revise = { date: '2026-11-09', change: 'Value corrected to 8', evidence: 'Invented evidence.' };
+  const file = buildParityCases({ surface: SURFACE, suite: SUITE, oracle: ORACLE, captures: next, existing, revise });
+  assert.deepEqual(file.cases[0].volatile, ['/at']);
+  assert.deepEqual(file.cases[0].output, { value: 8, at: '<volatile>' });
+  assert.deepEqual(file.history, [revise]);
+  // The same captures again change nothing, so no revision is needed.
+  assert.deepEqual(
+    buildParityCases({ surface: SURFACE, suite: SUITE, oracle: ORACLE, captures: next, existing: file }),
+    file,
+  );
+});
+
+test('build: a revision adds a pointer the new captures prove volatile to the recorded ones', () => {
+  const existing = buildParityCases({
+    surface: SURFACE,
+    suite: SUITE,
+    oracle: ORACLE,
+    captures: stampCaptures('stamp', [
+      ['run-1', 7, 't1', { etag: 'e' }],
+      ['run-2', 7, 't2', { etag: 'e' }],
+    ]),
+  });
+  const next = stampCaptures('stamp', [
+    ['run-5', 7, 't1', { etag: 'e5' }],
+    ['run-6', 7, 't1', { etag: 'e6' }],
+  ]);
+  const revise = { date: '2026-11-09', change: 'etag is per run', evidence: 'Invented evidence.' };
+  const file = buildParityCases({ surface: SURFACE, suite: SUITE, oracle: ORACLE, captures: next, existing, revise });
+  assert.deepEqual(file.cases[0].volatile, ['/at', '/etag']);
+  assert.deepEqual(file.cases[0].output, { value: 7, at: '<volatile>', etag: '<volatile>' });
+});
+
+test('build: a revision drops a recorded volatile pointer only when named and no longer differing', () => {
+  const existing = buildParityCases({
+    surface: SURFACE,
+    suite: SUITE,
+    oracle: ORACLE,
+    captures: stampCaptures('stamp', [
+      ['run-1', 7, 't1'],
+      ['run-2', 7, 't2'],
+    ]),
+  });
+  const base = { surface: SURFACE, suite: SUITE, oracle: ORACLE, existing };
+  const revise = { date: '2026-11-09', change: 'at is fixed', evidence: 'Invented.', dropVolatile: ['stamp#/at'] };
+  const agreeing = stampCaptures('stamp', [
+    ['run-5', 7, 't1'],
+    ['run-6', 7, 't1'],
+  ]);
+  const file = buildParityCases({ ...base, captures: agreeing, revise });
+  assert.deepEqual(file.cases[0].volatile, []);
+  assert.deepEqual(file.cases[0].output, { value: 7, at: 't1' });
+  assert.deepEqual(file.history, [{ date: revise.date, change: revise.change, evidence: revise.evidence }]);
+  const differing = stampCaptures('stamp', [
+    ['run-5', 7, 't5'],
+    ['run-6', 7, 't6'],
+  ]);
+  assert.throws(
+    () => buildParityCases({ ...base, captures: differing, revise }),
+    /case stamp: volatile pointer \/at still differs between the new captures/,
+  );
+  assert.throws(
+    () => buildParityCases({ ...base, captures: agreeing, revise: { ...revise, dropVolatile: ['stamp#/value'] } }),
+    /volatile drop "stamp#\/value" names no recorded volatile pointer of a case/,
+  );
+});
+
+test('build: a recorded volatile pointer missing from the new output must be dropped explicitly', () => {
+  const existing = buildParityCases({
+    surface: SURFACE,
+    suite: SUITE,
+    oracle: ORACLE,
+    captures: stampCaptures('stamp', [
+      ['run-1', 7, 't1'],
+      ['run-2', 7, 't2'],
+    ]),
+  });
+  const next = ['run-5', 'run-6'].map((run) =>
+    rawCapture(run, [{ id: 'stamp', input: { expression: 'stamp' }, output: { value: 7 } }]),
+  );
+  const revise = { date: '2026-11-09', change: 'at removed', evidence: 'Invented evidence.' };
+  const base = { surface: SURFACE, suite: SUITE, oracle: ORACLE, captures: next, existing };
+  assert.throws(() => buildParityCases({ ...base, revise }), {
+    code: 'PARITY_VOLATILE_UNRESOLVED',
+    message: /case stamp: recorded volatile pointer \/at does not resolve in the new output/,
+  });
+  const file = buildParityCases({ ...base, revise: { ...revise, dropVolatile: ['stamp#/at'] } });
+  assert.deepEqual(file.cases[0].volatile, []);
+});
+
+test('build: a recorded container pointer covers new volatile pointers beneath it', () => {
+  const list = (run, items) => rawCapture(run, [{ id: 'list', input: { expression: 'list' }, output: { items } }]);
+  const existing = buildParityCases({
+    surface: SURFACE,
+    suite: SUITE,
+    oracle: ORACLE,
+    captures: [list('run-1', [{ id: 'a' }]), list('run-2', [{ id: 'a' }, { id: 'b' }])],
+  });
+  assert.deepEqual(existing.cases[0].volatile, ['/items']);
+  const next = [list('run-5', [{ id: 'x' }]), list('run-6', [{ id: 'y' }])];
+  const file = buildParityCases({ surface: SURFACE, suite: SUITE, oracle: ORACLE, captures: next, existing });
+  assert.deepEqual(file.cases, existing.cases);
+  assert.deepEqual(file.history, []);
+});
+
 test('build: an existing capture id with a different sha256 throws', () => {
   const captures = [rawCapture('run-1', BASE_RESULTS), rawCapture('run-2', BASE_RESULTS)];
   const existing = buildParityCases({ surface: SURFACE, suite: SUITE, oracle: ORACLE, captures });
@@ -436,6 +586,44 @@ test('replay: a pointer-scoped gap fails when another field differs', async (t) 
   const error = outcomes.get(`${SURFACE}/${SUITE}#list`);
   assert.ok(error instanceof assert.AssertionError);
   assert.match(error.message, /\/items\/0\/id/);
+});
+
+test('replay: a failure diff labels a known-gap pointer as a known gap, not as a volatile value', async (t) => {
+  const output = {
+    items: [
+      { id: '<volatile>', n: 1 },
+      { id: 'b', n: 2 },
+    ],
+  };
+  const cases = [
+    validFile().cases[0],
+    { id: 'list', input: { expression: 'list' }, output, volatile: ['/items/0/id'] },
+  ];
+  const file = writeCaseFile(tempDir(t), validFile({ cases }));
+  const run = listRunner({
+    list: () => ({
+      items: [
+        { id: 'run', n: 9 },
+        { id: 'b', n: 5 },
+      ],
+    }),
+  });
+  const gap = { [`${SUITE}#list`]: { '/items/1/n': 'Invented gap.' } };
+  const error = (await replayOutcomes(file, run, gap)).get(`${SURFACE}/${SUITE}#list`);
+  assert.ok(error instanceof assert.AssertionError);
+  assert.match(error.message, /^output differs at \/items\/0\/n\n/);
+  assert.deepEqual(error.expected, {
+    items: [
+      { id: '<volatile>', n: 1 },
+      { id: 'b', n: '<known gap>' },
+    ],
+  });
+  assert.deepEqual(error.actual, {
+    items: [
+      { id: '<volatile>', n: 9 },
+      { id: 'b', n: '<known gap>' },
+    ],
+  });
 });
 
 test('replay: a pointer-scoped gap fails with known gap closed when the pointer matches', async (t) => {
@@ -588,12 +776,81 @@ test('cli: build with an existing oracle change fails without revise and succeed
   const flags = BUILD_FLAGS.map((flag, index) => (BUILD_FLAGS[index - 1] === '--oracle-version' ? '2.0.0' : flag));
   const refused = await runCli(['build', ...flags, ...captureFlags(files)], root);
   assert.equal(refused.code, 1);
-  assert.match(refused.err, /oracle would change; pass revise/);
+  assert.match(
+    refused.err,
+    /^parity-cases: oracle would change; pass --revise-change <text> and --revise-evidence <text> to record it\n$/,
+  );
   const revised = [...flags, '--revise-change', 'Oracle version bumped.', '--revise-evidence', 'Invented evidence.'];
   assert.equal((await runCli(['build', ...revised, ...captureFlags(files)], root)).code, 0);
   const written = loadParityCases(path.join(root, 'mirage/test/parity/cases', SURFACE, `${SUITE}.json`));
   assert.equal(written.history.length, 1);
   assert.equal(written.oracle.version, '2.0.0');
+});
+
+test('cli: a revision keeps recorded volatile pointers and --revise-drop-volatile removes one', async (t) => {
+  const root = tempDir(t);
+  const stamp = (run, value, at) => ({
+    capture: { id: run, capturedAt: '2026-11-08' },
+    results: [{ id: 'stamp', input: { expression: 'stamp' }, output: { value, at } }],
+  });
+  const first = [
+    writeRawCapture(root, 'r1.json', stamp('run-1', 7, 't1')),
+    writeRawCapture(root, 'r2.json', stamp('run-2', 7, 't2')),
+  ];
+  const next = [
+    writeRawCapture(root, 'r5.json', stamp('run-5', 8, 't1')),
+    writeRawCapture(root, 'r6.json', stamp('run-6', 8, 't1')),
+  ];
+  const written = () => loadParityCases(path.join(root, 'mirage/test/parity/cases', SURFACE, `${SUITE}.json`));
+  assert.equal((await runCli(['build', ...BUILD_FLAGS, ...captureFlags(first)], root)).code, 0);
+  const revise = ['--revise-change', 'Value corrected to 8', '--revise-evidence', 'Invented evidence.'];
+  const revised = await runCli(['build', ...BUILD_FLAGS, ...captureFlags(next), ...revise], root);
+  assert.equal(revised.code, 0, revised.err);
+  assert.match(revised.out, /1 cases \(0 added\), 1 volatile pointers, 4 captures/);
+  assert.deepEqual(written().cases[0].output, { value: 8, at: '<volatile>' });
+  const unrevised = await runCli(
+    ['build', ...BUILD_FLAGS, ...captureFlags(next), '--revise-drop-volatile', 'stamp#/at'],
+    root,
+  );
+  assert.equal(unrevised.code, 1);
+  assert.equal(unrevised.err, 'parity-cases: --revise-drop-volatile needs --revise-change and --revise-evidence\n');
+  const dropFlags = [
+    '--revise-change',
+    'at fixed',
+    '--revise-evidence',
+    'Invented.',
+    '--revise-drop-volatile',
+    'stamp#/at',
+  ];
+  const dropped = await runCli(['build', ...BUILD_FLAGS, ...captureFlags(next), ...dropFlags], root);
+  assert.equal(dropped.code, 0, dropped.err);
+  assert.deepEqual(written().cases[0].output, { value: 8, at: 't1' });
+  assert.equal(written().history.length, 2);
+});
+
+test('cli: a recorded volatile pointer missing from the new output names the CLI drop flag', async (t) => {
+  const root = tempDir(t);
+  const stamp = (run, output) => ({
+    capture: { id: run, capturedAt: '2026-11-08' },
+    results: [{ id: 'stamp', input: { expression: 'stamp' }, output }],
+  });
+  const first = [
+    writeRawCapture(root, 'r1.json', stamp('run-1', { value: 7, at: 't1' })),
+    writeRawCapture(root, 'r2.json', stamp('run-2', { value: 7, at: 't2' })),
+  ];
+  const next = [
+    writeRawCapture(root, 'r5.json', stamp('run-5', { value: 7 })),
+    writeRawCapture(root, 'r6.json', stamp('run-6', { value: 7 })),
+  ];
+  assert.equal((await runCli(['build', ...BUILD_FLAGS, ...captureFlags(first)], root)).code, 0);
+  const revise = ['--revise-change', 'at removed', '--revise-evidence', 'Invented evidence.'];
+  const refused = await runCli(['build', ...BUILD_FLAGS, ...captureFlags(next), ...revise], root);
+  assert.equal(refused.code, 1);
+  assert.equal(
+    refused.err,
+    'parity-cases: case stamp: recorded volatile pointer /at does not resolve in the new output; ' +
+      'drop it with --revise-drop-volatile "stamp#/at"\n',
+  );
 });
 
 test('cli: check reports an invalid case file with exit code 1', async (t) => {

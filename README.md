@@ -23,7 +23,8 @@ CLI and gives you two ways to see a change without deploying it:
   images and literal markup edits in place of the deployed ones. Saved stylesheets usually swap in place; other changes
   reload the affected tabs.
 
-![Paqvilo architecture: project-owned exports feed Lense browser overlays on a live portal or Mirage local rendering with simulated data.](https://raw.githubusercontent.com/maksii/paqvilo/main/docs/assets/overview.svg)
+![Paqvilo architecture: project-owned exports feed Lense browser overlays on a live portal or Mirage local rendering
+with simulated data.](https://raw.githubusercontent.com/maksii/paqvilo/main/docs/assets/overview.svg)
 
 ## What you can do locally
 
@@ -63,7 +64,7 @@ follows. Press **Alt+Shift+P** for Inspect and persona controls; close the brows
 ## Use your own site
 
 ```sh
-npx paqvilo@^0.9.8 init ./my-portals --name my-portals   # empty project; installs nothing
+npx paqvilo@^0.9.8 init ./my-portals   # empty project; installs nothing
 cd my-portals
 npm run setup        # install the toolkit and check the browser
 npm run configure    # point the project at your export in the local /_setup/ workspace
@@ -72,7 +73,8 @@ npm run dev          # Lense: overlay on the configured live environment
 ```
 
 [Getting started](https://github.com/maksii/paqvilo/blob/main/docs/getting-started.md) explains where your export goes
-and the first run of each workflow. `npx --no-install paqvilo --help` lists every command.
+and the first run of each workflow. `npx --no-install paqvilo --help` lists the command groups; append `--help` to any
+command for its options.
 
 ## Scope
 
@@ -102,7 +104,8 @@ build tooling). It runs on Windows and Linux.
 - [Configuration](https://github.com/maksii/paqvilo/blob/main/docs/configuration.md) and
   [project extensions](https://github.com/maksii/paqvilo/blob/main/docs/project-extensions.md)
 - [CONTRIBUTING](https://github.com/maksii/paqvilo/blob/main/CONTRIBUTING.md) and
-  [Discussions](https://github.com/maksii/paqvilo/discussions)
+  [Discussions](https://github.com/maksii/paqvilo/discussions); report vulnerabilities as the
+  [security policy](https://github.com/maksii/paqvilo/blob/main/SECURITY.md) describes
 
 > **Microsoft notice:** Paqvilo is independent and is not affiliated with, sponsored or endorsed by Microsoft.
 > Microsoft, Dataverse, Power Pages, Power Platform and other Microsoft names referenced here are trademarks of the

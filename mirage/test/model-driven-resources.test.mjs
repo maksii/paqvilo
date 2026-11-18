@@ -213,6 +213,17 @@ test('explicit client sources are independent of metadata, ordered, confined and
   const absent = await importModelDrivenResources(layers, { clientSources: [override, path.join(metadata, 'absent')] });
   assert.equal(absent.assets.size, 0);
   assert.equal(absent.diagnostics[0].code, 'MODEL_CLIENT_SOURCE_INVALID');
+  // The diagnostic names the clientSources entry and its path, never a raw ENOENT.
+  assert.match(
+    absent.diagnostics[0].message,
+    /^modelDriven.clientSources entry S*absent does not exist; name an existing local directory or Solution ZIP file.$/,
+  );
+  assert.doesNotMatch(absent.diagnostics[0].message, /ENOENT/);
+  const shownAbsent = await importModelDrivenResources(layers, {
+    clientSources: [path.join(metadata, 'absent')],
+    projectRoot: metadata,
+  });
+  assert.match(shownAbsent.diagnostics[0].message, /^modelDriven.clientSources entry absent does not exist;/);
   assert.equal((await importModelDrivenResources(layers, { clientSources: [] })).resources.length, 0);
   assert.deepEqual(modelDrivenSettings({ clientSources: ['./local'] }, 'modelDriven', metadata).clientSources, [
     path.join(metadata, 'local'),
@@ -639,9 +650,13 @@ test('modelDriven.enabled false switches the model-driven surface off on both ho
     try {
       const status = await (await fetch(sim.url + '/_sim/api/status')).json();
       assert.equal(status.links.modelDriven, null);
+      // The capability summary agrees with the links on both hosts.
+      assert.equal(status.capabilities.modelDriven, false);
       // The shell and its catalogue API are not served at all (an error page would also be "not 200").
       for (const route of ['/main.aspx', '/_apps/api'])
         assert.equal((await fetch(sim.url + route, { redirect: 'manual' })).status, 404, route);
+      // Status lists no admin-adjacent model-driven route the disabled surface would answer 404 on.
+      assert.deepEqual(status.adminAdjacentRoutes, []);
     } finally {
       await sim.close();
     }

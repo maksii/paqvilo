@@ -106,6 +106,31 @@ const BEHAVIOUR_PROPERTY = /^On[A-Z]/;
 const MAX_LOG = 200;
 const MAX_CONNECTOR_CALLS = 50; // distinct connector answers one behaviour formula may wait for
 const SUSPEND = Symbol('canvas.connector-pending');
+// The driver actions act() answers, in the order its switch lists them. act() accepts exactly these (it refuses any
+// other before its switch), so the unknown-action error, which names them all, cannot drift from the dispatcher.
+export const CANVAS_ACTIONS = Object.freeze([
+  'select',
+  'input',
+  'text',
+  'add-media',
+  'codecomponent-event',
+  'codecomponent',
+  'media',
+  'tick',
+  'search',
+  'gallery-window',
+  'navigate',
+  'back',
+  'run',
+  'evaluate',
+  'resize',
+  'refresh',
+]);
+/** The refusal of an action outside `actions`, naming every one of them. */
+export const unknownCanvasActionMessage = (action, actions) => {
+  const problem = action == null || action === '' ? 'A canvas action is required' : 'Unknown canvas action ' + action;
+  return `${problem}; use ${actions.slice(0, -1).join(', ')} or ${actions.at(-1)}.`;
+};
 const SCREEN = 'canvas-screen',
   CONTROL = 'canvas-control';
 const kindName = (kind) =>
@@ -2479,6 +2504,8 @@ export function createCanvasApp({
      */
     act: (request) =>
       serial(async () => {
+        if (!CANVAS_ACTIONS.includes(request?.action))
+          throw fail(unknownCanvasActionMessage(request?.action, CANVAS_ACTIONS), 'CanvasActionInvalid');
         const before = state.errors.length;
         let result = null;
         switch (request?.action) {
@@ -2551,10 +2578,7 @@ export function createCanvasApp({
             forget();
             break;
           default:
-            throw fail(
-              `Unknown canvas action ${request?.action}; use select, input, text, codecomponent, media, tick, search, gallery-window, navigate, back, run, evaluate, resize or refresh.`,
-              'CanvasActionInvalid',
-            );
+            throw new Error(`Canvas action ${request.action} is listed in CANVAS_ACTIONS but has no handler.`);
         }
         if (request?.action !== 'evaluate') await syncTimers();
         await settle();

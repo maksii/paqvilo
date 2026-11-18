@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
 import { fileURLToPath } from 'node:url';
-import { parseToolArgs } from './tool-options.mjs';
+import { assertToolPaths, parseToolArgs } from './tool-options.mjs';
 import { chromium } from 'playwright-core';
 import { captureLaunchOptions } from './lib/browser-launch.mjs';
 import { loadCatalogue, loadConfig } from '../lense/config.mjs';
@@ -99,7 +99,7 @@ function captureFailure(error) {
     })
     .slice(0, 2000);
   return {
-    code: 'SHELL_CAPTURE_FAILED',
+    code: error?.code === 'unsupported_option' ? error.code : 'SHELL_CAPTURE_FAILED',
     blocking: true,
     message,
     ...(error?.disconnectFailed ? { disconnectFailed: true } : {}),
@@ -249,7 +249,7 @@ function captureFailure(error) {
         if (state.status.live?.connected)
           throw new Error('Runtime already has a live connection; disconnect it before shell capture');
       } else {
-        await assertOfflineState(target.mirage.stateFile);
+        await assertOfflineState(target.mirage.stateFile, { operation: 'capturing the shell offline' });
         simulator = await createLocalSimulator({
           sourceDir: target.sourceDir,
           stateFile: target.mirage.stateFile,
@@ -351,6 +351,7 @@ export function captureExitCode(report, { strict = false } = {}) {
 export async function runCaptureShellCommand(args, { stdout = process.stdout, stderr = process.stderr } = {}) {
   try {
     const values = parseToolArgs('capture-shell', args);
+    assertToolPaths('capture-shell', values);
     const report = await captureShell({
       ...values,
       ...(!values.json

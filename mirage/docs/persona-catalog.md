@@ -1,17 +1,16 @@
 # Persona catalogues and isolated setups
 
 A catalogue describes **which contact to test and why**. Contacts, parent accounts and exported web-role memberships
-remain the identity source: catalogue metadata never creates records or grants permissions. A pack's `personas` array
-is a separate, older field and keeps its meaning. Web-role memberships come from data, through a preset's or a dataset
+remain the identity source: catalogue metadata never creates records or grants permissions. A pack's `personas` array is
+a separate, older field and keeps its meaning. Web-role memberships come from data, through a preset's or a dataset
 fragment's `personaRoles` (see [data packs](data-packs.md)), never from the catalogue.
 
 ## Version 1 contract
 
-`personaCatalog` is a data property on a registered pack, a preset body, or a
-`dataset()` fragment. All use the same schema. `validatePersonaCatalog(value,
-'Data pack my-pack')` from `paqvilo/mirage/packs` returns a detached value or throws
-`InvalidPersonaCatalog`, naming the source and field. Version 1 and these helpers are part of the
-[public API](../../docs/public-api.md#persona-catalogues).
+`personaCatalog` is a data property on a registered pack, a preset body, or a `dataset()` fragment. All use the same
+schema. `validatePersonaCatalog(value, 'Data pack my-pack')` from `paqvilo/mirage/packs` returns a detached value or
+throws an error with code `InvalidPersonaCatalog` whose message names the source and field. Version 1 and these helpers
+are part of the [public API](../../docs/public-api.md#persona-catalogues).
 
 ```js
 const personaCatalog = {
@@ -76,112 +75,98 @@ export default {
 | Personas           | Required `key`, GUID `contactId`, declared `group`; optional `label` (1–80), declared `subgroup`, `tags`, `description`, `order`, `startPath`, declared `context`, `extensions`. GUID matching ignores case/braces. |
 | Tags / description | Up to 20 lowercase alphanumeric/hyphen tags, each 1–40 characters. Plain-text description up to 500; card shows its first line. HTML is escaped.                                                                    |
 | Ordering           | Integer `order`, default 1000; then label and stable ID/key. Other contacts follow catalogue groups.                                                                                                                |
-| Navigation         | `startPath` starts with `/`; external URLs, protocol-relative paths, backslashes, encoded path escapes and control characters fail. Query/fragment supported.                                                       |
+| Navigation         | `startPath` starts with `/`; external URLs, protocol-relative paths, backslashes and control characters fail, also when percent-encoded. Query/fragment supported.                                                  |
 | Scenarios          | Required `id`, `label`, declared `group`, `persona`; optional `description`, `order`, declared `subgroup`, `context`, `preset`, `startPath`.                                                                        |
 | Extensions         | Personas/contexts accept namespaced keys (`my-pack:fixture`) containing finite, acyclic JSON up to 32 levels deep. Mirage returns this metadata without executing it.                                               |
 
-Contexts accept `id`, `label`, `description`, `order`, `deploymentProfile`,
-`environmentVariables`, `portalOverrides`, `preset`, `startPath`, `browser`,
-`extensions`. Profile selection references an **already configured** profile ID,
-with optional boolean `pages`, `environmentVariables`, `connectionReferences`
-flags under `enabled`. Omit it to inherit; `{profile:null}` disables selection,
-subject to required sections. It cannot supply arbitrary file paths.
+Contexts accept `id`, `label`, `description`, `order`, `deploymentProfile`, `environmentVariables`, `portalOverrides`,
+`preset`, `startPath`, `browser`, `extensions`. Profile selection references an **already configured** profile ID, with
+optional boolean `pages`, `environmentVariables`, `connectionReferences` flags under `enabled`. Omit it to inherit;
+`{profile:null}` disables selection, subject to required sections. It cannot supply arbitrary file paths.
 
-Variables map names to typed JSON. Snippet/settings overrides map names to strings
-or `null` (remove). Contexts cannot override roles/access rules. Browser options
-accept valid locale/time zone, viewport width/height 1–16384, and `light`, `dark`,
-`no-preference` colour scheme. The browser testing helper applies these options;
-ordinary tab navigation cannot change browser locale or viewport.
+Variables map names to typed JSON. Snippet/settings overrides map names to strings or `null` (remove). Contexts cannot
+override roles/access rules. Browser options accept valid locale/time zone, viewport width/height 1–16384, and `light`,
+`dark`, `no-preference` colour scheme. The browser testing helper applies these options; ordinary tab navigation cannot
+change browser locale or viewport.
 
 ## Storage and precedence
 
-- A preset supplying a catalogue replaces state metadata; one without it preserves
-  the existing catalogue. Dataset fragments add entries by key/ID; existing state
-  wins. Group subgroups merge by ID.
-- Matching pack catalogues apply to every state. State entries win; among packs,
-  the first registered definition wins. Conflicting contact IDs for a pack key
-  produce `PERSONA_CATALOG_KEY_CONFLICT`.
-- Missing pack contacts increment `skipped` silently. Each missing/inactive state
-  contact produces `PERSONA_CATALOG_CONTACT_MISSING`.
-- Active uncatalogued contacts appear under **Other contacts**. One contact may
-  have several keys for different configurations/scenarios.
+- A preset supplying a catalogue replaces state metadata; one without it preserves the existing catalogue. Dataset
+  fragments add entries by key/ID; existing state wins. Group subgroups merge by ID.
+- Matching pack catalogues apply to every state. State entries win; among packs, the first registered definition wins.
+  Conflicting contact IDs for a pack key produce `PERSONA_CATALOG_KEY_CONFLICT`.
+- Missing pack contacts increment `skipped` silently. Each missing/inactive state contact produces
+  `PERSONA_CATALOG_CONTACT_MISSING`.
+- Active uncatalogued contacts appear under **Other contacts**. One contact may have several keys for different
+  configurations/scenarios.
 
-Each authored catalogue declares its referenced groups/personas/contexts.
-`mergePersonaCatalogs(primary, fallback)` merges without mutating inputs. State
-catalogues survive restart and state export.
+Each authored catalogue declares its referenced groups/personas/contexts. `mergePersonaCatalogs(primary, fallback)`
+merges without mutating inputs. State catalogues survive restart and state export.
 
 ## Picking and management
 
-Sign-in renders groups/subgroups and submit buttons on the server and works without
-JavaScript. With a catalogue, `/_sim/#access` uses the same picker for browser
-identity and a chooser dialog for **Contact personas**. Without one, the existing
-list/select UI remains.
+Sign-in renders groups/subgroups and submit buttons on the server and works without JavaScript. With a catalogue,
+`/_sim/#access` uses the same picker for browser identity and a chooser dialog for **Contact personas**. Without one,
+the existing list/select UI remains.
 
-Search ignores accents/case and AND-matches terms across label, contact name, key,
-email, account, roles, group/subgroup labels, tags and full description. Facet values
-combine with OR within a facet and AND between facets. Counts exclude duplicated
-Default/Pinned/Recent cards. **Has web roles** hides entries without effective
-roles. Share filters as `#access?q=reviewer&tag=own&role=Reviewer`.
+Search ignores accents/case and AND-matches terms across label, contact name, key, email, account, roles, group/subgroup
+labels, tags and full description. Facet values combine with OR within a facet and AND between facets. Counts exclude
+duplicated Default/Pinned/Recent cards. **Has web roles** hides entries without effective roles. Share filters as
+`#access?q=reviewer&tag=own&role=Reviewer`.
 
-Pin cards with the star. Five recent choices are remembered per browser/source.
-The configured default appears first in a Default row and in its own group.
-Selecting a browser persona does not change another visitor's session.
+Pin cards with the star. Five recent choices are remembered per browser/source. The configured default appears first in
+a Default row and in its own group. Selecting a browser persona does not change another visitor's session.
 
-Expand **Persona catalogue & local runtimes** to edit personas, groups/subgroups,
-contexts and scenarios. Editors offer profiles, typed variable maps, snippet/setting
-maps and browser options. Customizing pack metadata copies the entry and required
-references into state. Removing an override reveals the pack entry beneath it.
-Invalid references fail validation. Import replaces state metadata; Export writes
-the effective catalogue. Reset removes only state metadata. Saves use a catalogue
-digest; concurrent edits require a reload before saving.
+Expand **Persona catalogue & local runtimes** to edit personas, groups/subgroups, contexts and scenarios. Editors offer
+profiles, typed variable maps, snippet/setting maps and browser options. Customizing pack metadata copies the entry and
+required references into state. Removing an override reveals the pack entry beneath it. Invalid references fail
+validation. Import replaces state metadata; Export writes the effective catalogue. Reset removes only state metadata.
+Saves use a catalogue digest; concurrent edits require a reload before saving.
 
 On the portal address, `/_sim/sign-in?persona=reviewer-own&returnUrl=/reviews/` presents one persona and a sign-in
 button protected by the portal token. GET never establishes a session; without `persona` it answers 400
-`PersonaParameterRequired`, and an unknown key answers 404 with nearby keys. This shortcut works even when the source
-site disables native local login.
+(`The persona parameter is required.`), and an unknown key answers 404 naming the closest keys. This shortcut works even
+when the source site disables native local login.
 
 ## Isolated contexts and scenarios
 
-A context, or a scenario with a preset, starts a local runtime from a consistent
-snapshot of the parent and applies preset, profile and overrides to that copy. It
-has its own cookie, state and loopback origin; live forwarding/writes are disabled
-on launch. Parent state/source files stay intact. If the preset removes the selected
-contact, launch fails and the new copy is disposed.
+A context, or a scenario with a preset, starts a local runtime from a consistent snapshot of the parent and applies
+preset, profile and overrides to that copy. It has its own cookie, state and loopback origin; live forwarding/writes are
+disabled on launch. Parent state/source files stay intact. If the preset removes the selected contact, launch fails and
+the new copy is disposed.
 
-The same context definition and `instanceKey` reuse a runtime and its edits, even
-when the persona or scenario start page differs. Scenarios without a context keep
-their own copies. Different keys/setups use separate copies. Definition edits
-produce a new copy on next launch.
-Use unique keys for independent tests; share a setup among cookie-isolated visitors.
-Context resolves scenario → persona; preset resolves scenario → context; start page
-resolves explicit return URL → scenario → persona → context → `/`.
+The same context definition and `instanceKey` reuse a runtime and its edits, even when the persona or scenario start
+page differs. Scenarios without a context keep their own copies. Different keys/setups use separate copies. Definition
+edits produce a new copy on next launch. Use unique keys for independent tests; share a setup among cookie-isolated
+visitors. Context resolves scenario → persona; preset resolves scenario → context; start page resolves explicit return
+URL → scenario → persona → context → `/`.
 
-The default maximum is four copies. Configure
-`sites.<id>.mirage.personaContexts: {maxInstances:2}` (also under defaults), or
-`createSimulator({personaContexts:{maxInstances:2}})`. Range 0–32; zero disables
-launches. **Stop and discard** resets a copy; relaunch snapshots the current parent.
-Children cannot start nested copies. Return to the parent to switch setup. Parent
-shutdown removes owned copies. Temporary copies do not survive parent restart.
-If stopping a child fails, its status remains `stopping`; retry Stop to finish cleanup.
-It cannot be reused while stopping. Other owned children still close if one fails.
-Their files stay under the project's ignored `.paqvilo/persona-runtimes/` folder.
-Children follow the parent's source-watch setting; source refreshes preserve each
-copy's local data and configuration overrides.
+The default maximum is four copies. Configure `sites.<id>.mirage.personaContexts: {maxInstances:2}` (also under
+defaults), or `createSimulator({personaContexts:{maxInstances:2}})`. Range 0–32; zero disables launches. A Mirage
+project file has no `personaContexts` key (a version 1 file ignores one). `paqvilo mirage dev` or `mirage start` with
+`--project` takes the setting from the catalogue site that `--site` selects, else from the catalogue's default site when
+its `mirage.project` is that project file, else from the one site whose `mirage.project` is that file; `--config` alone
+selects no site, and without a site the default of four applies. When several sites map the project and none is
+selected, the command fails with `Sites <a>, <b> all map the project <file>; choose one with --site <id>.` A direct
+`mirage serve --project` takes the setting only from the site that `--site` selects (in `--config` or
+`./paqvilo.config.yml`), for every portal of the project. **Stop and discard** resets a copy; relaunch snapshots the
+current parent. Children cannot start nested copies. Return to the parent to switch setup. Parent shutdown removes owned
+copies. Temporary copies do not survive parent restart. If stopping a child fails, its status remains `stopping`; retry
+Stop to finish cleanup. It cannot be reused while stopping. Other owned children still close if one fails. Their files
+stay under the project's ignored `.paqvilo/persona-runtimes/` folder. Children follow the parent's source-watch setting;
+source refreshes preserve each copy's local data and configuration overrides.
 
-Copies share the Node process: configuration/data are isolated, CPU/heap are shared.
-Startup scales with dataset size and each copy retains its own decoded data. For
-millions of rows, share setups, keep the instance limit low, and run separate Mirage
-processes/state files for independent CPU workers. Ordinary visitor sessions do not
-copy data. Snapshot writing streams without one whole-state JSON string.
+Copies share the Node process: configuration/data are isolated, CPU/heap are shared. Startup scales with dataset size
+and each copy retains its own decoded data. For millions of rows, share setups, keep the instance limit low, and run
+separate Mirage processes/state files for independent CPU workers. Ordinary visitor sessions do not copy data. Snapshot
+writing streams without one whole-state JSON string.
 
 ## API and testing
 
-`GET /__sim/api/personas` preserves identity/permission/web-role/membership fields.
-With a catalogue it adds version/enabled, joined personas, groups/subgroup counts,
-other/total/skipped/diagnostics, contexts/scenarios, effective `catalog`,
-`stateCatalog`, `catalogDigest`, source `scope`, session and owned runtimes. Without
-one, `personas` keeps the legacy shape. Catalogue values are local admin data; do
-not put secrets in fixture catalogues.
+`GET /__sim/api/personas` preserves identity/permission/web-role/membership fields. With a catalogue it adds
+version/enabled, joined personas, groups/subgroup counts, other/total/skipped/diagnostics, contexts/scenarios, effective
+`catalog`, `stateCatalog`, `catalogDigest`, source `scope`, session and owned runtimes. Without one, `personas` keeps
+the legacy shape. Catalogue values are local admin data; do not put secrets in fixture catalogues.
 
 | API                                       | Operation                                                                                                                                           |
 | ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -191,7 +176,8 @@ not put secrets in fixture catalogues.
 | `GET /__sim/api/persona-runtimes`         | Lists owned copies and the limit.                                                                                                                   |
 | `DELETE /__sim/api/persona-runtimes/<id>` | Stops/discards an owned copy.                                                                                                                       |
 
-Writes require the administration token in `x-sim-csrf` (`csrf` of `/_sim/api/status`, or `simulator.csrf`); `connectRuntime` handles it:
+Writes require the administration token in `x-sim-csrf` (`csrf` of `/_sim/api/status`, or `simulator.csrf`); without it
+they answer 403. `connectRuntime` handles it:
 
 ```js
 import { connectRuntime, createPersonaSession, createPersonaBrowserContext } from 'paqvilo/mirage/testing';
@@ -218,37 +204,34 @@ try {
 }
 ```
 
-`createPersonaSession` accepts `{config,site}` or `{origin}` directly. Management
-methods include `launchPersona`, `personaRuntimes`, `stopPersonaRuntime`,
-`savePersonaCatalog`, `resetPersonaCatalog`. Closing a visitor/browser context
-leaves shared copies running; stop owned test instances through the parent or close
-the parent. Testing descriptions exclude identity cookies and expose persona
-extensions as `visitor.persona.extensions` for project automation.
+`createPersonaSession` accepts `{config,site}` or `{origin}` directly. The `connectRuntime` client also has
+`launchPersona`, `personaRuntimes`, `stopPersonaRuntime`, `savePersonaCatalog` and `resetPersonaCatalog`; a stale
+`expectedDigest` fails with `PersonaCatalogConflict` (409). Closing a visitor/browser context leaves shared copies
+running; stop owned test instances through the parent or close the parent. Testing descriptions exclude identity cookies
+and expose persona extensions as `visitor.persona.extensions` for project automation.
 
 ## Identity-provider and Lense pickers
 
-The local external identity provider reads the owning runtime's effective catalogue. It
-shows labels, contact names, descriptions, role/tag/account facets, ordered groups/subgroups,
-Default, Other contacts, and browser-local pinned/recent choices. GET search works without
-JavaScript; JavaScript updates results and the URL while preserving the search input. Search
-is case/accent insensitive, folds ø/æ/œ/ß/đ/ł, and ANDs terms and facets while ORing values
-inside one facet. Supported parameters: `q`, `group`, `subgroup`, `role`, `tag`,
-`account`, `hasRoles`; repeated values select multiple options.
+The local external identity provider reads the owning runtime's effective catalogue. It shows labels, contact names,
+descriptions, role/tag/account facets, ordered groups/subgroups, Default, Other contacts, and browser-local
+pinned/recent choices. GET search works without JavaScript; JavaScript updates results and the URL while preserving the
+search input. Search is case/accent insensitive, folds ø/æ/œ/ß/đ/ł, and ANDs terms and facets while ORing values inside
+one facet. Supported parameters: `q`, `group`, `subgroup`, `role`, `tag`, `account`, `hasRoles`; repeated values select
+multiple options.
 
-Responses show 50 matching personas per page (hard cap 200); Show more/Previous preserve
-filters and the authorization request. Filter menus start collapsed, and GET responses with
-active facets expand them. Groups above 25 matches start collapsed. One POST
-form owns existing-persona buttons; a separate form owns registration so Enter creates the
-entered identity. Protocol fields are never repeated per persona. Each identity
-card explains the session effect. Contexts remain explicit isolated setups in the full picker;
-selecting an identity at the provider does not silently apply its configuration.
+Responses show 50 matching personas per page; Show more/Previous preserve filters and the authorization request. Filter
+menus start collapsed, and GET responses with active facets expand them. Without an active search or facet, groups above 25 matches start collapsed. One
+POST form owns existing-persona buttons; a separate form owns registration so Enter creates the entered identity.
+Protocol fields are never repeated per persona. Each identity card explains the session effect. Contexts remain explicit
+isolated setups in the full picker; selecting an identity at the provider does not silently apply its configuration.
 
-New user follows the site's registration and provider switches. `prompt=create` exposes
-a forced registration test; `newUser: never` still suppresses it. Forced choices name the
-settings that may reject the callback. Forged creation POSTs are checked server-side.
+New user follows the site's registration and provider switches. `prompt=create` exposes a forced registration test;
+`newUser: never` still suppresses it. Forced choices name the settings that may reject the callback. Forged creation
+POSTs are checked server-side.
 
-Configure the local chooser in site or default Mirage settings. Only these keys are accepted; `title` and
-`description` are at most 500 characters, `accentColor` is a six-digit hex colour, and the defaults are
+Configure the local chooser in catalogue site or default Mirage settings; a runtime started with `--project` applies
+them under the same conditions as [`personaContexts`](#isolated-contexts-and-scenarios). Only these keys are accepted;
+`title` and `description` are at most 500 characters, `accentColor` is a six-digit hex colour, and the defaults are
 `newUser: auto` and `presentation: page`:
 
 ```yaml
@@ -264,17 +247,14 @@ mirage:
       scripts: [./local/identity.js]
 ```
 
-Head assets resolve relative to the catalogue/project root, must remain inside it even
-through symlinks, and are served on the local provider under reserved paths. CSS custom
-properties `--persona-accent`, `--persona-surface`, `--persona-border`,
-`--persona-muted` and stable `chooser-*` classes support branding and layout. Scripts
-are explicitly trusted project code. These settings/assets stay local and never change
-exports or a connected provider. Dialog presentation retains the provider's separate origin
-and frame protection. The display button switches between a bounded dialog layout and a
-full page. Credential/MFA simulation is outside this chooser.
+Head assets resolve relative to the catalogue/project root, must remain inside it even through symlinks, and are served
+on the local provider under reserved paths. CSS custom properties `--persona-accent`, `--persona-surface`,
+`--persona-border`, `--persona-muted` and stable `chooser-*` classes support branding and layout. Scripts are explicitly
+trusted project code. These settings/assets stay local and never change exports or a connected provider. Dialog
+presentation retains the provider's separate origin and frame protection. The display button switches between a bounded
+dialog layout and a full page. Credential/MFA simulation is outside this chooser.
 
-Lense Tweaks uses the same catalogue and indexed search rules, renders 50 results at a
-time, retains pinned/recent choices per browser, and links to the full management picker.
-Catalogue scenario choices name the persona, start page and isolated-setup effect. Opening
-one prepares the local setup and completes the portal's own sign-in flow before the start
-page. Uncatalogued contacts retain a searchable fallback.
+Lense Tweaks uses the same catalogue and indexed search rules, renders 50 results at a time, retains pinned/recent
+choices per browser, and links to the full management picker. Catalogue scenario choices name the persona, start page
+and isolated-setup effect. Opening one prepares the local setup and completes the portal's own sign-in flow before the
+start page. Uncatalogued contacts retain a searchable fallback.

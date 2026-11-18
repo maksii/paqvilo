@@ -5,6 +5,7 @@ const fail = (message, status = 502) => Object.assign(new Error(message), { stat
 
 /** Validate before URL normalization can hide traversal or encoded separators. */
 export function validateLivePath(pathname) {
+  if (arguments.length === 0) throw new TypeError('validateLivePath(pathname) requires an origin-relative path.');
   if (
     typeof pathname !== 'string' ||
     !pathname.startsWith('/') ||
@@ -282,6 +283,42 @@ function liveRedirectResponse(bridge, url, status, responseHeaders, bytes) {
   };
 }
 
+// Playwright errors carry ANSI colour codes; every report and console line that can receive one strips them.
+const ANSI_ESCAPE = new RegExp(String.fromCodePoint(27) + String.raw`\[[0-9;?]*[ -/]*[@-~]`, 'g');
+export const stripAnsi = (value) => String(value ?? '').replace(ANSI_ESCAPE, '');
+
+export const CDP_CONNECT_FAILURE =
+  'Could not connect to the loopback browser debugging endpoint. Confirm its port and availability.';
+
+function loopbackDebuggingUrl(cdpUrl) {
+  if (typeof cdpUrl !== 'string' || !URL.canParse(cdpUrl))
+    throw fail('Use a loopback browser debugging endpoint.', 400);
+  const url = new URL(cdpUrl);
+  if (
+    !['http:', 'ws:'].includes(url.protocol) ||
+    !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) ||
+    url.username ||
+    url.password
+  )
+    throw fail('Use a loopback browser debugging endpoint.', 400);
+  return url;
+}
+
+/**
+ * Connects Playwright to a loopback browser debugging endpoint (http: or ws:, no credentials). A refused endpoint is
+ * one plain line (CDP_CONNECT_FAILURE, status 409); Playwright's own error, with its call log, stays the cause.
+ */
+export async function connectLoopbackBrowser(cdpUrl, { timeout = 10000 } = {}) {
+  const url = loopbackDebuggingUrl(cdpUrl);
+  // Loaded on first connection: every runtime imports this module, few attach a browser.
+  const { chromium } = await import('playwright-core');
+  try {
+    return await chromium.connectOverCDP(url.href, { timeout });
+  } catch (error) {
+    throw Object.assign(new Error(CDP_CONNECT_FAILURE, { cause: error }), { status: 409, code: 'LIVE_BRIDGE' });
+  }
+}
+
 /** Uses a connected browser's own cookie jar. No cookies or credentials are exported. */
 export class LiveBridge {
   /**
@@ -309,28 +346,9 @@ export class LiveBridge {
     }
   }
   async connect(cdpUrl) {
-    if (typeof cdpUrl !== 'string' || !URL.canParse(cdpUrl))
-      throw fail('Use a loopback browser debugging endpoint.', 400);
-    const url = new URL(cdpUrl);
-    if (
-      !['http:', 'ws:'].includes(url.protocol) ||
-      !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) ||
-      url.username ||
-      url.password
-    )
-      throw fail('Use a loopback browser debugging endpoint.', 400);
+    const url = loopbackDebuggingUrl(cdpUrl);
     await this.close();
-    // Loaded on first connection: every runtime imports this module, few attach a browser.
-    const { chromium } = await import('playwright-core');
-    let browser;
-    try {
-      browser = await chromium.connectOverCDP(url.href, { timeout: 10000 });
-    } catch {
-      throw fail(
-        'Could not connect to the loopback browser debugging endpoint. Confirm its port and availability.',
-        409,
-      );
-    }
+    const browser = await connectLoopbackBrowser(url.href);
     const contexts = browser.contexts();
     if (contexts.length !== 1) {
       await browser.close();
@@ -386,7 +404,7 @@ export class LiveBridge {
       headers.__RequestVerificationToken = token;
       if (tokenWriter) body = checkedBody(tokenWriter(token));
     }
-    let response, status, responseHeaders, bytes;
+    let response, status, responseHeaders, bytes, responseUrl;
     try {
       response = await this.context.request.fetch(url.href, {
         method,
@@ -398,7 +416,7 @@ export class LiveBridge {
       });
       status = response.status();
       responseHeaders = response.headers();
-      const responseUrl = new URL(response.url?.() || url.href);
+      responseUrl = new URL(response.url?.() || url.href);
       if (responseUrl.origin !== this.origin) throw fail('Live response escaped the configured origin.', 400);
       bytes = await response.body();
       if (bytes.length > 32 * 1024 * 1024) throw fail('Live response exceeds the 32 MiB limit.', 413);
@@ -412,6 +430,8 @@ export class LiveBridge {
     if (redirect) return redirect;
     return {
       status,
+      // The answered same-origin URL, so callers can recognise a served sign-in page.
+      url: responseUrl.href,
       headers: safeResponseHeaders(responseHeaders),
       body: bytes,
     };

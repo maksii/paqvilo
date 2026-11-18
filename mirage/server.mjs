@@ -1,3 +1,4 @@
+import { requireRuntimeSources } from './lib/required-argument.mjs';
 import { trailingParenthesized } from './lib/trailing-parenthesized.mjs';
 import {
   dataverseEnvironmentValue,
@@ -13,6 +14,9 @@ import {
   adminAssetType,
   diagnosticsByCode,
   diagnosticsOfTrace,
+  mirrorHead,
+  queryFlag,
+  adminEndpointNotFound,
 } from './lib/runtime-admin.mjs';
 import { hostnameOf } from './lib/dataverse-webhooks.mjs';
 import { createDashboardRoutes, routes as DASHBOARD_ROUTES } from './lib/sim-dashboard-routes.mjs';
@@ -27,7 +31,7 @@ import { docsLinks } from './lib/docs-links.mjs';
 import { simulationSettings, simulationReport } from './lib/simulation-settings.mjs';
 import { createSimulationPersistence } from './lib/simulation-persistence.mjs';
 import { dataverseOrganizationId } from './lib/dataverse-organization.mjs';
-import { preserveOrganizationPresetSections } from './lib/organization-presets.mjs';
+import { preserveDataOwnedTables, preserveOrganizationPresetSections } from './lib/organization-presets.mjs';
 import { createModelDrivenRecordService, createModelDrivenWebApi } from './lib/dataverse-model-driven.mjs';
 import { createStaffSessions, createStaffSessionHandler } from './lib/staff-session.mjs';
 import { createDataverseAdmin } from './lib/dataverse-admin.mjs';
@@ -71,6 +75,7 @@ import {
   loadDeploymentProfiles,
   profileSelection,
   deploymentProfilesSummary,
+  withDefinedVariables,
 } from './lib/deployment-profiles.mjs';
 import {
   DataStore,
@@ -133,6 +138,7 @@ import {
   organizationCustomApi,
 } from './lib/exported-operations.mjs';
 import { createPortalAuthorization, portalAuthorizationModel } from './lib/portal-authorization.mjs';
+import { changeOperationOverride, checkOperationOverrides } from './lib/operation-override-route.mjs';
 import { createPortalDocumentService } from './lib/sharepoint-documents.mjs';
 import { renderPortalSearchPage } from './lib/portal-search.mjs';
 import {
@@ -215,13 +221,13 @@ import { createFlowRoutes, routes as FLOW_ROUTES } from './lib/sim-flow-routes.m
 import { createTraceChannel, createTraceRoutes, routes as TRACE_ROUTES } from './lib/sim-trace-routes.mjs';
 import { logPage, resolveRenderSources, writeActivityBundle } from './lib/sim-activity.mjs';
 import { LOG_RETAIN_DEFAULT } from './lib/config-keys.mjs';
-import { recordHttpError, statusFromHttp } from './lib/trace-store.mjs';
+import { recordHttpError, statusFromHttp, TRACE_HOSTS } from './lib/trace-store.mjs';
 import { browserProbe, setTraceHeaders, sseClients, traceSessionKey } from './lib/trace-hosts.mjs';
 import { buildSourceGraph } from './lib/source-graph.mjs';
 import { scenarioSettings } from './lib/capability-report.mjs';
 import { environmentVariablePayload } from './lib/secret-resolver.mjs';
 import { authenticationSettings } from './lib/external-login.mjs';
-import { dataverseSettings, dataverseStatus } from './lib/dataverse-settings.mjs';
+import { dataverseHostStatus, dataverseSettings, managedIdentityStatusReader } from './lib/dataverse-settings.mjs';
 import { uuidV5, createApplicationUser } from './lib/dataverse-security.mjs';
 import { ensureCertificate } from './lib/dataverse-tls.mjs';
 // The RadCaptcha challenge resources (lib/platform.mjs captchaChallenge): a placeholder image and
@@ -462,7 +468,9 @@ const mime = (file) =>
     '.ttf': 'font/ttf',
     '.pdf': 'application/pdf',
   })[path.extname(file).toLowerCase()] || 'application/octet-stream';
-const error = (message, status = 400, code = 'INVALID_REQUEST') => Object.assign(new Error(message), { status, code });
+// parameter names a refused query parameter in the admin API's error envelope.
+const error = (message, status = 400, code = 'INVALID_REQUEST', parameter) =>
+  Object.assign(new Error(message), { status, code, ...(parameter ? { parameter } : {}) });
 // A persona whose context is in the catalogue launches that context's runtime, so the picker links it to the administration.
 const personaNeedsAdministration = (persona, contexts = []) =>
   Boolean(persona.context) && contexts.some((context) => context.id === persona.context);
@@ -503,6 +511,17 @@ const decodeAdminIdentifier = (value) => {
 };
 const escaped = (text) =>
   String(text).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+// The 403 of a portal write whose verification token is absent (given: false) or not this session's (given: true).
+const portalTokenRefusal = (given, code) =>
+  error(
+    given ? 'The portal verification token is not valid for this session.' : 'Missing portal verification token.',
+    403,
+    code,
+  );
+// A portal write carries this session's verification token (the __RequestVerificationToken header).
+const assertPortalToken = (value, expected, code) => {
+  if (!sameToken(value, expected)) throw portalTokenRefusal(Boolean(value), code);
+};
 const isWrite = (method) => !['GET', 'HEAD', 'OPTIONS'].includes(method);
 function validateEndpoint(value) {
   if (
@@ -661,7 +680,8 @@ function recordListenerErrorOnce(record, name) {
   };
 }
 
-export async function createSimulator(options = {}) {
+export async function createSimulator(options) {
+  requireRuntimeSources('createSimulator(options)', options);
   const runtime = runtimeSettings(options.runtime);
   if (runtime.kind !== 'power-pages') {
     const { createStandaloneRuntime } = await import('./lib/standalone-runtime.mjs');
@@ -850,8 +870,11 @@ export async function createSimulator(options = {}) {
     bootstrapTimings.profilePinMs = Math.round(performance.now() - preloadStarted);
     bootstrapTimings.statePreloadMs = restoredState === undefined ? 0 : bootstrapTimings.profilePinMs;
   }
+  const pinFromState = stateFile && personaInstance?.deploymentProfile === undefined && persistedPin !== null;
   if (personaInstance?.deploymentProfile !== undefined) persistedPin = personaInstance.deploymentProfile;
-  let activeProfiles = await loadDeploymentProfiles(profileConfig, persistedPin);
+  let activeProfiles = await loadDeploymentProfiles(profileConfig, persistedPin, {
+    pinStateFile: pinFromState ? path.resolve(stateFile) : null,
+  });
   // Bootstrap : portal export + ordered solution layers -> mappings, schemas,
   // permission model. Parsed solution files are cached beside the state file and
   // reused only for files whose size/mtime/ctime/inode are unchanged.
@@ -996,6 +1019,7 @@ export async function createSimulator(options = {}) {
     bootstrapTimings.solutionCache = { ...cache.stats, processHits: cache.processHits, file: solutionCacheFile };
   }
   await loadSolutions({ reuseImported: true });
+  activeProfiles = withDefinedVariables(activeProfiles, solutionData.environmentVariables);
   // Project data packs (project.dataPacks) join the built-in pack registry.
   const projectPacks =
     project?.dataPacks?.length || dataPacks.length || packs.length
@@ -1135,6 +1159,7 @@ export async function createSimulator(options = {}) {
     settings: simulation,
     packs: projectPacks ?? [],
     stateFile,
+    diagnostic: (entry) => sourceDiagnostic(entry),
   });
   const hostClock =
     typeof settingOptionsRest.clock === 'function'
@@ -1147,6 +1172,8 @@ export async function createSimulator(options = {}) {
     file: stateFile,
     persistence,
     storageAdapter,
+    // A reclaimed writer lock is a runtime finding (/_sim/api/diagnostics), reported from startup on.
+    onLockRecovery: (entry) => sourceDiagnostic(entry),
     presetLibrary: generatedPresets,
     platform: platformOption,
     state: restoredState !== undefined ? { version: 1 } : applySolutions(seededInitialState()),
@@ -1164,7 +1191,12 @@ export async function createSimulator(options = {}) {
     packs: projectPacks ?? [],
     runtime: runtimeOption,
     // Host surfaces under their legacy status keys (capability registry summary()).
-    surfaces: () => hostSurfaces({ host: 'power-pages', dataverseApi: dataverseConfig.enabled }),
+    surfaces: () =>
+      hostSurfaces({
+        host: 'power-pages',
+        dataverseApi: dataverseConfig.enabled,
+        modelDriven: modelDrivenSettingsValue.enabled !== false,
+      }),
     inventory: () => solutionInventory,
     localOrigin: () => localOrigin ?? null,
     codeApps: () => codeAppRecords,
@@ -1208,11 +1240,16 @@ export async function createSimulator(options = {}) {
   const workflowsView = organizationHost.workflows;
   const codeApps = codeAppSettings(settingOptionsRest.codeApps);
   let startupPresetBody;
+  const presetNotFound = (name) =>
+    error(
+      `Preset '${name}' not found; GET /_sim/api/presets lists this runtime's presets and paqvilo mirage --help the registry presets.`,
+      404,
+    );
   const validateStartupConfiguration = () => {
     if (!startupPreset.applied || presetConfiguration !== 'apply') return;
     const state = store.snapshot({ sections: ['presets', 'mappings', 'simulator'] });
     const selected = resolvePreset(state, preset, generatedPresets, store.recordContext());
-    if (!selected) throw error('Preset not found.', 404);
+    if (!selected) throw presetNotFound(preset);
     if (
       selected.configurationPreset &&
       !experimentPresets(state, sourcePortal, packConfigurations.presets).some(
@@ -1244,6 +1281,8 @@ export async function createSimulator(options = {}) {
   if (Object.keys(store.state.simulator?.modelDriven?.records ?? {}).length) {
     sourcePortal = await importSource(store.state.simulator.modelDriven.records);
   }
+  // A state file without the simulator block (hand-written or older) starts with the block a new state gets.
+  store.state.simulator ??= seededInitialState().simulator;
   store.state.simulator.contentPolicySource = policyOrigin(store.state.simulator.contentPolicySource);
   if (stateExisted) validateStartupConfiguration();
   if (personaInstance)
@@ -1280,7 +1319,6 @@ export async function createSimulator(options = {}) {
   });
   // Managed identity endpoints (lib/dataverse-managed-identity.mjs): created once the listener has its origin.
   let managedIdentity = null;
-  let managedIdentityHeaderShown = false;
   // Settings identities first, then the ones added through the admin API (both answer token requests).
   const managedIdentityList = () => [
     ...(dataverseConfig.managedIdentities ?? []),
@@ -1298,21 +1336,16 @@ export async function createSimulator(options = {}) {
   let dataverseCertificate = null;
   // The identity header is shown once, as secrets are: only the first admin status read (GET /_sim/api/dataverse) after start
   // carries it. Other state reads, the page's own polling included, always carry null.
-  const managedIdentitySummary = ({ reveal = false } = {}) => {
-    if (!managedIdentity) return null;
-    const { IDENTITY_ENDPOINT, IDENTITY_HEADER, IMDS_ENDPOINT } = managedIdentity.env();
-    const appService = managedIdentityMode === 'appservice';
-    const shown = appService && reveal && !managedIdentityHeaderShown;
-    if (shown) managedIdentityHeaderShown = true;
-    return { endpoint: appService ? IDENTITY_ENDPOINT : IMDS_ENDPOINT, header: shown ? IDENTITY_HEADER : null };
-  };
-  const dataverseSummary = () => ({
-    ...dataverseStatus(dataverseConfig, dataverse ?? {}),
-    organizationAvailable: Boolean(organization),
-    certificateFile: dataverseCertificate?.file ?? null,
-    certificateFingerprint: dataverseCertificate?.fingerprint256 ?? null,
-    managedIdentity: managedIdentitySummary(),
-  });
+  const managedIdentitySummary = managedIdentityStatusReader(
+    () => managedIdentity,
+    () => managedIdentityMode,
+  );
+  const dataverseSummary = () =>
+    dataverseHostStatus(dataverseConfig, dataverse ?? {}, {
+      organizationAvailable: organization,
+      certificate: dataverseCertificate,
+      managedIdentity: managedIdentitySummary(),
+    });
   // Site settings bound to environment variables take their effective value; Secret ones resolve as the organization's
   // SYSTEM user. portalOverrides.settings still win over both.
   const environmentBound = (source, state) =>
@@ -1789,6 +1822,8 @@ export async function createSimulator(options = {}) {
   };
   sourceDiagnostic = recordDiagnostic;
   earlySourceDiagnostics.splice(0).forEach(recordDiagnostic);
+  // Findings of the project file (an unknown key of a version-1 project is ignored and reported) at startup.
+  for (const entry of project?.diagnostics ?? []) recordDiagnostic(entry);
   await organizationHost.createBackend();
 
   // Column types come from the Solution's metadata first, then from the mapping's own fields, so a table that only
@@ -2456,6 +2491,8 @@ export async function createSimulator(options = {}) {
         organizationHost.canvas.enabled && organizationHost.canvasApps().length ? `${appsOrigin}/_apps/canvas/` : null,
       powerPages: '/',
       dataverseApi: dataverse?.origin ?? null,
+      // The token authority that mirage/docs/dataverse-api.md tells clients to read (mirage status prints it).
+      dataverseAuthority: dataverse?.authority ?? null,
     },
     simulation: organizationHost.simulationReport(storageAdapter?.report(store.state) ?? simulationReport()),
     recordCapabilities: recordCapabilitiesSummary({ reuse: reuseCapabilities }),
@@ -2464,7 +2501,7 @@ export async function createSimulator(options = {}) {
   // Admin responses that return the whole state stream it: stored tables are read page by page instead of becoming one
   // response string, and ?summary=1 answers with configuration, counts and no table rows.
   const stateResponse = (req, res) => {
-    if (new URL(req.url, 'http://localhost').searchParams.get('summary') === '1')
+    if (queryFlag(new URL(req.url, 'http://localhost').searchParams, 'summary'))
       return json(res, 200, exposedState({ summary: true }));
     // The forks were taken under the caller's lock; streaming them need not hold it.
     json(
@@ -2632,7 +2669,7 @@ export async function createSimulator(options = {}) {
     mutation = next.catch(() => {});
     return next;
   };
-  const saveState = async (state, { reload = true } = {}) => {
+  const persistState = async (state, { reload = true } = {}) => {
     // Keep the snapshot's original revision across source/profile I/O. SDK
     // transactions can commit outside the host mutation queue during that work.
     const expectedRevision = store.snapshotRevision(state) ?? store.revision;
@@ -2670,6 +2707,7 @@ export async function createSimulator(options = {}) {
       if (pinChanged) {
         sourceDependencies = { ...(await discoverSourceDependencies(portal)), compat: localOverrides.compat };
         await loadSolutions();
+        activeProfiles = withDefinedVariables(activeProfiles, solutionData.environmentVariables);
         generatedPresets = initialState(portal, bootstrapOptions()).presets;
         store.presetLibrary = generatedPresets;
         fingerprint = await calculateFingerprint();
@@ -2705,6 +2743,12 @@ export async function createSimulator(options = {}) {
     }
     appliedManagementRecords = structuredClone(store.state.simulator?.modelDriven?.records ?? {});
   };
+  // Every whole-state write that changes the operations map (configuration, import, reset, presets, scenarios) applies it
+  // like PATCH /_sim/api/operations/<key>: CLR runtimes are prepared first and the trigger hosts re-synchronize after.
+  const saveState = (state, options) =>
+    isDeepStrictEqual(state.simulator?.operations ?? {}, store.state.simulator?.operations ?? {})
+      ? persistState(state, options)
+      : organizationHost.applyOperationOverrides(state.simulator?.operations, () => persistState(state, options));
   // Source import happens after the record transaction commits. The short
   // publication transaction checks its overlay snapshot again, so background
   // SDK writes during source I/O cannot be overwritten by rematerialization.
@@ -2762,13 +2806,25 @@ export async function createSimulator(options = {}) {
     }
     if (preset.permissionSource) state.simulator.permissionSource = preset.permissionSource;
   };
-  const applySelectedPreset = async (name, adjust, { applyConfiguration = false, returnState = true } = {}) => {
+  // The configuration preset a data preset names, applied to the simulator settings of the replacement state.
+  const applyConfigurationPreset = (state, id) => {
+    const configuration = experimentPresets(state, sourcePortal, packConfigurations.presets).find(
+      (entry) => entry.id === id,
+    );
+    if (!configuration) throw error('Configuration preset not found: ' + id, 404);
+    state.simulator = applyExperiment({ simulator: state.simulator }, configuration).simulator;
+  };
+  const applySelectedPreset = async (
+    name,
+    adjust,
+    { applyConfiguration = false, returnState = true, startup = false } = {},
+  ) => {
     const preset =
       name === startupPreset.name && startupPresetBody
         ? startupPresetBody
         : resolvePreset(store.state, name, generatedPresets, store.recordContext());
     if (preset === startupPresetBody) startupPresetBody = undefined;
-    if (!preset) throw error('Preset not found.', 404);
+    if (!preset) throw presetNotFound(name);
     const replaced = ['mappings', 'tables', 'permissions', 'plugins', 'settings'].filter(
       (key) => preset[key] !== undefined,
     );
@@ -2789,17 +2845,15 @@ export async function createSimulator(options = {}) {
       // resolvePreset returned a detached graph owned by this operation.
       if (preset[key] !== undefined) state[key] = preset[key];
     preserveOrganizationPresetSections(organizationSections, preset, state);
+    // At startup the tables a pack DATA file owns keep the file's rows: the file is authoritative, and its first write
+    // must not publish the preset's rows over it. An explicit /_sim/ apply replaces them and writes them to the file.
+    if (startup && storageAdapter) preserveDataOwnedTables(organizationSections, state, storageAdapter.dataOwned);
     applyPresetSections(state, preset, name);
     // Scenarios adjust persona/permissions in the same state replacement as their preset.
     if (adjust) await adjust(state);
-    if (applyConfiguration && preset.configurationPreset) {
-      const configuration = experimentPresets(state, sourcePortal, packConfigurations.presets).find(
-        (entry) => entry.id === preset.configurationPreset,
-      );
-      if (!configuration) throw error('Configuration preset not found: ' + preset.configurationPreset, 404);
-      state.simulator = applyExperiment({ simulator: state.simulator }, configuration).simulator;
-    }
-    await saveState(state);
+    if (applyConfiguration && preset.configurationPreset) applyConfigurationPreset(state, preset.configurationPreset);
+    // A preset's table mappings are declared schema, accepted at every simulation level (lib/simulation-persistence.mjs).
+    await (storageAdapter ? storageAdapter.presetApplication(() => saveState(state)) : saveState(state));
     return returnState ? exposedState() : undefined;
   };
   const validateConfig = (cfg) => {
@@ -3043,7 +3097,7 @@ export async function createSimulator(options = {}) {
     const definition = contextId ? report.contexts.find((entry) => entry.id === contextId) : null;
     const preset = scenario?.preset ?? definition?.preset;
     if (preset && !resolvePreset(store.snapshot({ sections: ['presets', 'mappings'] }), preset, generatedPresets))
-      throw error('Preset not found: ' + preset, 404, 'PersonaPresetNotFound');
+      throw error(presetNotFound(preset).message, 404, 'PersonaPresetNotFound');
     if (definition?.deploymentProfile) {
       try {
         profileSelection(profileConfig, definition.deploymentProfile);
@@ -3319,9 +3373,11 @@ export async function createSimulator(options = {}) {
         ENVIRONMENT_ROUTES,
       ),
       // Admin-adjacent routes outside /_sim/api (model-driven/http.mjs routes): full paths, never probed by the admin app.
-      adminAdjacentRoutes: MODEL_DRIVEN_ROUTES,
+      adminAdjacentRoutes: modelDrivenSettingsValue.enabled === false ? [] : MODEL_DRIVEN_ROUTES,
       // The /_sim/events?channels=... channels this host streams (reloads always come with the stream).
       eventChannels: ['logs', 'trace'],
+      // The origin hosts the trace `host` filter accepts (lib/trace-store.mjs TRACE_HOSTS); the Activity filter lists them.
+      traceHosts: TRACE_HOSTS,
     };
   };
   const SCENARIO_FIELDS = new Set([
@@ -3885,14 +3941,14 @@ export async function createSimulator(options = {}) {
     [
       '/preflight',
       async (req, res, url, relative) => {
-        if (relative !== '/preflight' || req.method !== 'GET') throw error('Admin endpoint not found.', 404);
+        if (relative !== '/preflight' || req.method !== 'GET') throw adminEndpointNotFound();
         const scenario = url.searchParams.get('requires')
           ? scenarioSettings({
               id: url.searchParams.get('scenario') ?? 'request',
               requires: url.searchParams.getAll('requires'),
             })
           : null;
-        return json(res, 200, await preflight({ scenario, strict: url.searchParams.get('strict') === 'true' }));
+        return json(res, 200, await preflight({ scenario, strict: queryFlag(url.searchParams, 'strict') }));
       },
     ],
     ['/session', (req, res, url) => sessionApi(req, res, url)],
@@ -3900,7 +3956,7 @@ export async function createSimulator(options = {}) {
     [
       '/model-driven/offline',
       (req, res, url, relative) => {
-        if (relative !== '/model-driven/offline' || req.method !== 'GET') throw error('Admin endpoint not found.', 404);
+        if (relative !== '/model-driven/offline' || req.method !== 'GET') throw adminEndpointNotFound();
         return json(res, 200, { items: modelDrivenHandler.offlineSessions() });
       },
     ],
@@ -3985,11 +4041,12 @@ export async function createSimulator(options = {}) {
       }),
     });
   async function admin(req, res, url) {
+    mirrorHead(req);
     if (await messaging(req, res, url)) return;
     if (await coreAdmin(req, res, url)) return;
     const relative = url.pathname.slice('/__sim/api'.length);
     const entry = PORTAL_ADMIN.find(([prefix]) => relative === prefix || relative.startsWith(prefix + '/'));
-    if (!entry) throw error('Admin endpoint not found.', 404);
+    if (!entry) throw adminEndpointNotFound();
     return entry[1](req, res, url, relative);
   }
   /* NOSONAR */ async function portalAdmin(req, res, url, relative) {
@@ -4020,6 +4077,7 @@ export async function createSimulator(options = {}) {
           'Select explicit logical fixture tables with one tables query parameter.',
           400,
           'InvalidVerificationSelection',
+          'tables',
         );
       const selectedTables = url.searchParams.get('tables').split(',');
       const auth = requestAuth(req, new URL('/', url));
@@ -4089,7 +4147,7 @@ export async function createSimulator(options = {}) {
       );
     }
     if (method === 'GET' && relative === '/state') {
-      const current = await evidenceState(url.searchParams.get('summary') === '1');
+      const current = await evidenceState(queryFlag(url.searchParams, 'summary'));
       current.status.solutionMetadata = {
         ...solutionMetadata.summary,
         data: solutionData.stats,
@@ -4133,54 +4191,28 @@ export async function createSimulator(options = {}) {
       throw error('Missing simulator CSRF token.', 403);
     const operationRoute = /^\/operations\/([^/]+)$/.exec(relative);
     if (operationRoute && ['PATCH', 'DELETE'].includes(method))
-      /* NOSONAR: single-pass routine, splitting it would change shared state */ return change(async () => {
-        const key = decodeAdminIdentifier(operationRoute[1]);
-        const item = operations().find((item) => item.key === key);
-        if (!item) throw error('This operation is not in the current source exports.', 404);
-        if (!item.configurable)
-          throw error(
-            item.kind === 'plugin-step'
-              ? item.unsupported || 'This plugin registration is disabled in the export.'
-              : 'This workflow has no exported portal consumer or trigger route. Add its consumer to the portal sources first.',
-            409,
-          );
-        let value;
-        if (method !== 'DELETE') {
-          value = await jsonObjectBody(req);
-          validateOperationOverrides({ [key]: value }, { pluginStep: item.kind === 'plugin-step' ? item : undefined });
-          if (value.mode === 'handler' && !item.registered)
-            throw error('No trusted project handler is registered for this operation.', 409);
-          if (value.mode === 'clr') {
-            if (!item.clrAvailable)
-              throw error(
-                'No explicitly trusted CLR descriptor is registered for this exact exported plugin step/type.',
-                409,
-              );
-            if (item.unsupported) throw error(item.unsupported, 409);
-          }
-          if (value.mode === 'handler' && item.unsupported) throw error(item.unsupported, 409);
-          if (value.mode === 'exported' && !item.definitionAvailable)
-            throw error('The selected sources do not include this operation definition.', 409);
-        }
-        const next = { ...store.state.simulator?.operations };
-        if (method === 'DELETE') delete next[key];
-        else next[key] = value;
-        // The host prepares a CLR runtime this choice selects before the choice is stored, and closes one it no longer selects.
-        // The operation-key delta is a transaction on the live state: it queues with committed asynchronous jobs, so their
-        // writes are kept and neither side conflicts (a whole-state replacement lost that race to a job's several commits).
-        await organizationHost.applyOperationOverrides(next, async () => {
-          await store.transact(() => {
-            store.state.simulator ??= config();
-            const operations = { ...store.state.simulator.operations };
-            if (method === 'DELETE') delete operations[key];
-            else operations[key] = value;
-            store.state.simulator.operations = operations;
-          });
-          revision++;
-          publishLog('reload', { revision, message: `Runtime configuration reloaded (revision ${revision}).` });
-          events.send(`event: reload\ndata: ${revision}\n\n`);
+      return change(async () => {
+        const items = await changeOperationOverride({
+          key: decodeAdminIdentifier(operationRoute[1]),
+          method,
+          readBody: () => jsonObjectBody(req),
+          operations,
+          store,
+          initial: config,
+          fail: error,
+          // The host prepares a CLR runtime this choice selects before the choice is stored, and closes one it no longer
+          // selects. The operation-key delta is a transaction on the live state: it queues with committed asynchronous
+          // jobs, so their writes are kept and neither side conflicts (a whole-state replacement lost that race to a job's
+          // several commits).
+          apply: (next, commit) =>
+            organizationHost.applyOperationOverrides(next, async () => {
+              await commit();
+              revision++;
+              publishLog('reload', { revision, message: `Runtime configuration reloaded (revision ${revision}).` });
+              events.send(`event: reload\ndata: ${revision}\n\n`);
+            }),
         });
-        return json(res, 200, { items: operations() });
+        return json(res, 200, items);
       });
     if (method === 'POST' && relative === '/shutdown') {
       void json(res, 202, { accepted: true, message: 'Mirage shutdown accepted.' });
@@ -4656,6 +4688,8 @@ export async function createSimulator(options = {}) {
               'PERSONA_CONFIGURATION_INVALID',
             );
         }
+        // An operations map is refused like PATCH /_sim/api/operations/<key>; saveState applies it.
+        if (Object.hasOwn(patch, 'operations')) checkOperationOverrides(patch.operations, operations, error);
         await saveState(state);
         void stateResponse(req, res);
       });
@@ -4858,7 +4892,7 @@ export async function createSimulator(options = {}) {
         if (action === 'apply' && kind === 'presets' && method === 'POST') {
           const options = await jsonObjectBody(req);
           if (options.applyConfiguration !== undefined && typeof options.applyConfiguration !== 'boolean')
-            throw error('applyConfiguration must be boolean.', 400);
+            throw error('applyConfiguration must be true or false.', 400, 'INVALID_REQUEST', 'applyConfiguration');
           await applySelectedPreset(id, undefined, { ...options, returnState: false });
           return stateResponse(req, res);
         }
@@ -4925,7 +4959,7 @@ export async function createSimulator(options = {}) {
         );
       });
     }
-    throw error('Admin endpoint not found.', 404);
+    throw adminEndpointNotFound();
   }
   // Site tables (lib/site-tables.mjs): read-only site components and web
   // role memberships derived from the export and local personas, rebuilt whenever
@@ -5018,7 +5052,7 @@ export async function createSimulator(options = {}) {
     res.end(bytes);
   }
   // Local sign-in, sign-out and the session API (lib/auth-session.mjs; docs:
-  // sim-administration.md "Sign-in, sign-out and sessions").
+  // mirage/docs/sim-administration.md "Sign-in and sessions").
   const signInPersonas = () => personaReport().contacts.filter((contact) => contact.active);
   const identityFor = (session) => trace.run({ auth: { identity: sessionIdentity(session) } }, currentIdentity);
   // A sign-in names its contact on the request's http root: the root's actor becomes the contact and a signIn event
@@ -5709,8 +5743,7 @@ export async function createSimulator(options = {}) {
         if (!local()) throw error('Pack writes require local providers.', 409, 'LocalRuntimeRequired');
         if (!(identity.contactId ?? identity.id))
           throw error('Pack writes require sign-in.', 401, 'AuthenticationRequired');
-        if (!sameToken(req.headers.__requestverificationtoken, csrf))
-          throw error('Missing portal verification token.', 403);
+        assertPortalToken(req.headers.__requestverificationtoken, csrf);
         const body = await jsonObjectBody(req);
         const result = await invokePackMutation({
           endpoint,
@@ -5727,8 +5760,7 @@ export async function createSimulator(options = {}) {
     const formRoute = /^\/__sim\/forms\/(entityform|webform)\/([\w-]+)\/submit$/.exec(url.pathname);
     if (formRoute) {
       if (req.method !== 'POST') throw error('Native form submission requires POST.', 405);
-      if (!sameToken(req.headers.__requestverificationtoken, csrf))
-        throw error('Missing portal verification token.', 403);
+      assertPortalToken(req.headers.__requestverificationtoken, csrf);
       const body = await jsonBody(req);
       const formIdentity = currentIdentity();
       // An anonymous visitor's advanced form session belongs to its browser session: the
@@ -5766,6 +5798,7 @@ export async function createSimulator(options = {}) {
         );
       });
     }
+    if (url.pathname.startsWith('/__sim/api')) mirrorHead(req);
     // Browser sign-in sessions : GET /__sim/api/session, POST .../sign-in, .../sign-out.
     if (/^\/__sim\/api\/session(?:\/|$)/.test(url.pathname)) return sessionApi(req, res, url);
     if (url.pathname.startsWith('/__sim/api')) return admin(req, res, url);
@@ -5777,6 +5810,8 @@ export async function createSimulator(options = {}) {
         'cache-control': 'no-cache',
         connection: 'keep-alive',
       });
+      // A HEAD answers the stream's headers and ends: it has no body to stream and joins no channel.
+      if (req.method === 'HEAD') return res.end();
       res.write(`event: ready\ndata: ${revision}\n\n`);
       events.add(res);
       // Administrators opt into the runtime log channel; portal pages only receive reloads.
@@ -5790,7 +5825,12 @@ export async function createSimulator(options = {}) {
       return;
     }
     // The console's ticket navigation spends a sign-in or sign-out ticket (mintPortalTicket).
-    if (url.pathname.startsWith('/__sim/session-token/') && ['GET', 'HEAD'].includes(req.method))
+    // A HEAD (a link preview, a prefetch) must not spend the ticket the navigation needs.
+    if (url.pathname.startsWith('/__sim/session-token/') && req.method === 'HEAD') {
+      res.writeHead(405, { allow: 'GET', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' });
+      return res.end();
+    }
+    if (url.pathname.startsWith('/__sim/session-token/') && req.method === 'GET')
       return consumePortalTicket(req, res, url.pathname.slice('/__sim/session-token/'.length));
     if (url.pathname === '/__sim/sign-in') {
       if (req.method === 'POST') {
@@ -5805,9 +5845,10 @@ export async function createSimulator(options = {}) {
         });
         return res.end();
       }
-      if (req.method !== 'GET') throw error('Method not allowed', 405);
+      // HEAD mirrors GET; the HTTP server sends no body for it.
+      if (req.method !== 'GET' && req.method !== 'HEAD') throw error('Method not allowed', 405);
       const personaKey = url.searchParams.get('persona')?.trim();
-      if (!personaKey) throw error('The persona parameter is required.', 400, 'PersonaParameterRequired');
+      if (!personaKey) throw error('The persona parameter is required.', 400, 'PersonaParameterRequired', 'persona');
       const persona = findPersona(personaKey);
       const report = personaReport();
       const returnUrl = personaStartPath(
@@ -5891,8 +5932,7 @@ export async function createSimulator(options = {}) {
     );
     if (endpoint) {
       if (endpoint.mode === 'live') return forward(req, res, url);
-      if (isWrite(req.method) && !sameToken(req.headers.__requestverificationtoken, csrf))
-        throw error('Missing portal verification token.', 403);
+      if (isWrite(req.method)) assertPortalToken(req.headers.__requestverificationtoken, csrf);
       if (endpoint.entity) {
         const shadow = new URL(url);
         shadow.pathname = `/_api/${endpoint.entity}`;
@@ -5927,8 +5967,7 @@ export async function createSimulator(options = {}) {
         try {
           if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method))
             throw error('This method cannot execute server logic.', 405);
-          if (isWrite(req.method) && !sameToken(req.headers.__requestverificationtoken, csrf))
-            throw error('Missing portal verification token.', 403, 'Forbidden');
+          if (isWrite(req.method)) assertPortalToken(req.headers.__requestverificationtoken, csrf, 'Forbidden');
           const raw = await executeServerLogic({
             name: serverLogic,
             method: req.method,
@@ -5998,8 +6037,7 @@ export async function createSimulator(options = {}) {
     );
     if (flow && config().mode !== 'live') {
       if (req.method !== 'POST') throw error('Cloud-flow triggers require POST.', 405);
-      if (!sameToken(req.headers.__requestverificationtoken, csrf))
-        throw error('Missing portal verification token.', 403);
+      assertPortalToken(req.headers.__requestverificationtoken, csrf);
       const identity = currentIdentity();
       assertOperationRole(flow, identity);
       const bytes = (await rawBody(req)).toString('utf8');
@@ -6210,8 +6248,7 @@ export async function createSimulator(options = {}) {
         });
         return res.end(body === undefined ? undefined : JSON.stringify(body));
       };
-      if (!sameToken(req.headers.__requestverificationtoken, csrf))
-        throw error('Missing portal verification token.', 403);
+      assertPortalToken(req.headers.__requestverificationtoken, csrf);
       const now = Date.now();
       for (const [id, entry] of stagedUploads) if (now - entry.created > 3600000) dropStaged(id);
       if (/^InitializeFileUpload$/i.test(fileApi[1])) {
@@ -6368,7 +6405,7 @@ export async function createSimulator(options = {}) {
           const verified = tokens.length
             ? tokens.length === 1 && pageToken(tokens[0])
             : pageToken(nativeViewStateKey(controls.get('__VIEWSTATE')));
-          if (!verified) throw error('Missing portal verification token.', 403);
+          if (!verified) throw portalTokenRefusal(tokens.length > 0 || controls.has('__VIEWSTATE'));
           // The captcha refresh is an ASP.NET AJAX partial postback answered with the update panel delta.
           const captchaTarget = /^(.+\$captcha)\$CaptchaLinkButton$/.exec(controls.get('__EVENTTARGET') ?? '');
           if (captchaTarget && /^delta=true$/i.test(String(req.headers['x-microsoftajax'] ?? ''))) {
@@ -6431,7 +6468,7 @@ export async function createSimulator(options = {}) {
       const verified = tokens.length
         ? tokens.length === 1 && pageToken(tokens[0])
         : pageToken(nativeViewStateKey(controls.get('__VIEWSTATE')));
-      if (!verified) throw error('Missing portal verification token.', 403);
+      if (!verified) throw portalTokenRefusal(tokens.length > 0 || controls.has('__VIEWSTATE'));
       nativeEntries = [...controls];
     } else if (!['GET', 'HEAD'].includes(req.method)) throw error('Use the local Web API for writes.', 405);
     if (/^\/_portal\/modal-form-template-path(?:\/[^/]+)?\/?$/i.test(url.pathname)) {
@@ -7140,9 +7177,24 @@ export async function createSimulator(options = {}) {
       `<!doctype html><title>${requestTitle ?? 'Portal simulation diagnostic'}</title><main style="font:16px system-ui;max-width:900px;margin:50px auto"><h1>${requestTitle ?? 'Portal rendering needs attention'}</h1><p>${escaped(err.message)}</p><p><a href="/__sim/">Open simulator admin</a></p></main>`,
     );
   };
+  // A request that takes a JSON error envelope: the portal and administration APIs, native form posts, a pack endpoint,
+  // and any request whose Accept names JSON and not HTML (a script's fetch, a client library).
+  const jsonErrorRequest = (req, pathname) =>
+    req.url.startsWith('/_api/') ||
+    req.url.startsWith('/__sim/api') ||
+    req.url.startsWith('/__sim/forms/') ||
+    isPackEndpoint(pathname) ||
+    (/\bapplication\/(?:[\w.+-]*\+)?json\b/i.test(req.headers.accept ?? '') &&
+      !/\btext\/html\b/i.test(req.headers.accept ?? ''));
   const writeRequestError = (err, req, res) => {
     const status = requestErrorStatus(err);
-    if (req.url.startsWith('/_api/') || req.url.startsWith('/__sim/api') || req.url.startsWith('/__sim/forms/')) {
+    const pathname = req.url.split('?')[0];
+    // A missing or refused simulator asset (/_sim/<name>.mjs, .css, ...) answers plain text, not a portal page.
+    if (!jsonErrorRequest(req, pathname) && /^\/__sim\/[^/]+\.[a-z0-9]+$/i.test(pathname)) {
+      res.writeHead(status, { 'content-type': 'text/plain; charset=utf-8', 'x-content-type-options': 'nosniff' });
+      return void res.end(requestErrorMessage(err));
+    }
+    if (jsonErrorRequest(req, pathname)) {
       const postback = req.url.startsWith('/__sim/forms/entityform/')
         ? formWriteError(err, config().observed ?? portal.observed, 'entityform', portal)
         : null;
@@ -7150,6 +7202,12 @@ export async function createSimulator(options = {}) {
         error: {
           code: requestErrorCode(err) ?? 'SIMULATOR_ERROR',
           message: requestErrorMessage(err),
+          // The admin API's error shape names the refused query parameter (sim-administration.md); so does the local
+          // sign-in shortcut's (`persona`).
+          ...((req.url.startsWith('/__sim/api') || /^\/__?sim\/sign-in(?:\?|$)/.test(req.url)) &&
+          typeof err.parameter === 'string'
+            ? { parameter: err.parameter }
+            : {}),
           ...(req.url.startsWith('/__sim/forms/') && Array.isArray(err.details?.validationErrors)
             ? { validationErrors: err.details.validationErrors }
             : {}),
@@ -7266,6 +7324,9 @@ export async function createSimulator(options = {}) {
       res.setHeader('set-cookie', started.cookie);
     }
     let rootSpan = null;
+    // A root names its route as the documentation writes it: the handler reads /_sim as /__sim (the same path family),
+    // and the recorded name keeps the documented /_sim spelling (mirage/docs/sim-administration.md).
+    const documentedPath = (pathname) => pathname.replace(/^\/__sim(?=\/|$)/, '/_sim');
     // The http root of the request. At level off nothing here runs: no trace header parsing, no audit lookup (D-R3-13).
     const openRoot = (who) => {
       // X-Trace-Id names the trace and X-Sim-Parent-Trace the parent span. An audit id (X-Sim-Trace-Id, always an audit id:
@@ -7279,7 +7340,7 @@ export async function createSimulator(options = {}) {
       const surface = appTraceSurface(url.pathname);
       return traces.start({
         kind: 'http',
-        name: `${req.method} ${url.pathname}`,
+        name: `${req.method} ${documentedPath(url.pathname)}`,
         module: surface?.module ?? 'portal',
         operation: req.method,
         actor: {
@@ -7310,13 +7371,13 @@ export async function createSimulator(options = {}) {
     else if (traces.enabled && !['GET', 'HEAD', 'OPTIONS'].includes(req.method) && isSimRootPath(url.pathname))
       rootSpan = traces.start({
         kind: 'http',
-        name: `${req.method} ${url.pathname}`,
+        name: `${req.method} ${documentedPath(url.pathname)}`,
         module: 'sim',
         operation: req.method,
         actor: { kind: 'system', id: null, name: 'simulator' },
         session: { visitorId: null, sessionKey: null },
         origin: { host: 'sim', portal: portalTraceName(), preset: cfg.activeExperiment?.id ?? null },
-        attributes: { routeFamily: '__sim', ...requestAttributes(req, url) },
+        attributes: { routeFamily: '_sim', ...requestAttributes(req, url) },
         ...traces.fromHeaders(req.headers),
       });
     const span = audited
@@ -7523,6 +7584,7 @@ export async function createSimulator(options = {}) {
       applySelectedPreset(preset, undefined, {
         applyConfiguration: presetConfiguration === 'apply',
         returnState: false,
+        startup: true,
       }),
     );
   bootstrapTimings.presetMs = Math.round(performance.now() - bootstrapStageAt);
@@ -7563,7 +7625,6 @@ export async function createSimulator(options = {}) {
       schema: () => solutionData?.schema ?? null,
       metadataFields: (logical) => modelMetadata()?.entities?.[logical]?.fields,
       metadataSnapshot: () => modelMetadata()?.entities,
-      log: (...args) => recordDiagnostic({ code: 'DATAVERSE_API', message: String(args[0]?.message ?? args[0]) }),
     });
     organizationRecords = createModelDrivenRecordService({ organization, origin: () => localOrigin });
     // The site's authorization model (portal-authorization.mjs), reported once per start.
@@ -7693,6 +7754,7 @@ export async function createSimulator(options = {}) {
           portal = applyPortalOverrides(await environmentBound(sourcePortal, store.state), config().portalOverrides);
           sourceDependencies = { ...(await discoverSourceDependencies(portal)), compat: localOverrides.compat };
           await loadSolutions();
+          activeProfiles = withDefinedVariables(activeProfiles, solutionData.environmentVariables);
           generatedPresets = initialState(portal, bootstrapOptions()).presets;
           store.presetLibrary = generatedPresets;
           // Publish the new source fingerprint and renderer before the recompiled

@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { DataError } from './data-error.mjs';
 import { contextUrl, parseDataverseRoute, parsePrefer } from './dataverse-odata.mjs';
 import { guidKey } from './dataverse-values.mjs';
-import { privilegeDeniedError } from './dataverse-security.mjs';
+
 import { denied } from './dataverse-fls.mjs';
 import { parseEntityReference } from './data.mjs';
 import { parseXmlDocument, xmlEscapeAttribute } from './fetchxml-engine.mjs';
@@ -300,7 +300,7 @@ function emptyRecycleBin(api) {
   return async (c) => {
     const { store } = api;
     if (!api.principals.roles(c.user).some((role) => role.name === 'System Administrator'))
-      throw privilegeDeniedError(c.user, RECYCLE_PRIVILEGE, REFERENCE);
+      throw api.principals.deniedError(c.user, RECYCLE_PRIVILEGE, REFERENCE);
     const keys = (store.state.tables[REFERENCE] ?? []).map((r) => guidKey(r.deleteditemreferenceid));
     await api.change(() =>
       store.transact(
@@ -1104,4 +1104,19 @@ export function install(api) {
   });
 }
 
-export const EXTENSION = { name: 'dataverse-data-messages', install };
+/** Capability record for the capability registry; dataverse-extensions.mjs adds the operations install registered. */
+function describe() {
+  return {
+    name: 'dataverse-data-messages',
+    version: 1,
+    kind: 'dataverse-extension',
+    level: 'behaviour',
+    reason: 'Recycle bin (delete hook, Restore, EmptyRecycleBin) and the classic import job run against the store.',
+    requires: [],
+    principal: 'caller',
+    stateOwner: 'store',
+    lifecycle: 'per-request',
+  };
+}
+
+export const EXTENSION = { name: 'dataverse-data-messages', install, describe };

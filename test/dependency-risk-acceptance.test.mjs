@@ -8,6 +8,7 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { auditedProjects, auditAllProjects, auditProject } from '../scripts/audit-dependencies.mjs';
 import {
+  matchesApprovedRiskInputs,
   readAuditInputs,
   temporaryRiskAcceptance,
   validateAuditReport,
@@ -16,6 +17,10 @@ import {
 const root = fileURLToPath(new URL('../', import.meta.url));
 const fixtures = new URL('./fixtures/dependency-audit-risk/', import.meta.url);
 const index = JSON.parse(fs.readFileSync(new URL('index.json', fixtures), 'utf8'));
+// An applicable acceptance: the approved 2026-11-17 entry, pinned to trimmed copies of the approved manifests and locks
+// under inputs/ (only the lock entries its findings name). The repository file itself holds no acceptance.
+const policy = JSON.parse(fs.readFileSync(new URL('policy.json', fixtures), 'utf8'));
+const inputDirectory = (project) => new URL(`inputs/${index.projects[project].file.replace(/\.json$/, '')}/`, fixtures);
 const acceptedProjects = [
   '.',
   'examples/project/components/pcf-dataset-control',
@@ -28,12 +33,15 @@ const beforeExpiry = () => expiry - 1;
 const rawReport = (project = '.') => fs.readFileSync(new URL(index.projects[project].file, fixtures));
 const report = (project = '.') => JSON.parse(rawReport(project));
 const evidence = (project = '.') => {
-  const directory = path.join(root, project);
-  const lock = fs.readFileSync(path.join(directory, project === '.' ? 'paqvilo-lock.json' : 'package-lock.json'));
-  return { manifest: fs.readFileSync(path.join(directory, 'package.json')), lock, auditedLock: Buffer.from(lock) };
+  const lock = fs.readFileSync(new URL('package-lock.json', inputDirectory(project)));
+  return {
+    manifest: fs.readFileSync(new URL('package.json', inputDirectory(project))),
+    lock,
+    auditedLock: Buffer.from(lock),
+  };
 };
 const accept = (project = '.', value = report(project), inputs = evidence(project), now = beforeExpiry, status = 1) =>
-  temporaryRiskAcceptance(project, value, status, inputs, { now });
+  temporaryRiskAcceptance(project, value, status, inputs, { now, policy });
 const mutateJson = (bytes, change) => {
   const value = JSON.parse(bytes);
   change(value);
@@ -49,11 +57,16 @@ function fixtureRoot(t) {
   for (const project of auditedProjects) {
     const cwd = path.join(directory, project);
     fs.mkdirSync(cwd, { recursive: true });
+    const accepted = acceptedProjects.includes(project);
     const source = path.join(root, project);
-    fs.copyFileSync(path.join(source, 'package.json'), path.join(cwd, 'package.json'));
     const name = project === '.' ? 'paqvilo-lock.json' : 'package-lock.json';
-    fs.copyFileSync(path.join(source, name), path.join(cwd, name));
-    if (project === '.') fs.copyFileSync(path.join(source, name), path.join(cwd, 'package-lock.json'));
+    fs.copyFileSync(
+      accepted ? new URL('package.json', inputDirectory(project)) : path.join(source, 'package.json'),
+      path.join(cwd, 'package.json'),
+    );
+    const lock = accepted ? new URL('package-lock.json', inputDirectory(project)) : path.join(source, name);
+    fs.copyFileSync(lock, path.join(cwd, name));
+    if (project === '.') fs.copyFileSync(lock, path.join(cwd, 'package-lock.json'));
   }
   return directory;
 }
@@ -64,6 +77,7 @@ function auditHarness(directory, override = () => undefined, now = beforeExpiry)
   const options = {
     rootDirectory: directory,
     now,
+    riskPolicy: policy,
     log: (line) => output.push(line),
     error: (line) => output.push(line),
     runAudit: (executable, args, settings) => {
@@ -102,7 +116,10 @@ test('only the five exact captured development graphs receive the temporary risk
     assert.match(result.message, /user-approved 2026-11-17; expires 2026-11-24T00:00:00Z/);
   }
   for (const project of ['mirage', 'examples/other', '../', 'toString'])
-    assert.equal(temporaryRiskAcceptance(project, report(), 1, evidence(), { now: beforeExpiry }).accepted, false);
+    assert.equal(
+      temporaryRiskAcceptance(project, report(), 1, evidence(), { now: beforeExpiry, policy }).accepted,
+      false,
+    );
 });
 
 test('expiry uses the UTC boundary and rejects missing, invalid or pre-capture clock evidence', () => {
@@ -125,7 +142,10 @@ test('even whitespace-only manifest/lock drift and a different actual audited ro
       assert.equal(accept(project, report(project), inputs).accepted, false, `${project}: ${key}`);
     }
     for (const inputs of [undefined, {}, { ...evidence(project), lock: undefined }])
-      assert.equal(temporaryRiskAcceptance(project, report(project), 1, inputs, { now: beforeExpiry }).accepted, false);
+      assert.equal(
+        temporaryRiskAcceptance(project, report(project), 1, inputs, { now: beforeExpiry, policy }).accepted,
+        false,
+      );
   }
 });
 
@@ -263,7 +283,10 @@ test('missing/invalid audit output, counts or status cannot become a successful 
   ];
   for (const change of changes) assert.equal(accept('.', change(report())).accepted, false);
   for (const status of [undefined, null, 0, 2, '1'])
-    assert.equal(temporaryRiskAcceptance('.', report(), status, evidence(), { now: beforeExpiry }).accepted, false);
+    assert.equal(
+      temporaryRiskAcceptance('.', report(), status, evidence(), { now: beforeExpiry, policy }).accepted,
+      false,
+    );
 });
 
 test('the runner still performs all ten ordinary audits and reports risk acceptance without changing counts', (t) => {
@@ -395,44 +418,67 @@ test('changed dependency inputs with a valid zero report do not require the temp
   );
 });
 
-test('the authorized root cosmetic metadata update preserves every original approved configuration field', () => {
-  const originalConfigurationSha256 = 'fcbdb302d046bf60ee8dace8c46c6e0eebe8524533e83306b655f940c1bfae1e';
-  const manifestBytes = fs.readFileSync(path.join(root, 'package.json'));
-  const manifest = JSON.parse(manifestBytes);
-  const policy = JSON.parse(fs.readFileSync(path.join(root, 'scripts/dependency-risk-acceptance.json')));
-  const provenance = policy.rootManifestMetadataUpdate;
-  const configurationFingerprint = (value) => {
-    const projection = structuredClone(value);
-    delete projection.description;
-    delete projection.keywords;
-    const keys = new Set();
-    JSON.stringify(projection, (key, item) => {
-      keys.add(key);
-      return item;
-    });
-    return createHash('sha256')
-      .update(JSON.stringify(projection, [...keys].sort()))
-      .digest('hex');
-  };
-  assert.equal(configurationFingerprint(manifest), originalConfigurationSha256);
-  assert.equal(provenance.nonCosmeticConfigurationSha256, originalConfigurationSha256);
-  assert.equal(provenance.initialManifestSha256, '10e74cafb14aac269e29fc675754714d86a5768d44fd6fe33f6c210e6e23fc7b');
-  assert.equal(provenance.currentManifestSha256, '3b892c5bd4f2e9dfb51cdfe4292a5f729bc2b617958601aae6ee876641a69b11');
-  assert.equal(provenance.currentManifestSha256, createHash('sha256').update(manifestBytes).digest('hex'));
-  assert.equal(policy.projects['.'].manifestSha256, provenance.currentManifestSha256);
-  assert.deepEqual(provenance.changedKeys, ['description', 'keywords']);
-  assert.equal(provenance.sourceCommit, 'b21ab711af69919ba840c67fc52216e72c3c3ee5');
-  const cosmetic = structuredClone(manifest);
-  cosmetic.description = 'Invented metadata fixture';
-  cosmetic.keywords = ['invented'];
-  assert.equal(configurationFingerprint(cosmetic), originalConfigurationSha256);
-  for (const field of Object.keys(manifest).filter((key) => !['description', 'keywords'].includes(key))) {
-    const drifted = structuredClone(manifest);
-    drifted[field] = null;
-    assert.notEqual(configurationFingerprint(drifted), originalConfigurationSha256, field);
+test('the repository file holds no acceptance: {} accepts nothing and needs no re-evaluation', (t) => {
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, 'scripts/dependency-risk-acceptance.json'), 'utf8')), {});
+  for (const project of acceptedProjects) {
+    const live = temporaryRiskAcceptance(project, report(project), 1, evidence(project), { now: beforeExpiry });
+    assert.deepEqual(live, { accepted: false, reason: 'no temporary risk acceptance is in force' });
+    assert.equal(matchesApprovedRiskInputs(project, evidence(project)), false);
   }
-  const extra = { ...manifest, unapprovedConfigurationField: true };
-  assert.notEqual(configurationFingerprint(extra), originalConfigurationSha256);
+  const directory = fixtureRoot(t);
+  const harness = auditHarness(directory);
+  harness.options.riskPolicy = undefined;
+  assert.equal(
+    auditAllProjects('fixture-npm-cli.js', harness.options),
+    true,
+    'every finding fails without an acceptance',
+  );
+  assert.equal(harness.output.filter((line) => line.includes('TEMPORARY RISK ACCEPTANCE')).length, 0);
+  assert.equal(harness.output.filter((line) => line.includes('no temporary risk acceptance is in force')).length, 5);
+  const zero = report();
+  zero.vulnerabilities = {};
+  zero.metadata.vulnerabilities = { info: 0, low: 0, moderate: 0, high: 0, critical: 0, total: 0 };
+  const clean = auditHarness(directory, () => ({ status: 0, stdout: JSON.stringify(zero), stderr: '' }));
+  clean.options.riskPolicy = undefined;
+  assert.equal(auditAllProjects('fixture-npm-cli.js', clean.options), false);
+  assert.equal(
+    clean.output.some((line) => /RISK ACCEPTANCE|re-evaluation/.test(line)),
+    false,
+  );
+});
+
+test('a malformed or half-filled acceptance file fails closed instead of meaning no acceptance', (t) => {
+  const { projects, ...withoutProjects } = policy;
+  const firstProject = Object.keys(projects)[0];
+  const halfPinned = structuredClone(policy);
+  delete halfPinned.projects[firstProject].lockSha256;
+  const invalid = [
+    null,
+    [],
+    'none',
+    { advisory: policy.advisory },
+    withoutProjects,
+    { ...policy, projects: {} },
+    { ...policy, expiresAt: 'soon' },
+    { ...policy, evidenceCapturedAt: undefined },
+    { ...policy, advisory: '' },
+    { ...policy, approval: undefined },
+    { ...policy, approval: '' },
+    halfPinned,
+  ];
+  const directory = fixtureRoot(t);
+  const zero = report();
+  zero.vulnerabilities = {};
+  zero.metadata.vulnerabilities = { info: 0, low: 0, moderate: 0, high: 0, critical: 0, total: 0 };
+  for (const [ordinal, candidate] of invalid.entries()) {
+    const result = temporaryRiskAcceptance('.', report(), 1, evidence(), { now: beforeExpiry, policy: candidate });
+    assert.equal(result.accepted, false, `policy ${ordinal}`);
+    assert.match(result.reason, /Invalid scripts\/dependency-risk-acceptance\.json/, `policy ${ordinal}`);
+    assert.throws(() => matchesApprovedRiskInputs('.', evidence(), candidate), /Invalid scripts/, `policy ${ordinal}`);
+    const harness = auditHarness(directory, () => ({ status: 0, stdout: JSON.stringify(zero), stderr: '' }));
+    harness.options.riskPolicy = candidate;
+    assert.equal(auditAllProjects('fixture-npm-cli.js', harness.options), true, `zero findings, policy ${ordinal}`);
+  }
 });
 
 test('the observed npm remediation alternatives preserve the exact installed security report', () => {

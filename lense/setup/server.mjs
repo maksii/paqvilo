@@ -14,6 +14,7 @@ import {
   runPreviewOperation,
 } from './preview.mjs';
 import path from 'node:path';
+import { paqviloCommand, paqviloPrefix } from '../command-hint.mjs';
 
 /** `count` local ports from 8787 upward that are free on this computer and not in `taken`, so addresses stay readable. */
 async function localPorts(count, taken = []) {
@@ -83,10 +84,24 @@ function commandArgs(runtime, store, value) {
       : value?.settings?.defaultSite || ids[0];
   return { file: `--config ${name}`, site: site ? `--site ${quote(site)}` : '' };
 }
-function restartCommand(runtime, store, value) {
+/**
+ * How the page writes commands for the folder this workspace serves (lense/command-hint.mjs): the words that start
+ * a paqvilo command there, and the setup check (the project's npm script only when it defines that same command).
+ */
+function commandHints(store) {
+  return {
+    prefix: paqviloPrefix(store.directory).join(' '),
+    setup: paqviloCommand(['doctor', '--setup'], {
+      script: 'check:setup',
+      config: store.kind === 'catalogue' ? store.file : undefined,
+      cwd: store.directory,
+    }),
+  };
+}
+function restartCommand(prefix, runtime, store, value) {
   const { site } = commandArgs(runtime, store, value);
   const siteArg = site ? ` ${site}` : '';
-  return `npx paqvilo ${runtime.command} ${store.kind === 'project' ? '--project' : '--config'} ${quote(store.file)}${siteArg}`;
+  return `${prefix} ${runtime.command} ${store.kind === 'project' ? '--project' : '--config'} ${quote(store.file)}${siteArg}`;
 }
 // What the restart comparison covers, named in the banner.
 const RESTART_SCOPE = {
@@ -208,6 +223,7 @@ export async function createSetupHandler(options = {}) {
       : { restartRequired: now.value !== initialIdentity.value, restartReason: null };
   };
   const live = liveOrigin(runtime);
+  const commands = commandHints(store);
   const running = (value, state) =>
     runtime
       ? {
@@ -215,7 +231,7 @@ export async function createSetupHandler(options = {}) {
           ...state,
           liveProxy: Boolean(live),
           restartScope: RESTART_SCOPE[runtime.product] ?? RESTART_SCOPE.Mirage,
-          restartCommand: restartCommand(runtime, store, value),
+          restartCommand: restartCommand(commands.prefix, runtime, store, value),
         }
       : null;
   const templates = setupTemplates(store.kind),
@@ -259,6 +275,7 @@ export async function createSetupHandler(options = {}) {
         csrf,
         runtime: current,
         commandArgs: commandArgs(runtime, store, value),
+        commands,
         stages: setupStages(value, current),
         topology: plannedTopology(value),
         templates,
@@ -293,6 +310,7 @@ export async function createSetupHandler(options = {}) {
       return {
         ...value,
         commandArgs: commandArgs(runtime, store, value),
+        commands,
         stages: setupStages(value, value.runtime),
         topology: plannedTopology(value),
         templates,

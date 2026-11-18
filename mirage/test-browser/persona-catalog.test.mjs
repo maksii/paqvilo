@@ -110,6 +110,21 @@ test('native grouped sign-in remains usable without JS; browser automation appli
   await opened.context.close();
 });
 
+test('the sign-in page remembers the persona that signed in as a recent choice', async (t) => {
+  const { app } = await personaFixture(t);
+  const context = await browser.newContext();
+  ownedFixture(t).add(() => context.close());
+  const page = await context.newPage();
+  await page.goto(app.url + '/SignIn');
+  await page.locator('[data-persona-query]').fill('person-1');
+  await page.locator('[data-persona-row="person-1"] [name="personaKey"]').first().click();
+  await page.waitForURL(app.url + '/');
+  // A signed-in visitor is sent on from the sign-in page, so the picker is seen again after the session ends.
+  await context.clearCookies();
+  await page.goto(app.url + '/SignIn');
+  await page.locator('[data-persona-shortcuts="recent"]:not([hidden]) [data-persona-row="person-1"]').waitFor();
+});
+
 test('a pending persona launch keeps the picker and its caption bound to the submitted persona', async (t) => {
   const { app } = await personaFixture(t);
   const context = await browser.newContext();

@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { cli, isMain, UsageError } from '../cli.mjs';
+import { connectionHelp, defaultConnection, exampleRoot } from '../paths.mjs';
 import { loadConnection, connectedClient } from '../../../lense/dataverse/index.mjs';
 import { privateJson } from '../../../lense/dataverse/connection.mjs';
 import { buildTesterOverlay, buildStressTesterOverlay } from './tester-overlay.mjs';
@@ -510,35 +511,66 @@ export async function setTesterRoles(
   };
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const args = process.argv.slice(2),
-    arg = (name) => {
-      const i = args.indexOf(name);
-      return i < 0 ? undefined : args[i + 1];
+if (isMain(import.meta)) {
+  const { values } = cli(
+    `Usage: node examples/company-operations/portal-security/bind-tester.mjs --contact GUID --site GUID
+       [--mode baseline|stress|roles|reset] [--role-count 0|1|2|4|8|12] [--connection FILE] [--catalogue FILE]
+       [--overlay FILE] [--out DIR] [--apply] [--allow-managed-reset]
+
+Run from the toolkit checkout. Plans binding a real signed-in tester Contact against the live environment; --apply
+writes it.
+
+  --contact GUID          existing tester Contact (never created or edited)
+  --site GUID             website target
+  --mode NAME             baseline (default), stress, roles or reset
+  --role-count N          with --mode roles: business roles to keep
+${connectionHelp('  --connection FILE       ')}
+  --catalogue FILE        merged catalogue (default: the example's data/stress-catalogue.json)
+  --overlay FILE          existing private overlay whose actor matches --contact
+  --out DIR               evidence directory under an ignored .paqvilo
+                          (default: the example's .paqvilo/portal-security/tester-<first 8 characters of --contact>)
+  --apply                 write; otherwise save a read-only plan
+  --allow-managed-reset   with --mode baseline or stress: allow reopening revoked managed grants`,
+    {
+      contact: { type: 'string' },
+      site: { type: 'string' },
+      mode: { type: 'string', default: 'baseline' },
+      'role-count': { type: 'string' },
+      connection: { type: 'string' },
+      catalogue: { type: 'string' },
+      overlay: { type: 'string' },
+      out: { type: 'string' },
+      apply: { type: 'boolean' },
+      'allow-managed-reset': { type: 'boolean' },
     },
-    project = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'),
-    mode = arg('--mode') ?? 'baseline',
-    contactId = arg('--contact')?.toLowerCase(),
-    siteId = arg('--site')?.toLowerCase();
+  );
+  const project = exampleRoot,
+    mode = values.mode,
+    contactId = values.contact?.toLowerCase(),
+    siteId = values.site?.toLowerCase();
   if (
     !['baseline', 'stress', 'roles', 'reset'].includes(mode) ||
     ![contactId, siteId].every((v) => /^[0-9a-f-]{36}$/i.test(v ?? ''))
   )
-    throw new Error('Select --mode baseline/stress/roles/reset and provide --contact and --site GUIDs.');
-  const directory = arg('--out') ?? path.join(project, '.paqvilo/portal-security/tester-' + contactId.slice(0, 8));
+    throw new UsageError('Select --mode baseline/stress/roles/reset and provide --contact and --site GUIDs.');
+  if (mode === 'roles' && !['0', '1', '2', '4', '8', '12'].includes(values['role-count']))
+    throw new UsageError('--mode roles requires --role-count 0/1/2/4/8/12.');
+  if (mode !== 'roles' && values['role-count'] !== undefined)
+    throw new UsageError('--role-count applies only to --mode roles.');
+  if (!['baseline', 'stress'].includes(mode) && values['allow-managed-reset'])
+    throw new UsageError('--allow-managed-reset applies only to --mode baseline or stress.');
+  const directory = values.out ?? path.join(project, '.paqvilo/portal-security/tester-' + contactId.slice(0, 8));
   if (!path.resolve(directory).split(path.sep).includes('.paqvilo'))
-    throw new Error('Actual identities and state must stay under ignored .paqvilo');
+    throw new UsageError('Actual identities and state must stay under ignored .paqvilo.');
   await fs.mkdir(directory, { recursive: true });
-  const catalogue = JSON.parse(
-      await fs.readFile(arg('--catalogue') ?? path.join(project, 'data/stress-catalogue.json')),
-    ),
+  const catalogue = JSON.parse(await fs.readFile(values.catalogue ?? path.join(project, 'data/stress-catalogue.json'))),
     schema = JSON.parse(await fs.readFile(path.join(project, 'dataverse/manifest.json'))),
-    connection = await loadConnection(arg('--connection') ?? '.paqvilo/dataverse/provisioning.connection.json'),
+    connection = await loadConnection(values.connection ?? defaultConnection),
     client = connectedClient(connection);
   await client.verify(connection.organisationId);
   const baseline = buildTesterOverlay(catalogue, contactId);
   let overlay = baseline;
-  if (arg('--overlay')) overlay = JSON.parse(await fs.readFile(arg('--overlay')));
+  if (values.overlay) overlay = JSON.parse(await fs.readFile(values.overlay));
   else if (mode !== 'baseline') overlay = buildStressTesterOverlay(catalogue, baseline);
   if (overlay.personas?.[0]?.contactId !== contactId || !overlay.private)
     throw new Error('Private overlay identity mismatch');
@@ -549,10 +581,10 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       startedAt: new Date().toISOString(),
       organisationId: connection.organisationId,
       mode,
-      selectedRoleVariant: mode === 'roles' ? String(arg('--role-count')) : 'baseline',
+      selectedRoleVariant: mode === 'roles' ? values['role-count'] : 'baseline',
       contactId,
       siteId,
-      apply: args.includes('--apply'),
+      apply: values.apply === true,
       beforeRoles: before,
       entries: [],
     },
@@ -567,14 +599,14 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   if (['baseline', 'stress'].includes(mode))
     journal.records = await applyTesterRecords(client, catalogue, overlay, {
       apply: journal.apply,
-      allowManagedReset: args.includes('--allow-managed-reset'),
+      allowManagedReset: values['allow-managed-reset'] === true,
       managedRevokedState: schema.choices
         .find((c) => c.name === 'pqvd_accessstate')
         .options.find((o) => o.label === 'Revoked').value,
       onProgress: progress,
     });
   journal.roles = await setTesterRoles(client, siteId, catalogue, schema, overlay, {
-    selected: mode === 'roles' ? String(arg('--role-count')) : 'baseline',
+    selected: mode === 'roles' ? values['role-count'] : 'baseline',
     apply: journal.apply,
     onProgress: progress,
   });

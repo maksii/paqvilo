@@ -54,6 +54,12 @@ test('debugging requires explicit opt-in and declared portable symbol paths; edi
     ['a//Original.pdb'],
   ])
     assert.throws(() => validateClrDescriptor({ ...base, symbols }), /confined relative PDB/);
+  const many = (ext) => Array.from({ length: 101 }, (_, i) => `d${i}.${ext}`);
+  assert.throws(() => validateClrDescriptor({ ...base, symbols: many('pdb') }), /at most 100 confined relative PDB/);
+  assert.throws(
+    () => validateClrDescriptor({ ...base, dependencies: many('dll') }),
+    /at most 100 confined relative DLL/,
+  );
   assert.equal(validateClrDescriptor({ ...base, debug: true, symbols: ['Original.pdb'] }).debug, true);
   const files = editorFiles({
     name: 'invented',

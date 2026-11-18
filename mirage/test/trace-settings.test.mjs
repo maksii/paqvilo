@@ -36,7 +36,10 @@ test('traceSettings rejects unknown keys, foreign levels and values out of range
     assert.throws(() => traceSettings({ [key]: 100.5 }), new RegExp(`${key} must be an integer`));
     assert.throws(() => traceSettings({ [key]: '100' }), new RegExp(`${key} must be an integer`));
   }
-  assert.throws(() => traceSettings({ persist: 'yes' }), /mirage\.trace\.persist must be true or false/);
+  assert.throws(() => traceSettings({ persist: 'yes' }), /mirage\.trace\.persist must be true or false \(got "yes"\)$/);
+  // A refused value is named as the trace filters name theirs.
+  assert.throws(() => traceSettings({ level: 'verbose' }), /level must be off, summary or full \(got "verbose"\)$/);
+  assert.throws(() => traceSettings({ traces: 9 }), /traces must be an integer from 10 to 10000 \(got "9"\)$/);
   assert.throws(() => traceSettings({ level: 'x' }, 'trace'), /^Error: trace\.level must be/);
 });
 

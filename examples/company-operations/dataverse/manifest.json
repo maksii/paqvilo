@@ -4142,6 +4142,6 @@
   "views": [],
   "scope": {
     "prepared": "Table/column/choice/relationship/key structure from the three specifications",
-    "remaining": "Named forms/views, website components, plugin binaries/steps/images, flows, runtime invariants and seed data are subsequent implementation increments; default forms/views are platform-generated."
+    "remaining": "Not modeled here: named forms/views and Quick Find settings (forms/), website components (portal-security/, portal-harness/), plug-in assemblies/steps/images and integrity guards (plugins/) and seed data (data/) are deployed by their own tools in this example; flows are contracts only and are not deployed; default forms/views are platform-generated."
   }
 }

@@ -6,7 +6,7 @@ import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { MIRAGE_COMMANDS, MIRAGE_TOOLS } from '../mirage/tool-registry.mjs';
+import { MIRAGE_COMMANDS, MIRAGE_TOOLS, MIRAGE_TOOL_USAGE_EXIT } from '../mirage/tool-registry.mjs';
 import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 import {
   exitOnUnhandledTermination,
@@ -91,14 +91,15 @@ for (const args of publicCommands)
 for (const name of Object.keys(MIRAGE_TOOLS))
   test(`public Mirage tool help rejects malformed requests without running the tool: ${name}`, async (t) => {
     const result = await run(t, ['mirage', name, '--help', '--unknown', '--json']);
-    assert.equal(result.status, 1, name);
+    // With --help as without it, the tool's own argument-error exit code.
+    assert.equal(result.status, MIRAGE_TOOL_USAGE_EXIT[name] ?? 1, name);
     assert.equal(JSON.parse(result.stdout).ok, false, name);
     assert.equal(result.stderr, '', name);
   });
 
 test('public Mirage tool help rejects a positional argument without running the tool', async (t) => {
   const positional = await run(t, ['mirage', 'liquid-conformance', '--help', 'unexpected']);
-  assert.equal(positional.status, 1);
+  assert.equal(positional.status, MIRAGE_TOOL_USAGE_EXIT['liquid-conformance']);
   assert.equal(positional.stdout, '');
   assert.match(positional.stderr, /Unexpected argument/);
 });

@@ -17,32 +17,40 @@ and claim parity only where replay cases built from recorded reference captures 
 
 ## Start a runtime
 
-From your project, with a catalogue (`paqvilo.config.yml`):
+From your project, with a catalogue (`paqvilo.config.yml`), no other step is needed:
 
 ```sh
-npx --no-install paqvilo mirage init --config ./paqvilo.config.yml --site portal
 npx --no-install paqvilo mirage dev --config ./paqvilo.config.yml --site portal
 ```
 
-For apps or APIs without a Power Pages export, use a `mirage.project.yml` and `--project` instead; see
-[standalone organization](docs/standalone-organization.md).
+`mirage init` writes the same selection as a Mirage project file (`.paqvilo/mirage/<site>.project.yml`) and prints the
+`dev` command that uses it with `--project`. Use a project file to share or pin a runtime selection, in CI, or for apps
+or APIs without a Power Pages export ([standalone organization](docs/standalone-organization.md)); the catalogue form
+never reads it.
 
 ## Pick the session that fits
 
 | Command          | What it does                                                                                   |
 | ---------------- | ---------------------------------------------------------------------------------------------- |
 | `demo`           | Copies a populated, editable example and opens the development browser                         |
-| `init`           | Writes a per-site runtime project from your catalogue                                          |
+| `init`           | Writes a per-site Mirage project file from your catalogue, for use with `--project`            |
 | `dev`            | Starts runtimes and opens the development browser; stops the runtimes it started when it ends  |
 | `start`          | Starts owned runtimes in the background                                                        |
-| `status`, `stop` | Inspects or stops background runtimes in the same project scope                                |
+| `status`, `stop` | Inspects or stops the background runtimes of one selection (see below)                         |
 | `serve`          | Runs one foreground runtime without the development browser; stop with Ctrl+C                  |
 | `inspect`        | Prints what the importer read from the sources (`--json`)                                      |
 | `data`           | `data scaffold` and `data generate` write local datasets ([data packs](docs/data-packs.md))    |
 | `preflight`      | Reports missing prerequisites for a scenario ([preflight](docs/capabilities-and-preflight.md)) |
 | `trace`          | Reads the activity of a running runtime ([request tracing](docs/tracing.md))                   |
 
-`paqvilo mirage --help` lists the other tools (render, inventories, parity and verification runners).
+`paqvilo mirage --help` lists the other tools (render, inventories, parity and verification runners), `--state-dir` and
+the `setup` alias; every command answers `--help` with its own options.
+
+`status` and `stop` select runtimes by the
+[scoping rule](docs/toolkit-integration.md#which-runtimes-status-and-stop-select): the runtimes started for
+`--project F`, otherwise the catalogue site that `--config`/`--site` select (including `--runtime` starts for that
+site) plus the runtimes of the project it maps; `stop` stops exactly what `status` lists, and both report other
+toolkit-owned runtimes in the same state folder under `others`.
 
 ```sh
 npx --no-install paqvilo mirage status --config ./paqvilo.config.yml --json
@@ -51,8 +59,8 @@ npx --no-install paqvilo mirage serve --source ./portal-export --solution-root .
 ```
 
 Run lifecycle commands with the same catalogue or `--project` that started the session. A runtime that was already
-running before `dev` keeps running when the browser closes. A multi-portal catalogue runs one runtime per site, each with
-its own state and session cookie.
+running before `dev` keeps running when the browser closes. A multi-portal catalogue runs one runtime per site, each
+with its own state and session cookie.
 
 `start` prints a stop command. Copy it exactly: it keeps the project or catalogue selectors and runtime overrides (port,
 state), and an encoded `node -e` form preserves characters the shell would otherwise interpret. A long command refers to
@@ -63,14 +71,15 @@ cannot identify an older session).
 
 ## Addresses and sign-in
 
-A runtime prints its portal address, `adminUrl` (the `/_sim/` administration workspace) and, on the Power Pages host,
-`appsUrl` (model-driven apps at `/main.aspx`). `/_sim/` on the portal address redirects to `adminUrl`. Each address is a
-separate loopback origin; see [simulation administration](docs/sim-administration.md).
+`serve` and `status --json` report the portal address, `adminUrl` (the `/_sim/` administration workspace) and, on the
+Power Pages host, `appsUrl` (model-driven apps at `/main.aspx`); `start` and `dev` print the first two. A browser
+navigation to `/_sim/` on the portal address redirects to `adminUrl`. Each address is a separate loopback origin; see
+[simulation administration](docs/sim-administration.md).
 
 Portal requests are anonymous until a browser signs in locally: through the portal's sign-in page, Lense **Tweaks**,
 `/_sim/`, `simulator.signIn()` or the [testing helpers](../docs/public-api.md#test-many-visitors-concurrently). The
-session is a per-runtime cookie, so signing one browser in never signs another in. [Persona catalogues](docs/persona-catalog.md)
-group test identities and isolated setups.
+session is a per-runtime cookie, so signing one browser in never signs another in.
+[Persona catalogues](docs/persona-catalog.md) group test identities and isolated setups.
 
 ## Data and persistence
 

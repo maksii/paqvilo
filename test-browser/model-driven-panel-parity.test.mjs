@@ -764,3 +764,35 @@ test('a warning-only shared panel counts one issue without a JavaScript or netwo
   await host.getByText('Console warnings', { exact: true }).waitFor();
   await host.getByText('Invented warning only', { exact: true }).waitFor();
 });
+
+test('rows not observed on this revision count under the same filters that list them', async (t) => {
+  const f = await modelPanelFixture(t),
+    state = f.inspector.snapshot();
+  await f.inspector.close();
+  const resources = [
+    { name: 'x_applied.js', mime: 'text/javascript', currentRevisionApplied: 1, paths: ['/x_applied.js'] },
+    { name: 'x_edited.js', mime: 'text/javascript', currentRevisionApplied: 0, paths: ['/x_edited.js'] },
+    { name: 'x_ignored.js', mime: 'text/javascript', currentRevisionApplied: 0, paths: ['/x_ignored.js'] },
+  ];
+  const facts = new Map([
+    ['x_applied.js', { edited: false }],
+    ['x_edited.js', { edited: true }],
+    ['x_ignored.js', { edited: false, noBaseline: true }],
+  ]);
+  const data = modelDrivenPanelData(
+    { ...state, resources, diagnostics: [], problems: [] },
+    { cfg: {}, ui: { open: true }, facts },
+  );
+  await f.page.evaluate(panelUi, { ...data, token: 'count-fixture', capabilities: { actions: false, targets: false } });
+  const host = f.page.locator('#paqvilo-panel');
+  assert.equal(await host.getByRole('button', { name: /^All \d/ }).textContent(), 'All 3');
+  const edited = host.getByRole('button', { name: /^Edited \d/ });
+  assert.equal(await edited.textContent(), 'Edited 1');
+  await edited.click();
+  assert.equal(await host.locator('.row[data-rel="x_edited.js"]').count(), 1);
+  assert.equal(
+    await host.locator('.row[data-rel="x_ignored.js"]').count(),
+    0,
+    'the Edited filter lists only edited rows',
+  );
+});

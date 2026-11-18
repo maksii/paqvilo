@@ -1,3 +1,4 @@
+import { requiredArgument } from './required-argument.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -5,22 +6,31 @@ import { orderedMap } from '../../lense/async-map.mjs';
 import { stateDigest } from './state-stream.mjs';
 import { statFiles } from './file-stamps.mjs';
 
-export const stateFingerprint = (state) => stateDigest({ config: state.config, data: state.data });
+export const stateFingerprint = (
+  state = requiredArgument('stateFingerprint(state)', 'a runtime state with config and data'),
+) => stateDigest({ config: state.config, data: state.data });
 
 /** Loaded modules and files served on demand must both remain stable for evidence. */
-export const implementationEvidence = (loaded, current) => ({
+export const implementationEvidence = (
+  loaded = requiredArgument('implementationEvidence(loaded, current)', 'the loaded implementation fingerprint'),
+  current = requiredArgument('implementationEvidence(loaded, current)', 'the current implementation fingerprint'),
+) => ({
   loadedImplementationFingerprint: loaded,
   implementationFingerprint: createHash('sha256').update(loaded).update('\0').update(current).digest('hex'),
   implementationChanged: loaded !== current,
 });
 
 /** Hash observed export bytes, not a guessed deployed commit. Symlinks are never followed. */
-export async function sourceFingerprint(sourceDir) {
+export async function sourceFingerprint(
+  sourceDir = requiredArgument('sourceFingerprint(sourceDir)', 'a source directory'),
+) {
   return fingerprint(sourceDir, false);
 }
 
 /** SDK build products are not runtime implementation inputs. Export/plugin hashes retain them. */
-export async function implementationSourceFingerprint(sourceDir) {
+export async function implementationSourceFingerprint(
+  sourceDir = requiredArgument('implementationSourceFingerprint(sourceDir)', 'a source directory'),
+) {
   return fingerprint(sourceDir, true);
 }
 
@@ -104,11 +114,15 @@ const RACY_WINDOW_NS = 2_000_000_000n;
  * its size, modification/change time or identity differs. A file written within RACY_WINDOW_NS
  * of the walk could change again without a visible stat change, so its digest is never reused.
  */
-export async function cachedSourceFingerprint(sourceDir) {
+export async function cachedSourceFingerprint(
+  sourceDir = requiredArgument('cachedSourceFingerprint(sourceDir)', 'a source directory'),
+) {
   return cachedFingerprint(sourceDir, false);
 }
 
-export async function cachedImplementationSourceFingerprint(sourceDir) {
+export async function cachedImplementationSourceFingerprint(
+  sourceDir = requiredArgument('cachedImplementationSourceFingerprint(sourceDir)', 'a source directory'),
+) {
   return cachedFingerprint(sourceDir, true);
 }
 

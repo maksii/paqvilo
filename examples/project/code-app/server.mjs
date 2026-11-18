@@ -2,6 +2,12 @@
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import { cli } from '../cli.mjs';
+cli(`Usage: node code-app/server.mjs   (npm run code-app:dev)
+
+Serves the code app on loopback and proxies its bridge calls to a running Mirage. Configured by environment:
+  PAQVILO_MIRAGE_URL or MIRAGE_URL  loopback Mirage origin (default http://127.0.0.1:8787)
+  CODE_APP_PORT                     app port (default 5199)`);
 let target = new URL(process.env.PAQVILO_MIRAGE_URL || process.env.MIRAGE_URL || 'http://127.0.0.1:8787');
 if (target.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(target.hostname))
   throw new Error('MIRAGE_URL must be loopback HTTP');

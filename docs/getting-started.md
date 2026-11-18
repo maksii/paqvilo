@@ -19,13 +19,16 @@ In a new or existing project folder (run `npm init -y` only if there is no `pack
 npm init -y
 npm install --save-dev paqvilo
 npx --no-install paqvilo --help
-npx --no-install paqvilo doctor --setup
+npx --no-install paqvilo doctor --setup --browser msedge
 ```
 
-`npx --no-install paqvilo` runs the installed copy; one install supplies both Lense and Mirage.
-`doctor --setup` checks installed dependencies and the browser. Commit `package.json` and `package-lock.json` (use
-`npm ci --ignore-scripts` for repeatable installs) and ignore `node_modules/` and `.paqvilo/`. On Windows, run
-`git config core.longpaths true` in any repository that will hold deep portal exports.
+`npx --no-install paqvilo` runs the installed copy; one install supplies both Lense and Mirage. `doctor --setup` checks
+installed dependencies, Node and Git, and that the browser is installed: the one named by `--browser` (use `chrome` for
+Chrome), else the one in `./paqvilo.config.yml`; with neither, or when that file cannot be read, it reports the browser
+as not checked and why. Commit
+`package.json` and `package-lock.json` (use `npm ci --ignore-scripts` for repeatable installs) and ignore
+`node_modules/` and `.paqvilo/`. On Windows, run `git config core.longpaths true` in any repository that will hold deep
+portal exports.
 
 ### Try the demo
 
@@ -34,10 +37,10 @@ npx --no-install paqvilo mirage demo
 ```
 
 This copies an editable sample into `paqvilo-example/`, loads invented data and opens the development browser on a free
-port; no portal export or Power Pages account is needed. Keep the terminal running; close the browser or press **Ctrl+C**
-to stop. Rerunning keeps your source edits and restores the sample dataset. Options: `--dir <folder>` (an unrelated
-nonempty folder is never overwritten), `--browser chrome`, `--scaffold` (prepare the VS Code workspace without starting).
-The [demo guide](demo.md) is the walkthrough.
+port; no portal export or Power Pages account is needed. Keep the terminal running; close the browser or press
+**Ctrl+C** to stop. Rerunning keeps your source edits and restores the sample dataset. Options: `--dir <folder>` (an
+unrelated nonempty folder is never overwritten), `--browser chrome`, `--scaffold` (prepare the VS Code workspace without
+starting). The [demo guide](demo.md) is the walkthrough.
 
 ## 2. Scaffold your project
 
@@ -45,7 +48,7 @@ For your own site, generate an empty project (a new folder with its own `package
 configure it in the browser:
 
 ```sh
-npx paqvilo@^0.9.8 init ./my-portal-project --name my-portal-project --site portal
+npx paqvilo@^0.9.8 init ./my-portal-project
 cd my-portal-project
 npm run setup
 npm run configure
@@ -53,8 +56,9 @@ npm run check:project
 ```
 
 `init` writes files only. `setup` installs dependencies and checks tools; `configure` opens the
-[setup workspace](setup.md); `check:project` is the offline readiness gate. The [project scaffold guide](project-scaffold.md)
-covers every generated script, multi-site projects and adopting an existing project.
+[setup workspace](setup.md); `check:project` is the offline readiness gate. The
+[project scaffold guide](project-scaffold.md) covers every generated script, multi-site projects and adopting an
+existing project.
 
 ### Connect an export
 
@@ -71,21 +75,19 @@ my-portal-project/
   .paqvilo/                # ignored local state
 ```
 
-A minimal `paqvilo.config.yml` for that layout (the setup workspace writes an equivalent file):
+For that layout, set these values in the generated `paqvilo.config.yml` (in the setup workspace or by hand), keep its
+other keys, and remove each `TODO(paqvilo-init)` marker as you settle it:
 
 ```yaml
 sourceRoot: ./sources
-defaultSite: portal
-portals: selected
 sites:
   portal:
     source: portal-export
-    defaultEnv: dev
     environments:
       dev: https://your-portal.example.test
-    mirage:
-      port: 8787
-      solutionRoots: []
+defaults:
+  mirage:
+    solutionRoots: [../solutions/Core] # [] when you have no Solution export
 ```
 
 Replace the URL with your online development environment. `source` and `solutionRoots` resolve from `sourceRoot`, so
@@ -101,14 +103,13 @@ Its `pages` should list your pages; review any `diagnostics`. Settings and expor
 ## 3. Work locally with Mirage
 
 ```sh
-npx --no-install paqvilo mirage init --config ./paqvilo.config.yml --site portal
 npx --no-install paqvilo mirage dev --config ./paqvilo.config.yml --site portal
 ```
 
-`mirage init` writes a runtime project file under `.paqvilo/mirage/`; `mirage dev` opens the rendered portal in a
-dedicated browser and stops the runtime when that browser closes. **Alt+Shift+P** opens the panel: **Inspect** follows an
-element to its templates, forms, tables and access rules; **Tweaks** signs the browser in as a local persona and selects
-scenarios; the administration address (`/_sim/`) manages simulated records and runtime settings.
+`mirage dev` reads the catalogue, opens the rendered portal in a dedicated browser and stops the runtime when that
+browser closes. **Alt+Shift+P** opens the panel: **Inspect** follows an element to its templates, forms, tables and
+access rules; **Tweaks** signs the browser in as a local persona and selects scenarios; the administration address
+(`/_sim/`) manages simulated records and runtime settings.
 
 A new state holds portal configuration and empty business tables, and every visitor starts anonymous. For generated
 rows, stop the session and run:
@@ -118,8 +119,10 @@ npx --no-install paqvilo mirage data scaffold --config ./paqvilo.config.yml --si
 npx --no-install paqvilo mirage dev --config ./paqvilo.config.yml --site portal --state .paqvilo/smoke-state.json
 ```
 
-For realistic cases, add Solution metadata and register a [data pack](../mirage/docs/data-packs.md). Background sessions
-and several portals are in the [Mirage guide](../mirage/README.md).
+Scaffolding generates rows only for tables whose Solution metadata it finds; the report lists the others under
+`referencedWithoutMetadata`. For realistic cases, add Solution metadata and register a
+[data pack](../mirage/docs/data-packs.md). Background sessions and several portals are in the
+[Mirage guide](../mirage/README.md).
 
 ## 4. Preview live with Lense
 
@@ -138,9 +141,10 @@ The baseline records local files; it does not establish what is deployed online.
 npx --no-install paqvilo lense dev --config ./paqvilo.config.yml --site portal --env dev
 ```
 
-Sign in through the portal's own sign-in with your intended account, edit an exported CSS file and save; the page
-reloads with your change. **Online / Local** in the panel compares responses. Liquid and Dataverse still run online, so
-portal actions change live data and server-side changes still need deployment. See [Lense](lense.md).
+Sign in through the portal's own sign-in with your intended account, edit an exported CSS file and save; the stylesheet
+is swapped in place (other saved files reload the affected tabs). **Online / Local** in the panel compares responses.
+Liquid and Dataverse still run online, so portal actions change live data and server-side changes still need deployment.
+See [Lense](lense.md).
 
 ## Troubleshooting
 

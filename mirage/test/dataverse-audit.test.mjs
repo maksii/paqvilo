@@ -1,5 +1,6 @@
 // Simulated Dataverse auditing: seeding, enablement, audit actions, impersonation, the
 // history functions and their privileges.
+// @test-kind unproven: local model of Dataverse auditing; the shapes follow the Audit table reference, no native capture is cited
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { rm } from 'node:fs/promises';
@@ -8,7 +9,7 @@ import { join } from 'node:path';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { AUDIT_ACTION, install, recordUserAccess, reset, writeAudit } from '../lib/dataverse-audit.mjs';
 import { DataError } from '../lib/data-error.mjs';
-import { uuidV5 } from '../lib/dataverse-security.mjs';
+import { privilegeDeniedError, uuidV5 } from '../lib/dataverse-security.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const ORG = '6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f';
@@ -56,7 +57,7 @@ function apiFor(store, grants, schema = { tables: { widget: { logicalName: 'widg
     change: (fn) => fn(),
     registry: { register: (op) => ops.push(op) },
     recordHooks: { add: (name, fn) => (hooks[name] = fn) },
-    principals: { privileges: (user) => user.grants, authorize: () => 1 },
+    principals: { privileges: (user) => user.grants, authorize: () => 1, deniedError: privilegeDeniedError },
     grants,
   };
 }
@@ -164,6 +165,32 @@ test('N:N associate and disassociate audit through the afterWrite hook', async (
   );
   const page = await history(api, 'w1');
   assert.equal(page.body.AuditDetailCollection.AuditDetails[0]['@odata.type'], RELATIONSHIP);
+});
+
+// @test-kind unproven: the Audit table reference lists Assign/Remove Role To User (55/56) and To Team (53/54); which table flag gates them is not documented, so organization auditing alone is modelled
+test('a role assigned or removed from either side is audited on the user or team as a security role change', async () => {
+  for (const org of [true, false]) {
+    const api = await setup({ org });
+    const mapping = (logicalName) => ({ logicalName });
+    const write = (logical, operation, id, relationship, relatedId) =>
+      api.hooks.afterWrite({ identity: IDENTITY }, mapping(logical), { operation, id, relationship, relatedId });
+    await write('systemuser', 'associate', 'u1', 'systemuserroles_association', 'r1');
+    await write('role', 'disassociate', 'r1', 'systemuserroles_association', 'u1');
+    await write('team', 'associate', 't1', 'teamroles_association', 'r1');
+    await write('role', 'disassociate', 'r1', 'teamroles_association', 't1');
+    assert.deepEqual(
+      auditRows(api).map((r) => [r.action, r.operation, r.objecttypecode, r.objectid.id]),
+      org
+        ? [
+            [55, 2, 'systemuser', 'u1'],
+            [56, 2, 'systemuser', 'u1'],
+            [53, 2, 'team', 't1'],
+            [54, 2, 'team', 't1'],
+          ]
+        : [],
+      org ? 'organization auditing on' : 'organization auditing off',
+    );
+  }
 });
 
 test("the schema's object-keyed table flag drives auditing when the mapping says nothing, and an association never throws", async () => {

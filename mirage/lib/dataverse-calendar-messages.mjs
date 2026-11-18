@@ -10,7 +10,7 @@ import { idOf, argsOf, rowOf } from './dataverse-message-context.mjs';
 // one on the same span, and Book on a series validates attendees against the first occurrence only.
 import { randomUUID } from 'node:crypto';
 import { DataError } from './data-error.mjs';
-import { privilegeDeniedError, privilegeName, uuidV5 } from './dataverse-security.mjs';
+import { privilegeName, uuidV5 } from './dataverse-security.mjs';
 import { organizationRecord } from './organization-context.mjs';
 import { contextUrl } from './dataverse-odata.mjs';
 import { TIME_ZONE_DEFINITIONS, TIME_ZONE_IDS } from './platform-time-zones.mjs';
@@ -744,7 +744,9 @@ function operations(api) {
   const write = (fn) => api.change(() => store.transact(fn, { isolated: true }));
   const need = (c, logical, right) => {
     const privilege = privilegeName(right, api.principals.privilegeNoun(logical));
-    if (!(api.principals.privileges(c.user).get(privilege) > 0)) throw privilegeDeniedError(c.user, privilege, logical); // NOSONAR: operand can be NaN or undefined, the negated test differs
+    // A missing privilege reads undefined: only a positive depth grants it.
+    const granted = api.principals.privileges(c.user).get(privilege) > 0;
+    if (!granted) throw api.principals.deniedError(c.user, privilege, logical);
   };
   const respond = (c, name, payload) => ({
     status: 200,
@@ -1306,4 +1308,62 @@ function reset(api) {
   return api.store.transact(() => seedTimeZones(api.store));
 }
 
-export const EXTENSION = { name: 'dataverse-calendar-messages', install, reset };
+/** Capability record for the capability registry; dataverse-extensions.mjs adds the operations install registered. */
+function describe() {
+  return {
+    name: 'dataverse-calendar-messages',
+    version: 1,
+    kind: 'dataverse-extension',
+    level: 'behaviour',
+    reason: 'Time zone conversion with IANA zones and on-demand recurrence expansion.',
+    operations: [
+      {
+        name: 'ExpandCalendar',
+        level: 'contract',
+        reason:
+          'Reduced scheduling rules: calendar rules repeat DAILY or WEEKLY only and a series books against its first occurrence.',
+      },
+      {
+        name: 'QuerySchedule',
+        level: 'contract',
+        reason:
+          'Reduced scheduling rules: calendar rules repeat DAILY or WEEKLY only and a series books against its first occurrence.',
+      },
+      {
+        name: 'Search',
+        level: 'contract',
+        reason:
+          'Reduced scheduling rules: calendar rules repeat DAILY or WEEKLY only and a series books against its first occurrence.',
+      },
+      {
+        name: 'Book',
+        level: 'contract',
+        reason:
+          'Reduced scheduling rules: calendar rules repeat DAILY or WEEKLY only and a series books against its first occurrence.',
+      },
+      {
+        name: 'Reschedule',
+        level: 'contract',
+        reason:
+          'Reduced scheduling rules: calendar rules repeat DAILY or WEEKLY only and a series books against its first occurrence.',
+      },
+      {
+        name: 'Validate',
+        level: 'contract',
+        reason:
+          'Reduced scheduling rules: calendar rules repeat DAILY or WEEKLY only and a series books against its first occurrence.',
+      },
+      {
+        name: 'RetrieveExchangeAppointments',
+        level: 'contract',
+        reason: 'The store stands in for Exchange.',
+      },
+    ],
+    requires: [],
+    principal: 'caller',
+    stateOwner: 'store',
+    lifecycle: 'per-request',
+  };
+}
+
+export const EXTENSION = { name: 'dataverse-calendar-messages', install, reset, describe };

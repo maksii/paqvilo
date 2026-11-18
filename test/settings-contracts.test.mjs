@@ -417,7 +417,7 @@ test('mirage status and stop read a catalogue whose site sets contract settings 
   assert.equal(refused.code, 1);
   assert.equal(
     JSON.parse(refused.stdout).error.message,
-    'sites.invented.mirage.connections.x_conn.password is not a connection setting',
+    "Unknown sites.invented.mirage.connections.x_conn key 'password'",
   );
   assert.deepEqual(runtimes(refused.modules), []);
 });

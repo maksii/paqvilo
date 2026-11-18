@@ -814,8 +814,35 @@ function operations(api) {
   return ops;
 }
 
+/** Capability record for the capability registry; dataverse-extensions.mjs adds the operations install registered. */
+function describe() {
+  return {
+    name: 'dataverse-metadata-messages',
+    version: 1,
+    kind: 'dataverse-extension',
+    level: 'behaviour',
+    operations: [
+      {
+        name: 'ExportFieldTranslation',
+        level: 'contract',
+        reason: 'The CrmFieldTranslations.xml element layout is a guess.',
+      },
+      {
+        name: 'ImportFieldTranslation',
+        level: 'contract',
+        reason: 'The CrmFieldTranslations.xml element layout is a guess.',
+      },
+    ],
+    requires: [],
+    principal: 'caller',
+    stateOwner: 'store',
+    lifecycle: 'per-request',
+  };
+}
+
 export const EXTENSION = {
   name: 'dataverse-metadata-messages',
+  describe,
   install(api) {
     // Each operation's declaration comes from its csdl or signature (dataverse-operations.mjs), so $metadata lists it.
     for (const op of operations(api))

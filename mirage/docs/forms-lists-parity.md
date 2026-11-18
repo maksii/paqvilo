@@ -7,9 +7,11 @@ adapters supply platform-shaped form events, validators, date and picklist contr
 actions, notes and attachments, and session-sensitive requests; permissions are checked by the local data layer.
 Generated fields and unsupported controls keep diagnostics.
 
-A locally passing flow shows that the simulated scenario works. Compare the reference DOM and network behavior before
-calling it platform parity ([reference parity evidence](parity-evidence.md)); project tests should assert their own
-labels, relationships, actions and saved results against an explicitly registered dataset.
+No replay case ([test kinds](../../docs/test-kinds.md#replay-cases)) records native form or list behaviour; the rules
+below are local models of Microsoft's documentation and site observations. A locally passing flow shows that the
+simulated scenario works. Compare the reference DOM and network behaviour before calling it platform parity
+([reference parity evidence](parity-evidence.md)); project tests should assert their own labels, relationships,
+actions and saved results against an explicitly registered dataset.
 
 ## Form selection and metadata
 
@@ -29,13 +31,13 @@ labels, relationships, actions and saved results against an explicitly registere
   ignores defaults; stored values and prepopulation win, and the stored row is unchanged. DateOnly controls filled from
   the clock keep the observed UTC suffix in their hidden postback value; the submitter accepts it and the zone-free
   edited value.
-- **Read security.** A form or advanced form step reads its record as Dataverse answers the reading principal: the site's
-  application user under standard authorization, the visitor's mapped Dataverse user under enhanced authorization
+- **Read security.** A form or advanced form step reads its record as Dataverse answers the reading principal: the
+  site's application user under standard authorization, the visitor's mapped Dataverse user under enhanced authorization
   ([enhanced authorization](dataverse-parity.md#enhanced-authorization)). Unreadable secured columns are empty, masked
   columns show their mask (for example `***7003`), calculated and formula columns show computed values, lookups the
-  related primary name. Lists, search, Liquid and the portal Web API follow the same rules
-  ([column security on portal reads](dataverse-parity.md#column-security-on-portal-reads)). A secured column posted
-  back unchanged in its masked or empty form is not written.
+  related primary name. Lists, search, Liquid and the portal Web API follow the same rules ([column security on portal
+  reads](dataverse-parity.md#column-security-on-portal-reads)). A secured column posted back unchanged in its masked or
+  empty form is not written.
 
 ## Submission
 
@@ -53,13 +55,16 @@ the attach-file control) successful controls to the form action, including modal
   Boolean radio and select controls decode `1`/`0` and reject other text; the JSON API requires typed Booleans.
 - **Success.** Source success settings choose an inline HTML response or the redirect target. A redirect's appended
   record-ID parameter must be configured explicitly: Mirage keeps the exported name and query settings and never
-  supplies a missing `id` ([on-success settings](https://learn.microsoft.com/en-us/power-pages/configure/basic-forms#on-success-settings)).
-  Redirect responses carry `Content-Type: text/html; charset=utf-8`. Check the resulting page and saved record, not
-  only the submit response.
-- **Validation and write errors.** Required, format, range and length errors re-render the form as HTML with status 200. A failed atomic basic-form write also re-renders with escaped posted values and `#MessagePanel.alert-danger`; the
-  original error stays in diagnostics. CSRF failures, malformed or forged controls, inaccessible pages and errors
-  before the write keep their error status. The JSON endpoint keeps its status and the browser reloads the document
-  with the posted values and error panel. Advanced forms keep their inline save-error contract.
+  supplies a missing `id` ([on-success
+  settings](https://learn.microsoft.com/en-us/power-pages/configure/basic-forms#on-success-settings)). Redirect
+  responses carry `Content-Type: text/html; charset=utf-8`. Check the resulting page and saved record, not only the
+  submit response.
+- **Validation and write errors.** Required, format, range and length errors re-render the form as HTML with HTTP
+  status 200. A failed atomic basic-form write also re-renders with escaped posted values and
+  `#MessagePanel.alert-danger`; the original error stays in diagnostics. CSRF failures, malformed or forged controls,
+  inaccessible pages and errors before the write keep their error status. The JSON endpoint keeps its status and the
+  browser reloads the document with the posted values and error panel. Advanced forms keep their inline save-error
+  contract.
 - **Plug-in refusals.** When a plug-in refuses a basic form save with `InvalidPluginExecutionException` (a declarative
   rule, a step handler's `reject(message)`, a plug-in type's throw or a CLR plug-in), the form re-renders with status
   200 and `An unknown failure has occurred. Error ID # [<id>]`; `<id>` is a new GUID also sent as `x-ms-request-id` and
@@ -115,7 +120,8 @@ later one; a Rewrite page renders no tag from its copy and keeps its attached ba
   `__VIEWSTATE`, and the last tab's Insert saves everything. A step with `adx_referenceentityshowreadonlyform` renders
   the referenced record's read-only form (`ReadOnlyFormView_<table>`) first. A control the platform cannot render (an
   inline web resource, a quick view on a postback step, a control whose ID the read-only form already rendered) stops
-  the form at its cell with the platform's error alert, as the live portal does.
+  the form at its cell with the platform's error alert. This undocumented behaviour is a local model; no replay case
+  records it.
 
 ## Modern lists and the client API
 
@@ -132,7 +138,7 @@ Every page runs the local [`$pages` client API](https://learn.microsoft.com/en-u
 (`mirage/lib/pages-client-api.js`), loaded right after the page runtime script: inline on pages that load the
 platform bundles, otherwise from `/__sim-static/pages-client-api.js`.
 
-| Member                                                     | Behavior                                                                                                                                                                                                                                                                    |
+| Member                                                     | Behaviour                                                                                                                                                                                                                                                                   |
 | ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `Microsoft.PowerPages.onPagesClientApiReady(callback)`     | Calls back, and resolves with `$pages`, once the document is parsed. The deprecated `Microsoft.Dynamic365.Portal.onPagesClientApiReady` warns once. `isClientApiEnabled` is `"True"`                                                                                        |
 | `currentPage.lists`                                        | `getAll`, `getListById`; per list `id`, `isModern`, `rows`, `columns`, `getColumn`, `getVisible`, `setVisible`, `getHtmlElement`, `on`/`off` with `loaded`, `rowclick` and `cellclick`. A classic list answers empty rows and columns and ignores `on`/`off`, as documented |
@@ -144,16 +150,16 @@ platform bundles, otherwise from `/__sim-static/pages-client-api.js`.
 
 Forms: `id` is the control element ID (`EntityFormControl_…`, `WebFormControl_…`) and `name` the form name; `controls`,
 `tabs` (with `sections`, `getName`, `getVisible`, `setVisible`), sections (`controls`, `getName`, `getVisible`,
-`setVisible`), `isMultiStep`, `getVisible`, `setVisible`, `getHtmlElement` and `getControlByLogicalName`. A multistep form
-adds `nextButton`/`previousButton` (jQuery, empty when absent), `hasNextStep`, `hasPreviousStep`, `goToNextStep` (clicks
-Next or Submit) and `goToPreviousStep` (throws without a previous step). Forms and controls have no events.
+`setVisible`), `isMultiStep`, `getVisible`, `setVisible`, `getHtmlElement` and `getControlByLogicalName`. A multistep
+form adds `nextButton`/`previousButton` (jQuery, empty when absent), `hasNextStep`, `hasPreviousStep`, `goToNextStep`
+(clicks Next or Submit) and `goToPreviousStep` (throws without a previous step). Forms and controls have no events.
 
 Controls have `getName`, `getLogicalName`, `getType`, `getValue`, `setValue`, `getVisible`, `setVisible`, `getDisabled`,
-`setDisabled`, `getRequired`, `setRequired`, `addValidator`, `removeValidator` and `clearValidators`, plus the members of
-their type: String, Memo, Integer, Decimal, Double, Money, Email, URL, TickerSymbol, DateTime, Boolean (value is the
+`setDisabled`, `getRequired`, `setRequired`, `addValidator`, `removeValidator` and `clearValidators`, plus the members
+of their type: String, Memo, Integer, Decimal, Double, Money, Email, URL, TickerSymbol, DateTime, Boolean (value is the
 option label), MultipleChoice, Picklist (`subType`), MultiSelectPicklist, Lookup (`isDropdown`, or `isModal` with
-`clearValue`), File and Image (`maxFileSizeInByte`, `removeFile`), Status and StatusReason (read-only),
-FormattedInteger and AddressComposite.
+`clearValue`), File and Image (`maxFileSizeInByte`, `removeFile`), Status and StatusReason (read-only), FormattedInteger
+and AddressComposite.
 
 - `setRequired` and `addValidator` validators run on submit and report in the validation summary; a server-required
   column stays required. A read-only control refuses `setValue`.

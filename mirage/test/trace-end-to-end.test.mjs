@@ -438,7 +438,7 @@ test('every Dataverse, plug-in and job span names its record; the member root na
   }
   assert.ok(targeted.length >= 20, `${targeted.length} record spans`);
   assert.equal(sim.trace.query({ recordId: `{${orderId.toUpperCase()}}` }).items[0]?.traceId, run.traceId);
-  // The member has a first and last name and no full name: the roots name the contact by them (DV-C-9).
+  // The member has a first and last name and no full name: the roots name the contact by them.
   assert.equal(tree.root.actor.name, 'Ada Member');
   assert.equal(sim.trace.span(run.denied.spanId).actor.name, 'Bo Stranger');
 });
@@ -568,8 +568,8 @@ test('a refused write names the plug-in fault on its step, stage, dispatch and W
     [tree.root.status, tree.root.attributes.statusCode, tree.root.error.message],
     ['error', 400, fault.message],
   );
-  // The request root names the same fault identity as every span below it, not the portal answer's translated code
-  // (DV-Y8-3); the HTTP answer keeps the portal's own error.
+  // The request root names the same fault identity as every span below it, not the portal answer's translated code;
+  // the HTTP answer keeps the portal's own error.
   assert.deepEqual(tree.root.error, fault, 'the root carries the plug-in fault identity');
   assert.deepEqual(
     [tree.root.error.code, tree.root.error.type, tree.root.error.pluginType, tree.root.error.step],

@@ -81,7 +81,12 @@ export function pluginFailure(error, plugin, timeoutMs) {
   const cds = {
     ...(fault
       ? {
-          'Microsoft.PowerApps.CDS.ErrorDetails.OperationStatus': '0',
+          // The OperationStatus value (Failed, 0, unless the plug-in names one: a CLR host sends its member name).
+          'Microsoft.PowerApps.CDS.ErrorDetails.OperationStatus': String(
+            OPERATION_STATUS.includes(error.operationStatus)
+              ? OPERATION_STATUS.indexOf(error.operationStatus)
+              : Number(error.operationStatus ?? 0) | 0, // NOSONAR: bitwise coercion keeps an integer value
+          ),
           'Microsoft.PowerApps.CDS.ErrorDetails.SubErrorCode': String(
             error.errorCode == null ? PLUGIN_SUBERROR : Number(error.errorCode) | 0, // NOSONAR: bitwise coercion wraps to signed 32 bits on purpose
           ),

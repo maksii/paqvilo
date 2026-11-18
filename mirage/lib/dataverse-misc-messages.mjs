@@ -9,7 +9,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { DataError } from './data-error.mjs';
 import { idOf, registerInternalMessage, registerAddon, STAMPED_COLUMNS } from './dataverse-addon-common.mjs';
 import { contextUrl, parseDataverseRoute, parsePrefer } from './dataverse-odata.mjs';
-import { privilegeDeniedError, privilegeName, uuidV5 } from './dataverse-security.mjs';
+import { privilegeName, uuidV5 } from './dataverse-security.mjs';
 import { valueRowOf } from './dataverse-org-messages.mjs';
 import { messageCollection } from './dataverse-message-context.mjs';
 import { toFetchXml } from './dataverse-soap-query.mjs';
@@ -464,7 +464,9 @@ const respond = (c, name, payload) => ({
 const write = (api, fn) => api.change(() => api.store.transact(fn, { isolated: true }));
 const need = (api, c, logical, right) => {
   const privilege = privilegeName(right, api.principals.privilegeNoun(logical));
-  if (!(api.principals.privileges(c.user).get(privilege) > 0)) throw privilegeDeniedError(c.user, privilege, logical); // NOSONAR: operand can be NaN or undefined, the negated test differs
+  // A missing privilege reads undefined: only a positive depth grants it.
+  const granted = api.principals.privileges(c.user).get(privilege) > 0;
+  if (!granted) throw api.principals.deniedError(c.user, privilege, logical);
 };
 // The row check of an operation on one stored row (its depth and shares), refused with the same 403 as the Web API.
 const authorizeRow = (api, c, logical, operation, row) =>
@@ -1405,4 +1407,31 @@ function install(api) {
     });
 }
 
-export const EXTENSION = { name: 'dataverse-misc-messages', install };
+/** Capability record for the capability registry; dataverse-extensions.mjs adds the operations install registered. */
+function describe() {
+  return {
+    name: 'dataverse-misc-messages',
+    version: 1,
+    kind: 'dataverse-extension',
+    level: 'behaviour',
+    operations: [
+      {
+        name: 'ValidateFetchXmlExpression',
+        level: 'contract',
+        reason:
+          'Parses the FetchXML; the documented performance checks are not simulated, so no messages are reported.',
+      },
+      {
+        name: 'GetComponentManagedIdentityFIC',
+        level: 'contract',
+        reason: 'The subject hash segment is a stand-in.',
+      },
+    ],
+    requires: [],
+    principal: 'caller',
+    stateOwner: 'store',
+    lifecycle: 'per-request',
+  };
+}
+
+export const EXTENSION = { name: 'dataverse-misc-messages', install, describe };

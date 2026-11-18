@@ -72,7 +72,7 @@ test('an audited request and its trace name each other; a Liquid read entry name
     entries.every((entry) => entry.traceId === traceId),
     'the audit traceId filter keeps one trace',
   );
-  // DV-N4-2: the entity set name and the logical name find the same audit entries and spans.
+  // the entity set name and the logical name find the same audit entries and spans.
   const api = await fetch(sim.url + '/_api/x_items?$select=x_name');
   await api.text();
   await endedTree(sim.trace, api.headers.get('x-trace-id'));

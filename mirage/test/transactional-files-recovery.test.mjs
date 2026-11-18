@@ -134,8 +134,8 @@ test('foreign lock tokens and legacy journals remain refused without deleting ei
   assert.equal(await fs.readFile(`${f.files[0]}.lock`, 'utf8'), original);
 });
 
-// @test-kind security: a lock without an ownership journal is never reclaimed
-test('locks with no ownership journal are never reclaimed', async (t) => {
+// @test-kind security: a lock without owner identity and without an ownership journal is never reclaimed
+test('locks without owner identity and with no ownership journal are never reclaimed', async (t) => {
   const f = await fixture(t),
     token = `2147483646:${randomUUID()}`;
   await fs.writeFile(`${f.files[0]}.lock`, token);

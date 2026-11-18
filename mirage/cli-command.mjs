@@ -6,13 +6,26 @@ import { createWriteStream } from 'node:fs';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { parseArgs } from 'node:util';
 import { assertPortalSource } from './lib/source-dialect.mjs';
 import { shareSolutionParses } from './lib/solution-cache.mjs';
 import { runtimePort } from './lib/runtime-port.mjs';
-import { runtimeSettings } from './lib/runtime-config.mjs';
-import { simulationSettings } from './lib/simulation-settings.mjs';
-import { MIRAGE_COMMANDS, MIRAGE_CORE_COMMANDS, unknownMirageCommand } from './tool-registry.mjs';
+import { RUNTIME_KINDS, choiceMessage, runtimeSettings } from './lib/runtime-config.mjs';
+import { SIMULATION_LEVELS, simulationSettings } from './lib/simulation-settings.mjs';
+import { MIRAGE_COMMANDS, MIRAGE_CORE_COMMANDS, MIRAGE_DATA_USAGE, unknownMirageCommand } from './tool-registry.mjs';
+import { assertPathOptions, joinNegativeValues, parseRaw } from './tool-options.mjs';
+import { readJsonOption } from './lib/path-options.mjs';
+import { mirageFailureCode } from './cli-output.mjs';
+
+// A command this entry does not run: a toolkit Mirage command (init, dev, trace, ...) runs through paqvilo mirage.
+const unknownCommandError = (command) =>
+  Object.assign(
+    new Error(
+      MIRAGE_COMMANDS.includes(command)
+        ? `Unknown command: ${command} for mirage/cli.mjs, which runs ${MIRAGE_CORE_COMMANDS.join(', ')}. Run paqvilo mirage ${command}.`
+        : unknownMirageCommand(command),
+    ),
+    { code: 'unknown_command' },
+  );
 
 // Loaded on first use: the server's module graph takes seconds to load, and data, verify and help never start it.
 const createSimulator = async (options) => {
@@ -43,6 +56,16 @@ const loadCommandModules = async () => {
     await import('./lib/deployment-profiles.mjs'));
   ({ runtimeOptions, configuredSettingKeys, startupPresetChoice, commandLinePreset } =
     await import('./lib/config-keys.mjs'));
+};
+// The input files and directories a command names must exist; checked after the option and value checks, before reading.
+const INPUT_PATHS = {
+  config: 'file',
+  project: 'file',
+  source: 'dir',
+  repo: 'dir',
+  'solution-root': 'dir',
+  scenario: 'file',
+  'pack-module': 'module',
 };
 const valueOptions = new Set([
   'source',
@@ -81,6 +104,237 @@ const valueOptions = new Set([
   'data-model',
 ]);
 
+// The options each direct Mirage command accepts: the parser refuses any other, and its help lists exactly these.
+const sourceOptions = [
+  'source',
+  'config',
+  'site',
+  'env',
+  'repo',
+  'project',
+  'portal',
+  'solution-root',
+  'solution-order',
+  'data-model',
+];
+const runtimeOptionNames = ['runtime', 'simulation'];
+export const MIRAGE_COMMAND_OPTIONS = Object.freeze({
+  inspect: [
+    ...sourceOptions,
+    ...runtimeOptionNames,
+    'deployment-profile',
+    'preset',
+    'preset-mode',
+    'apply-configuration',
+    'json',
+  ],
+  preflight: [...sourceOptions, ...runtimeOptionNames, 'preset', 'pack-module', 'scenario', 'strict', 'json'],
+  serve: [
+    ...sourceOptions,
+    ...runtimeOptionNames,
+    'port',
+    'state',
+    'state-dir',
+    'origin',
+    'cdp',
+    'preset',
+    'preset-mode',
+    'apply-configuration',
+    'deployment-profile',
+    'pack-module',
+    'no-watch',
+    'allow-live-writes',
+    'start-token',
+    'json',
+  ],
+  render: [
+    ...sourceOptions,
+    ...runtimeOptionNames,
+    'state',
+    'state-dir',
+    'origin',
+    'cdp',
+    'preset',
+    'preset-mode',
+    'apply-configuration',
+    'deployment-profile',
+    'pack-module',
+    'path',
+    'output',
+  ],
+  'capture-stylesheets': [
+    ...sourceOptions,
+    ...runtimeOptionNames,
+    'state',
+    'state-dir',
+    'origin',
+    'cdp',
+    'deployment-profile',
+    'pack-module',
+    'stylesheet',
+  ],
+  'capture-snippet-composition': [
+    ...sourceOptions,
+    ...runtimeOptionNames,
+    'state',
+    'state-dir',
+    'origin',
+    'cdp',
+    'deployment-profile',
+    'pack-module',
+    'path',
+    'parent-snippet',
+    'child-snippet',
+  ],
+  data: [
+    ...sourceOptions.filter((option) => option !== 'solution-order'),
+    'pack',
+    'pack-module',
+    'profile',
+    'seed',
+    'rows',
+    'state',
+    'out',
+    'count',
+    'materialize-persona-memberships',
+    'json',
+  ],
+});
+// Each option of the direct commands: its value placeholder ('' for a flag) and what it does. Help is generated from
+// this table and MIRAGE_COMMAND_OPTIONS, so it lists exactly what the parser accepts.
+const OPTION_HELP = Object.freeze({
+  source: ['DIR', 'Exported portal source directory.'],
+  config: ['FILE', 'Toolkit catalogue for --site.'],
+  site: ['ID', 'Catalogue site.'],
+  env: ['ID', "Catalogue environment (default: the site's defaultEnv)."],
+  repo: ['DIR', 'Portal checkout (instead of PAQVILO_REPO).'],
+  project: ['FILE', 'Mirage project file.'],
+  portal: ['ID', 'Portal of --project (default: its defaultPortal).'],
+  'solution-root': ['DIR', 'Unpacked solution root (repeatable).'],
+  'solution-order': ['derived|explicit', 'Keep the listed solution order with explicit.'],
+  'data-model': ['standard|enhanced', 'Data model of a YAML source (a .powerpages-site export defaults to enhanced).'],
+  runtime: ['power-pages|model-driven|dataverse-api', 'Runtime kind.'],
+  simulation: ['dry-run|simulation|deep', 'Simulation level.'],
+  port: ['PORT', "Listening port (default: the site's mirage.port, else 8787)."],
+  state: [
+    'FILE',
+    'Runtime state file (data generate and scaffold read it and write the result back to it unless an output file is named; scaffold creates it from the portal when it does not exist).',
+  ],
+  'state-dir': [
+    'DIR',
+    'Local state and evidence directory (default: .paqvilo beside --config or --project, else here).',
+  ],
+  origin: ['HTTPS_ORIGIN', 'Live portal origin for reference reads.'],
+  cdp: ['URL', 'DevTools endpoint of the intended connected browser.'],
+  preset: [
+    'NAME',
+    "Data preset (serve defaults to the project's or catalogue site's preset; other commands apply it only when passed).",
+  ],
+  'preset-mode': ['bootstrap|always', 'When the startup preset applies.'],
+  'apply-configuration': ['', "Apply the selected data preset's configuration."],
+  'deployment-profile': ['NAME', 'Legacy exported Pages deployment profile.'],
+  'pack-module': ['PATH', 'Trusted data pack module (repeatable).'],
+  path: ['/PAGE/', 'Portal-relative page path (default /).'],
+  output: ['FILE', 'Rendered page file.'],
+  stylesheet: ['PATH', 'Live stylesheet to capture (repeatable).'],
+  'parent-snippet': ['NAME', 'Content snippet that renders the child.'],
+  'child-snippet': ['NAME', 'Content snippet rendered by the parent.'],
+  'no-watch': ['', 'Do not reload on source changes.'],
+  'allow-live-writes': [
+    '',
+    'Permit live create, update and delete requests; the /_sim/ live writes switch still decides (off by default).',
+  ],
+  'start-token': ['TOKEN', 'Set by the toolkit command that starts and records this runtime.'],
+  scenario: ['FILE', 'Scenario JSON { id, requires: [...] } that scopes blocking.'],
+  strict: ['', 'Block on every unsatisfied requirement.'],
+  pack: ['PACK_ID', 'Data pack whose rows generate merges into the state (generate only).'],
+  profile: ['NAME', 'Generation profile (generate: default deep; scaffold: smoke or dev, default smoke).'],
+  seed: ['S', 'Random seed: generate passes it to the pack, scaffold uses it for its rows.'],
+  rows: ['N', 'Rows scaffold generates per table (scaffold only).'],
+  out: [
+    'FILE',
+    'State file generate or scaffold writes the merged state to (default: --state, updated in place); the JSON report goes to standard output.',
+  ],
+  count: ['NAME=N', 'Rows the pack generates for one of its tables (generate only; repeatable).'],
+  'materialize-persona-memberships': [
+    '',
+    "Also write the pack's persona web-role memberships into the state (generate only; needs the portal source).",
+  ],
+  json: ['', 'JSON output.'],
+});
+// What each direct command does, its usage and, where docs/cli.md documents them, its exit codes.
+const COMMAND_HELP = Object.freeze({
+  serve: {
+    purpose: 'Serve a portal, project or standalone runtime locally.',
+    usage: [
+      'paqvilo mirage serve [--site SITE --env ENV] [--repo PATH]',
+      'paqvilo mirage serve --source PATH --port 8787',
+      'paqvilo mirage serve --project mirage.project.yml [--portal PORTAL_ID] --port 8787',
+    ],
+    exit: 'JSON readiness report; --json also makes errors JSON; failure 1.',
+  },
+  inspect: {
+    purpose: 'Print the bootstrap report of a project or portal source (JSON, with or without --json).',
+    usage: [
+      'paqvilo mirage inspect --project mirage.project.yml --json',
+      'paqvilo mirage inspect --source PATH --json',
+    ],
+    exit: 'failure 1.',
+  },
+  render: {
+    purpose: 'Render one portal page to a file.',
+    usage: ['paqvilo mirage render --source PATH --path /PAGE/ --output .paqvilo/page.html'],
+  },
+  'capture-stylesheets': {
+    purpose: 'Capture live stylesheets through the intended connected browser into the local asset cache.',
+    usage: [
+      'paqvilo mirage capture-stylesheets --site SITE --env ENV --cdp http://127.0.0.1:PORT --stylesheet /styles/theme.css',
+    ],
+  },
+  'capture-snippet-composition': {
+    purpose: 'Capture how a live parent snippet composes a child snippet, through the intended connected browser.',
+    usage: [
+      'paqvilo mirage capture-snippet-composition --site SITE --env ENV --cdp http://127.0.0.1:PORT --path /PAGE/ --parent-snippet NAME --child-snippet NAME',
+    ],
+  },
+  data: {
+    purpose: 'Generate pack data or scaffold sample data into a state file (JSON report).',
+    usage: MIRAGE_DATA_USAGE.split('\n').map((line) => line.replace(/^ {2}/, '')),
+    exit: 'failure 1.',
+  },
+  preflight: {
+    purpose: 'Report the runtime requirements a configuration satisfies and which of them block.',
+    usage: [
+      'paqvilo mirage preflight (--project FILE [--portal ID] | --config FILE --site ID [--env ID] | --source DIR [--solution-root DIR ...]) [--runtime KIND] [--preset ID] [--scenario FILE] [--strict] [--json]',
+    ],
+    exit: '0 nothing blocking in scope; 1 blocking requirement(s); 2 invocation or configuration error.',
+  },
+});
+/** One help line per option: --name VALUE, then what it does. */
+const mirageOptionLines = (names) =>
+  names
+    .map((name) => {
+      const [value, text] = OPTION_HELP[name];
+      const flag = value ? `--${name} ${value}` : `--${name}`;
+      return `  ${flag}  ${text}`;
+    })
+    .join('\n');
+/** The help of one direct Mirage command, from COMMAND_HELP and the options it accepts. */
+function mirageCommandHelp(command) {
+  const { purpose, usage, exit } = COMMAND_HELP[command];
+  return [
+    `paqvilo mirage ${command}: ${purpose}`,
+    '',
+    'Usage:',
+    ...usage.map((line) => `  ${line}`),
+    '',
+    'Options:',
+    mirageOptionLines(MIRAGE_COMMAND_OPTIONS[command]),
+    '  -h, --help  Show this help.',
+    ...(exit ? ['', `Exit status: ${exit}`] : []),
+  ].join('\n');
+}
+
 /** The runtime options, solution roots and startup-preset catalogue that preflight checks, resolved as serve resolves them. */
 async function preflightScope(args, { cwd, project, profileMirage, runtime }) {
   let options;
@@ -111,6 +365,7 @@ async function preflightScope(args, { cwd, project, profileMirage, runtime }) {
             site: args.site,
             env: args.env,
             cwd,
+            source: args.source,
             ...(args.repo ? { repo: args.repo } : {}),
             ...(args.config ? { config: args.config } : {}),
           });
@@ -138,7 +393,15 @@ async function preflightScope(args, { cwd, project, profileMirage, runtime }) {
 /** The scenario of preflight, named as the invocation spelled it in the report; null without --scenario. */
 async function readScenario(args, givenScenario) {
   if (!args.scenario) return null;
-  return { ...JSON.parse(await fs.readFile(path.resolve(args.scenario), 'utf8')), file: givenScenario };
+  const value = await readJsonOption('scenario', args.scenario);
+  // A refused scenario names the option and the file it came from; the message never quotes the file's values.
+  const { scenarioSettings } = await import('./lib/capability-report.mjs');
+  try {
+    scenarioSettings(value);
+  } catch (error) {
+    throw new Error(`--scenario file ${args.scenario} is not a valid scenario: ${error.message}.`, { cause: error });
+  }
+  return { ...value, file: givenScenario };
 }
 
 /** Prints a preflight report: the document with --json, else one line for each requirement in scope that is not satisfied. */
@@ -214,73 +477,79 @@ export async function runMirageCommand( // NOSONAR: the command dispatch of the 
   };
   const invocationError = (error) => {
     if (jsonRequested)
-      out(JSON.stringify({ schemaVersion: 1, ok: false, error: { code: 'MIRAGE_FAILED', message: error.message } }));
+      out(
+        JSON.stringify({
+          schemaVersion: 1,
+          ok: false,
+          error: { code: mirageFailureCode(error), message: error.message },
+        }),
+      );
     else err(error.message);
   };
   let parsed;
   try {
-    parsed = parseArgs({
-      args: argv,
-      allowPositionals: true,
-      tokens: true,
-      options: {
-        source: { type: 'string' },
-        runtime: { type: 'string' },
-        simulation: { type: 'string' },
-        repo: { type: 'string' },
-        // The toolkit catalogue file (lense/config.mjs), as the toolkit's own --config.
-        config: { type: 'string' },
-        site: { type: 'string' },
-        // Without --env the catalogue site's defaultEnv applies (lense/config.mjs).
-        env: { type: 'string' },
-        port: { type: 'string', default: '8787' },
-        state: { type: 'string' },
-        'state-dir': { type: 'string' },
-        origin: { type: 'string' },
-        cdp: { type: 'string' },
-        preset: { type: 'string' },
-        'preset-mode': { type: 'string' },
-        'apply-configuration': { type: 'boolean' },
-        path: { type: 'string', default: '/' },
-        stylesheet: { type: 'string', multiple: true },
-        'parent-snippet': { type: 'string' },
-        'child-snippet': { type: 'string' },
-        output: { type: 'string' },
-        local: { type: 'string' },
-        'solution-root': { type: 'string', multiple: true },
-        'solution-order': { type: 'string' },
-        project: { type: 'string' },
-        portal: { type: 'string' },
-        'deployment-profile': { type: 'string' },
-        pack: { type: 'string' },
-        'pack-module': { type: 'string', multiple: true },
-        profile: { type: 'string' },
-        seed: { type: 'string' },
-        rows: { type: 'string' },
-        out: { type: 'string' },
-        count: { type: 'string', multiple: true },
-        'materialize-persona-memberships': { type: 'boolean' },
-        help: { type: 'boolean', short: 'h' },
-        json: { type: 'boolean' },
-        // preflight: a scenario JSON file { id, requires: [...] } scopes blocking; --strict blocks on every unsatisfied requirement.
-        scenario: { type: 'string' },
-        strict: { type: 'boolean' },
-        'no-watch': { type: 'boolean' },
-        // Live create, update and delete requests are impossible without this runtime flag.
-        'allow-live-writes': { type: 'boolean' },
-        // standard or enhanced: the data model of a YAML source (a .powerpages-site export
-        // defaults to enhanced); a project portal and a catalogue site set dataModel instead.
-        'data-model': { type: 'string' },
-        // Given by the toolkit command that starts and records this runtime (lense/process-identity.mjs).
-        'start-token': { type: 'string' },
-      },
-    });
+    const options = {
+      source: { type: 'string' },
+      runtime: { type: 'string' },
+      simulation: { type: 'string' },
+      repo: { type: 'string' },
+      // The toolkit catalogue file (lense/config.mjs), as the toolkit's own --config.
+      config: { type: 'string' },
+      site: { type: 'string' },
+      // Without --env the catalogue site's defaultEnv applies (lense/config.mjs).
+      env: { type: 'string' },
+      port: { type: 'string', default: '8787' },
+      state: { type: 'string' },
+      'state-dir': { type: 'string' },
+      origin: { type: 'string' },
+      cdp: { type: 'string' },
+      preset: { type: 'string' },
+      'preset-mode': { type: 'string' },
+      'apply-configuration': { type: 'boolean' },
+      path: { type: 'string', default: '/' },
+      stylesheet: { type: 'string', multiple: true },
+      'parent-snippet': { type: 'string' },
+      'child-snippet': { type: 'string' },
+      output: { type: 'string' },
+      local: { type: 'string' },
+      'solution-root': { type: 'string', multiple: true },
+      'solution-order': { type: 'string' },
+      project: { type: 'string' },
+      portal: { type: 'string' },
+      'deployment-profile': { type: 'string' },
+      pack: { type: 'string' },
+      'pack-module': { type: 'string', multiple: true },
+      profile: { type: 'string' },
+      seed: { type: 'string' },
+      rows: { type: 'string' },
+      out: { type: 'string' },
+      count: { type: 'string', multiple: true },
+      'materialize-persona-memberships': { type: 'boolean' },
+      help: { type: 'boolean', short: 'h' },
+      json: { type: 'boolean' },
+      // preflight: a scenario JSON file { id, requires: [...] } scopes blocking; --strict blocks on every unsatisfied requirement.
+      scenario: { type: 'string' },
+      strict: { type: 'boolean' },
+      'no-watch': { type: 'boolean' },
+      // Live create, update and delete requests are impossible without this runtime flag.
+      'allow-live-writes': { type: 'boolean' },
+      // standard or enhanced: the data model of a YAML source (a .powerpages-site export
+      // defaults to enhanced); a project portal and a catalogue site set dataModel instead.
+      'data-model': { type: 'string' },
+      // Given by the toolkit command that starts and records this runtime (lense/process-identity.mjs).
+      'start-token': { type: 'string' },
+    };
+    parsed = parseRaw({ args: joinNegativeValues(argv, options), allowPositionals: true, tokens: true, options });
   } catch (error) {
     invocationError(error);
     // preflight reports invocation errors with exit code 2.
     return invocationCommand() === 'preflight' ? 2 : 1;
   }
   const { values: args, positionals, tokens } = parsed;
+  // An explicit --port wins; without one, serve uses the catalogue site's mirage.port as the lifecycle commands do
+  // (docs/cli.md: the site's mirage.port, else 8787).
+  const portGiven = tokens.some((token) => token.kind === 'option' && token.name === 'port');
+  const servePort = (catalogue) => runtimePort(portGiven ? args.port : (catalogue?.port ?? args.port));
   // The scenario file as the invocation spelled it: the preflight report names that file, not its resolved path.
   const givenScenario = args.scenario;
   // Paths in the arguments name files relative to the invocation's working directory.
@@ -318,14 +587,19 @@ export async function runMirageCommand( // NOSONAR: the command dispatch of the 
     alive.unref();
   }
   if (args.help && command !== 'help' && !MIRAGE_CORE_COMMANDS.includes(command)) {
-    invocationError(new Error(unknownMirageCommand(command)));
+    invocationError(unknownCommandError(command));
     return 1;
+  }
+  if (args.help && positionals.length && MIRAGE_CORE_COMMANDS.includes(command)) {
+    out(mirageCommandHelp(command));
+    return 0;
   }
   if (args.help || command === 'help') {
     await loadPresets();
     out(`Power Pages local mirage
 
 Commands: ${MIRAGE_COMMANDS.join(', ')}
+Also accepted: setup (the same as paqvilo setup)
 
   paqvilo mirage serve [--site SITE --env ENV] [--repo PATH]
   paqvilo mirage serve --source PATH --port 8787
@@ -338,12 +612,10 @@ Commands: ${MIRAGE_COMMANDS.join(', ')}
   paqvilo mirage render --source PATH --path /PAGE/ --output .paqvilo/page.html
   paqvilo mirage capture-stylesheets --site SITE --env ENV --cdp http://127.0.0.1:PORT --stylesheet /styles/theme.css
   paqvilo mirage capture-snippet-composition --site SITE --env ENV --cdp http://127.0.0.1:PORT --path /PAGE/ --parent-snippet NAME --child-snippet NAME
-  paqvilo mirage data generate --pack PACK_ID --profile PROFILE --state FILE [--out FILE] [--seed S]
-    [--count NAME=N ...] [--pack-module PATH] [--materialize-persona-memberships]
-  paqvilo mirage data scaffold --profile smoke|dev --state FILE [--rows N] [--seed S] [--out FILE]
-    portal for scaffold or membership materialization: [--site SITE --env ENV --repo PATH] | --project FILE [--portal ID] | --source PORTAL_DIR [--solution-root DIR ...]
+  ${MIRAGE_DATA_USAGE}
 
-Options: --state FILE, --preset NAME (when served by mirage serve or mirage dev, the default is the project's or catalogue site's preset; other commands apply --preset only when passed), --preset-mode bootstrap|always, --apply-configuration (apply the selected data preset’s configuration), --no-watch, --cdp URL, --solution-root PATH (repeatable), --solution-order derived|explicit, --project FILE, --portal ID, --runtime power-pages|model-driven|dataverse-api, --simulation dry-run|simulation|deep, --deployment-profile NAME, --config FILE (toolkit catalogue for --site), --repo DIR, --allow-live-writes (permits live create, update and delete requests; the /_sim/ live writes switch still decides, off by default), --data-model standard|enhanced (the data model of a YAML source; a .powerpages-site export defaults to enhanced)
+Options (each command accepts its own subset; paqvilo mirage COMMAND --help lists them):
+${mirageOptionLines(Object.keys(OPTION_HELP))}
 Solution roots (--solution-root, else the catalogue site's mirage solutionRoots, else unpacked solution repositories discovered next to the portal repository) are a set layered definition-before-extension; --solution-order explicit (or solutionOrder: explicit in the catalogue site or project file) keeps the listed order.
 Admin: /_sim/. New workspaces use local data/page modes; saved modes persist.
 Default state and evidence paths are under .paqvilo. Map deploymentProfiles in config and pin locally in /_sim/ → Environment; legacy exported Pages profiles use --deployment-profile.
@@ -361,116 +633,33 @@ Live access uses the selected connected browser identity. Exact parity requires 
     return 0;
   }
   try {
-    if (!MIRAGE_CORE_COMMANDS.includes(command)) throw new Error(unknownMirageCommand(command));
+    if (!MIRAGE_CORE_COMMANDS.includes(command)) throw unknownCommandError(command);
     if (command !== 'data' && positionals.length > 1)
       throw new Error(`Unexpected positional argument: ${positionals[1]}`);
     // Defaults are not evidence that an option was supplied: inspect only parser tokens.
-    const sourceOptions = [
-      'source',
-      'config',
-      'site',
-      'env',
-      'repo',
-      'project',
-      'portal',
-      'solution-root',
-      'solution-order',
-      'data-model',
-    ];
-    const runtimeOptionNames = ['runtime', 'simulation'];
-    const matrix = {
-      inspect: [
-        ...sourceOptions,
-        ...runtimeOptionNames,
-        'deployment-profile',
-        'preset',
-        'preset-mode',
-        'apply-configuration',
-        'json',
-      ],
-      preflight: [...sourceOptions, ...runtimeOptionNames, 'preset', 'pack-module', 'scenario', 'strict', 'json'],
-      serve: [
-        ...sourceOptions,
-        ...runtimeOptionNames,
-        'port',
-        'state',
-        'state-dir',
-        'origin',
-        'cdp',
-        'preset',
-        'preset-mode',
-        'apply-configuration',
-        'deployment-profile',
-        'pack-module',
-        'no-watch',
-        'allow-live-writes',
-        'start-token',
-        'json',
-      ],
-      render: [
-        ...sourceOptions,
-        ...runtimeOptionNames,
-        'state',
-        'state-dir',
-        'origin',
-        'cdp',
-        'preset',
-        'preset-mode',
-        'apply-configuration',
-        'deployment-profile',
-        'pack-module',
-        'path',
-        'output',
-      ],
-      'capture-stylesheets': [
-        ...sourceOptions,
-        ...runtimeOptionNames,
-        'state',
-        'state-dir',
-        'origin',
-        'cdp',
-        'deployment-profile',
-        'pack-module',
-        'stylesheet',
-      ],
-      'capture-snippet-composition': [
-        ...sourceOptions,
-        ...runtimeOptionNames,
-        'state',
-        'state-dir',
-        'origin',
-        'cdp',
-        'deployment-profile',
-        'pack-module',
-        'path',
-        'parent-snippet',
-        'child-snippet',
-      ],
-      data: [
-        ...sourceOptions.filter((option) => option !== 'solution-order'),
-        'pack',
-        'pack-module',
-        'profile',
-        'seed',
-        'rows',
-        'state',
-        'out',
-        'count',
-        'materialize-persona-memberships',
-        'json',
-      ],
-    };
+    const matrix = MIRAGE_COMMAND_OPTIONS;
     const isCapture = ['capture-stylesheets', 'capture-snippet-composition'].includes(command);
     const allowed = new Set([...matrix[command], 'help', ...(isCapture ? ['preset'] : [])]);
     for (const token of tokens) {
       if (token.kind === 'option' && !allowed.has(token.name))
-        throw new Error(`--${token.name} is not supported by mirage ${command}`);
+        throw Object.assign(new Error(`--${token.name} is not supported by mirage ${command}`), {
+          code: 'unsupported_option',
+        });
       if (token.kind === 'option' && token.name === 'port') runtimePort(token.value);
       if (token.kind === 'option' && token.value === '') throw new Error(`--${token.name} requires a nonempty value`);
     }
 
     if (args.portal && !args.project) throw new Error('--portal selects a portal from --project.');
     if (args.project && args.source) throw new Error('Use either --project or --source, not both.');
+    // preflight's usage presents --project, --config --site and --source as alternatives (serve and data deliberately
+    // take a --site's settings under --project).
+    if (command === 'preflight' && args.project && (args.config || args.site))
+      throw new Error('Use either --project or --config/--site, not both.');
+    // The command-line value is named as typed; a project or catalogue value keeps naming its key.
+    if (args.runtime !== undefined && !RUNTIME_KINDS.includes(args.runtime))
+      throw new Error(choiceMessage('--runtime', RUNTIME_KINDS, args.runtime));
+    if (args.simulation !== undefined && !SIMULATION_LEVELS.includes(args.simulation))
+      throw new Error(choiceMessage('--simulation', SIMULATION_LEVELS, args.simulation));
     if (isCapture && !args.cdp) throw new Error(`${command} requires --cdp for the intended connected browser.`);
     if (isCapture && args.preset)
       throw new Error(`${command} does not apply presets. Apply --preset when starting serve.`);
@@ -482,6 +671,7 @@ Live access uses the selected connected browser identity. Exact parity requires 
     if (command === 'data') {
       const { runDataCommand, validateDataCommand } = await import('./lib/data-generation.mjs');
       validateDataCommand(positionals.slice(1), args);
+      assertPathOptions(args, INPUT_PATHS);
       // data scaffold resolves its portal like serve: a project file and portal,
       // an explicit --source (solution roots discovered unless --solution-root),
       // or the toolkit catalogue site/environment (--site/--env/--repo).
@@ -489,20 +679,23 @@ Live access uses the selected connected browser identity. Exact parity requires 
         positionals[1] === 'scaffold' || (positionals[1] === 'generate' && args['materialize-persona-memberships'])
           ? await resolveDataSource(args, cwd)
           : {};
-      out(JSON.stringify(await runDataCommand(positionals.slice(1), { ...args, ...resolved }), null, 2));
+      // The catalogue site's data packs (its mirage.dataPacks), as serve registers them, beside --pack-module.
+      const siteMirage = args.project ? undefined : await catalogueSiteMirage(args, cwd, null);
+      out(
+        JSON.stringify(
+          await runDataCommand(positionals.slice(1), {
+            ...args,
+            ...resolved,
+            catalogueDataPacks: siteMirage?.dataPacks ?? [],
+          }),
+          null,
+          2,
+        ),
+      );
     } else {
+      assertPathOptions(args, INPUT_PATHS);
       const project = args.project ? await loadProjectConfig(args.project) : null;
-      let profileMirage;
-      if (args.site) {
-        const { loadCatalogue, resolveMirageConfig } = await import('../lense/config.mjs');
-        const catalogue = loadCatalogue({ ...args, cwd }),
-          selected = catalogue.sites[args.site];
-        if (selected)
-          profileMirage = resolveMirageConfig(selected.mirage, {
-            configDir: catalogue.configDir,
-            sourceRoot: catalogue.sourceRoot,
-          });
-      }
+      const profileMirage = await catalogueSiteMirage(args, cwd, project);
       const runtime = runtimeSettings(
         args.runtime ? { kind: args.runtime } : (project?.runtime ?? profileMirage?.runtime),
       );
@@ -530,6 +723,9 @@ Live access uses the selected connected browser identity. Exact parity requires 
           );
         const roots = project?.solutionRoots ?? args['solution-root'] ?? profileMirage?.solutionRoots ?? [];
         if (command === 'inspect') {
+          // The same Dataverse API validation as serve's startup (lib/standalone-runtime.mjs).
+          const { standaloneDataverseSettings } = await import('./lib/dataverse-settings.mjs');
+          standaloneDataverseSettings(runtime.kind, runtimeOptions({ project, catalogue: profileMirage }).dataverse);
           const choice = startupPresetChoice(args, { project, catalogue: profileMirage });
           const source = await loadOrganizationSources({
             solutionRoots: roots,
@@ -553,6 +749,7 @@ Live access uses the selected connected browser identity. Exact parity requires 
                 },
                 entities: Object.keys(source.metadata.entities),
                 diagnostics: [
+                  ...(project?.diagnostics ?? []),
                   ...source.metadata.diagnostics,
                   ...source.solutionData.diagnostics,
                   ...source.clientResources.diagnostics,
@@ -603,7 +800,7 @@ Live access uses the selected connected browser identity. Exact parity requires 
             solutionRoots: roots,
             solutionOrder: project?.solutionOrder ?? args['solution-order'],
             stateFile,
-            port: runtimePort(args.port),
+            port: servePort(profileMirage),
             project: project && projectSummary(project),
             projectRoot: standaloneProjectRoot(),
             dataPacks: [
@@ -716,6 +913,8 @@ Live access uses the selected connected browser identity. Exact parity requires 
               references: project.references,
               defaultReference: project.defaultReference?.id ?? null,
               dataPacks: project.dataPacks,
+              // Findings of the project file itself (an unknown key of a version-1 project is ignored and reported).
+              diagnostics: project.diagnostics ?? [],
               solutionDiagnostics: bootstrapped.solutionData.diagnostics,
             },
             null,
@@ -748,8 +947,9 @@ Live access uses the selected connected browser identity. Exact parity requires 
               : projectStateFile(project, portal.id, path.join(stateDir, 'simulator/projects'));
             const startup = startupPresetChoice(args, { project, catalogue: profileMirage });
             const simulator = await createSimulator({
-              ...runtimeOptions({ project, portal }),
-              configuredSettings: configuredSettingKeys({ project, portal }),
+              // The catalogue site that --config --site names (lense start --project passes them) applies under the project.
+              ...runtimeOptions({ project, portal, catalogue: profileMirage }),
+              configuredSettings: configuredSettingKeys({ project, portal, catalogue: profileMirage }),
               onStartup: reportStartup,
               setup: args.config
                 ? {
@@ -881,12 +1081,13 @@ Live access uses the selected connected browser identity. Exact parity requires 
           siteMirage = cfg.mirageConfig ?? null;
         } else if (args.site) {
           // --source with a catalogued --site (as `mirage dev` launches serve): the site's
-          // mirage settings (observed behaviour, catalogued roots) still apply.
+          // mirage settings (observed behaviour, catalogued roots) still apply; --source replaces only its source.
           const { loadConfig } = await import('../lense/config.mjs');
           const cfg = await loadConfig({
             site: args.site,
             env: args.env,
             cwd,
+            source: args.source,
             ...(args.repo ? { repo: args.repo } : {}),
             ...(args.config ? { config: args.config } : {}),
           });
@@ -959,7 +1160,12 @@ Live access uses the selected connected browser identity. Exact parity requires 
             throw new Error('capture-stylesheets requires --stylesheet PATH (repeatable).');
           if (command === 'capture-snippet-composition' && (!args['parent-snippet'] || !args['child-snippet']))
             throw new Error('capture-snippet-composition requires --parent-snippet NAME and --child-snippet NAME.');
-          const port = command === 'serve' ? runtimePort(args.port) : 0;
+          // Refused before the runtime starts (and prints its startup events): the capture reads the live HTTPS portal.
+          if (capturing && !/^https:\/\//i.test(origin ?? ''))
+            throw new Error(
+              `${command} needs the live portal's HTTPS origin: select an --env whose origin is HTTPS or pass --origin https://<portal host>.`,
+            );
+          const port = command === 'serve' ? servePort(profileMirage) : 0;
           const stateFile = path.resolve(
             args.state ??
               (project
@@ -1188,43 +1394,79 @@ Live access uses the selected connected browser identity. Exact parity requires 
 
 /** Portal source and solution roots for data commands, resolved like serve. */
 async function resolveDataSource(options, cwd) {
-  if (options.project) {
-    if (options.source) throw new Error('Use either --project or --source, not both.');
-    if (options['solution-root']?.length) throw new Error('--solution-root is supplied by the project configuration.');
-    if (options['data-model'])
-      throw new Error("--data-model is supplied by the project configuration (the portal's dataModel).");
-    const project = await loadProjectConfig(options.project);
-    const portalId = options.portal ?? project.defaultPortal;
-    const portal = project.portals.find((candidate) => candidate.id === portalId);
-    if (!portal) throw new Error(`Portal '${portalId}' is not configured in ${project.configFile}`);
-    return {
-      source: portal.sourceDir,
-      dataModel: portal.dataModel ?? undefined,
-      'solution-root': portal.solutionRoots,
-      resolution: { kind: 'project', configFile: project.configFile, portal: portal.id },
-    };
-  }
-  if (options.source)
-    return {
-      source: path.resolve(cwd, options.source),
-      resolution: { kind: 'source', solutionRoots: options['solution-root']?.length ? 'explicit' : 'discovered' },
-    };
-  const { loadConfig } = await import('../lense/config.mjs');
-  const cfg = await loadConfig({
-    site: options.site,
-    env: options.env,
-    cwd,
-    ...(options.repo ? { repo: options.repo } : {}),
-    ...(options.config ? { config: options.config } : {}),
+  return options.project ? projectDataSource(options) : catalogueDataSource(options, cwd);
+}
+
+/**
+ * The Mirage settings of the catalogue site a command names (--site), or of the catalogue's default site when --config
+ * names a catalogue without --site, --project or --source: the site Power Pages commands select (PAQVILO_SITE, then
+ * defaultSite, then the first site). A standalone site (no portal) is read from the catalogue as it is, so its packs,
+ * Solution roots and personas apply to standalone runtimes too. Undefined without a catalogue or for an unknown site.
+ */
+async function catalogueSiteMirage(args, cwd, project) {
+  if (!args.site && !(args.config && !project && !args.source)) return undefined;
+  const { loadCatalogue, resolveMirageConfig } = await import('../lense/config.mjs');
+  const catalogue = loadCatalogue({ ...args, cwd });
+  const name =
+    args.site ??
+    catalogue.settings.values.PAQVILO_SITE ??
+    catalogue.root.defaultSite ??
+    Object.keys(catalogue.sites)[0];
+  const selected = catalogue.sites[name];
+  if (!selected) return undefined;
+  return resolveMirageConfig(selected.mirage, {
+    configDir: catalogue.configDir,
+    sourceRoot: catalogue.sourceRoot,
+    ...(selected.sourceDir ? { sourceDir: selected.sourceDir } : {}),
   });
+}
+
+/** A data command's portal from --project [--portal]. */
+async function projectDataSource(options) {
+  if (options.source) throw new Error('Use either --project or --source, not both.');
+  if (options['solution-root']?.length) throw new Error('--solution-root is supplied by the project configuration.');
+  if (options['data-model'])
+    throw new Error("--data-model is supplied by the project configuration (the portal's dataModel).");
+  const project = await loadProjectConfig(options.project);
+  const portalId = options.portal ?? project.defaultPortal;
+  const portal = project.portals.find((candidate) => candidate.id === portalId);
+  if (!portal) throw new Error(`Portal '${portalId}' is not configured in ${project.configFile}`);
   return {
-    source: cfg.sourceDir,
-    dataModel: options['data-model'] ?? cfg.mirageConfig.dataModel,
-    resolution: {
-      kind: 'catalogue',
-      site: cfg.siteName,
+    source: portal.sourceDir,
+    dataModel: portal.dataModel ?? undefined,
+    'solution-root': portal.solutionRoots,
+    resolution: { kind: 'project', configFile: project.configFile, portal: portal.id },
+  };
+}
+
+/** A data command's portal from --source or a catalogue site (alone, or named with --source as serve accepts it). */
+async function catalogueDataSource(options, cwd) {
+  let cfg = null;
+  if (!options.source || options.site) {
+    const { loadConfig } = await import('../lense/config.mjs');
+    cfg = await loadConfig({
+      site: options.site,
       env: options.env,
-      solutionRoots: options['solution-root']?.length ? 'explicit' : 'discovered',
-    },
+      cwd,
+      source: options.source,
+      ...(options.repo ? { repo: options.repo } : {}),
+      ...(options.config ? { config: options.config } : {}),
+    });
+  }
+  const source = options.source ? path.resolve(cwd, options.source) : cfg.sourceDir;
+  // The same resolution as serve: --solution-root, else the catalogue site's solutionRoots, else discovery.
+  const roots = await resolveSolutionRoots({
+    sourceDir: source,
+    explicitRoots: options['solution-root'],
+    catalogue: cfg?.mirageConfig,
+  });
+  const solutionRoots = { cli: 'explicit', catalogue: 'catalogue', discovered: 'discovered' }[roots.source];
+  return {
+    source,
+    'solution-root': roots.roots,
+    dataModel: options['data-model'] ?? cfg?.mirageConfig.dataModel,
+    resolution: options.source
+      ? { kind: 'source', solutionRoots }
+      : { kind: 'catalogue', site: cfg.siteName, env: options.env, solutionRoots },
   };
 }

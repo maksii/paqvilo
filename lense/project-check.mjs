@@ -8,6 +8,7 @@ import { detectSourceDialect } from '../mirage/lib/source-dialect.mjs';
 import { discoverSolutionTrees } from '../mirage/lib/solution-schema.mjs';
 import { developmentScriptDrift } from './project-workflows.mjs';
 import { GIT_HANG_GUARD_MS, GIT_MISSING_MESSAGE, gitMissing } from './git.mjs';
+import { paqviloCommand } from './command-hint.mjs';
 
 const MARKER = 'TODO(paqvilo-init):';
 const ignored = new Set(['.git', 'node_modules', '.paqvilo', 'paqvilo.config.local.yml', 'coverage']);
@@ -89,11 +90,18 @@ export function scaffoldMarkers(directory) {
   return todo;
 }
 
-export function scaffoldWarning(directory) {
+export function scaffoldWarning(directory, cwd = process.cwd()) {
   try {
     const manifest = JSON.parse(fs.readFileSync(path.join(directory, 'package.json'), 'utf8'));
-    if (manifest.paqvilo?.scaffold && scaffoldMarkers(directory).length)
-      return 'Project scaffold has unfinished markers; run paqvilo init --check.';
+    if (manifest.paqvilo?.scaffold && scaffoldMarkers(directory).length) {
+      const here = path.relative(cwd, directory) === '';
+      const check = paqviloCommand(['init', '--check'], {
+        script: here ? 'check:scaffold' : undefined,
+        extra: here ? [] : [directory],
+        cwd,
+      });
+      return `Project scaffold has unfinished markers; run ${check}.`;
+    }
   } catch {
     /* Optional guidance must not change doctor readiness. */
   }
@@ -166,16 +174,25 @@ export function checkProject(directory, { config, processEnv = process.env } = {
   } catch {
     /* loadCatalogue reports it */
   }
+  // The line of the key that sets the field: the site's own, else the defaults it inherits; none when no key sets it.
   const lineOf = (field) => {
-    try {
-      const node = document?.getIn(field.split('.'), true);
-      return node?.range ? lineCounter.linePos(node.range[0]).line : 1;
-    } catch {
-      return 1;
+    const inherited = /^sites\.[^.]+\.(.+)$/.exec(field)?.[1];
+    for (const key of [field, ...(inherited ? [`defaults.${inherited}`] : [])]) {
+      const names = key.split('.');
+      try {
+        const parent = names.length > 1 ? document?.getIn(names.slice(0, -1), true) : document?.contents;
+        const pair = parent?.items?.find((item) => (item.key?.value ?? item.key) === names.at(-1));
+        if (pair?.key?.range) return lineCounter.linePos(pair.key.range[0]).line;
+      } catch {
+        /* not a path in this document */
+      }
     }
+    return undefined;
   };
-  const add = (kind, text, field, severity = 'error') =>
-    todo.push({ file: relative, line: lineOf(field), kind, severity, text });
+  const add = (kind, text, field, severity = 'error') => {
+    const line = lineOf(field);
+    todo.push({ file: relative, ...(line ? { line } : {}), kind, severity, text });
+  };
   let catalogue;
   try {
     catalogue = loadCatalogue({ config: configFile }, processEnv);
@@ -491,7 +508,14 @@ async function inspectSitePaths(name, configFile, catalogue, processEnv, sites, 
     );
     const layout = detectSourceDialect(cfg.sourceDir);
     sites.push({ site: name, source: cfg.sourceDir, dialect: layout.dialect, imported: layout.imported });
-    if (!layout.imported)
+    if (!pathExists(cfg.sourceDir, 'isDirectory'))
+      add(
+        name,
+        'PORTAL_SOURCE_MISSING',
+        cfg.sourceDir,
+        `The portal source folder does not exist: create or clone the portal export there, or point sites.${name}.source (or sourceRoot) at an existing export.`,
+      );
+    else if (!layout.imported)
       add(
         name,
         'PORTAL_LAYOUT_UNSUPPORTED',

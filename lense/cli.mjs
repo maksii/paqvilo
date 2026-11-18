@@ -17,7 +17,7 @@ const configuration = () => import('./config.mjs');
 const HELP = `paqvilo lense - work on Power Pages portal sources locally, laid over an online environment
 
 Usage: paqvilo lense <command> [options]
-       npm run lense -- <command> [options]
+       (in a project: npx --no-install paqvilo lense <command> [options])
 
 Commands
   dev      open a browser on the environment with local sources laid over it; reloads on save
@@ -40,6 +40,7 @@ Commands
            local Mirage runtime: init writes a project file from the catalogue site; dev opens
            the runtime with the paqvilo panel and stops it again when the browser closes; with
            portals=all, one Mirage per catalogue site, switched in the panel with live targets
+  setup    alias of paqvilo setup: the local configuration workspace at /_setup/
 
 Which site and environment (default: .env, then paqvilo.config.yml)
   --site <name>     site from paqvilo.config.yml
@@ -134,24 +135,6 @@ Agent session access
   --strict          verify: fail on new diagnostics; audit: fail on blocked or unmapped resources
 `;
 
-const MIRAGE_INIT_HELP = `paqvilo mirage init — write the Mirage project file for a catalogue site
-
-Usage: paqvilo mirage init --config FILE --site SITE [--env ENV] [--url URL] [--source DIR] [--repo DIR]
-                           [--portals selected|all] [--out FILE] [--force] [--json]
-
-  --config FILE     another catalogue file
-  --site <name>     site from paqvilo.config.yml
-  --env <name>      catalogue environment, or declared model-driven reference ID
-  --url <url>       use this site URL instead of a configured environment
-  --source <dir>    use this extract folder instead of the configured one
-  --repo <dir>      portal checkout/worktree root for all shared relative site sources
-  --portals <selected|all>  mirage init: one Mirage or one per catalogue site (default from config)
-  --out <file>      project file to write (default: the site's catalogued
-                    mirage.project, else .paqvilo/mirage/<site>.project.yml)
-  --force           replace an existing project file
-  --json            machine readable output
-`;
-
 let values, positionals;
 try {
   ({ values, positionals } = parseOptions({
@@ -159,7 +142,7 @@ try {
     options,
   }));
 } catch (err) {
-  const code = err.code === 'ERR_PARSE_ARGS_UNKNOWN_OPTION' ? 'unsupported_option' : 'invalid_argument';
+  const code = err.code === 'unsupported_option' ? 'unsupported_option' : 'invalid_argument';
   const parseArguments = process.argv.slice(2);
   const separator = parseArguments.indexOf('--');
   const jsonRequested = (separator < 0 ? parseArguments : parseArguments.slice(0, separator)).includes('--json');
@@ -183,7 +166,7 @@ try {
         error: { code, message: err.message },
       }),
     );
-  else console.error(`paqvilo: ${err.message}\nRun with --help to see supported options.`);
+  else console.error(`paqvilo: ${err.message}`);
   process.exit(1);
 }
 
@@ -224,21 +207,17 @@ const commands = {
 };
 
 if (!Object.hasOwn(commands, command)) {
+  // One line naming the command and the valid ones; full help only for --help.
+  const { paqviloCommand } = await import('./command-hint.mjs');
+  const message = `Unknown command "${command}". Choose ${Object.keys(commands).join(', ')}. Run ${paqviloCommand(['lense', '--help'])} for options.`;
   if (values.json)
-    console.log(
-      JSON.stringify({
-        schemaVersion: 1,
-        command,
-        ok: false,
-        error: { code: 'unknown_command', message: `Unknown command "${command}"` },
-      }),
-    );
-  else console.error(`Unknown command "${command}".\n\n${HELP}`);
+    console.log(JSON.stringify({ schemaVersion: 1, command, ok: false, error: { code: 'unknown_command', message } }));
+  else console.error(`paqvilo: ${message}`);
   process.exit(1);
 }
 
 if (values.help) {
-  const usage = lenseCommandHelp(command, positionals[1], HELP, MIRAGE_INIT_HELP);
+  const usage = lenseCommandHelp(command, positionals[1], HELP);
   if (values.json || command === 'agent')
     console.log(JSON.stringify({ schemaVersion: 1, command: 'help', ok: true, usage }));
   else console.log(usage);
@@ -316,6 +295,15 @@ try {
     values.startup = startup;
   }
   phase = 'configuration';
+  // An explicit catalogue must exist, whether or not the command reads it; only mirage status and stop still select the
+  // runtimes recorded for a removed catalogue (commands/mirage.mjs).
+  const removedCatalogueSelects = command === 'mirage' && ['status', 'stop'].includes(positionals[1] ?? 'status');
+  if (values.config !== undefined && !removedCatalogueSelects) {
+    const { existsSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+    if (!existsSync(values.config))
+      throw (await configuration()).catalogueNotFound(resolve(values.config), { explicit: true });
+  }
   let cfg = null;
   const pick = async (selection) => {
     const { pickSiteAndEnv } = await import('./prompt.mjs');
@@ -363,11 +351,13 @@ try {
       await import('./commands/setup.mjs')
     ).runSetup(['--config', values.config ?? './paqvilo.config.yml', '--open']);
   } else {
-    if (!values.json && starting) {
-      let setupOptions = '';
-      if (values.config) setupOptions = ' --config ' + JSON.stringify(values.config);
-      else if (values.project) setupOptions = ' --project ' + JSON.stringify(values.project);
-      console.error(`Configure this project with: paqvilo setup${setupOptions}`);
+    // Only a configuration problem is answered by setup; a refused argument is not.
+    if (!values.json && starting && phase === 'configuration') {
+      const { paqviloCommand } = await import('./command-hint.mjs');
+      const setup = values.config
+        ? paqviloCommand(['setup'], { config: values.config })
+        : paqviloCommand(['setup'], { extra: values.project ? ['--project', values.project] : [] });
+      console.error(`Configure this project with: ${setup}`);
     }
     if (process.env.PAQVILO_DEBUG) console.error(err.stack);
     process.exitCode = 1;

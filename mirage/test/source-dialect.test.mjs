@@ -54,7 +54,7 @@ const SHORT_KEY_SITE = {
 };
 
 const MSPP_MESSAGE =
-  /No portal pages were recognised in .*mspp\. Detected layout: PAC YAML with mspp_ keys\. The Mirage does not import this layout yet; use a PAC YAML export with adx_ keys, a \.powerpages-site export or the site's unpacked Solution \(powerpagecomponents\/\)\./;
+  /No portal pages were recognized in .*mspp\. Detected layout: PAC YAML with mspp_ keys\. The Mirage does not import this layout yet; use a PAC YAML export with adx_ keys, a \.powerpages-site export or the site's unpacked Solution \(powerpagecomponents\/\)\./;
 const MSPP_SITE = {
   'mspp/website.yml': 'mspp_name: Site\nmspp_websiteid: 6a0f0c2e-0000-4000-8000-000000000099\n',
   'mspp/web-pages/home/Home.webpage.yml': 'mspp_name: Home\nmspp_partialurl: /\n',
@@ -197,7 +197,7 @@ test('an adx_ export without web pages and an unknown folder fail with their own
       watch: false,
       requirePortalSource: true,
     }),
-    /Detected layout: no recognised portal layout \(no website\.yml, web-pages\/, web-files\/ or powerpagecomponents\/\)\. Point it at the folder that contains website\.yml \(a PAC YAML or \.powerpages-site export\), or at an unpacked Solution with powerpagecomponents\/\./,
+    /Detected layout: no recognized portal layout \(no website\.yml, web-pages\/, web-files\/ or powerpagecomponents\/\)\. Point it at the folder that contains website\.yml \(a PAC YAML or \.powerpages-site export\), or at an unpacked Solution with powerpagecomponents\/\./,
   );
   const portal = await importPortal(path.join(root, 'portal'));
   assert.deepEqual(

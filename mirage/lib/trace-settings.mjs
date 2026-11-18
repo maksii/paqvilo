@@ -7,22 +7,24 @@ const RANGES = {
   payloadBytes: [256, 1_048_576, 16_384],
 };
 const KEYS = new Set(['level', ...Object.keys(RANGES), 'persist']);
+// A refused value is named the way the trace filters name theirs: ` (got "…")`.
+const got = (value) => ` (got ${JSON.stringify(String(value))})`;
 
 /** Validates mirage.trace ({ level, traces, spansPerTrace, payloadBytes, persist }) and fills its defaults. */
 export function traceSettings(value = {}, label = 'mirage.trace') {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} must be an object`);
   for (const key of Object.keys(value)) if (!KEYS.has(key)) throw new Error(`Unknown setting ${label}.${key}`);
   const level = value.level ?? 'summary';
-  if (!LEVELS.has(level)) throw new Error(`${label}.level must be off, summary or full`);
+  if (!LEVELS.has(level)) throw new Error(`${label}.level must be off, summary or full${got(level)}`);
   const result = { level };
   for (const [key, [min, max, fallback]] of Object.entries(RANGES)) {
     const number = value[key] ?? fallback;
     if (!Number.isSafeInteger(number) || number < min || number > max)
-      throw new Error(`${label}.${key} must be an integer from ${min} to ${max}`);
+      throw new Error(`${label}.${key} must be an integer from ${min} to ${max}${got(number)}`);
     result[key] = number;
   }
   const persist = value.persist ?? false;
-  if (typeof persist !== 'boolean') throw new Error(`${label}.persist must be true or false`);
+  if (typeof persist !== 'boolean') throw new Error(`${label}.persist must be true or false${got(persist)}`);
   result.persist = persist;
   return result;
 }

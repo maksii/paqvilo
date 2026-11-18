@@ -26,6 +26,8 @@ const TEXT = 'nvarchar',
   BOOL = 'bit',
   GUID = 'uniqueidentifier',
   LOOKUP = 'lookup';
+// Column types read as _<name>_value: lookups, owners and customers.
+const REFERENCE_TYPES = new Set([LOOKUP, 'owner', 'customer']);
 
 const TABLES = {
   duplicaterule: {
@@ -91,6 +93,17 @@ const valueOf = (v) => (v !== null && typeof v === 'object' ? v.id : v) ?? null;
 const textOf = (v) => String(valueOf(v) ?? '');
 const same = (a, b) => textOf(a).toLowerCase() === textOf(b).toLowerCase();
 const isBlank = (v) => textOf(v) === '';
+// The table a rule or request names by logical name: a declared mapping, or a standard table the store holds without one
+// (account, contact on a standalone organization). Null for an unknown name or an entity set name.
+function mappingOf(store, logical) {
+  if (typeof logical !== 'string' || logical === '') return null;
+  try {
+    const mapping = store.resolveMapping(logical);
+    return same(mapping.logicalName, logical) ? mapping : null;
+  } catch {
+    return null;
+  }
+}
 // Date and time values as epoch milliseconds, or null when the value is not a date.
 // Date.parse reads a date-only value as UTC but a date-time without an offset as local time.
 const timeOf = (v) => {
@@ -126,8 +139,10 @@ function seedTables(store) {
 function formatRow(api, user, mapping, row) {
   const visible = api.fieldSecurity?.mask ? (api.fieldSecurity.mask(user, mapping.logicalName, row) ?? {}) : row;
   const out = {};
+  // A standard table without a declared mapping (contact on a standalone organization) takes its columns from metadata.
+  const fields = { ...mapping.fields, ...api.metadataFields?.(mapping.logicalName) };
   for (const [column, value] of Object.entries(visible)) {
-    if (mapping.fields[column]?.dataverseType !== LOOKUP) {
+    if (!REFERENCE_TYPES.has(fields[column]?.dataverseType)) {
       out[column] = cloneStateData(value);
       continue;
     }
@@ -191,15 +206,15 @@ function matchesRow(store, rule, conditions, base, row) {
       return !(conditions.length === 1 || cond.ignoreblankvalues === true) && isBlank(a) && isBlank(b);
     const op = operatorOf(cond.operatorcode);
     if (op !== 'label') return compare(op, cond.operatorparam, a, b, rule.iscasesensitive === true);
-    const left = labelOf(store.state.mappings[rule.baseentityname], cond.baseattributename, a);
-    const right = labelOf(store.state.mappings[rule.matchingentityname], cond.matchingattributename, b);
+    const left = labelOf(mappingOf(store, rule.baseentityname), cond.baseattributename, a);
+    const right = labelOf(mappingOf(store, rule.matchingentityname), cond.matchingattributename, b);
     return compare('exact', null, left, right, rule.iscasesensitive === true);
   });
 }
 
 // Rows of the rule's matching table that duplicate `base`. selfId excludes the record being written when the tables are the same.
 function duplicatesUnder(store, rule, base, selfId) {
-  const mapping = store.state.mappings[rule.matchingentityname];
+  const mapping = mappingOf(store, rule.matchingentityname);
   if (!mapping) return [];
   const conditions = conditionsOf(store, rule);
   if (conditions.length === 0) return []; // assumed: a rule without conditions matches nothing
@@ -306,7 +321,7 @@ function baseEntityOf(business) {
 // supplies the values the request does not name (supplied values win). The row's id is returned as selfId, to be left out.
 function comparedOf(api, c, baseEntity, supplied) {
   const { store } = api;
-  const mapping = store.state.mappings[baseEntity];
+  const mapping = mappingOf(store, baseEntity);
   const selfId = supplied[mapping?.idColumn];
   const stored =
     selfId == null ? undefined : store.tableRows(baseEntity).find((row) => same(row[mapping.idColumn], selfId));
@@ -323,7 +338,7 @@ const retrieveDuplicates = (api) => async (c) => {
   const baseEntity = baseEntityOf(business);
   const matching = c.params.MatchingEntityName;
   if (!baseEntity) throw new DataError('BusinessEntity must name its logical name.', 400, 'InvalidRequest');
-  const target = store.state.mappings[matching];
+  const target = mappingOf(store, matching);
   if (!target) throw new DataError(`${matching} does not exist.`, 404, 'UnknownEntity');
   api.principals.authorize({ user: c.user, entity: matching, operation: 'read', mapping: target });
   const readable = api.principals.readFilter({ user: c.user, entity: matching, mapping: target });
@@ -360,7 +375,7 @@ const bulkDetectDuplicates = (api) => async (c) => {
   const body = typeof c.body === 'string' ? JSON.parse(c.body || '{}') : (c.body ?? {});
   const entity = body.Query?.EntityName ?? body.Query?.entityName;
   if (!entity) throw new DataError('Query must name the entity to check.', 400, 'InvalidRequest'); // native message text not known
-  const mapping = store.state.mappings[entity];
+  const mapping = mappingOf(store, entity);
   if (!mapping) throw new DataError(`${entity} does not exist.`, 404, 'UnknownEntity');
   api.principals.authorize({ user: c.user, entity, operation: 'read', mapping });
   const jobId = await api.systemJob(
@@ -376,7 +391,7 @@ const bulkDetectDuplicates = (api) => async (c) => {
       scan: for (const row of store.tableRows(entity)) {
         if (readable && !readable(row)) continue;
         for (const rule of rules) {
-          const matchId = store.state.mappings[rule.matchingentityname]?.idColumn; // no mapping: duplicatesUnder finds nothing
+          const matchId = mappingOf(store, rule.matchingentityname)?.idColumn; // no mapping: duplicatesUnder finds nothing
           for (const match of duplicatesUnder(store, rule, row, row[mapping.idColumn])) {
             pairs.push({
               rule,
@@ -608,4 +623,19 @@ export function install(api) {
   });
   api.recordHooks.add('afterPreValidation', (c, mapping, change) => beforeWrite(store, c, mapping, change));
   return api.change(() => reset(api));
+}
+
+/** Capability record for the capability registry; dataverse-extensions.mjs adds the operations install registered. */
+export function describe() {
+  return {
+    name: 'dataverse-duplicates',
+    version: 1,
+    kind: 'dataverse-extension',
+    level: 'behaviour',
+    reason: 'Duplicate rules, the create and update check and the duplicate messages run against the store.',
+    requires: [],
+    principal: 'caller',
+    stateOwner: 'store',
+    lifecycle: 'per-request',
+  };
 }

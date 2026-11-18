@@ -482,7 +482,7 @@ test('modern text input and selectable text use supported aliases with a visible
   await page.waitForFunction(() =>
     document.querySelector('[data-testid="canvas-inspector"]')?.textContent.includes('"modernSelected": true'),
   );
-  assert.match(await page.getByTestId('canvas-inspector').textContent(), /Modern control behavior is approximated/);
+  assert.match(await page.getByTestId('canvas-inspector').textContent(), /Modern control behaviour is approximated/);
 });
 
 test('one browser tab owns a shared timer clock and another takes over after close', async (t) => {

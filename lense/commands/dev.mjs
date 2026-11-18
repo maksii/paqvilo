@@ -4,6 +4,7 @@ import { DEV_READY } from '../dev-messages.mjs';
 import chokidar from 'chokidar';
 import { openBrowser, refreshPages } from '../browser.mjs';
 import { loadDevTargets } from '../config.mjs';
+import { paqviloCommand } from '../command-hint.mjs';
 import { urlKey } from '../portal-model.mjs';
 import { compareWebFile } from '../online.mjs';
 import { gitDirectories } from '../git.mjs';
@@ -100,7 +101,7 @@ function printSummaryDiagnostics(session, cfg, model, rewriter, log) {
     log(`  NEEDS DEPLOY: ${unsupported.rel} - ${unsupported.reason}`);
   if (model.warnings.length > 3 || rewriter.unsupported.length > 3)
     log(
-      `diagnostics ${plural(model.warnings.length, 'source warning')}, ${plural(rewriter.unsupported.length, 'deployment-only source')}; full details in the panel or "paqvilo doctor"`,
+      `diagnostics ${plural(model.warnings.length, 'source warning')}, ${plural(rewriter.unsupported.length, 'deployment-only source')}; full details in the panel or "${paqviloCommand(['lense', 'doctor'], { script: 'doctor' })}"`,
     );
 }
 
@@ -271,7 +272,7 @@ export function printSummary(session, log = console.log) {
   log(`site        ${cfg.siteName} @ ${cfg.envName}  ${cfg.origin}`);
   if (cfg.chosen)
     log(
-      `            (site from ${cfg.chosen.site}, environment from ${cfg.chosen.env}; "npm run list" shows the choices)`,
+      `            (site from ${cfg.chosen.site}, environment from ${cfg.chosen.env}; "${paqviloCommand(['lense', 'list'], { script: 'list', config: cfg.configFile })}" shows the choices)`,
     );
   for (const note of cfg.notes ?? []) log(`  note: ${note}`);
   if (cfg.caution)
@@ -871,11 +872,11 @@ function applySetupUrl(targets, setupUrl) {
 function logAllPortals(selection) {
   if (selection.mode !== 'all') return;
   console.log(
-    `portals     all ${selection.targets.length} configured origins; activated on visit. Use the panel to switch, "paqvilo list" to inspect.`,
+    `portals     all ${selection.targets.length} configured origins; activated on visit. Use the panel to switch, "${paqviloCommand(['lense', 'list'], { script: 'list' })}" to inspect.`,
   );
 }
 
-function logBrowserProfile(attached, cfg, profile) {
+export function logBrowserProfile(attached, cfg, profile) {
   const profileName = profile.name ? ` profile ${profile.name}` : '';
   const profileDirectory =
     profile.profileDirectory && profile.kind === 'external' ? ` (${profile.profileDirectory})` : '';

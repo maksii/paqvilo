@@ -50,6 +50,23 @@ test('CDP attachment rejects a launch debugger port before connecting or opening
   assert.equal(launch.mock.callCount(), 0);
 });
 
+test('an unreachable CDP endpoint fails with one line, without the Playwright prefix or call log', async (t) => {
+  t.mock.method(chromium, 'launchPersistentContext', async () => assert.fail('attachment must not launch'));
+  const server = net.createServer();
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  await new Promise((resolve) => server.close(resolve));
+  const cdpUrl = `http://127.0.0.1:${port}/devtools/browser/invented-secret-id`;
+  await assert.rejects(openBrowser({ browser: { cdpUrl, debugPort: null } }), (error) => {
+    assert.match(
+      error.message,
+      /^Cannot attach to the --cdp-url browser debugging endpoint \(.+\)\. Start the browser/,
+    );
+    assert.doesNotMatch(error.message, /\n|Call log|browserType\.|invented-secret-id/);
+    return true;
+  });
+});
+
 test('ordinary CDP attachment and an explicit disabled launch port retain user-owned browser lifetime', async (t) => {
   const context = { close: async () => assert.fail('the attached context belongs to the user') };
   let detached = 0;

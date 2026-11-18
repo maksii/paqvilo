@@ -79,8 +79,7 @@ function plainObject(value, label) {
 }
 
 function knownKeys(value, keys, label) {
-  for (const key of Object.keys(value))
-    if (!keys.includes(key)) throw new Error(`${label}.${key} is not a supported setting`);
+  for (const key of Object.keys(value)) if (!keys.includes(key)) throw new Error(`Unknown ${label} key '${key}'`);
 }
 
 function required(value, label) {
@@ -301,6 +300,17 @@ function tds(value, label) {
   };
 }
 
+/**
+ * The Dataverse HTTP API settings of a standalone runtime (runtime kind model-driven or dataverse-api): on by default for
+ * dataverse-api, which refuses it switched off. serve (standalone-runtime.mjs) and inspect validate with this one function.
+ */
+export function standaloneDataverseSettings(kind, value, extra = {}) {
+  const settings = dataverseSettings({ enabled: kind === 'dataverse-api', ...value, ...extra });
+  if (kind === 'dataverse-api' && !settings.enabled)
+    throw new Error('A dataverse-api runtime requires its HTTP API to be enabled: remove dataverse.enabled: false.');
+  return settings;
+}
+
 export function dataverseSettings(value, label = 'dataverse') {
   if (value === undefined || value === false) return { enabled: false };
   const input = value === true ? {} : plainObject(value, label);
@@ -388,5 +398,37 @@ export function dataverseStatus(settings, runtime = {}) {
     version: settings.version ?? null,
     // The listening TDS port (null when the endpoint is disabled).
     tdsPort: runtime.tdsPort ?? null,
+  };
+}
+
+// The Dataverse status both hosts (server.mjs and standalone-runtime.mjs) return from GET /_sim/api/dataverse and in
+// their state's dataverse section, so the two shapes cannot drift.
+export function dataverseHostStatus(settings, runtime, { organizationAvailable, certificate, managedIdentity }) {
+  return {
+    ...dataverseStatus(settings, runtime),
+    organizationAvailable: Boolean(organizationAvailable),
+    certificateFile: certificate?.file ?? null,
+    certificateFingerprint: certificate?.fingerprint256 ?? null,
+    managedIdentity,
+  };
+}
+
+// The managed identity part of that status. The App Service identity header is shown once, as secrets are: only the
+// first read with reveal (the admin status GET) carries it; every other read carries null.
+export function managedIdentityStatusReader(identity, mode) {
+  let headerShown = false;
+  return ({ reveal = false } = {}) => {
+    const current = identity();
+    if (!current) return { enabled: false, mode: null, endpoint: null, header: null };
+    const env = current.env(),
+      appService = mode() === 'appservice';
+    const shown = appService && reveal && !headerShown;
+    if (shown) headerShown = true;
+    return {
+      enabled: true,
+      mode: mode(),
+      endpoint: appService ? env.IDENTITY_ENDPOINT : env.IMDS_ENDPOINT,
+      header: shown ? env.IDENTITY_HEADER : null,
+    };
   };
 }

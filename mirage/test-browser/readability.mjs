@@ -1,9 +1,9 @@
-// D-M-6 readability measurement of the open /_sim/ view, run in the page (`page.evaluate(measureView)`): self-contained,
+// Readability measurement of the open /_sim/ view, run in the page (`page.evaluate(measureView)`): self-contained,
 // no imports. firstY: the top (px from the page top) of the first useful content element after the page heading — a
 // data row, tile, fact list, form control, list item, card or empty state; prose: the characters of visible
 // explanatory text (paragraphs, help lines, notices, row details outside tables and fact lists) that is not inside an
 // (i) popover, tooltip or `[data-help]`; firstRowY: the top of the first data row; scrollX: whether the page scrolls
-// sideways; infoPairs: adjacent bare (i) buttons; frames: the shared tables whose frame scrolls sideways (a cut column or row action, DV-N4c-2).
+// sideways; infoPairs: adjacent bare (i) buttons; frames: the shared tables whose frame scrolls sideways (a cut column or row action).
 export function measureView() {
   const content = document.querySelector('#content');
   const visible = (node) =>
@@ -36,10 +36,10 @@ export function measureView() {
     (node) => visible(node) && !node.closest('.page-heading, .ui-guide, .ui-info, nav'),
   );
   const box = first?.getBoundingClientRect();
-  // The first data row of the main list (D-M-7 list views: at most 180 px from the top).
+  // The first data row of the main list (list views: at most 180 px from the top).
   const row = [...content.querySelectorAll('tbody tr')].find(visible)?.getBoundingClientRect();
   // What the eye reads as explanation: paragraphs, list items, help and notice lines, row and step details, the
-  // description of an action (DV-N4b-2).
+  // description of an action.
   const PROSE =
     'p, li, small, .ui-help, .muted, .field-help, .ui-field-help, .notice, .ui-notice, .ui-guide, .row-detail, .step-detail, .action-row';
   // Data, not explanation: tables, fact grids, data lines (bindings, source paths), the Health hero's fact chips and

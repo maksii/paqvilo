@@ -804,7 +804,11 @@ test('inherited Object names are unknown presets for reads and apply, a cross-si
     );
     const applied = await call(`/__sim/api/presets/${name}/apply`, 'POST', {});
     assert.equal(applied.status, 404, `POST apply ${name}`);
-    assert.equal(applied.json.error.message, 'Preset not found.', `POST apply ${name}`);
+    assert.equal(
+      applied.json.error.message,
+      `Preset '${name}' not found; GET /_sim/api/presets lists this runtime's presets and paqvilo mirage --help the registry presets.`,
+      `POST apply ${name}`,
+    );
   }
   assert.equal((await call('/__sim/api/status')).status, 200, 'the runtime still answers after the cross-site reads');
 });

@@ -957,10 +957,12 @@ function panelBrowserImpl(data) {
         out += `<div class="banner"><span class="grow"><b>${d.pending.length}</b> file${d.pending.length > 1 ? 's' : ''} changed since this page loaded: ${esc(d.pending.slice(0, 2).map(baseName).join(', '))}${d.pending.length > 2 ? ' ...' : ''}</span><button class="btn" data-act="reload">Reload</button></div>`;
       }
       const all = d.items;
+      // Model-driven rows not observed on this revision are listed under the same filters, so they count too.
+      const counted = d.modelDriven ? [...all, ...(d.unobserved ?? [])] : all;
       const counts = {
-        all: all.length,
-        edited: all.filter((i) => i.edited).length,
-        differs: all.filter((i) => i.differs === true || i.isNew).length,
+        all: counted.length,
+        edited: counted.filter((i) => i.edited).length,
+        differs: counted.filter((i) => i.differs === true || i.isNew).length,
       };
       const filter = counts[S.ui.filter] == null ? 'all' : S.ui.filter;
       const scopeButton = (s) => {
@@ -1002,7 +1004,7 @@ function panelBrowserImpl(data) {
         lists += group(
           'unobserved',
           'Not observed on this revision',
-          (d.unobserved ?? []).filter((i) => matches(i.rel, i.url ?? '', i.title ?? '')).map(itemRow),
+          (d.unobserved ?? []).filter((i) => inFilter(i) && matches(i.rel, i.url ?? '', i.title ?? '')).map(itemRow),
         );
       const insync = d.insync.filter((i) => matches(i.rel));
       lists += group('insync', `Recognised, same as ${d.env}`, insync.map(itemRow));
@@ -2415,6 +2417,12 @@ function panelBrowserImpl(data) {
       host.dataset.overrides = String(d.items.length);
       host.dataset.issues = String(warns + errs + net);
       host.dataset.label = `${d.site} @ ${d.env}`;
+      // The drawn local runtime state: a failed read is distinguishable from a runtime that is still being read.
+      let runtimeState = '';
+      if (d.mirage?.active) runtimeState = 'active';
+      else if (d.mirage?.error) runtimeState = 'failed';
+      else if (d.mirage) runtimeState = 'inactive';
+      host.dataset.runtime = runtimeState;
       place();
       let dotState = ' paused';
       if (d.online) dotState = ' off';
@@ -3541,7 +3549,10 @@ function panelBrowserImpl(data) {
           S.inspectLoading = null;
         }
         S.d = d;
-        if (MIRAGE_TABS.has(S.ui.tab) && (!d.mirageMode || d.mirage?.active === false)) S.ui.tab = 'overrides';
+        // A failed runtime read is drawn on the Tweaks tab with its Read again control; a redraw, including the
+        // one Read again itself schedules while it is still reading, must not move the user off that tab.
+        if (MIRAGE_TABS.has(S.ui.tab) && (!d.mirageMode || (d.mirage?.active === false && !d.mirage.error)))
+          S.ui.tab = 'overrides';
         S.targets = (Array.isArray(d.targets) ? d.targets : []).flatMap((target) => {
           try {
             // eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.

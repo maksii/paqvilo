@@ -387,7 +387,14 @@ async function connectAttachedBrowser(endpoint, guardMs) {
   try {
     return await chromium.connectOverCDP(endpoint, { timeout: guardMs });
   } catch (error) {
-    throw hangGuardError(error, 'Attaching to the debugging endpoint', guardMs);
+    if (error?.name === 'TimeoutError') throw hangGuardError(error, 'Attaching to the debugging endpoint', guardMs); // One line with the cause, without Playwright's API prefix, call log or the endpoint itself.
+    const reason = String(error?.message ?? error)
+      .split('\n')[0]
+      .replace(/^browserType\.connectOverCDP:\s*/, '');
+    throw new Error(
+      `Cannot attach to the --cdp-url browser debugging endpoint (${reason}). Start the browser with a remote debugging port and pass that endpoint to --cdp-url.`,
+      { cause: error },
+    );
   }
 }
 

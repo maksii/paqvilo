@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { runtimeOrigin } from './runtime.mjs';
+import { requiredArgument } from '../lib/required-argument.mjs';
 
 const failure = (message, code, status) => Object.assign(new Error(message), { code, ...(status ? { status } : {}) });
 const methods = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']);
@@ -78,15 +79,17 @@ function portalRoute(origin, route) {
  * private cookie is never returned in session descriptions or matrix reports.
  * This client never starts a runtime, changes the configured persona, or retries
  * a request whose mutation may already have committed. */
-export async function createPortalSession({
-  origin,
-  contactId,
-  roles,
-  id = randomUUID(),
-  fetchImpl = globalThis.fetch,
-  timeoutMs = 30000,
-  signal,
-} = {}) {
+export async function createPortalSession(
+  {
+    origin,
+    contactId,
+    roles,
+    id = randomUUID(),
+    fetchImpl = globalThis.fetch,
+    timeoutMs = 30000,
+    signal,
+  } = requiredArgument('createPortalSession({ origin })', 'an options object with the runtime origin'),
+) {
   origin = runtimeOrigin(origin);
   if (
     typeof id !== 'string' ||

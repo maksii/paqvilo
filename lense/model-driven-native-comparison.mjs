@@ -19,7 +19,8 @@ export async function readModelDrivenNativeSource({ origin, path, token }) {
     if (!response.ok || !response.body?.getReader)
       return { ok: false, error: `Native source comparison unavailable (HTTP ${response.status}).` };
     const mime = response.headers.get('content-type') ?? '';
-    if (!/(?:javascript|ecmascript|text\/css)/i.test(mime))
+    // Dataverse answers some web resource reads as text/jscript, a legacy JavaScript type.
+    if (!/(?:javascript|ecmascript|jscript|text\/css)/i.test(mime))
       return { ok: false, error: 'The native response is not a script or stylesheet.' };
     reader = response.body.getReader();
     const chunks = [];

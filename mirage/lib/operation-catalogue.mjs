@@ -198,6 +198,9 @@ function operationMode(override, registered, record, contract) {
   return contract?.supported && callable && contract.connections.every((c) => c.bound) ? 'exported' : 'placeholder';
 }
 
+// Connector runtime → the operation warnings already reported through its catalogue's diagnostic callback.
+const reportedWarnings = new WeakMap();
+
 /** Source discovery is automatic; executable project JavaScript still requires an explicit choice. */
 export function operationCatalogue({
   portal,
@@ -224,6 +227,18 @@ export function operationCatalogue({
             principal: handlers?.flowIdentities?.get(record.processId),
           })
         : null;
+    // Connector warnings reach the runtime diagnostics once per connector runtime (the catalogue is rebuilt on every store
+    // revision; a source reload builds a new runtime and reports them again).
+    if (contract?.warnings?.length && connectors) {
+      const seen = reportedWarnings.get(connectors) ?? new Set();
+      reportedWarnings.set(connectors, seen);
+      for (const warning of contract.warnings) {
+        const id = `${key}|${warning.connectionId}|${warning.code}`;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        diagnostic({ ...warning, operationKey: key, flow: record.name });
+      }
+    }
     const mode = operationMode(overrides[key]?.mode, registered, record, contract);
     items.push({
       key,

@@ -4,23 +4,35 @@
 npx --no-install paqvilo setup --open     # or `npm run configure` in a generated project or the demo
 ```
 
-`paqvilo setup` serves the local `/_setup/` workspace: a browser editor for the [configuration](configuration.md). It works before exports exist and with missing or invalid configuration, and never falls back to the toolkit's bundled catalogue. `paqvilo lense setup` and `paqvilo mirage setup` are aliases.
+`paqvilo setup` serves the local `/_setup/` workspace: a browser editor for the [configuration](configuration.md). It
+works before exports exist and with missing or invalid configuration, and never falls back to the toolkit's bundled
+catalogue. `paqvilo lense setup` and `paqvilo mirage setup` are aliases.
 
-| Option             | Effect                                                    |
-| ------------------ | --------------------------------------------------------- |
-| `--config <file>`  | Shared catalogue to edit (default `./paqvilo.config.yml`) |
-| `--project <file>` | Standalone Mirage project file instead of a catalogue     |
-| `--port <n>`       | Loopback port; a free port is chosen when omitted         |
-| `--open`           | Open the workspace in the browser                         |
-| `--json`           | Print the URL as JSON                                     |
+| Option             | Effect                                                        |
+| ------------------ | ------------------------------------------------------------- |
+| `--config <file>`  | Shared catalogue to edit (default `./paqvilo.config.yml`)     |
+| `--project <file>` | Standalone Mirage project file instead of a catalogue         |
+| `--port <n>`       | Loopback port; a free port is chosen when omitted             |
+| `--open`           | Open the workspace in the browser                             |
+| `--json`           | Print `url` and `config` as JSON (`project` with `--project`) |
 
-Ctrl+C stops only the setup server. Starting a project that has no configuration file from a terminal (`lense dev`, `mirage dev` or `mirage start` with `--config`) opens setup instead of failing; without a terminal, or with `--json`, the command fails and names `paqvilo setup`.
+`--config` and `--project` are alternatives: giving both fails and names them. Commands the page shows are built for the
+folder it serves: an npm script only when the project's `package.json` defines that same command, otherwise
+`npx --no-install paqvilo …` in a project that depends on paqvilo and `npx paqvilo …` elsewhere.
 
-Setup configures; [`/_sim/`](../mirage/docs/sim-administration.md) manages a running preview. Both share one shell with an **Areas** switch. Setup does not install packages or browsers ([getting started](getting-started.md)), deploy, synchronize, run PAC, read live references, execute data packs or authorize live writes.
+Ctrl+C stops only the setup server. Starting a project whose configuration file does not exist from a terminal
+(`lense dev`, `mirage dev` or `mirage start`, without `--project`) opens setup instead of failing. Without a terminal
+the command fails and prints the `setup` command to run; with `--json` it fails with `CONFIG_NOT_FOUND`.
+
+Setup configures; [`/_sim/`](../mirage/docs/sim-administration.md) manages a running preview. Both share one shell with
+an **Areas** switch. Setup does not install packages or browsers ([getting started](getting-started.md)), deploy,
+synchronize, run PAC, read live references, execute data packs or authorize live writes.
 
 ## Quick setup
 
-The page opens on **Quick setup**, five steps for someone who has an exported site or Solution and does not know the configuration format. **All settings** switches to the full [journey](#journey); the choice is remembered in the browser.
+The page opens on **Quick setup**, five steps for someone who has an exported site or Solution and does not know the
+configuration format. **All settings** switches to the full [journey](#journey); the choice is remembered in the
+browser.
 
 | Step                 | What it does                                                                                                                                                                                                                                                      |
 | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -30,13 +42,19 @@ The page opens on **Quick setup**, five steps for someone who has an exported si
 | Run it               | Start, restart and stop the preview; open the website, apps, canvas apps and simulator. A failed start shows its reason and links the startup log.                                                                                                                |
 | Check                | Findings in plain words with the step that fixes them and, while the preview runs, what is ready, what runs as a local stand-in and what is missing.                                                                                                              |
 
-In a folder without configuration, setup searches up to four folders deep (skipping dot folders and `node_modules`) for website exports, unpacked Solutions and `pack.mjs` data modules. **Create project** writes one target that uses them, with a free local port (8787 when available), a free Web API port (8790 when available) when the API is chosen, and dry run. A found data module is registered only when ticked, by its path.
+In a folder without configuration, setup searches up to four folders deep (skipping dot folders and `node_modules`) for
+website exports, unpacked Solutions and `pack.mjs` data modules. **Create project** writes one target that uses them,
+with a free local port (8787 when available), a free Web API port (8790 when available) when the API is chosen, and dry
+run. A found data module is registered only when ticked, by its path.
 
-Setup starts and stops only local Mirage previews the toolkit owns, through `paqvilo mirage start|stop` in a detached runner (`.paqvilo/setup/preview-operation.json` records the last operation). A preview started from a terminal is shown with the command to restart it there. A Lense preview is never started, stopped or contacted from setup.
+Setup starts and stops only local Mirage previews the toolkit owns, through `paqvilo mirage start|stop` in a detached
+runner (`.paqvilo/setup/preview-operation.json` records the last operation). A preview started from a terminal is shown
+with the command to restart it there. A Lense preview is never started, stopped or contacted from setup.
 
 ## Journey
 
-**All settings** is one guided page: a status strip, the system map, and nine stages. Each stage is `done`, `next`, `blocked` or `optional`, derived from the findings and the configuration.
+**All settings** is one guided page: a status strip, the system map, and nine stages. Each stage is `done`, `next`,
+`blocked` or `optional`, derived from the findings and the configuration.
 
 | Stage                 | Required                       | Holds                                                                                                                      |
 | --------------------- | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------- |
@@ -50,14 +68,24 @@ Setup starts and stops only local Mirage previews the toolkit owns, through `paq
 | Web API access        | no                             | Dataverse API users and app registrations                                                                                  |
 | Start & check         | yes                            | Preview controls and on-demand preflight (ids or globs, optionally strict). Done when the running preview matches the file |
 
-A key without a dedicated form appears in the **More settings** editor of its stage as a guided control or a YAML snippet validated on save. `secrets`, `connections` and `dataverse.applications` accept references only; their values are redacted in the guided view. The document editor edits every setting and can repair invalid YAML.
+A key without a dedicated form appears in the **More settings** editor of its stage as a guided control or a YAML
+snippet validated on save. `secrets`, `connections` and `dataverse.applications` accept references only; their values
+are redacted in the guided view. The document editor edits every setting and can repair invalid YAML.
 
 ## Configure through the page
 
-- **Layers.** The shared layer is the team catalogue; the personal layer is the ignored `paqvilo.config.local.yml`. Precedence is unchanged ([configuration](configuration.md#select-a-catalogue)). The page shows effective shell and `.env` choices without exposing `.env` contents or discovery records, and does not edit them. In a catalogue session, each `sites.<id>.mirage.project` file inside the catalogue folder is a further layer, `project:<site>`.
-- **Paths.** Sources and Solution roots resolve below the source root, which resolves from the catalogue directory; absolute paths work for separate checkouts. Origins must be HTTP(S) origins without credentials, paths or query strings.
+- **Layers.** The shared layer is the team catalogue; the personal layer is the ignored `paqvilo.config.local.yml`.
+  Precedence is unchanged ([configuration](configuration.md#select-a-catalogue)). The page shows effective shell and
+  `.env` choices without exposing `.env` contents or discovery records, and does not edit them. In a catalogue session,
+  each `sites.<id>.mirage.project` file inside the catalogue folder is a further layer, `project:<site>`.
+- **Paths.** Sources and Solution roots resolve below the source root, which resolves from the catalogue directory;
+  absolute paths work for separate checkouts. Origins must be HTTP(S) origins without credentials, paths or query
+  strings.
 - **Several websites** are several projects, each with its own local port.
-- **Saves.** Guided edits preserve unrelated fields and comments; replacing a whole document is an explicit action; JSON project files stay JSON; schema errors reject the save. Missing folders and placeholder origins are findings, not errors, so configuration can be completed step by step. When another process edited the file, reload before saving; unsaved form edits stay visible.
+- **Saves.** Guided edits preserve unrelated fields and comments; replacing a whole document is an explicit action; JSON
+  project files stay JSON; schema errors reject the save. Missing folders and placeholder origins are findings, not
+  errors, so configuration can be completed step by step. When another process edited the file, reload before saving;
+  unsaved form edits stay visible.
 - **A valid configuration is not proof** of navigation, browser application or a deployed commit.
 
 ### API
@@ -74,14 +102,24 @@ A key without a dedicated form appears in the **More settings** editor of its st
 
 ## During a preview
 
-Mirage serves the workspace at `/_setup/` on each runtime's administration address (the `setupUrl` it reports; `/_setup/` on the portal address redirects there). Lense prints a separate loopback setup URL and links it from the Paqvilo panel; the workspace is never mounted on a live portal origin. If development cannot start, run `paqvilo setup` on its own to repair the project.
+Mirage serves the workspace at `/_setup/` on each runtime's administration address (the `setupUrl` it reports;
+`/_setup/` on the portal address redirects there). Lense prints a separate loopback setup URL and links it from the
+Paqvilo panel; the workspace is never mounted on a live portal origin. If development cannot start, run `paqvilo setup`
+on its own to repair the project.
 
-Saves apply on the next preview start: saving never redirects a running browser, resets simulator data, flushes in-memory edits or changes source watchers. The workspace compares the runtime settings the preview loaded with those of the saved configuration, not file contents, and when they differ shows the exact restart command for the running product and site.
+Saves apply on the next preview start: saving never redirects a running browser, resets simulator data, flushes
+in-memory edits or changes source watchers. The workspace compares the runtime settings the preview loaded with those of
+the saved configuration, not file contents, and when they differ shows the exact restart command for the running product
+and site.
 
-Saves ensure project ignore rules for `.env`, personal configuration and local runtime state, preserving existing ignore-file content. A personal file already tracked in Git must be untracked before private overrides can be saved.
+Saves ensure project ignore rules for `.env`, personal configuration and local runtime state, preserving existing
+ignore-file content. A personal file already tracked in Git must be untracked before private overrides can be saved.
 
-Tooling requests have a two-minute deadline and timed-out writes are never retried automatically: the server may have completed the write, so check the refreshed configuration before retrying.
+Tooling requests have a two-minute deadline and timed-out writes are never retried automatically: the server may have
+completed the write, so check the refreshed configuration before retrying.
 
 ## Security
 
-The service accepts loopback connections only, confines file access to its selected configuration layers, validates Host, Origin and a CSRF token for saves, and refuses symlinked configuration outputs. Treat it as a local development tool with the same project access as the CLI.
+The service accepts loopback connections only, confines file access to its selected configuration layers, validates
+Host, Origin and a CSRF token for saves, and refuses symlinked configuration outputs. Treat it as a local development
+tool with the same project access as the CLI.

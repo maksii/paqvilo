@@ -10,8 +10,8 @@ runs its tests before the branch is merged.
 From a toolkit checkout with dependencies installed and the GitHub CLI signed in:
 
 ```sh
-node scripts/preview-release.mjs --branch feature/form-layout             # dry run
-node scripts/preview-release.mjs --branch feature/form-layout --publish   # publish to npm
+node scripts/preview-release.mjs --branch feature/form-layout             # tag + gated npm publish --dry-run
+node scripts/preview-release.mjs --branch feature/form-layout --publish   # tag + gated publish to npm
 ```
 
 `--repo owner/name` selects the repository (default: the current one). The account needs permission to create tags and
@@ -21,15 +21,15 @@ preview-capable `release.yml`; merge or rebase it into older branches first. The
 Git tag, npm tag, dry-run state, workflow URL and install command; the run summary repeats the install command. Follow
 the run with `gh run list --workflow release.yml --event workflow_dispatch`.
 
-A dry run builds and tests the package and runs `npm publish --dry-run`; nothing reaches npm, but its `package`
-artifact can be installed as a local `.tgz`. To publish a tag that a dry run qualified, rerun the gates on the same tag:
+A dry run builds and tests the package and runs `npm publish --dry-run`; nothing reaches npm, but its `package` artifact
+can be installed as a local `.tgz`. To publish a tag that a dry run qualified, rerun the gates on the same tag:
 
 ```sh
 gh workflow run release.yml --ref <printed-git-tag> -f tag=<printed-git-tag> -f dry_run=false
 ```
 
-If dispatch fails after the tag was created, the helper prints this retry command; never move the tag. A version
-already on npm is skipped on rerun.
+If dispatch fails after the tag was created, the helper prints this retry command; never move the tag. A version already
+on npm is skipped on rerun.
 
 ## Versions and channels
 
@@ -39,15 +39,15 @@ already on npm is skipped on rerun.
 | Main prerelease       | for example `v0.9.8-rc.1`, matching `package.json`           | `next`                   |
 | Branch preview        | `v0.9.8-preview.<branch-token>.<timestamp>.g<commit-prefix>` | `preview-<branch-token>` |
 
-The branch token is the lower-cased branch name (at most 32 characters) plus 8 hex characters of its SHA-256, so
-`feature/a` and `feature-a` get different channels. The timestamp makes each request a new version; the 12-character
-commit prefix binds it to its source. A preview dist-tag points to the latest publication for that branch. Previews
-never move `latest` or `next` and create no GitHub release.
+The branch token is the branch name lower-cased with each run of characters other than `a-z0-9` replaced by `-` (at most
+32 characters) plus 8 hex characters of the name's SHA-256, so `feature/a` and `feature-a` get different channels. The
+timestamp makes each request a new version; the 12-character commit prefix binds it to its source. A preview dist-tag
+points to the latest publication for that branch. Previews never move `latest` or `next` and create no GitHub release.
 
 The workflow stamps the preview version into `package.json`, `package-lock.json` and `paqvilo-lock.json` in its runner
-checkouts only, runs the static checks, Linux and Windows unit and browser lanes and the installed-package smoke on
-that version, and publishes the archive those gates built after verifying its metadata. Stable tags keep the
-matching-version and `main`-ancestry checks.
+checkouts only, runs the static checks, Linux and Windows unit and browser lanes and the installed-package smoke on that
+version, and publishes the archive those gates built after verifying its metadata. Stable tags keep the matching-version
+and `main`-ancestry checks.
 
 ## Install in a consumer project
 
@@ -81,8 +81,8 @@ npm run preview:cleanup -- --apply      # unpublish the candidates
 `--apply` runs `npm unpublish paqvilo@<version>` for each candidate in your terminal, so npm can ask for its normal
 two-factor or browser approval. It never uses a range or whole-package unpublish, runs no package scripts, reads no
 `.env` and stores no token. Before each removal it re-plans from fresh registry metadata, and afterwards it confirms the
-version is gone, because npm can exit 0 after a refused write; a failed removal stops cleanup, and a rerun skips what
-is already removed. There is no cleanup workflow or maintenance token: publishing stays on trusted publishing.
+version is gone, because npm can exit 0 after a refused write; a failed removal stops cleanup, and a rerun skips what is
+already removed. There is no cleanup workflow or maintenance token: publishing stays on trusted publishing.
 
 Removal is permanent: lockfiles pinned to a removed preview stop installing, and the version number cannot be reused.
 npm applies its [unpublish policy](https://docs.npmjs.com/policies/unpublish/) to each request; when it refuses,

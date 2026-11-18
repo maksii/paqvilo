@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { dependencyReadiness } from './ensure-dependencies.mjs';
+import { answerHelp } from './script-help.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 function git(args, { raw = false, allowFailure = false } = {}) {
@@ -209,6 +210,14 @@ function prePush() {
   if (result.status !== 0) throw new Error(result.error?.message ?? 'Pre-push validation failed. Push stopped.');
 }
 
+answerHelp(process.argv.slice(2), {
+  name: 'git-hooks',
+  usage: `Usage: node scripts/git-hooks.mjs install|pre-commit|pre-push
+  install      sets core.hooksPath to .githooks in this checkout (writes the Git configuration)
+  pre-commit   checks the staged snapshot: test kinds and the quality scripts its change scope selects
+  pre-push     runs npm run ci:verify on a clean worktree (--full on main)
+Offline. Takes no options; --help prints this help. See CONTRIBUTING.md.`,
+});
 try {
   if (process.argv[2] === 'install') install();
   else if (process.argv[2] === 'pre-commit') await preCommit();

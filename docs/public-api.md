@@ -3,7 +3,9 @@
 The entry points below are Paqvilo's supported programmatic API. Removing or incompatibly changing a
 listed export requires a major version change; `test/fixtures/public-api.json` pins the guaranteed
 names. Modules reached through the `./mirage/*` and `./lense/*` wildcard exports (for example
-`paqvilo/mirage/lib/data.mjs`) are implementation details.
+`paqvilo/mirage/lib/data.mjs`) are implementation details, with three exceptions that `test/public-api.test.mjs`
+keeps working: `paqvilo/mirage/lib/code-apps-client.js` (the same names as `paqvilo/mirage/code-apps/client`),
+`createSimulator` from `paqvilo/mirage/server.mjs` and `loadCatalogue` from `paqvilo/lense/config.mjs`.
 
 | Import                            | Exports                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -18,6 +20,18 @@ names. Modules reached through the `./mirage/*` and `./lense/*` wildcard exports
 | `paqvilo/lense`                   | `loadCatalogue`, `loadConfig`, `loadDevTargets`, `resolveMirageConfig`, `resolveCatalogue`, `analyzeProject`, `analysisRules`, `analysisCapabilities` ([static analysis](static-analysis.md))                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `paqvilo/dataverse`               | `DataverseClient`, `connectedClient`, `loadConnection`, `publicConnection`, `registerApplication`, `connectExistingApplication`, `saveProtectedState`, `loadProtectedState`, `readPowerPagesSites`, `readPowerPagesSite`, `setPowerPagesSiteVisibility`, `readManifest`, `validateManifest`, `compileManifest`, `planManifest`, `applyManifest`, `publishManifest`, `checkKeys`, `exportSolution`, `completeLookupAuditing`, `scopeSolutionRoots`, `readCatalogue`, `validateCatalogue`, `planData`, `applyData`, `compareData`, `runDataQueries`, `retrieveFetchXml` ([Dataverse toolkit](dataverse-provisioning.md))                                                                                                                                                                                                                                                                                                                                                                                                                  |
 
+A listed function or class called without an argument it requires throws (an asynchronous one rejects) with a
+`TypeError` that names the call and the argument, such as `TypeError: readStateFile(file) requires a state file path.`
+or `TypeError: new DataverseClient({ environmentUrl, token }) requires an options object with environmentUrl and token.`
+A `connectRuntime()` handle method does the same and sends no request
+(`TypeError: runtime.records(table, query) requires a table logical name.`). Exports whose arguments are all optional
+run with their defaults instead. The `capture*Contract` exports of `paqvilo/mirage/testing` are excluded: their source
+is pinned evidence, so they do not check their arguments.
+
+`loadCatalogue({ config, cwd })` reads `config`, else `paqvilo.config.yml` in `cwd` (default: the working directory);
+when that file does not exist it throws an error with code `CONFIG_NOT_FOUND`. Only a `source` or `project` selection
+without `site` runs without a catalogue.
+
 The three Code Apps entry points ship TypeScript declarations; `codeApps(options?)` is the
 development-only Vite plugin for a local Mirage workbench, and the client exports are the typed
 lower-level APIs for application-owned service adapters.
@@ -30,7 +44,7 @@ runtime, asynchronous jobs and committed-work backend; `DataStore` also takes `c
 `paqvilo/mirage/testing` exports:
 
 - `fixedClock(startMs)`: `now`, `advance(ms)`, `set(ms)`.
-- `sequentialIds(namespace)`: valid version 5 GUIDs over a counter.
+- `sequentialIds(namespace)`: valid version 5 GUIDs over a counter; `namespace` is an optional GUID.
 - `createScheduler({ clock, manual, faults })`: `schedule`, `cancel`, `pending`, `runDue`, `advance`,
   `drain`, `close`, `status`.
 
@@ -180,14 +194,16 @@ const response = await fetch(`${sim.origin}/`, { headers });
 await sim.signOut();
 ```
 
-`connectRuntime` also takes `{ origin: 'http://127.0.0.1:8787' }`. It finds an owned running runtime
-(including dynamic ports), else the configured port, checks its source folder, confines every origin to
-loopback, and never starts or stops a runtime. Writes send CSRF automatically. `timeoutMs` (default
-30000; 0 = none) bounds each admin call and is inherited by `createSession` when it is 0–300000.
+`connectRuntime` also takes `{ origin: 'http://127.0.0.1:8787' }`. It finds a running runtime that a `paqvilo mirage`
+command started for the site (including dynamic ports), else the configured port; an in-process `createSimulator` is not
+recorded there, so pass its `url` as `origin`. It checks its source folder, confines every origin to loopback, and
+never starts or stops a runtime. When something other than a Mirage runtime answers there (another server on the port,
+a portal), it fails with `code` `RuntimeNotMirage`, naming what answered. Writes send CSRF automatically. `timeoutMs`
+(default 30000; 0 = none) bounds each admin call and is inherited by `createSession` when it is 0–300000.
 
 | Group         | Methods                                                                                                                                                                                                                                                                                                                                |
 | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Runtime       | `status()`, `state({ summary })`, `records(table, query)` (administrative read; test permissions through portal routes), `liveConnect(cdp)`, `liveDisconnect()`, `captureShell(path)`                                                                                                                                                  |
+| Runtime       | `status()`, `state({ summary })`, `records(table, query)` (administrative read; test permissions through portal routes), `liveConnect(cdp)`, `liveDisconnect()`, `captureShell(path)`, `witness({ tables })` ([verification witness](../mirage/docs/sim-administration.md#verification-witness))                                       |
 | Identity      | `signIn(contextOrNull, { contactId, roles, configuredPersona })` (fetch: cookie header; Playwright: context cookies), `signOut(contextOrNull)`, `createSession(options)`                                                                                                                                                               |
 | Configuration | `platformSettings()`, `setPlatformSettings(overrides)`, `resetPlatformSetting(key)`, `siteSettings()`, `setSiteSetting(name, value)`, `resetSiteSetting(name)`, `setSnippet(name, value)`, `resetSnippet(name)`, `experiments(id?)`, `saveExperiment(preset)`, `applyExperiment(id)`, `deleteExperiment(id)`, `transportDiagnostics()` |
 | Evidence      | `audit(filters)`, `exportAudit(filters)`, `diagnostics(filters)`, `logs(filters)`, `exportBundle(filters)`, `trace.*`                                                                                                                                                                                                                  |
@@ -212,20 +228,21 @@ Evidence reads return sanitized data without headers or row bodies:
 - `logs({ since, limit, type, traceId })` reads `GET /_sim/api/logs` (`mirage.logs.retain` lines):
   `{ items, latestSequence, oldestSequence, retained, dropped, retain, more }`, oldest first, after the
   exclusive `since` or else the newest `limit` (default 500); `type` is one or more of `startup`,
-  `request`, `liquid`, `data`, `plugin`, `diagnostic`, `reload`.
+  `request`, `liquid`, `data`, `plugin`, `diagnostic`, `reload`; another `type` is refused with `status: 400`,
+  `code` `InvalidLogFilter` and `parameter: 'type'`.
 - `exportBundle(filters)` returns the [activity bundle](../mirage/docs/tracing.md#activity-bundle)
   documents in order, each with `kind` (`bundle`, `activity` or `otlp`, `audit`, `log`, `finding`,
   `evidence`, `end`); it takes the trace filters, `traces: 'ndjson' | 'otlp'` and `limit`.
 - `trace` has `query`, `spans`, `tree(traceId)`, `span(spanId)`, `ancestry(spanId)`, `stats`, `export`,
   `settings`, `status`, `configure(partial)`, `clear`, `flush` and
   `subscribe(listener, { signal, events, traceId })`. Filters are plain objects (`recordId` matches every
-  span that acted on a row; `result`, `auditId`, `hasErrors`, and `traceId` as an 8+ character prefix);
-  `sort`, `order`, `format` and `limit` pass through. `tree`/`span` return `null` and `ancestry` `[]` for an
-  id no longer retained. `flush()` resolves once persisted lines and live frames are handed off.
-  `subscribe` returns `unsubscribe()` with a `closed` promise. Errors: `status: 400` with `code`
-  `InvalidTraceFilter` (and `parameter`) or `InvalidTraceSettings`; `RuntimeUnreachable` and
-  `RuntimeConnectionLost` keep the fetch error as `cause`. The in-process `simulator.trace` has the same
-  reads synchronously, `flush()` as a promise and `subscribe(listener, { payloads, events, traceId })`;
+  span that acted on a row; `result`, `auditId`, `hasErrors`, and `traceId` as a full id or a prefix of at least 8
+  hexadecimal characters); `sort`, `order`, `format` and `limit` (1–2000) pass through. `tree`/`span` return `null`
+  and `ancestry` `[]` for an id no longer retained. `flush()` resolves once persisted lines and live frames are handed
+  off. `subscribe` returns `unsubscribe()` with a `closed` promise. Errors: `status: 400` with `code`
+  `InvalidTraceFilter` (with the refused `parameter`, such as `limit` or `traceId`) or `InvalidTraceSettings`;
+  `RuntimeUnreachable` and `RuntimeConnectionLost` keep the fetch error as `cause`. The in-process `simulator.trace`
+  has the same reads synchronously, `flush()` as a promise and `subscribe(listener, { payloads, events, traceId })`;
   instrumentation (`start`, `run`, `wrap`, `link`, …) stays on the organization store
   ([store contract](design/tracing.md#store-contract)). See [request tracing](../mirage/docs/tracing.md#api).
 
@@ -233,15 +250,15 @@ Evidence reads return sanitized data without headers or row bodies:
 
 The `createSimulator` handle exposes fields fixed for the runtime's life:
 
-| Field                     | Power Pages host                                                                                      | Standalone host                |
-| ------------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------ |
-| `url`                     | Portal origin                                                                                         | Origin (also `origin`, `port`) |
-| `adminOrigin`, `adminUrl` | Administration origin on its own ephemeral port; `adminUrl` ends in `/__sim/` (same page as `/_sim/`) | Same                           |
-| `setupUrl`                | `/_setup/` on the administration origin                                                               | Same                           |
-| `appsOrigin`, `appsUrl`   | Apps origin on its own ephemeral port, and its root                                                   | Absent                         |
-| `csrf`                    | Administration token, sent as `x-sim-csrf`; also in `state()` and status                              | Same                           |
-| `portalToken`             | The `__RequestVerificationToken` value portal forms send                                              | Absent                         |
-| `appsToken`               | Token the apps pages send                                                                             | Equals the main page token     |
+| Field                     | Power Pages host                                                                                      | Standalone host                   |
+| ------------------------- | ----------------------------------------------------------------------------------------------------- | --------------------------------- |
+| `url`                     | Portal origin                                                                                         | Origin (also `origin`, `port`)    |
+| `adminOrigin`, `adminUrl` | Administration origin on its own ephemeral port; `adminUrl` ends in `/__sim/` (same page as `/_sim/`) | Same; `adminUrl` ends in `/_sim/` |
+| `setupUrl`                | `/_setup/` on the administration origin                                                               | Same                              |
+| `appsOrigin`, `appsUrl`   | Apps origin on its own ephemeral port, and its root                                                   | Absent                            |
+| `csrf`                    | Administration token, sent as `x-sim-csrf`; also in `state()` and status                              | Same                              |
+| `portalToken`             | The `__RequestVerificationToken` value portal forms send                                              | Absent                            |
+| `appsToken`               | Token the apps pages send                                                                             | Equals the main page token        |
 
 A client that sends neither `Sec-Fetch-Site` nor `Origin` (Node `fetch`, `connectRuntime`) uses `/_sim/api`
 on the portal origin with `csrf`; browsers use the separate origins
@@ -275,7 +292,7 @@ try {
 `contactId` for an anonymous visitor (membership roles are the default). `timeoutMs` (0–300000, default
 30000; 0 = none) bounds each request. Methods: `session()`, `signIn(contactId, { roles })`, `signOut()`,
 `setRoles(rolesOrNull)`, `request(path, fetchOptions)`, `json(path, { method, body, headers, signal })`
-(returns `{ status, traceId, body }`) and `close()`. Web API writes get the verification header
+(returns `{ status, traceId, body }`), `witness({ tables })` and `close()`. Web API writes get the verification header
 automatically; identity changes and `close()` refuse while the visitor has pending requests. Requests are
 confined to portal paths on loopback, cannot override identity headers and refuse live runtime execution.
 Session descriptions omit cookie values.
@@ -293,8 +310,8 @@ is not platform parity evidence.
 
 `await resolveCatalogue({ config }, processEnv)` returns `sourceRoot`, each site's `sourceDir`, effective
 Solution roots, Mirage port and state file, and provenance; `paqvilo lense list --json` shows the same
-under `resolved`. The project template's `node editor-workspace.mjs` builds `portal.code-workspace` from
-it. Worktree setup: [configuration](configuration.md#personal-settings-and-worktrees).
+under `resolved`. The demo project's `node editor-workspace.mjs` (`examples/project`) builds
+`portal.code-workspace` from it. Worktree setup: [configuration](configuration.md#personal-settings-and-worktrees).
 
 ## Reference comparison
 

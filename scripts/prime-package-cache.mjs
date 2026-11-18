@@ -5,6 +5,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { CHILD_HANG_GUARD_MS } from './smoke-process.mjs';
+import { answerHelp } from './script-help.mjs';
 
 export function cacheSpecs(lock, example) {
   return [
@@ -101,4 +102,13 @@ function prepareConsumerCache(preparation, npmCli) {
   );
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  answerHelp(process.argv.slice(2), {
+    name: 'prime-package-cache',
+    usage: `Usage: npm run cache:package   (node scripts/prime-package-cache.mjs under npm)
+Adds the locked packages and the archives a fresh consumer install resolves to the npm cache, so npm run release:smoke
+installs offline. Contacts the npm registry; writes the npm cache and a temporary .paqvilo/distribution/cache-*
+directory (PAQVILO_KEEP_WORK=1 keeps it). Takes no options; --help prints this help.`,
+  });
+  main();
+}

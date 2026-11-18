@@ -213,20 +213,14 @@ test('rejects invalid values with precise messages', () => {
       { serviceProtection: { requestsPer300s: 0 } },
       /dataverse\.serviceProtection\.requestsPer300s must be an integer from 1/,
     ],
-    [
-      { serviceProtection: { requestsPer300s: 10, extra: 1 } },
-      /dataverse\.serviceProtection\.extra is not a supported setting/,
-    ],
+    [{ serviceProtection: { requestsPer300s: 10, extra: 1 } }, /Unknown dataverse\.serviceProtection key 'extra'/],
   ];
   for (const [value, pattern] of cases) assert.throws(() => dataverseSettings(value), pattern, JSON.stringify(value));
 });
 
 test('unknown top-level keys are rejected', () => {
-  assert.throws(() => dataverseSettings({ portt: 80 }), /dataverse\.portt is not a supported setting/);
-  assert.throws(
-    () => dataverseSettings({ portt: 80 }, 'mirage.dataverse'),
-    /mirage\.dataverse\.portt is not a supported setting/,
-  );
+  assert.throws(() => dataverseSettings({ portt: 80 }), /Unknown dataverse key 'portt'/);
+  assert.throws(() => dataverseSettings({ portt: 80 }, 'mirage.dataverse'), /Unknown mirage\.dataverse key 'portt'/);
 });
 
 test('application secrets are never accepted from configuration', () => {
@@ -394,10 +388,7 @@ test('federatedCredentials default to the token-exchange audience and need exact
     () => bad([{ issuer: 'not a url', subject: 's' }]),
     /federatedCredentials\[0\]\.issuer must be an http\(s\) URL/,
   );
-  assert.throws(
-    () => bad([{ issuer: ISSUER, subject: 's', extra: 1 }]),
-    /federatedCredentials\[0\]\.extra is not a supported setting/,
-  );
+  assert.throws(() => bad([{ issuer: ISSUER, subject: 's', extra: 1 }]), /federatedCredentials\[0\] key 'extra'/);
   assert.throws(() => bad({}), /federatedCredentials must be an array/);
 });
 
@@ -445,10 +436,7 @@ test('federatedIssuers hold public JWKS only; auditing and tds validate', () => 
     () => dataverseSettings({ tds: { port: 70000 } }),
     /dataverse\.tds\.port must be an integer from 0 to 65535/,
   );
-  assert.throws(
-    () => dataverseSettings({ tds: { enabled: true, host: 'x' } }),
-    /dataverse\.tds\.host is not a supported setting/,
-  );
+  assert.throws(() => dataverseSettings({ tds: { enabled: true, host: 'x' } }), /Unknown dataverse\.tds key 'host'/);
 });
 
 test('pluginTimeoutSeconds defaults to the 2-minute sandbox limit and accepts whole seconds from 1 to 3600', () => {
@@ -474,7 +462,7 @@ test('managed identity endpoint modes are validated and survive configuration no
     [true, /dataverse\.managedIdentity must be an object$/],
     [[], /dataverse\.managedIdentity must be an object$/],
     [{ mode: 'remote' }, /dataverse\.managedIdentity\.mode must be appservice, imds or arc$/],
-    [{ unknown: true }, /dataverse\.managedIdentity\.unknown is not a supported setting$/],
+    [{ unknown: true }, /Unknown dataverse\.managedIdentity key 'unknown'$/],
   ])
     assert.throws(() => dataverseSettings({ managedIdentity }), message);
 });

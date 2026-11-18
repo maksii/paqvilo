@@ -1,0 +1,298 @@
+{
+  "scope": "One native Dataverse Web API v9.2 capture of the composed contact fullname and yomifullname on a developer environment (fullnameconventioncode 1), as a System Administrator application user. Two throwaway contacts with invented names were created, updated and deleted (404 afterwards); a lead was not captured because the environment has no lead table. Host and record ids are omitted; bodies keep only the name columns.",
+  "capturedAt": "2026-11-18",
+  "rawSha256": "3ce49ec5fb59a230cee1c72fc5ba0fe7def09d5a7aaabeb8572f8bc3d38bdd04",
+  "steps": [
+    {
+      "label": "organization convention",
+      "method": "GET",
+      "status": 200,
+      "body": {
+        "value": [
+          {
+            "fullnameconventioncode": 1
+          }
+        ]
+      }
+    },
+    {
+      "label": "create contact lastname only",
+      "method": "POST",
+      "request": {
+        "lastname": "Pqfn Zeta"
+      },
+      "status": 201,
+      "body": {
+        "yomimiddlename": null,
+        "lastname": "Pqfn Zeta",
+        "firstname": null,
+        "fullname": "Pqfn Zeta",
+        "yomifirstname": null,
+        "yomifullname": "Pqfn Zeta",
+        "middlename": null,
+        "yomilastname": null
+      }
+    },
+    {
+      "label": "read after create",
+      "method": "GET",
+      "status": 200,
+      "body": {
+        "yomimiddlename": null,
+        "lastname": "Pqfn Zeta",
+        "firstname": null,
+        "fullname": "Pqfn Zeta",
+        "yomifirstname": null,
+        "yomifullname": "Pqfn Zeta",
+        "middlename": null,
+        "yomilastname": null
+      }
+    },
+    {
+      "label": "patch firstname",
+      "method": "PATCH",
+      "request": {
+        "firstname": "Ivo"
+      },
+      "status": 200,
+      "body": {
+        "yomimiddlename": null,
+        "lastname": "Pqfn Zeta",
+        "firstname": "Ivo",
+        "fullname": "Ivo Pqfn Zeta",
+        "yomifirstname": null,
+        "yomifullname": "Ivo Pqfn Zeta",
+        "middlename": null,
+        "yomilastname": null
+      }
+    },
+    {
+      "label": "read after firstname",
+      "method": "GET",
+      "status": 200,
+      "body": {
+        "yomimiddlename": null,
+        "lastname": "Pqfn Zeta",
+        "firstname": "Ivo",
+        "fullname": "Ivo Pqfn Zeta",
+        "yomifirstname": null,
+        "yomifullname": "Ivo Pqfn Zeta",
+        "middlename": null,
+        "yomilastname": null
+      }
+    },
+    {
+      "label": "patch middlename",
+      "method": "PATCH",
+      "request": {
+        "middlename": "Quill"
+      },
+      "status": 200,
+      "body": {
+        "yomimiddlename": null,
+        "lastname": "Pqfn Zeta",
+        "firstname": "Ivo",
+        "fullname": "Ivo Pqfn Zeta",
+        "yomifirstname": null,
+        "yomifullname": "Ivo Pqfn Zeta",
+        "middlename": "Quill",
+        "yomilastname": null
+      }
+    },
+    {
+      "label": "read after middlename",
+      "method": "GET",
+      "status": 200,
+      "body": {
+        "yomimiddlename": null,
+        "lastname": "Pqfn Zeta",
+        "firstname": "Ivo",
+        "fullname": "Ivo Pqfn Zeta",
+        "yomifirstname": null,
+        "yomifullname": "Ivo Pqfn Zeta",
+        "middlename": "Quill",
+        "yomilastname": null
+      }
+    },
+    {
+      "label": "patch fullname directly",
+      "method": "PATCH",
+      "request": {
+        "fullname": "Supplied Override"
+      },
+      "status": 200,
+      "body": {
+        "yomimiddlename": null,
+        "lastname": "Pqfn Zeta",
+        "firstname": "Ivo",
+        "fullname": "Ivo Pqfn Zeta",
+        "yomifirstname": null,
+        "yomifullname": "Ivo Pqfn Zeta",
+        "middlename": "Quill",
+        "yomilastname": null
+      }
+    },
+    {
+      "label": "read after fullname patch",
+      "method": "GET",
+      "status": 200,
+      "body": {
+        "yomimiddlename": null,
+        "lastname": "Pqfn Zeta",
+        "firstname": "Ivo",
+        "fullname": "Ivo Pqfn Zeta",
+        "yomifirstname": null,
+        "yomifullname": "Ivo Pqfn Zeta",
+        "middlename": "Quill",
+        "yomilastname": null
+      }
+    },
+    {
+      "label": "create contact first+last+supplied fullname+yomi",
+      "method": "POST",
+      "request": {
+        "firstname": "Ana",
+        "lastname": "Pqfn Omega",
+        "fullname": "Someone Else",
+        "yomifirstname": "Yana",
+        "yomilastname": "Yomega"
+      },
+      "status": 201,
+      "body": {
+        "yomimiddlename": null,
+        "lastname": "Pqfn Omega",
+        "firstname": "Ana",
+        "fullname": "Ana Pqfn Omega",
+        "yomifirstname": "Yana",
+        "yomifullname": "Yana Yomega",
+        "middlename": null,
+        "yomilastname": "Yomega"
+      }
+    },
+    {
+      "label": "read second",
+      "method": "GET",
+      "status": 200,
+      "body": {
+        "yomimiddlename": null,
+        "lastname": "Pqfn Omega",
+        "firstname": "Ana",
+        "fullname": "Ana Pqfn Omega",
+        "yomifirstname": "Yana",
+        "yomifullname": "Yana Yomega",
+        "middlename": null,
+        "yomilastname": "Yomega"
+      }
+    },
+    {
+      "label": "lead table exists",
+      "method": "GET",
+      "status": 404,
+      "body": {
+        "error": {
+          "code": "0x80060888",
+          "message": "EntityMetadata With Id = LogicalName='lead' does not exist."
+        }
+      }
+    },
+    {
+      "label": "delete contacts",
+      "method": "DELETE",
+      "status": 400,
+      "body": {
+        "error": {
+          "code": "0x80040265",
+          "message": "CO business create/delete blocked: projection maintenance is not qualified."
+        }
+      }
+    },
+    {
+      "label": "read deleted contacts",
+      "method": "GET",
+      "status": 200,
+      "body": {}
+    },
+    {
+      "label": "delete contacts",
+      "method": "DELETE",
+      "status": 400,
+      "body": {
+        "error": {
+          "code": "0x80040265",
+          "message": "CO business create/delete blocked: projection maintenance is not qualified."
+        }
+      }
+    },
+    {
+      "label": "read deleted contacts",
+      "method": "GET",
+      "status": 200,
+      "body": {}
+    },
+    {
+      "label": "patch yomilastname only",
+      "method": "PATCH",
+      "request": {
+        "yomilastname": "Yzeta"
+      },
+      "status": 200,
+      "body": {
+        "lastname": "Pqfn Zeta",
+        "firstname": "Ivo",
+        "fullname": "Ivo Pqfn Zeta",
+        "yomifirstname": null,
+        "yomifullname": "Yzeta",
+        "middlename": "Quill",
+        "yomilastname": "Yzeta"
+      }
+    },
+    {
+      "label": "read after yomilastname",
+      "method": "GET",
+      "status": 200,
+      "body": {
+        "lastname": "Pqfn Zeta",
+        "firstname": "Ivo",
+        "fullname": "Ivo Pqfn Zeta",
+        "yomifirstname": null,
+        "yomifullname": "Yzeta",
+        "middlename": "Quill",
+        "yomilastname": "Yzeta"
+      }
+    },
+    {
+      "label": "delete contact (custom plug-in bypass)",
+      "method": "DELETE",
+      "status": 204,
+      "body": null
+    },
+    {
+      "label": "read deleted contact",
+      "method": "GET",
+      "status": 404,
+      "body": {
+        "error": {
+          "code": "0x80040217",
+          "message": "Entity 'contact' With Id = a610d54f-8ae3-f111-84e8-7c1e52205ba2 Does Not Exist"
+        }
+      }
+    },
+    {
+      "label": "delete contact (custom plug-in bypass)",
+      "method": "DELETE",
+      "status": 204,
+      "body": null
+    },
+    {
+      "label": "read deleted contact",
+      "method": "GET",
+      "status": 404,
+      "body": {
+        "error": {
+          "code": "0x80040217",
+          "message": "Entity 'contact' With Id = 339f0456-8ae3-f111-84e8-7c1e52205ba2 Does Not Exist"
+        }
+      }
+    }
+  ]
+}

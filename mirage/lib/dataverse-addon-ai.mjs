@@ -716,4 +716,27 @@ function install(api) {
   }
 }
 
-export const EXTENSION = { name: 'dataverse-addon-ai', install };
+/** Capability record for the capability registry; dataverse-extensions.mjs adds the operations install registered. */
+function describe() {
+  return {
+    name: 'dataverse-addon-ai',
+    version: 1,
+    kind: 'dataverse-extension',
+    level: 'contract',
+    reason:
+      'No model runs: the capability probes answer guessed values and the runtime messages answer the documented AI error unless a pack handler replaces them.',
+    operations: [
+      {
+        name: 'AddToFeedbackLoop',
+        level: 'behaviour',
+        reason: 'Creates the feedback-loop row through the record handlers as the caller.',
+      },
+    ],
+    requires: [],
+    principal: 'caller',
+    stateOwner: 'store',
+    lifecycle: 'per-request',
+  };
+}
+
+export const EXTENSION = { name: 'dataverse-addon-ai', install, describe };

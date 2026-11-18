@@ -7,6 +7,26 @@ const bindings = new WeakMap();
 const objectSources = new WeakMap();
 const PROVENANCE_ATTRIBUTE = 'data-paqvilo-source';
 
+// What the toolkit adds to rendered portal output, shared by every live-versus-local comparison. Provenance annotations
+// (data-paqvilo-source, data-paqvilo-script) sit on portal elements: the attribute is ignored and the element kept.
+// Any other data-paqvilo-* attribute marks an element the toolkit injected (runtime and client scripts, form
+// configuration, frame readiness, the PCF debugger), and data-sim-* attributes are local runtime annotations.
+// Plain data, so in-page snapshot functions (page.evaluate) can receive the same definition.
+export const TOOLKIT_MARKUP = Object.freeze({
+  attributePattern: '^data-(?:paqvilo|sim)-',
+  elementPattern: '^data-paqvilo-',
+  annotations: Object.freeze([PROVENANCE_ATTRIBUTE, 'data-paqvilo-script']),
+});
+const toolkitAttribute = new RegExp(TOOLKIT_MARKUP.attributePattern, 'i'),
+  toolkitElement = new RegExp(TOOLKIT_MARKUP.elementPattern, 'i');
+/** True for an attribute only the toolkit adds to rendered markup. */
+export const isToolkitAttribute = (name) => toolkitAttribute.test(name);
+/** True for an element the toolkit injected, given its attribute names. */
+export const isToolkitElement = (names) =>
+  names.some((name) => toolkitElement.test(name) && !TOOLKIT_MARKUP.annotations.includes(name.toLowerCase()));
+/** True for a response header only the local runtime sends: diagnostics, provenance, script proof and trace id. */
+export const isToolkitHeader = (name) => /^x-(?:sim-|paqvilo-|trace-id$)/i.test(name);
+
 export function scriptLineStarts(text, maxLines = 16384) {
   const lineStarts = [0];
   let truncated = false;

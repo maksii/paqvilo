@@ -14,7 +14,7 @@ export function modelDrivenActionsUi(data) {
   const sheet = new CSSStyleSheet();
   sheet.replaceSync(`
     .actions-panel{position:fixed;left:12px;bottom:68px;width:650px;max-width:calc(100vw - 24px);max-height:calc(100dvh - 92px);overflow:auto;padding:14px;pointer-events:auto;background:white;border:1px solid #c8c8c8;border-radius:6px;box-shadow:0 4px 18px #0003}
-    .actions-panel[hidden],[data-actions-hidden]{display:none!important}.actions-bar-identity{position:fixed;left:12px;bottom:64px;max-width:calc(100vw - 24px);padding:8px;background:#fff4ce;color:#6b4d00;border-radius:4px;pointer-events:auto;display:flex;align-items:center;gap:8px}.actions-bar-identity[hidden]{display:none}.actions-head,.actions-toolbar,.actions-item,.actions-buttons{display:flex;align-items:center;gap:8px}.actions-head h2{font-size:16px;margin:0;flex:1}.actions-tabs{display:flex;gap:6px;margin:12px 0}.actions-tabs button[aria-pressed=true]{background:#deecf9;border-color:#0078d4}.actions-panel input,.actions-panel textarea,.actions-panel select{font:inherit;color:inherit;box-sizing:border-box;padding:7px;border:1px solid #a19f9d;border-radius:3px;min-width:0}.actions-search{width:100%}.actions-toolbar{margin:8px 0}.actions-toolbar label{display:flex;gap:5px;align-items:center}.actions-list{max-height:34dvh;overflow:auto;border-block:1px solid #eee;margin:10px 0}.actions-group h3{position:sticky;top:0;background:white;margin:0;padding:7px 0;font-size:13px}.actions-item{border-top:1px solid #eee;padding:7px 0;align-items:flex-start}.actions-item>button:first-child{flex:1;text-align:left;border:0;background:transparent;padding:3px}.actions-item small{display:block;color:#616161;font-size:12px}.actions-star{flex:none;min-width:32px}.actions-detail{padding:10px;background:#f7f9fb;border-radius:4px}.actions-detail h3{margin:0 0 5px}.actions-input{display:flex;flex-direction:column;gap:4px;margin:9px 0}.actions-input:has(input[type=checkbox]){flex-direction:row;align-items:center}.actions-reason{color:#8a4d00;font-size:12px}.actions-result{margin-top:12px;padding-top:10px;border-top:1px solid #c8c8c8}.actions-result h3{margin:0;font-size:14px}.actions-result p{white-space:pre-wrap;overflow-wrap:anywhere}.actions-table-wrap{max-height:32dvh;overflow:auto}.actions-result table{border-collapse:collapse;width:100%;font-size:12px}.actions-result th,.actions-result td{border-bottom:1px solid #eee;padding:6px;text-align:left;vertical-align:top;white-space:pre-wrap;overflow-wrap:anywhere;max-width:360px}.actions-result pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:28dvh;overflow:auto;font:12px/1.5 Consolas,monospace}.actions-identity{padding:9px;background:#fff4ce;color:#6b4d00;margin-top:8px;border-radius:4px}.actions-identity button{margin-left:8px}.actions-identity:empty{display:none}.actions-users{max-height:28dvh;overflow:auto}.actions-users button{display:block;width:100%;text-align:left;margin:5px 0}.actions-code{width:100%;min-height:180px;font:12px/1.5 Consolas,monospace!important;tab-size:2;resize:vertical}.actions-panel :focus-visible{outline:2px solid #0078d4;outline-offset:2px}.actions-status{min-height:20px;color:#005a9e;font-size:12px}.actions-muted{color:#616161;font-size:12px}@media(max-width:650px){.actions-panel{left:6px;bottom:70px;max-width:calc(100vw - 12px);padding:11px}.actions-toolbar,.actions-buttons{flex-wrap:wrap}.actions-list{max-height:29dvh}.actions-panel input:not([type=checkbox]){width:100%}}
+    .actions-panel[hidden],[data-actions-hidden]{display:none!important}.actions-bar-identity{position:fixed;left:12px;bottom:64px;max-width:calc(100vw - 24px);padding:8px;background:#fff4ce;color:#6b4d00;border-radius:4px;pointer-events:auto;display:flex;align-items:center;gap:8px}.actions-bar-identity[hidden]{display:none}.actions-head,.actions-toolbar,.actions-item,.actions-buttons{display:flex;align-items:center;gap:8px}.actions-head h2{font-size:16px;margin:0;flex:1}.actions-tabs{display:flex;gap:6px;margin:12px 0}.actions-tabs button[aria-pressed=true]{background:#deecf9;border-color:#0078d4}.actions-panel input,.actions-panel textarea,.actions-panel select{font:inherit;color:inherit;box-sizing:border-box;padding:7px;border:1px solid #a19f9d;border-radius:3px;min-width:0}.actions-search{width:100%}.actions-toolbar{margin:8px 0}.actions-toolbar label{display:flex;gap:5px;align-items:center}.actions-list{border-block:1px solid #eee;margin:10px 0}.actions-inline{margin:0 0 8px}.actions-unavailable>summary{cursor:pointer;padding:7px 0;font-size:13px;font-weight:600}.actions-group>h3{position:sticky;top:0;background:white;margin:0;padding:7px 0;font-size:13px}.actions-item{border-top:1px solid #eee;padding:7px 0;align-items:flex-start}.actions-item>button:first-child{flex:1;text-align:left;border:0;background:transparent;padding:3px}.actions-item small{display:block;color:#616161;font-size:12px}.actions-star{flex:none;min-width:32px}.actions-detail{padding:10px;background:#f7f9fb;border-radius:4px}.actions-detail h3{margin:0 0 5px}.actions-input{display:flex;flex-direction:column;gap:4px;margin:9px 0}.actions-input:has(input[type=checkbox]){flex-direction:row;align-items:center}.actions-reason{color:#8a4d00;font-size:12px}.actions-result{margin-top:12px;padding-top:10px;border-top:1px solid #c8c8c8}.actions-result h3{margin:0;font-size:14px}.actions-result p{white-space:pre-wrap;overflow-wrap:anywhere}.actions-table-wrap{max-height:32dvh;overflow:auto}.actions-result table{border-collapse:collapse;width:100%;font-size:12px}.actions-result th,.actions-result td{border-bottom:1px solid #eee;padding:6px;text-align:left;vertical-align:top;white-space:pre-wrap;overflow-wrap:anywhere;max-width:360px}.actions-result pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:28dvh;overflow:auto;font:12px/1.5 Consolas,monospace}.actions-identity{padding:9px;background:#fff4ce;color:#6b4d00;margin-top:8px;border-radius:4px}.actions-identity button{margin-left:8px}.actions-identity:empty{display:none}.actions-users{max-height:28dvh;overflow:auto}.actions-users button{display:block;width:100%;text-align:left;margin:5px 0}.actions-code{width:100%;min-height:180px;font:12px/1.5 Consolas,monospace!important;tab-size:2;resize:vertical}.actions-panel :focus-visible{outline:2px solid #0078d4;outline-offset:2px}.actions-status{min-height:20px;color:#005a9e;font-size:12px}.actions-muted{color:#616161;font-size:12px}@media(max-width:650px){.actions-panel{left:6px;bottom:70px;max-width:calc(100vw - 12px);padding:11px}.actions-toolbar,.actions-buttons{flex-wrap:wrap}.actions-panel input:not([type=checkbox]){width:100%}}
   `);
   root.adoptedStyleSheets = [...root.adoptedStyleSheets, sheet];
   const identitySheet = new CSSStyleSheet();
@@ -27,12 +27,12 @@ export function modelDrivenActionsUi(data) {
     shared = new CSSStyleSheet();
     shared.replaceSync(`
     .actions-panel{position:static;inset:auto;width:100%;max-width:none;max-height:none;overflow:visible;padding:0;border:0;border-radius:0;box-shadow:none;background:var(--bg);color:var(--fg)}
-    .actions-group h3{background:var(--bg)}.actions-detail{background:var(--tint)}.actions-panel .f[aria-pressed=true]{background:var(--primary);border-color:var(--primary);color:var(--on-primary)}
+    .actions-group>h3{background:var(--bg)}.actions-detail{background:var(--tint)}.actions-panel .f[aria-pressed=true]{background:var(--primary);border-color:var(--primary);color:var(--on-primary)}
     .actions-item>.actions-select{color:var(--fg)}.actions-item>.actions-select:hover{color:var(--link);background:var(--tint)}.actions-star{color:var(--fg)}
     .actions-panel input,.actions-panel textarea,.actions-panel select{background:var(--bg);color:var(--fg);border-color:var(--input-line);border-radius:var(--radius)}.actions-panel :focus-visible{outline-color:var(--primary)}
     .actions-item,.actions-list,.actions-result,.actions-result th,.actions-result td{border-color:var(--line)}.actions-item small,.actions-muted{color:var(--muted)}.actions-status{color:var(--link)}.actions-reason{color:var(--warn)}
     .actions-identity,.actions-bar-identity{background:var(--warn-bg);color:var(--fg);border-radius:var(--radius)}.actions-bar-identity{position:static;inset:auto;max-width:none;margin:6px 10px;padding:8px;border:1px solid var(--warn)}
-    .actions-list{max-height:30vh}.actions-panel .actions-table-wrap{max-height:25vh}.actions-head h2{font-size:14px}.actions-tabs{flex-wrap:wrap}.actions-toolbar,.actions-buttons{flex-wrap:wrap}
+    .actions-panel .actions-table-wrap{max-height:25vh}.actions-head h2{font-size:14px}.actions-tabs{flex-wrap:wrap}.actions-toolbar,.actions-buttons{flex-wrap:wrap}
   `);
     root.adoptedStyleSheets = [...root.adoptedStyleSheets, shared];
   }
@@ -98,7 +98,16 @@ export function modelDrivenActionsUi(data) {
     selectedCommand,
     actionSearch = '',
     actionFilter = 'all',
-    lastResultRequest;
+    lastResultRequest,
+    resultAction,
+    // The view (Actions, Identity or Custom) whose request produced the shown status and result.
+    resultView,
+    unavailableOpen = false;
+  // Actions whose page changes have a session-owned reversal; the reversal is offered on the result.
+  const UNDO_ACTIONS = {
+    'form:show-logical-names': 'form:clear-logical-names',
+    'form:god-mode': 'form:restore-overrides',
+  };
   const requests = new Map(),
     params = new Map(),
     drafts = new Map(),
@@ -193,20 +202,30 @@ export function modelDrivenActionsUi(data) {
       );
     }
   }
-  function renderResult(value) {
+  function renderResult(value, actionId = resultAction) {
     results.replaceChildren();
     results.hidden = !value;
     if (!value) {
       lastResultRequest = undefined;
+      resultAction = undefined;
       return;
     }
+    resultAction = actionId;
     const heading = make('div', null, 'actions-head'),
       title = make('h3', value.title || 'Action result');
     title.tabIndex = -1;
-    heading.append(
-      title,
-      button('Clear', () => renderResult(null)),
-    );
+    // Dismissing removes only this panel result; a page change it made is undone by its paired action, offered here.
+    const dismiss = button('Dismiss', () => {
+      renderResult(null);
+      status.textContent = '';
+    });
+    dismiss.setAttribute('aria-label', 'Dismiss result');
+    dismiss.title = 'Remove this result from the panel. Changes on the page stay.';
+    heading.append(title);
+    const undo = current.actions?.find((action) => action.id === UNDO_ACTIONS[actionId]);
+    if (undo && value.status === 'ok' && availability(undo).available)
+      heading.append(button(undo.label, () => void runAction(undo)));
+    heading.append(dismiss);
     results.append(heading);
     if (value.message) results.append(make('p', String(value.message)));
     if (Array.isArray(value.columns) && Array.isArray(value.rows)) appendResultTable(value);
@@ -310,11 +329,15 @@ export function modelDrivenActionsUi(data) {
     const request = requests.get(id);
     if (disposed || !request || location.origin !== current.origin) return;
     requests.delete(id);
+    resultView = request.view;
     if (request.kind === 'identity' && identityRequest === id && value?.identity) {
       identity = { active: Boolean(value.identity.active), label: value.identity.label ?? selectedUser?.label };
       renderIdentity();
     }
-    renderResult(value ?? { title: 'Action result', message: 'The action completed without a result.' });
+    renderResult(
+      value ?? { title: 'Action result', message: 'The action completed without a result.' },
+      request.actionId,
+    );
     lastResultRequest = id;
     if (value?.status === 'ok') status.textContent = 'Completed.';
     else if (value?.status === 'cancelled') status.textContent = 'Cancelled.';
@@ -322,9 +345,10 @@ export function modelDrivenActionsUi(data) {
     renderView();
     if (!panel.hidden) results.querySelector('h3')?.focus();
   }
-  async function dispatch(kind, label, invoke) {
+  async function dispatch(kind, label, invoke, actionId) {
     const id = requestId();
-    requests.set(id, { kind, label });
+    requests.set(id, { kind, label, actionId, view });
+    resultView = view;
     if (kind === 'identity') identityRequest = id;
     status.textContent = `Running ${label}…`;
     renderResult(null);
@@ -354,8 +378,12 @@ export function modelDrivenActionsUi(data) {
     if (!supported.available || busy()) return;
     const values = params.get(action.id) ?? {};
     remember(action.label);
-    return dispatch('action', action.label, (id) =>
-      globalThis.__paqviloModelAction?.({ token: current.token, requestId: id, action: action.id, params: values }),
+    return dispatch(
+      'action',
+      action.label,
+      (id) =>
+        globalThis.__paqviloModelAction?.({ token: current.token, requestId: id, action: action.id, params: values }),
+      action.id,
     );
   }
   function startIdentity(objectId) {
@@ -429,7 +457,7 @@ export function modelDrivenActionsUi(data) {
     search.setAttribute('aria-label', 'Find actions');
     search.value = actionSearch;
     const list = make('div', null, 'actions-list'),
-      detail = make('div');
+      detail = make('div', null, 'actions-inline');
     content.append(search);
     const controls = make('div', null, 'actions-toolbar');
     for (const [label, value] of [
@@ -449,7 +477,45 @@ export function modelDrivenActionsUi(data) {
       control.setAttribute('aria-pressed', String(value === actionFilter));
       controls.append(control);
     }
-    content.append(controls, list, detail);
+    content.append(controls, list);
+    // The selected action opens directly under its own row with its status and result, so what the click produced is
+    // next to what was clicked instead of after the whole list.
+    const showDetail = (action, row) => {
+      detail.replaceChildren();
+      actionForm(action, detail);
+      detail.append(status, waiting, results);
+      row.after(detail);
+    };
+    function actionRow(action) {
+      const row = make('div', null, 'actions-item'),
+        select = button(
+          action.label,
+          () => {
+            selectedAction = action.id;
+            if (!busy()) status.textContent = '';
+            showDetail(action, row);
+            detail.scrollIntoView?.({ block: 'nearest' });
+          },
+          'actions-select',
+        );
+      const support = availability(action);
+      select.append(
+        make('small', support.available ? action.description : support.reason || 'Unavailable on this page.'),
+      );
+      const favorite = button(
+        favorites.has(action.label) ? '★' : '☆',
+        () => {
+          favorites.has(action.label) ? favorites.delete(action.label) : favorites.add(action.label);
+          persistLabels();
+          draw();
+        },
+        'actions-star',
+      );
+      favorite.setAttribute('aria-label', `Favorite ${action.label}`);
+      favorite.setAttribute('aria-pressed', String(favorites.has(action.label)));
+      row.append(select, favorite);
+      return row;
+    }
     function draw() {
       list.replaceChildren();
       const term = search.value.toLocaleLowerCase(),
@@ -460,48 +526,48 @@ export function modelDrivenActionsUi(data) {
               (actionFilter === 'favorites' && favorites.has(action.label)) ||
               (actionFilter === 'recent' && recent.includes(action.label))),
         );
-      // Off a record form, form and record actions gather at the end under one heading instead of mixing with what works here.
-      const groupOf = (action) => (availability(action).needsRecord ? 'Needs a record form' : action.group);
-      const groups = [...new Set(entries.map(groupOf))].sort(
-        (left, right) => Number(left === 'Needs a record form') - Number(right === 'Needs a record form'),
-      );
-      for (const group of groups) {
+      // Groups show only what the current page supports, using the same requirement checks the action runner applies;
+      // the rest stays reachable, with each reason, in one collapsed group at the end.
+      const usable = entries.filter((action) => availability(action).available),
+        unusable = entries.filter((action) => !availability(action).available);
+      const rows = new Map();
+      for (const group of new Set(usable.map((action) => action.group))) {
         const section = make('section', null, 'actions-group');
         section.append(make('h3', group));
-        if (group === 'Needs a record form')
-          section.append(make('p', 'Open a record of this table (or any table) to use these.', 'actions-muted'));
-        for (const action of entries.filter((entry) => groupOf(entry) === group)) {
-          const row = make('div', null, 'actions-item'),
-            select = button(
-              action.label,
-              () => {
-                selectedAction = action.id;
-                detail.replaceChildren();
-                actionForm(action, detail);
-              },
-              'actions-select',
-            );
-          const support = availability(action);
-          select.append(
-            make('small', support.available ? action.description : support.reason || 'Unavailable on this page.'),
+        for (const action of usable.filter((entry) => entry.group === group)) {
+          const row = actionRow(action);
+          rows.set(action.id, row);
+          section.append(row);
+        }
+        list.append(section);
+      }
+      if (unusable.length) {
+        const section = make('details', null, 'actions-group actions-unavailable'),
+          summary = make('summary', `Not available here (${unusable.length})`);
+        section.open = unavailableOpen || Boolean(term) || unusable.some((action) => action.id === selectedAction);
+        section.addEventListener(
+          'toggle',
+          () => {
+            unavailableOpen = section.open;
+          },
+          { signal },
+        );
+        section.append(summary);
+        if (unusable.some((action) => availability(action).needsRecord))
+          section.append(
+            make('p', 'Open a record of this table (or any table) to use the form actions.', 'actions-muted'),
           );
-          const favorite = button(
-            favorites.has(action.label) ? '★' : '☆',
-            () => {
-              favorites.has(action.label) ? favorites.delete(action.label) : favorites.add(action.label);
-              persistLabels();
-              draw();
-            },
-            'actions-star',
-          );
-          favorite.setAttribute('aria-label', `Favorite ${action.label}`);
-          favorite.setAttribute('aria-pressed', String(favorites.has(action.label)));
-          row.append(select, favorite);
+        for (const action of unusable) {
+          const row = actionRow(action);
+          rows.set(action.id, row);
           section.append(row);
         }
         list.append(section);
       }
       if (!entries.length) list.append(make('p', 'No matching actions.', 'actions-muted'));
+      const action = current.actions?.find((entry) => entry.id === selectedAction);
+      if (action && rows.has(action.id)) showDetail(action, rows.get(action.id));
+      else detail.remove();
     }
     search.addEventListener(
       'input',
@@ -512,8 +578,6 @@ export function modelDrivenActionsUi(data) {
       { signal },
     );
     draw();
-    const action = current.actions?.find((entry) => entry.id === selectedAction);
-    if (action) actionForm(action, detail);
   }
   function renderIdentityView() {
     content.append(
@@ -704,6 +768,12 @@ export function modelDrivenActionsUi(data) {
     content.append(toolbar, form);
   }
   function renderView() {
+    // Status and results return to the panel foot; the Actions view moves them under the selected action again.
+    panel.append(status, waiting, results);
+    // A result belongs to the view that ran it; another view does not show it.
+    const here = resultView === undefined || resultView === view;
+    status.hidden = !here;
+    results.hidden = !here || !results.childElementCount;
     waiting.replaceChildren();
     if ([...requests.values()].some((request) => request.kind !== 'identity'))
       waiting.append(

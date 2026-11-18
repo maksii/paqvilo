@@ -1,3 +1,4 @@
+import { requiredArgument } from '../mirage/lib/required-argument.mjs';
 import { identityProviderSettings, identityProviderAssets } from '../mirage/lib/identity-provider-settings.mjs';
 // Configuration, from the most general to the most specific:
 //
@@ -17,6 +18,7 @@ import YAML from 'yaml';
 import { resolveLocalOverrides } from '../mirage/lib/local-overrides.mjs';
 import { detectFormat, portalSourceDir, unsupportedSourceLayout } from './portal-model.mjs';
 import { validateDebuggerMode } from './browser-profile.mjs';
+import { paqviloCommand } from './command-hint.mjs';
 import {
   validateCatalogue,
   normalizeCatalogue,
@@ -30,6 +32,10 @@ import {
 import { resolveCatalogueSettings } from '../mirage/lib/config-keys.mjs';
 // The contract setting parsers alone: reading a catalogue loads no provider runtime (mirage/lib/settings-contracts.mjs).
 import '../mirage/lib/settings-contracts.mjs';
+
+/** The command that lists the catalogue's sites and environments, as the user runs it here. */
+const listCommand = (configFile, opts) =>
+  paqviloCommand(['lense', 'list'], { script: 'list', config: configFile, cwd: opts.cwd });
 
 /** A deliberate configuration error with a stable `code`; scripts match on it and analyze reports it. */
 const configurationError = (message, code = 'configuration_error') => Object.assign(new Error(message), { code });
@@ -155,8 +161,13 @@ function readYamlFile(file) {
   try {
     return YAML.parse(fs.readFileSync(file, 'utf8')) ?? {};
   } catch (err) {
-    // YAML errors can contain private values, so only the bounded first line is exposed and the cause is not chained.
-    throw configurationError(`${path.basename(file)} is not valid YAML: ${err.message.split('\n')[0]}`);
+    // YAML errors quote file contents (a value may be a token), so only the reason code and position are exposed, as
+    // for a Mirage project file (mirage/lib/project-config.mjs), and the cause is not chained.
+    const at = err.linePos?.[0];
+    const where = [err.code ?? 'YAMLParseError', at && `at line ${at.line}, column ${at.col}`]
+      .filter(Boolean)
+      .join(' ');
+    throw configurationError(`${path.basename(file)} is not valid YAML (${where}). Fix the file.`);
   }
 }
 
@@ -322,18 +333,41 @@ function catalogueProvenance(sites, opts, settings, local) {
   };
 }
 
+/** The toolkit's sample catalogue: the site defaults of a --source run in a folder without a catalogue. */
+const SAMPLE_CATALOGUE = path.join(TOOL_ROOT, 'paqvilo.config.yml');
+
 /**
- * Reads the catalogue (all sites and environments) without selecting one.
- * @param {{config?: string, cwd?: string}} opts `cwd` is the working directory relative paths resolve against
+ * The one-line CONFIG_NOT_FOUND refusal of a catalogue that does not exist: an explicit --config file, or the working
+ * directory's paqvilo.config.yml, with the selectors the command accepts instead (`alternatives`).
+ */
+export function catalogueNotFound(file, { explicit = false, alternatives = '--config <catalogue>' } = {}) {
+  // An explicit file is named as the direct Mirage commands name a missing --config or --project file.
+  const message = explicit
+    ? `--config file not found: ${file}. Pass an existing file.`
+    : `No catalogue: ${file} does not exist. Run in the folder that holds paqvilo.config.yml, or pass ${alternatives}.`;
+  return Object.assign(new Error(message), { code: 'CONFIG_NOT_FOUND' });
+}
+
+/**
+ * Reads the catalogue (all sites and environments) without selecting one: --config, else `cwd`/paqvilo.config.yml;
+ * without either only a --source or --project selection without --site runs, on the sample catalogue's site defaults.
+ * @param {{config?: string, cwd?: string, source?: string, project?: string, site?: string}} opts `cwd` is the working directory relative
+ *   paths resolve against
  */
 export function loadCatalogue(opts = {}, processEnv = process.env) {
-  const localConfig = path.join(opts.cwd ?? process.cwd(), 'paqvilo.config.yml');
-  const configFile = path.resolve(
-    opts.config ?? (fs.existsSync(localConfig) ? localConfig : path.join(TOOL_ROOT, 'paqvilo.config.yml')),
-  );
+  const cwd = path.resolve(opts.cwd ?? process.cwd());
+  const localConfig = path.join(cwd, 'paqvilo.config.yml');
+  // Without a catalogue only a --source or Mirage --project run (no --site) borrows the sample's site defaults; anything
+  // else is refused.
+  let configFile = opts.config ? path.resolve(opts.config) : localConfig;
+  if (!opts.config && !fs.existsSync(localConfig)) {
+    if (!(opts.source || opts.project) || opts.site) throw catalogueNotFound(localConfig);
+    configFile = SAMPLE_CATALOGUE;
+  }
   const base = readYamlFile(configFile);
-  if (!base) throw Object.assign(new Error(`Config file not found: ${configFile}`), { code: 'CONFIG_NOT_FOUND' });
-  const configDir = path.dirname(configFile);
+  if (!base) throw catalogueNotFound(configFile, { explicit: true });
+  // The sample is never a project folder: its .env, personal config and state belong to the working directory.
+  const configDir = path.relative(configFile, SAMPLE_CATALOGUE) === '' ? cwd : path.dirname(configFile);
   const local = readYamlFile(path.join(configDir, 'paqvilo.config.local.yml'));
   const settings = readEnvSettings(configDir, processEnv);
   const root = catalogueRoot(base, local ?? {}, settings.values);
@@ -385,7 +419,13 @@ export function isExtract(dir) {
  * @param {object|null|undefined} raw the site's `mirage` mapping merged over `defaults.mirage`
  * @param {{configDir: string, sourceRoot: string}} where
  */
-export function resolveMirageConfig(raw, { configDir, sourceRoot, sourceDir = sourceRoot }) {
+export function resolveMirageConfig(
+  raw,
+  { configDir, sourceRoot, sourceDir = sourceRoot } = requiredArgument(
+    'resolveMirageConfig(raw, where)',
+    'where: an object with the catalogue folder (configDir) and the portal checkout root (sourceRoot)',
+  ),
+) {
   const value = isPlainObject(raw) ? raw : {};
   if (value.presetConfiguration !== undefined && !['data-only', 'apply'].includes(value.presetConfiguration))
     throw configurationError('mirage.presetConfiguration must be data-only or apply');
@@ -423,7 +463,9 @@ function selectedConfigSite(catalogue, opts, initial) {
   const site = Object.hasOwn(sites, siteName) ? sites[siteName] : null;
   if (!site)
     throw Object.assign(
-      new Error(`Unknown site "${siteName}". Known sites: ${names.join(', ')}. Run "npm run list" to see them.`),
+      new Error(
+        `Unknown site "${siteName}". Known sites: ${names.join(', ')}. Run "${listCommand(configFile, opts)}" to see them.`,
+      ),
       { code: initial && opts.site !== undefined ? 'invalid_argument' : 'configuration_error' },
     );
   let siteFrom;
@@ -433,7 +475,7 @@ function selectedConfigSite(catalogue, opts, initial) {
   if (mirageOnlySite(site))
     throw Object.assign(
       new Error(
-        `Site "${siteName}" is a ${site.mirage.runtime.kind} Mirage site without a portal: it is not a Lense target. Start it with "npx paqvilo mirage dev --site ${siteName}".`,
+        `Site "${siteName}" is a ${site.mirage.runtime.kind} Mirage site without a portal: it is not a Lense target. Start it with "${paqviloCommand(['mirage', 'dev'], { config: configFile, cwd: opts.cwd, extra: ['--site', siteName] })}".`,
       ),
       { code: 'mirage_only_site' },
     );
@@ -487,7 +529,7 @@ function selectedConfigEnvironment(siteName, site, opts, settings, configFile, r
   if (!env?.url)
     throw Object.assign(
       new Error(
-        `Unknown environment "${envName}" for site "${siteName}". Known: ${envNames.join(', ') || '(none)'}. Run "npm run list" to see them.`,
+        `Unknown environment "${envName}" for site "${siteName}". Known: ${envNames.join(', ') || '(none)'}. Run "${listCommand(configFile, opts)}" to see them.`,
       ),
       { code: initial && opts.env !== undefined ? 'invalid_argument' : 'configuration_error' },
     );
@@ -510,6 +552,11 @@ function selectedConfigSource(siteName, site, opts, settings, configDir, { valid
   const sourceDir = portalSourceDir(configuredSourceDir);
   if (!sourceDir)
     throw configurationError(`Site "${siteName}" has no "source" folder configured`, 'source_not_configured');
+  if (checkSource && !validSources.has(sourceDir) && !fs.existsSync(sourceDir))
+    throw configurationError(
+      `"${sourceDir}" (source of site "${siteName}") does not exist: create or clone the portal export there, or point the site's source (sites.${siteName}.source, sourceRoot or --source) at an existing export`,
+      'source_not_portal_extract',
+    );
   if (checkSource && !validSources.has(sourceDir) && !isExtract(sourceDir)) {
     // A layout the toolkit cannot read is named, so it is never treated as an empty portal.
     const layout = unsupportedSourceLayout(sourceDir);
@@ -666,7 +713,7 @@ function chooseAllDevInitial(catalogue, initial, targets) {
   if (!initial && mirageOnly.length === Object.keys(catalogue.sites).length && mirageOnly.length)
     throw Object.assign(
       new Error(
-        `Every configured site is a Mirage site without a portal (${mirageOnly.join(', ')}): there is no Lense target. Start one with "npx paqvilo mirage dev --site <site>".`,
+        `Every configured site is a Mirage site without a portal (${mirageOnly.join(', ')}): there is no Lense target. Start one with "${paqviloCommand(['mirage', 'dev'], { config: catalogue.configFile, extra: ['--site', '<site>'] })}".`,
       ),
       { code: 'mirage_only_site' },
     );

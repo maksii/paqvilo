@@ -129,5 +129,9 @@ test('deep path and later extensions keep their declared solution ownership', as
   const names = plan.actions.map((a) => a.key);
   assert.equal(names.length, new Set(names).size);
   assert.ok(plan.actions.filter((a) => a.kind === 'key').every((a) => a.solution));
-  assert.ok(manifest.scope.remaining.includes('Named forms/views'));
+  // The scope statement describes the example as it is: forms, portal, plug-ins and seed data have their own tools.
+  assert.ok(manifest.scope.remaining.includes('named forms/views'));
+  for (const folder of ['forms/', 'portal-security/', 'portal-harness/', 'plugins/', 'data/'])
+    assert.ok(manifest.scope.remaining.includes(folder), folder);
+  assert.doesNotMatch(manifest.scope.remaining, /subsequent implementation increments/);
 });

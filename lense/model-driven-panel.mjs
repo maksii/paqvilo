@@ -32,7 +32,10 @@ export function modelDrivenPanelData(
     path: item.source,
     url: item.paths?.[0],
     count: item.currentRevisionApplied,
-    note: item.currentRevisionApplied ? `applied on revision ${state.revision}` : 'not observed on this revision',
+    note: [
+      item.currentRevisionApplied ? `applied on revision ${state.revision}` : 'not observed on this revision',
+      ...(facts.get(item.name)?.noBaseline ? ['no Git baseline (ignored)'] : []),
+    ].join(' · '),
     canPause: !item.unbound,
     canDiff: !item.unbound && /(?:javascript|ecmascript|text\/css)/i.test(item.mime ?? ''),
     paused: Boolean(item.paused),
@@ -540,8 +543,12 @@ export async function createModelDrivenPanelSources(imported) {
       for (const asset of assets) {
         const before = baseline.available ? baseline.show(asset.file) : null;
         const bytes = native.get(asset.name);
+        // Edited means what Git reports as changed (modified, added or untracked), as portal Lense marks it. A file Git
+        // ignores is absent from HEAD without being a change: it has no baseline to compare with.
+        const edited = changed.has(path.resolve(asset.file));
         state.facts.set(asset.name, {
-          edited: baseline.available ? before === null || changed.has(path.resolve(asset.file)) : undefined,
+          edited: baseline.available ? edited : undefined,
+          noBaseline: baseline.available && before === null && !edited,
           canDiff: bytes !== undefined || baseline.available,
           differs: bytes !== undefined ? !bytes.equals(asset.data) : null,
           baseline,
@@ -586,6 +593,8 @@ export async function createModelDrivenPanelSources(imported) {
           [...state.facts.values()].some((fact) => fact.edited === undefined))
       )
         throw new Error('Changed scope requires a readable Git HEAD for every selected source root.');
+      if (value === 'changed' && [...state.facts.values()].some((fact) => fact.noBaseline))
+        throw new Error('Changed scope needs a Git baseline: some selected sources are ignored by Git.');
       state.scope = value;
     },
     observe(name, bytes) {

@@ -1,5 +1,11 @@
 import { createSimulator } from 'paqvilo/mirage';
 import { fileURLToPath } from 'node:url';
+import { cli } from '../cli.mjs';
+cli(`Usage: node code-app/mirage.mjs   (npm run code-app:mirage)
+
+Starts a dry-run Mirage with this project's solution and the code app registered. Configured by environment:
+  MIRAGE_PORT    Mirage port (default 8787)
+  CODE_APP_PORT  port of the code app server (default 5199)`);
 const root = fileURLToPath(new URL('../', import.meta.url));
 const sim = await createSimulator({
   projectRoot: root,

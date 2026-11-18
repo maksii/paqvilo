@@ -158,7 +158,10 @@ export default { id: 'fixture', name: 'Fixture', description: 'Invented data', m
   assert.deepEqual(after.simulator.contactRoles, [...before.simulator.contactRoles, { contactId, roleId }]);
   assert.equal((await generate({ 'materialize-persona-memberships': true, source })).addedMemberships, 0);
   const unchanged = await fs.readFile(stateFile, 'utf8');
-  await assert.rejects(generate({}, ['generate', 'unexpected']), /unexpected positional arguments/);
+  await assert.rejects(
+    generate({}, ['generate', 'unexpected']),
+    /Unexpected argument "unexpected"; data takes one action/,
+  );
   await assert.rejects(generate({ rows: '3' }), /--rows is supported only by data scaffold/);
   assert.equal(await fs.readFile(stateFile, 'utf8'), unchanged, 'rejected arguments cannot write state');
   for (const [invalid, message] of [

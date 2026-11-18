@@ -7,14 +7,16 @@ the same inventory. Exported registrations do not prove which steps are active o
 inventory of native platform handlers: native logic absent from the export needs its own project model or trusted
 implementation.
 
-"As recorded natively" below marks behaviour measured on a live organization; other behaviour follows Microsoft's
-documented contracts or is a stated local model.
+"As recorded natively" below marks behaviour taken from captures on a live organization (`observation` evidence, see
+[execution boundaries](#execution-boundaries)); other behaviour follows Microsoft's documented contracts or is a stated
+local model.
 
 ## Execution modes
 
 Each enabled step runs one implementation. A `/_sim/` choice, a trusted pack handler or a web hook endpoint takes
-precedence over the assembly's uploaded content; without content a trusted original-CLR descriptor runs it; otherwise
-the step is a placeholder.
+precedence over the assembly's uploaded content; without content a trusted original-CLR descriptor runs it when its
+`defaultMode` is `clr` or **Execute trusted original CLR assembly** is chosen in `/_sim/`; otherwise the step is a
+placeholder.
 
 | Mode            | Local behaviour                                                                                         |
 | --------------- | ------------------------------------------------------------------------------------------------------- |
@@ -26,7 +28,7 @@ the step is a placeholder.
 
 - **Uploaded content runs by default.** A step whose assembly has content (uploaded through the Web API, SOAP or the
   Plug-in Registration Tool, from a `pluginpackage`, or read from a Solution export's `.dll`) runs it in the CLR host,
-  as the platform runs every registered plug-in. See [uploaded assemblies](#uploaded-assemblies-run-like-native).
+  as the platform runs every registered plug-in. See [uploaded assemblies](#uploaded-assemblies-run-by-default).
 - **An exported step without bytes** (a Power Pages export carries none) runs original code only through a trusted
   `pluginRuntimes` descriptor ([original assembly registration](#original-assembly-registration)). Discovery alone
   never enables a DLL; missing CLR prerequisites do not prevent mocks or disabled choices.
@@ -45,25 +47,26 @@ the Solution's list. A disabled step stops running, a deleted step is removed, a
 takes its pipeline position (stage, then rank) like a Solution step. Mirage stores plug-in packages, assemblies, types,
 steps and images with the `sdkmessage` and `sdkmessagefilter` rows they reference.
 
-**Validation** answers with the native codes:
+**Validation** answers with these codes, taken from native captures (the isolation-mode refusal was captured for a
+package-owned assembly and is assumed for the others):
 
-| Case                                                                                | Answer                                                                         |
-| ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| Missing message or handler                                                          | `0x80040200` "sdkmessageid is missing." / "plugintypeid is missing."           |
-| Fractional rank                                                                     | `0x80048d19`. Any whole rank is accepted; a negative rank runs before rank 1   |
-| Unknown filter                                                                      | 404 `0x80040217` (a filter of another message is accepted)                     |
-| Deployment its filter's (else message's) availability does not admit                | `0x80040203`, checked before secure configuration                              |
-| Asynchronous step outside stage 40                                                  | `0x80040203` naming the step                                                   |
-| Filter that takes no custom step; a global step on `WhoAmI` or `RetrieveVersion`    | `0x80044187` naming the step and filter or message                             |
-| Unknown filtering attribute (also one with leading or trailing spaces)              | `0x8004f036`                                                                   |
-| Image type the message does not support                                             | `0x8004416d`                                                                   |
-| Image attribute that is not a column of the step's table                            | `0x80081119`                                                                   |
-| Duplicate typename in an assembly                                                   | `0x8004417C`                                                                   |
-| Type that is not one of the assembly's plug-in or workflow activity types           | `0x8004418b` "PluginType [..] not found in PluginAssembly [..]"                |
-| Deleting a plug-in type a step uses (assemblies and packages likewise)              | `0x8004f01f`; the step survives                                                |
-| Isolation mode other than sandbox                                                   | 403 `0x80040256`                                                               |
-| Assembly content over 16 MB; source type other than database                        | `0x8004418f`; `0x8004417D`                                                     |
-| Step registration without `prvCreateSdkMessageProcessingStep` and `prvReadSolution` | 403 `0x80040220` naming `prvReadSolution`; holding only the former is accepted |
+| Case                                                                                | Answer                                                                                                                                                    |
+| ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Missing message or handler                                                          | `0x80040200` "sdkmessageid is missing." / "plugintypeid is missing."                                                                                      |
+| Fractional rank                                                                     | `0x80048d19`. Any whole rank is accepted; a negative rank runs before rank 1                                                                              |
+| Unknown filter                                                                      | 404 `0x80040217` (a filter of another message is accepted)                                                                                                |
+| Deployment its filter's (else message's) availability does not admit                | `0x80040203`, checked before secure configuration                                                                                                         |
+| Asynchronous step outside stage 40                                                  | `0x80040203` naming the step                                                                                                                              |
+| Filter that takes no custom step; a global step on `WhoAmI` or `RetrieveVersion`    | `0x80044187` naming the step and filter or message                                                                                                        |
+| Unknown filtering attribute (also one with leading or trailing spaces)              | `0x8004f036`                                                                                                                                              |
+| Image type the message does not support                                             | `0x8004416d`                                                                                                                                              |
+| Image attribute that is not a column of the step's table                            | `0x80081119`                                                                                                                                              |
+| Duplicate typename in an assembly                                                   | `0x8004417c`                                                                                                                                              |
+| Type that is not one of the assembly's plug-in or workflow activity types           | `0x8004418b` "PluginType [..] not found in PluginAssembly [..]"                                                                                           |
+| Deleting a plug-in type a step uses (assemblies and packages likewise)              | `0x8004f01f`; the step survives                                                                                                                           |
+| Isolation mode other than sandbox                                                   | 403 `0x80040256` "Action failed for assembly '<identity>': No publisher is found, assembly must be registered in isolation."                              |
+| Assembly content over 16 MB; source type other than database                        | `0x8004418f`; `0x8004417d`                                                                                                                                |
+| Step registration without `prvCreateSdkMessageProcessingStep` and `prvReadSolution` | 403 `0x80040220` naming `prvReadSolution`; with the former, `prvReadSolution` is not needed (the lookups still need their Append and AppendTo privileges) |
 
 A step without a stage is accepted. Images on SetState, SetStateDynamicEntity (EntityMoniker), GrantAccess (Target)
 and DeleteMultiple (Targets) are refused, as are asynchronous-stage, filtering-attribute and image-type combinations the
@@ -88,13 +91,13 @@ is inspected as bounded PE/CLI data for identity and declared types; it executes
 types runs. Offline Only registrations stay in the inventory and never run.
 
 **Message catalogue.** Standard SDK messages keep their native `sdkmessageid`, availability, private, auto-transaction
-and workflow flags and `none` filter: the request messages of the official SDK
-assemblies plus the data, bulk, retention and archive messages. Platform messages whose native id is not recorded
-(AddMembers, RemoveMembers, Route, Handle, Send, the privilege, role and Replicate messages, ...) get a local id. Web API
-actions whose message has another name (AddMembersTeam is AddMembers, SetParentTeam and SetParentSystemUser are
-SetParent, ...) seed no message; other Web API operation names seed one with a local id. Messages a Microsoft solution
-installs come from the exported Solution or the project's `observed.sdkMessages`. A custom API created, renamed, rebound
-or deleted at runtime gets, replaces or loses its `sdkmessage` row and filter at once.
+and workflow flags and `none` filter: the request messages of the official SDK assemblies plus the data, bulk, retention
+and archive messages. Platform messages whose native id is not recorded (AddMembers, RemoveMembers, Route, Handle, Send,
+the privilege, role and Replicate messages, ...) get a local id. Web API actions whose message has another name
+(AddMembersTeam is AddMembers, SetParentTeam and SetParentSystemUser are SetParent, ...) seed no message; other Web API
+operation names seed one with a local id. Messages a Microsoft solution installs come from the exported Solution or the
+project's `observed.sdkMessages`. A custom API created, renamed, rebound or deleted at runtime gets, replaces or loses
+its `sdkmessage` row and filter at once.
 
 **Filters per table.**
 
@@ -149,17 +152,21 @@ differ from native. Stage 30 is the main operation, not a general extensibility 
   includes its nested SDK calls and their plug-ins. Past it the step fails with 400 `0x80040224` and a
   `System.TimeoutException` message naming the type (`LocalPluginTimeout`), as recorded natively.
 - **Faults.** An ordinary exception from `IPlugin.Execute` or a JavaScript step-id handler answers 400 `0x80040224` with
-  its message. An `InvalidPluginExecutionException` answers `0x80040265` whatever code it authors; the authored code,
-  or the SDK's default HRESULT `0x80131500`, stays in `sourceException.errorCode`. A step-id handler declares one by
-  throwing `{ pluginFault: 'InvalidPluginExecutionException', message, errorCode? }`; a plug-in type handler's exception
-  is always that fault. The portal Web API wraps these faults in its own envelope.
+  its message. An `InvalidPluginExecutionException` answers `0x80040265` whatever code it authors. Its authored
+  `errorCode`, or the SDK's default HRESULT `0x80131500`, is sent as the signed
+  `Microsoft.PowerApps.CDS.ErrorDetails.SubErrorCode` annotation (`-2146233088` by default), and its `OperationStatus`
+  as the `Microsoft.PowerApps.CDS.ErrorDetails.OperationStatus` value (`0`, Failed, unless authored; `Canceled` is
+  `1`), for JavaScript handlers and CLR steps alike; the annotations appear when `Prefer` asks for them. An ordinary
+  exception carries neither. A step-id handler declares the fault by throwing
+  `{ pluginFault: 'InvalidPluginExecutionException', message, errorCode? }`; a plug-in type handler's exception is
+  always that fault. The portal Web API wraps these faults in its own envelope.
 - **Update rebase.** After PreOperation, Update re-reads the row and patches the latest saved values with the current
   Target and staged defaults: a field changed by a nested SDK write survives unless the Target names it.
 - **Retrieve** reads after PreValidation and PreOperation; a ColumnSet change affects the returned attributes, and
   replacing the same-table Target selects another record while `PrimaryEntityId` keeps the requested id. Web API single
   and property reads use Retrieve, collection reads RetrieveMultiple; TDS bypasses both.
-- **Read writes.** A Retrieve or RetrieveMultiple step may write through the SDK. A portal or Web API read whose steps run
-  gets a read-operation boundary: the read is not transacted, its steps' SDK writes commit in their own transaction
+- **Read writes.** A Retrieve or RetrieveMultiple step may write through the SDK. A portal or Web API read whose steps
+  run gets a read-operation boundary: the read is not transacted, its steps' SDK writes commit in their own transaction
   queued behind any open one (the step sees its own writes; others see them after commit), and they stay when the read
   later faults. A direct synchronous read without that boundary rejects original SDK writes.
 - Operation flags, identities, parents, rollback boundaries and event chains belong to the active operation across
@@ -167,22 +174,22 @@ differ from native. Stage 30 is the main operation, not a general extensibility 
 
 ### Messages
 
-| Message                                                                                                  | Local pipeline                                                                                                                                                                                                                                                                                        |
-| -------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Create, Update, Delete                                                                                   | Stages 10/20/40 and asynchronous steps. Each also runs its CreateMultiple, UpdateMultiple or DeleteMultiple steps inside its own pipeline (see [bulk](#bulk-messages)).                                                                                                                               |
-| Retrieve, RetrieveMultiple                                                                               | Stages 10/20/40 with typed query and result; asynchronous Retrieve steps run once after the read, also when a synchronous PostOperation step faults it.                                                                                                                                               |
-| Associate, Disassociate                                                                                  | One association pipeline for Web API `$ref`, SDK and portal `/_api` `$ref`: appendTo/append checks, record hooks per related row, stages 10/20/40 around the relationship write. A Web API N:N association first reads its intersect row.                                                             |
-| Assign, SetState, GrantAccess, ModifyAccess, RevokeAccess                                                | Own pipeline and main operation from SDK, SOAP and Web API. SetState runs as SetStateDynamicEntity. Assign and SetState update the row through the Update pipeline (no Update PreValidation, ConcurrencyBehavior or nested SetStateDynamicEntity); Assign's Update runs as SYSTEM.                    |
-| RetrievePrincipalAccess, RetrieveSharedPrincipalsAndAccess                                               | Own pipeline with outputs (`AccessRights`, `PrincipalAccesses`); `IsAutoTransact` false; a team holding only a share reports the shared rights.                                                                                                                                                       |
-| Update that sets `statecode`                                                                             | Runs SetStateDynamicEntity inside its main operation, one level deeper.                                                                                                                                                                                                                               |
-| Upsert, UpsertMultiple, SetState steps                                                                   | Accepted, never run, as natively. SDK Upsert reads the record (by id or by `KeyAttributes` of a declared alternate key) and runs Create or Update. UpsertMultiple runs CreateMultiple for new records, then UpdateMultiple, inside its UpsertMultiple/30 main operation.                              |
-| Web API PATCH without `If-Match`                                                                         | Runs inside an Upsert main operation: a RetrieveMultiple existence check (QueryExpression on the key, no columns, TopCount 2), then Create or Update. `If-Match: *` and ETag requests skip the Upsert frame; If-Match on a missing row answers 404 `0x80040217` before any pipeline.                  |
-| Merge                                                                                                    | SDK and Web API Merge on a mergeable table run the Merge pipeline around its Updates in one transaction: the subordinate is deactivated, then marked merged, and the target is written only when it gains values. On a table without a Merge filter SDK Merge fails with `0x80040800`.                |
-| DeleteMultiple (standard table)                                                                          | PreValidation of the bulk step and of each target's Delete, then 405 `0x8004023b`.                                                                                                                                                                                                                    |
-| Create or Update writing money                                                                           | Runs `RetrieveExchangeRate` at internal stage 25 as SYSTEM (PreOperation, PostOperation and asynchronous steps, never PreValidation), between the Create's PreOperation and main operation. Natively a CreateMultiple runs it once; locally each target's Create does. Currency-only writes run none. |
-| Custom APIs                                                                                              | Stages 10/20/40 around the main operation, subject to the API's processing-step policy (None, Async Only, Sync and Async).                                                                                                                                                                            |
-| Other Web API actions and functions (and SOAP requests relayed to them)                                  | A generic pipeline: the Target row (else bound table, else `none`) as primary entity, inputs converted without parameter metadata (GUID text as Guid, typed objects as EntityReference or Entity), response properties as outputs. A local model.                                                     |
-| SOAP WhoAmI, RetrieveVersion, RetrieveCurrentOrganization, ExecuteMultiple, ExecuteTransaction, metadata | No pipeline. An enabled, explicitly selected step on them stops the request with 501 `LocalPluginUnsupported` before any effect.                                                                                                                                                                      |
+| Message                                                                                                  | Local pipeline                                                                                                                                                                                                                                                                                                                                                              |
+| -------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Create, Update, Delete                                                                                   | Stages 10/20/40 and asynchronous steps. Each also runs its CreateMultiple, UpdateMultiple or DeleteMultiple steps inside its own pipeline (see [bulk](#bulk-messages)).                                                                                                                                                                                                     |
+| Retrieve, RetrieveMultiple                                                                               | Stages 10/20/40 with typed query and result; asynchronous Retrieve steps run once after the read, also when a synchronous PostOperation step faults it.                                                                                                                                                                                                                     |
+| Associate, Disassociate                                                                                  | One association pipeline for Web API `$ref`, SDK and portal `/_api` `$ref`: appendTo/append checks, record hooks per related row, stages 10/20/40 around the relationship write. A Web API N:N association first reads its intersect row.                                                                                                                                   |
+| Assign, SetState, GrantAccess, ModifyAccess, RevokeAccess                                                | Own pipeline and main operation from SDK and SOAP; the sharing messages also from their Web API actions. SetState runs as SetStateDynamicEntity. Assign and SetState update the row through the Update pipeline (no Update PreValidation, ConcurrencyBehavior or nested SetStateDynamicEntity); Assign's Update runs as SYSTEM.                                             |
+| RetrievePrincipalAccess, RetrieveSharedPrincipalsAndAccess                                               | Own pipeline with outputs (`AccessRights`, `PrincipalAccesses`); `IsAutoTransact` false; a team holding only a share reports the shared rights.                                                                                                                                                                                                                             |
+| Update that sets `statecode`                                                                             | Runs SetStateDynamicEntity inside its main operation, one level deeper (a local model).                                                                                                                                                                                                                                                                                     |
+| Upsert, UpsertMultiple, SetState steps                                                                   | Accepted, never run, as recorded natively. SDK Upsert reads the record (by id or by `KeyAttributes` of a declared alternate key) and runs Create or Update. UpsertMultiple runs CreateMultiple for new records, then UpdateMultiple, inside its UpsertMultiple/30 main operation.                                                                                           |
+| Web API PATCH without `If-Match`                                                                         | Runs inside an Upsert main operation: a RetrieveMultiple existence check (QueryExpression on the key, no columns, TopCount 2), then Create or Update. `If-Match: *` and ETag requests skip the Upsert frame; If-Match on a missing row answers 404 `0x80040217` before any pipeline.                                                                                        |
+| Merge                                                                                                    | SDK and Web API Merge on a mergeable table run the Merge pipeline around its Updates in one transaction: the subordinate is deactivated, then marked merged, and the target is written only when it gains values. On a table without a Merge filter SDK Merge fails with `0x80040800`.                                                                                      |
+| DeleteMultiple (standard table)                                                                          | PreValidation of the bulk step and of each target's Delete, then 405 `0x8004023b`.                                                                                                                                                                                                                                                                                          |
+| Create or Update writing money                                                                           | Runs `RetrieveExchangeRate` at internal stage 25 as SYSTEM (PreOperation, PostOperation and asynchronous steps, never PreValidation), between the Create's PreOperation and main operation. Natively a CreateMultiple runs it once; locally each target's Create does. Currency-only writes run none.                                                                       |
+| Custom APIs                                                                                              | Stages 10/20/40 around the main operation, subject to the API's processing-step policy (None, Async Only, Sync and Async).                                                                                                                                                                                                                                                  |
+| Other Web API actions and functions (and SOAP requests relayed to them)                                  | A generic pipeline: the Target row (else bound table, else `none`) as primary entity, inputs converted without parameter metadata (GUID text as Guid, typed objects as EntityReference or Entity), response properties as outputs. A local model. PublishXml and PublishAllXml (Web API and SDK) run the steps registered on their sdkmessages, `Publish` and `PublishAll`. |
+| SOAP WhoAmI, RetrieveVersion, RetrieveCurrentOrganization, ExecuteMultiple, ExecuteTransaction, metadata | No pipeline. An enabled step on them (an unfiltered step, or one from a Solution) stops the request before any effect with `LocalPluginUnsupported`, a SOAP fault naming the step.                                                                                                                                                                                          |
 
 SOAP Assign and SetState commit as one request transaction that queues their own and the delegated Update's
 asynchronous steps. Between the two subordinate Updates of a Merge, the platform's internal stage-50 step reads the
@@ -199,7 +206,8 @@ an alternate key binds its row and keeps the key in the Target.
   the same event; a queued DeleteMultiple job has an empty PrimaryEntityId. The wrapper's PrimaryEntityId starts empty
   and is set by executed scalar steps in rank order.
 - **Bulk origin.** HTTP and SDK CreateMultiple/UpdateMultiple run the bulk ranks, then all single ranks for target A
-  before target B in each stage, each record under the bulk message's context with the bulk request's ids. Targets are
+  before target B in each stage; each record's single steps see the bulk message's context of that stage as
+  `ParentContext` and the bulk request's ids. Targets are
   typed (TotalRecordCount 0 at PreValidation, -1 and MinActiveRowVersion `"-1"` afterwards), each target has its own
   Context4 image set, and a delegated record runs only its own message's steps. UpdateMultiple keeps duplicate entries:
   single Update steps run for each, and the first entry per id supplies the write. CLR bulk handlers may replace
@@ -231,9 +239,10 @@ stays the initiating user. `IsApplicationUser` is true exactly when the initiati
 **Input parameters and shared variables.**
 
 - Every SharedVariables collection starts with the platform entries: `IsAutoTransact` (false for reads), `AcceptLang`
-  (the caller's Accept-Language; empty for SDK requests from a plug-in), `tag`, and on Create `DefaultsAddedFlag` (not
-  on a CreateMultiple request). Inside a `$batch` change set, collections, their parents and jobs add
-  `IsODataTransaction` true and `ODataChangesetRequestCount`, and every stage is in the transaction.
+  (the caller's Accept-Language; empty for SDK requests from a plug-in), `tag` when the request carries one, and on
+  Create `DefaultsAddedFlag` (not on a CreateMultiple request). Inside a [`$batch`](dataverse-api.md#batch) change
+  set, collections, their parents and jobs add `IsODataTransaction` true and `ODataChangesetRequestCount`, and every
+  stage is in the transaction.
 - Create PreOperation and PostOperation collections carry `telemetryrootcontext`, a JSON string with local ids.
 - After a main operation writes a user-owned table (or an association intersect), the root collection lists it in
   `ChangedEntityTypes` with `Update` (a `Dictionary<string, string>` in the CLR host). GrantAccess, ModifyAccess and
@@ -241,7 +250,7 @@ stays the initiating user. `IsApplicationUser` is true exactly when the initiati
   `POADistributionChanged` 1. A single-record write that queues asynchronous work adds `fileattachment: Create`
   (Mirage adds it before the PostOperation steps; natively Create and Delete show it only after their first
   PostOperation step). Only the root ancestor shows these entries; organization-owned tables are not listed.
-- Inputs enumerate as natively: the request's parameters, then `tag` and `FromSandbox`, then platform additions
+- Inputs enumerate in this order: the request's parameters, then `tag` and `FromSandbox`, then platform additions
   (`ConcurrencyBehavior`, `IncludeAnnotations`, `ReturnNotifications`, `AppModuleId`, `IsAppModuleContext`,
   `UpdateContent`, `RelatedEntitiesQuery`), a bridged multiple message's `Targets` last.
 - Delete and sandbox SDK requests carry `ConcurrencyBehavior` and `FromSandbox` in PreValidation and main-operation
@@ -257,8 +266,8 @@ stays the initiating user. `IsApplicationUser` is true exactly when the initiati
   case); a step's edited FetchXML is read back into the query. PostOperation's BusinessEntityCollection carries the
   paging cookie with the page's `$orderby` values and first and last keys. A one-to-many `$expand` passes one
   FetchExpression in RelatedEntitiesQuery and its rows in RelatedEntities.
-- The MSCRM bypass headers appear as InputParameters (`BypassCustomPluginExecution` Boolean, the others as sent) at every
-  stage, on parent frames and on asynchronous jobs.
+- The MSCRM bypass headers appear as InputParameters (`BypassCustomPluginExecution` Boolean, the others as sent) at
+  every stage, on parent frames and on asynchronous jobs.
 - The request `tag` (SDK, SOAP, or the HTTP `tag` query parameter) reaches shared variables, is re-projected to its
   canonical value between steps and inherited by nested calls; an explicit tag on a nested SDK request fails with the
   duplicate-key fault. Concurrent requests and batch members have independent tag scopes.
@@ -266,8 +275,8 @@ stays the initiating user. `IsApplicationUser` is true exactly when the initiati
   seconds). A request a plug-in issues reports an empty `InitiatingUserAgent`.
 
 **Targets.** A Create Target carries the submitted columns at PreValidation (plus `transactioncurrencyid` on money
-tables); PreOperation adds audit, ownership, state and time-zone stamps, never `versionnumber`. A standard table's Create
-shows its choice and two-option defaults from PreValidation. `exchangerate` and `<money>_base` first appear at
+tables); PreOperation adds audit, ownership, state and time-zone stamps, never `versionnumber`. A standard table's
+Create shows its choice and two-option defaults from PreValidation. `exchangerate` and `<money>_base` first appear at
 PostOperation of a write that sets money. An Update Target gains `modifiedon`, `modifiedby` and `modifiedonbehalfby`
 after PreValidation. A Web API Update writing a text column as null or empty shows an empty string while the row stores
 null. Create allocates its identity before PreValidation; an explicitly submitted primary-key Attribute that is still
@@ -286,8 +295,8 @@ values carry their storage scale; references carry no resolved names.
 **Formatted values.** Images label booleans, choices (`; Red; Blue; ` for multi-select), named references, money (record
 currency symbol at column precision), decimals, numbers and dates (ISO text in the calling user's time zone, from
 `usersettings.timezonecode`, else UTC). A Create Target carries them from PreOperation; an Update Target only when the
-request entered as UpdateMultiple or UpsertMultiple. Native recordings came from one UTC en-US user; other time zones and
-cultures are local models.
+request entered as UpdateMultiple or UpsertMultiple. Native recordings came from one UTC en-US user; other time zones
+and cultures are local models.
 
 **Values.** `multiselectpicklist` columns use `OptionSetValueCollection`; Float/Double columns stay `System.Double`;
 lookups with exactly one target table become `EntityReference` (a raw GUID with several targets fails with
@@ -307,7 +316,7 @@ environment id, tenant id, application-user status and user-agent presence.
 `IServiceProvider` supplies the execution context, tracing, `IOrganizationServiceFactory`,
 `IServiceEndpointNotificationService` (posts the RemoteExecutionContext to a loopback web hook), `ILogger`
 (`PLUGIN_CLR_TELEMETRY`, not the trace log), `IFeatureControlService` and `IManagedIdentityService` (cannot acquire a
-token locally); any other service type is null, as natively.
+token locally); any other service type is null.
 
 `CreateOrganizationService(userId)` runs as that user: `null` is SYSTEM, `Guid.Empty` the step's `UserId`, another id
 that system user (a missing user faults `0x80040217`). That user is `UserId` and `InitiatingUserId` of the nested
@@ -330,42 +339,45 @@ answers its typed response class (`WhoAmIResponse`), a generic one the base `Org
 
 Faults: a missing row is `0x80040217` ("Entity '<table>' With Id = <id> Does Not Exist"), an undeclared column
 `0x80041103`; organization failures arrive as `FaultException<OrganizationServiceFault>` with the Web API's code for the
-same failure. `NotSupportedException` (`LocalPluginSdkUnsupported`) marks a local gap, never a native fault: asynchronous
-handlers, metadata writes, RetrieveMetadataChanges with a query, `SubQueryExpression`, `AttributeExpressions`,
-`ForceSeek`, multidimensional arrays and non-SDK value types. A nil Retrieve ColumnSet fails with the argument fault; a
-nil QueryExpression ColumnSet selects only the primary key.
+same failure. `NotSupportedException` (`LocalPluginSdkUnsupported`) marks a local gap, never a native fault:
+asynchronous handlers, metadata writes, RetrieveMetadataChanges with a query, `SubQueryExpression`,
+`AttributeExpressions`, `ForceSeek`, multidimensional arrays and non-SDK value types. A nil Retrieve ColumnSet fails
+with the argument fault; a nil QueryExpression ColumnSet selects only the primary key.
 
 **Record pipeline.** SDK Create, Update, Delete and Retrieve (and the flow Dataverse connector) run the organization
 record pipeline: state defaults, synchronous record hooks (business rules, computed-column refusal, currency, state
 transitions, duplicate detection, column security, rollup marking, cascade), audit columns, row version and the
 alternate-key answer (412 `0x80060892`); reads apply the read projection. A pre-operation hook that answers a promise
 (an async-only Power Fx adapter, attachment bytes routed to a storage provider) refuses the call with 501
-`SdkAsyncPreOperationUnsupported` naming its module, before anything is stored. A virtual table without a provider refuses
-the SDK write with 501 `VirtualProviderMissing`; one with a provider needs its synchronous operations (see [virtual providers](dataverse-contract-modules.md#virtual-providers)). A post-operation hook
-that returns a promise finishes after the call returns, outside its savepoint; a failure records `SDK_DEFERRED_EFFECT`.
+`SdkAsyncPreOperationUnsupported` naming its module, before anything is stored. A virtual table without a provider
+refuses the SDK write with 501 `VirtualProviderMissing`; one with a provider needs its synchronous operations (see
+[virtual providers](dataverse-contract-modules.md#virtual-providers)). A post-operation hook that returns a promise
+finishes after the call returns, outside its savepoint; a failure records `SDK_DEFERRED_EFFECT`.
 `profile.pipeline.level` reports `behaviour` for writes and reads and `contract` for asynchronous hook effects;
 without an organization on the store the service writes directly and reports `inventory`.
 
 ## Asynchronous steps and system jobs
 
 Each accepted asynchronous run is written as a Ready `asyncoperation` (System Event, `operationtype` 1) inside the
-transaction that commits the triggering write, so a rolled-back write leaves no job. One runner per store runs Ready jobs
-in table order on the organization scheduler (the next turn by default; `runDue()`/`advance(ms)` on a manual scheduler).
-A run claims the job (Locked), then records Completed/Succeeded (30) or Completed/Failed (31) with `message`,
-`friendlymessage` and `errorcode`; a succeeded job is removed when its step has `asyncautodelete`. With the Dataverse API
-off the job row is only the queue entry and is removed when the run ends.
+transaction that commits the triggering write, so a rolled-back write leaves no job. One runner per store runs Ready
+jobs in table order on the organization scheduler (the next turn by default; `runDue()`/`advance(ms)` on a manual
+scheduler). A run claims the job (Locked), then records Completed/Succeeded (30) or Completed/Failed (31) with
+`message`, `friendlymessage` and `errorcode`; a succeeded job is removed when its step has `asyncautodelete`. With the
+Dataverse API off the job row is only the queue entry and is removed when the run ends.
 
-- **Start delay.** A job waits `asyncStartDelayMs` (default 1000 ms, the floor of the 0 to 6 s native pickup) before it
+- **Start delay.** A job waits the Dataverse API setting
+  [`asyncStartDelayMs`](dataverse-api.md#enable-it) (default 1000 ms, the floor of the 0 to 6 s native pickup) before it
   may start, so a follow-up write sent right after the response still reaches it; `postponeuntil` stays null.
-- **Cancellation.** Deleting a row cancels every waiting job regarding it inside the deleting transaction (3/32, "This
-  system job was canceled because a referenced record was deleted."). A job whose step was deleted ends Failed
-  (`0x8004418b`, "Could not find plugin step description."); one whose step was disabled is Canceled ("Skipping Async
-  Operation ... is in disabled state"). A job cancelled (statecode 3) before it starts does not run.
-- **Failure.** A failed plug-in job has `errorcode` `0x80040265`, the authored text as `friendlymessage` and the trace
-  block (`Plugin Trace:` ... `Error Message:`) as `message`.
+- **Cancellation.** Deleting a row cancels every waiting job regarding it inside the deleting transaction (3/32,
+  `friendlymessage` "This system job was canceled because a referenced record was deleted."). A job whose step was
+  deleted ends Failed (`0x8004418b`, `message` "Could not find plugin step description."); one whose step was disabled
+  is Canceled (`friendlymessage` "Skipping Async Operation ... is in disabled state"). A job cancelled (statecode 3)
+  before it starts does not run.
+- **Failure.** A failed plug-in job has `errorcode` `0x80040265` (stored as -2147220891), the authored text as
+  `friendlymessage` and the trace block (`Plugin Trace:` ... `Error Message:`) as `message`.
 - **Retry.** `InvalidPluginExecutionException(OperationStatus.Retry, ...)` returns the job to Ready with a fresh
-  invocation; a step that always asks for Retry executes five times and ends Failed with `retrycount` 4, as natively.
-  Retry delays are local scheduler turns, not the native back-off.
+  invocation; a step that always asks for Retry executes five times and ends Failed with `retrycount` 4, as recorded
+  natively. Retry delays are local scheduler turns, not the native back-off.
 - **Context.** An asynchronous step sees the operation as it stood when PostOperation began (synchronous PostOperation
   edits do not reach it) and at most four parent frames, outside a transaction, without images. A request it issues is a
   new root operation of the originating request at the job's Depth + 1.
@@ -377,7 +389,7 @@ off the job row is only the queue entry and is removed when the run ends.
   queued jobs and due scheduler tasks; with a manual scheduler it waits only for running work, and a job blocked on a
   not-yet-due task is finished by the `advance(ms)` that makes it due.
 - **Classic workflows.** A background classic workflow run (mode 0 trigger) is a committed job of kind `workflow` with
-  `operationtype` 10, run the same way.
+  `operationtype` 10, run the same way ([workflows](dataverse-api.md#workflows)).
 
 Web hook jobs are described under [webhooks](#webhooks). Cloud scheduling, service protection and worker recovery are
 not reproduced.
@@ -393,8 +405,9 @@ HttpQueryString (6) adds query parameters; `authvalue` is read as XML settings, 
 seconds. Message inputs keep their typed shapes; unknown SDK value types fail with `LocalWebhookContextUnsupported`.
 
 - **Loopback only.** Mirage contacts an endpoint only when its host is `localhost`, `*.localhost`, `127.0.0.0/8` or
-  `::1` (the same rule as `TriggerServiceEndpointCheck` and the `odata.callback` check). A host name is resolved first and refused unless every address is loopback. Any other URL, or a missing
-  endpoint row, is never contacted and records `WEBHOOK_NOT_CONTACTED` (host only): a synchronous step lets the
+  `::1` (the same rule as `TriggerServiceEndpointCheck` and the `odata.callback` check). A host name is resolved first
+  and refused unless every address is loopback; redirects are refused. Any other URL, or a missing endpoint row, is
+  never contacted and records `WEBHOOK_NOT_CONTACTED` (host only): a synchronous step lets the
   operation continue; an asynchronous step writes a Canceled job (32) "Simulator: endpoint not contacted (loopback
   webhooks only)". The platform's 80/443 port restriction is not applied.
 - **Synchronous** steps wait for the endpoint inside the operation. 2xx lets it commit; anything else, or no answer,
@@ -403,8 +416,7 @@ seconds. Message inputs keep their typed shapes; unknown SDK value types fail wi
   post through the synchronous I/O bridge worker.
 - **Asynchronous** steps post after commit; a non-2xx answer leaves a Failed job (31). The job stays Locked while its
   POST runs without holding back later jobs; if its row is gone when the answer arrives, `PLUGIN_ASYNC_JOB_MISSING` is
-  recorded. Query failed jobs by `statuscode`
-  31 and `owningextensionid`.
+  recorded. Query failed jobs by `statuscode` 31 and `owningextensionid`.
 - **Queues and topics.** Contracts 2, 5 and 6 go to the local message bus when `providers.messaging.endpoints` maps the
   endpoint, else fail with `SERVICE_ENDPOINT_UNMAPPED` ([messaging](messaging-and-outbox.md#service-endpoint-delivery)).
   Without a messaging provider, and for other contracts (Event Hub, ...), a synchronous step is skipped with
@@ -414,21 +426,24 @@ seconds. Message inputs keep their typed shapes; unknown SDK value types fail wi
 - `TriggerServiceEndpointCheck` probes a contract 8 endpoint only on loopback (204 for 2xx, no authentication sent); a
   mapped queue or topic answers 204 without sending; anything else answers 400.
 
-## Uploaded assemblies run like native
+## Uploaded assemblies run by default
 
 A registered, enabled step whose type belongs to an assembly with uploaded `content` runs it in the CLR host without a
 trust step (mode `clr`; pack handlers, web hooks and a `/_sim/` choice keep precedence), as the platform runs every
-registered plug-in (decision C08). A custom API main operation whose type is in such an assembly runs the same way.
+registered plug-in. A custom API main operation whose type is in such an assembly runs the same way. This is a local
+contract: the host is the local CLR host described below, not the platform sandbox.
 
 On first run Mirage writes the stored bytes, with the package's other `lib/` assemblies of the same target framework,
 into an owned directory under the project's ignored `.paqvilo/plugin-assemblies`, and compiles the host there. Steps on
 the same content share it; changed content is prepared again; a deleted step, assembly or package closes its runtime and
-removes the directory. Only the stored bytes and the SDK are loaded, and every run re-checks the prepared files' hashes.
+removes the directory. Only the stored bytes (with the package's assemblies) and the SDK are loaded, and every run
+re-checks the prepared files' hashes.
 
 `Microsoft.Xrm.Sdk.dll` is found through `PAQVILO_XRM_SDK` (a path; a missing file fails rather than falling back), then
 the newest `microsoft.crmsdk.coreassemblies/<version>/lib/net462` in the NuGet packages folder (`NUGET_PACKAGES`, else
-`~/.nuget/packages`), then the checkout's `.paqvilo/ci/sdk-reference` (restored by `npm run ci:prepare`). A
-`Microsoft.Crm.Sdk.Proxy.dll` beside it is supplied too. Microsoft assemblies are not distributed with the toolkit.
+`~/.nuget/packages`), then the toolkit checkout's `.paqvilo/ci/sdk-reference/reference/lib/net462` (restored by
+`npm run ci:prepare`). A `Microsoft.Crm.Sdk.Proxy.dll` beside it is supplied too. Microsoft assemblies are not
+distributed with the toolkit.
 
 When the assembly cannot run (no SDK, not Windows .NET Framework, host compilation failure, a type that cannot load or
 construct) the step fails with 400 `0x80040224` naming the type and assembly (local wording), its operation rolls back,
@@ -442,10 +457,12 @@ For an exported step without uploaded bytes, register its exact step id in a tru
 | Field                                 | Meaning                                                                                                                                                               |
 | ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `trust: 'execute-local-assembly'`     | Required opt-in                                                                                                                                                       |
-| `root`, `assembly`, `typeName`        | Trusted root, relative DLL path, exact type name                                                                                                                      |
-| `sdkRoot`, `sdkAssembly`, `cacheRoot` | Externally installed SDK and the snapshot cache                                                                                                                       |
+| `root`, `assembly`, `typeName`        | Absolute trusted root, relative DLL path, exact type name                                                                                                             |
+| `dependencies`                        | Further relative DLL paths under `root` (at most 100)                                                                                                                 |
+| `sdkRoot`, `sdkAssembly`, `cacheRoot` | Externally installed SDK (absolute root, relative DLL) and the absolute snapshot cache                                                                                |
+| `timeoutMs`                           | Positive integer; values above the 2-minute default are capped and values below 100 ms are raised to 100                                                              |
 | `serviceProfile`                      | Execution-user GUID, evidence and table/operation grants (no portal roles or administrator access)                                                                    |
-| `context`                             | Evidence-qualified initiating-user, organisation and business-unit GUIDs; optional `executionUserId`, `interfaceVersion` (4 or 7), `operationCreatedOn` with evidence |
+| `context`                             | Evidence-qualified initiating-user, organization and business-unit GUIDs; optional `executionUserId`, `interfaceVersion` (4 or 7), `operationCreatedOn` with evidence |
 | `sdkCallerProfiles`                   | Grants for other `CreateOrganizationService` users on a store without a security model                                                                                |
 | `defaultMode`                         | `clr` or `placeholder`                                                                                                                                                |
 | `persistentHost`                      | `false` for a fresh host per execution                                                                                                                                |
@@ -462,20 +479,21 @@ named "CustomApi '<name>' implementation". A caught fault from a main operation 
 ### CLR host
 
 - One long-lived host per runtime (all descriptors naming the same files, or one uploaded content), shared by its types,
-  steps, messages and depths, so assembly static state survives between executions as in the native sandbox. Each
+  steps, messages and depths, so assembly static state survives between executions, as recorded natively. Each
   execution gets its own thread, plug-in instance, configuration and context; a nested Execute enters the same process.
   A plug-in exception keeps the host; a timeout or crash closes it and fails every invocation in flight. A simulator
   closes its hosts on shutdown.
-- A fresh host (`persistentHost: false`) is a new process per execution from the
-  verified executable, with a per-execution copy of the assembly.
-- The host runs in en-US and UTC, as the native sandbox reports. The protocol is UTF-8. SDK, trace and context calls
+- A fresh host (`persistentHost: false`) is a new process per execution from the verified executable, with a
+  per-execution copy of the assembly.
+- The host runs in en-US and UTC, as recorded natively. The protocol is UTF-8. SDK, trace and context calls
   from threads the plug-in starts are served; a handle used after its invocation returned has expired.
 - Preparation confines and hashes the assembly, SDK, host source and generated host, and re-checks them before every
   start and call. No SDK download runs at startup.
-- Limits: Depth 12; the deadline (at most 2 minutes); a context over 116.85 MB fails with `Message size exceeded when
-sending context to Sandbox` (-2147220970). A host that exits mid-invocation fails it with `0x8004418d`
-  SandboxWorkerNotAvailable; one that cannot start fails the call with 503 `LocalPluginHostUnavailable`. SDK call
-  counts, trace lengths and protocol sizes are not limited; console output is discarded.
+- Limits: Depth 12; the deadline (at most 2 minutes); a context over 116.85 MB (measured as the local JSON context)
+  fails with 400 `0x80040216` (-2147220970) "Message size exceeded when sending context to Sandbox. Message size: <n>
+  Mb". A host that exits mid-invocation fails it with
+  `0x8004418d` SandboxWorkerNotAvailable; one that cannot start fails the call with 503 `LocalPluginHostUnavailable`.
+  SDK call counts, trace lengths and protocol sizes are not limited; console output is discarded.
 - Ownership: a host binds only to the process that created it while it runs (409 `LocalPluginParentUnavailable`
   otherwise) and ends when its owning Node process ends, even abruptly (input pipe closed, kill-on-close job object).
 - Trusted original code can access the local machine: this process isolation is **not an untrusted-code sandbox**.
@@ -483,13 +501,13 @@ sending context to Sandbox` (-2147220970). A host that exits mid-invocation fail
 ### Bypass and business-logic ownership
 
 SDK requests may set `BypassCustomPluginExecution` (boolean), `BypassBusinessLogicExecution` (`CustomSync`,
-`CustomAsync`, or both) or `BypassBusinessLogicExecutionStepIds` (comma-separated step GUIDs); HTTP headers and SOAP
-parameters behave the same. The run-as user needs `prvBypassCustomPlugins` for the first and
-`prvBypassCustomBusinessLogic` for the others (System Administrator only); on a store without a security model the
-profile lists them in `privileges` with evidence. `BypassCustomPluginExecution` and `CustomSync` skip synchronous steps
-only; asynchronous steps still run. Choices apply to that operation; nested SDK operations need their own. They do not
-grant row access or skip a custom API main operation. The step-id limit is three, or the export's `OrgDbOrgSettings`
-`BypassBusinessLogicExecutionStepIdsLimit`.
+`CustomAsync`, or both) or `BypassBusinessLogicExecutionStepIds` (comma-separated step GUIDs); HTTP
+[headers](dataverse-api.md#headers) and SOAP parameters behave the same. The run-as user needs `prvBypassCustomPlugins`
+for the first and `prvBypassCustomBusinessLogic` for the others (System Administrator only); on a store without a
+security model the profile lists them in `privileges` with evidence. `BypassCustomPluginExecution` and `CustomSync` skip
+synchronous steps only; asynchronous steps still run. Choices apply to that operation; nested SDK operations need their
+own. They do not grant row access or skip a custom API main operation. The step-id limit is three, or the export's
+`OrgDbOrgSettings` `BypassBusinessLogicExecutionStepIdsLimit`.
 
 Bypass keeps an extension classified as `system` or `microsoft` with evidence:
 `observed.businessLogicOwnership[componentGuid] = { kind, evidence }` for a step, workflow or expression.
@@ -510,8 +528,7 @@ guard (`0x8004419a`) is a separate local contract and not ownership proof.
   the response. It reads and writes tables (`Filter`, `LookUp`, `Collect`, `Patch`, `Remove`, `CountRows`, `Sort`) as
   the calling user, with privileges, row access and column security, as one unit: an error after a write leaves no row.
   An `Error(...)` or formula error answers 400 `0x80040265` with its message; a refused write (also inside `ForAll`)
-  answers that refusal's envelope. Without the Power Fx engine both answer 501
-  `PowerFxEvaluatorMissing`.
+  answers that refusal's envelope. Without the Power Fx engine both answer 501 `PowerFxEvaluatorMissing`.
 - **Low-code plug-ins.** An `fxexpression` with a message and a table that no custom API names runs before the write as
   the calling user: `Set(ThisRecord.column, value)` or `Set(column, value)` changes any column of the row; a secured
   column the caller may not write refuses the write (403 `0x8004f502` on create, `0x8004f507` on update); `Error(...)`
@@ -529,10 +546,10 @@ guard (`0x8004419a`) is a separate local contract and not ownership proof.
 
 ## Trace log
 
-Handlers and CLR runs write `plugintracelog` rows according to `organization.plugintracelogsetting` (0 off, 1 exceptions,
-2 all). As recorded natively, `messageblock` joins trace lines with CRLF and keeps the last 10240 characters;
-`typename` is assembly-qualified; `configuration` and `secureconfiguration` are the step's; `requestid` is the context's;
-`performanceconstructorduration` is 0; `exceptiondetails` is empty after success and names the
+Handlers and CLR runs write `plugintracelog` rows according to `organization.plugintracelogsetting` (0 off, 1
+exceptions, 2 all). As recorded natively, `messageblock` joins trace lines with CRLF and keeps the last 10240
+characters; `typename` is assembly-qualified; `configuration` and `secureconfiguration` are the step's; `requestid` is
+the context's; `performanceconstructorduration` is 0; `exceptiondetails` is empty after success and names the
 `OrganizationServiceFault` after an `InvalidPluginExecutionException`. Trace rows survive failed business transactions
 and SDK savepoint rollbacks; nothing else does. If saving the trace also fails, both errors are reported in an
 `AggregateError` whose cause is the business rejection. Trace cleanup is not modelled.
@@ -577,9 +594,10 @@ share one symbol set and host.
 1. Start Mirage with the project's `mirage dev` command. `defaultMode: 'clr'` selects original execution for that step
    on every start, dry run included; a `/_sim/` choice still wins, and **Use source default** restores the descriptor's.
 2. Set breakpoints (constructors included) and trigger the operation. The terminal prints the owned
-   `paqvilo-plugin-host.exe` PID; the host waits for a managed debugger before constructing the plug-in. Its command line
-   ends with `--label <project folder>@<runtime port>`.
-3. Run **Mirage plug-in: attach .NET Framework** (generated by `paqvilo init --refresh-editor`) and pick that PID.
+   `paqvilo-plugin-host.exe` PID; the host waits for a managed debugger before constructing the plug-in. Its command
+   line ends with `--label <project folder>@<runtime port>`.
+3. Run the launch configuration `<Project>: Mirage plug-in: attach .NET Framework` (generated by
+   `paqvilo init`, or `paqvilo init --refresh-editor` in an existing project) and pick that PID.
 4. Inspect locals, `InputParameters`, images, `SharedVariables` and outputs. SDK requests still pass through the
    organization pipeline; the request stays pending while paused.
 5. To rebuild, stop Mirage, build, start again and attach to the new PID. A changed DLL or PDB is refused by a prepared
@@ -603,9 +621,10 @@ start, so no deployment, profiler capture or manual copying is needed. Then for 
 Put stop, build and dev in one npm script joined with `&&` so a failed build cannot start stale output; editor refresh
 generates tasks for project npm scripts. Hot reload is not supported.
 
-Microsoft's [Plug-in Profiler](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/tutorial-debug-plug-in)
-replays a captured remote context instead; a local breakpoint debugs the loaded assembly but does not prove native
-pipeline parity.
+Microsoft's [Plug-in
+Profiler](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/tutorial-debug-plug-in) replays a
+captured remote context instead; a local breakpoint debugs the loaded assembly but does not prove native pipeline
+parity.
 
 ## Configure source facts
 
@@ -623,8 +642,11 @@ observed:
       evidence: Type declaration matches the exported PluginType name.
 ```
 
-Catalogue paths resolve from `sourceRoot`, project paths from the project directory; they must be regular `.cs` files
-inside the trusted root.
+Each `path` resolves inside the entry's trusted `root`. Without `root` it is the catalogue's `sourceRoot` (catalogue)
+or the project file's folder (project); a relative `root` resolves against the same folder, and `mirage init` writes
+the catalogue's roots relative to the generated project file. The path must be a relative regular `.cs` file of at most
+1 MiB, without `.`, `..`, `bin`, `obj`, `node_modules`, `.git` or `.paqvilo` segments; an unresolved mapping reports
+`PLUGIN_SOURCE_UNRESOLVED`.
 
 ## Model a write
 
@@ -640,11 +662,13 @@ A mock response body changes submitted values during stage 10 or 20, or rejects 
 
 Project packs register `pluginSteps` handlers by exact step id, or `pluginTypes` handlers by type name (see
 [project extensions](../../docs/project-extensions.md)). A synchronous handler receives `step`, `entity`, `operation`,
-`stage`, `target`, `record`, `previous`, `identity`, `changedAttributes`, `sharedVariables`, `trace(text)` and
-`reject(message)`, and returns `{ target: {...} }` to patch. Context records are clones; `sharedVariables` is the
-operation's live collection, seen by later JavaScript and CLR steps. Async handlers are rejected. Stage 40 patches reach
-later steps but not the saved row; Delete patches are refused. Completed or timed-out handler continuations cannot touch
-the store again.
+`stage`, `target`, `record`, `previous`, `preImage`, `postImage`, `identity`, `changedAttributes`, `sharedVariables`,
+`context`, `trace(text)` and `reject(message)`, and returns `{ target: {...} }` to patch. Context records are clones;
+`sharedVariables` is the operation's live collection, seen by later JavaScript and CLR steps. A handler that returns a
+promise, or a result the pipeline cannot use, fails the write and rolls it back like the handler's own exception: 400
+`0x80040224` for a step-id handler, `0x80040265` for a plug-in type handler. A promise answers "Plugin handlers must
+return synchronously." (`LocalPluginAsyncHandler` for local callers). Stage 40 patches reach later steps but not the
+saved row; Delete patches are refused. Completed or timed-out handler continuations cannot touch the store again.
 
 On a Power Pages basic form a `reject(message)` or `InvalidPluginExecutionException` shows the plug-in message only when
 `Site/EnableCustomPluginError` is `true` ([forms and lists](forms-lists-parity.md)). The
@@ -673,14 +697,15 @@ RetrieveMultiple use the affected table and record.
 ## Local registration comparison
 
 ```js
-import { comparePluginRegistrations } from 'paqvilo/mirage/fixtures';
+import { comparePluginRegistrations, parsePluginDocument } from 'paqvilo/mirage/fixtures';
 
-const report = comparePluginRegistrations(before.plugins, after.plugins);
+const report = comparePluginRegistrations(parsePluginDocument(beforeXml), parsePluginDocument(afterXml));
 ```
 
-Pass two `importSolutionPlugins(selectedLayers)` inventories, or `parsePluginDocument(xml)` results for single exports
-(both exported from the same entry). Stable GUIDs identify assemblies, types and steps; added, removed and changed facts
-include execution mode, stage, rank, table, message, filtering attributes and image alias, type, message property and
-attributes. Attribute order and GUID case are ignored. Duplicate or missing identities are diagnostics with
-`complete: false`; nothing is matched by friendly name. Configuration, secure configuration and assembly content are
-never copied into the result. This compares exported definitions, not deployed organizations.
+Pass two inventories: `importSolutionPlugins(selectedLayers)` results, or `parsePluginDocument(xml)` results for single
+exports (both exported from the same entry). The report lists `added`, `removed`, `changed` (with per-field `before` and
+`after`), `unchanged` counts, `diagnostics` and `complete`. Stable GUIDs identify assemblies, types and steps; added,
+removed and changed facts include execution mode, stage, rank, table, message, filtering attributes and image alias,
+type, message property and attributes. Attribute order and GUID case are ignored. Duplicate or missing identities are
+diagnostics with `complete: false`; nothing is matched by friendly name. Configuration, secure configuration and
+assembly content are never copied into the result. This compares exported definitions, not deployed organizations.

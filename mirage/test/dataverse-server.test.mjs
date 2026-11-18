@@ -143,6 +143,29 @@ test('users are created with an integer accessmode only, then disabled and given
   assert.deepEqual(user.roles, ['Basic User']);
 });
 
+test('a second user with the same domainname or a second application user with the same appId is refused', async (t) => {
+  const { admin } = await start(t, { dataverse: { enabled: true } });
+  const first = { fullname: 'Twin User', domainname: 'twin@example.test', roles: ['Basic User'] };
+  assert.equal((await admin('/dataverse/users', { method: 'POST', body: first })).status, 201);
+  const twin = await admin('/dataverse/users', {
+    method: 'POST',
+    body: { ...first, domainname: 'TWIN@example.test' },
+  });
+  assert.equal(twin.status, 409);
+  assert.match(JSON.stringify(twin.body), /A user with domainname TWIN@example\.test already exists\./);
+  const identity = await admin('/dataverse/managed-identities', {
+    method: 'POST',
+    body: { clientId: APP_ID, displayName: 'Identity first' },
+  });
+  assert.equal(identity.status, 201);
+  const application = await admin('/dataverse/applications', {
+    method: 'POST',
+    body: { appId: APP_ID, displayName: 'Integration client' },
+  });
+  assert.equal(application.status, 409);
+  assert.match(JSON.stringify(application.body), new RegExp(`An application user with appId ${APP_ID} already exists`));
+});
+
 test('reset keeps application registrations and re-seeds the security rows, so an application created before it still authenticates', async (t) => {
   const { app, admin } = await start(t, { dataverse: { enabled: true } });
   const created = await createApplication(admin);

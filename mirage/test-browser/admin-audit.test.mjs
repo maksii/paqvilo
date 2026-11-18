@@ -87,7 +87,7 @@ test('real simulator admin lazy records, audit API/Liquid correlation, valid-tok
   await page.waitForFunction(() =>
     document.querySelector('table[data-table="records"] tbody')?.textContent.includes('Synthetic member 20'),
   );
-  // D-M-11: the record search sits in the toolbar row (a summary-mode workspace searches on the runtime).
+  // the record search sits in the toolbar row (a summary-mode workspace searches on the runtime).
   await page.getByRole('searchbox', { name: 'Search record values' }).fill('member 80');
   await page.waitForFunction(() => document.querySelectorAll('table[data-table="records"] tbody tr').length === 1);
   assert.match(await page.locator('table[data-table="records"] tbody').innerText(), /Synthetic member 80/);

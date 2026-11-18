@@ -6,7 +6,7 @@ route, access and local behaviour at `/_sim/#operations` on the administration a
 forwards a definition to Power Automate; to compare with the platform, compare run and action traces and resulting
 data from an authorized environment running the same export.
 
-## Choose local behavior
+## Choose local behaviour
 
 | Mode                    | Result                                                                                             |
 | ----------------------- | -------------------------------------------------------------------------------------------------- |
@@ -20,8 +20,10 @@ data from an authorized environment running the same export.
 Save a behaviour for an operation and call its exported route from the portal; **Use source default** removes the
 override. Overrides change simulation state only; they never deploy the source or activate an online flow.
 
-- A discovered flow defaults to exported only when its trigger is supported and every connector call (a Dataverse
-  trigger included) resolves to a bound connection; otherwise it stays a placeholder. Unsupported expressions,
+- A discovered flow defaults to exported only when its trigger is supported, it has a portal consumer route or a
+  Dataverse trigger, and every connector call (a Dataverse trigger included) resolves to a bound connection; otherwise
+  it stays a placeholder. A manual, HTTP Request or Recurrence flow without a consumer therefore needs an explicit
+  exported choice before `POST /_sim/api/flow-runs` or its trigger host runs it. Unsupported expressions,
   connectors and execution settings need an exact per-action mock or disabled choice.
 - An unlinked workflow stays visible and accepts a local mock or disabled choice without an invented route or role
   grant; configuration alone never invokes it. A supported activated Dataverse row trigger with an explicit backend
@@ -41,13 +43,13 @@ sources you trust.
 Server logic reaches the host only through these bridges. A bridge whose host service is absent answers status 501
 with `ServerError: true`, never success.
 
-| Bridge                                                                           | Local behaviour                                                                                                                                                                                                                                                                                                                                                                                          |
-| -------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Server.Connector.Dataverse.InvokeCustomApi(httpMethod, url, payload)`           | Runs the custom API through the operation registry (unbound `name`, or `set(id)/Microsoft.Dynamics.CRM.name`; function parameters as inline literals) as the site's application user. A bound row must be readable by the signed-in contact, else 403. Answers the server-object envelope (`StatusCode`, `Body`, `IsSuccessStatusCode`, `ReasonPhrase`, `ServerError`, `ServerErrorMessage`, `Headers`). |
-| `Server.Connector.CloudFlow.TriggerAsync(flowId, payload)`                       | Runs the site's cloud flow like `/_api/cloudflow/v1.0/trigger/<guid>`, with its web-role check; the payload carries `siteId` and `userId`. A flow without a Response answers 202 with an empty `Body`, reported as success.                                                                                                                                                                              |
-| `Server.Connector.HttpClient.GetAsync/PostAsync/PutAsync/PatchAsync/DeleteAsync` | Contract: the URL is rewritten by the connections' `settings.rewrites`, and only a loopback target is called (no redirects). Any other host answers `StatusCode` 502, `ServerError: true`, `ServerErrorMessage: 'HTTP target is not a declared local service'` and records `SERVER_LOGIC_HTTP_REFUSED`.                                                                                                  |
-| `Server.Logger.Log/Warn/Error`                                                   | Lines go to the diagnostics stream (`SERVER_LOGIC_LOG`) with the operation id (`Server.Context.ActivityId`).                                                                                                                                                                                                                                                                                             |
-| `Server.EnvironmentVariable.get(name)`                                           | Non-secret effective values; see [environment variables and secrets](deployment-profiles.md#environment-variable-types-effective-values-and-secrets).                                                                                                                                                                                                                                                    |
+| Bridge                                                                           | Local behaviour                                                                                                                                                                                                                                                                                                                                                                                  |
+| -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `Server.Connector.Dataverse.InvokeCustomApi(httpMethod, url, payload)`           | Runs the custom API through the operation registry (unbound `name`, or `set(id)/Microsoft.Dynamics.CRM.name`; function parameters as inline literals) as the principal below. A bound row must be readable by the signed-in contact, else 403. Answers the server-object envelope (`StatusCode`, `Body`, `IsSuccessStatusCode`, `ReasonPhrase`, `ServerError`, `ServerErrorMessage`, `Headers`). |
+| `Server.Connector.CloudFlow.TriggerAsync(flowId, payload)`                       | Runs the site's cloud flow like `/_api/cloudflow/v1.0/trigger/<guid>`, with its web-role check; the payload carries `siteId` and `userId`. A flow without a Response answers 202 with an empty `Body`, reported as success.                                                                                                                                                                      |
+| `Server.Connector.HttpClient.GetAsync/PostAsync/PutAsync/PatchAsync/DeleteAsync` | Contract: the URL is rewritten by the connections' `settings.rewrites`, and only a loopback target is called (no redirects). Any other host answers `StatusCode` 502, `ServerError: true`, `ServerErrorMessage: 'HTTP target is not a declared local service'` and records `SERVER_LOGIC_HTTP_REFUSED`.                                                                                          |
+| `Server.Logger.Log/Warn/Error`                                                   | Lines go to the diagnostics stream (`SERVER_LOGIC_LOG`) with the operation id (`Server.Context.ActivityId`).                                                                                                                                                                                                                                                                                     |
+| `Server.EnvironmentVariable.get(name)`                                           | Non-secret effective values; see [environment variables and secrets](deployment-profiles.md#environment-variable-types-effective-values-and-secrets).                                                                                                                                                                                                                                            |
 
 ### Server logic site settings and principal
 
@@ -57,9 +59,13 @@ with `ServerError: true`, never success.
   HttpClient host before any rewrite; a refused host answers the 403 envelope and records
   `SERVER_LOGIC_HTTP_DOMAIN_BLOCKED`.
 - Time limit: a local run defaults to 5 seconds. The simulator option `serverLogicTimeoutMs` (milliseconds, a finite
-  number above 0, else a `TypeError`) replaces the default. The applied limit is capped at `ServerLogic/TimeoutInSeconds` (default 120, at
-  most 240) and never below 100 ms; a site value above the local limit records `SERVER_LOGIC_TIMEOUT_LOCAL` (info).
-- `InvokeCustomApi` never runs as SYSTEM. It runs as the site's application user: the observed one
+  number above 0, else a `TypeError`) replaces the default. The applied limit is capped at
+  `ServerLogic/TimeoutInSeconds` (default 120, at most 240) and never below 100 ms; a site value above the local limit
+  records `SERVER_LOGIC_TIMEOUT_LOCAL` (info). A run stopped at the limit answers 500 `ServerLogicTimeout`
+  (`Server logic exceeded its time limit of 5000 ms (serverLogicTimeoutMs, at most ServerLogic/TimeoutInSeconds).`),
+  and an exception the exported code does not catch answers 500 `ServerLogicFailed` with the exception's message.
+- `InvokeCustomApi` never runs as SYSTEM. Under enhanced authorization it runs as the visitor's mapped Dataverse user
+  when there is one; otherwise as the site's application user: the observed one
   (`observed.portalApplicationUserId`) when that row exists, else a local application user `# Portals-<site name>`
   created once with System Administrator standing in for the native Portal Application User, Service Writer and
   Service Deleter roles.
@@ -73,25 +79,25 @@ scheduler or its retry service.
 
 ### Triggers
 
-| Trigger                                                           | Local behaviour                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Power Pages Request                                               | Runs from its portal consumer; a run that waits before its Response answers 202 `{ runId, status: 'Waiting' }`.                                                                                                                                                                                                                                                                                                                                    |
-| Manual (`Button`)                                                 | Runs as a child flow or on demand (`POST /_sim/api/flow-runs`).                                                                                                                                                                                                                                                                                                                                                                                    |
-| HTTP Request (`kind: Http`)                                       | On demand through `POST /_sim/api/flow-triggers/<flowId>`; its signed callback URL is served only locally. The body is checked against the schema only with `operationOptions: EnableSchemaValidation` (400 `InvalidRequest`), as for [Schema Validation](https://learn.microsoft.com/en-us/azure/connectors/connectors-native-reqres#add-a-request-trigger); Button and Power Pages triggers always check it.                                     |
-| `Recurrence`                                                      | Runs on the runtime scheduler once the flow has the exported choice and explicit local activation (rules below).                                                                                                                                                                                                                                                                                                                                   |
-| Dataverse row trigger                                             | Added, modified, deleted and combined messages, Organization scope, scalar submitted-column selection and saved-row OData filters (rules below).                                                                                                                                                                                                                                                                                                   |
-| Dataverse "When an action is performed" (`BusinessEventsTrigger`) | Each committed run of the named custom API (`catalog`, `category`, `entityname`, `sdkmessagename`; `entityname` `none` for an unbound action) stages a durable job that starts a run (trigger type `Automated`) with body `{ InputParameters, OutputParameters }`. A rolled-back action starts nothing. Loaded Solution catalogs constrain matching; without catalog rows it matches the action name and records `FLOW_TRIGGER_CATALOG_UNCHECKED`. |
-| Connector webhook or polling trigger                              | Contract, only when a pack `flowTriggers` export hosts its connector operation: subscribed on activation, a run per `fire(body)`, a polling `poll()` at the recurrence `frequency` and `interval` from `startTime` (a schedule does not apply), unsubscribed when the flow is disabled or the runtime closes.                                                                                                                                      |
+| Trigger                                                           | Local behaviour                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| ----------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Power Pages Request                                               | Runs from its portal consumer; a run that waits before its Response answers 202 `{ runId, status: 'Waiting' }`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| Manual (`Button`)                                                 | Runs as a child flow or on demand (`POST /_sim/api/flow-runs`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| HTTP Request (`kind: Http`)                                       | On demand through `POST /_sim/api/flow-triggers/<flowId>`; its signed callback URL is served only locally. The body is checked against the schema only with `operationOptions: EnableSchemaValidation` (400 `InvalidRequest`), as for [Schema Validation](https://learn.microsoft.com/en-us/azure/connectors/connectors-native-reqres#add-a-request-trigger); Button and Power Pages triggers always check it.                                                                                                                                                                                                                          |
+| `Recurrence`                                                      | Runs on the runtime scheduler once the flow has the exported choice and explicit local activation (rules below).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| Dataverse row trigger                                             | Added, modified, deleted and combined messages, Organization scope, scalar submitted-column selection and saved-row OData filters (rules below).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| Dataverse "When an action is performed" (`BusinessEventsTrigger`) | Each committed run of the named custom API (`catalog`, `category`, `entityname`, `sdkmessagename`; `entityname` `none` for an unbound action) stages a durable job that starts a run (trigger type `Automated`) with body `{ InputParameters, OutputParameters }`. A rolled-back action starts nothing. A trigger without `catalog` and `category` matches by action name. Otherwise the Solution's Dataverse "Catalog" and "Catalog Assignment" rows (`catalog`, `catalogassignment`) must assign the action to that category; when no `catalog` row is loaded it matches by action name and records `FLOW_TRIGGER_CATALOG_UNCHECKED`. |
+| Connector webhook or polling trigger                              | Contract, only when a pack `flowTriggers` export hosts its connector operation: subscribed on activation, a run per `fire(body)`, a polling `poll()` at the recurrence `frequency` and `interval` from `startTime` (a schedule does not apply), unsubscribed when the flow is disabled or the runtime closes.                                                                                                                                                                                                                                                                                                                           |
 
 Without a host, another connector trigger answers `Unsupported trigger <type>/<operation> (<connector>; no pack
 flowTriggers entry hosts it); configure an explicit flow mock or disable it.` Request triggers with splitting,
 concurrency, recurrence, operation options or unsupported inputs are explicit capability errors.
 
 **Activation.** Draft or unknown activation stays inactive. **Explicitly activate this source locally** (or
-`{ mode: 'exported', activation: 'local-enabled' }` through `/_sim/api/operations/<key>` or `PATCH /_sim/api/config`)
-records a local override without altering the export or the online flow. Both hosts re-synchronise the Recurrence and
-connector trigger hosts at startup and after every override, so the flow is scheduled at once. The `flow-triggers`
-capability record is part of the host registry.
+`{ mode: 'exported', activation: 'local-enabled' }` through `PATCH /_sim/api/operations/<key>` or
+`PATCH /_sim/api/config`) records a local override without altering the export or the online flow. Both hosts
+re-synchronize the Recurrence and connector trigger hosts at startup and after every override, so the flow is scheduled
+at once. The `flow-triggers` capability record is part of the host registry.
 
 **Recurrence.** `frequency` Second to Month, `interval`, optional `startTime`, `timeZone` and `schedule`. `timeZone` is
 an IANA name resolved through Intl, or a Windows id mapped through the Unicode CLDR 45 windowsZones table (territory
@@ -155,11 +161,12 @@ resolved inputs and journalled like connector actions, see [data packs](data-pac
 - **Concurrency.** Actions with no runAfter path between them start together, and a join waits for every dependency.
   Branches whose runAfter statuses on the same predecessor exclude each other are not concurrent. A waiting action
   (`Wait`, approval, waiting child) holds only its branch; the others' built-in actions continue, so a Response in a
-  concurrent branch answers before the run waits, while provider-backed actions and further waits run after the
-  resume. Branches that write the same variable, where one writes what another reads (`variables('<name>')` in
-  inputs, expressions or `foreach`), or that both answer a Response need an explicit mock or disabled choice, as do
-  concurrent `Foreach` iterations that write a variable. A dynamic variable name or malformed expression cannot prove
-  independence. Mocked and disabled actions are excluded; variable names are case-sensitive.
+  concurrent branch answers before the run waits (the `/_sim/api` start routes return that Response too), while
+  provider-backed actions and further waits run after the resume. Branches that write the same variable, where one
+  writes what another reads (`variables('<name>')` in inputs, expressions or `foreach`), or that both answer a
+  Response need an explicit mock or disabled choice (else the run fails 501 `LocalFlowUnsupported` naming the
+  actions), as do concurrent `Foreach` iterations that write a variable. A dynamic variable name or malformed
+  expression cannot prove independence. Mocked and disabled actions are excluded; variable names are case-sensitive.
 - **Completion.** `Terminate` stops the run at once; with `runStatus` `Failed` or `Cancelled` it fails with its
   `runError.message` (`LocalFlowTerminated`). Completion follows terminal branch statuses: a successful failure handler
   resolves its branch and a skipped terminal action inherits its predecessor's status
@@ -170,7 +177,7 @@ resolved inputs and journalled like connector actions, see [data packs](data-pac
   disabled) and get no inferred default without an initial value.
 - **Not approximated:** an action-level `retryPolicy`, `operationOptions`, `limit` (except on `Until`) or
   `staticResults`, and arbitrary external connectors. A connector action accepts `runtimeConfiguration.secureData` and
-  `inputs.retryPolicy` ([flow runs](#flow-runs-waits-and-approvals)). A `Wait` inside `Until` cannot suspend.
+  `inputs.retryPolicy` ([flow runs](#flow-runs-waits-and-approvals)).
 
 ### Expressions
 
@@ -194,14 +201,13 @@ The interpreter implements these functions, and refuses an argument count outsid
   intervals since 0001-01-01 as Int64; invalid dates, zone-less values and other offsets are refused.
 - **Strings and collections.** `split` treats a nonempty delimiter literally (empty is refused); `join` uses the Join
   action's exact conversion and refuses results above 104,857,600 characters; `substring`, `skip` and `take` need
-  nonnegative safe integers and reject overflow; `skip` and `take` keep collection types. `startsWith` and `endsWith`
+  non-negative safe integers and reject overflow; `skip` and `take` keep collection types. `startsWith` and `endsWith`
   are case-insensitive and need two strings (null fails: use `coalesce(item()?['x_name'], '')`); `contains` is
   case-sensitive.
-- **Syntax.** Interpolation keeps literal `@@{...}` escapes and exact numeric digits
-  ([expression syntax](https://learn.microsoft.com/en-us/azure/logic-apps/workflow-definition-language-schema#expressions)).
-  Omitted arguments, including a trailing comma, are rejected; commas inside quoted strings and zero-argument calls
-  are valid. Quoted or escaped expression-looking text is literal. Expression failures still allow ordinary `runAfter`
-  handling.
+- **Syntax.** Interpolation keeps literal `@@{...}` escapes and exact numeric digits ([expression
+  syntax](https://learn.microsoft.com/en-us/azure/logic-apps/workflow-definition-language-schema#expressions)). Omitted
+  arguments, including a trailing comma, are rejected; commas inside quoted strings and zero-argument calls are valid.
+  Quoted or escaped expression-looking text is literal. Expression failures still allow ordinary `runAfter` handling.
 
 Two pure APIs from `paqvilo/mirage/fixtures` check expressions and conditions without starting a run or a provider:
 
@@ -217,8 +223,8 @@ evaluates dynamic fields or infers types from an absent schema or sample.
 
 ## Connections and connectors
 
-An `OpenApiConnection` action, the built-in `Http` action and a Dataverse trigger resolve along this chain, and every failed hop is a coded
-error, never an implicit success:
+An `OpenApiConnection` action, the built-in `Http` action and a Dataverse trigger resolve along this chain, and every
+failed hop is a coded error, never an implicit success:
 
 1. the action's `host.connectionName` names an entry of the flow's `properties.connectionReferences`, giving the
    connection reference logical name;
@@ -254,8 +260,15 @@ connections:
       rewrites: { 'https://functions.example.test/api/': 'http://localhost:7071/api/' }
 ```
 
-Connection entries never hold credentials: a credential-looking key (secret, password, key, token) must be an
-`env:NAME` or `variable:NAME` reference, and rewrite prefixes cannot carry user information, a query or a fragment.
+An entry takes only `connector`, `provider`, `principal`, `evidence` and `settings`, and `settings` only `rewrites`,
+`auth` and `parameters`. `settings.auth` takes only `apiKey`, `username`, `password`, `token`, `clientId` and
+`clientSecret`. Connection entries never hold credentials: every `settings.auth` value, and any value under a
+`principal` or `settings.parameters` key named like secret, password, key or token, must be an `env:NAME` or
+`variable:NAME` reference. Rewrite prefixes are absolute http(s) URLs without user information, a query or a fragment.
+Validation runs when the configuration loads and stops with a message that names the full key path, for example
+`Unknown sites.example.mirage.connections.c1.settings key 'headers'`, or for a literal secret
+`sites.example.mirage.connections.c1.settings.auth takes apiKey, username, password, token, clientId, clientSecret as env:NAME or variable:NAME references only`
+(the runtime does not start; the `mirage preflight` exit code is 2).
 
 **Errors.** `ConnectorNotConfigured` (501), `ConnectionNotBound` (409), `ConnectionUnauthorized` (401, undeclared
 principal), `PermissionDenied` (403), `OperationUnsupported` (501), `ProviderUnavailable` (503, including a non-loopback
@@ -319,19 +332,39 @@ providers and follow source reloads. A connector compiles from OpenAPI 2.0:
 - the policy templates `setheader` (Request and Response), `setqueryparameter`, `routerequesttoendpoint`,
   `dynamichosturl`, `setproperty`, `convertarraytoobject` and `convertobjecttoarray`, in instance order, with
   `@headers()`, `@queryParameters()`, `@connectionParameters()`, `@environmentVariables()`, `@body()` and `@item()`;
-- a C# `script.csx` for its `scriptOperations` (all operations when empty), run through the local .NET SDK in place of
-  the backend request (`CONNECTOR_SCRIPT_SDK_MISSING` without `dotnet` on PATH).
+- a C# `script.csx` for its `scriptOperations` (all operations when the API properties list none), run through the
+  local .NET SDK in place of the backend request; other operations go to the backend directly. A script runs only when
+  the project trusts it: `connectorScripts` ([configuration](../../docs/configuration.md)) names
+  `{ connector, sha256 }` of its exact text. An untrusted script (`CONNECTOR_SCRIPT_UNTRUSTED`, the message names the
+  hash to register) or a missing `dotnet` (`CONNECTOR_SCRIPT_SDK_MISSING`) makes the scripted operations unsupported.
+  The host is built once per script under the state directory; its first build restores Newtonsoft.Json and
+  Microsoft.Extensions.Logging.Abstractions through NuGet. A trusted script runs unsandboxed with your user rights;
+  `Context.SendAsync` goes through the connection rewrites and the loopback rule. A build error
+  (`CONNECTOR_SCRIPT_BUILD_FAILED`), an exception thrown by the script or invalid JSON in its answer fails the action
+  with 502 `ProviderFailed` naming the cause.
 
 Requests go to a matching pack `httpFixtures` entry or a loopback URL after `settings.rewrites`; any other URL answers
 `ProviderUnavailable`. A `nextLink` page is requested only on the operation's host or its rewritten origin (else 403
 `PermissionDenied`, nothing sent), with authentication and Request `setheader` policies.
 
-OAuth: client credentials (`flow: application`) without a static token posts `grant_type=client_credentials` to the
-definition's `tokenUrl` (after rewrites; loopback or fixture only) and caches the token in memory until `expires_in`;
-authorization code (`flow: accessCode`) is signed in through `POST /_sim/api/connections/<connection id>/authorize`.
-Until then, or on a refused token request, calls answer 401 `ConnectionUnauthorized`; any other flow without a static
-token answers 501 `OperationUnsupported`. Authorization-code tokens are [sealed](#flow-runs-waits-and-approvals) in
-state; tokens and secrets never reach diagnostics or `/_sim` answers.
+OAuth: client credentials (`flow: application`, needs `clientId` and `clientSecret`) without a static token posts
+`grant_type=client_credentials` to the definition's `tokenUrl` (after rewrites; loopback or fixture only) and caches the
+token in memory until `expires_in`. Authorization code (`flow: accessCode`, needs `clientId`) is signed in through
+`POST /_sim/api/connections/<connection id>/authorize`: it answers 202
+`{ connectionId, authorizeUrl, redirectUri, expiresAt }`; open `authorizeUrl` in a browser within 10 minutes. The
+authorization server redirects to a one-time loopback listener (`http://127.0.0.1:<port>/callback`, PKCE `S256`),
+which exchanges the code and refreshes the token later with its refresh token. `GET /_sim/api/connections` lists the
+connections and `GET /_sim/api/connections/<connection id>/authorization` answers
+`{ signedIn, expiresAt, refreshable }`; a connection of another flow answers 400 `ConnectionNotAuthorizationCode`, an
+unknown one 404 `ConnectionNotFound`. Until sign-in, or on a refused sign-in or token request, calls answer 401
+`ConnectionUnauthorized`. Any other OAuth flow (implicit, password) is never signed in locally: its connector is not
+blocked, a connection with a static token reference (`auth.token: env:<NAME>`) sends it as `Authorization: Bearer`,
+and a call on a connection without one answers 501 `OperationUnsupported`. For each cloud flow that uses such a
+connection without a token, the flow's entry in `GET /_sim/api/operations` lists a `CONNECTOR_AUTH_UNSUPPORTED` warning
+in `contract.warnings` naming the connector, the connection, the actions and the OAuth flow; the same warning, with the
+flow name (`flow`) and `operationKey`, is reported once in `GET /_sim/api/diagnostics` and in the preflight report's
+`diagnostics` (`GET /_sim/api/preflight`, `mirage preflight --json`). Authorization-code tokens are
+[sealed](#flow-runs-waits-and-approvals) in state; tokens and secrets never reach diagnostics or `/_sim` answers.
 
 Anything else blocks the connector and makes its actions unsupported with a named diagnostic:
 `CONNECTOR_POLICY_UNSUPPORTED`, `CONNECTOR_MEDIA_TYPE_UNSUPPORTED`, `CONNECTOR_SCRIPT_MISSING`,
@@ -355,8 +388,8 @@ so a rolled-back execution keeps its `Failed` row.
   `wait = { kind: 'delay' | 'approval' | 'webhook' | 'child', id, actionPath, until?, timeoutAt?, assignedTo? }`.
   Timers run on the store's scheduler (`runDue()`/`advance(ms)` when manual): a delay ends `Succeeded`, a timeout ends
   the action and any pending approval `TimedOut` so `runAfter: ['TimedOut']` branches can run. Waits are re-armed
-  after a restart. A waiting action inside a `Foreach`, or without a run store, answers 501
-  `FlowSuspendNotWired`: mock or disable it.
+  after a restart. A waiting action also suspends inside `Foreach` (concurrent included) and `Until`; only a run
+  without a run store answers 501 `FlowSuspendNotWired`: mock or disable it.
 - **Resume** is deterministic replay. Non-secret parameter values are frozen when the run starts, `Secret` parameters
   are resolved again. `resume(runId, outcome)` answers `{ steps, journal, input, parameters, replay, processId,
 correlationId, definitionHash }`; `steps` maps every journalled action path (a repeated loop action is `<path>#2`)
@@ -368,13 +401,16 @@ correlationId, definitionHash }`; `steps` maps every journalled action path (a r
   `{ status, secure: true }`. A memory-only runtime cannot open them after a restart: the resume fails `NotResumable`
   (`SecureOutputs (action <path>)`).
 - **Retry.** `inputs.retryPolicy` on a connector action takes `{ type: 'fixed' | 'exponential' | 'none', count: 1–4,
-interval: <ISO 8601, at most one day> }`; `ProviderUnavailable`, `ProviderTimeout`, 429 and 5xx are retried on the
-  scheduler (exponential waits interval × 2^(n−1)), each attempt journalled under `attempts`. A policy on a built-in
+interval: <ISO 8601, at most one day> }` (`none` takes only `type`); `ProviderUnavailable`, `ProviderTimeout`, 408, 429
+  and 5xx are retried up to `count` times after the first attempt on the scheduler (exponential waits
+  interval × 2^(n−1)), each attempt journalled under `attempts`; other answers are not retried. A policy on a built-in
   action or with invalid values is 400 `InvalidRequest`.
 - **Child flows.** A `Workflow` action runs its child through the internal `flow` connector (`RunChildFlow`) as its
   own run (trigger type `ChildFlow`) inside the parent's transaction. The child needs an exported definition (404
-  `ChildFlowNotFound`) with a manual `Button` trigger (400 `ChildFlowTriggerUnsupported`) and a Response; a child in
-  mock, disabled or handler mode fails 501 `ChildFlowNotExecutable`. A child that answered before waiting answers its
+  `ChildFlowNotFound`) with a manual `Button` trigger (400 `ChildFlowTriggerUnsupported`) and a Response (else the
+  action fails `LocalFlowFailed`); it needs no exported choice of its own, but a child in mock, disabled or handler
+  mode fails 501 `ChildFlowNotExecutable`. A child Response of 400 or above, or a `Terminate` (`LocalFlowTerminated`),
+  fails the parent action. A child that answered before waiting answers its
   parent at once and keeps running. A child that waits first suspends its parent (wait kind `child`, `id` the child
   run); when it completes, a still-waiting parent resumes with its Response (400 and above, or a failed, cancelled or
   timed-out child, fails the action). `POST /_sim/api/flow-waits/<id>` refuses a child wait with 409
@@ -402,27 +438,29 @@ default `timeoutAt` of 30 days, the Power Automate run limit.
 | `Custom`          | the first response, which must be one of the `;`-separated `responseOptions` (required) |
 | `CustomAwaitAll`  | every assignee answered; the outcome joins the responses                                |
 
-Any other type is refused at creation (400 `ProviderFailed`). A response must come from an assignee (email or id,
-case-insensitive; else 403 `ApprovalResponderNotAssigned`), once per assignee (else 409 `ApprovalAlreadyAnswered`); a
-response without a responder counts for the only assignee, and with several the 400 names them. A completing response
+Any other type, or a Custom type without `responseOptions`, is refused at creation (400 `ProviderFailed`). A response
+must come from an assignee (email or id, case-insensitive; else 403 `ApprovalResponderNotAssigned`), once per assignee
+(else 409 `ApprovalAlreadyAnswered`), with an outcome among the type's options (else 400 `InvalidRequest` listing
+them); a response without a responder counts for the only assignee, and with several the 400 `InvalidRequest` names
+them. At `timeoutAt` the approval and the action end `TimedOut`. A completing response
 answers `{ statusCode: 200, body: { name, title, details, outcome, requestDate, completionDate, responses: [...] } }`
 with field names from the Approvals output definition; while `Pending` it answers `statusCode: 202` with
 `completed: false`. Status codes and the dynamic envelope are not reproduced exactly.
 
 #### Administration routes
 
-Every `POST` needs the administration token in `x-sim-csrf` (`csrf` of
-`/_sim/api/status`, or `simulator.csrf`); answers pass through `redactSecrets`.
+Every `POST` needs the administration token in `x-sim-csrf` (`csrf` of `/_sim/api/status`, or `simulator.csrf`); answers
+pass through `redactSecrets`.
 
-| Route                                             | Result                                                                                                                                                                                                                                                                                                              |
-| ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /_sim/api/flow-runs?processId=&status=`      | Run summaries, newest first.                                                                                                                                                                                                                                                                                        |
-| `GET /_sim/api/flow-runs/<runId>`                 | One run with its journal; never trigger input or secure outputs.                                                                                                                                                                                                                                                    |
-| `GET /_sim/api/flow-waits?state=overdue\|pending` | Waiting runs and their waits; an approval wait carries an `approval` block (type, title, options, assignees, responses, awaiting, requireAll).                                                                                                                                                                      |
-| `POST /_sim/api/flow-waits/<waitId>`              | `{ outcome, responder, comments }` for an approval, `{ outputs }` for a delay or webhook wait. Records the response and schedules the resume (202) once the approval completes; a still-pending approval answers 202 with `scheduled: false`. Without a resume function: 501 `FlowResumeNotWired`, nothing changes. |
-| `POST /_sim/api/flow-runs`                        | `{ processId, input }` starts a tracked run (trigger type `Manual`) of a manual, HTTP Request, Recurrence or pack connector-trigger flow whose choice is exported: 201 with the summary and any Response; another choice 409 `FlowNotExecutable`, another trigger 400 `FlowTriggerUnsupported`.                     |
-| `POST /_sim/api/flow-triggers/<flowId>`           | Runs an HTTP Request trigger flow with the JSON body; answers the Response status and body with only its `content-type` and `x-*` headers (never `x-sim*`, cookies, `location` or CSP), or 202 `{ runId, status }` without a Response or when it waits.                                                             |
-| `GET /_sim/api/flow-triggers`                     | One entry per Recurrence, HTTP Request and connector-trigger flow: `kind`, `state` (`scheduled`, `subscribed`, `on-demand`, `inactive`), `nextRun` and why an entry is inactive. Reading only lists.                                                                                                                |
+| Route                                             | Result                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /_sim/api/flow-runs?processId=&status=`      | Run summaries, newest first.                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `GET /_sim/api/flow-runs/<runId>`                 | One run with its journal; never trigger input or secure outputs.                                                                                                                                                                                                                                                                                                                                                                |
+| `GET /_sim/api/flow-waits?state=overdue\|pending` | Waiting runs and their waits; an approval wait carries an `approval` block (type, title, options, assignees, responses, awaiting, requireAll).                                                                                                                                                                                                                                                                                  |
+| `POST /_sim/api/flow-waits/<waitId>`              | `{ outcome, responder, comments }` for an approval, `{ outputs }` for a delay or webhook wait. Records the response and schedules the resume (202) once the approval completes; a still-pending approval answers 202 with `scheduled: false`. Without a resume function: 501 `FlowResumeNotWired`, nothing changes.                                                                                                             |
+| `POST /_sim/api/flow-runs`                        | `{ processId, input }` starts a tracked run (trigger type `Manual`) of a manual, HTTP Request, Recurrence or pack connector-trigger flow whose choice is exported: 201 with the summary, plus `response` when the run answered a Response (also when it waits after answering); another choice 409 `FlowNotExecutable`, another trigger 400 `FlowTriggerUnsupported`, a flow without an exported definition 404 `FlowNotFound`. |
+| `POST /_sim/api/flow-triggers/<flowId>`           | Runs an HTTP Request trigger flow with the JSON body; answers the Response status and body with only the Response's `content-type` and `x-*` headers (never `x-sim*`, `x-trace-id`, cookies, `location` or CSP; the host adds its own `x-trace-id` and `x-sim-span-id`), also when the run waits after answering, or 202 `{ runId, status }` without a Response or when it waits first.                                         |
+| `GET /_sim/api/flow-triggers`                     | One entry per Recurrence, HTTP Request and pack-hosted connector-trigger flow: `kind`, `state` (`scheduled`, `subscribed`, `on-demand`, `inactive`), `nextRun` and why an entry is inactive. Reading only lists.                                                                                                                                                                                                                |
 
 ## Local portal routes
 
@@ -450,9 +488,10 @@ localServices:
   fx-api: { kind: http, baseUrl: 'http://127.0.0.1:5000' }
 ```
 
-- Settings validation requires every `baseUrl`, `blob` and probe to stay on
-  localhost, 127.0.0.0/8 or ::1, a probe to be a path on that origin, and refuses a `connectionString` key (name an
-  environment variable instead).
+- Settings validation requires every `baseUrl`, `blob` and probe to stay on localhost, 127.0.0.0/8 or ::1, a probe to
+  be a path on that origin, and refuses a `connectionString` key (name an environment variable in
+  `connectionStringVariable` instead). A refusal names the key path, for example
+  `sites.example.mirage.localServices.f.baseUrl must be an http(s) URL on localhost, 127.0.0.0/8 or ::1`.
 - Preflight sends one GET per service without redirects, ended by a caller's `timeoutMs` or the 30-second
   idle window, and answers `{ id, kind, reachable, status, required, message }` without throwing; messages show origin
   and path only. A Service Bus entry reads its variable at probe time and checks the emulator's loopback health

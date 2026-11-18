@@ -3,6 +3,7 @@ import fsSync from 'node:fs';
 import path from 'node:path';
 import { discoverSolutionTrees, scanSolutionSources } from './solution-schema.mjs';
 import { INVENTORY_TREE_DIRS } from './solution-inventory.mjs';
+import { requiredArgument } from './required-argument.mjs';
 
 /**
  * Discover unpacked Dataverse solution repositories next to a portal source.
@@ -15,7 +16,10 @@ import { INVENTORY_TREE_DIRS } from './solution-inventory.mjs';
  * only columns of that table; independent roots keep name order. An explicit order
  * (CLI --solution-root or project configuration) always replaces this discovery.
  */
-export async function discoverSolutionRoots(sourceDir, { cacheFile, diagnostics } = {}) {
+export async function discoverSolutionRoots(
+  sourceDir = requiredArgument('discoverSolutionRoots(sourceDir)', 'a portal source directory'),
+  { cacheFile, diagnostics } = {},
+) {
   let current = path.resolve(sourceDir);
   while (true) {
     try {
@@ -85,6 +89,11 @@ export async function resolveSolutionRoots({ sourceDir, explicitRoots, explicitO
       order: catalogue.solutionOrder === 'explicit' ? 'explicit' : 'derived',
       source: 'catalogue',
     };
+  if (sourceDir === undefined)
+    requiredArgument(
+      'resolveSolutionRoots({ sourceDir })',
+      'a portal source directory when no solution roots are given',
+    );
   return { roots: await discoverSolutionRoots(sourceDir, { cacheFile }), order: 'derived', source: 'discovered' };
 }
 

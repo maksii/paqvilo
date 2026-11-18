@@ -19,6 +19,7 @@ import {
   portalMatrix,
 } from '../portal-matrix.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { renderSweep } from '../render-sweep.mjs';
 
 async function tree(t, files) {
   const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'portal-matrix-'));
@@ -518,7 +519,9 @@ test('problems and Markdown name unexplained imports, failed requests and failed
       import: { ...portal.import, website: { name: 'path\\|<img>[link](x)`' } },
     })),
   });
-  assert.ok(unsafe.includes('path&#92;&#124;&#60;img&#62;&#91;link&#93;(x)&#96;'));
+  // Markdown backslash escapes, readable in the terminal, not HTML entities.
+  assert.ok(unsafe.includes(String.raw`path\\\|\<img\>\[link\](x)` + '\\`'), unsafe);
+  assert.doesNotMatch(unsafe, /&#\d+;/);
 });
 
 /** Minimal unpacked solution: complete account and contact definitions, so the scaffold can create persona contacts. */
@@ -642,6 +645,74 @@ test('matrix runs every portal stage for the standard portal of a two-portal pro
   assert.equal(work('scaffold anonymous'), 302);
   assert.equal(work('scaffold all-roles'), 200);
   assert.equal(standard.scaffold.runs[1].identity.authenticated, true);
+});
+
+/** A catalogue site over the standard export whose startup preset (empty-local) has the given presetMode. */
+async function presetSite(t, presetMode) {
+  const root = await tree(t, {
+    ...Object.fromEntries(Object.entries(standardExport).map(([name, content]) => [`portal/${name}`, content])),
+    ...solutionTree(),
+    'paqvilo.config.yml': [
+      'sourceRoot: .',
+      'defaultSite: site',
+      'sites:',
+      '  site:',
+      '    source: portal',
+      '    defaultEnv: local',
+      '    environments: { local: http://127.0.0.1:8787 }',
+      `    mirage: { solutionRoots: [./solutions/core], preset: empty-local, presetMode: ${presetMode} }`,
+      '',
+    ].join('\n'),
+  });
+  return { config: path.join(root, 'paqvilo.config.yml'), out: path.join(root, 'matrix') };
+}
+
+// @test-kind contract: the default scaffold personas must sign in on a site whose startup preset keeps an existing state
+test('scaffold all-roles signs in the coverage contact on a site with a bootstrap startup preset', async (t) => {
+  const { config, out } = await presetSite(t, 'bootstrap');
+  const matrix = await portalMatrix({ config, sites: ['site'], out, only: ['scaffold'], log: () => {} });
+  assert.deepEqual(matrix.problems, []);
+  const [portal] = matrix.portals;
+  assert.deepEqual(
+    portal.scaffold.runs.map((run) => run.persona),
+    ['scaffold anonymous', 'scaffold all-roles'],
+  );
+  assert.equal(portal.scaffold.runs[1].identity.authenticated, true);
+  assert.deepEqual(portal.scaffold.runs[1].identity.roles, ['Authenticated Users']);
+});
+
+// @test-kind contract: a scaffold persona that cannot sign in names the persona, the reason and how to choose another
+test('a scaffold persona whose contact a startup preset removes names the persona, the cause and the way out', async (t) => {
+  const { config, out } = await presetSite(t, 'always');
+  const matrix = await portalMatrix({ config, sites: ['site'], out, only: ['scaffold'], log: () => {} });
+  const [problem] = matrix.problems;
+  assert.equal(problem?.stage, 'scaffold', JSON.stringify(matrix.problems));
+  assert.match(
+    problem.problem,
+    /^stage failed: scaffold persona 'all-roles' cannot sign in: coverage contact [0-9a-f-]{36} is not an active local contact/,
+  );
+  assert.match(problem.problem, /presetMode always replaces the scaffolded rows\)\./);
+  assert.match(problem.problem, /Set the site's presetMode to bootstrap, or pass --scaffold-personas anonymous\.$/);
+});
+
+// @test-kind contract: render-sweep's configured persona names the contact that cannot sign in and the alternatives
+test('render-sweep configured persona with an unknown contact names it and the personas to use instead', async (t) => {
+  const { config } = await presetSite(t, 'bootstrap');
+  const state = path.join(path.dirname(config), 'state.json');
+  const contactId = '0f1a2b3c-0000-4000-8000-0000000000ff';
+  await fs.writeFile(
+    state,
+    JSON.stringify({ simulator: { identity: { id: contactId, contactId, roleSource: 'memberships', roles: [] } } }),
+  );
+  await assert.rejects(
+    renderSweep({ config, site: 'site', solutionRoots: [], persona: 'configured', state, limit: 1 }),
+    (error) =>
+      error.code === 'PERSONA_CONTACT_UNAVAILABLE' &&
+      error.message ===
+        `Persona 'configured' cannot sign in: the state's configured contact ${contactId} is not an active local ` +
+          'contact. Select an active contact as the default persona in /_sim/ (Personas), or use --persona ' +
+          'authenticated or all-roles.',
+  );
 });
 
 test('matrix runs every portal stage for the enhanced portal of a two-portal project', async (t) => {

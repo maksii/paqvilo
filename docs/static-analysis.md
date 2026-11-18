@@ -26,7 +26,8 @@ level or above, and on incomplete inspection of supported sources.
 Each result has a `verdict`: `ready` (complete, no finding at the threshold), `incomplete` (inspection did
 not finish, whatever the threshold) or `error` (a finding reached the threshold). Text output uses it as
 the report heading; a report that fails before analysis, such as a configuration error, is headed ERROR.
-`ready` is the gate result, so `--fail-on none` is ready even when incomplete; it certifies nothing.
+The separate `ready` field is the gate result, so `--fail-on none` gives `ready: true` even when the
+verdict is `incomplete`; it certifies nothing.
 
 - **Error:** a proven invalid local source contract.
 - **Warning:** a concrete risk or inconsistency to review; intended configurations may be valid.
@@ -65,7 +66,7 @@ recognition and limitations per domain.
 | Code Apps                           | Explicit app/SDK/CLI/configuration, build/dependency/lock contracts and initialization patterns                                      |
 | Power Automate                      | Exported flow structures, action/dependency graphs, connection bindings and source safety/performance hints                          |
 | Custom connectors                   | Recognized OpenAPI operations, local references, parameters and security declarations; endpoints are not contacted                   |
-| MCP apps                            | Recognized tool schemas, annotations and implementation pairing; annotations do not prove behavior                                   |
+| MCP apps                            | Recognized tool schemas, annotations and implementation pairing; annotations do not prove behaviour                                  |
 | Native mobile and extensions        | Source/package declarations and transferable project-quality guidance; native build/dispatcher/host/device evidence remains separate |
 | Governance and process intelligence | Explicit evidence-required capabilities; application exports cannot establish tenant policy, health or business process metrics      |
 

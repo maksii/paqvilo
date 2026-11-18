@@ -9,6 +9,7 @@ import { once } from 'node:events';
 import { createInterface } from 'node:readline';
 import { createFixture, SITE, tempDirSync } from './fixture.mjs';
 import { inspectCheckout } from '../lense/commands/doctor.mjs';
+import { paqviloPrefix } from '../lense/command-hint.mjs';
 import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import { boundedCommand, COMMAND_HANG_GUARD_MS } from './helpers/bounded-command.mjs';
@@ -288,7 +289,8 @@ test('Mirage start waits for runtime readiness and exposes page dependency conte
   assert.notEqual(new URL(session.adminUrl).port, new URL(session.url).port);
   assert.ok(path.isAbsolute(session.stateFile));
   assert.ok(session.stateFile.startsWith(path.join(path.dirname(config), '.paqvilo') + path.sep));
-  assert.match(session.stop, /^npx paqvilo mirage stop --config /);
+  // The hint starts the way paqvilo runs where the command ran (lense/command-hint.mjs): here the toolkit checkout.
+  assert.ok(session.stop.startsWith(`${paqviloPrefix().join(' ')} mirage stop --config `), session.stop);
   assert.ok(session.stop.includes(config), 'the hint retains the exact selected catalogue');
   assert.ok(session.stop.includes('--site test'));
   assert.ok(session.stop.includes('--port ' + new URL(session.url).port));
@@ -597,7 +599,7 @@ test('mirage init writes a validated project file from the catalogue site and re
     assert.equal(report.action, 'init');
     assert.equal(report.file, out);
     assert.equal(report.catalogued, false);
-    assert.match(report.next, /paqvilo mirage dev --config/);
+    assert.ok(report.next.startsWith(`${paqviloPrefix().join(' ')} mirage dev --config`), report.next);
     assert.ok(report.next.includes('--project'));
     assert.ok(report.next.includes(config) && report.next.includes(fx.dir));
     assert.ok(
@@ -648,9 +650,11 @@ test('mirage init writes a validated project file from the catalogue site and re
     fs.appendFileSync(config, `      project: ${JSON.stringify(missing)}\n`);
     const unavailable = await run('mirage', 'start', '--config', config, '--repo', fx.dir, '--port', '0', '--json');
     assert.equal(unavailable.status, 1);
-    assert.match(
-      JSON.parse(unavailable.stdout).error.message,
-      /missing\.project\.yml, which does not exist.*paqvilo mirage init/,
+    const unavailableMessage = JSON.parse(unavailable.stdout).error.message;
+    assert.match(unavailableMessage, /missing\.project\.yml, which does not exist/);
+    assert.ok(
+      unavailableMessage.includes(`Create it with: ${paqviloPrefix().join(' ')} mirage init`),
+      unavailableMessage,
     );
     const catalogued = await run('mirage', 'init', '--config', config, '--repo', fx.dir, '--json');
     assert.equal(catalogued.status, 0, catalogued.stdout + catalogued.stderr);

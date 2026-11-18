@@ -2,6 +2,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { deflateRawSync } from 'node:zlib';
 import { MAX_COMMAND_PAYLOAD_BYTES } from './command-payload.mjs';
+import { paqviloPrefix } from './command-hint.mjs';
 
 // CMD accepts at most 8191 characters. Leave room for its invocation prefix;
 // use the same bound for portable hints copied between supported shells.
@@ -42,16 +43,25 @@ function stopArgument(value, platform) {
   return `'${value.replaceAll("'", "'\"'\"'")}'`;
 }
 
-/** Copyable CLI hints, with an exact argv batch when a group needs distinct selectors. */
-export function mirageCommandHint(commands, { cli, platform = process.platform, storePayload, cwd } = {}) {
+/**
+ * Copyable CLI hints, with an exact argv batch when a group needs distinct selectors. A readable hint starts the way
+ * paqvilo is run from `from` (lense/command-hint.mjs). With `lines`, a group whose every argument can be quoted is
+ * printed as one readable command per line instead of the batch.
+ */
+export function mirageCommandHint(
+  commands,
+  { cli, platform = process.platform, storePayload, cwd, from = process.cwd(), lines = false } = {},
+) {
   validateCommandArguments(commands, cli);
   if (cwd !== undefined && (typeof cwd !== 'string' || !path.isAbsolute(cwd) || cwd.includes('\0')))
     throw new Error('Command working directory must be an absolute path without NUL bytes.');
   if (!commands.length) return null;
-  if (commands.length === 1 && cwd === undefined) {
-    const quoted = ['npx', 'paqvilo', ...commands[0].map(String)].map((value) => stopArgument(value, platform));
-    if (quoted.every((value) => value !== null)) {
-      const readable = quoted.join(' ');
+  if ((commands.length === 1 || lines) && cwd === undefined) {
+    const quoted = commands.map((command) =>
+      [...paqviloPrefix(from), ...command.map(String)].map((value) => stopArgument(value, platform)),
+    );
+    if (quoted.every((command) => command.every((value) => value !== null))) {
+      const readable = quoted.map((command) => command.join(' ')).join('\n');
       if (readable.length <= MAX_HINT_CHARACTERS) return readable;
     }
   }

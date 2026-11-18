@@ -14,12 +14,13 @@ to the organization as `api.providers.messaging` and `api.providers.outbox`.
 The queue and outbox state are rows of internal tables (`paqvilo_queuemessage`, `paqvilo_queuesequence`,
 `paqvilo_outboxentry`, plus the standard `flowrun` table), composed in the organization's startup transaction at every
 simulation level and without an entity set, so the portal and Web API never route to them. At `dry-run`, or without a
-state file, they work in memory and are lost when the runtime closes; use a persistent level and a state file when
-they must survive a restart.
+state file, they work in memory and are lost when the runtime closes; use a persistent level and a state file when they
+must survive a restart.
 
 ## Local message bus
 
-The local bus works over the store. Each mutation is one journaled store transaction; `{ nested: true }` joins a running transaction, so the message rolls back with it.
+The local bus works over the store. Each mutation is one journaled store transaction; `{ nested: true }` joins a running
+transaction, so the message rolls back with it.
 
 | Operation                                                             | Behaviour                                                                                                                                                                                        |
 | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -30,7 +31,8 @@ The local bus works over the store. Each mutation is one journaled store transac
 | `deadLetter(lockToken, { reason, description })`                      | Moves the message to `<entity>/$deadletterqueue`.                                                                                                                                                |
 | `peek(entity, { max })`, `stats(entity)`                              | Lists or counts messages by state: `active`, `locked`, `scheduled`, `deadLettered`.                                                                                                              |
 
-- FIFO within one entity; entities are independent. An expired lock is released by the next `receive` on its entity.
+- FIFO within one entity; entities are independent. An expired lock is released by the next `receive` on its entity and
+  counts as an abandoned delivery: the message reappears after that attempt's `retry.backoffMs`.
 - `retry` is `{ maxAttempts, backoffMs, deadLetter }`, default `{ maxAttempts: 1, backoffMs: [], deadLetter: true }`. A
   message released after `maxAttempts` deliveries is dead-lettered with `MaxDeliveryCountExceeded`, or dropped with
   `deadLetter: false`.
@@ -64,27 +66,26 @@ key, one session, link credit. It has `send`, `receive`, `complete`, `abandon` a
 
 The connection string is read from its `env:NAME` variable when a connection opens; the key goes only into the SASL
 exchange and is never kept or reported. `preflight()` opens a fresh connection and attaches a sender link to every
-entity that `providers.messaging.endpoints` maps to the provider, under the
-[idle guard](storage-providers.md#contract); `provider:messaging/<id>` is `satisfied` on success and `missing` with the
-reason otherwise.
+entity that `providers.messaging.endpoints` maps to the provider, under the [idle guard](storage-providers.md#contract);
+`provider:messaging/<id>` is `satisfied` on success and `missing` with the reason otherwise.
 
 The [local service](operations.md#local-services) health check requires `UseDevelopmentEmulator=true`, an `sb://`
-endpoint on a loopback host and a valid port, then sends `GET /health` on loopback port 5300 without redirects. It
-never throws and reports `SERVICEBUS_EMULATOR_CONNECTION_MISSING`, `_NOT_DEVELOPMENT`, `_ENDPOINT_INVALID`,
-`_PORT_INVALID`, `_NOT_LOOPBACK`, `_UNREACHABLE` or `_UNHEALTHY`.
+endpoint on a loopback host and a valid health port, then sends `GET /health` to that host on port 5300 without
+redirects. It never throws and reports `SERVICEBUS_EMULATOR_CONNECTION_MISSING`, `_NOT_DEVELOPMENT`,
+`_ENDPOINT_INVALID`, `_PORT_INVALID`, `_NOT_LOOPBACK`, `_UNREACHABLE` or `_UNHEALTHY`.
 
 Emulator facts that affect tests: it runs as Docker containers (the emulator and SQL Server); entities come from its
-`config.json` at container start and are lost on restart (Paqvilo's own job rows stay authoritative); one namespace,
-256 KB messages.
+`config.json` at container start and are lost on restart (Paqvilo's own job rows stay authoritative); one namespace, 256
+KB messages.
 
 ### Check against the real emulator
 
 CI uses a loopback fake broker (`mirage/testing/amqp-fake-broker.mjs`) with its own codec. A real-emulator run is
 manual:
 
-1. Start the emulator as in
-   [Test locally with the Service Bus emulator](https://learn.microsoft.com/azure/service-bus-messaging/test-locally-with-service-bus-emulator),
-   with a `config.json` declaring your queue, topic and subscription.
+1. Start the emulator as in [Test locally with the Service Bus
+   emulator](https://learn.microsoft.com/azure/service-bus-messaging/test-locally-with-service-bus-emulator), with a
+   `config.json` declaring your queue, topic and subscription.
 2. Set a variable to the emulator connection string, for example
    `FX_SB=Endpoint=sb://localhost;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=<key>;UseDevelopmentEmulator=true;`.
 3. Declare `providers.messaging.<id>: { kind: servicebus-emulator, connectionString: env:FX_SB }` and map an endpoint to
@@ -93,12 +94,14 @@ manual:
 
 ## Configuration keys
 
-Mirage validates `providers.messaging` at start; unknown keys are rejected per kind, and the
-normalised result parses again unchanged.
+Mirage validates `providers.messaging` and `providers.outbox` when the configuration loads; unknown keys are rejected
+per kind, and the normalized result parses again unchanged. A refusal names the full key path, for example
+`Unknown sites.example.mirage.providers.messaging.sb key 'retry' for kind servicebus-emulator` or
+`sites.example.mirage.providers.messaging.sb.connectionString is required (env:NAME)`.
 
 | Key                                         | Values                                                                                                                                                            |
 | ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `providers.messaging.<id>.kind`             | `local-queue`, `servicebus-emulator` or `pack:<packId>/<name>`. The id `local` defaults to `local-queue`.                                                         |
+| `providers.messaging.<id>.kind`             | Required: `local-queue`, `servicebus-emulator` or `pack:<packId>/<name>`. An undeclared `local` id is added as `local-queue` with the default retry.              |
 | `providers.messaging.<id>.retry`            | `local-queue` and pack kinds: `maxAttempts` 1–100, `backoffMs` at most 32 delays of 0–86400000, `deadLetter`. Not for the emulator: its `config.json` owns those. |
 | `providers.messaging.<id>.lockDurationMs`   | `local-queue` only; 1000–300000.                                                                                                                                  |
 | `providers.messaging.<id>.connectionString` | Required for `servicebus-emulator`; `env:NAME` only. The endpoint must be `sb://` on loopback with `UseDevelopmentEmulator=true`.                                 |
@@ -118,7 +121,9 @@ and optionally `preflight()`, under the composition rules of
 
 ## Outbox
 
-The outbox captures messages as rows of `paqvilo_outboxentry` and keeps the newest 1,000. The descriptor is `outbox:local` at `behaviour` with `fidelity: 'capture-only'`. **The outbox never sends anything.**
+The outbox captures messages as rows of `paqvilo_outboxentry` and keeps the newest `providers.outbox.retention` entries
+(default 1,000, at most 1,000,000). The descriptor is `outbox:local` at `behaviour` with `fidelity: 'capture-only'`.
+**The outbox never sends anything.**
 
 `capture(entry, { nested })` takes `channel` (`email`, `teams`, `outlook` or `portal-email`), `from`, `to[]`, `cc[]`,
 `bcc[]`, `subject`, `body`, `bodyType` (`text` or `html`), `attachments[]` (`{ name, contentType, content?, size? }`),
@@ -171,7 +176,7 @@ How a plug-in step whose handler is a service endpoint delivers:
 - **Unmapped endpoints** raise `SERVICE_ENDPOINT_UNMAPPED` (id and name, never `authvalue`): a synchronous step fails
   the operation, an asynchronous job ends Failed (31).
 - **TriggerServiceEndpointCheck** answers 204 for a mapped contract 2, 5 or 6 endpoint (sending nothing) and 400 for an
-  unmapped one; without a provider it accepts loopback contract 8 endpoints only.
+  unmapped one; it probes a contract 8 endpoint only on a loopback URL, and refuses every other endpoint.
 
 ## `/_sim/` routes
 
@@ -185,8 +190,9 @@ Both hosts serve these routes; they inspect and purge the default bus only.
 | `GET /_sim/api/outbox?correlationId=&channel=&since=` | `{ configured, entries }`                                                                                                       |
 
 Every answer, and every flow-run answer, passes through `redactSecrets`: a key that, lower-cased and without
-separators, ends in `authvalue`, `connectionstring`, `password`, `secret`, `clientsecret`, `clientpassword`, `saskey`,
-`sastoken`, `sharedaccesskey`, `sharedaccesssignature`, `accountkey`, `apikey`, `token`, `accesstoken`,
-`authorization`, `primarykey`, `secondarykey`, `functionkey`, `signature` or `cookie`, or contains `functionskey`, has
-its value replaced with `[redacted]`, as does the `value` of a `{ key, value }` pair whose `key` is credential-named.
-The bare field `key` and `sharedaccesskeyname` never match.
+separators, ends in `authvalue`, `connectionstring`, `password`, `pwd`, `secret`, `token`, `apikey`, `authorization`,
+`signature`, `cookie`, `saskey`, `sharedaccesskey`, `accountkey`, `primarykey`, `secondarykey`, `functionkey` or
+`subscriptionkey`, or contains `functionskey`, has its value replaced with `[redacted]`, as does the `value` of a
+`{ key, value }` pair whose `key` is credential-named. The bare field `key` and `sharedaccesskeyname` never match.
+Free-text fields (`body`, `subject`, `message`, `description`, `reason` and similar) are also masked for embedded
+connection strings and credential headers.

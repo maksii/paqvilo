@@ -40,11 +40,11 @@ offline.
 ## Reading the results
 
 The rules inspect source patterns, including code paths a test may never run. A clean result does not prove the
-native app supports a script, that every unsupported pattern was found, or that the hosted checker agrees. The
-`avoid-2011-api` rule does not flag every `Xrm.Page` use, and `do-not-make-parent-assumption` ignores expressions
-containing `Xrm`.
+native app supports a script, that every unsupported pattern was found, or that the hosted checker agrees.
+`use-client-context` (not `avoid-2011-api`) reports `Xrm.Page`, but not every form of access (`Xrm["Page"]` passes),
+and `do-not-make-parent-assumption` ignores expressions containing `Xrm`, such as `parent.Xrm.Page`.
 
 Mirage maps `Xrm.Page` to its local form context, and HTML resources in frames may reach `parent.Xrm` or the DOM
 through same-origin access. Mirage reports unsupported client API members, but it does not warn about such browser
-access, and local success does not establish native behavior. Use lint alongside project tests and native
+access, and local success does not establish native behaviour. Use lint alongside project tests and native
 verification; see the [client API](model-driven-client-api.md).

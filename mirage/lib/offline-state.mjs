@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { hashStateFile } from './state-stream.mjs';
+import { requiredArgument } from './required-argument.mjs';
 
 function discoveryDirectories(stateFile) {
   const directories = new Set([path.join(process.cwd(), '.paqvilo/simulator')]);
@@ -52,15 +53,25 @@ async function candidateUsesState(candidate, stateFile, isRunning) {
   return false;
 }
 
-/** Offline imports never replace an active runtime's independently held state. */
-export async function assertOfflineState(stateFile, { directory, isRunning = running } = {}) {
+/**
+ * Offline writes never replace an active runtime's independently held state. `operation` names the attempted
+ * operation in the refusal (for example "scaffolding data").
+ */
+export async function assertOfflineState(
+  stateFile,
+  { directory, isRunning = running, operation = 'importing reference records' } = {},
+) {
+  // Only a call without arguments names the function; a command without --state passes undefined.
+  if (arguments.length === 0) requiredArgument('assertOfflineState(stateFile)', 'a state file path');
   if (typeof stateFile !== 'string' || !stateFile) throw new Error('An existing state file is required.');
   for (const candidate of directory ? [directory] : discoveryDirectories(stateFile)) {
     if (await candidateUsesState(candidate, stateFile, isRunning))
-      throw new Error('Stop the Mirage using this state before importing reference records.');
+      throw new Error(`Stop the Mirage using this state (${path.resolve(stateFile)}) before ${operation}.`);
   }
 }
 
-export async function stateFileFingerprint(stateFile) {
+export async function stateFileFingerprint(
+  stateFile = requiredArgument('stateFileFingerprint(stateFile)', 'a state file path'),
+) {
   return hashStateFile(stateFile);
 }

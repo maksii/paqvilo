@@ -1,8 +1,8 @@
 # Local deployment profiles
 
-Mirage maps named environment profiles to deployment-settings files you already have, applies a configured default,
-and lets you pin a selection per portal in local state. Register file paths explicitly: Mirage does not discover
-adjacent repositories, and it never runs PAC, uploads, deploys, synchronizes or connects to a service.
+Mirage maps named environment profiles to deployment-settings files you already have, applies a configured default, and
+lets you pin a selection per portal in local state. Register file paths explicitly: Mirage does not discover adjacent
+repositories, and it never runs PAC, uploads, deploys, synchronizes or connects to a service.
 
 ## Configure profiles
 
@@ -38,16 +38,17 @@ sites:
 
 Formats follow the
 [Pages deployment-profile tutorial](https://learn.microsoft.com/en-us/power-pages/configure/power-platform-cli-tutorial#upload-the-changes-using-deployment-profile)
-and [Solution deployment settings](https://learn.microsoft.com/en-us/power-platform/alm/conn-ref-env-variables-build-tools);
+and
+[Solution deployment settings](https://learn.microsoft.com/en-us/power-platform/alm/conn-ref-env-variables-build-tools);
 every mapped file may be JSON or YAML.
 
 **Paths.** A string resolves against the catalogue directory (also in personal overrides); absolute paths are accepted.
 `{ source: <path> }` resolves against the selected portal source folder and `{ sourceRoot: <path> }` against the
 resolved source root, so both follow `--repo` and worktrees. In a Mirage project, `deploymentProfiles` may sit at the
 top level or in a `portals` entry (which replaces the project's whole object; `{}` clears it) and paths resolve against
-the project file. For `createSimulator({ deploymentProfiles, projectRoot })` they resolve against `projectRoot`
-(default the current directory). `mirage init` copies catalogue mappings into the project with rebased paths; when the
-toolkit launches the catalogue's own `mirage.project`, the catalogue mapping wins so personal overrides still apply.
+the project file. For `createSimulator({ deploymentProfiles, projectRoot })` they resolve against `projectRoot` (default
+the current directory). `mirage init` copies catalogue mappings into the project with rebased paths; when the toolkit
+launches the catalogue's own `mirage.project`, the catalogue mapping wins so personal overrides still apply.
 
 **Several files.** Both Solution sections accept an ordered list; a later file replaces entries with the same
 case-insensitive schema or logical name and keeps the rest. `pages` takes one file.
@@ -78,20 +79,31 @@ dev:
 
 ## Validation rules
 
-- Mapped sections are enabled by default; `enabled` overrides that, and `required` lists sections that must stay
-  enabled with a file. Without `default` no profile applies until one is pinned, so required sections need a valid
-  default. Required means the file must exist, not that every patch target exists.
+- Mapped sections are enabled by default; `enabled` overrides that, and `required` lists sections that must stay enabled
+  with a file. Without `default` no profile applies until one is pinned, so required sections need a valid default.
+  Required means the file must exist, not that every patch target exists.
 - Pages patches use the importer: record ids win over names, language and record identity are kept, and an unresolved
   target is a `DEPLOYMENT_PROFILE_TARGET_UNRESOLVED` diagnostic.
-- Environment variable settings need exported Solution definitions; types and definitions are never invented.
-- Connection references are local configuration only: they do not authorize or run Power Automate connections. An
-  empty `ConnectionId` is an unset reference, skipped and reported as `DEPLOYMENT_PROFILE_CONNECTION_UNSET`; it does
-  not remove a reference set by an earlier file.
+- Environment variable settings need exported Solution definitions; types and definitions are never invented. An entry
+  whose `SchemaName` has no definition changes nothing, is not counted in `counts.environmentVariables` and is reported
+  as a `DEPLOYMENT_PROFILE_VARIABLE_UNDEFINED` warning naming the profile and the schema name.
+- Connection references are local configuration only: they do not authorize or run Power Automate connections. An empty
+  `ConnectionId` is an unset reference, skipped and reported as `DEPLOYMENT_PROFILE_CONNECTION_UNSET`; it does not
+  remove a reference set by an earlier file.
 - Unknown ids, unsupported fields, duplicate names within one file and malformed active files are rejected; disabled
   files are not read. Doctor reports file and parse readiness per profile, with YAML errors as file, parser code and
   line/column, never source excerpts.
 - An explicitly selected invalid profile, or a pin that no longer matches the configuration, fails startup rather than
-  apply part of an environment.
+  apply part of an environment. A stale pin exits 1 with this message, printed as one line
+  (`configured: none` when no profile is configured):
+
+  ```text
+  Select a configured deployment profile: the locally pinned profile "<id>" is not configured (configured: <ids>).
+  Remove simulator.deploymentProfilePin from <state file>, or restore the profile.
+  ```
+
+  Delete that key from the named state file, or restore the profile in the configuration, and start again.
+
 - Use either the legacy exported Pages `deploymentProfile` / `--deployment-profile NAME` or mapped `deploymentProfiles`,
   not both.
 
@@ -108,8 +120,12 @@ PUT /_sim/api/environment/profiles    # {"profile":"test","enabled":{"connection
 PUT /_sim/api/environment/profiles    # null removes the pin and reapplies the configured default
 ```
 
-Mutations need the administration token in `x-sim-csrf` (`csrf` of `/_sim/api/status`, or `simulator.csrf`). Clients
-submit only registered profile ids and section flags, never paths; the status shows paths and counts, never file values.
+Mutations need the administration token in `x-sim-csrf` (`csrf` of `/_sim/api/status`, or `simulator.csrf`); without it
+the answer is 403. Clients submit only registered profile ids and section flags, never paths: an unknown profile or
+another key answers 400 `InvalidDeploymentProfile`. A successful `PUT` answers the new `profileSelection` (`profile`,
+`enabled`, `sources`, `pinned`, `counts`, `diagnostics`, ...); it shows paths and counts, never file values. The
+[standalone runtime](standalone-organization.md) (`--runtime model-driven` or `dataverse-api`) answers this `PUT` with
+501 `{ "supported": false, "reason": "…" }`.
 
 - Precedence: exported source → selected profile → project `environmentVariables` → manual local overrides. Manual
   overrides survive a profile switch; rows seeded by a disabled or replaced profile section are removed.
@@ -121,17 +137,17 @@ submit only registered profile ids and section flags, never paths; the status sh
 ## Environment variable types, effective values and secrets
 
 Solution environment variables keep their exported type: String (100000000), Number (100000001), Boolean (100000002),
-JSON (100000003), Data source (100000004) and Secret (100000005); values are text. The effective value is, lowest
-first: definition default → Solution value → selected profile → project `environmentVariables` → `/_sim/` or persona
-local value. Seeding writes it into the `environmentvariablevalue` row, so Web API reads,
-`RetrieveEnvironmentVariableValue` and `effectiveEnvironmentVariables(state)` (`mirage/lib/secret-resolver.mjs`) agree.
+JSON (100000003), Data source (100000004) and Secret (100000005); values are text. The effective value is, lowest first:
+definition default → Solution value → selected profile → project `environmentVariables` → `/_sim/` or persona local
+value. Seeding writes it into the `environmentvariablevalue` row, so Web API reads, `RetrieveEnvironmentVariableValue`
+and `effectiveEnvironmentVariables(state)` (`mirage/lib/secret-resolver.mjs`) agree.
 
 Server logic reads non-secret values with `Server.EnvironmentVariable.get(name)` (case-insensitive);
 `runExportedServerLogic` reads them from the store when its caller passes none. A Secret variable answers `null` there
 and records `SECRET_NOT_EXPOSED_TO_SERVER_LOGIC`, because Power Pages hands secrets to a site through a site setting
 bound to the variable (`environmentvariable` with `source` 1, recorded as `settingEnvironmentVariables`). Such settings
-stay classified secret through local overrides: page inspection (`/_sim/api/page-resources`, Lense) shows `[secret]`
-and never the value, while rendering still receives it.
+stay classified secret through local overrides: page inspection (`/_sim/api/page-resources`, Lense) shows `[secret]` and
+never the value, while rendering still receives it.
 
 A Secret variable's value is a Key Vault reference, never the secret:
 
@@ -154,15 +170,16 @@ secrets:
     disabled: false
   fx-vault/other:
     source: protected # a Windows DPAPI blob for the current user
-    protectedValue: '<base64 DPAPI blob>'
+    protectedValue: AQAAANCMnd8BFdERjHoAwE/Cl+sBAAAA # base64; validated as base64 at load
 ```
 
-- A `value` key is refused: secret values never live in configuration, state or profiles.
+- A `value` or `secret` key is refused: secret values never live in configuration, state or profiles.
 - `RetrieveEnvironmentVariableSecretValue` resolves the reference for the caller when a `secrets` map exists: 200
   resolved, 403 principal not in `allow`, 404 unbound or missing, 400 expired, disabled or not a Key Vault Secret; 501
-  without a `secrets` map. These refusal statuses are local choices, not captured native responses. `NotifyEnvironmentVariableSecretChange` only validates its arguments.
+  without a `secrets` map. These refusal statuses are local choices, not captured native responses.
+  `NotifyEnvironmentVariableSecretChange` only validates its arguments.
 - `RetrieveEnvironmentVariables`, OData reads of `environmentvariablevalues` and `/_sim/api/environment` return the
-  reference only. The environment table omits `value`, `effectiveValue` and `defaultValue` for secret definitions and
-  adds `reference` and `secretStatus` (`bound`, `status`, `version`, `expiresOn`; `not-configured` without a resolver).
+  reference only. The environment table omits `value` and `effectiveValue` for secret definitions, reports `defaultValue` as
+  `null` and adds `reference` and `secretStatus` (`bound`, `status`, `version`, `expiresOn`; `not-configured` without a resolver).
 - Resolver diagnostics (`SECRET_DENIED`, `SECRET_MISSING`, `SECRET_EXPIRED`, `SECRET_DISABLED`, `SECRET_UNBOUND`) name
   the `<vault>/<name>` key and the reason, never the value.

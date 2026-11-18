@@ -9,6 +9,11 @@ Each kind of check proves something different. Report them separately, and never
 | Project acceptance test                                                                        | That one simulated business scenario works end to end locally                                    | Behaviour for other personas, data or deployments   |
 | Recorded reference comparison (`parity-suite`, `baseline-suite`)                               | Agreement with the reference for the compared routes, identities and data at capture time        | Anything not compared                               |
 
-A sign-in page, an HTTP 200 or an inventory match is not a passing page. Always report coverage and skipped or incomplete cases alongside passes, and keep runtime errors, failed requests, unmatched source patches and unsupported diagnostics with the result. Record the source baseline, local scenario, permission mode and toolkit version so a result can be reproduced.
+A sign-in page, an HTTP 200 or an inventory match is not a passing page. Always report coverage and skipped or
+incomplete cases alongside passes, and keep runtime errors, failed requests, unmatched source patches and unsupported
+diagnostics with the result. Record the source baseline, local scenario, permission mode and toolkit version so a result
+can be reproduced.
 
-Store business screenshots, logs, state and reference captures under the project's ignored `.paqvilo/`. To compare with a live reference, see [reference parity evidence](parity-evidence.md). A `parity` test claim additionally needs replay cases built from two or more captures ([test kinds](../../docs/test-kinds.md)).
+Store business screenshots, logs, state and reference captures under the project's ignored `.paqvilo/`. To compare with
+a live reference, see [reference parity evidence](parity-evidence.md). A `parity` test claim additionally needs replay
+cases built from two or more captures ([test kinds](../../docs/test-kinds.md)).

@@ -50,7 +50,7 @@ import { uploadedAssemblyOfType, uploadedClrRuntime } from './plugin-uploaded.mj
 import { pluginStepBypassed, pluginBypassOwnership } from './plugin-bypass.mjs';
 import { denied } from './dataverse-fls.mjs';
 import { changedColumns, dataverseHost } from './power-fx-dataverse.mjs';
-import { privilegeDeniedError, uuidV5 } from './dataverse-security.mjs';
+import { uuidV5 } from './dataverse-security.mjs';
 import { authorizeGrant, validateServiceProfile } from './local-organization-service.mjs';
 import { child, childText, parseSolutionXml } from './solution-xml.mjs';
 
@@ -777,7 +777,7 @@ function resolveApiInvocation(api, name, c, options, handlers, pluginTypes) {
       innerCode: '',
     });
   if (row.executeprivilegename && !api.principals.privileges(c.user).has(row.executeprivilegename))
-    throw privilegeDeniedError(c.user, row.executeprivilegename, row.boundentitylogicalname ?? row.uniquename);
+    throw api.principals.deniedError(c.user, row.executeprivilegename, row.boundentitylogicalname ?? row.uniquename);
   const inputs = checkParameters(store, row, c);
   const properties = propertiesOf(store, row);
   if (!properties.length && row.isfunction) throw notFound(name);

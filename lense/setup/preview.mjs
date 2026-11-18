@@ -301,12 +301,15 @@ export async function previewSessions({ kind, file, sites = [] }) {
       sites.find((item) => session.stateFile && path.basename(path.dirname(session.stateFile)) === item.id);
     const key = `${session.pid} ${session.url}`;
     let answered;
-    if (session.ready === true)
+    // An owned preview recorded as ready stays ready on a read that got no answer; that read carries no links, so
+    // the ones it reported before are kept.
+    if (session.ready === true && session.runtime)
       answered = {
-        links: session.runtime?.links ?? null,
-        kind: session.runtime?.runtime?.kind ?? session.runtime?.kind ?? null,
+        links: session.runtime.links ?? null,
+        kind: session.runtime.runtime?.kind ?? session.runtime.kind ?? null,
       };
-    else if (session.probe === 'no-answer') answered = before.get(key);
+    else if (session.probe === 'no-answer')
+      answered = before.get(key) ?? (session.ready === true ? { links: null, kind: null } : undefined);
     if (answered) now.set(key, answered);
     return {
       site: site?.id ?? null,

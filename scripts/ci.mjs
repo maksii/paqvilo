@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { parseArgs } from 'node:util';
+import { parseOptions } from '../lense/cli-options.mjs';
 import { classifyChanges, suitesForScope } from '../.github/scripts/change-scope.mjs';
 import { dependencyReadiness, browserExecutable } from './ensure-dependencies.mjs';
 import { ensureVerifiedArchive, extractZipOnWindows } from './verified-download.mjs';
@@ -1448,8 +1448,9 @@ export function laneFixtures(args, platform = process.platform) {
   return { ecosystem: needsEcosystem(suite, unit, shard), sdk_reference: requiresClrFixture(suite, platform) };
 }
 
+// One-line refusals for unknown, valueless and repeated options (`--suite` given twice must not pick one silently).
 function parseRunArgs(args) {
-  return parseArgs({
+  return parseOptions({
     args,
     options: {
       full: { type: 'boolean' },
@@ -1661,17 +1662,51 @@ async function runMain() {
   const suite = values.suite;
   const browser = !values.unit;
   const unit = !values.browser;
-  if (command !== 'verify')
-    throw new Error(
-      'Use prepare or verify, with --suite lense|mirage|examples, --unit, --browser, --prepared, --base <ref>, or --full.',
-    );
   const selected = selectVerificationScope(suite, full, values);
   const { scope, changed } = selected;
   const suites = suitesForScope(scope);
   await runVerification({ values, suite, full, unit, browser, scope, suites, changed, receipt, receiptFile });
 }
+const CI_COMMANDS = ['prepare', 'verify', 'fixtures', 'sdk', 'sdk-prepare', 'browser'];
+export const CI_USAGE = `Usage: node scripts/ci.mjs <command> [options]
+Commands:
+  verify        run the suites a change touches against --base (default origin/main), preparing them first
+  prepare       install dependencies, fixtures and browsers for a suite or lane
+  fixtures      print which fixture caches prepare uses for the same options (key=value lines)
+  sdk           run the SDK client gates prepared by sdk-prepare (takes no options)
+  sdk-prepare   prepare the SDK client gates (takes no options)
+  browser       install the pinned Chromium (takes no options)
+Options for verify, prepare and fixtures:
+  --suite <name>         lense, mirage or examples
+  --unit | --browser     only the unit or only the browser lane (omit both to run both)
+  --shard <i>/<n>        one shard of --suite lense|mirage with --unit or --browser
+Options for verify:
+  --full                 every suite, unit and browser lanes (npm run validate)
+  --base <ref>           compare HEAD with <ref> to select suites (not with --suite)
+  --prepared             skip preparation that an earlier prepare completed
+Options for prepare and fixtures:
+  --quality              the standalone quality lane
+  --sdk                  also prepare the full SDK client gates (only with --suite mirage --unit)
+  --help                 print this help
+See CONTRIBUTING.md.`;
+
+// Help and an unknown command are answered before the workspace lease or any installation.
+function helpRequested(command, args) {
+  if ([command, ...args].some((arg) => ['--help', '-h'].includes(arg))) return true;
+  if (!CI_COMMANDS.includes(command)) {
+    const problem = command ? 'Unknown command ' + command : 'No command given';
+    throw new Error(`${problem}; use ${CI_COMMANDS.join(', ')} (see --help).`);
+  }
+  // Option errors stay with the command: an invalid verify still revokes an earlier receipt first.
+  return false;
+}
+
 async function main() {
   const [command, ...args] = process.argv.slice(2);
+  if (helpRequested(command, args)) {
+    console.log(CI_USAGE);
+    return;
+  }
   // Read-only: answers without the workspace lease, before any dependency is installed.
   if (command === 'fixtures') {
     const lines = Object.entries({ ...laneFixtures(args), ...fixtureCacheKeys() })

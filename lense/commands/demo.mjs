@@ -136,7 +136,9 @@ async function copyStarter(target, copy) {
   }
   await fs.copyFile(path.join(STARTER, 'gitignore.template'), path.join(target, '.gitignore'));
   await fs.copyFile(path.join(STARTER, 'gitattributes.template'), path.join(target, '.gitattributes'));
-  await fs.copyFile(path.join(STARTER, 'editor-workspace.mjs'), path.join(target, 'editor-workspace.mjs'));
+  // Top-level modules the copied scripts import.
+  for (const name of ['editor-workspace.mjs', 'cli.mjs'])
+    await fs.copyFile(path.join(STARTER, name), path.join(target, name));
   await normalizeText(target);
   const { version, dependencies } = JSON.parse(await fs.readFile(path.join(ROOT, 'package.json'), 'utf8'));
   const example = JSON.parse(await fs.readFile(path.join(STARTER, 'package.json'), 'utf8'));
@@ -246,6 +248,9 @@ export function parseDemoOptions(args) {
   return { values: { dir: './paqvilo-example', ...chosen }, positionals };
 }
 
+// Every demo start resets the data to the sample; the catalogue's bootstrap mode keeps state for `npm run dev`.
+const DEMO_PRESET_ARGUMENTS = Object.freeze(['--preset', 'example-demo', '--preset-mode', 'always']);
+
 async function runDemo() {
   const { values, positionals } = parseDemoOptions(process.argv.slice(2));
   if (positionals.length) throw new Error('demo accepts options only; use --dir <path> to choose its folder');
@@ -277,7 +282,7 @@ Opening the development browser. Keep this terminal running.
 5. Edit portal/web-files/demo.css and save to see the local change.
 
 6. Compare 14 PCF editors, Liquid components and Extended operations.
-   Try a short account or contact name to check plugin validation.
+   Try a short account or contact name to check plug-in validation.
 
 Each demo start restores the sample dataset. Source edits stay in the demo folder.
 Open paqvilo-demo.code-workspace in VS Code for prepared tasks and browser debugging.
@@ -294,8 +299,7 @@ Close the browser or press Ctrl+C to stop.\n`);
     'selected',
     '--port',
     '0',
-    '--preset',
-    'example-demo',
+    ...DEMO_PRESET_ARGUMENTS,
   ];
   if (values.browser) args.push('--browser', values.browser);
   if (values.headless) args.push('--headless');

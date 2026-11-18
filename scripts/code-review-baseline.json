@@ -38,16 +38,16 @@
       "reason": "Generated standalone jQuery watcher; one authored fragment is enforced by generate-compat-watchers --check."
     },
     {
-      "key": "runtime:clone:mirage/lib/dataverse-app-messages.mjs|mirage/lib/dataverse-calendar-messages.mjs:2993269f84b1be975288ad24822512642096d4ed5eb4ec521529af30417446a9",
+      "key": "runtime:clone:mirage/lib/dataverse-app-messages.mjs|mirage/lib/dataverse-calendar-messages.mjs:9d762064264c8a56fe81a19ce5e1203ca85e97ab4e38bf2a32bf8d7a92cae378",
       "files": ["mirage/lib/dataverse-app-messages.mjs", "mirage/lib/dataverse-calendar-messages.mjs"],
-      "lines": 12,
+      "lines": 14,
       "type": "clone",
       "reason": "Local write/transaction wrappers retain operation-specific response and privilege policy; pure context/read mechanics are shared."
     },
     {
-      "key": "runtime:clone:mirage/lib/dataverse-app-messages.mjs|mirage/lib/dataverse-org-messages.mjs:a4e588b9aa64e49be695baeb5522d55d6740f6d773e4549a887caba42b6adebf",
+      "key": "runtime:clone:mirage/lib/dataverse-app-messages.mjs|mirage/lib/dataverse-org-messages.mjs:52a114b8881dfef9104c87c396d88042a98d25d8ad1f8d8807c1be331cff2208",
       "files": ["mirage/lib/dataverse-app-messages.mjs", "mirage/lib/dataverse-org-messages.mjs"],
-      "lines": 14,
+      "lines": 16,
       "type": "clone",
       "reason": "Local write/transaction wrappers retain operation-specific response and privilege policy; pure context/read mechanics are shared."
     },
@@ -99,6 +99,13 @@
       "lines": 15,
       "type": "clone",
       "reason": "Separate operation/type schema identities; matching parameter shapes are declarative protocol data."
+    },
+    {
+      "key": "runtime:clone:mirage/lib/dataverse-security-messages.mjs|mirage/lib/dataverse-security-messages2.mjs:c2180b74ed85fadd727e6680be39dbc1440f665942a457dfaba75c37a8aa341c",
+      "files": ["mirage/lib/dataverse-security-messages.mjs", "mirage/lib/dataverse-security-messages2.mjs"],
+      "lines": 14,
+      "type": "clone",
+      "reason": "Local write/transaction wrappers retain operation-specific response and privilege policy; pure context/read mechanics are shared."
     },
     {
       "key": "runtime:clone:mirage/lib/dataverse-solution-messages.mjs|mirage/lib/dataverse-solution-messages.mjs:68760b0406adc3ddedf441c03ddb9919cbb98f8b2832499c9ab82e4af2b163a5",
@@ -787,6 +794,13 @@
       "reason": "Deliberate in-process entry point of the capture-shell command with caller-supplied streams; the capture-shell tests drive it and the process entry runs the same function."
     },
     {
+      "key": "runtime:exports:mirage/cli-command.mjs:MIRAGE_COMMAND_OPTIONS",
+      "file": "mirage/cli-command.mjs",
+      "type": "exports",
+      "name": "MIRAGE_COMMAND_OPTIONS",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
       "key": "runtime:exports:mirage/dataverse-parity.mjs:compareRuns",
       "file": "mirage/dataverse-parity.mjs",
       "type": "exports",
@@ -1463,6 +1477,13 @@
       "file": "mirage/lib/dataverse-security.mjs",
       "type": "exports",
       "name": "tokenKind",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
+      "key": "runtime:exports:mirage/lib/dataverse-settings.mjs:dataverseStatus",
+      "file": "mirage/lib/dataverse-settings.mjs",
+      "type": "exports",
+      "name": "dataverseStatus",
       "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
     },
     {

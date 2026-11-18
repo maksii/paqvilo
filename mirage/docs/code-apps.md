@@ -7,14 +7,15 @@ the SDK's host wire protocol: Microsoft publishes no contract for replacing that
 `contract` (`capabilities.codeApps`). A connector operation without a simulation answers `501` and never reports
 success.
 
-| Module                             | Role                                                               |
-| ---------------------------------- | ------------------------------------------------------------------ |
-| `mirage/lib/code-app-settings.mjs` | Validates the `codeApps` setting (`codeAppSettings(value, label)`) |
-| `mirage/lib/code-apps-config.mjs`  | Reads `power.config.json` (never writes it) and builds app records |
-| `mirage/lib/code-apps-http.mjs`    | The bridge HTTP handler                                            |
-| `mirage/lib/code-apps-client.js`   | Browser shim (`paqvilo/mirage/code-apps/client`)                   |
-| `mirage/lib/code-apps-sdk.js`      | Optional SDK data executor (`paqvilo/mirage/code-apps`)            |
-| `mirage/lib/code-apps-vite.mjs`    | Vite plugin (`paqvilo/mirage/code-apps/vite`)                      |
+| Module                               | Role                                                               |
+| ------------------------------------ | ------------------------------------------------------------------ |
+| `mirage/lib/code-app-settings.mjs`   | Validates the `codeApps` setting (`codeAppSettings(value, label)`) |
+| `mirage/lib/code-apps-config.mjs`    | Reads `power.config.json` (never writes it) and builds app records |
+| `mirage/lib/code-apps-http.mjs`      | The bridge HTTP handler                                            |
+| `mirage/lib/code-apps-client.js`     | Browser shim (`paqvilo/mirage/code-apps/client`)                   |
+| `mirage/lib/code-apps-sdk.js`        | Optional SDK data executor (`paqvilo/mirage/code-apps`)            |
+| `mirage/lib/code-apps-vite.mjs`      | Vite plugin (`paqvilo/mirage/code-apps/vite`)                      |
+| `mirage/lib/code-apps-workbench.mjs` | The `/_apps/code/` workbench page                                  |
 
 ## Configuration
 
@@ -56,18 +57,18 @@ settings, registered apps, dev server commands or bindings.
 
 Both hosts serve the bridge, before the model-driven handler, for the apps in `codeApps`. Paths are relative to
 `/_apps/code/<name>/`. The app's user is the staff user selected in `/_sim/`. Every Dataverse and connector request,
-GET included, needs the apps token in `x-sim-csrf` (some Dataverse functions are GET and write); `GET context` returns
-the token in its `x-sim-csrf` response header. Responses send `cache-control: no-store` and
-`x-content-type-options: nosniff`.
+GET included, needs the apps token in `x-sim-csrf` (some Dataverse functions are GET and write; without it
+`403 CsrfRequired`); `GET context` returns the token in its `x-sim-csrf` response header. Responses send
+`cache-control: no-store` and `x-content-type-options: nosniff`.
 
-| Endpoint                                     | Behavior                                                                                                                                                                                                                                                                                                                                                                        |
-| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET status`                                 | Simulation mode, level, local app URL, connection dependencies and configuration diagnostics (never the raw config). Needs no staff selection.                                                                                                                                                                                                                                  |
-| `GET context`                                | `IContext`: `{ app: { appId, appSettings, environmentId, queryParams, dataverseOrgUrl, appUrl }, user: { fullName, objectId, systemUserId, tenantId, userPrincipalName }, host: { sessionId } }` for the selected staff user. `401` with the local administrator or an unavailable user. `dataverseOrgUrl` is the local Dataverse origin; `queryParams` is the request's query. |
-| `POST token` `{ resource }`                  | `{ access_token, expires_on }` from the local Dataverse authority. The resource must be the local Dataverse origin, optionally with `/` or `/.default`; otherwise `400 InvalidResource`. Needs `dataverse.enabled`, else `501 DataverseApiDisabled`. Tokens are never logged.                                                                                                   |
-| `GET/POST/PATCH/PUT/DELETE dataverse/<path>` | Runs `/api/data/v9.2/<path>` in process as the staff user (reads in a read transaction, writes atomically), forwarding method, query, JSON or binary body (up to 16 MiB) and `accept`, `content-type`, `prefer`, `if-match`, `if-none-match` and OData version headers. Never uses the portal `/_api`.                                                                          |
-| `POST connectors/<reference>/<operationId>`  | `<reference>` is a connection-reference key or data-source name (keys win; an alias shared by several references answers `409 ConnectionReferenceAmbiguous`). Unknown references answer `404`. The binding's provider answers; without one, `501 ConnectorNotSimulated` or `ConnectorNotConfigured`.                                                                            |
-| `GET` (root)                                 | Loader page that frames `localAppUrl` with `allow="local-network-access"` and forwards the query string, like Local Play. CSP: the model-driven shell's plus `frame-src <localAppUrl origin>`.                                                                                                                                                                                  |
+| Endpoint                                     | Behaviour                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET status`                                 | Simulation mode, level, local app URL, `features` (what the bridge serves), connection dependencies and configuration diagnostics (never the raw config). Needs no staff selection.                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `GET context`                                | `IContext`: `{ app: { appId, appSettings, environmentId, queryParams, dataverseOrgUrl, appUrl }, user: { fullName, objectId, systemUserId, tenantId, userPrincipalName }, host: { sessionId } }` for the selected staff user. `401 StaffSessionRequired` without a selected staff user (the local administrator is not one), `401 StaffPrincipalUnavailable` when that user is unavailable or disabled, or the selection was made by an earlier runtime. `dataverseOrgUrl` is the local Dataverse origin (the runtime's own origin without the Web API); `queryParams` is the request's query.                       |
+| `POST token` `{ resource }`                  | `{ access_token, expires_on }` (Unix seconds) from the local Dataverse authority, for the selected staff user, so `/api/data` `WhoAmI` with the token answers that user. Needs the apps token in `x-sim-csrf` (else `403 CsrfRequired`). The resource must be the local Dataverse origin (`dataverseOrgUrl` of `context`, which differs from the app's origin when the Web API listens on its own port), optionally with `/` or `/.default`; otherwise `400 InvalidResource` and `CODEAPP_TOKEN_REFUSED`. A valid resource then needs `dataverse.enabled`, else `501 DataverseApiDisabled`. Tokens are never logged. |
+| `GET/POST/PATCH/PUT/DELETE dataverse/<path>` | Runs `/api/data/v9.2/<path>` in process as the staff user (reads in a read transaction, writes atomically), forwarding method, query, JSON or binary body (up to 16 MiB) and `accept`, `content-type`, `prefer`, `if-match`, `if-none-match` and OData version headers. Never uses the portal `/_api`. Unbound and bound actions and functions (`GET WhoAmI`, `GET <set>(<id>)/Microsoft.Dynamics.CRM.<function>()`, `POST <set>(<id>)/Microsoft.Dynamics.CRM.<action>`) run as on the local Web API.                                                                                                                |
+| `POST connectors/<reference>/<operationId>`  | `<reference>` is a connection-reference key or data-source name (keys win; an alias shared by several references answers `409 ConnectionReferenceAmbiguous`). Unknown references answer `404 ConnectionReferenceNotFound`. The binding's provider answers; without one, `501 ConnectorNotSimulated` or `ConnectorNotConfigured`.                                                                                                                                                                                                                                                                                     |
+| `GET` (root)                                 | Loader page that frames `localAppUrl` with `allow="local-network-access"` and forwards the query string. CSP: the model-driven shell's plus `frame-src <localAppUrl origin>`.                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 
 An unknown app answers `404 CodeAppNotFound`; `/_apps/code/<name>` redirects (`308`) to the trailing-slash path.
 
@@ -79,16 +80,26 @@ origin, appId })` adapts the Dataverse authority (`dataverse-auth.mjs`) to `issu
 
 `paqvilo/mirage/code-apps/client` exports `configure({ app, origin?, onEvent? })`, `getStatus()`, `getContext()`,
 `getToken(resource)` and `dataClient` with `create(entitySet, record)`, `get(entitySet, id, options)`,
-`getAll(entitySet, options)`, `update(entitySet, id, changes)`, `delete(entitySet, id)` and
-`execute(reference, operationId, parameters)`.
+`getAll(entitySet, options)`, `update(entitySet, id, changes)`, `delete(entitySet, id)`,
+`uploadFile(entitySet, id, column, fileName, data)`, `downloadFile(entitySet, id, column, fullSize?)`,
+`deleteFile(entitySet, id, column)`, `executeDataverseAction(operation, body?)`, `getEntityMetadata(table, options?)`
+and `execute(reference, operationId, parameters)`. Types are in `mirage/lib/code-apps-client.d.ts`.
 
-- Call `configure({ app: '<name>' })` first. Data methods resolve to `{ data }` and throw on errors; Microsoft's
+- `executeDataverseAction(name, body?)` takes the name of an unbound operation: a registered custom action or
+  function, or a Web API built-in function (`WhoAmI`, `RetrieveVersion`, `RetrieveCurrentOrganization`,
+  `RetrieveTotalRecordCount`, `RetrieveMetadataChanges`), whose `body` properties become parameters in the URL alias
+  form (`RetrieveTotalRecordCount(EntityNames=@p0)?@p0=["x_item"]`). A path or other value throws
+  `executeDataverseAction takes the name of an unbound action or function (for example WhoAmI), not "<given>"; bound actions and functions are not supported.`
+  Call bound operations with a `dataverse/<path>` request.
+- Call `configure({ app: '<name>' })` first. Data methods resolve to `{ data }` and throw on errors; the error carries
+  the HTTP `status` and the Web API's `code` (for example `403` and `0x80040220` for a missing privilege). Microsoft's
   generated services return a richer result, so this client is not an SDK replacement.
 - Calls use `credentials: 'same-origin'` and send the CSRF header once `context` supplied it. Serve the app and Mirage
   from the same host name (`localhost` or `127.0.0.1`) so the staff cookie is sent.
 - An explicit `origin` must be an http(s) root origin on the current browser origin, without credentials, path, query
   or fragment. Entity sets must be Dataverse identifiers.
-- `getContext()` caches its result, including caller mutations to its query parameters, as the official SDK does;
+- `getContext()` caches its result, including caller mutations to its query parameters, as two recorded runs of the
+  official SDK show (`mirage/test/code-apps-context-cache-parity.test.mjs`, an observation test);
   `configure()` clears the cache and rejects pending results of the previous configuration. A write already sent cannot
   be rolled back: check the records before repeating an interrupted write.
 - Query options: `select`, `filter`, `orderBy`, `top`, `count` and `skipToken` map to OData; `maxPageSize` sets
@@ -100,8 +111,8 @@ origin, appId })` adapts the Dataverse authority (`dataverse-auth.mjs`) to `issu
 
 For a hand-built integration, proxy `/_apps/code` to Mirage so app and bridge share one origin. A Vite proxy needs
 `changeOrigin: true` and must validate the incoming Host and Origin before forwarding an Origin rebased to Mirage; the
-[example server](../../examples/project/code-app/server.mjs) shows these checks. Never expose such a proxy to a
-network. The Vite plugin's proxy refuses a request whose `Host` is not the dev server's, whose `Origin` differs, or whose
+[example server](../../examples/project/code-app/server.mjs) shows these checks. Never expose such a proxy to a network.
+The Vite plugin's proxy refuses a request whose `Host` is not the dev server's, whose `Origin` differs, or whose
 `Sec-Fetch-Site` is cross-site, then strips `Origin` and `Sec-Fetch-*` so Mirage treats the call as programmatic and the
 apps token authorizes it.
 
@@ -110,8 +121,8 @@ apps token authorizes it.
 Apps that keep generated SDK data services can install an executor for Mirage through Microsoft's documented
 [`IDataOperationExecutor`](https://learn.microsoft.com/javascript/api/@microsoft/power-apps/idataoperationexecutor?view=powerapps-js-latest)
 and `setDataOperationExecutor`, exported from the internal-named `@microsoft/power-apps/internal/data` subpath; pin and
-retest it when you upgrade the SDK. The SDK stays an application dependency; Paqvilo does not bundle it. The Vite
-plugin installs this automatically; by hand:
+retest it when you upgrade the SDK. The SDK stays an application dependency; Paqvilo does not bundle it. The Vite plugin
+installs this automatically; by hand:
 
 ```js
 // Mirage-only entry. Keep this registration out of the native build.
@@ -127,17 +138,18 @@ const context = await getContext();
 `entitySets` maps generated source names to exported entity sets; other names pass through. The executor returns
 `{ success, data, error?, skipToken?, count? }` and keeps failed results instead of throwing.
 
-| Operation                                                                           | Mirage behavior                                                                                            |
-| ----------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| CRUD with `select`, `filter`, `orderBy`, `top`, `count`, `skipToken`, `maxPageSize` | Local Dataverse pipeline                                                                                   |
-| Entity metadata                                                                     | Scalar selection, column and relationship expansions                                                       |
-| Connectors                                                                          | Configured simulated operations; missing operations fail                                                   |
-| Dataverse actions                                                                   | Registered unbound custom actions and functions, and `WhoAmI`                                              |
-| Files and images                                                                    | Single-request upload, download and delete, up to 16 MiB                                                   |
-| Other                                                                               | Bound actions and functions, partition IDs, `skip`, chunked uploads and other raw requests fail explicitly |
+| Operation                                                                           | Mirage behaviour                                                                                                                                                          |
+| ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| CRUD with `select`, `filter`, `orderBy`, `top`, `count`, `skipToken`, `maxPageSize` | Local Dataverse pipeline                                                                                                                                                  |
+| Entity metadata                                                                     | Scalar selection, column and relationship expansions                                                                                                                      |
+| Connectors                                                                          | Configured simulated operations; missing operations fail                                                                                                                  |
+| Dataverse actions                                                                   | Registered unbound custom actions and functions, and the Web API built-in functions with their parameters, through `executeDataverseAction`                               |
+| Files and images                                                                    | Single-request upload, download and delete, up to 16 MiB                                                                                                                  |
+| Other                                                                               | Bound actions and functions, partition IDs, `skip`, chunked uploads and other raw requests fail explicitly; call bound operations through the bridge's `dataverse/<path>` |
 
-The executor supplies data only; other host services need the native host. `examples/project/test/baseline-code-app-sdk.test.mjs`
-runs the real SDK entry points against the bridge; it does not prove native player compatibility.
+The executor supplies data only; other host services need the native host.
+`examples/project/test/baseline-code-app-sdk.test.mjs` runs the real SDK entry points against the bridge; it does not
+prove native player compatibility.
 
 ## Develop SDK apps with Vite and the workbench
 
@@ -156,10 +168,12 @@ export default defineConfig(({ command, mode }) => {
 });
 ```
 
-- The plugin runs only while Vite serves, and only when `PAQVILO_MIRAGE_URL` is set, the mode is `mirage`, or
-  `enabled: true` is passed. It reads the app name from `PAQVILO_CODE_APP` and the Mirage origin from
-  `PAQVILO_MIRAGE_URL` (the apps address on the Power Pages host, the main address on the standalone host), or from
-  `codeApps({ app: 'alpha', mirageUrl: 'http://127.0.0.1:8787', enabled: true })`.
+- The plugin runs only while Vite serves, and only when `PAQVILO_MIRAGE_URL` is set, the mode is `mirage` (or the `mode`
+  option), or `enabled: true` is passed; `enabled: false` always turns it off. It reads the app name from
+  `PAQVILO_CODE_APP` and the Mirage origin from `PAQVILO_MIRAGE_URL` (the apps address on the Power Pages host, the main
+  address on the standalone host), or from
+  `codeApps({ app: 'alpha', mirageUrl: 'http://127.0.0.1:8787', enabled: true })`. `config` names another
+  configuration file (default `power.config.json`, relative to the Vite root).
 - App code keeps `getContext` from `@microsoft/power-apps/app` and generated services using `getClient`; the plugin
   installs Mirage's context and data adapters, using the app's `power.config.json` mappings. Production builds keep the
   native SDK path without the Mirage bootstrap.
@@ -194,10 +208,11 @@ paqvilo mirage dev --project ./mirage.project.yml --port 0 --debug-port 9222
 
 The runtime starts first, then each declared dev server, then the dedicated browser opens the workbench at
 `/_apps/code/`. The workbench lists the apps; select one, set query parameters, reload it, inspect bridge activity and
-open administration. It checks each app server on open and Refresh and marks an app loaded once its document posts the
-bridge event. Select a staff user in `/_sim/` before calling context or data. `--path` sets a different start page
-(origin-relative, with query and fragment); attach DevTools or an editor to the debug port and pick the framed app's
-source to set breakpoints. Command output and workbench status are local logs, not evidence of an online session.
+open administration. It checks each app server on open and on **Refresh apps** and marks an app loaded once its
+document posts the bridge event. Select a staff user in `/_sim/` before calling context or data. `--path` sets a
+different start page (origin-relative, with query and fragment); attach DevTools or an editor to the debug port and
+pick the framed app's source to set breakpoints. Command output and workbench status are local logs, not evidence of
+an online session.
 
 ### Start app servers with Mirage dev
 
@@ -239,7 +254,7 @@ npm run code-app:dev
 
 The first starts a standalone Dataverse simulator on `http://127.0.0.1:8787` with `code-app` registered as
 `invented-items`; the second serves the app on `http://127.0.0.1:5199` and proxies the bridge. Open the printed
-`adminUrl` (`/_sim/`), create an invented interactive staff user with the System Administrator role and select it, then
+`/_sim/` address, create an invented interactive staff user with the System Administrator role and select it, then
 open `http://127.0.0.1:8787/_apps/code/invented-items/`. Create, rename and delete an item. **Try connector** answers
 `501 ConnectorNotSimulated` because the example declares a reference without a simulation.
 
@@ -271,13 +286,14 @@ a source breakpoint, CRUD and the unsupported connector) and `node --test mirage
 ## Native Power Apps development
 
 Build the real app in a separate project from Microsoft's
-[quickstart](https://learn.microsoft.com/power-apps/developer/code-apps/how-to/create-an-app-from-scratch) (`pa app init`,
-`pa app add data-source`, `pa app run`). The template registers `powerApps()` from `@microsoft/power-apps-vite/plugin`; keep it for the native build, and keep
-the CLI's `localhost` URLs for Local Play (Mirage's broader loopback support says nothing about the native player).
-Online connectors need an existing connection in the environment (`pa connection list`), the correct connector ID and
-consent; never map a native connection ID to an invented local provider. `pa app push` publishes and is a separate
-online action. Native authentication, connectors, delegation, security and player behavior need validation in an
-authorized environment. Mirage does not implement Microsoft's separate Copilot Managed Runtime preview.
+[quickstart](https://learn.microsoft.com/power-apps/developer/code-apps/how-to/create-an-app-from-scratch)
+(`pa app init`, `pa app add data-source`, `pa app run`). The template registers `powerApps()` from
+`@microsoft/power-apps-vite/plugin`; keep it for the native build, and keep the CLI's `localhost` URLs for Local Play
+(Mirage's broader loopback support says nothing about the native player). Online connectors need an existing connection
+in the environment (`pa connection list`), the correct connector ID and consent; never map a native connection ID to an
+invented local provider. `pa app push` publishes and is a separate online action. Native authentication, connectors,
+delegation, security and player behaviour need validation in an authorized environment. Mirage does not implement
+Microsoft's separate Copilot Managed Runtime preview.
 
 Microsoft documentation: [overview](https://learn.microsoft.com/power-apps/developer/code-apps/overview),
 [architecture](https://learn.microsoft.com/power-apps/developer/code-apps/architecture),

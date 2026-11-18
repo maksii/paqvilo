@@ -91,7 +91,7 @@ test('defaults generate a complete empty project, valid catalogue and bound offl
   assert.ok(markers > 0);
   assert.equal(unfinished.todo.filter((item) => item.kind === 'marker').length, markers);
   assert.ok(unfinished.todo.every((item) => item.line > 0 && item.file));
-  assert.match(scaffoldWarning(directory), /paqvilo init --check/);
+  assert.match(scaffoldWarning(directory), /paqvilo(?:\.mjs)? init --check /);
 });
 
 test('multiple sites/packs, chrome, custom paths and dependency specification are deterministic', async (t) => {

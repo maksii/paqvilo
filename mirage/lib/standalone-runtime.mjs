@@ -17,7 +17,11 @@ import { initialOrganizationState } from './organization-bootstrap.mjs';
 import { loadOrganizationSources } from './solution-runtime-source.mjs';
 import { assertReloadableScan } from './solution-schema.mjs';
 import { solutionWatchFilter } from './solution-roots.mjs';
-import { dataverseSettings, dataverseStatus } from './dataverse-settings.mjs';
+import {
+  dataverseHostStatus,
+  managedIdentityStatusReader,
+  standaloneDataverseSettings,
+} from './dataverse-settings.mjs';
 import { createModelDrivenRecordService, createModelDrivenWebApi } from './dataverse-model-driven.mjs';
 import { createStaffSessions, createStaffSessionHandler } from './staff-session.mjs';
 import { createModelDrivenData, storeCatalogue } from './model-driven/data.mjs';
@@ -33,14 +37,18 @@ import {
   adminAssetType,
   createRuntimeAdminRouter,
   diagnosticsByCode as byCode,
+  adminEndpointNotFound,
+  missingCsrfToken,
+  mirrorHead,
+  queryFlag,
 } from './runtime-admin.mjs';
+import { changeOperationOverride, checkOperationOverrides } from './operation-override-route.mjs';
 import { createDataverseAdmin } from './dataverse-admin.mjs';
 import { stringifyExactJson } from './exact-numeric.mjs';
 import { uuidV5 } from './dataverse-security.mjs';
 import { runtimePort } from './runtime-port.mjs';
 import { modelDrivenSettings } from './model-driven-settings.mjs';
 import { clientExtensionCatalogue } from './model-driven-resources.mjs';
-import { validateOperationOverrides } from './operation-catalogue.mjs';
 import { ensureCertificate } from './dataverse-tls.mjs';
 import { platformSettingEntries } from './platform-settings.mjs';
 import {
@@ -59,7 +67,7 @@ import {
   appTraceSurface,
   staffActor,
 } from './organization-host.mjs';
-import { deploymentProfilesSummary } from './deployment-profiles.mjs';
+import { deploymentProfilesSummary, withDefinedVariables } from './deployment-profiles.mjs';
 import { createCanvasHandler } from './canvas-http.mjs';
 import { createCanvasRuntime } from './canvas-runtime.mjs';
 import { canvasPcfApps } from './canvas-pcf.mjs';
@@ -70,7 +78,7 @@ import { createRequestContext, runWithRequest, correlationOf } from './request-c
 import { createMessagingRoutes, routes as MESSAGING_ROUTES } from './sim-messaging-routes.mjs';
 import { createFlowRoutes, routes as FLOW_ROUTES } from './sim-flow-routes.mjs';
 import { createTraceChannel, createTraceRoutes, routes as TRACE_ROUTES } from './sim-trace-routes.mjs';
-import { recordHttpError, statusFromHttp } from './trace-store.mjs';
+import { recordHttpError, statusFromHttp, TRACE_HOSTS } from './trace-store.mjs';
 import { ANONYMOUS_ROOT, browserProbe, setTraceHeaders } from './trace-hosts.mjs';
 import { writeActivityBundle } from './sim-activity.mjs';
 import { buildSourceGraph } from './source-graph.mjs';
@@ -93,6 +101,7 @@ import {
   listenerVerdict,
   normalizeTokenHeaders,
   portalVerdict,
+  sameToken,
 } from './admin-origin.mjs';
 
 const fail = (message, status = 400, code = 'RuntimeRequestInvalid') =>
@@ -199,6 +208,17 @@ function standaloneAdminAssetHeaders(res, file, index) {
   });
 }
 
+/** Where the profile a standalone runtime starts with is selected: the catalogue site, the project file or the API option. */
+function profileDefaultLocation({ setup, project }) {
+  if (setup?.config) {
+    const site = setup.site ? 'site ' + setup.site : 'the site';
+    return `set mirage.deploymentProfiles.default for ${site} in the catalogue ${setup.config}`;
+  }
+  const projectFile = setup?.project ?? project?.configFile;
+  if (projectFile) return `set deploymentProfiles.default in the project file ${projectFile}`;
+  return 'pass the profile as deploymentProfiles.default to createSimulator';
+}
+
 /* NOSONAR */ export async function createStandaloneRuntime(options = {}) {
   validateSourceMapSetting(options);
   const startedAt = performance.now(),
@@ -279,7 +299,12 @@ function standaloneAdminAssetHeaders(res, file, index) {
   });
   bootstrapTimings.presetLibraryMs = Math.round(performance.now() - seedStarted);
   seedStarted = performance.now();
-  const storageAdapter = await createSimulationPersistence({ settings: simulation, packs, stateFile });
+  const storageAdapter = await createSimulationPersistence({
+    settings: simulation,
+    packs,
+    stateFile,
+    diagnostic: (entry) => sourceDiagnostic(entry),
+  });
   // Host clock/ids/scheduler (runtime-clock.mjs) drive the store, the organization and its backend; defaults are wall time.
   const clock = typeof options.clock === 'function' ? { now: options.clock } : (options.clock ?? undefined);
   const store = new DataStore({
@@ -295,6 +320,8 @@ function standaloneAdminAssetHeaders(res, file, index) {
       : boot.state,
     presetLibrary: boot.presetLibrary,
     storageAdapter,
+    // A reclaimed writer lock is a runtime finding (/_sim/api/diagnostics), reported from startup on.
+    onLockRecovery: (entry) => sourceDiagnostic(entry),
     persistence: options.persistence,
     platform: options.platform,
     ...(clock ? { clock } : {}),
@@ -316,7 +343,9 @@ function standaloneAdminAssetHeaders(res, file, index) {
     codeAppRecords = [];
   // The mounted /_sim/api routers' prefixes (status `routes`): the runtime admin router's own list, set where it is mounted.
   let adminRoutes = [];
-  let managedIdentityHeaderShown = false;
+  // PATCH and DELETE /_sim/api/operations/<key>, set where the admin router is mounted.
+  let operationRoute = null;
+  let dataverseCertificate = null;
   const requests = new Set();
   let mutation = Promise.resolve();
   const change = (fn) => {
@@ -334,16 +363,12 @@ function standaloneAdminAssetHeaders(res, file, index) {
   };
   sourceDiagnostic = diagnostic;
   early.splice(0).forEach(diagnostic);
+  // Findings of the project file (an unknown key of a version-1 project is ignored and reported) at startup.
+  for (const entry of options.project?.diagnostics ?? []) diagnostic(entry);
   const overlay = createSolutionMetadataOverlay({ appsOf: solutionApps }),
     metadata = () => overlay(sources.metadata, store.state);
-  const settings = dataverseSettings({
-    enabled: runtime.kind === 'dataverse-api',
-    ...options.dataverse,
-    localeId: lcid,
-  });
+  const settings = standaloneDataverseSettings(runtime.kind, options.dataverse, { localeId: lcid });
   const liveSettings = liveDataverseSettings(settings, projectRoot, () => store);
-  if (runtime.kind === 'dataverse-api' && !settings.enabled)
-    throw new Error('A dataverse-api runtime requires its HTTP API to be enabled.');
   // The shared organization composition (organization-host.mjs): handler maps, memoised catalogues, providers, backend and API.
   const EMPTY = Object.freeze({});
   const caps = {
@@ -358,7 +383,8 @@ function standaloneAdminAssetHeaders(res, file, index) {
     portalRendering: false,
   };
   // Host surfaces registered in the capability registry under their legacy status keys (summary() reads them back).
-  const surfaces = () => hostSurfaces({ host: 'standalone', dataverseApi: caps.dataverseApi });
+  const surfaces = () =>
+    hostSurfaces({ host: 'standalone', dataverseApi: caps.dataverseApi, modelDriven: modelDriven.enabled !== false });
   const organizationHost = await composeOrganizationHost({
     store,
     packs,
@@ -410,29 +436,24 @@ function standaloneAdminAssetHeaders(res, file, index) {
     canvas: organizationHost.canvas.enabled && organizationHost.canvasApps().length ? '/_apps/canvas/' : null,
     powerPages: null,
     dataverseApi: dataverse?.origin ?? null,
+    // The token authority that mirage/docs/dataverse-api.md tells clients to read (mirage status prints it).
+    dataverseAuthority: dataverse?.authority ?? null,
   });
   const policy = () => organizationHost.simulationReport(storageAdapter?.report(store.state) ?? simulationReport());
   const managedIdentityList = () => [
     ...(settings.managedIdentities ?? []),
     ...(store.state.dataverse?.managedIdentities ?? []),
   ];
-  const managedIdentitySummary = ({ reveal = false } = {}) => {
-    if (!managedIdentity) return { enabled: false };
-    const env = managedIdentity.env(),
-      mode = settings.managedIdentity?.mode ?? 'appservice';
-    const shown = reveal && mode === 'appservice' && !managedIdentityHeaderShown;
-    if (shown) managedIdentityHeaderShown = true;
-    return {
-      enabled: true,
-      mode,
-      endpoint: mode === 'appservice' ? env.IDENTITY_ENDPOINT : env.IMDS_ENDPOINT,
-      header: shown ? env.IDENTITY_HEADER : null,
-    };
-  };
-  const dvSummary = () => ({
-    ...dataverseStatus(settings, dataverse ?? organization ?? {}),
-    managedIdentity: managedIdentitySummary(),
-  });
+  const managedIdentitySummary = managedIdentityStatusReader(
+    () => managedIdentity,
+    () => settings.managedIdentity?.mode ?? 'appservice',
+  );
+  const dvSummary = () =>
+    dataverseHostStatus(settings, dataverse ?? organization ?? {}, {
+      organizationAvailable: organization,
+      certificate: dataverseCertificate,
+      managedIdentity: managedIdentitySummary(),
+    });
   const config = () => ({
     ...store.state.simulator,
     runtime,
@@ -443,12 +464,16 @@ function standaloneAdminAssetHeaders(res, file, index) {
   });
   // Deployment profile (deployment-profiles.mjs): loaded as the Power Pages host does, after state restore (a saved pin wins).
   let profile = null;
-  const loadProfile = () =>
-    activeDeploymentProfile({
+  // Its EnvironmentVariables are limited to the definitions of the Solution data it applies with (withDefinedVariables).
+  const loadProfile = async (solutionData = sources.solutionData) => {
+    const loaded = await activeDeploymentProfile({
       deploymentProfiles: options.deploymentProfiles,
       projectRoot,
       pin: store.state.simulator?.deploymentProfilePin ?? null,
+      pinStateFile: stateFile ? path.resolve(stateFile) : null,
     });
+    return loaded && withDefinedVariables(loaded, solutionData.environmentVariables);
+  };
   const environmentOverrides = () => ({
     ...profile?.environmentVariables,
     ...options.environmentVariables,
@@ -498,9 +523,12 @@ function standaloneAdminAssetHeaders(res, file, index) {
       adminRoutes,
     ),
     // Admin-adjacent routes outside /_sim/api (model-driven/http.mjs routes): full paths, never probed by the admin app.
-    adminAdjacentRoutes: MODEL_DRIVEN_ROUTES,
+    // Listed only when the model-driven surface is mounted: a disabled surface answers 404 on them.
+    adminAdjacentRoutes: caps.modelDriven ? MODEL_DRIVEN_ROUTES : [],
     // The /_sim/events?channels=... channels this host streams.
     eventChannels: ['trace'],
+    // The origin hosts the trace `host` filter accepts (trace-store.mjs TRACE_HOSTS); the Activity filter lists them.
+    traceHosts: TRACE_HOSTS,
   });
   const exposed = () => ({
     csrf: adminToken,
@@ -549,7 +577,7 @@ function standaloneAdminAssetHeaders(res, file, index) {
       '/preflight',
       (url) =>
         preflight({
-          strict: url.searchParams.get('strict') === 'true',
+          strict: queryFlag(url.searchParams, 'strict'),
           scenario: url.searchParams.get('requires')
             ? scenarioSettings({
                 id: url.searchParams.get('scenario') ?? 'request',
@@ -622,7 +650,7 @@ function standaloneAdminAssetHeaders(res, file, index) {
     bootstrapTimings.stateCompositionMs = Math.round(performance.now() - stageAt);
     stageAt = performance.now();
     startupPhase('preset');
-    if (startupPreset.applied) await store.applyPreset(options.preset, { returnSnapshot: false });
+    if (startupPreset.applied) await store.applyPreset(options.preset, { returnSnapshot: false, startup: true });
     bootstrapTimings.presetMs = Math.round(performance.now() - stageAt);
     stageAt = performance.now();
     startupPhase('organization');
@@ -633,7 +661,7 @@ function standaloneAdminAssetHeaders(res, file, index) {
       schema: () => sources.schema,
       metadataFields: (logical) => metadata().entities?.[logical]?.fields,
       metadataSnapshot: () => metadata().entities,
-      log: options.log ?? (() => {}),
+      log: options.log,
     });
     bootstrapTimings.organizationMs = Math.round(performance.now() - stageAt);
     sourceComponents = createSourceSolutionComponentStorage({
@@ -782,6 +810,33 @@ function standaloneAdminAssetHeaders(res, file, index) {
       void json(res, 200, await handle(url));
       return true;
     };
+    // PATCH and DELETE /_sim/api/operations/<key>: the Power Pages host's handler (operation-override-route.mjs). The
+    // admin router before it has refused a write without the CSRF token.
+    operationRoute = async (req, res, url) => {
+      const key = /^\/(?:_sim|__sim)\/api\/operations\/([^/]+)$/.exec(url.pathname)?.[1];
+      if (!key || !['PATCH', 'DELETE'].includes(req.method)) return false;
+      if (!adminToken || !sameToken(req.headers['x-sim-csrf'], adminToken)) throw missingCsrfToken();
+      let decoded;
+      try {
+        decoded = decodeURIComponent(key);
+      } catch {
+        throw fail('Administration identifier has invalid URL encoding.');
+      }
+      const items = await change(() =>
+        changeOperationOverride({
+          key: decoded,
+          method: req.method,
+          readBody: () => readBody(req),
+          operations,
+          store,
+          initial: config,
+          fail,
+          apply: (next, commit) => organizationHost.applyOperationOverrides(next, commit),
+        }),
+      );
+      void json(res, 200, items);
+      return true;
+    };
     const admin = createRuntimeAdminRouter({
       store,
       json,
@@ -814,12 +869,9 @@ function standaloneAdminAssetHeaders(res, file, index) {
       configure: async (patch) => {
         if (Object.keys(patch).some((key) => key !== 'operations'))
           throw fail('Change runtime configuration in Setup and restart this instance.', 409, 'RuntimeRestartRequired');
-        // validateOperationOverrides throws on an invalid map and returns nothing: the validated map is the patch itself.
-        validateOperationOverrides(patch.operations);
+        // Each entry is refused as PATCH /_sim/api/operations/<key> refuses it; the checked map is the patch itself.
+        checkOperationOverrides(patch.operations, operations, fail);
         const overrides = patch.operations ?? {};
-        for (const key of Object.keys(overrides))
-          if (!operations().some((item) => item.key === key))
-            throw fail(`Unknown operation ${key}.`, 404, 'OperationNotFound');
         // A step switched to clr gets its CLR runtime prepared before the choice is stored.
         await organizationHost.applyOperationOverrides(overrides, () =>
           store.transact(() => {
@@ -940,6 +992,10 @@ function standaloneAdminAssetHeaders(res, file, index) {
           profile
             ? deploymentProfilesSummary(profile.config, profile)
             : { supported: false, reason: 'No deploymentProfiles are configured for this runtime.' },
+        selectProfileUnsupported: () =>
+          profile
+            ? `The standalone host does not switch deployment profiles while it runs: ${profileDefaultLocation(options)} and restart.`
+            : 'No deploymentProfiles are configured for this runtime.',
         setOverride: async (schemaName, value) => {
           await store.transact(() =>
             applyEnvironmentOverride(store, store.state, schemaName, value, {
@@ -1000,6 +1056,7 @@ function standaloneAdminAssetHeaders(res, file, index) {
         if (answeredByListener(req, res, url, onAdminListener)) return;
         normalizeTokenHeaders(req, url.pathname, { adminToken, pageToken: csrf, appsToken: csrf });
         if (await setup(req, res)) return;
+        if (/^\/(?:_sim|__sim)\/api(?:\/|$)/.test(url.pathname)) mirrorHead(req);
         // GET /_sim/events?channels=trace: the trace channel, with the frames the Power Pages host streams.
         if (standaloneEventRoute(req, res, url, store, traceChannel)) return;
         if (
@@ -1011,7 +1068,10 @@ function standaloneAdminAssetHeaders(res, file, index) {
         )
           return;
         if (await environmentRoutes(req, res, url)) return;
-        if ((await admin(req, res, url)) || (await hostApi(req, res, url))) return;
+        if ((await admin(req, res, url)) || (await hostApi(req, res, url)) || (await operationRoute?.(req, res, url)))
+          return;
+        // Any other path under /_sim/api answers as on the Power Pages host.
+        if (/^\/(?:_sim|__sim)\/api(?:\/|$)/.test(url.pathname)) throw adminEndpointNotFound();
         // Reserved app surfaces answer before the model-driven handler, which refuses every other /_apps/* path.
         if (canvas(req, res, url)) return;
         if (await code(req, res, url)) return;
@@ -1078,7 +1138,12 @@ function standaloneAdminAssetHeaders(res, file, index) {
           });
           if (!res.headersSent)
             void json(res, error.status ?? 500, {
-              error: { code: error.code ?? 'RuntimeError', message: error.message },
+              error: {
+                code: error.code ?? 'RuntimeError',
+                message: error.message,
+                // A refused admin query names its parameter, as on the Power Pages host.
+                ...(error.status === 400 && typeof error.parameter === 'string' ? { parameter: error.parameter } : {}),
+              },
             });
           else res.destroy();
         });
@@ -1107,16 +1172,16 @@ function standaloneAdminAssetHeaders(res, file, index) {
     });
     adminOrigin = `http://${host === '::1' ? '[::1]' : host}:${adminServer.address().port}`;
     if (settings.enabled) {
-      let certificate = null;
+      dataverseCertificate = null;
       if (settings.tls) {
         let certificateFile = options.dataverseCertificateFile;
         if (certificateFile == null)
           certificateFile = durable ? path.join(path.dirname(stateFile), 'dataverse-ca.pem') : null;
-        certificate = await ensureCertificate(certificateFile);
+        dataverseCertificate = await ensureCertificate(certificateFile);
       }
       dataverse = await organizationHost.startApi({
         host,
-        tls: certificate && { key: certificate.key, cert: certificate.cert },
+        tls: dataverseCertificate && { key: dataverseCertificate.key, cert: dataverseCertificate.cert },
         managedIdentities: managedIdentityList,
         managedIdentityMode: settings.managedIdentity?.mode ?? 'appservice',
         secretDirectory: path.join(projectRoot, '.paqvilo', 'mirage'),
@@ -1139,7 +1204,7 @@ function standaloneAdminAssetHeaders(res, file, index) {
           diagnostic,
         });
         assertReloadableScan(sources.scan, next.scan);
-        const nextProfile = await loadProfile();
+        const nextProfile = await loadProfile(next.solutionData);
         const apply = async () => {
           const previous = {
             sources,

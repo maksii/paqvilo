@@ -5,6 +5,9 @@
   const approach = app.dataset.demoWorkspace;
   const canWrite = app.dataset.demoCanWrite === 'true';
   function applyAccess(){if(canWrite)return;app.querySelectorAll('[data-delete-account],[data-delete-contact],[data-delete-note],[data-edit-note],[data-delete-record],[data-toggle-state],[data-edit-account],[data-create-contact],[data-save-account],a[href*="mode=create"],a[href*="mode=edit"],[data-contact][data-mode=edit],[data-note-form]').forEach(node=>node.hidden=true);}
+  // A code component page renders inside the platform's form#liquid_form, where the HTML parser drops a nested <form> tag; that page marks its forms as divs, rebuilt here as script-created forms, which may nest.
+  app.querySelectorAll('div[data-note-form],div[data-contact-form]').forEach(div=>{const form=document.createElement('form');for(const {name,value} of div.attributes)form.setAttribute(name,value);form.append(...div.childNodes);div.replaceWith(form);});
+  applyAccess();
   const base = '/approach/' + approach + '/';
   const find = selector => app.querySelector(selector);
   const status = find('[data-status]');

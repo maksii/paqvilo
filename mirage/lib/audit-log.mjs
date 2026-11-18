@@ -203,7 +203,7 @@ export function auditText(value, limit = 12000) {
 }
 
 // An id filter of at least 8 hexadecimal characters (after an optional kind: prefix, as in visitor:ad87d220) also
-// matches every id it begins (DV-N4-3); an ambiguous prefix matches all of them. The trace store re-exports it.
+// matches every id it begins; an ambiguous prefix matches all of them. The trace store re-exports it.
 const ID_PREFIX = /^(?:[a-z]+:)?[0-9a-f]{8}[0-9a-f-]*$/i;
 /** True when actual equals wanted, or wanted is an id prefix (8+ hex characters) that actual begins with. */
 export const idMatches = (actual, wanted) =>
@@ -303,7 +303,7 @@ export class AuditLog {
         contactId: limitText(identity?.contactId ?? identity?.id, 100) || null,
         roles: (identity?.roles ?? []).map((role) => auditText(role, 200)).slice(0, 100),
       },
-      // The browser session (D-M-2 Who): the anonymous visitor cookie id, and contact:<id> or visitor:<id> (else null).
+      // The browser session (Who): the anonymous visitor cookie id, and contact:<id> or visitor:<id> (else null).
       visitorId: visitorId ? limitText(visitorId, 100) : null,
       sessionKey: sessionKey ? limitText(sessionKey, 140) : null,
       query: auditQuery(query),
@@ -410,9 +410,10 @@ export class AuditLog {
       const value = get(key);
       if (value === undefined || value === null || value === '') return null;
       if (!/^\d+$/.test(String(value)) || !Number.isSafeInteger(Number(value)))
-        throw Object.assign(new RangeError(`${key} must be a nonnegative safe integer.`), {
+        throw Object.assign(new RangeError(`${key} must be a non-negative safe integer.`), {
           status: 400,
           code: 'InvalidAuditSequence',
+          parameter: key,
         });
       return Number(value);
     };

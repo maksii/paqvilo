@@ -14,7 +14,7 @@ export function identityProviderSettings(value = {}) {
     if (value[key] !== undefined && (typeof value[key] !== 'string' || value[key].length > 500))
       throw new Error(`mirage.identityProvider.${key} must be text of at most 500 characters`);
   if (value.accentColor !== undefined && !/^#[0-9a-f]{6}$/i.test(value.accentColor))
-    throw new Error('mirage.identityProvider.accentColor must be a six-digit hex color');
+    throw new Error('mirage.identityProvider.accentColor must be a six-digit hex colour');
   validateLocalOverrides({ head: value.head ?? {} });
   return {
     newUser: 'auto',

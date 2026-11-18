@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
+import { requiredArgument } from '../../mirage/lib/required-argument.mjs';
 
 export const digest = (value) =>
   createHash('sha256')
@@ -176,6 +177,12 @@ function validateTable(table, manifest, solutionNames, prefix) {
   component(table, solutionNames);
   table.columns ??= [];
   table.keys ??= [];
+  ensure(
+    table.includeAllSubcomponents === undefined || typeof table.includeAllSubcomponents === 'boolean',
+    'table includeAllSubcomponents must be boolean',
+  );
+  // Another solution owns an existing table's subcomponents: only a table the manifest creates may be a whole root.
+  ensure(!(table.existing && table.includeAllSubcomponents), 'includeAllSubcomponents requires a new table');
   if (!table.existing) validateNewTable(table, prefix);
   unique(table.columns, (c) => c.name, `column on ${table.name}`);
   for (const column of [...table.columns, ...(table.existing ? [] : [table.primaryName])])
@@ -341,7 +348,7 @@ function validateFormsAndViews(manifest, tables, solutionNames) {
   }
 }
 
-export function validateManifest(input) {
+export function validateManifest(input = requiredArgument('validateManifest(manifest)', 'a manifest object')) {
   const manifest = structuredClone(input);
   validatePublisher(manifest);
   const solutionNames = validateSolutionEntries(manifest);
@@ -354,7 +361,7 @@ export function validateManifest(input) {
   return manifest;
 }
 
-export async function readManifest(file) {
+export async function readManifest(file = requiredArgument('readManifest(file)', 'a manifest file path')) {
   if (file instanceof URL) file = fileURLToPath(file);
   const raw = JSON.parse(await fs.readFile(file, 'utf8'));
   for (const form of raw.forms ?? [])
@@ -495,7 +502,7 @@ function relationshipPayload(r, language) {
   };
 }
 
-export function compileManifest(input) {
+export function compileManifest(input = requiredArgument('compileManifest(manifest)', 'a manifest object')) {
   const m = validateManifest(input),
     actions = [];
   const add = (key, kind, solution, route, body, extra = {}) =>

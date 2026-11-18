@@ -6,53 +6,54 @@ which store indexes keep large writes linear. State file formats and persistence
 
 ## Startup
 
-- **One composition transaction.** The organization installs its registrations, security and platform extensions in
-  one private transaction before its listener opens. A failed installation rolls back and closes what it installed. An
+- **One composition transaction.** The organization installs its registrations, security and platform extensions in one
+  private transaction before its listener opens. A failed installation rolls back and closes what it installed. An
   unchanged, insert-only bootstrap writes no checkpoint.
-- **Bootstrap presets.** With `--preset-mode bootstrap` (`presetMode: 'bootstrap'`) a preset applies only when the
-  state file does not exist yet, so restarts keep local records. The default, `always`, reapplies it on every start.
+- **Bootstrap presets.** With `--preset-mode bootstrap` (`presetMode: 'bootstrap'`) a preset applies only when the state
+  file does not exist yet, so restarts keep local records. The default, `always`, reapplies it on every start.
   `status.startupPreset` reports the preset, mode and whether it applied.
 - **State restore.** The portal host restores the state file once and checks its identity before adopting it.
 - **Solution reuse.** A site-bound context keeps its Solution scan and schema inputs; a runtime checks file stamps,
   roots, layer order and locale before reusing them, and changed portal content invalidates the portal import.
 - **Source watching.** On Windows, watching uses one recursive OS notification per distinct root, filtered to the
   watched sources and debounced until files settle; each folder above a root is also watched (without subfolders) to
-  notice a replaced root. Other platforms use chokidar. `bootstrap.timings.watcher` names the backend. Keep source
-  roots out of folders other programs write to constantly (such as the temporary folder), or start with `--no-watch`
+  notice a replaced root. Other platforms use chokidar. The `watcher` timing below names the backend. Keep source roots
+  out of folders other programs write to constantly (such as the temporary folder), or start with `--no-watch`
   (`watch: false`).
 
-`status.bootstrap.timings` reports source and cache, state restore and composition, preset and organization costs,
-state-file size and format, and memory snapshots. `startupMs` and `listenerMs` cover the runtime call through listener
-and watcher setup; the portal's `sourceBootstrapMs` covers the earlier source and state composition. `profilePinMs`,
-`statePreloadMs` and `stateRestoreMs` overlap configuration time: do not add them up.
+On the Power Pages host, `status.bootstrap.timings` of `GET /_sim/api/state` (also `simulator.state()`) reports source
+and cache, state restore and composition, preset and organization costs, state-file size and format, and memory
+snapshots. `startupMs` and `listenerMs` cover the runtime call through listener and watcher setup; the portal's
+`sourceBootstrapMs` covers the earlier source and state composition. `profilePinMs`, `statePreloadMs` and
+`stateRestoreMs` overlap configuration time: do not add them up.
 
 An embedding caller can pass `onStartup({ phase, elapsedMs })` to observe phase starts and `listener-ready`; the
 observer is not awaited and its errors do not fail startup. `createMirageContext({ onStartup })` also reports
-`context-configuration`, Solution import and portal preparation, and bound runtimes inherit the observer. Module
-loading happens before any event, so measure a cold `import('paqvilo/mirage')` separately. Startup has no built-in
-deadline; supervise the process when you need one. A listening runtime does not mean the browser has loaded the
-application.
+`context-configuration`, Solution import and portal preparation, and bound runtimes inherit the observer. Module loading
+happens before any event, so measure a cold `import('paqvilo/mirage')` separately. Startup has no built-in deadline;
+supervise the process when you need one. A listening runtime does not mean the browser has loaded the application.
 
 ## Model-driven catalogue
 
 The model-driven shell requests `/_apps/api/index` (apps, navigation, table identities), then
-`/_apps/api/metadata/<logical-name>` for the selected table; forms, views, fields and relationships travel only for
-that table and requested lookup or subgrid targets. The complete catalogue at `/_apps/api` streams one table at a time
-and is gzip-compressed when accepted (`gzip;q=0` disables it); read it incrementally for Solutions with thousands of
-tables. API-only runtimes build no catalogue.
+`/_apps/api/metadata/<logical-name>` for the selected table; forms, views, fields and relationships travel only for that
+table and requested lookup or subgrid targets. The complete catalogue at `/_apps/api` streams one table at a time and is
+gzip-compressed when accepted (`gzip;q=0` disables it); read it incrementally for Solutions with thousands of tables.
+API-only runtimes build no catalogue.
 
 - Grids keep the native 5,000-record count limit for saved views and FetchXML (`5000+`); paging continues past it.
-- Staff grants and field security are evaluated per request and never cached across requests. Within one read,
-  imported metadata is resolved once per table until a read plug-in that may write takes its rollback snapshot.
+- Staff grants and field security are evaluated per request and never cached across requests. Within one read, imported
+  metadata is resolved once per table until a read plug-in that may write takes its rollback snapshot.
 - Catalogue construction yields between tables after about 8 ms of work, so status requests stay responsive;
   disconnecting stops the remaining work.
 
 ## Measure on your machine
 
-The probe generates invented Solutions and records, starts runtimes on loopback and never contacts a portal. Run it
-from a toolkit checkout:
+The probe generates invented Solutions and records, starts runtimes on loopback and never contacts a portal. Run it from
+a toolkit checkout:
 
 ```sh
+node scripts/runtime-performance.mjs --help        # options and exit codes
 node scripts/runtime-performance.mjs               # portal host, 16/32/64 tables, 10,000 records
 node scripts/runtime-performance.mjs --standalone  # the same without a portal
 node scripts/runtime-performance.mjs --quick       # one 16-table, 1,000-record case
@@ -74,13 +75,15 @@ memory, and checks that a journal edit survives the restart.
 | `--heartbeat-budget` | 1000         | each status heartbeat              |
 | `--data-budget`      | heartbeat    | the first grid and record reads    |
 
-`--tables` takes a comma-separated scale series; vary `--forms-per-table` with fixed records to isolate metadata
-growth, and `--records` with fixed tables to isolate data growth. The default matrix stops at the first missed budget;
-`--large` records misses under `findings`, prints the full report and exits nonzero when there are any. The budgets are
-declared for these invented fixtures, not guarantees for any export or machine: set them for your selected sources and
-target machine before comparing runs. All cases share one process, so caches are warm after the first and peak RSS is
-cumulative. No API response proves the visible application is usable: measure browser sign-in, first usable controls
-and refresh separately.
+`--tables` takes a comma-separated scale series; vary `--forms-per-table` with fixed records to isolate metadata growth,
+and `--records` with fixed tables to isolate data growth. The default matrix aborts a request at its budget and stops at
+the first miss with one line on standard error, such as `Stopped: startup exceeded declared 30000 ms budget.`, and no
+report; `--large` measures every request to its end, records misses under `findings`, prints the full report and exits
+nonzero when there are any. The report is JSON on standard output; progress events go to standard error. Exit codes: `0` every budget met, `1` a budget missed, `2` an
+invalid invocation (the message names the option). The budgets are declared for these invented fixtures, not guarantees
+for any export or machine: set them for your selected sources and target machine before comparing runs. All cases share
+one process, so caches are warm after the first and peak RSS is cumulative. No API response proves the visible
+application is usable: measure browser sign-in, first usable controls and refresh separately.
 
 The ordinary test suite checks invariants, never elapsed time: a single state restore, bounded metadata payloads,
 cooperative response ordering, cancellation and linear id reads when input doubles.

@@ -144,6 +144,17 @@ export async function checkWorkflows({
   provisionTool = provision,
   run = execute,
 } = {}) {
+  const args = argv.slice(2);
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log(`Usage: node scripts/check-workflows.mjs [--cache-key | --provision]
+  (no option)    provision actionlint and ShellCheck, then check the workflows and Git hooks
+  --cache-key    print only the tool cache key (also to GITHUB_OUTPUT); reads nothing else
+  --provision    only download and verify both tools (may use GITHUB_TOKEN)
+  --help         print this help`);
+    return;
+  }
+  const unknown = args.find((arg) => !['--cache-key', '--provision'].includes(arg));
+  if (unknown) throw new Error(`Unknown option ${unknown}; run with --help to see supported options.`);
   const supported = workflowTools();
   if (argv.includes('--cache-key')) {
     const line = `key=${workflowToolsCacheKey()}\n`;

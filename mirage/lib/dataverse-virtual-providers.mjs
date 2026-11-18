@@ -106,7 +106,7 @@ const messageOf = (error) => (error instanceof Error ? error.message : String(er
 const report = (state, entry) =>
   state.reporter.report(entry, `${entry.code}\u0000${entry.table}\u0000${entry.operation ?? ''}`);
 
-/** Validates the pack export 'virtualTableProviders': data source ids or table names mapping to { retrieve?, retrieveMultiple?, create?, update?, delete?, describe? }. Synchronous or async functions only; throws TypeError with the key. */
+/** Validates the pack export 'virtualTableProviders': data source ids or table names mapping to { retrieve?, retrieveMultiple?, create?, update?, delete?, describe?, begin?, commit?, rollback? } (synchronous or async functions) and the *Sync operations (retrieveSync, retrieveMultipleSync, createSync, updateSync, deleteSync: synchronous functions only, never async). Throws TypeError with the key. */
 export function validateVirtualTableProviders(map) {
   if (map === undefined) return {};
   if (!map || typeof map !== 'object' || Array.isArray(map))
@@ -129,6 +129,12 @@ function validateProviderOperations(key, provider) {
       throw new TypeError(`virtualTableProviders['${key}'] has an unknown operation '${operation}'.`);
     if (typeof fn !== 'function')
       throw new TypeError(`virtualTableProviders['${key}'].${operation} must be a function.`);
+    // A *Sync operation answers callers that cannot await; an async function always answers a promise. (A plain
+    // function that returns a promise is refused when it answers: readSync and the synchronous writes.)
+    if (operation.endsWith('Sync') && ['AsyncFunction', 'AsyncGeneratorFunction'].includes(fn.constructor?.name))
+      throw new TypeError(
+        `virtualTableProviders['${key}'].${operation} must be a synchronous function that returns its answer, not an async function; use ${operation.slice(0, -4)} for an async operation.`,
+      );
   }
   const declared = TRANSACTION_OPERATIONS.filter((operation) => operation in provider);
   if (declared.length && declared.length !== TRANSACTION_OPERATIONS.length)
@@ -571,22 +577,11 @@ function readSync(state, resolved, c, { single = false, id = null, request = nul
 }
 
 function synchronousReadUnsupported(resolved, kind, single, fetchXml) {
-  let readOperation, providerOperation;
-  if (fetchXml) {
-    readOperation = 'FetchXML read';
-    providerOperation = 'Web API route';
-  } else if (single) {
-    readOperation = 'Retrieve';
-    providerOperation = kind;
-  } else {
-    readOperation = 'RetrieveMultiple';
-    providerOperation = kind;
-  }
-  return new DataError(
-    `Virtual table '${resolved.table}' is read through its provider; a synchronous SDK ${readOperation} needs the provider's ${providerOperation} operation.`,
-    501,
-    'SdkVirtualReadUnsupported',
-  );
+  const readOperation = single ? 'Retrieve' : 'RetrieveMultiple';
+  const message = fetchXml
+    ? `Virtual table '${resolved.table}' is read through its provider; no provider operation takes FetchXML (retrieveMultipleSync takes { select, filter, orderby, top }), so read it with an SDK RetrieveMultiple query instead.`
+    : `Virtual table '${resolved.table}' is read through its provider; a synchronous SDK ${readOperation} needs the provider's ${kind} operation.`;
+  return new DataError(message, 501, 'SdkVirtualReadUnsupported');
 }
 
 // api.virtualProviders.query: the provider's rows for a request { select, filter, orderby, top }, or null without a provider

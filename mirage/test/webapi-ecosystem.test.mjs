@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of the Web API ecosystem (platform change diagnostics, feeds, runtime behaviour) on invented fixtures; no native capture is replayed
 // Dataverse and Web API runtime behaviour described in mirage/docs/dataverse-parity.md ("Fiscal calendar",
 // "Token failures", "Navigation binding", "Platform changes").
 import test from 'node:test';
@@ -588,6 +589,11 @@ test('platform change diagnostics name enhanced authorization, list feeds, unsec
   ]);
   assert.equal(byCode.ENHANCED_AUTHORIZATION.state, 'Enabled');
   assert.deepEqual(byCode.LIST_ODATA_FEED_REMOVED.items, ['Feed (/_odata/contactset)']);
+  // Dated platform changes are stated with their documented date and source, true whenever the message is read.
+  assert.match(byCode.LIST_ODATA_FEED_REMOVED.message, /removal documented for June 2026 \(Learn, important changes/);
+  assert.match(byCode.LIST_ODATA_FEED_REMOVED.message, /unless observed\.listODataFeeds is "served"/);
+  assert.match(byCode.TABLE_PERMISSIONS_ALWAYS_ENFORCED.message, /regardless of that setting from June 2026 \(Learn/);
+  for (const diagnostic of found) assert.doesNotMatch(diagnostic.message, /\bby June 2026|Since June 2026/);
   assert.deepEqual(byCode.TABLE_PERMISSIONS_ALWAYS_ENFORCED.items, [
     'list Open',
     'basic form Open form',

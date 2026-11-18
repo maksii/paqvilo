@@ -1,3 +1,4 @@
+import { requiredArgument } from './required-argument.mjs';
 import { portalField } from './importer.mjs';
 import { accountWebRoleIds } from './platform-changes.mjs';
 import { guidKey } from './dataverse-values.mjs';
@@ -169,7 +170,7 @@ function membershipPortalIdentity(portal, state, model, contactId, contact) {
               roleIds: accountRoles,
               roles: accountRoles.map((roleId) => model.roles.get(roleId)?.name).filter(Boolean),
               message:
-                "Web roles associated with the persona's parent account are not applied locally. The 2017 Adxstudio portal source gave contacts their parent account's web roles; current Power Pages behaviour is not documented (docs/dataverse-parity.md, Platform changes).",
+                "Web roles associated with the persona's parent account are not applied locally. The 2017 Adxstudio portal source gave contacts their parent account's web roles; current Power Pages behaviour is not documented (mirage/docs/dataverse-parity.md, Platform changes).",
             },
           ]
         : []),
@@ -274,8 +275,8 @@ function manyToManyScope(rel, permission, target, mappings) {
 
 /** Compile an explicit grant ledger and hierarchy. Unresolved source grants fail closed. */
 export function buildPermissionModel(
-  portal,
-  state,
+  portal = requiredArgument('buildPermissionModel(portal, state)', 'a portal (the importPortal result)'),
+  state = requiredArgument('buildPermissionModel(portal, state)', 'a runtime state'),
   {
     relationships = {},
     source = state.simulator?.permissionSource ?? 'configured',

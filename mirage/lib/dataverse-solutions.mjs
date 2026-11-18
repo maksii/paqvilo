@@ -313,7 +313,7 @@ function attributeXml(name, field, primary) {
     f.maxLength != null ? el('MaxLength', f.maxLength) : '',
     f.precision != null ? el('Accuracy', f.precision) : '',
     f.minValue != null ? el('MinValue', f.minValue) : '',
-    f.maxValue != null ? el('MaxValue', f.maxValue) : '',
+    (f.maxValue ?? f.maxSizeInKB) != null ? el('MaxValue', f.maxValue ?? f.maxSizeInKB) : '', // file and image: MaxSizeInKB
     setName ? el('OptionSetName', setName) : '',
     optionXml,
   ].join('')}</attribute>`;
@@ -351,6 +351,7 @@ function entityXml(mapping, logical, names) {
     el('DataProviderId', dm.DataProviderId),
     optionalBooleanXml(dm.ChangeTrackingEnabled, 'ChangeTrackingEnabled'),
     optionalBooleanXml(dm.IsOptimisticConcurrencyEnabled, 'IsOptimisticConcurrencyEnabled'),
+    optionalBooleanXml(dm.IsAuditEnabled, 'IsAuditEnabled'),
     el('OwnershipTypeMask', mapping.ownership ?? 'OrganizationOwned'),
     el('IsActivity', dm.IsActivity === true ? 1 : 0),
     el('HasRelatedNotes', dm.HasNotes === true ? 1 : 0),
@@ -817,7 +818,7 @@ function copyOptionSetFacts(set, stored) {
   }
 }
 
-function applyOptionSets(api, state, optionSets, log, members) {
+function applyOptionSets(api, state, optionSets, log, members, layers = null) {
   for (const set of optionSets) {
     const existing = Object.keys(state.dataverse?.globalOptionSets ?? {}).some(
       (name) => lower(name) === lower(set.name),
@@ -832,6 +833,7 @@ function applyOptionSets(api, state, optionSets, log, members) {
       log.push({ kind: 'optionset', name: set.name, action: 'created' });
     }
     members.push({ kind: 'optionset', logical: set.name, name: null, created: !existing });
+    layers?.push({ kind: 'optionset', logical: set.name, name: null, body: null, applied: true, kept: false });
   }
 }
 
@@ -860,8 +862,9 @@ function applyEntityTable({ c, state, entity, attributes, replaces, managed, log
       log.push({ kind: 'attribute', name: `${logical}.${a.name}`, action: 'kept' });
       continue;
     }
+    const primary = mapping.fields?.[a.name]?.columnMetadata?.isPrimaryName === true;
     if (exists) delete mapping.fields[a.name];
-    createColumn(c, key, attributeBody(a, false));
+    createColumn(c, key, attributeBody(a, primary), { primary });
     outcome.set(a.name, exists ? 'overwritten' : 'created');
     log.push({ kind: 'attribute', name: `${logical}.${a.name}`, action: exists ? 'overwritten' : 'created' });
   }
@@ -876,6 +879,7 @@ function applyEntityProperties(mapping, entity) {
     dataProviderId: 'DataProviderId',
     changeTrackingEnabled: 'ChangeTrackingEnabled',
     isOptimisticConcurrencyEnabled: 'IsOptimisticConcurrencyEnabled',
+    isAuditEnabled: 'IsAuditEnabled',
   }))
     if (entity[source] !== undefined) {
       mapping.dataverseMetadata ??= {};
@@ -949,13 +953,14 @@ function applyEntityLayers({ entity, logical, attributes, outcome, existed, tabl
     applied: !existed || tableReplaced,
     kept: entityKept,
   });
-  for (const attribute of attributes.filter((item) => !primary(item))) {
+  // Every column of the table takes its layer, the primary name column included (its body keeps IsPrimaryName).
+  for (const attribute of attributes) {
     const kept = outcome.get(attribute.name) === 'kept';
     layers.push({
       kind: 'attribute',
       logical,
       name: attribute.name,
-      body: attributeBody(attribute, false),
+      body: attributeBody(attribute, primary(attribute)),
       customizable: attribute.isCustomizable !== false,
       applied: !kept,
       kept: kept && unmanagedOnTop('attribute', logical, attribute.name),
@@ -1098,7 +1103,7 @@ function apply(api, archive, { overwrite, origin, version, caller }, log) {
   };
   const replaces = (kind, logical, name = null) =>
     managed ? becomesTop(kind, logical, name) && (overwrite || !unmanagedOnTop(kind, logical, name)) : overwrite;
-  applyOptionSets(api, state, archive.optionSets, log, members);
+  applyOptionSets(api, state, archive.optionSets, log, members, managed ? layers : null);
   applyEntities({
     c,
     state,
@@ -1520,4 +1525,46 @@ export function reset(api) {
     seedMappings(api.store);
     markStagedUpgrades(api.store.state);
   });
+}
+
+/** Capability record for the capability registry; dataverse-extensions.mjs adds the operations install registered. */
+export function describe() {
+  return {
+    name: 'dataverse-solutions',
+    version: 1,
+    kind: 'dataverse-extension',
+    level: 'behaviour',
+    reason: 'Solution export, import, components, dependencies, patches, upgrades and layers run against the store.',
+    operations: [
+      {
+        name: 'RetrieveFormattedImportJobResults',
+        level: 'contract',
+        reason: 'Returns the import log Mirage writes, not the native Excel format.',
+      },
+      {
+        name: 'RetrieveDependenciesForDelete',
+        level: 'contract',
+        reason: 'No test in mirage/test exercises it.',
+      },
+      {
+        name: 'RetrieveMissingDependenciesWithMetadata',
+        level: 'contract',
+        reason: 'No test in mirage/test exercises it.',
+      },
+      {
+        name: 'RemoveActiveCustomizations',
+        level: 'contract',
+        reason: 'No test in mirage/test exercises it.',
+      },
+      {
+        name: 'BulkRemoveActiveCustomizationsAsync',
+        level: 'contract',
+        reason: 'No test in mirage/test exercises it.',
+      },
+    ],
+    requires: [],
+    principal: 'caller',
+    stateOwner: 'store',
+    lifecycle: 'per-request',
+  };
 }

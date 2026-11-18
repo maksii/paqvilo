@@ -23,7 +23,7 @@ const values={x_name:'PRIVATE_FORM_VALUE',x_zero:0,x_false:false,x_empty:'',x_pa
 const attributes=Object.entries(values).map(([name,value])=>({getName:()=>name,getValue:()=>{f.valueReads++;return value},getAttributeType:()=>name==='x_parent'?'lookup':name==='x_due'?'datetime':typeof value,getIsDirty:()=>name==='x_name',getRequiredLevel:()=>f.required,setRequiredLevel:value=>f.required=value,...(name==='x_choices'?{getOptions:()=>[{text:'Planned',value:1},{text:'Complete',value:3}]}:{})}));
 const control={getName:()=> 'x_name',getVisible:()=>f.visible,setVisible:value=>f.visible=value,getDisabled:()=>f.disabled,setDisabled:value=>f.disabled=value};
 const section={getVisible:()=>f.sectionVisible,setVisible:value=>f.sectionVisible=value};const tab={getVisible:()=>f.tabVisible,setVisible:value=>f.tabVisible=value,sections:collection([section])};
-window.Xrm={Utility:{getGlobalContext:()=>({getClientUrl:()=>location.origin,getVersion:()=> '9.2.1234.5',organizationSettings:{bapEnvironmentId:'${environmentId}',organizationId:'${environmentId}',uniqueName:'invented'},userSettings:{userId:'${recordId}',userName:'PRIVATE_USER_NAME',getSecurityRolePrivilegesInfo:async()=>f.privileges,roles:collection([{name:'Invented role'}])}}),getPageContext:()=>({input:{pageType:'entityrecord',entityName:f.entity,entityId:f.id}})},Page:{data:{entity:{getEntityName:()=>f.entity,getId:()=>{f.idReads++;return f.id},getIsDirty:()=>f.dirty,attributes:collection(attributes),addOnSave:handler=>f.saveHandlers.push(handler),removeOnSave:handler=>f.saveHandlers=f.saveHandlers.filter(item=>item!==handler)},refresh:async save=>f.refreshes.push(save)},ui:{getFormType:()=>2,formSelector:{getCurrentItem:()=>({getId:()=> '${formId}'})},controls:collection([control,{getControlType:()=> 'subgrid',refresh:()=>f.gridRefreshes++}]),tabs:collection([tab])}},Navigation:{openUrl:async url=>f.opened.push({url}),openForm:async(options,params)=>f.opened.push({options,params})},App:{sidePanes:{createPane:async options=>({navigate:async page=>f.opened.push({pane:options,page}),close:()=>f.closedPanes++})}}};
+window.Xrm={Utility:{getGlobalContext:()=>({getClientUrl:()=>location.origin,getVersion:()=> '9.2.1234.5',organizationSettings:{bapEnvironmentId:'${environmentId}',organizationId:'${environmentId}',uniqueName:'invented'},userSettings:{userId:'${recordId}',userName:'PRIVATE_USER_NAME',getSecurityRolePrivilegesInfo:async()=>f.privileges,roles:collection([{name:'Invented role'}])}}),getPageContext:()=>({input:{pageType:'entityrecord',entityName:f.entity,entityId:f.id}})},Page:{data:{entity:{getEntityName:()=>f.entity,getId:()=>{f.idReads++;return f.id},getIsDirty:()=>f.dirty,attributes:collection(attributes),addOnSave:handler=>f.saveHandlers.push(handler),removeOnSave:handler=>f.saveHandlers=f.saveHandlers.filter(item=>item!==handler)},refresh:async save=>{f.refreshes.push(save);if(f.answer==='discard'||f.answer==='save')f.dirty=false;if(f.answer==='save')await fetch('/fixture-saved')}},ui:{getFormType:()=>2,formSelector:{getCurrentItem:()=>({getId:()=> '${formId}'})},controls:collection([control,{getControlType:()=> 'subgrid',refresh:()=>f.gridRefreshes++}]),tabs:collection([tab])}},Navigation:{openUrl:async url=>f.opened.push({url}),openForm:async(options,params)=>f.opened.push({options,params})},App:{sidePanes:{createPane:async options=>({navigate:async page=>f.opened.push({pane:options,page}),close:()=>f.closedPanes++})}}};
 const host=document.createElement('div');host.id='paqvilo-model-inspector';document.body.append(host);host.__paqModelActions={token:'invented-owned-session',results:[],receive(requestId,result){this.results.push({requestId,result})}};
 </script>`;
 
@@ -36,6 +36,7 @@ after(() => browser?.close());
 async function fixture(t) {
   const requests = [],
     waits = new Map();
+  let saves = 0;
   const server = http.createServer((request, response) => {
     const url = new URL(request.url, 'http://fixture.invalid');
     requests.push({ method: request.method, path: url.pathname, query: Object.fromEntries(url.searchParams) });
@@ -43,6 +44,10 @@ async function fixture(t) {
       if (!response.destroyed)
         response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(body));
     };
+    if (url.pathname === '/fixture-saved') {
+      saves++;
+      return send({});
+    }
     if (url.pathname === '/main.aspx') return response.writeHead(200, { 'content-type': 'text/html' }).end(html);
     if (url.pathname.includes('/Attributes'))
       return send({
@@ -96,6 +101,7 @@ async function fixture(t) {
         x_zero: 0,
         x_false: false,
         x_null: null,
+        modifiedon: `2026-01-01T00:00:0${saves}Z`,
         'x_name@OData.Community.Display.V1.FormattedValue': 'PRIVATE_FORMATTED_VALUE',
       };
       const blocked = waits.get('record');
@@ -289,9 +295,27 @@ test('client overrides restore exact states and autosave guard blocks only 70 wi
   );
   await run('form:refresh-subgrids');
   assert.equal(await page.evaluate(() => window.nativeFixture.gridRefreshes), 1);
-  page.once('dialog', (dialog) => dialog.accept());
-  await run('form:refresh-autosave-off');
-  assert.deepEqual(await page.evaluate(() => window.nativeFixture.refreshes), [false]);
+  // The native app asks about a dirty draft itself (Unsaved changes); Lense raises no second browser dialog and reports
+  // the answer from the form state and the saved record's modifiedon.
+  const dialogs = [];
+  page.on('dialog', (dialog) => {
+    dialogs.push(dialog.type());
+    void dialog.dismiss();
+  });
+  const discard = async (answer) => {
+    await page.evaluate((answer) => {
+      window.nativeFixture.dirty = true;
+      window.nativeFixture.answer = answer;
+    }, answer);
+    return run('form:refresh-autosave-off');
+  };
+  const closed = await discard('close');
+  assert.equal(closed.status, 'cancelled');
+  assert.match(closed.message, /draft was kept/);
+  assert.match((await discard('discard')).message, /^Refreshed without saving; the draft was discarded\./);
+  assert.match((await discard('save')).message, /saved the draft \(Save and continue\)/);
+  assert.deepEqual(await page.evaluate(() => window.nativeFixture.refreshes), [false, false, false]);
+  assert.deepEqual(dialogs, []);
   await run('form:show-logical-names');
   assert.equal(await page.locator('[data-paq-model-logical-name]').count(), 1);
   await page.evaluate(disposeModelDrivenActions, { origin, token: 'invented-owned-session' });
@@ -373,7 +397,7 @@ test('native identity reads use exact privilege names and bounded active-user qu
   assert.equal(users.users[0].label, 'Invented active user');
   const read = requests.find((request) => request.path.endsWith('/systemusers'));
   assert.equal(read.query.$top, '100');
-  assert.match(read.query.$filter, /isdisabled eq false and applicationid eq null/);
+  assert.match(read.query.$filter, /isdisabled eq false and azureactivedirectoryobjectid ne null/);
   assert.match(read.query.$filter, /O''Neal/);
   assert.equal(
     requests.some((request) => request.method !== 'GET'),

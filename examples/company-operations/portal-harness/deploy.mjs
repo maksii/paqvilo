@@ -5,11 +5,9 @@ import { fileURLToPath } from 'node:url';
 import { loadConnection, connectedClient } from 'paqvilo/dataverse';
 import { prepare, fetchXmlTagMatches } from './compile.mjs';
 import { savePrivateJson } from './private-journal.mjs';
+import { cli, isMain, UsageError } from '../cli.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const args = Object.fromEntries(
-  process.argv.slice(2).reduce((a, v, i, all) => (v.startsWith('--') ? [...a, [v.slice(2), all[i + 1]]] : a), []),
-);
 export function componentId(website, key) {
   const bytes = createHash('sha256').update(`CO Portal Lab v1:${website}:${key}`).digest().subarray(0, 16);
   bytes[6] = (bytes[6] & 15) | 80;
@@ -407,7 +405,15 @@ function componentWriteStatus(unchanged, own) {
   return own ? 'updated' : 'created';
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const config = JSON.parse(await fs.readFile(args.config, 'utf8'));
+if (isMain(import.meta)) {
+  const { values } = cli(
+    `Usage: node portal-harness/deploy.mjs --config FILE
+
+Run from examples/company-operations. Writes the harness pages as native powerpagecomponents to the live site named
+in the private JSON config; authorized sites only. A relative path resolves from the working directory.`,
+    { config: { type: 'string' } },
+  );
+  if (!values.config) throw new UsageError('--config FILE is required.');
+  const config = JSON.parse(await fs.readFile(values.config, 'utf8'));
   console.log(JSON.stringify(await deploy(config)));
 }

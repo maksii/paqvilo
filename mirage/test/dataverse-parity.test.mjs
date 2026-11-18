@@ -400,8 +400,83 @@ test('parity CLI prints its usage without a command and names a rejected write p
     out,
   ]);
   assert.equal(rejected.code, 1);
-  assert.match(rejected.stderr, /Plan contains writes; explicit allowWrites required/);
+  assert.match(rejected.stderr, /Plan contains writes; explicit --allow-writes required/);
   await assert.rejects(fs.access(out), { code: 'ENOENT' });
+});
+
+test('parity CLI names the missing option, the rejected --base, the assertion rule and a reused --out', async (t) => {
+  const temp = await makeTemporaryDirectory(path.join(os.tmpdir(), 'dataverse-parity-cli-'));
+  t.after(() => fs.rm(temp, { recursive: true, force: true }));
+  const generic = /inspect private journal/;
+  for (const [args, expected] of [
+    [['assert', '--actual', 'a.json'], /^assert requires --checks, --out\. Use catalogue/],
+    [['diff'], /^diff requires --reference, --actual, --out\./],
+    [['catalogue', '--out', 'x.json'], /^catalogue requires --metadata\./],
+    [['record', '--plan', 'p.json'], /^record and replay requires --base, --out\./],
+  ]) {
+    const result = await runCli(args);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, expected);
+  }
+  const planFile = path.join(temp, 'read-plan.json');
+  await fs.writeFile(planFile, JSON.stringify(plan([readCase()])));
+  const remote = await runCli([
+    'record',
+    '--plan',
+    planFile,
+    '--base',
+    'http://example.invalid/api/data/v9.2/',
+    '--out',
+    path.join(temp, 'r'),
+  ]);
+  assert.match(remote.stderr, /--base must be a loopback URL, or an HTTPS URL together with --allow-remote/);
+  const shape = await runCli([
+    'record',
+    '--plan',
+    planFile,
+    '--base',
+    'http://127.0.0.1:9/odata/',
+    '--out',
+    path.join(temp, 'r'),
+  ]);
+  assert.match(shape.stderr, /--base must be an absolute URL ending with \/api\/data\/v9\.x\//);
+
+  const runFile = path.join(temp, 'run.json');
+  await fs.writeFile(runFile, JSON.stringify({ complete: true, results: [] }));
+  const checksFile = path.join(temp, 'checks.json');
+  await fs.writeFile(checksFile, JSON.stringify([{ id: 'c1', caseId: 'x', assertions: [] }]));
+  const badChecks = await runCli([
+    'assert',
+    '--actual',
+    runFile,
+    '--checks',
+    checksFile,
+    '--out',
+    path.join(temp, 'a.json'),
+  ]);
+  assert.match(badChecks.stderr, /^Assertion check c1: checks require unique ids, a caseId, non-empty assertions/);
+  assert.doesNotMatch(badChecks.stderr, generic);
+
+  const existing = path.join(temp, 'existing');
+  await fs.mkdir(existing);
+  const reused = await runCli([
+    'record',
+    '--plan',
+    planFile,
+    '--base',
+    'http://127.0.0.1:9/api/data/v9.2/',
+    '--out',
+    existing,
+  ]);
+  assert.equal(reused.code, 1);
+  assert.match(reused.stderr, /existing already exists; evidence is never overwritten, so choose a new --out path/);
+  assert.doesNotMatch(reused.stderr, /EEXIST/);
+});
+
+test('an unknown option is named in one line instead of the generic failure line', async () => {
+  const { code, stderr } = await runCli(['--bogus']);
+  assert.equal(code, 1);
+  assert.equal(stderr.trim(), "Unknown option '--bogus'. Run with --help to see supported options.");
 });
 
 test('--help and -h print the usage to stdout with every sub-command and exit 0', async () => {
@@ -411,6 +486,9 @@ test('--help and -h print the usage to stdout with every sub-command and exit 0'
     assert.match(stdout, /^Use catalogue --metadata FILE .* assert --actual FILE --checks FILE --out FILE$/m);
     for (const command of ['catalogue', 'record', 'replay', 'assert', 'diff'])
       assert.match(stdout, new RegExp(`\\b${command}\\b`));
+    // Help names every option the commands accept, including the policy flags refusals ask for.
+    for (const option of ['--token-env NAME', '--allow-remote', '--allow-writes'])
+      assert.ok(stdout.includes(option), `help names ${option}`);
   }
 });
 

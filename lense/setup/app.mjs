@@ -705,7 +705,7 @@ function siteEditor(site) {
     `<div class="row"><button type="button" class="button" data-add-profile>Add profile</button><label class="checkbox-line"><input type="radio" name="profile-default" value="" ${current ? '' : 'checked'}>No default profile</label></div>` +
     (project
       ? `<fieldset class="quick-group"><legend>Code apps</legend><p>Register each local app. Changes apply after restarting the preview.</p><div data-code-apps>${(state.layers.shared.values?.codeApps ?? []).map((app, index) => codeAppRow(app, index)).join('')}</div><button type="button" class="button" data-add-code-app>Add code app</button></fieldset>`
-      : '<p class="muted small">Code apps run from a standalone project file (paqvilo setup --project), not from this settings file.</p>') +
+      : `<p class="muted small">Code apps run from a standalone project file (<code>${esc(state.commands.prefix)} setup --project</code>), not from this settings file.</p>`) +
     `<div class="toolbar"><button type="submit" class="button primary">Save</button><span class="muted">Writes the ${layer} settings file. Applies when the preview restarts.</span></div></form>`
   );
 }
@@ -2365,40 +2365,41 @@ function advancedBody() {
   );
 }
 function guidanceBody() {
-  // Arguments quoted by the server (status.commandArgs), as the restart command quotes them.
+  // Arguments quoted by the server (status.commandArgs), as the restart command quotes them; the command prefix for
+  // the served folder from status.commands.
   const project = state.kind === 'project',
     arg = esc(state.commandArgs?.file ?? ''),
-    at = state.commandArgs?.site ? ` ${esc(state.commandArgs.site)}` : '';
+    at = state.commandArgs?.site ? ` ${esc(state.commandArgs.site)}` : '',
+    run = esc(state.commands.prefix);
   const steps = [
-    [
-      'Install and check',
-      'In a scaffold, run <code>npm run setup</code>; otherwise <code>npx paqvilo doctor --setup</code>.',
-    ],
+    // The server names the project's npm script only when the project defines it (lense/command-hint.mjs).
+    ['Install and check', `Run <code>${esc(state.commands.setup)}</code>.`],
     [
       'Scaffold or compare',
-      `${project ? '' : '<code>npx paqvilo init --check</code> lists remaining scaffold tasks. '}<code>npx paqvilo mirage demo</code> copies the shipped example project.`,
+      (project ? '' : '<code>' + run + ' init --check</code> lists remaining scaffold tasks. ') +
+        `<code>${run} mirage demo</code> copies the shipped example project.`,
     ],
     [
       'Inspect',
-      project ? `<code>npx paqvilo mirage inspect ${arg}</code>` : `<code>npx paqvilo lense doctor ${arg} --all</code>`,
+      project ? `<code>${run} mirage inspect ${arg}</code>` : `<code>${run} lense doctor ${arg} --all</code>`,
     ],
     [
       'Generate data (optional)',
-      `<code>npx paqvilo mirage data scaffold --profile smoke --state .paqvilo/smoke-state.json ${arg}${at}</code>`,
+      `<code>${run} mirage data scaffold --profile smoke --state .paqvilo/smoke-state.json ${arg}${at}</code>`,
     ],
     ...(project
       ? []
       : [
           [
             'Standalone project (optional)',
-            `<code>npx paqvilo mirage init ${arg}${at}</code>, then <code>npx paqvilo setup --project &lt;file&gt;</code>`,
+            `<code>${run} mirage init ${arg}${at}</code>, then <code>${run} setup --project &lt;file&gt;</code>`,
           ],
         ]),
     [
       'Start a preview',
       project
-        ? `<code>npx paqvilo mirage serve ${arg}</code>`
-        : `<code>npx paqvilo mirage dev ${arg}${at}</code> locally, or <code>npx paqvilo lense dev ${arg}${at}</code> for an authorized environment`,
+        ? `<code>${run} mirage serve ${arg}</code>`
+        : `<code>${run} mirage dev ${arg}${at}</code> locally, or <code>${run} lense dev ${arg}${at}</code> for an authorized environment`,
     ],
   ];
   // One row per guide: several keys can name the same document.

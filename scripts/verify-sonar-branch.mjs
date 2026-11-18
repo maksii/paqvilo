@@ -4,6 +4,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveGitExecutable } from './trusted-git.mjs';
+import { answerHelp } from './script-help.mjs';
 
 export const MAX_LINE = 299;
 const MAX_MESSAGE = 200;
@@ -198,6 +199,15 @@ async function main() {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  answerHelp(process.argv.slice(2), {
+    // The prefix keeps the message the CLI has always given for unexpected arguments.
+    name: 'Unexpected Sonar verifier arguments',
+    usage: `Usage: node scripts/verify-sonar-branch.mjs
+Waits for the Sonar analysis named in .scannerwork/report-task.txt and fails unless the full-source branch has zero
+unresolved issues and the checked-out commit is the analysed revision. Reads SONAR_HOST_URL, SONAR_TOKEN,
+SONAR_FULL_BRANCH and SONAR_EXPECTED_REVISION; contacts the Sonar server; writes nothing. Takes no options; --help
+prints this help.`,
+  });
   main()./* NOSONAR */ catch((error) => {
     // NOSONAR: preserve nonblocking module evaluation timing
     process.stderr.write(`${error.message}\n`);

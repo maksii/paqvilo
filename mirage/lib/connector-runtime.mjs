@@ -958,6 +958,8 @@ const SCRIPT_RESTORE =
     connectors: connector.connectorIds,
     operations,
     blocked: connector.blocked,
+    // Compile warnings that apply to a connection without a static token (an OAuth flow that is not run locally).
+    tokenWarnings: (connector.diagnostics ?? []).filter((entry) => entry.severity === 'warning' && entry.tokenOnly),
     oauth:
       connector.auth.type === 'oauth'
         ? {
@@ -1989,7 +1991,10 @@ export function createConnectorRuntime({
       if (!registry.has(provider))
         fail('ConnectorNotConfigured', 'The connection names a provider that is not registered.');
       const resolvedPrincipal = principal ?? principalOf(connection?.principal);
+      // A token-only connector warning applies while the connection declares no static token reference.
+      const warnings = connection?.settings?.auth?.token ? [] : (registry.get(provider).tokenWarnings ?? []);
       return {
+        ...(warnings.length ? { warnings } : {}),
         connectorId,
         referenceLogicalName,
         connectionId: id ?? null,
@@ -2111,7 +2116,7 @@ export function createConnectorRuntime({
     const note = (status, error) =>
       diagnostic({
         code: 'CONNECTOR_INVOKE',
-        // Human facts (D-M-2 Findings): the operation, the Dataverse table it names (entityName), a sentence.
+        // Human facts (Findings): the operation, the Dataverse table it names (entityName), a sentence.
         name: operationId ?? connectorId,
         entity: typeof parameters?.entityName === 'string' ? parameters.entityName : null,
         message: `${operationId ?? 'An operation'} of ${connectorId} answered ${status}${errorDetail(error)}.`,

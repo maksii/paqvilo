@@ -68,7 +68,11 @@ test('acceptance attaches to the live browser under the hang guard', async (t) =
     liveOrigin: 'https://portal.invalid',
     cdpUrl: 'http://127.0.0.1:9',
   });
-  assert.equal(result.error, sentinel.message);
+  // A refused attach is reported with the reference tools' shared connection message (mirage/lib/live.mjs).
+  assert.equal(
+    result.error,
+    'Could not connect to the loopback browser debugging endpoint. Confirm its port and availability.',
+  );
   assert.equal(seen[0].timeout, BROWSER_HANG_GUARD_MS);
 });
 

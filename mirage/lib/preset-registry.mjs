@@ -1,3 +1,4 @@
+import { requiredArgument } from './required-argument.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -65,7 +66,7 @@ export function genericPresets() {
       id: 'contact-demo',
       name: 'Contact and account demo',
       description:
-        'One invented contact and organisation with self/account permissions and a declarative full-name rule. Replaces the contact and account tables.',
+        'One invented contact and organization with self/account permissions and a declarative full-name rule. Replaces the contact and account tables.',
       mappings: {
         contact: { entitySet: 'contacts', idColumn: 'contactid' },
         account: { entitySet: 'accounts', idColumn: 'accountid' },
@@ -254,9 +255,12 @@ function hydrateConfigurationPreset(value, entry, id, pack) {
 }
 
 /** Validate a pack object without evaluating lazy personas/plugins getters. */
-export function validatePack(pack, source = 'data pack') {
+export function validatePack(pack, source = null) {
+  // Only a call without arguments names the function; loadPack passes a module's missing default export as undefined.
+  if (arguments.length === 0) requiredArgument('validatePack(pack, source)', 'a pack object');
+  // source names the pack (its module or id) after "Data pack"; without one the message says "Data pack" once.
   const fail = (message) => {
-    throw new Error(`Data pack ${source}: ${message}`);
+    throw new Error(source ? `Data pack ${source}: ${message}` : `Data pack: ${message}`);
   };
   if (!pack || typeof pack !== 'object' || Array.isArray(pack)) fail('must default-export an object');
   if (typeof pack.id !== 'string' || !packIdPattern.test(pack.id)) fail('id must match /^[a-z0-9][a-z0-9._-]*$/');
@@ -273,7 +277,7 @@ export function validatePack(pack, source = 'data pack') {
   // HTTP endpoints under /__sim/ served while the pack matches the portal.
   validatePackExtensions(pack, fail);
   validatePackTemplates(pack, fail);
-  // Recognised exports (lib/pack-exports.mjs): invalid values throw, unknown keys are diagnostics.
+  // Recognized exports (lib/pack-exports.mjs): invalid values throw, unknown keys are diagnostics.
   // The validated pack is a frozen snapshot of its own data exports, so a getter or Proxy cannot answer differently later.
   const validated = snapshotPacks.has(pack) ? pack : (packSnapshots.get(pack) ?? snapshotPackExports(pack));
   packSnapshots.set(pack, validated);
@@ -312,7 +316,9 @@ const moduleLabel = (module) =>
     : String(module);
 
 /** Import and validate one pack module (absolute path or file URL). */
-export async function loadPack(module) {
+export async function loadPack(
+  module = requiredArgument('loadPack(module)', 'a pack module (absolute path, file URL or module object)'),
+) {
   if (module && typeof module === 'object' && !(module instanceof URL)) {
     return validatePack(module, module.id ?? 'loaded pack');
   }
@@ -429,7 +435,12 @@ export function presetDescriptor(library, id) {
  * Legacy loads and public previews are memoized; owned applications create a
  * new transferred graph. `finish(body, { owned: true })` may adopt only that graph.
  */
-export function defineLazyPreset(library, id, entry, { pack, finish } = {}) {
+export function defineLazyPreset(
+  library = requiredArgument('defineLazyPreset(library, id, entry, options)', 'a preset library'),
+  id,
+  entry,
+  { pack, finish } = {},
+) {
   if (!presetIdPattern.test(id) || reserved.has(id))
     throw new Error(`Invalid preset id '${id}'${pack ? ' in data pack ' + pack : ''}`);
   if (!entry || typeof entry !== 'object')
@@ -530,7 +541,10 @@ export function presetLibrary({ portal, metadata, packs = [], options } = {}) {
 
 /** Value-free preflight for configuration bodies and links declared in preset descriptors.
  * Lazy preset loaders are not evaluated; put configurationPreset on their descriptor. */
-export function configurationPresetDiagnostics(packOrPacks, options = {}) {
+export function configurationPresetDiagnostics(
+  packOrPacks = requiredArgument('configurationPresetDiagnostics(packOrPacks)', 'a pack or an array of packs'),
+  options = {},
+) {
   const packs = Array.isArray(packOrPacks) ? packOrPacks : [packOrPacks];
   const report = configurationPresetReport(packs);
   const diagnostics = [...report.diagnostics],

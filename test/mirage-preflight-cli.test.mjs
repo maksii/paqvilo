@@ -122,6 +122,31 @@ test('mirage preflight reports a placeholder flow and blocks on it only with --s
   assert.deepEqual(await fs.readdir(stateDir), []);
 });
 
+test('a Solution root that fails to load prints its loader message on the blocking solution-source row', async (t) => {
+  const { root, portal, run } = await fixture(t);
+  const unreadable = path.join(root, 'unreadable'),
+    empty = path.join(root, 'empty');
+  await write(unreadable, { 'Other/Solution.xml': 'not xml <<<' });
+  await fs.mkdir(empty);
+  for (const [dir, reason, message] of [
+    [unreadable, 'SOLUTION_XML_INVALID', /./],
+    [empty, 'SOLUTION_ROOT_EMPTY', /^The directory holds no Solution/],
+  ]) {
+    const [text, json] = await Promise.all([
+      run('--source', portal, '--solution-root', dir, '--strict'),
+      run('--source', portal, '--solution-root', dir, '--strict', '--json'),
+    ]);
+    const row = JSON.parse(json.stdout).requirements.find((item) => item.kind === 'solution-source');
+    assert.equal(row.reason, reason, dir);
+    assert.match(row.message ?? '', message, dir);
+    assert.equal(text.status, 1, text.stderr);
+    assert.ok(
+      text.stdout.includes(`BLOCKING missing ${row.id} - ${row.message}`),
+      `${reason}: the text line carries the loader message\n${text.stdout}`,
+    );
+  }
+});
+
 test('mirage preflight exits 2 on an invocation error', async (t) => {
   const { root, solution, stateDir, run } = await fixture(t);
   const scenario = path.join(root, 'broken.json');

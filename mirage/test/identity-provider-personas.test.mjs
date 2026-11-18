@@ -128,7 +128,7 @@ test('registration modes and presentation settings are explicit and validated', 
   for (const [value, message] of [
     [{ newUser: 'maybe' }, /newUser must be auto, always or never/],
     [{ presentation: 'iframe' }, /presentation must be page or dialog/],
-    [{ accentColor: 'red;url(x)' }, /six-digit hex color/],
+    [{ accentColor: 'red;url(x)' }, /six-digit hex colour/],
     [{ unexpected: true }, /Unknown mirage\.identityProvider\.unexpected/],
     [{ head: { scripts: 'x.js' } }, /head\.scripts must be an array of project file paths/],
   ])

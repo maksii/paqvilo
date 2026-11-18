@@ -108,6 +108,11 @@ const errorNumber = (error) => {
 const canceled = (message, innerCode = '0x0') =>
   Object.assign(new DataError(message, 400, 'InvalidRequest', { innerCode }), { jobStatus: JOB_STATUS.canceled });
 const failure = (message) => new DataError(message, 400, 'InvalidRequest', { innerCode: '0x0' });
+// A real-time run's failure rejects the request: a DataError keeps its own code, anything else answers 0x80040265 with its
+// message (the code of a real-time workflow failure is a guess).
+const realtimeFailure = (error) => (error instanceof DataError ? error : native('0x80040265', error.message));
+// A failed mock run: a real-time one answers as every real-time failure does; a background one fails its job.
+const mockFailure = (run, message) => (run.realtime ? realtimeFailure(new Error(message)) : failure(message));
 
 // ---- Solution sources
 
@@ -442,7 +447,7 @@ async function runClassic(api, config, run) {
       workflowId: id,
       message: 'Explicit local mock; the workflow XAML was not executed.',
     });
-    if (choice.status === JOB_STATUS.failed) throw failure(choice.message);
+    if (choice.status === JOB_STATUS.failed) throw mockFailure(run, choice.message);
     writeLog(store, api, run, { status: LOG_STATUS.succeeded, message: choice.message, startedon });
     return choice.message;
   }
@@ -542,7 +547,8 @@ function tracedRun(api, run, work, { cloud = false } = {}) {
 async function attempt(api, config, run) {
   try {
     return await tracedRun(api, run, () => api.change(() => api.runAtomic(() => runClassic(api, config, run))));
-  } catch (error) {
+  } catch (error_) {
+    const error = run.realtime ? realtimeFailure(error_) : error_;
     const choice = classicChoice(config, run.row);
     const logged = choice.mode === 'handler' || choice.mode === 'mock';
     if (logged || (run.realtime && run.row.syncworkflowlogonfailure)) {
@@ -1070,8 +1076,7 @@ async function afterWriteTriggers(api, config, c, mapping, { operation, id }) {
     try {
       await runClassic(api, config, run);
     } catch (error) {
-      if (error instanceof DataError) throw error;
-      throw native('0x80040265', error.message); // the code of a real-time workflow failure is a guess
+      throw realtimeFailure(error);
     }
   }
 }

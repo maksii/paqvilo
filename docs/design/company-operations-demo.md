@@ -1,32 +1,38 @@
 # Company Operations example: data model
 
 Design of the synthetic [Company Operations example](../../examples/company-operations/README.md): an invented
-organisation and workforce model with simultaneous memberships, twelve combinable roles and deep permission paths. The
+organization and workforce model with simultaneous memberships, twelve combinable roles and deep permission paths. The
 [permission harness](power-pages-permission-test-harness.md) and [plug-in observations](dataverse-plugin-observation.md)
 build on it. These are model contracts, not proof of any environment's installed state.
+
+Status: implemented in `examples/company-operations`: the generated schema manifest, fixture catalogues, forms and the
+`portal-security` permission blueprint. Backend enforcement of the
+[integrity rules](#integrity-rules-for-seed-checks-and-backend-enforcement) is proposed; the seed tests check them, and
+the guard plug-ins meanwhile block untrusted creates, deletes and structural updates of business rows. The Source5
+cohort is an optional, separately generated schema revision.
 
 `examples/company-operations/prepare-schema.mjs` generates `dataverse/manifest.json` by parsing four sections of this
 document (**Tables columns and keys**, **Choices and twelve roles**, **Access permission projections**, **Single target
 relationships and cascade settings**) plus the schema sections of the two companion documents. Keep those headings and
 table rows exact; any edit to them must regenerate the committed manifest (`npm run schema:prepare`), and the project's
-schema test fails when the two disagree.
+`generated-files` and `schema` tests fail when the two disagree.
 
 ## Solutions
 
-| Solution                         | Contents                                                                                                                  |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `PaqviloCompanyOperationsCore`   | 19 custom business/reference tables, Account/Contact/Transaction Currency extensions, 17 choices, keys and relationships. |
-| `PaqviloCompanyOperationsForms`  | Named forms and views (depends on Core).                                                                                  |
-| `PaqviloPermissionTestSupport`   | Run, result and probe tables (harness design).                                                                            |
-| `PaqviloPluginEvidence`          | Operation, event and chain-node tables (plug-in design).                                                                  |
-| `PaqviloBehaviorPlugins`         | Plug-in assemblies and steps, plus the result/probe/equipment extension columns.                                          |
-| `PaqviloCompanyOperationsPortal` | The website and its configuration (built by `portal-security/package.mjs`).                                               |
+| Solution                         | Contents                                                                                                                    |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `PaqviloCompanyOperationsCore`   | 19 custom business/reference tables, Account/Contact columns, reused Transaction Currency, 17 choices, keys, relationships. |
+| `PaqviloCompanyOperationsForms`  | Named forms and views (depends on Core).                                                                                    |
+| `PaqviloPermissionTestSupport`   | Run, result and probe tables (harness design).                                                                              |
+| `PaqviloPluginEvidence`          | Operation, event and chain-node tables (plug-in design).                                                                    |
+| `PaqviloBehaviorPlugins`         | Plug-in assemblies and steps, plus the result/probe/equipment extension columns.                                            |
+| `PaqviloCompanyOperationsPortal` | The website and its configuration (built by `portal-security/package.mjs`).                                                 |
 
-Publisher prefix `pqvd`, option value prefix `18327`, version `1.0.0.0`, language `1033`. In total: **28 tables, 25
-custom**. Create metadata through the [Dataverse provisioning API](../dataverse-provisioning.md) and export the
-server-generated solutions; never hand-author table XML instead. Segmented native exports need their tables to exist,
-so they are update packages, not first-install packages
-([segmentation limits](https://learn.microsoft.com/en-us/power-platform/alm/segmented-solutions-alm)).
+The first five are in the manifest; the portal solution is packaged separately. Publisher prefix `pqvd`, option value
+prefix `18327`, version `1.0.0.0`, language `1033`. In total: **28 tables, 25 custom**. Create metadata through the
+[Dataverse provisioning API](../dataverse-provisioning.md) and export the server-generated solutions; never hand-author
+table XML instead. Segmented native exports need their tables to exist, so they are update packages, not first-install
+packages ([segmentation limits](https://learn.microsoft.com/en-us/power-platform/alm/segmented-solutions-alm)).
 
 Keep the plain account demo intact and never copy its global account grants (including anonymous Read). Do not reuse
 business `pqvd_finding` for technical observations. No marker columns are added to business tables: query correlation
@@ -50,21 +56,21 @@ Global roots for business, directory, grant or role-catalogue tables. Web roles 
 security roles. Microsoft documents no maximum permission depth and nothing about the performance of an eleven-table
 graph, so each target site is qualified by the harness.
 
-## Organisation membership and employment
+## Organization membership and employment
 
-Account represents Company, Subsidiary, Region, Branch, Operating unit or Vendor. Organisational Accounts share a root
+Account represents Company, Subsidiary, Region, Branch, Operating unit or Vendor. Organizational Accounts share a root
 Company; Vendors sit outside the trees. Branches are not Dataverse business units. Company roots have no parent and a
 null `pqvd_rootaccountid` (Dataverse rejects a Company-to-itself root link as a hierarchy loop); descendants store their
-Company's GUID; Vendors have no organisational root.
+Company's GUID; Vendors have no organizational root.
 
-Contact is a shared person. `pqvd_orgcontact` is that person's membership in one organisational Account, with work
+Contact is a shared person. `pqvd_orgcontact` is that person's membership in one organizational Account, with work
 contact details there. A person may have several memberships and concurrent engagements (for example permanent in A and
 contracting in B); there is no one-active-engagement rule and no cross-company FTE total. Roles are independent of
 engagement kind, and ending one engagement revokes only the grants it sponsors.
 
 ```text
 Company/branch Account
-  -> Organisation contact membership -> shared Contact (identity leaf)
+  -> Organization contact membership -> shared Contact (identity leaf)
     -> Employment / contract
       -> Assignment -> Service request -> Work order -> Work task
         -> Checklist item -> Inspection attempt -> Finding
@@ -74,12 +80,12 @@ Account -> Department -> Employment -> Private employment terms
 ```
 
 Never route operational permissions `Account -> shared Contact -> all employments`: access to a Contact through A would
-expose its B engagements. Workforce permissions traverse the organisation-specific membership; a shared-Contact display
+expose its B engagements. Workforce permissions traverse the organization-specific membership; a shared-Contact display
 grant, if ever needed, is a Read-only leaf.
 
 ## Metadata conventions
 
-Nineteen organisation-owned custom business/reference tables (not activity, virtual or elastic), each with GUID key
+Nineteen organization-owned custom business/reference tables (not activity, virtual or elastic), each with GUID key
 `<logicalname>id`, primary name `pqvd_name` Text(160), standard timestamps and Active/Inactive state. Standard
 Account/Contact ownership and security roles are unchanged; ChainNode is user/team-owned to test Assign.
 
@@ -94,7 +100,7 @@ secured columns; wait for Active indexes before importing data; null key values 
 
 | Table / entity set                                    | Additional columns                                                                                                                                                                                                                                                                                                                                                                                                                                         | Alternate key definitions                                                                                                                                                                                                       |
 | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `account` / `accounts`                                | Standard `name`, `accountnumber`, `parentaccountid`; `pqvd_orgkind` Choice!, `pqvd_rootaccountid` L(account) S                                                                                                                                                                                                                                                                                                                                             | `pqvd_ak_account_number`: account number, required for demo records. Root lookup required for descendants; null for Company/Vendor. Company canonical root = its own ID.                                                        |
+| `account` / `accounts`                                | Standard `name`, `accountnumber`, `parentaccountid`; `pqvd_orgkind` Choice!, `pqvd_rootaccountid` L(account) S                                                                                                                                                                                                                                                                                                                                             | `pqvd_ak_account_number`: account number, required for demo records. Root lookup required for descendants; null for Company/Vendor; a Company is its own canonical root.                                                        |
 | `contact` / `contacts`                                | Standard first/last/full name, email/telephone, `parentcustomerid`; `pqvd_personcode` Text(40)!                                                                                                                                                                                                                                                                                                                                                            | `pqvd_ak_contact_personcode`: person code. Customer lookup is optional default/home context, not a membership/security anchor.                                                                                                  |
 | `transactioncurrency` / `transactioncurrencies`       | Standard ID, name, ISO code, precision, exchange rate                                                                                                                                                                                                                                                                                                                                                                                                      | System Money dependency; reuse existing currencies and rates. Direct native observer registration/execution is not assumed.                                                                                                     |
 | `pqvd_currencyreference` / `pqvd_currencyreferences`  | `pqvd_code` Text(3)!, `pqvd_symbol` Text(10), `pqvd_precision` Integer(0..4), `pqvd_systemcurrencyid` L(transactioncurrency)!                                                                                                                                                                                                                                                                                                                              | `pqvd_ak_currencyreference_code`: ISO code; `pqvd_ak_currencyreference_currency`: required system-currency lookup. Enforces at most one reference per system currency; a required lookup is N:1, not a native 1:1 relationship. |
@@ -190,7 +196,7 @@ descendants.
 `pqvd_access_referenceaccounts` (to Vendor accounts) for the scoped reference leaves. Intersect entity names equal the
 relationship names, with no payload columns.
 
-- Organisation grants link the anchor Account and, only with includedescendants, its descendants; never ancestors,
+- Organization grants link the anchor Account and, only with includedescendants, its descendants; never ancestors,
   siblings or another Company.
 - Department grants link the department and its active employments directly, avoiding a membership-to-all-engagements
   bridge for people in several departments.
@@ -198,7 +204,7 @@ relationship names, with no payload columns.
   assignments for that engagement. Directory membership links (Employee: the root Company; Contractor: its department)
   have no Employment children.
 - Non-Active grants have no intersections. Revocation or expiry clears principals and links; business-row state alone
-  revokes nothing. Seed data materialises the projections; no reconciler is installed, so association writes stay
+  revokes nothing. Seed data materializes the projections; no reconciler is installed, so association writes stay
   provisioner-only.
 
 ## Single target relationships and cascade settings
@@ -246,7 +252,7 @@ The referenced table holds the primary key; the referencing table holds the look
 | `pqvd_orgcontact_inspections`         | `pqvd_orgcontact`     | `pqvd_inspection`        | `pqvd_inspectororgcontactid`   |
 | `pqvd_inspection_findings`            | `pqvd_inspection`     | `pqvd_finding`           | `pqvd_inspectionid`            |
 
-Plus the twelve Contact principal relationships from the role table. Organisation parents reuse the standard
+Plus the twelve Contact principal relationships from the role table. Organization parents reuse the standard
 `account_parent_account`; root-account and employment-manager relationships are not hierarchical.
 
 New 1:N relationships use NoCascade for Assign, Share, Unshare and Reparent, and Restrict for Delete, including optional
@@ -257,12 +263,12 @@ Dataverse enforces that. Standard Account parent cascades are unchanged. Cascade
 
 `pqvd_currencyreference` is immutable reference data mapped one-to-one (by alternate keys, not a native 1:1) to the
 reused system currencies; it never mirrors or changes exchange rates. It gives the plug-in observer and the harness a
-custom currency table to observe (R21), since direct observation of system Currency is not assumed; system-Currency
-gaps stay explicit. Money fields keep the standard
-`transactioncurrencyid` lookup. Six roles (Company manager, Branch manager, HR, Procurement, Auditor, CTO) get
-Read-only reference leaves through `pqvd_access_currencyreferences` and separate system-currency Read leaves through
-`pqvd_access_currencies`; only HR and Procurement get Append To for money bindings. Portal Create, Update and Delete and
-projection writes are rejected. No reference table has Global visibility.
+custom currency table to observe (harness case R21), since direct observation of system Currency is not assumed;
+system-Currency gaps stay explicit. Money fields keep the standard `transactioncurrencyid` lookup. Six roles (Company
+manager, Branch manager, HR, Procurement, Auditor, CTO) get Read-only reference leaves through
+`pqvd_access_currencyreferences` and separate system-currency Read leaves through `pqvd_access_currencies`; only HR and
+Procurement get Append To for money bindings. Portal Create, Update and Delete and projection writes are rejected. No
+reference table has Global visibility.
 
 ## Counted permission paths
 
@@ -289,11 +295,11 @@ Employee/Contractor path: Access -> Employment (`pqvd_access_employments`) -> As
 Checklist -> Inspection -> Finding, nine nodes. Directory and profile grants are separate leaves without workforce
 children.
 
-Trees are cloned per role, never per person or organisation, with node keys `<ROLE>-<PATH>-<TABLE>` (for example
+Trees are cloned per role, never per person or organization, with node keys `<ROLE>-<PATH>-<TABLE>` (for example
 `IT-WORKFORCE-ACCESSPERMISSION` to `IT-WORKFORCE-FINDING`). Every child has one parent and its root's web role. Several
 trees may reach the same rows; one role's aggregated Account Read is never another role's parent. Secondary routes
 (only for roles granted them): Account -> Equipment -> Requests -> service descendants; Account -> Site -> Building ->
-Room; Account -> Department -> Employment; Employment -> Terms; Equipment -> Finance; Access -> projected Equipment.
+Room; Account -> Department; Employment -> Terms; Equipment -> Finance; Access -> projected Equipment.
 
 ## Role privileges and collisions
 
@@ -316,9 +322,10 @@ the exact per-node flags.
 | ORGADMIN       | RCU                                  | RCU                         | R operational                | —             | R / R                     | —       | RCU       | R                                                 |
 | CTO            | R                                    | R                           | R operational                | —             | RCU / RCU                 | R       | R         | RCU                                               |
 
-Every cell is bounded by its own grant's scope. Branch manager plus Employee broadens directory Read while keeping branch
-equipment Write narrow. HR in A plus IT in B gives terms only in A and equipment Write only in B. OrgAdmin and CTO give
-no HR access. Separation-of-duties approval is business logic outside this model, not a fabricated permission denial.
+Every cell is bounded by its own grant's scope. Branch manager plus Employee broadens directory Read while keeping
+branch equipment Write narrow. HR in A plus IT in B gives terms only in A and equipment Write only in B. OrgAdmin and
+CTO give no HR access. Separation-of-duties approval is business logic outside this model, not a fabricated permission
+denial.
 
 Lookup binding needs C or U on the source, Append on the referencing record and Append To plus Read on the target; the
 rights may come from different roles when both scopes cover the records. Creating a record does not by itself give
@@ -342,13 +349,20 @@ installs them. The rules it follows:
 
 ## Integrity rules for seed checks and backend enforcement
 
-1. Organisation trees and reporting chains are acyclic; organisational parents share the root; Vendors are never
+`test/data.test.mjs` checks these rules on the generated catalogues. Backend enforcement is proposed: no service
+maintains them on writes. Until one exists, the `BusinessProjectionGuard` plug-in (registered on every business table,
+see the [plug-in design](dataverse-plugin-observation.md)) rejects creates and deletes by any caller other than the
+configured trusted identity (except disposable canary equipment) and every untrusted update beyond names and descriptive
+fields, and `ProjectionAssociationGuard` keeps projection associations provisioner-only. Where the plug-ins are
+installed, the C and U flags in the role table describe the permission graph, not the writes the guards accept.
+
+1. Organization trees and reporting chains are acyclic; organizational parents share the root; Vendors are never
    ancestors.
 2. An employment's department belongs to its membership's Account; a manager engagement is in the same root. One
    membership per Account and Contact does not limit employment count.
 3. Fixed-term employees need an end date; external contracts need a Vendor supplier and an end date; end is not before
    start. Terms use salary for employees and a day rate for contractors.
-4. Organisation scope has no department selector; Department scope needs a matching department; Engagement scope needs
+4. Organization scope has no department selector; Department scope needs a matching department; Engagement scope needs
    an employment of the grantee; includedescendants is false for Department and Engagement scope.
 5. Active principals are exclusive and match role, grantee, clock and state; scope edits revoke old projections first.
 6. An asset's room lies inside its owning Account subtree; an Issued assignment belongs to an active employment there;
@@ -360,11 +374,11 @@ installs them. The rules it follows:
 
 ## Fixtures
 
-Three invented Companies (Arcwell Group with Services and Manufacturing subsidiaries, Northstar Group, Kestrel Studio),
-branches with one operating unit each, two Vendors, departments, Contacts with concurrent engagements, equipment with
-Issued and Returned history, and five complete deep chains under different roots. The fixed clock is
-`2026-10-12T09:00:00Z`; GUIDs are deterministic. Existing currency identities and rates are reused. Counts are in the
-[project guide](../../examples/company-operations/README.md).
+Three invented Companies (Arcwell Group with Services and Manufacturing subsidiaries, Northstar Group with a Services
+subsidiary, Kestrel Studio), branches with one operating unit each, two harness canary units, two Vendors, departments,
+Contacts with concurrent engagements, equipment with Issued and Returned history, and five complete deep chains, each
+anchored on a different Account. The fixed clock is `2026-10-12T09:00:00Z`; GUIDs are deterministic. Existing currency
+identities and rates are reused. Counts are in the [project guide](../../examples/company-operations/README.md).
 
 Each catalogue `scenarios` entry is an independently authored oracle: a persona, target IDs, the privilege and whether
 it is allowed, with the reason. Sixteen cover role combinations (`multi-org-worker`, `hr-a-it-b`, `hr-it-same-org`,
@@ -373,10 +387,10 @@ it is allowed, with the reason. Sixteen cover role combinations (`multi-org-work
 `expired-one-org`, `deep-allow-deny`, `append-union`, `revoked-parent-tree`) and twelve cover single roles; the stress
 catalogue adds one. Role conflicts are cases to explain, never reasons to drop an assignment.
 
-Load order: currencies and role catalogue; Account and Contact identities; Account parent and root links; memberships and
-departments; engagements and terms; locations and equipment; assignment history; the service chain; then
-current-assignment, manager and principal/scope projections. A two-pass loader handles the deferred reporting and
-equipment/current-assignment cycles; imports match declared business keys, never display names.
+`paqvilo dataverse data-apply` creates records in catalogue order with their deterministic GUIDs, then sets the deferred
+`pqvd_manageremploymentid` and `pqvd_currentassignmentid` references in a second pass (breaking the reporting and
+current-assignment cycles), then adds the N:N associations. A row that is missing by GUID but matches a declared
+alternate key is reported as drift, never adopted; display names are never used to match.
 
 ## Source5 cohort
 

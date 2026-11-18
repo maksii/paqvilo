@@ -95,6 +95,19 @@ function assertName(name) {
   return name;
 }
 
+// A folder path segment: the same check, refused as a folder path so a traversal attempt is named as one.
+function assertFolderName(segment) {
+  try {
+    return assertName(segment);
+  } catch {
+    throw new DataError(
+      'The folder path is not valid: a folder name cannot be empty, "." or "..", or contain a separator (path traversal is refused).',
+      400,
+      'SharePointInvalidName',
+    );
+  }
+}
+
 // A new file or folder name also follows SharePoint's naming rules: no " * : < > ? / \ |, no leading or trailing space,
 // no trailing dot, none of the reserved names. The exact SharePoint Online set is a guess (Learn documents these
 // characters and the Windows reserved names; .lock, _vti_, desktop.ini, ~$ prefixes and _private are the SharePoint list).
@@ -318,7 +331,7 @@ function createApi(api) {
     const { folder } = locationContext(api, locationId, identity, operation);
     if (!Array.isArray(path) || path.length > MAX_FOLDER_DEPTH)
       throw new DataError('The folder path is not valid.', 400, 'SharePointInvalidName');
-    const key = [folder, ...path.map((segment) => encodeSegment(assertName(segment)))].join('/');
+    const key = [folder, ...path.map((segment) => encodeSegment(assertFolderName(segment)))].join('/');
     if (path.length && !(await storageOf(api).head(`${key}/${FOLDER_MARKER}`)))
       throw new DataError(`The folder '${path.join('/')}' does not exist in this location.`, 404, 'NotFound');
     return key;
@@ -610,7 +623,7 @@ const failureBody = (error) => ({ error: { code: error.code ?? 'PortalDocumentsF
         );
       if (path.length > MAX_FOLDER_DEPTH)
         throw new DataError('The folder path is not valid.', 400, 'SharePointInvalidName');
-      for (const segment of path) assertName(segment);
+      for (const segment of path) assertFolderName(segment);
       if (req.method !== 'GET' && !sameToken(req.headers.__requestverificationtoken, csrf))
         return answer(res, 403, failureBody({ code: 'Forbidden', message: 'Missing portal verification token.' }));
       // Without storage every operation answers 501, never an empty list.

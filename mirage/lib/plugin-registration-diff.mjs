@@ -3,6 +3,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import { guidKey } from './dataverse-values.mjs';
 import { inspectionBudget } from './inspection-budget.mjs';
+import { requiredArgument } from './required-argument.mjs';
 
 const plain = (value) => value && [Object.prototype, null].includes(Object.getPrototypeOf(value));
 const normalized = (value) => {
@@ -155,7 +156,10 @@ function compareRegistrationKind(kind, before, after, state) {
 }
 
 /** Compare importSolutionPlugins inventories by stable IDs; ambiguity stays explicit. No runtime or remote writes. */
-export function comparePluginRegistrations(before, after) {
+export function comparePluginRegistrations(
+  before = requiredArgument('comparePluginRegistrations(before, after)', 'two parsed registration inventories'),
+  after = requiredArgument('comparePluginRegistrations(before, after)', 'two parsed registration inventories'),
+) {
   if (!plain(before) || !plain(after)) throw new Error('Two parsed registration inventories are required.');
   const diagnostics = [],
     added = [],

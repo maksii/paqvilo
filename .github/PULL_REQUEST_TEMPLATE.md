@@ -1,6 +1,6 @@
 ## What changes?
 
-<!-- Explain the problem and resulting behavior. Link an issue if there is one. -->
+<!-- Explain the problem and resulting behaviour. Link an issue if there is one. -->
 
 ## Validation
 
@@ -13,4 +13,4 @@
 - [ ] My PR title follows Conventional Commits.
 - [ ] New or changed tests declare their kind (`// @test-kind`, see docs/test-kinds.md).
 - [ ] I used synthetic fixtures and kept portal exports, credentials and live evidence out of this repository.
-- [ ] I updated coverage/docs for any changed or unsupported platform behavior.
+- [ ] I updated coverage/docs for any changed or unsupported platform behaviour.

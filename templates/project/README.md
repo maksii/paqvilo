@@ -6,10 +6,10 @@ no portal. Complete marked choices before selecting a real environment.
 
 ## First checkout
 
-Use Node **{{node}} or later in the {{nodeMajor}}.x LTS line**, its npm CLI, Git on PATH and the catalogue's browser (Edge
-by default). Install the browser separately; presence is not launch/OS readiness.
+Use Node **{{node}} or later in the {{nodeMajor}}.x LTS line**, its npm CLI, Git on PATH and the catalogue's browser
+(Edge by default). Install the browser separately; presence is not launch/OS readiness.
 PAC, .NET and source build tools are not generally needed to consume exports;
-project-specific plugin workflows can add them.
+project-specific plug-in workflows can add them.
 
 1. Run `npm run setup`. Without a lockfile it uses `npm install --ignore-scripts`;
    with one it uses `npm ci --ignore-scripts`. Commit the lockfile. A ci failure stops
@@ -21,9 +21,10 @@ project-specific plugin workflows can add them.
    previews after reviewing the changes.
 4. Resolve `npm run check:scaffold`, then run `npm run check:project`. The latter gates
    all sites' Sources/Mirage readiness and mapped paths without executing pack code.
-   `npm run check:setup` separately checks tools and the effective browser.
-5. Run `npm run mirage:init`, then `npm run mirage:dev` locally. `npm run dev` uses live
-   overlays and requires authorization for the selected reference environment.
+   `npm run check:setup`, which setup also runs, checks Node, Git and the effective browser.
+5. Run `npm run mirage:dev` locally; it reads the catalogue. (`npm run mirage:init` is optional:
+   it writes a Mirage project file per site under `.paqvilo/mirage/` for `--project` use.)
+   `npm run dev` uses live overlays and requires authorization for the selected reference environment.
 6. Run `npm run validate` for starter tests. Implement meaningful
    [acceptance cases](docs/acceptance.md), then use `npm run validate:configured` for
    configured-project/CI readiness. Empty/skipped smoke cases prove no page coverage.
@@ -59,7 +60,7 @@ review/commit manifest and lockfile, refresh/check the project and run both vali
 levels. No nested toolkit dependency install is needed.
 
 Use `node_modules/paqvilo/docs/` and `node_modules/paqvilo/mirage/docs/` as version-matched
-guides. Online main-branch docs can describe newer behavior. Use
+guides. Online main-branch docs can describe newer behaviour. Use
 `npx --no-install paqvilo --version` and `--help` to identify the installed contract.
 
 ## Offline CI and boundaries
@@ -81,7 +82,7 @@ Setup performs none of them. Keep tokens/discoveries in ignored `.paqvilo/` and 
 only owned sessions.
 
 Into-existing generation adds files; it does not integrate an existing package or
-catalogue. Inspect skipped files and `paqvilo init --ready` adoption findings, then
+catalogue. Inspect skipped files and `npx --no-install paqvilo init --ready` adoption findings, then
 reconcile scripts/dependencies/configuration yourself. Generation success is not readiness.
 
 See [workflows](docs/workflows.md), [configuration](docs/configuration.md),

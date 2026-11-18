@@ -585,7 +585,7 @@ async function readCanvasLayout(files, diagnostic) {
   if (unknownVersion)
     diagnostic(
       'CANVAS_SOURCE_SCHEMA_UNKNOWN',
-      `pa.yaml schema v${unknownVersion} is not recognised; known: ${CANVAS_SCHEMA_VERSIONS.join(', ')}.`,
+      `pa.yaml schema v${unknownVersion} is not recognized; known: ${CANVAS_SCHEMA_VERSIONS.join(', ')}.`,
     );
   result.app.schemaVersion = unknownVersion ?? CANVAS_SCHEMA_VERSIONS.at(-1);
   const layout = await readCanvasLayout(files, diagnostic);

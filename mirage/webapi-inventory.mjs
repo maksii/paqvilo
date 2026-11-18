@@ -4,7 +4,7 @@ import { reportCliError } from './cli-output.mjs';
 // Static inventory of portal Web API (/_api) request shapes and FetchXML
 // features, compared with what the local Dataverse implementation supports.
 // Reads exported sources only; never contacts a portal.
-import { parseToolArgs, toolOptionsHelp, inventoryInputs } from './tool-options.mjs';
+import { assertToolPaths, parseToolArgs, toolOptionsHelp, inventoryInputs } from './tool-options.mjs';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -1074,8 +1074,7 @@ async function main(args) {
     console.log(`Usage: paqvilo mirage webapi-inventory ${toolOptionsHelp('webapi-inventory')}`);
     return;
   }
-  if (!(options.portal || options.config || options.site))
-    throw new Error('Select --portal DIR or --config FILE --site ID.');
+  assertToolPaths('webapi-inventory', options);
   const inputs = await inventoryInputs(options);
   const result = await inventoryWebApi(inputs.sourceDir, {
     solutionRoots: inputs.solutionRoots,

@@ -6,6 +6,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { paqviloCommand } from '../command-hint.mjs';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { OverlaySession } from '../session.mjs';
@@ -470,7 +471,7 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
     if (!onTarget()) {
       if (!args.headed) {
         throw new Error(
-          `${startPath} needs a sign-in (ended on ${redactedPageUrl(page.url())}). Run: npm run verify -- --headed --signed-in --path ${startPath}  and sign in in the window that opens`,
+          `${startPath} needs a sign-in (ended on ${redactedPageUrl(page.url())}). Run: ${paqviloCommand(['lense', 'verify'], { script: 'verify', config: cfg.configFile, extra: ['--headed', '--signed-in', '--path', startPath] })}  and sign in in the window that opens`,
         );
       }
       log(

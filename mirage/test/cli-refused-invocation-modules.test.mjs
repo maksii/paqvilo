@@ -86,6 +86,8 @@ test('a runtime client given an origin loads no catalogue, project or discovery 
     'mirage.project.yml',
   );
   ownedFixture(t).remove(() => fs.rm(path.dirname(project), { recursive: true, force: true }));
+  // An existing project file: a missing one is refused as an input path before discovery.
+  await fs.writeFile(project, 'version: 2\n');
   // Port 9 (discard) refuses on loopback: the client reaches its request with the origin alone.
   const [byOrigin, refusedOption, byProject] = await Promise.all([
     trace(['list', '--origin', 'http://127.0.0.1:9', '--json']),
@@ -96,9 +98,58 @@ test('a runtime client given an origin loads no catalogue, project or discovery 
   assert.equal(JSON.parse(byOrigin.stdout).ok, false);
   assert.deepEqual(byOrigin.loaded, []);
   assert.equal(refusedOption.code, 1);
-  assert.equal(JSON.parse(refusedOption.stdout).error.code, 'InvalidArguments');
+  assert.equal(JSON.parse(refusedOption.stdout).error.code, 'unsupported_option');
   assert.deepEqual(refusedOption.loaded, []);
   // No runtime serves the project: the client says so after reading the discovery records.
   assert.equal(JSON.parse(byProject.stdout).error.code, 'RuntimeUnreachable');
   assert.deepEqual(byProject.loaded, ['lense/config', 'lense/commands/mirage']);
+});
+
+// @test-kind contract: a capture command needs the live HTTPS origin and says so before the runtime prints any startup event
+test('a capture without an HTTPS portal origin is refused in one line before the runtime starts', async (t) => {
+  const source = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-cli-capture-origin-'));
+  ownedFixture(t).remove(() => fs.rm(source, { recursive: true, force: true }));
+  await fs.writeFile(
+    path.join(source, 'Home.webpage.yml'),
+    'adx_webpageid: home\nadx_name: Invented home\nadx_partialurl: /\n',
+  );
+  const args = ['--source', source, '--cdp', 'http://127.0.0.1:9', '--state', path.join(source, 'state.json')];
+  for (const command of [
+    ['capture-stylesheets', '--stylesheet', '/invented.css'],
+    ['capture-snippet-composition', '--parent-snippet', 'Parent', '--child-snippet', 'Child'],
+  ]) {
+    const { code, stdout, stderr } = await resolvedModules(t, tool('cli'), [...command, ...args], []);
+    assert.equal(code, 1);
+    assert.equal(stdout, '');
+    assert.equal(
+      stderr.replace(/\nRESOLVED:.*\n$/, '').trim(),
+      `${command[0]} needs the live portal's HTTPS origin: select an --env whose origin is HTTPS or pass --origin https://<portal host>.`,
+    );
+  }
+});
+
+// @test-kind contract: docs/cli.md: a Mirage command keeps the toolkit's JSON codes for a missing catalogue, an unknown command and a repeated option, through paqvilo mirage and mirage/cli.mjs alike
+test('a Mirage command in a folder without a catalogue reports the toolkit codes in its JSON envelope', async (t) => {
+  const paqvilo = fileURLToPath(new URL('../../bin/paqvilo.mjs', import.meta.url));
+  const cases = [
+    [['data', 'scaffold', '--state', 'x.json', '--json'], 'CONFIG_NOT_FOUND'],
+    [['serve', '--site', 'sample', '--json'], 'CONFIG_NOT_FOUND'],
+    [['doctor', '--site', 'sample', '--json'], 'unknown_command'],
+    [['inspect', '--port', '1', '--port', '2', '--json'], 'invalid_argument'],
+  ];
+  const runs = cases.flatMap(([args, expected]) => [
+    resolvedModules(t, paqvilo, ['mirage', ...args], []).then((result) => ({ result, args, expected })),
+    resolvedModules(t, tool('cli'), args, []).then((result) => ({ result, args, expected })),
+  ]);
+  for (const { result, args, expected } of await Promise.all(runs)) {
+    assert.equal(result.code, 1, args.join(' '));
+    const { ok, error } = JSON.parse(result.stdout);
+    assert.equal(ok, false, args.join(' '));
+    assert.equal(error.code, expected, `${args.join(' ')}: ${error.message}`);
+  }
+  // A toolkit command reached through mirage/cli.mjs names the command that runs it.
+  const direct = await resolvedModules(t, tool('cli'), ['init', '--site', 'sample', '--json'], []);
+  const { error } = JSON.parse(direct.stdout);
+  assert.equal(error.code, 'unknown_command');
+  assert.match(error.message, /Run paqvilo mirage init\.$/);
 });

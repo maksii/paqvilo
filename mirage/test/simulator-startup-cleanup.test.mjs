@@ -56,7 +56,11 @@ test('a failed startup closes every record owner and reports close failures with
   );
   restore();
   assert.ok(failure instanceof Error, String(failure));
-  assert.equal(failure.message, 'Preset not found.', failure.stack);
+  assert.equal(
+    failure.message,
+    `Preset 'missing' not found; GET /_sim/api/presets lists this runtime's presets and paqvilo mirage --help the registry presets.`,
+    failure.stack,
+  );
   assert.deepEqual(
     failure.cleanupErrors.map((error) => error.message),
     ['Invented close failure'],

@@ -5,11 +5,14 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import assert from 'node:assert/strict';
 import { after as nodeAfter, test as nodeTest } from 'node:test';
+import { requiredArgument } from '../lib/required-argument.mjs';
 
 const PARITY_CASES_SCHEMA = 'paqvilo.parity-cases/1';
 const ORACLE_KINDS = ['native', 'official-package', 'reference-engine'];
 // Stored in place of every value at a volatile pointer: the run-specific value is never kept in a case file.
 const VOLATILE = '<volatile>';
+// Shown in place of a known-gap pointer's value in a replay failure diff only; never stored.
+const KNOWN_GAP = '<known gap>';
 
 const TOP_LEVEL_KEYS = new Set(['schema', 'surface', 'suite', 'oracle', 'captures', 'cases', 'history']);
 const CAPTURE_KEYS = new Set(['id', 'sha256', 'capturedAt']);
@@ -92,13 +95,13 @@ function resolvePointer(root, pointer) {
 
 // Copy of `value` where the value at each pointer is replaced by VOLATILE. Used to store case outputs and to
 // mask both sides of a failure diff to the same placeholder.
-function maskVolatile(value, pointers) {
+function maskVolatile(value, pointers, placeholder = VOLATILE) {
   const copy = structuredClone(value);
   for (const pointer of pointers) {
     const cut = pointer.lastIndexOf('/');
     const parent = resolvePointer(copy, pointer.slice(0, cut));
     const token = unescapeToken(pointer.slice(cut + 1));
-    if (parent.found && hasToken(parent.value, token)) parent.value[token] = VOLATILE;
+    if (parent.found && hasToken(parent.value, token)) parent.value[token] = placeholder;
   }
   return copy;
 }
@@ -261,7 +264,9 @@ function toFilePath(fileUrlOrPath) {
  * @returns {object} the parsed case file
  * @throws {Error} `<path>: <problems>` when the file is not valid
  */
-export function loadParityCases(fileUrlOrPath) {
+export function loadParityCases(
+  fileUrlOrPath = requiredArgument('loadParityCases(fileUrlOrPath)', 'a case file URL or path'),
+) {
   const filePath = toFilePath(fileUrlOrPath);
   let value;
   try {
@@ -352,15 +357,65 @@ function sameCase(existing, fresh) {
   );
 }
 
+// Volatility is recorded evidence: a pointer earlier captures proved volatile stays volatile when new captures happen
+// to agree on it, unless the revision drops it. A pointer beneath another volatile pointer is covered by it.
+function carryVolatile(existing, fresh, drops) {
+  for (const pointer of drops) {
+    if (fresh.volatile.includes(pointer)) {
+      throw new Error(`case ${fresh.id}: volatile pointer ${pointer} still differs between the new captures`);
+    }
+  }
+  const kept = existing.volatile.filter((pointer) => !drops.includes(pointer));
+  const union = [...new Set([...kept, ...fresh.volatile])];
+  const pointers = union
+    .filter((pointer) => !union.some((other) => pointer.startsWith(`${other}/`)))
+    .sort(compareCodeUnits);
+  for (const pointer of kept) {
+    if (pointers.includes(pointer) && !resolvePointer(fresh.output, pointer).found) {
+      const reason = `case ${fresh.id}: recorded volatile pointer ${pointer} does not resolve in the new output`;
+      const error = new Error(`${reason}; drop it with revise.dropVolatile ["${fresh.id}#${pointer}"]`);
+      error.code = 'PARITY_VOLATILE_UNRESOLVED';
+      error.reason = reason;
+      error.drop = `${fresh.id}#${pointer}`;
+      throw error;
+    }
+  }
+  return { ...fresh, output: maskVolatile(fresh.output, pointers), volatile: pointers };
+}
+
+// `<case id>#<pointer>` entries grouped by case id; each must name a recorded volatile pointer of a rebuilt case.
+function dropsByCase(dropVolatile, existingCases, built) {
+  const drops = new Map();
+  for (const entry of dropVolatile ?? []) {
+    const text = String(entry);
+    const separator = text.indexOf('#/');
+    const id = text.slice(0, separator);
+    const pointer = text.slice(separator + 1);
+    const recorded = existingCases.find((parityCase) => parityCase.id === id);
+    if (typeof entry !== 'string' || separator === -1 || !recorded?.volatile.includes(pointer)) {
+      throw new Error(`volatile drop ${JSON.stringify(entry)} names no recorded volatile pointer of a case`);
+    }
+    if (!built.some((fresh) => fresh.id === id)) {
+      throw new Error(`volatile drop ${entry}: case ${id} is not in the new captures`);
+    }
+    drops.set(id, [...(drops.get(id) ?? []), pointer]);
+  }
+  return drops;
+}
+
 // Returns the existing cases with changed ones replaced, plus the fresh cases whose ids are new.
-function mergeCases(existingCases, built) {
+function mergeCases(existingCases, built, dropVolatile) {
+  const drops = dropsByCase(dropVolatile, existingCases, built);
   const changed = [];
   const cases = structuredClone(existingCases);
-  for (const fresh of built) {
-    const index = cases.findIndex((parityCase) => parityCase.id === fresh.id);
+  for (const candidate of built) {
+    const index = cases.findIndex((parityCase) => parityCase.id === candidate.id);
     if (index === -1) {
-      cases.push(fresh);
-    } else if (!sameCase(cases[index], fresh)) {
+      cases.push(candidate);
+      continue;
+    }
+    const fresh = carryVolatile(cases[index], candidate, drops.get(candidate.id) ?? []);
+    if (!sameCase(cases[index], fresh)) {
       changed.push(fresh.id);
       cases[index] = fresh;
     }
@@ -394,11 +449,15 @@ function changeNames(changed, oracleChanged) {
 function mergeIntoExisting(existing, { surface, suite, oracle, captures, built, revise }) {
   const problems = validateParityCases(existing, { surface, suite });
   if (problems.length > 0) throw new Error(`existing case file is not valid: ${problems.join('; ')}`);
-  const { cases, changed } = mergeCases(existing.cases, built);
+  const { cases, changed } = mergeCases(existing.cases, built, revise?.dropVolatile);
   const oracleChanged = diffParityOutput(oracle, existing.oracle).length > 0;
   const changes = changeNames(changed, oracleChanged);
   if (changes.length > 0 && !revise) {
-    throw new Error(`${changes.join(', ')} would change; pass revise { date, change, evidence } to record it`);
+    const error = new Error(`${changes.join(', ')} would change; pass revise { date, change, evidence } to record it`);
+    // Callers with their own option names (the CLI) reword the remedy from these fields.
+    error.code = 'PARITY_REVISION_REQUIRED';
+    error.changes = changes;
+    throw error;
   }
   return {
     schema: PARITY_CASES_SCHEMA,
@@ -414,18 +473,26 @@ function mergeIntoExisting(existing, { surface, suite, oracle, captures, built, 
 /**
  * Builds a case file from two or more captures of the same corpus. Volatile pointers are the pointers at
  * which a later capture differs from the first. With `existing`, new ids are appended; a change to an
- * existing case needs `revise` and appends one history entry.
+ * existing case needs `revise` and appends one history entry. An existing case keeps its recorded volatile
+ * pointers even when the new captures agree on them; `revise.dropVolatile` (`<case id>#<pointer>` entries)
+ * removes one, and is refused while the new captures still differ there.
  * @param {object} options
  * @param {string} options.surface surface name
  * @param {string} options.suite suite name
  * @param {{ kind: string, name: string, version: string, scope: string }} options.oracle recorded oracle
  * @param {Array<{ sha256: string, capture: { id: string, capturedAt: string }, results: object[] }>} options.captures
  * @param {object} [options.existing] previously built case file for the same surface and suite
- * @param {{ date: string, change: string, evidence: string }} [options.revise] needed to change existing cases
+ * @param {{ date: string, change: string, evidence: string, dropVolatile?: string[] }} [options.revise] needed to
+ *   change existing cases
  * @returns {object} the case file; it has passed validateParityCases
  * @throws {Error} when captures disagree, a root pointer differs, or an existing case would change unrevised
  */
-export function buildParityCases({ surface, suite, oracle, captures, existing, revise } = {}) {
+export function buildParityCases(
+  { surface, suite, oracle, captures, existing, revise } = requiredArgument(
+    'buildParityCases({ captures })',
+    'an options object with at least two captures',
+  ),
+) {
   if (!Array.isArray(captures) || captures.length < 2) throw new Error('at least two captures are required');
   if (captures.some((capture) => !Array.isArray(capture?.results))) throw new Error('every capture needs results');
   const [first, ...later] = captures;
@@ -505,11 +572,13 @@ export function diffParityOutput(actual, expected, { volatile = [], gaps = [] } 
 
 // ---------------------------------------------------------------- replay
 
-// Node prints the masked actual-vs-expected diff; the differing pointers are prepended to its message.
-function failOnDiffs(actual, expected, masked, diffs) {
+// Node prints the masked actual-vs-expected diff; the differing pointers are prepended to its message. Gap
+// pointers are masked with their own label so a declared gap is not shown as a volatile value.
+function failOnDiffs(actual, expected, volatile, gaps, diffs) {
   const pointers = diffs.map((diff) => diff.pointer).join(', ');
+  const mask = (value) => maskVolatile(maskVolatile(value, volatile), gaps, KNOWN_GAP);
   try {
-    assert.deepStrictEqual(maskVolatile(actual, masked), maskVolatile(expected, masked));
+    assert.deepStrictEqual(mask(actual), mask(expected));
   } catch (error) {
     error.message = `output differs at ${pointers}\n${error.message}`;
     throw error;
@@ -519,7 +588,7 @@ function failOnDiffs(actual, expected, masked, diffs) {
 
 function assertMatches(actual, expected, volatile) {
   const diffs = diffParityOutput(actual, expected, { volatile });
-  if (diffs.length > 0) failOnDiffs(actual, expected, volatile, diffs);
+  if (diffs.length > 0) failOnDiffs(actual, expected, volatile, [], diffs);
 }
 
 function assertWholeCaseGap(actual, expected, volatile, key) {
@@ -529,7 +598,7 @@ function assertWholeCaseGap(actual, expected, volatile, key) {
 function assertPointerGaps(actual, expected, volatile, gap, key) {
   const pointers = Object.keys(gap);
   const undeclared = diffParityOutput(actual, expected, { volatile, gaps: pointers });
-  if (undeclared.length > 0) failOnDiffs(actual, expected, [...volatile, ...pointers], undeclared);
+  if (undeclared.length > 0) failOnDiffs(actual, expected, volatile, pointers, undeclared);
   const all = diffParityOutput(actual, expected, { volatile });
   for (const pointer of pointers) {
     const differs = all.some((diff) => diff.pointer === pointer || diff.pointer.startsWith(`${pointer}/`));
@@ -585,7 +654,11 @@ async function replayCase(parityCase, run, gap, key, context) {
  * @param {{ test?: Function, knownGaps?: Record<string, string | Record<string, string>> }} [options]
  * @returns {object} the loaded case file
  */
-export function replayParityCases(fileUrlOrPath, run, { test = nodeTest, knownGaps = {} } = {}) {
+export function replayParityCases(
+  fileUrlOrPath = requiredArgument('replayParityCases(fileUrlOrPath, run)', 'a case file URL or path'),
+  run = requiredArgument('replayParityCases(fileUrlOrPath, run)', 'a run adapter function'),
+  { test = nodeTest, knownGaps = {} } = {},
+) {
   const file = loadParityCases(fileUrlOrPath);
   const context = Object.freeze({ surface: file.surface, suite: file.suite });
   const ids = new Set(file.cases.map((parityCase) => parityCase.id));
@@ -654,7 +727,13 @@ function adapterRunner(surface, adapter) {
  * @returns {Promise<{ files: number, cases: number }>} case files and cases registered
  * @throws {Error} when an adapter cannot be imported or exports neither `run` nor `open`
  */
-export async function replayParityDirectory({ cases, adapters, knownGaps, test = nodeTest, after = nodeAfter } = {}) {
+export async function replayParityDirectory({
+  cases = requiredArgument('replayParityDirectory({ cases, adapters })', 'a cases directory'),
+  adapters = requiredArgument('replayParityDirectory({ cases, adapters })', 'an adapters directory'),
+  knownGaps,
+  test = nodeTest,
+  after = nodeAfter,
+} = {}) {
   const adapterDir = toFilePath(adapters);
   const gapDir = knownGaps === undefined ? undefined : toFilePath(knownGaps);
   const files = listCaseFiles(toFilePath(cases));

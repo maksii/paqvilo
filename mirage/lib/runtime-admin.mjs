@@ -40,6 +40,31 @@ export async function adminAssetFile(name) {
     () => null,
   );
 }
+/**
+ * HEAD mirrors every GET administration route on both hosts: the response was created for a HEAD request, so the HTTP
+ * server sends no body. req.headMirror keeps the original method, so a GET route never reveals or spends a one-time
+ * value (dataverse-admin.mjs: the App Service identity header) for a HEAD.
+ */
+export function mirrorHead(req) {
+  if (req.method !== 'HEAD') return;
+  req.method = 'GET';
+  req.headMirror = true;
+}
+/**
+ * A boolean query parameter of an administration route: absent is false; true/1 and false/0 are read; any other value
+ * is refused (400 InvalidQueryParameter naming the parameter) rather than read as false.
+ */
+export function queryFlag(params, name) {
+  const value = params.get(name);
+  if (value === null || value === '') return false;
+  if (value === 'true' || value === '1') return true;
+  if (value === 'false' || value === '0') return false;
+  throw Object.assign(new Error(`${name} must be true or false (got ${JSON.stringify(value)}).`), {
+    status: 400,
+    code: 'InvalidQueryParameter',
+    parameter: name,
+  });
+}
 /** Content type of an admin asset; modules are text/javascript. */
 export const adminAssetType = (name) => {
   if (name.endsWith('.css')) return 'text/css; charset=utf-8';
@@ -49,6 +74,8 @@ export const adminAssetType = (name) => {
 const error = (message, status = 400, code = 'INVALID_REQUEST') => Object.assign(new Error(message), { status, code });
 /** The refusal of an administration write without the simulator CSRF token; the router and the staff-session route both throw it. */
 export const missingCsrfToken = () => error('Missing simulator CSRF token.', 403);
+/** The 404 of a path under /_sim/api that no route of the host answers; both hosts throw it. */
+export const adminEndpointNotFound = () => error('Admin endpoint not found.', 404);
 const decodeAdminIdentifier = (value) => {
   try {
     return decodeURIComponent(value);
@@ -154,7 +181,16 @@ export function createRuntimeAdminRouter({
           return c.answer(value, statusChunks ? { chunks: statusChunks(value) } : undefined);
         }),
     ],
-    ['/state', state && ((c) => c.method === 'GET' && c.relative === '/state' && c.answer(state(c.url)))],
+    [
+      '/state',
+      // ?summary is validated as on the Power Pages host; a host whose state is always a summary answers it either way.
+      state &&
+        ((c) => {
+          if (c.method !== 'GET' || c.relative !== '/state') return false;
+          queryFlag(c.url.searchParams, 'summary');
+          return c.answer(state(c.url));
+        }),
+    ],
     [
       '/config',
       (configuration || configure) &&

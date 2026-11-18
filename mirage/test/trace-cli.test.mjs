@@ -12,7 +12,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { createTraceStore } from '../lib/trace-store.mjs';
+import { createTraceStore, TRACE_HOSTS } from '../lib/trace-store.mjs';
+import { toolOptionsHelp } from '../tool-options.mjs';
 import { createTraceChannel, createTraceRoutes } from '../lib/sim-trace-routes.mjs';
 import { writeActivityBundle } from '../lib/sim-activity.mjs';
 import { connectRuntime } from '../testing/runtime.mjs';
@@ -28,7 +29,7 @@ const NOT_RETAINED =
   "Traces live in the runtime's memory: a restart or trace clear drops them all, and the least recently active are dropped beyond the traces limit.";
 const notRetained = (id) => `No retained trace has the id ${id}. ${NOT_RETAINED}`;
 const SHOW_USAGE =
-  'trace show needs one TRACE_ID \\(or a unique prefix of at least 8 characters of the id\\), or --latest\\.';
+  'trace show needs one TRACE_ID \\(or a unique prefix of at least 8 hexadecimal characters of the id\\), or --latest\\.';
 
 async function fixture(t, { endStream = false, failures = false } = {}) {
   let time = START;
@@ -336,7 +337,8 @@ test('export prints json, ndjson or otlp, bounded by --limit', async (t) => {
   const refused = await refusal('export', '--format', 'xml', '--origin', origin);
   assert.deepEqual(refused.error, {
     code: 'InvalidTraceFilter',
-    message: 'format must be one of json, ndjson, otlp (got "xml").',
+    // Refused before connecting, naming every format the command accepts (bundle is assembled by the command).
+    message: 'format must be one of json, ndjson, otlp, bundle (got "xml").',
     parameter: 'format',
   });
   const human = await cli('export', '--limit', '0', '--origin', origin);
@@ -410,9 +412,57 @@ test('every failure names its code', async (t) => {
   assert.doesNotMatch(loud.error.message, /Local runtime request failed/, 'the runtime message itself');
   const unreachable = await failure('list', '--origin', 'http://127.0.0.1:1');
   assert.equal(unreachable.error.code, 'RuntimeUnreachable');
+  // The origin was given: the message says that origin did not answer instead of suggesting --origin.
   assert.equal(
     unreachable.error.message,
-    'No Mirage runtime answers at http://127.0.0.1:1; start one or pass --origin.',
+    'No Mirage runtime answers at http://127.0.0.1:1, the given origin; start the runtime there or give the origin of a running one.',
+  );
+  // Every enumerated value is checked before connecting (an unreachable origin proves no request was made), exit 2.
+  for (const [args, code, parameter, message] of [
+    [
+      ['list', '--host', 'bogus'],
+      'InvalidTraceFilter',
+      'host',
+      /^host must be one of power-pages, standalone, .*sharepoint \(got "bogus"\)\.$/,
+    ],
+    [['watch', '--host', 'bogus'], 'InvalidTraceFilter', 'host', /^host must be one of /],
+    [
+      ['export', '--format', 'bogus'],
+      'InvalidTraceFilter',
+      'format',
+      /^format must be one of json, ndjson, otlp, bundle/,
+    ],
+    [
+      ['settings', '--level', 'loud'],
+      'InvalidTraceSettings',
+      undefined,
+      /level must be off, summary or full \(got "loud"\)/,
+    ],
+    [
+      ['settings', '--persist', 'maybe'],
+      'InvalidTraceSettings',
+      undefined,
+      /persist must be true or false \(got "maybe"\)/,
+    ],
+    [['export', '--limit', 'x'], 'InvalidTraceFilter', 'limit', /^limit must be an integer from 1 to 2000\.$/],
+    [['export', '--limit', '2001'], 'InvalidTraceFilter', 'limit', /^limit must be an integer from 1 to 2000\.$/],
+  ]) {
+    const value = await refusal(...args, '--origin', 'http://127.0.0.1:1');
+    assert.equal(value.error.code, code, args.join(' '));
+    assert.equal(value.error.parameter, parameter, args.join(' '));
+    assert.match(value.error.message, message, args.join(' '));
+  }
+  // An origin that is not a URL is named like any other refused origin, never as a bare "Invalid URL".
+  const notUrl = await failure('list', '--origin', 'x');
+  assert.deepEqual(notUrl.error, {
+    code: 'InvalidArguments',
+    message: 'Runtime origin must be an HTTP loopback origin without credentials, path or query.',
+  });
+  const missingProject = await failure('list', '--project', 'invented-missing.project.yml');
+  assert.equal(missingProject.error.code, 'InvalidArguments');
+  assert.match(
+    missingProject.error.message,
+    /^--project file not found: .*invented-missing\.project\.yml\. Pass an existing file\.$/,
   );
   assert.equal((await failure('watch', '--origin', 'http://127.0.0.1:1')).error.code, 'RuntimeUnreachable');
   assert.equal((await refusal('watch', '--has-errors', 'maybe', '--origin', origin)).error.code, 'InvalidTraceFilter');
@@ -531,7 +581,11 @@ test('the command rejects unknown flags, actions and misplaced options before co
   for (const [args, message] of [
     [['--bogus'], /--bogus/],
     [[], /Usage: paqvilo mirage trace list\|show \(TRACE_ID\|PREFIX\|--latest/],
-    [['inspect'], /Usage:/],
+    // An unknown subcommand is one line naming it and the valid ones; the usage is for --help.
+    [
+      ['inspect'],
+      /^Unknown trace subcommand 'inspect'\. Choose list, show, spans, stats, settings, clear, flush, export, watch\.$/,
+    ],
     [['show'], new RegExp(SHOW_USAGE)],
     [['show', 'abc'], new RegExp(SHOW_USAGE)],
     [['show', UNKNOWN_ID, '--latest'], new RegExp(SHOW_USAGE)],
@@ -546,7 +600,7 @@ test('the command rejects unknown flags, actions and misplaced options before co
     [['list', '--trace-end'], /--trace-end applies to trace watch only/],
     [['list', '--format', 'ndjson'], /--format applies to trace export only/],
     [['stats', '--limit', '5'], /--limit applies to trace export only/],
-    [['list', '--origin', 'https://example.invalid'], /loopback origin/],
+    [['list', '--origin', 'https://example.invalid'], /loopback origin without credentials, path or query\.$/],
     [
       ['list', '--origin', 'http://127.0.0.1:1', '--site', 'invented'],
       /Use one of --origin, --config\/--site or --project\./,
@@ -554,7 +608,8 @@ test('the command rejects unknown flags, actions and misplaced options before co
     [['list', '--origin', 'http://127.0.0.1:1', '--project', 'invented.project.yml'], /Use one of --origin/],
   ]) {
     const value = await failure(...args);
-    assert.equal(value.error.code, 'InvalidArguments', args.join(' '));
+    // An unknown option is unsupported_option in every command; trace's own refusals are InvalidArguments.
+    assert.equal(value.error.code, args[0] === '--bogus' ? 'unsupported_option' : 'InvalidArguments', args.join(' '));
     assert.match(value.error.message, message, args.join(' '));
   }
   const help = await cli('--help');
@@ -694,7 +749,11 @@ test('--project reaches the runtime its discovery record names and refuses a pro
     JSON.stringify({ pid: process.pid, project, sourceDir: null, url: origin }),
   );
   assert.equal((await json('list', '--project', project)).total, 1);
-  assert.deepEqual((await failure('list', '--project', path.join(dir, 'other', 'invented.project.yml'))).error, {
+  // An existing project file that no running runtime serves.
+  const other = path.join(dir, 'other', 'invented.project.yml');
+  await fs.mkdir(path.dirname(other));
+  await fs.writeFile(other, '');
+  assert.deepEqual((await failure('list', '--project', other)).error, {
     code: 'RuntimeUnreachable',
     message:
       'No running runtime discovered for this project; start it with paqvilo mirage serve --project FILE or pass --origin.',
@@ -722,4 +781,33 @@ test('a failed step fails its activity: stats count it in Roots and list shows t
   assert.ok(activity, 'the failed activity is listed');
   assert.equal(activity.result, 'error');
   assert.equal(activity.status, 'ok');
+});
+
+test('trace help lists exactly the hosts the host filter accepts', () => {
+  const usage = toolOptionsHelp('trace');
+  const listed = /--host ([a-z|-]+)/.exec(usage)?.[1].split('|');
+  assert.deepEqual(listed, [...TRACE_HOSTS]);
+});
+
+test('an unknown trace subcommand is named with the list of subcommands', async () => {
+  const outcome = await cli('bogus');
+  assert.equal(outcome.status, 1, outcome.stderr);
+  assert.match(
+    outcome.stderr,
+    /^Unknown trace subcommand 'bogus'\. Choose list, show, spans, stats, settings, clear, flush, export, watch\.\n/,
+  );
+});
+
+test('a server that is not a Mirage runtime is named as such, with how to select a runtime', async (t) => {
+  const server = http.createServer((req, res) => {
+    res.writeHead(404, { 'content-type': 'text/html' });
+    res.end('<html>Not found</html>');
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  ownedFixture(t).add(() => new Promise((resolve) => server.close(resolve)));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const value = await failure('list', '--origin', origin);
+  assert.equal(value.error.code, 'RuntimeNotMirage');
+  assert.ok(value.error.message.includes(`answers at ${origin} (HTTP 404)`), value.error.message);
+  assert.match(value.error.message, /--origin URL, --project FILE, or --config FILE --site ID/);
 });

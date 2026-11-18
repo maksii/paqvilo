@@ -1,3 +1,4 @@
+// @test-kind contract: project configuration loading, validation messages and project CLI behaviour designed by Paqvilo, on invented loopback fixtures
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -538,6 +539,10 @@ test('portals record observed site behaviour with its evidence; observations are
   assert.throws(
     () => observedConfig({ headers: { api: { a: 'b' } }, evidence: 'e' }),
     /observed\.headers\.api must be page, webFile or webApi/,
+  );
+  assert.throws(
+    () => observedConfig({ headers: ['page'], evidence: 'e' }),
+    /observed\.headers must map page, webFile or webApi to headers/,
   );
   assert.deepEqual(
     observedConfig({

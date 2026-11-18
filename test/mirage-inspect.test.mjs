@@ -1,3 +1,4 @@
+// @test-kind contract: Lense Mirage inspect keeps the runtime CLI's inspection reports, exit statuses and failure reasons.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -83,5 +84,24 @@ test('inspection report parsing distinguishes source diagnostics from crashes an
   assert.throws(
     () => inspectProcessResult({ status: null, signal: 'SIGTERM', stdout: JSON.stringify(report) }),
     /terminated by SIGTERM/,
+  );
+});
+
+// @test-kind contract: a failed inspection names the runtime CLI's own JSON-reported reason, not only its exit status
+test('a failed inspection surfaces the reason the runtime CLI reported in its JSON failure document', () => {
+  const reason = '"invented/sources/portal" (source of site "portal") does not exist';
+  const stdout = JSON.stringify({ schemaVersion: 1, ok: false, error: { code: 'command_failed', message: reason } });
+  assert.throws(
+    () => inspectProcessResult({ status: 1, stdout, stderr: '' }),
+    (error) => error.message === reason,
+  );
+  // A reason on stderr still wins, and without any reason the exit status is named.
+  assert.throws(
+    () => inspectProcessResult({ status: 1, stdout, stderr: 'Runtime unavailable' }),
+    /^Error: Runtime unavailable$/,
+  );
+  assert.throws(
+    () => inspectProcessResult({ status: 1, stdout: '{}', stderr: '' }),
+    /^Error: Mirage inspect exited with 1$/,
   );
 });

@@ -1,8 +1,11 @@
+// @test-kind tooling: inventory command-line selection and caller-named client wrappers.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { inventoryWebApi } from '../webapi-inventory.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
@@ -39,4 +42,25 @@ test('client wrapper calls count as requests only for the wrappers the caller na
     ['method.GET', 1],
     ['method.POST', 1],
   ]);
+});
+
+// Like the other catalogue commands, the inventory reads paqvilo.config.yml in the working
+// directory and its defaultSite when neither --portal nor --config/--site is given.
+test('webapi-inventory without selection options uses the working-directory catalogue', async (t) => {
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-inventory-cwd-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  await fs.mkdir(path.join(dir, 'portal', 'web-pages'), { recursive: true });
+  await fs.writeFile(path.join(dir, 'portal', 'website.yml'), 'adx_name: Inventory\nadx_websiteid: site');
+  const script = fileURLToPath(new URL('../webapi-inventory.mjs', import.meta.url));
+  const run = (args = ['--json']) => spawnSync(process.execPath, [script, ...args], { cwd: dir, encoding: 'utf8' });
+  const missing = run([]);
+  assert.equal(missing.status, 1);
+  assert.match(missing.stderr, /^No catalogue: .*paqvilo\.config\.yml does not exist\./);
+  await fs.writeFile(
+    path.join(dir, 'paqvilo.config.yml'),
+    'defaultSite: s\nsites:\n  s:\n    source: portal\n    defaultEnv: local\n    environments:\n      local: http://127.0.0.1:8787\n',
+  );
+  const found = run();
+  assert.equal(found.status, 0, found.stdout);
+  assert.equal(path.resolve(JSON.parse(found.stdout).portalRoot), path.resolve(dir, 'portal'));
 });

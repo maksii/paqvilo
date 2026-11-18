@@ -3,7 +3,7 @@
 // which the records layer runs.
 import { DataError } from './data-error.mjs';
 import { contextUrl } from './dataverse-odata.mjs';
-import { ownerColumns, privilegeDeniedError } from './dataverse-security.mjs';
+import { ownerColumns } from './dataverse-security.mjs';
 import { relationshipsOf } from './dataverse-standard.mjs';
 
 const TEXT = 'nvarchar',
@@ -191,7 +191,7 @@ function sendAppNotification(api) {
           // The recipient owns the notification: Create is judged against a row owned by the recipient in the recipient's business unit.
           const owner = ownerColumns(api.store, { id: recipientId, logical_name: 'systemuser' });
           const granted = api.principals.privileges(c.user).get(SEND_PRIVILEGE) > 0;
-          if (!granted) throw privilegeDeniedError(c.user, SEND_PRIVILEGE, 'appnotification');
+          if (!granted) throw api.principals.deniedError(c.user, SEND_PRIVILEGE, 'appnotification');
           api.principals.authorize({ user: c.user, entity: 'appnotification', operation: 'create', row: owner });
           await api.records.createInternal(
             c,
@@ -275,4 +275,27 @@ export function install(api) {
   });
   // Seeding is queued on the store; returning it lets an awaited install see the mappings.
   return reset(api);
+}
+
+/** Capability record for the capability registry; dataverse-extensions.mjs adds the operations install registered. */
+export function describe() {
+  return {
+    name: 'dataverse-predefined',
+    version: 1,
+    kind: 'dataverse-extension',
+    level: 'behaviour',
+    reason: 'savedQuery and userQuery run their stored FetchXML; many-to-many navigation answers 501.',
+    operations: [
+      {
+        name: 'SendAppNotification',
+        level: 'contract',
+        reason:
+          'Writes the appnotification row only; no toast is delivered and the Recipient shape and response body are guesses.',
+      },
+    ],
+    requires: [],
+    principal: 'caller',
+    stateOwner: 'store',
+    lifecycle: 'per-request',
+  };
 }

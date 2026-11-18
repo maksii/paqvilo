@@ -7,7 +7,11 @@ import { cpSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseDemoOptions, prepareDemo } from '../lense/commands/demo.mjs';
-import { tempDir } from './fixture.mjs';
+import { tempDir, withoutToolkitEnvironment } from './fixture.mjs';
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+import { ownStartedRuntimes } from './helpers/mirage-runtimes.mjs';
+import { boundedCommand, COMMAND_HANG_GUARD_MS } from './helpers/bounded-command.mjs';
+import { countOperations, operationBudget } from './helpers/operation-budget.mjs';
 
 const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
 
@@ -107,6 +111,8 @@ test('demo copies an editable project, preserves source edits on repeat and refu
     'deployment/PaqviloDemoCodeComponents.zip',
     'deployment/demo-data.zip',
     'deployment/configure.mjs',
+    'cli.mjs',
+    'editor-workspace.mjs',
     'code-solution/Other/Solution.xml',
     'code-app/server.mjs',
     'code-app/mirage.mjs',
@@ -130,6 +136,68 @@ test('demo copies an editable project, preserves source edits on repeat and refu
   await assert.rejects(prepareDemo(unrelated), /No files were changed/);
   assert.deepEqual(await fs.readdir(unrelated), ['important.txt']);
   await assert.rejects(prepareDemo(path.join(unrelated, 'important.txt')), /regular directory/);
+});
+
+/** Every file under `directory` with one of the extensions, skipping installed packages. */
+async function treeFiles(directory, extensions) {
+  const entries = await fs.readdir(directory, { withFileTypes: true, recursive: true });
+  return entries
+    .filter((entry) => entry.isFile() && extensions.some((extension) => entry.name.endsWith(extension)))
+    .map((entry) => path.join(entry.parentPath, entry.name))
+    .filter((file) => !file.split(path.sep).includes('node_modules'));
+}
+
+test('every relative import in a demo copy resolves inside it and every copied script prints its help', async (t) => {
+  const root = await tempDir('paqvilo-demo-');
+  const links = [];
+  t.after(async () => {
+    // Junctions are removed first so the recursive removal never reaches the toolkit checkout.
+    for (const link of links) await fs.unlink(link);
+    await fs.rm(root, { recursive: true, force: true });
+  });
+  const directory = path.join(root, 'example');
+  await prepareDemo(directory);
+  const sources = await treeFiles(directory, ['.mjs', '.js']);
+  const unresolved = [];
+  for (const file of sources)
+    for (const [, specifier] of (await fs.readFile(file, 'utf8')).matchAll(
+      /\b(?:from|import)\s*\(?\s*['"](\.{1,2}\/[^'"]+)['"]/g,
+    )) {
+      const target = path.resolve(path.dirname(file), specifier);
+      const inside = !path.relative(directory, target).startsWith('..');
+      if (!inside || !(await fs.stat(target).catch(() => null)))
+        unresolved.push(`${path.relative(directory, file)} -> ${specifier}`);
+    }
+  assert.deepEqual(unresolved, [], 'relative imports that do not resolve inside the copy');
+  // Install the copy's declared packages as links to this checkout, as npm install would provide them.
+  const manifest = JSON.parse(await fs.readFile(path.join(directory, 'package.json'), 'utf8'));
+  const toolkit = fileURLToPath(new URL('..', import.meta.url));
+  for (const name of Object.keys(manifest.devDependencies)) {
+    const link = path.join(directory, 'node_modules', name);
+    await fs.mkdir(path.dirname(link), { recursive: true });
+    await fs.symlink(name === 'paqvilo' ? toolkit : path.join(toolkit, 'node_modules', name), link, 'junction');
+    links.push(link);
+  }
+  // The entry points are the scripts that parse their arguments with the copy's shared cli().
+  const scripts = [];
+  for (const file of sources)
+    if (
+      !file.startsWith(path.join(directory, 'test') + path.sep) &&
+      /import\s*\{[^}]*\bcli\b[^}]*\}\s*from\s*'\.{1,2}\/(?:\.\.\/)*cli\.mjs'/.test(await fs.readFile(file, 'utf8'))
+    )
+      scripts.push(file);
+  assert.ok(scripts.length >= 9, scripts.join('\n'));
+  for (const script of scripts) {
+    const result = spawnSync(process.execPath, [script, '--help'], {
+      cwd: directory,
+      encoding: 'utf8',
+      timeout: CLI_HANG_GUARD_MS,
+      windowsHide: true,
+    });
+    const name = path.relative(directory, script);
+    assert.equal(result.status, 0, `${name}: ${result.stderr}`);
+    assert.match(result.stdout, /\S/, name);
+  }
 });
 
 test('an interrupted demo copy leaves no folder behind and the next run succeeds', async (t) => {
@@ -245,6 +313,31 @@ test('a rename failure with another error code is not retried', async (t) => {
   assert.deepEqual(await fs.readdir(root), []);
 });
 
+test('the demo copy answers editor-workspace --help and argument errors before npm install', async (t) => {
+  const root = await tempDir('paqvilo-demo-workspace-');
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const directory = path.join(root, 'example');
+  await prepareDemo(directory);
+  const run = (...args) =>
+    spawnSync(process.execPath, ['editor-workspace.mjs', ...args], {
+      cwd: directory,
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: CLI_HANG_GUARD_MS,
+    });
+  const help = run('--help');
+  assert.equal(help.status, 0, help.stderr);
+  assert.match(help.stdout, /^Usage: node editor-workspace\.mjs/);
+  const unknown = run('--bogus');
+  assert.equal(unknown.status, 1);
+  assert.equal(unknown.stderr, 'Unknown option --bogus. Run it with --help for usage.\n');
+  // Real work needs the toolkit: one line saying how to install it, no module-resolution trace.
+  const work = run();
+  assert.equal(work.status, 1);
+  assert.equal(work.stderr, 'The paqvilo package is not installed in this project. Run npm install first.\n');
+  await assert.rejects(fs.access(path.join(directory, 'portal.code-workspace')), { code: 'ENOENT' });
+});
+
 // Expected values were captured from the demo parser before it moved to the shared option parsing.
 const DEMO_PARSE_TABLE = [
   ['no arguments', [], { values: { dir: './paqvilo-example' }, positionals: [] }],
@@ -268,9 +361,9 @@ const DEMO_PARSE_TABLE = [
     ['--dir', 'one', '--dir', 'two'],
     { values: { dir: 'two' }, positionals: [] },
   ],
-  ['an unknown option', ['--bogus'], { error: 'ERR_PARSE_ARGS_UNKNOWN_OPTION' }],
-  ['a missing value', ['--dir'], { error: 'ERR_PARSE_ARGS_INVALID_OPTION_VALUE' }],
-  ['a positional argument', ['extra'], { error: 'ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL' }],
+  ['an unknown option', ['--bogus'], { error: 'unsupported_option' }],
+  ['a missing value', ['--dir'], { error: 'invalid_argument' }],
+  ['a positional argument', ['extra'], { error: 'invalid_argument' }],
 ];
 
 test('demo option parsing keeps its accepted options, defaults, repeated values and errors', () => {
@@ -312,3 +405,49 @@ test('demo command prints help and parse errors with the same exit codes and mes
     }
   }
 });
+
+test(
+  'every demo start restores the sample dataset and keeps source edits',
+  { timeout: operationBudget(4, COMMAND_HANG_GUARD_MS) },
+  async (t) => {
+    withoutToolkitEnvironment(t);
+    const root = await tempDir('paqvilo-demo-reset-');
+    ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+    const directory = path.join(root, 'example');
+    await prepareDemo(directory);
+    const config = path.join(directory, 'paqvilo.config.yml');
+    // The demo's own catalogue says bootstrap (ordinary `npm run dev` keeps state); the demo's arguments must win.
+    assert.match(await fs.readFile(config, 'utf8'), /presetMode: bootstrap/);
+    // The arguments the demo command passes to its runtime, read from the command's source.
+    const command = await fs.readFile(new URL('../lense/commands/demo.mjs', import.meta.url), 'utf8');
+    const literal = /DEMO_PRESET_ARGUMENTS = Object\.freeze\((\[[^\]]*\])\)/.exec(command)[1];
+    const presetArguments = JSON.parse(literal.replaceAll("'", '"'));
+    const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
+    const run = countOperations(t, 4, (...args) =>
+      boundedCommand(t, process.execPath, [cli, 'mirage', ...args, '--config', config, '--site', 'example'], {
+        cwd: directory,
+      }),
+    );
+    const start = async () => {
+      const result = await run('start', '--port', '0', ...presetArguments, '--json');
+      ownStartedRuntimes(t, result.stdout);
+      assert.equal(result.status, 0, result.stdout + result.stderr);
+      return JSON.parse(result.stdout);
+    };
+    const first = await start();
+    assert.equal((await run('stop', '--json')).status, 0);
+    const state = JSON.parse(await fs.readFile(first.stateFile, 'utf8'));
+    const sample = state.tables.contact.length;
+    state.tables.contact.push({ contactid: '00000000-0000-4000-8000-0000000000aa', fullname: 'Added locally' });
+    await fs.writeFile(first.stateFile, JSON.stringify(state));
+    const source = path.join(directory, 'portal/web-files/demo.css');
+    await fs.appendFile(source, '\n/* my source edit */\n');
+    const second = await start();
+    assert.deepEqual(second.runtime.startupPreset, { ...second.runtime.startupPreset, mode: 'always', applied: true });
+    assert.equal((await run('stop', '--json')).status, 0);
+    const restored = JSON.parse(await fs.readFile(second.stateFile, 'utf8')).tables.contact;
+    assert.equal(restored.length, sample);
+    assert.ok(!restored.some((row) => row.fullname === 'Added locally'));
+    assert.match(await fs.readFile(source, 'utf8'), /my source edit/);
+  },
+);

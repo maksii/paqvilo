@@ -49,7 +49,8 @@ export function jsonEnvelope(text, { command, positionals }) {
           ? ['init', 'inspect'].includes(positionals[1])
           : !['agent', 'dev', 'verify', 'status'].includes(command)),
       ...result,
-      ...(command === 'agent' ? { action: positionals[1] ?? 'sessions' } : {}),
+      // Help describes the command; it ran no action.
+      ...(command === 'agent' && result.command !== 'help' ? { action: positionals[1] ?? 'sessions' } : {}),
       ok: result.ok ?? result.ready ?? result.passed ?? errors.length === 0,
       writesFiles: Array.isArray(result.writesFiles) ? result.writesFiles : [],
       errors,

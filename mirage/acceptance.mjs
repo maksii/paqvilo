@@ -1,3 +1,4 @@
+import { requiredArgument } from './lib/required-argument.mjs';
 import fs from 'node:fs/promises';
 import { simulatorBackgroundRequest } from './lib/simulator-background-requests.mjs';
 import { cancelNavigationRequests } from './lib/navigation-cancellations.mjs';
@@ -25,6 +26,9 @@ import { classifyNativeNetworkFailures } from './lib/native-network-baseline.mjs
 import { observeReadAborts, reconcileIntentionalReadAbort } from './lib/intentional-abort.mjs';
 import { answerRoute } from './lib/closed-route.mjs';
 import { openBrowserWriteNet, connectCdpTransport } from './lib/browser-write-net.mjs';
+import { readJsonOption } from './lib/path-options.mjs';
+import { localUnreachable } from './lib/local-state-fetch.mjs';
+import { connectLoopbackBrowser, stripAnsi } from './lib/live.mjs';
 
 const safeUrl = (value) => {
   try {
@@ -46,10 +50,15 @@ const failureUrl = (value, { isLive = false } = {}) => {
   }
 };
 const safeMessage = (value) =>
-  String(value ?? '')
+  stripAnsi(value)
     .replace(/Bearer\s+\S+/gi, 'Bearer [redacted]')
     .replace(/((?:access_token|id_token|password|secret|authorization|cookie)\s*[=:]\s*)[^\s&]+/gi, '$1[redacted]')
-    .replace(/https?:\/\/[^\s)]+/g, (url) => safeUrl(url));
+    // Sentence punctuation after a URL (`origin http://127.0.0.1:1; start ...`) is not part of it.
+    .replace(/https?:\/\/[^\s)]+/g, (url) => {
+      let end = url.length;
+      while (end > 0 && ';,.:'.includes(url[end - 1])) end--;
+      return safeUrl(url.slice(0, end)) + url.slice(end);
+    });
 const LOOPBACK_HOSTS = Object.freeze(['127.0.0.1', 'localhost', '[::1]']);
 const loopback = (value) => {
   const url = new URL(value);
@@ -231,8 +240,11 @@ const expectedFields = (record, fields, contains) =>
  * asserts every required capability is executable (behaviour or above). Throws CapabilityUnavailable with the gaps.
  */
 export async function assertAcceptanceCapabilities({ localUrl, requires = [], timeout = 15000 }) {
-  const response = await fetch(new URL('/__sim/api/preflight', loopback(localUrl).origin), {
+  const origin = loopback(localUrl).origin;
+  const response = await fetch(new URL('/__sim/api/preflight', origin), {
     signal: AbortSignal.timeout(timeout),
+  }).catch((error) => {
+    throw localUnreachable(origin, error, timeout);
   });
   if (!response.ok) throw new Error(`Simulator preflight returned HTTP ${response.status}`);
   const report = await response.json();
@@ -242,26 +254,28 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
 }
 
 /** Run explicit actions against exported portal UI; record failures rather than converting partial flows into passes. */
-/* NOSONAR: single-pass routine, splitting it would change shared state */ export async function runAcceptance({
-  localUrl,
-  liveOrigin,
-  cdpUrl,
-  outputDir,
-  flows,
-  nativeNetworkBaseline,
-  channel = process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium'),
-  timeout = 15000,
-  navigationCommitReserveMs,
-  // Optional async hook run on the local browser context before the flows, e.g. a
-  // paqvilo-mirage-auth session sign-in of the persona under test.
-  prepareContext = null,
-  // Optional hook, called synchronously once a local navigation's hold for its pending writes is created.
-  onNavigationHold = null,
-  // Strict acceptance: capability ids or patterns (capability-registry.mjs globs) the flows need; with strict true the run
-  // refuses before any browser starts when the simulator's preflight reports one below behaviour (CapabilityUnavailable).
-  requires = null,
-  strict = false,
-}) {
+/* NOSONAR: single-pass routine, splitting it would change shared state */ export async function runAcceptance(
+  {
+    localUrl,
+    liveOrigin,
+    cdpUrl,
+    outputDir,
+    flows,
+    nativeNetworkBaseline,
+    channel = process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium'),
+    timeout = 15000,
+    navigationCommitReserveMs,
+    // Optional async hook run on the local browser context before the flows, e.g. a
+    // paqvilo-mirage-auth session sign-in of the persona under test.
+    prepareContext = null,
+    // Optional hook, called synchronously once a local navigation's hold for its pending writes is created.
+    onNavigationHold = null,
+    // Strict acceptance: capability ids or patterns (capability-registry.mjs globs) the flows need; with strict true the run
+    // refuses before any browser starts when the simulator's preflight reports one below behaviour (CapabilityUnavailable).
+    requires = null,
+    strict = false,
+  } = requiredArgument('runAcceptance(options)', 'an options object with localUrl, outputDir and flows'),
+) {
   if (!Number.isFinite(timeout) || timeout <= 0) throw new Error('timeout must be a positive finite number.');
   if (
     navigationCommitReserveMs !== undefined &&
@@ -269,7 +283,7 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
       navigationCommitReserveMs < 0 ||
       navigationCommitReserveMs >= timeout)
   )
-    throw new Error('navigationCommitReserveMs must be nonnegative and smaller than timeout.');
+    throw new Error('navigationCommitReserveMs must be non-negative and smaller than timeout.');
   const local = loopback(localUrl);
   if (!['http:', 'https:'].includes(local.protocol)) throw new Error('Local simulator requires HTTP(S).');
   const live = liveOrigin ? new URL(liveOrigin) : null;
@@ -285,6 +299,8 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
   const readState = async (full = false) => {
     const response = await fetch(new URL('/__sim/api/state' + (full ? '' : '?summary=1'), local.origin), {
       signal: AbortSignal.timeout(timeout),
+    }).catch((error) => {
+      throw localUnreachable(local.origin, error, timeout);
     });
     if (!response.ok) throw new Error(`Simulator state returned HTTP ${response.status}`);
     const state = await response.json();
@@ -344,7 +360,7 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
       if (!live || !cdpUrl)
         throw new Error('Live observations require --origin and the intended existing --cdp browser.');
       loopback(cdpUrl);
-      attachedBrowser = await chromium.connectOverCDP(cdpUrl, { timeout: BROWSER_HANG_GUARD_MS });
+      attachedBrowser = await connectLoopbackBrowser(cdpUrl, { timeout: BROWSER_HANG_GUARD_MS });
       if (attachedBrowser.contexts().length !== 1) throw new Error('Use exactly one attached browser identity.');
       const context = attachedBrowser.contexts()[0];
       if (context.serviceWorkers().some((worker) => new URL(worker.url()).origin === live.origin))
@@ -917,7 +933,11 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
               waitUntil: step.waitUntil ?? 'domcontentloaded',
             });
             actionDeadline = Infinity;
-            entry.status = response?.status();
+            entry.status = response?.status() ?? (await committedDocumentStatus(page));
+            if (entry.status === undefined)
+              throw new Error(
+                `The document response of ${step.path} was not observable; another debugging client may be intercepting the tab (for a reference read, use a Lense session started with --no-overrides).`,
+              );
             if (entry.status !== (step.status ?? 200))
               throw new Error(`Expected HTTP ${step.status ?? 200}, observed ${entry.status}.`);
             if (!isLive) await loadQuiet();
@@ -1257,6 +1277,16 @@ async function reconcileFrameProof({
   });
 }
 
+// page.goto answers null when Playwright saw no response for its navigation: a same-document navigation, or a document
+// another debugging client served or replaced (a Lense session with overrides). The committed document's navigation
+// timing still records the status it was served with, whoever served it; 0 or no entry means it is not observable.
+async function committedDocumentStatus(page) {
+  const status = await page
+    .evaluate(() => performance.getEntriesByType('navigation')[0]?.responseStatus)
+    .catch(() => undefined);
+  return status || undefined;
+}
+
 function flattenFrameTree(node) {
   return [node.frame, ...(node.childFrames ?? []).flatMap(flattenFrameTree)];
 }
@@ -1284,7 +1314,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   try {
     const values = parseToolArgs('acceptance', process.argv.slice(2));
     assertToolOptions('acceptance', values, ['local', 'origin', 'cdp']);
-    const flows = JSON.parse(await fs.readFile(values.plan, 'utf8'));
+    const flows = await readJsonOption('plan', values.plan);
     const result = await runAcceptance({
       localUrl: values.local,
       liveOrigin: values.origin,

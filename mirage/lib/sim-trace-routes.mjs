@@ -10,14 +10,13 @@
 // stream.
 import { createHash } from 'node:crypto';
 import { sseClients } from './trace-hosts.mjs';
-import { TRACE_EVENTS } from './trace-store.mjs';
+import { TRACE_EVENTS, TRACE_EXPORT_MAX as EXPORT_MAX } from './trace-store.mjs';
 
 const MAX_BODY = 64 * 1024;
 const PREFIX = /^\/(?:_sim|__sim)\/api(?=\/|$)/;
 const ROUTE = /^\/trace(?:\/(?:(spans|stats|export|settings|clear|flush)|span\/([^/]+)|id\/([^/]+)|([^/]+)))?$/; // NOSONAR: regex kept: a rewrite would change matches or captures
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const EXPORT_LIMIT = 200;
-const EXPORT_MAX = 2000;
 const QUERY_PAGE = 200;
 /** The /_sim/api prefixes this router answers (status `routes`). */
 export const routes = Object.freeze(['/trace']);

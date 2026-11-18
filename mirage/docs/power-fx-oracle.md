@@ -11,10 +11,13 @@ New-Item -ItemType Directory -Force .paqvilo | Out-Null
 node scripts/power-fx-oracle.mjs --pac "<path-to>\pac.exe" > .paqvilo/power-fx-report.json
 ```
 
-- Pass the actual `pac.exe`, not the `pac.cmd` launcher; omit `--pac` when `pac.exe` is on `PATH`. The only accepted
-  argument is `--pac`: the runner takes no formulas or environment, and runs only its built-in corpus.
-- It prints one JSON report and exits 1 for any difference, missing PAC, unrecognized output, unsafe authentication
-  context, timeout or process error. A missing PAC is a failure, never a skip.
+- Pass the actual `pac.exe`, not the `pac.cmd` launcher; omit `--pac` when `pac.exe` is on `PATH`. Besides `--help`,
+  the only accepted argument is `--pac`: the runner takes no formulas or environment, and runs only its built-in
+  corpus.
+- It prints one JSON report (`ok`, `pacVersion` and one entry per case with its `outcome`) and exits 0 when every case
+  matches. It exits 1 for any difference, invalid arguments (`OracleArgumentsInvalid`, for example "--pac may be given
+  only once"), missing PAC (`PacUnavailable`), unrecognized output, unsafe authentication context, timeout or process
+  error. A missing PAC is a failure, never a skip.
 - Code: `mirage/test-support/power-fx-oracle.mjs` (corpus and runner) and `scripts/power-fx-oracle.mjs` (command).
   Neither ships as a runtime dependency.
 
@@ -28,8 +31,8 @@ node scripts/power-fx-oracle.mjs --pac "<path-to>\pac.exe" > .paqvilo/power-fx-r
   echoed formulas and results. The parser checks order, completeness and expression errors instead of trusting the
   exit code, and rejects output it does not recognize. Process time (45 s) and output size are bounded.
 - **Values.** Large numbers are compared as formatted text, keeping every digit. Runtime errors are compared by Power
-  Fx error kind, with messages kept as diagnostics; an unresolved error-kind probe fails. Host differences are listed
-  separately in the report.
+  Fx error kind, with messages kept as diagnostics; an unresolved error-kind probe fails. A known host difference, such
+  as `Language()`, has the outcome `host-difference` instead of `match` and does not fail the run.
 - **Corpus.** Text and numeric formatting, arithmetic, date-only values, table and record projections, errors and
   coercion. Culture-sensitive cases request `en-US` explicitly, because PAC's console language can differ from
   Mirage's `en-US` default, and date-only cases avoid time-zone-dependent instants.

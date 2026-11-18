@@ -470,15 +470,20 @@ function authenticationErrorResponse({ internal, error, respond, antiForgery }) 
 }
 
 function standardErrorResponse(options) {
-  const { internal, status, error, respond } = options;
+  const { internal, status, error, details, respond } = options;
   const plain = undefined;
   if (internal === 'NoAttributesForTableCreate')
     return respond(400, '900400FF', 'No attributes for Create Table action.', plain);
   if (internal === 'MethodNotAllowed') return respond(405, 'InvalidOperation', error.message, plain);
   if (internal === 'NotImplemented') return respond(501, 'NotImplemented', error.message, plain);
-  if (status === 413) return respond(413, '', error.message, plain);
-  if (status === 409 && internal === 'StateConflict') return respond(409, '', error.message, plain);
-  if (status >= 500) return respond(500, '', 'An unexpected error occurred while processing the request.', plain);
+  // Every envelope carries a code: the Dataverse code when the error has one, else the local classification.
+  if (status === 413)
+    return respond(413, String(details.innerCode ?? internal ?? 'PayloadTooLarge'), error.message, plain);
+  if (status === 409 && internal === 'StateConflict') return respond(409, internal, error.message, plain);
+  // A local capability gap (501) keeps its status and reason; any other server failure is the portal's generic 9004010A.
+  if (status === 501) return respond(501, 'NotImplemented', error.message, plain);
+  if (status >= 500)
+    return respond(status, '9004010A', 'An unexpected error occurred while processing the request.', plain);
   return dataverseErrorResponse(options);
 }
 
@@ -1176,6 +1181,7 @@ function fetchTables(store, xml) {
   const plan = planFetch(parseXmlDocument(xml, { root: 'fetch' }), {
     profile: 'webapi',
     limits: store.querySettings().fetchLimits,
+    linkBudgetError: store.observed?.fetchLinkBudgetError,
   });
   const mappingOf = new Map([[plan.root, store.resolveMapping(plan.root.attrs.name)]]);
   for (const link of plan.links) mappingOf.set(link, store.resolveMapping(link.attrs.name));
@@ -1271,6 +1277,7 @@ function addFetchResponseAnnotations(body, fetched, info, nativePolicy, xml, sto
     const executed = planFetch(parseXmlDocument(fetched.executedXml ?? fetched.xml ?? xml, { root: 'fetch' }), {
       profile: 'webapi',
       limits: store.querySettings().fetchLimits,
+      linkBudgetError: store.observed?.fetchLinkBudgetError,
     });
     for (const link of executed.root.children.filter((node) => node.name === 'link-entity'))
       body[`@${executed.aliasOf.get(link)}.OData.Community.Display.V1.CurrentEntityField`] = link.attrs.to;
@@ -1420,9 +1427,18 @@ function decodePortalClassicBody(t, body) {
   return body;
 }
 
+const tooLarge = () =>
+  new DataError('Request message length is too large.', 413, 'PayloadTooLarge', { innerCode: '0x8004418a' });
 async function readBody(t) {
   const observed = t.deps.portal?.observed?.webApiErrorDetails === 'odata-wrapper';
-  let body = await t.deps.jsonBody(t.req, { allowEmpty: false, odataErrorDetails: observed });
+  let body;
+  try {
+    body = await t.deps.jsonBody(t.req, { allowEmpty: false, odataErrorDetails: observed });
+  } catch (error) {
+    // The host's body limit answers as the Web API's own request limit does: the envelope with 413 0x8004418a.
+    if (error?.status === 413) throw tooLarge();
+    throw error;
+  }
   if (t.deps.portal?.observed?.webApiRequestBody === 'portal-classic' && typeof body === 'string')
     body = decodePortalClassicBody(t, body);
   // The parsed body is the webapi span's input (captured, redacted, only at level full).
@@ -1737,12 +1753,7 @@ function filePrincipal(t, mapping, operation) {
     grants: [{ entity: mapping.logicalName, operations: [operation] }],
   };
 }
-const rawBody = (req) =>
-  readRawBody(req, {
-    maximum: FILE_BODY_LIMIT,
-    tooLarge: () =>
-      new DataError('Request message length is too large.', 413, 'PayloadTooLarge', { innerCode: '0x8004418a' }),
-  });
+const rawBody = (req) => readRawBody(req, { maximum: FILE_BODY_LIMIT, tooLarge });
 const transferOf = (download, method) => {
   if (download) return 'download';
   return method === 'DELETE' ? 'delete' : 'upload';

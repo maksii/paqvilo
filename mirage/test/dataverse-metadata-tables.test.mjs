@@ -144,7 +144,8 @@ test('install adds write routes for metadata paths only', () => {
   const [match] = routes;
   assert.equal(match(`/api/data/${VERSION}/EntityDefinitions`, 'POST'), true);
   assert.equal(match(`/api/data/${VERSION}/EntityDefinitions(LogicalName='new_x')/Attributes`, 'POST'), true);
-  assert.equal(match(`/api/data/${VERSION}/PublishXml`, 'POST'), true);
+  // PublishXml and PublishAllXml are operations (their registered Publish steps run around them), not metadata routes.
+  assert.equal(match(`/api/data/${VERSION}/PublishXml`, 'POST'), false);
   assert.equal(match(`/api/data/${VERSION}/EntityDefinitions`, 'GET'), false);
   assert.equal(match(`/api/data/${VERSION}/accounts`, 'POST'), false);
 });
@@ -867,4 +868,110 @@ test('created table privileges: one set per table, granted to System Administrat
   assert.deepEqual(names(), [], 'the privileges are gone with the table');
   assert.equal(grants().length, 0, 'and so are the role grants on them');
   assert.ok(store.state.tables.roleprivileges.length > 0, 'the built-in grants of other tables remain');
+});
+
+// @test-kind contract: Paqvilo ChangeTrackingEnabled written through the metadata API is what EntityDefinitions reports and what the Web API enforces
+test('ChangeTrackingEnabled: off when omitted, set on create and update, reported by metadata and enforced on track-changes', async () => {
+  const store = await fixtureStore();
+  const api = fakeApi(store);
+  await createBankAccount(api);
+  const admin = api.principals.byObjectId(ADMIN_OID);
+  const records = createRecordHandlers({
+    store,
+    change: (fn) => fn(),
+    principals: api.principals,
+    changes: createChangeLog(store),
+  });
+  const tracked = () => {
+    const url = new URL(`/api/data/${VERSION}/${store.state.mappings.new_bankaccount.entitySet}`, ORIGIN);
+    return records.handle({
+      method: 'GET',
+      route: parseDataverseRoute(url.pathname),
+      url,
+      origin: ORIGIN,
+      version: VERSION,
+      prefer: parsePrefer('odata.track-changes'),
+      headers: {},
+      user: admin,
+      caller: admin,
+      identity: { admin: true, id: admin.systemuserid, systemUserId: admin.systemuserid },
+      requestId: 'test',
+    });
+  };
+  const reported = () => readService(store).entity("LogicalName='new_bankaccount'").ChangeTrackingEnabled;
+  assert.equal(reported(), false);
+  await assert.rejects(tracked(), (error) => error.status === 400 && error.details?.innerCode === '0x80072491');
+  assert.equal(
+    (await send(api, 'PUT', entityPath('new_bankaccount'), { body: { ChangeTrackingEnabled: true } })).status,
+    204,
+  );
+  assert.equal(reported(), true);
+  assert.equal((await tracked()).status, 200);
+  await assert.rejects(send(api, 'PUT', entityPath('new_bankaccount'), { body: { ChangeTrackingEnabled: 'yes' } }), {
+    status: 400,
+  });
+  await send(api, 'POST', ENTITIES, {
+    body: tableBody({
+      SchemaName: 'new_Ledger',
+      DisplayCollectionName: label('Ledgers'),
+      ChangeTrackingEnabled: true,
+      Attributes: [column('String', 'new_LedgerName', { IsPrimaryName: true, MaxLength: 100 })],
+    }),
+  });
+  assert.equal(readService(store).entity("LogicalName='new_ledger'").ChangeTrackingEnabled, true);
+});
+
+// @test-kind contract: Paqvilo column and key writes accept the LogicalName='x' key form the reads accept, and IsSecured is stored
+test("column PUT and DELETE and key DELETE accept LogicalName='x'; a column POST honours IsSecured", async () => {
+  const store = await fixtureStore();
+  const api = fakeApi(store);
+  await createBankAccount(api);
+  const path = entityPath('new_bankaccount');
+  await send(api, 'POST', `${path}/Attributes`, { body: column('String', 'new_code', { IsSecured: true }) });
+  await send(api, 'POST', `${path}/Attributes`, { body: column('Memo', 'new_notes', { IsSecured: { Value: false } }) });
+  const fields = store.state.mappings.new_bankaccount.fields;
+  assert.equal(fields.new_code.columnMetadata.isSecured, true);
+  assert.equal(fields.new_notes.columnMetadata.isSecured, false);
+  await assert.rejects(send(api, 'POST', `${path}/Attributes`, { body: column('String', 'new_x', { IsSecured: 1 }) }), {
+    status: 400,
+    message: /IsSecured/,
+  });
+  const byName = `${path}/Attributes(LogicalName='new_notes')`;
+  assert.equal((await send(api, 'PUT', byName, { body: { MaxLength: 2000, IsSecured: true } })).status, 204);
+  assert.equal(store.state.mappings.new_bankaccount.fields.new_notes.columnMetadata.maxLength, 2000);
+  assert.equal(store.state.mappings.new_bankaccount.fields.new_notes.columnMetadata.isSecured, true);
+  await send(api, 'POST', `${path}/Keys`, { body: { SchemaName: 'new_code_key', KeyAttributes: ['new_code'] } });
+  assert.equal((await send(api, 'DELETE', `${path}/Keys(LogicalName='new_code_key')`)).status, 204);
+  assert.equal(store.state.mappings.new_bankaccount.alternateKeys?.length ?? 0, 0);
+  await assert.rejects(send(api, 'DELETE', `${path}/Keys(LogicalName='new_code_key')`), { status: 404 });
+  assert.equal((await send(api, 'DELETE', byName)).status, 204);
+  assert.equal(store.state.mappings.new_bankaccount.fields.new_notes, undefined);
+  await assert.rejects(send(api, 'DELETE', byName), { status: 404 });
+});
+
+// @test-kind contract: an image column keeps the CanStoreFullImage it was created or updated with (Learn: ImageAttributeMetadata)
+test('an image column honours CanStoreFullImage on create and update, in metadata and on the column the file seam reads', async () => {
+  const store = await fixtureStore();
+  const api = fakeApi(store);
+  await createBankAccount(api);
+  const attributes = `${entityPath('new_bankaccount')}/Attributes`;
+  await send(api, 'POST', attributes, { body: column('Image', 'new_photo', { CanStoreFullImage: true }) });
+  await send(api, 'POST', attributes, { body: column('Image', 'new_badge') });
+  const image = (name) =>
+    readService(store)
+      .attributes('new_bankaccount')
+      .find((a) => a.LogicalName === name);
+  const fields = () => store.state.mappings.new_bankaccount.fields;
+  assert.equal(image('new_photo').CanStoreFullImage, true);
+  assert.equal(fields().new_photo.canStoreFullImage, true);
+  assert.equal(image('new_badge').CanStoreFullImage, false);
+  assert.equal(fields().new_badge.canStoreFullImage, false);
+  const photoId = readService(store).metadataId('attribute', 'new_bankaccount', 'new_photo');
+  await send(api, 'PUT', `${attributes}(${photoId})`, { body: { CanStoreFullImage: false } });
+  assert.equal(image('new_photo').CanStoreFullImage, false);
+  assert.equal(fields().new_photo.canStoreFullImage, false);
+  await assert.rejects(
+    send(api, 'POST', attributes, { body: column('Image', 'new_logo', { CanStoreFullImage: 'yes' }) }),
+    { status: 400 },
+  );
 });

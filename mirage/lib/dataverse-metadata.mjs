@@ -24,7 +24,8 @@ import {
 import { expiredVersionStamp } from './dataverse-changes.mjs';
 import { DataError } from './data-error.mjs';
 import { relationshipsOf, standardFields, standardGlobalOptionSets, standardTableDef } from './dataverse-standard.mjs';
-import { MANAGED_MEMBERS } from './dataverse-soap-contracts.mjs';
+import { ENUM_MEMBERS, MANAGED_MEMBERS } from './dataverse-soap-contracts.mjs';
+import { withRollupCompanions } from './dataverse-rollup.mjs';
 import { platformCsdl } from './dataverse-operation-contracts.mjs';
 import { implicitAttributes } from './dataverse-implicit-attributes.mjs';
 import { implicitRelationships } from './dataverse-implicit-relationships.mjs';
@@ -597,6 +598,19 @@ function managedMembers(meta, contracts) {
   return meta;
 }
 
+// attribute-metadata.mjs reports enum members by number (the grid shape: Format, ImeMode); the Web API names them, as the
+// SOAP serializer does through the same table (ENUM_MEMBERS).
+function enumMembers(meta, contracts) {
+  for (const contract of contracts) {
+    for (const [key, names] of Object.entries(ENUM_MEMBERS)) {
+      if (!key.startsWith(`${contract}.`)) continue;
+      const name = key.slice(contract.length + 1);
+      if (typeof meta[name] === 'number' && names[meta[name]] !== undefined) meta[name] = names[meta[name]];
+    }
+  }
+  return meta;
+}
+
 // One requested item: null when its Criteria fails; else the base keys plus the requested properties (all when none are named).
 function projectChange(item, section) {
   if (!matchesAll(item, section?.Criteria)) return null;
@@ -1026,6 +1040,8 @@ export function createMetadataService({
         (!s && !mapping),
       // One ownership answer per table, shared with the security model: 'user' | 'org'.
       ownership: ownershipOf(logical, s, m),
+      // A managed layer holds the table (projectManagedFlags): its system columns are managed with it.
+      managedLayer: m?.dataverseMetadata?.managedLayer === true,
       // A Solution export that omits ownership takes the standard table's.
       ownershipType: !s?.ownership && def ? def.ownershipType : ownershipTypeName(logical, s, m),
       entitySet: s?.entitySetName ?? m?.entitySet ?? std?.entitySet ?? pluralizeEntitySetName(logical),
@@ -1093,14 +1109,16 @@ export function createMetadataService({
       ),
       Description: labelBlock(dm.labels?.Description ?? null, null, lcid),
       // Opt-in per table: the flag marks the entity set in $metadata when annotations=true.
-      ChangeTrackingEnabled: boolOf(src.s?.changeTrackingEnabled ?? src.m?.changeTrackingEnabled ?? false),
+      ChangeTrackingEnabled: boolOf(
+        src.s?.changeTrackingEnabled ?? src.m?.changeTrackingEnabled ?? dm.ChangeTrackingEnabled ?? false,
+      ),
       // Optimistic concurrency is enabled by default for custom tables. System-table support varies;
       // a supplied Solution/mapping fact wins and an unknown system table is not asserted enabled or disabled.
       IsOptimisticConcurrencyEnabled:
         src.s?.isOptimisticConcurrencyEnabled ??
         src.m?.isOptimisticConcurrencyEnabled ??
         (PREFIX.test(src.logical) && !src.isVirtual && !elastic ? true : null),
-      IsAuditEnabled: auditFlag(dm.IsAuditEnabled ?? false, true, 'isauditenabled'), // the default when the mapping says nothing is a guess
+      IsAuditEnabled: auditFlag(dm.IsAuditEnabled ?? src.s?.isAuditEnabled ?? false, true, 'isauditenabled'), // the default when the mapping says nothing is a guess
     };
     // Elastic tables take no charts, duplicate detection or N:N relationships.
     if (elastic)
@@ -1248,13 +1266,19 @@ export function createMetadataService({
       meta.RequiredLevel = { ...meta.RequiredLevel, Value: REQUIRED_NAMES[meta.RequiredLevel.Value] };
     const custom = PREFIX.test(name);
     const dm = def.dataverseMetadata ?? {};
-    if (def.managedLayer === true) meta.IsManaged = true; // a managed layer holds the column (projectManagedFlags)
+    // A managed layer holds the column (projectManagedFlags), or the column is a system column of a table a managed layer
+    // holds; a column the metadata API created on top (the origin pair, no layer of its own) stays unmanaged.
+    if (
+      def.managedLayer === true ||
+      (src.managedLayer && !(facts.isManaged === false && facts.isCustomizable === true))
+    )
+      meta.IsManaged = true;
     // The file default size and mapping keys (maxSizeInKB, canStoreFullImage, isPrimaryImage, globalOptionSet) are guesses.
     if (type === 'file') meta.MaxSizeInKB = facts.maxSizeInKB ?? null;
     if (type === 'image')
       Object.assign(meta, {
         MaxSizeInKB: facts.maxSizeInKB ?? 10240,
-        CanStoreFullImage: facts.canStoreFullImage ?? false,
+        CanStoreFullImage: facts.canStoreFullImage ?? def.canStoreFullImage ?? false,
         IsPrimaryImage: facts.isPrimaryImage ?? null,
       });
     meta.IsSecured = boolOf(dm.IsSecured ?? facts.isSecured ?? meta.IsSecured ?? false);
@@ -1273,7 +1297,10 @@ export function createMetadataService({
       MetadataId: metadataIdOf('attribute', src.logical, name),
       AttributeType: attrType,
     });
-    return managedMembers(shaped, ['AttributeMetadata', `${stem}AttributeMetadata`]);
+    return enumMembers(managedMembers(shaped, ['AttributeMetadata', `${stem}AttributeMetadata`]), [
+      'AttributeMetadata',
+      `${stem}AttributeMetadata`,
+    ]);
   }
 
   // Lookup companion inference needs presence of two target names, not the
@@ -1307,7 +1334,8 @@ export function createMetadataService({
     const targets = new Map();
     return implicitAttributes(
       src,
-      { [src.idColumn]: { dataverseType: 'primarykey' }, ...defaults, ...src.fields },
+      // A rollup column brings its platform companions (<column>_date and <column>_state, dataverse-rollup.mjs).
+      withRollupCompanions({ [src.idColumn]: { dataverseType: 'primarykey' }, ...defaults, ...src.fields }),
       {
         targetHasPhonetic: (logical) => {
           if (!targets.has(logical)) targets.set(logical, targetHasPhonetic(logical));
@@ -1449,7 +1477,7 @@ export function createMetadataService({
         ManagedPropertyLogicalName: 'iscustomizable',
       },
       IsCustomRelationship: r.isCustomRelationship ?? custom,
-      IsManaged: r.isManaged ?? false,
+      IsManaged: r.managedLayer === true || (r.isManaged ?? false),
       IsValidForAdvancedFind: r.isValidForAdvancedFind ?? true,
       RelationshipType: type,
       SchemaName: r.schemaName,
@@ -1630,7 +1658,8 @@ export function createMetadataService({
       IsGlobal: true,
       // The standard file's sets (standardGlobalOptionSets) are platform sets, not created ones.
       IsCustomOptionSet: !standardGlobalOptionSets()[name],
-      IsManaged: false,
+      // true while a managed layer holds the set (dataverse-metadata-relationships.mjs projectManagedFlags).
+      IsManaged: set.managedLayer === true,
       IntroducedVersion: set.IntroducedVersion ?? set.introducedVersion ?? null,
       IsCustomizable: set.IsCustomizable ?? {
         Value: set.isCustomizable ?? true,

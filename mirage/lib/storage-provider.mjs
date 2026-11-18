@@ -6,6 +6,7 @@ import { DataError } from './data-error.mjs';
 import { registerSettingParser } from './config-keys.mjs';
 import { STORAGE_ROUTES, storageSettings, storageSettingParser } from './storage-settings.mjs';
 import { packCheck, registerPackExport } from './pack-exports.mjs';
+import { choiceMessage } from './runtime-config.mjs';
 
 const STATUS = Object.freeze({
   NotFound: 404,
@@ -64,7 +65,7 @@ export function assertProvider(provider) {
   if (!d || typeof d !== 'object') fail('descriptor is missing');
   for (const field of ['id', 'kind'])
     if (typeof d[field] !== 'string' || !d[field]) fail(`descriptor.${field} must be a non-empty string`);
-  if (!LEVELS.includes(d.level)) fail(`descriptor.level must be ${LEVELS.join(', ')}`);
+  if (!LEVELS.includes(d.level)) fail(choiceMessage('descriptor.level', LEVELS, d.level));
   if (!Array.isArray(d.operations)) fail('descriptor.operations must be an array');
   if (!Array.isArray(d.requires ?? [])) fail('descriptor.requires must be an array');
   for (const operation of d.operations) {

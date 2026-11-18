@@ -600,4 +600,26 @@ export function install(api) {
   }
 }
 
-export const EXTENSION = { name: 'dataverse-addon-flows', install };
+/** Capability record; dataverse-extensions.mjs adds the operations install registered, the add-on levels with them. */
+function describe(api = null) {
+  const desktop = api?.addonHandlers?.has('RunDesktopFlow')
+    ? { level: 'contract', reason: 'Answered by a trusted pack dataverseMessages handler.' }
+    : {
+        level: 'inventory',
+        reason: 'No machine runs desktop flows: answers FeatureNotEnabled without a pack handler.',
+      };
+  return {
+    name: 'dataverse-addon-flows',
+    version: 1,
+    kind: 'dataverse-extension',
+    level: 'contract',
+    reason: 'Store-backed flow, group and solution-component messages with guessed status values and error codes.',
+    operations: [{ name: 'RunDesktopFlow', ...desktop }],
+    requires: [],
+    principal: 'caller',
+    stateOwner: 'store',
+    lifecycle: 'per-request',
+  };
+}
+
+export const EXTENSION = { name: 'dataverse-addon-flows', install, describe };

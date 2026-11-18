@@ -332,7 +332,10 @@ test('connectRuntime names a connection the runtime dropped apart from a runtime
   await assert.rejects(connectRuntime({ origin: `http://127.0.0.1:${port}` }), (error) => {
     assert.deepEqual(
       [error.code, error.message],
-      ['RuntimeUnreachable', `No Mirage runtime answers at http://127.0.0.1:${port}; start one or pass --origin.`],
+      [
+        'RuntimeUnreachable',
+        `No Mirage runtime answers at http://127.0.0.1:${port}, the given origin; start the runtime there or give the origin of a running one.`,
+      ],
     );
     assert.ok(error.cause instanceof TypeError);
     return true;

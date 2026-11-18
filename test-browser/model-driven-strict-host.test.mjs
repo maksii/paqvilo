@@ -142,6 +142,8 @@ test('a strict CSP and throwing client API keep Actions readable and runnable, X
   await host.getByRole('button', { name: 'Run action', exact: true }).click();
   await host.locator('.actions-status').filter({ hasText: 'Completed.' }).waitFor();
   await host.getByText('The current form draft has no changed attributes.').waitFor();
+  // Unsupported actions stay listed, with their reasons, in the collapsed "Not available here" group.
+  await host.getByText(/^Not available here \(\d+\)$/).click();
   assert.match(
     await host.getByRole('button', { name: /^Table processes/ }).textContent(),
     /does not report its Web API version/,

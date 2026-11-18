@@ -26,6 +26,7 @@ function ciFixture(t) {
     // The lane stop and signal helpers that scripts/ci.mjs imports.
     'lense/code-app-dev-stop.mjs',
     'lense/signal-forwarding.mjs',
+    'lense/cli-options.mjs',
   ])
     write(file, fs.readFileSync(new URL(`../${file}`, import.meta.url)));
   // Identity reads start PowerShell on Windows. Every lease and lane identity here is a fixture value, because the

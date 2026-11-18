@@ -7,14 +7,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { createSimulator } from '../api.mjs';
-import { profileFixture } from './fixtures/deployment-profiles.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ITEM_ENTITY, startPackSimulator } from './support/simulation-pack-fixture.mjs';
 
 const FLOW = '77777777-7777-4777-8777-0000000000f1',
   PACK_API = '77777777-7777-4777-8777-0000000000f2';
-const ENTITY =
-  '<Entity><Name>x_item</Name><EntityInfo><entity Name="x_item"><EntitySetName>x_items</EntitySetName><PrimaryIdAttribute>x_itemid</PrimaryIdAttribute><PrimaryNameAttribute>x_name</PrimaryNameAttribute><attributes><attribute PhysicalName="x_itemid"><Name>x_itemid</Name><Type>primarykey</Type></attribute><attribute PhysicalName="x_name"><Name>x_name</Name><Type>nvarchar</Type></attribute></attributes></entity></EntityInfo></Entity>';
 const DEF = {
   properties: {
     definition: {
@@ -31,10 +27,8 @@ export default { id: 'fx-control', name: 'Invented', description: 'Invented', ma
   dataFiles: [{ file: 'data.json', tables: { x_item: { path: ['items'], idColumn: 'x_itemid' } } }] };`;
 
 test('flow activation, a deployment-profile switch and a preset apply work at level simulation on the Power Pages host', async (t) => {
-  // The profile fixture removes its directory only after the runtime below has closed.
-  const fixture = await profileFixture({ after: (fn) => ownedFixture(t).remove(fn) });
   const files = {
-    'solution/Entities/x_item/Entity.xml': ENTITY,
+    'solution/Entities/x_item/Entity.xml': ITEM_ENTITY,
     'solution/customapis/x_Notify/customapi.xml':
       '<customapi uniquename="x_Notify"><bindingtype>0</bindingtype><isfunction>0</isfunction><name>x_Notify</name></customapi>',
     'solution/Workflows/manual.json': JSON.stringify(DEF),
@@ -42,24 +36,11 @@ test('flow activation, a deployment-profile switch and a preset apply work at le
     'pack/data.json': JSON.stringify({ items: [] }),
     'pack/pack.mjs': PACK,
   };
-  for (const [name, text] of Object.entries(files)) {
-    await fs.mkdir(path.dirname(path.join(fixture.root, name)), { recursive: true });
-    await fs.writeFile(path.join(fixture.root, name), text);
-  }
-  const sim = await createSimulator({
-    sourceDir: fixture.sourceDir,
-    solutionRoots: fixture.solutionRoots,
-    projectRoot: fixture.root,
-    deploymentProfiles: fixture.deploymentProfiles,
-    stateFile: fixture.stateFile,
-    port: 0,
-    watch: false,
+  const { sim, fixture } = await startPackSimulator(t, files, {
     simulation: { level: 'simulation' },
-    packs: [path.join(fixture.root, 'pack', 'pack.mjs')],
     preset: 'seed',
     dataverse: { enabled: true, port: 0, tls: false, tds: { enabled: false } },
   });
-  ownedFixture(t).add(() => sim.close());
   const call = async (method, suffix, payload) => {
     const response = await fetch(sim.url + '/_sim/api' + suffix, {
       method,

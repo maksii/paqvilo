@@ -4,8 +4,24 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-const apply = process.argv.includes('--apply');
 const isEntry = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const args = isEntry ? process.argv.slice(2) : [];
+const apply = args.includes('--apply');
+// Help and argument errors are answered before anything is read from or sent to GitHub.
+if (args.includes('--help') || args.includes('-h')) {
+  console.log(`Usage: node scripts/github-admin.mjs [--apply]
+  (no option)   print the declared repository settings plan as JSON; contacts nothing
+  --apply       apply the plan to GitHub with the gh CLI (repository admin permission required) and save the
+                verified settings under .paqvilo/admin/setup.json
+  --help        print this help
+See docs/repository-admin.md.`);
+  process.exit(0);
+}
+const unknown = args.find((arg) => arg !== '--apply');
+if (unknown) {
+  console.error(`github-admin: unknown option ${unknown}; run with --help to see supported options.`);
+  process.exit(1);
+}
 const repo = 'maksii/paqvilo';
 const endpoint = `repos/${repo}`;
 function api(method, route, body, { missing = false } = {}) {
@@ -21,10 +37,11 @@ function api(method, route, body, { missing = false } = {}) {
   }
   return result.stdout.trim() ? JSON.parse(result.stdout) : { ok: true };
 }
+// package.json is the single source of the repository description and homepage, so npm and GitHub cannot drift.
+const packageJson = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 const settings = {
-  description:
-    'Local-first, pro-code tools for Microsoft Power Pages: live previews with Lense and local rendering with Mirage.',
-  homepage: 'https://maksii.github.io/paqvilo/',
+  description: packageJson.description,
+  homepage: packageJson.homepage,
   has_issues: true,
   has_discussions: true,
   allow_squash_merge: true,

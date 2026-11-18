@@ -385,7 +385,7 @@ export function createFlowTriggerRunner({
     closing = false,
     stopSequence = Infinity;
   const record = (code, entry) => diagnostic({ code, ...entry });
-  // The human facts of a trigger finding (D-M-2 Findings): the flow's display name, the trigger table and a sentence.
+  // The human facts of a trigger finding (Findings): the flow's display name, the trigger table and a sentence.
   const flowFacts = (workflow, item, entity, status) => {
     const name = workflow?.name ?? item.name ?? item.processId ?? item.key;
     const onEntity = entity ? ` on ${entity}` : '';

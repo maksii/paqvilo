@@ -50,7 +50,7 @@ test('public command namespaces select Lense and Mirage independently', async (t
     assert.match(result.stdout, new RegExp(product, 'i'));
   }
   assert.equal(invalid.status, 1);
-  assert.equal(JSON.parse(invalid.stdout).error.code, 'UNKNOWN_PRODUCT');
+  assert.equal(JSON.parse(invalid.stdout).error.code, 'unknown_command');
   assert.equal(inventory.status, 0, inventory.stderr);
   const report = JSON.parse(inventory.stdout);
   assert.deepEqual([report.portal, report.format], [portal, 'standard']);

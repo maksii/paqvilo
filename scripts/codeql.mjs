@@ -429,6 +429,18 @@ export async function codeqlGate({
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const [arg] = process.argv.slice(2);
+  if (arg === '--help' || arg === '-h') {
+    console.log(`Usage: node scripts/codeql.mjs
+Runs the pinned CodeQL CLI bundle (downloaded and verified on first use) with the security-extended suites of the
+Security workflow over the validated tree, and fails on every result GitHub has not dismissed (reads the dismissals
+with gh). Takes no options; --help prints this help. See CONTRIBUTING.md.`);
+    process.exit(0);
+  }
+  if (arg) {
+    console.error(`codeql: unknown option ${arg}; it takes no options (see --help).`);
+    process.exit(1);
+  }
   try {
     await codeqlGate();
   } catch (error) {

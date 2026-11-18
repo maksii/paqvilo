@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { DataError } from './data-error.mjs';
 import { argsOf, callerColumns, registerAddon } from './dataverse-addon-common.mjs';
 import { parseDataverseRoute, parsePrefer } from './dataverse-odata.mjs';
-import { privilegeDeniedError, privilegeName } from './dataverse-security.mjs';
+import { privilegeName } from './dataverse-security.mjs';
 import { parseXmlDocument, planFetch } from './fetchxml-engine.mjs';
 
 const STATE_QUEUED = 0;
@@ -65,7 +65,9 @@ function operations(api) {
   const write = (fn) => api.change(() => store.transact(fn, { isolated: true }));
   const need = (c, logical, right) => {
     const privilege = privilegeName(right, api.principals.privilegeNoun(logical));
-    if (!(api.principals.privileges(c.user).get(privilege) > 0)) throw privilegeDeniedError(c.user, privilege, logical); // NOSONAR: operand can be NaN or undefined, the negated test differs
+    // A missing privilege reads undefined: only a positive depth grants it.
+    const granted = api.principals.privileges(c.user).get(privilege) > 0;
+    if (!granted) throw api.principals.deniedError(c.user, privilege, logical);
   };
   // Queued and not delayed or expired at `at`.
   const eligible = (row, at) =>
@@ -325,4 +327,19 @@ function install(api) {
   for (const op of operations(api)) registerAddon(api, op);
 }
 
-export const EXTENSION = { name: 'dataverse-addon-workqueues', install };
+/** Capability record for the capability registry; dataverse-extensions.mjs adds the operations install registered. */
+function describe() {
+  return {
+    name: 'dataverse-addon-workqueues',
+    version: 1,
+    kind: 'dataverse-extension',
+    level: 'behaviour',
+    reason: 'Store-backed work queue messages over workqueue and workqueueitem; ClearWorkQueue is always synchronous.',
+    requires: [],
+    principal: 'caller',
+    stateOwner: 'store',
+    lifecycle: 'per-request',
+  };
+}
+
+export const EXTENSION = { name: 'dataverse-addon-workqueues', install, describe };

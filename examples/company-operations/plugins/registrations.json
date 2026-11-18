@@ -17,6 +17,7 @@
         "ChainNodeGuard",
         "BusinessProjectionGuard",
         "ProjectionAssociationGuard",
+        "EquipmentCrudObserver",
         "PipelineContextObserver",
         "ChainA",
         "ChainB",
@@ -143,6 +144,46 @@
       "assembly": "Paqvilo.Demo.QueryObservation",
       "type": "IncomingQueryObserver",
       "table": "transactioncurrency",
+      "message": "RetrieveMultiple",
+      "stage": 40,
+      "order": 9900,
+      "mode": 0
+    },
+    {
+      "key": "IncomingQueryObserver/pqvd_currencyreference/RetrieveMultiple/10/10/0",
+      "assembly": "Paqvilo.Demo.QueryObservation",
+      "type": "IncomingQueryObserver",
+      "table": "pqvd_currencyreference",
+      "message": "RetrieveMultiple",
+      "stage": 10,
+      "order": 10,
+      "mode": 0
+    },
+    {
+      "key": "IncomingQueryObserver/pqvd_currencyreference/RetrieveMultiple/20/10/0",
+      "assembly": "Paqvilo.Demo.QueryObservation",
+      "type": "IncomingQueryObserver",
+      "table": "pqvd_currencyreference",
+      "message": "RetrieveMultiple",
+      "stage": 20,
+      "order": 10,
+      "mode": 0
+    },
+    {
+      "key": "IncomingQueryObserver/pqvd_currencyreference/RetrieveMultiple/20/9900/0",
+      "assembly": "Paqvilo.Demo.QueryObservation",
+      "type": "IncomingQueryObserver",
+      "table": "pqvd_currencyreference",
+      "message": "RetrieveMultiple",
+      "stage": 20,
+      "order": 9900,
+      "mode": 0
+    },
+    {
+      "key": "IncomingQueryObserver/pqvd_currencyreference/RetrieveMultiple/40/9900/0",
+      "assembly": "Paqvilo.Demo.QueryObservation",
+      "type": "IncomingQueryObserver",
+      "table": "pqvd_currencyreference",
       "message": "RetrieveMultiple",
       "stage": 40,
       "order": 9900,
@@ -1236,6 +1277,36 @@
       "mode": 0
     },
     {
+      "key": "BusinessProjectionGuard/pqvd_currencyreference/Create/20/5/0",
+      "assembly": "Paqvilo.Demo.PipelineTests",
+      "type": "BusinessProjectionGuard",
+      "table": "pqvd_currencyreference",
+      "message": "Create",
+      "stage": 20,
+      "order": 5,
+      "mode": 0
+    },
+    {
+      "key": "BusinessProjectionGuard/pqvd_currencyreference/Update/20/5/0",
+      "assembly": "Paqvilo.Demo.PipelineTests",
+      "type": "BusinessProjectionGuard",
+      "table": "pqvd_currencyreference",
+      "message": "Update",
+      "stage": 20,
+      "order": 5,
+      "mode": 0
+    },
+    {
+      "key": "BusinessProjectionGuard/pqvd_currencyreference/Delete/20/5/0",
+      "assembly": "Paqvilo.Demo.PipelineTests",
+      "type": "BusinessProjectionGuard",
+      "table": "pqvd_currencyreference",
+      "message": "Delete",
+      "stage": 20,
+      "order": 5,
+      "mode": 0
+    },
+    {
       "key": "BusinessProjectionGuard/pqvd_accessrole/Create/20/5/0",
       "assembly": "Paqvilo.Demo.PipelineTests",
       "type": "BusinessProjectionGuard",
@@ -1774,6 +1845,128 @@
       "stage": 20,
       "order": 5,
       "mode": 0
+    },
+    {
+      "key": "EquipmentCrudObserver/pqvd_equipment/Create/10/10/0",
+      "assembly": "Paqvilo.Demo.PipelineTests",
+      "type": "EquipmentCrudObserver",
+      "table": "pqvd_equipment",
+      "message": "Create",
+      "stage": 10,
+      "order": 10,
+      "mode": 0
+    },
+    {
+      "key": "EquipmentCrudObserver/pqvd_equipment/Create/20/10/0",
+      "assembly": "Paqvilo.Demo.PipelineTests",
+      "type": "EquipmentCrudObserver",
+      "table": "pqvd_equipment",
+      "message": "Create",
+      "stage": 20,
+      "order": 10,
+      "mode": 0
+    },
+    {
+      "key": "EquipmentCrudObserver/pqvd_equipment/Create/40/10/0",
+      "assembly": "Paqvilo.Demo.PipelineTests",
+      "type": "EquipmentCrudObserver",
+      "table": "pqvd_equipment",
+      "message": "Create",
+      "stage": 40,
+      "order": 10,
+      "mode": 0
+    },
+    {
+      "key": "EquipmentCrudObserver/pqvd_equipment/Update/10/10/0",
+      "assembly": "Paqvilo.Demo.PipelineTests",
+      "type": "EquipmentCrudObserver",
+      "table": "pqvd_equipment",
+      "message": "Update",
+      "stage": 10,
+      "order": 10,
+      "mode": 0
+    },
+    {
+      "key": "EquipmentCrudObserver/pqvd_equipment/Update/20/10/0",
+      "assembly": "Paqvilo.Demo.PipelineTests",
+      "type": "EquipmentCrudObserver",
+      "table": "pqvd_equipment",
+      "message": "Update",
+      "stage": 20,
+      "order": 10,
+      "mode": 0,
+      "images": ["Before"],
+      "imageColumns": [
+        "pqvd_name",
+        "pqvd_canaryrunid",
+        "pqvd_assettag",
+        "pqvd_equipmentstate",
+        "pqvd_currentassignmentid"
+      ]
+    },
+    {
+      "key": "EquipmentCrudObserver/pqvd_equipment/Update/40/10/0",
+      "assembly": "Paqvilo.Demo.PipelineTests",
+      "type": "EquipmentCrudObserver",
+      "table": "pqvd_equipment",
+      "message": "Update",
+      "stage": 40,
+      "order": 10,
+      "mode": 0,
+      "images": ["Before"],
+      "imageColumns": [
+        "pqvd_name",
+        "pqvd_canaryrunid",
+        "pqvd_assettag",
+        "pqvd_equipmentstate",
+        "pqvd_currentassignmentid"
+      ]
+    },
+    {
+      "key": "EquipmentCrudObserver/pqvd_equipment/Delete/10/10/0",
+      "assembly": "Paqvilo.Demo.PipelineTests",
+      "type": "EquipmentCrudObserver",
+      "table": "pqvd_equipment",
+      "message": "Delete",
+      "stage": 10,
+      "order": 10,
+      "mode": 0
+    },
+    {
+      "key": "EquipmentCrudObserver/pqvd_equipment/Delete/20/10/0",
+      "assembly": "Paqvilo.Demo.PipelineTests",
+      "type": "EquipmentCrudObserver",
+      "table": "pqvd_equipment",
+      "message": "Delete",
+      "stage": 20,
+      "order": 10,
+      "mode": 0,
+      "images": ["Before"],
+      "imageColumns": [
+        "pqvd_name",
+        "pqvd_canaryrunid",
+        "pqvd_assettag",
+        "pqvd_equipmentstate",
+        "pqvd_currentassignmentid"
+      ]
+    },
+    {
+      "key": "EquipmentCrudObserver/pqvd_equipment/Delete/40/10/0",
+      "assembly": "Paqvilo.Demo.PipelineTests",
+      "type": "EquipmentCrudObserver",
+      "table": "pqvd_equipment",
+      "message": "Delete",
+      "stage": 40,
+      "order": 10,
+      "mode": 0,
+      "images": ["Before"],
+      "imageColumns": [
+        "pqvd_name",
+        "pqvd_canaryrunid",
+        "pqvd_assettag",
+        "pqvd_equipmentstate",
+        "pqvd_currentassignmentid"
+      ]
     },
     {
       "key": "PipelineContextObserver/pqvd_crudprobe/Create/10/10/0",

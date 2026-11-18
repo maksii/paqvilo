@@ -4,6 +4,7 @@ import { pluginExecutionLifetime, pluginInvocationDepth } from './plugin-executi
 import { globalMetadataVersion } from './metadata-version.mjs';
 import { parseDataverseTop } from './dataverse-top.mjs';
 import { organizationRecord } from './organization-context.mjs';
+import { stampPersonName } from './dataverse-person-name.mjs';
 import { assertDataverseRootBody } from './dataverse-reader-details.mjs';
 // Record handlers for the simulated Dataverse Web API: collections, single rows,
 // properties, navigation, $ref and collection-bound actions. The Dataverse layer
@@ -2090,7 +2091,12 @@ export function createRecordHandlers({
       });
     }
     if (readFilter !== null) {
-      throw privilegeDeniedError(c.user, privilegeName('read', principals.privilegeNoun(logical)), logical);
+      // The caller's own role and privilege counts, as the security module states them for any other refused read.
+      throw privilegeDeniedError(c.user, privilegeName('read', principals.privilegeNoun(logical)), logical, {
+        roleCount: principals.roles?.(c.user)?.length ?? 0,
+        privilegeCount: principals.privileges?.(c.user)?.size ?? 0,
+        objectTypeCode: objectTypeCode(logical),
+      });
     }
   }
 
@@ -2366,12 +2372,14 @@ export function createRecordHandlers({
       : {};
   }
   // The main operation (after PreOperation, before the row is stored) runs the synchronous mainOperation hooks on the
-  // final row: platform values derived from it, such as the exchange rate and base amounts (dataverse-currency.mjs).
-  const mainOperation = (c) =>
-    hookList('mainOperation').length
-      ? (mapping, operation, row, previous, target, request = {}) =>
-          runHooks('mainOperation', c, mapping, { operation, row, previous, target, ...request })
-      : undefined;
+  // final row: platform values derived from it, such as a person's composed full name (dataverse-person-name.mjs) and
+  // the exchange rate and base amounts (dataverse-currency.mjs).
+  const mainOperation =
+    (c) =>
+    (mapping, operation, row, previous, target, request = {}) => {
+      stampPersonName(store, mapping, operation, row, target);
+      runHooks('mainOperation', c, mapping, { operation, row, previous, target, ...request });
+    };
   const derivedCreateColumns = new WeakMap();
   // A create's privilege refusal, raised after its PreValidation stage (privilegeRefusal).
   const createRefusals = new WeakMap();

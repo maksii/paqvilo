@@ -1,3 +1,4 @@
+// @test-kind contract: the code-app bridge runs Dataverse requests, functions and files through the local organization handlers as the selected staff user
 import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -84,6 +85,21 @@ test('SDK metadata and binary files traverse the actual local code app and organ
     body: '{}',
   });
   assert.equal(direct.ok, false);
+  // The built-in unbound functions answer through the bridge as the Web API does, as the bridge session's user.
+  const bridged = (suffix) =>
+    fetch(`http://127.0.0.1:${server.address().port}/_apps/code/invented/dataverse/${suffix}`, {
+      headers: { 'x-sim-csrf': 'test-csrf' },
+    });
+  const whoAmI = await bridged('WhoAmI');
+  assert.equal(whoAmI.status, 200);
+  const whoAmIBody = await whoAmI.json();
+  assert.equal(whoAmIBody.UserId, user.systemuserid);
+  assert.equal(whoAmIBody.OrganizationId, organization.organizationId);
+  assert.equal((await bridged('RetrieveVersion()')).status, 200);
+  const version = await sdk.executeAsync({
+    dataverseRequest: { action: 'customapi', parameters: { tableName: 'x', operationName: 'RetrieveVersion' } },
+  });
+  assert.equal(version.success, true, version.error?.message);
   const who = await sdk.executeAsync({
     dataverseRequest: { action: 'customapi', parameters: { tableName: 'whoami', operationName: 'WhoAmI' } },
   });
@@ -106,6 +122,24 @@ test('SDK metadata and binary files traverse the actual local code app and organ
   });
   assert.equal(action.success, true, action.error?.message);
   assert.deepEqual(action.data, { result: 'invented', caller: user.systemuserid });
+  // A built-in function with parameters runs as the Web API runs it with the parameters in the URL alias form.
+  const counted = await sdk.executeAsync({
+    dataverseRequest: {
+      action: 'customapi',
+      parameters: { tableName: 'x_item', operationName: 'RetrieveTotalRecordCount', body: { EntityNames: ['x_item'] } },
+    },
+  });
+  assert.equal(counted.success, true, counted.error?.message);
+  assert.deepEqual(counted.data.EntityRecordCountCollection.Keys, ['x_item']);
+  // The customapi request names no target record, so a bound operation path is refused before any request, by name.
+  const bound = await sdk.executeAsync({
+    dataverseRequest: {
+      action: 'customapi',
+      parameters: { tableName: 'x_item', operationName: `x_items(${ROW})/Microsoft.Dynamics.CRM.x_Bound` },
+    },
+  });
+  assert.equal(bound.success, false);
+  assert.match(bound.error.message, /takes the name of an unbound action or function .*not "x_items\(/);
   const bytes = new Uint8Array([0, 255, 16, 127]);
   const uploaded = await sdk.uploadFileToRecord('x_item', ROW, 'x_file', 'invented name.bin', bytes);
   assert.equal(uploaded.success, true, uploaded.error?.message);

@@ -178,7 +178,7 @@ function validateClrDependencies(value) {
             .some((p) => !p || p === '.' || p === '..' || p.includes(':')),
       ))
   )
-    fail('CLR dependencies must be confined relative DLL paths.');
+    fail('CLR dependencies must be at most 100 confined relative DLL paths.');
 }
 
 function validateClrContextIdentity(value) {
@@ -281,7 +281,7 @@ function validateClrExecutionOptions(value) {
       value.symbols.length > 100 ||
       value.symbols.some((file) => !isClrSymbolPath(file)))
   )
-    fail('CLR symbols must be confined relative PDB paths.');
+    fail('CLR symbols must be at most 100 confined relative PDB paths.');
 }
 export function validateClrDescriptor(value) {
   if (!value || typeof value !== 'object' || value.trust !== 'execute-local-assembly')
@@ -2533,6 +2533,29 @@ function executePooledClr(runtime, input, options, verified) {
           ) {
             details.innerCode = '0x80040224';
             message.message = `Unable to load plug-in type '${runtime.descriptor.typeName}' from assembly '${path.basename(runtime.descriptor.assembly, '.dll')}': ${message.message}`;
+          }
+          // An InvalidPluginExecutionException carries the CDS annotations a JavaScript handler's fault carries
+          // (plugin-fault.mjs pluginFailure): its SubErrorCode and OperationStatus among them.
+          if (details.innerCode === '0x80040265') {
+            const owner = input.context?.OwningExtension;
+            details.cdsAnnotations = pluginFailure(
+              {
+                message: message.message,
+                errorCode: message.errorCode,
+                operationStatus: message.operationStatus,
+                pluginFault: 'InvalidPluginExecutionException',
+              },
+              {
+                name: owner?.name,
+                id: owner?.id,
+                type: runtime.descriptor.typeName,
+                traces,
+                label: owner?.name ?? '',
+                stage: input.context?.Stage,
+                depth: input.context?.Depth,
+              },
+              timeout,
+            ).details.cdsAnnotations;
           }
           throw new DataError(
             message.message,

@@ -213,6 +213,14 @@ export function assertServerLogicTimeout(value, name = 'timeout') {
   // explicit timeout from a direct caller sets the bound up to that platform limit.
   const seconds = Math.min(Number(settingOf(portal, 'ServerLogic/TimeoutInSeconds')) || 120, 240);
   const bound = Math.max(100, Math.min(timeout ?? 5000, seconds * 1000));
+  // A run that throws or reaches its limit is a server-logic failure (500), never an unsupported operation (501).
+  const failed = (message) => failure(message, 500, 'ServerLogicFailed');
+  const timedOut = () =>
+    failure(
+      `Server logic exceeded its time limit of ${bound} ms (serverLogicTimeoutMs, at most ServerLogic/TimeoutInSeconds).`,
+      500,
+      'ServerLogicTimeout',
+    );
   const settings = Object.fromEntries(
     Object.entries(portal.settings ?? {}).map(([name, value]) => [name, value?.value ?? value]),
   );
@@ -402,11 +410,11 @@ export function assertServerLogicTimeout(value, name = 'timeout') {
         ),
       WORKER_STARTUP_LIMIT_MS,
     );
-    worker.on('error', (error) => finish(failure(error.message)));
+    worker.on('error', (error) => finish(failed(error.message)));
     worker.on('exit', (code) => {
       exited = true;
       clearTimeout(timer);
-      if (!complete) finish(failure(`Server-logic worker stopped before returning a result (${code}).`));
+      if (!complete) finish(failed(`Server-logic worker stopped before returning a result (${code}).`));
     });
     worker.on('message', (message) => inSpan(() => answerMessage(message)));
     const answerMessage = async (message) /* NOSONAR */ => {
@@ -414,21 +422,11 @@ export function assertServerLogicTimeout(value, name = 'timeout') {
       if (complete) return;
       if (message.kind === 'ready') {
         clearTimeout(timer);
-        timer = setTimeout(
-          () =>
-            stop(
-              failure(
-                `Server-logic execution exceeded its local time limit of ${bound} ms.`,
-                504,
-                'LocalOperationTimeout',
-              ),
-            ),
-          bound + 300,
-        );
+        timer = setTimeout(() => stop(timedOut()), bound + 300);
         return;
       }
       if (message.kind === 'result') return finish(null, message.raw);
-      if (message.kind === 'failure') return finish(failure(message.message));
+      if (message.kind === 'failure') return finish(message.timeout ? timedOut() : failed(message.message));
       if (message.kind === 'log') {
         span?.event('trace', { message: message.message, attributes: { level: message.level ?? null } });
         return (services.log ?? (() => {}))({

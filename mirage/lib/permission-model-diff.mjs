@@ -1,5 +1,7 @@
 // Compare compiled portal table grants, not deployed access or row populations.
 // Existing permission compilation remains the authority; this module never grants access.
+import { requiredArgument } from './required-argument.mjs';
+
 const ownObject = (value) => value && [Object.prototype, null].includes(Object.getPrototypeOf(value));
 const id = (value) =>
   String(value ?? '')
@@ -279,7 +281,10 @@ function permissionDiffStatus(issues, summary) {
 }
 
 /** Compare full buildPermissionModel outputs without reading rows, changing grants or contacting a service. */
-export function comparePermissionModels(before, after) {
+export function comparePermissionModels(
+  before = requiredArgument('comparePermissionModels(before, after)', 'two buildPermissionModel results'),
+  after = requiredArgument('comparePermissionModels(before, after)', 'two buildPermissionModel results'),
+) {
   let remaining = MAX_WORK;
   const work = (amount = 1) => {
     remaining -= amount;

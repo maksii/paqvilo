@@ -302,10 +302,11 @@ test('an explicit timeout above the site limit is capped at ServerLogic/TimeoutI
   await ready;
   t.mock.timers.tick(1300); // the execution limit: the 1 s site limit and its 300 ms grace
   const settled = await Promise.race([run, new Promise((resolve) => setImmediate(() => resolve('still running')))]);
-  assert.equal(settled?.code, 'LocalOperationTimeout', String(settled));
+  assert.equal(settled?.code, 'ServerLogicTimeout', String(settled));
+  assert.equal(settled.status, 500);
   assert.equal(
     settled.message,
-    'Server-logic execution exceeded its local time limit of 1000 ms.',
+    'Server logic exceeded its time limit of 1000 ms (serverLogicTimeoutMs, at most ServerLogic/TimeoutInSeconds).',
     'the host limit names the capped bound',
   );
   assert.equal(await call.exited, 1, 'the worker stopped at the capped limit is terminated');
@@ -488,8 +489,10 @@ test('a worker that never answers is stopped and terminated at its limit', async
   await ready;
   t.mock.timers.tick(400); // the execution limit: the 100 ms bound and its 300 ms grace
   await assert.rejects(run, {
-    code: 'LocalOperationTimeout',
-    message: 'Server-logic execution exceeded its local time limit of 100 ms.',
+    code: 'ServerLogicTimeout',
+    status: 500,
+    message:
+      'Server logic exceeded its time limit of 100 ms (serverLogicTimeoutMs, at most ServerLogic/TimeoutInSeconds).',
   });
   assert.equal(terminate.mock.callCount(), 1);
   assert.equal(await call.exited, 1);
@@ -501,7 +504,10 @@ test('a server logic that runs past its limit is stopped by its own worker and n
   const terminate = t.mock.method(Worker.prototype, 'terminate');
   const { record } = await source(t, 'function get(){ for(;;){} }');
   await assert.rejects(runExportedServerLogic({ record, portal: {}, store: store(), timeout: 100 }), {
-    message: 'Script execution timed out after 100ms',
+    code: 'ServerLogicTimeout',
+    status: 500,
+    message:
+      'Server logic exceeded its time limit of 100 ms (serverLogicTimeoutMs, at most ServerLogic/TimeoutInSeconds).',
   });
   assert.equal(await exited, 0);
   assert.equal(terminate.mock.callCount(), 0);
@@ -811,4 +817,14 @@ test('Imported flow HTTP failure retains completed connector commits and Respons
   assert.equal(accepted.status, 200);
   assert.equal(accepted.headers.get('x-invented-flow'), 'preserved');
   assert.equal(app.state().data.widget.length, 2);
+});
+
+// @test-kind unproven: no capture or Microsoft Learn page states the platform answer; the local contract is 500 ServerLogicFailed with the message
+test('an exception thrown by exported server code answers 500 ServerLogicFailed with its message', async (t) => {
+  const { record } = await source(t, "function get(){ throw new Error('invented failure'); }");
+  await assert.rejects(runExportedServerLogic({ record, portal: {}, store: store(), timeout: 5000 }), {
+    code: 'ServerLogicFailed',
+    status: 500,
+    message: 'invented failure',
+  });
 });

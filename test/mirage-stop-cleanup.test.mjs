@@ -236,22 +236,7 @@ test('a stop removes the start-up log of a ready runtime that acknowledged its s
   await fsp.writeFile(log, '');
   // A stand-in runtime: a pid double that is alive until it acknowledges the shutdown request.
   const pid = 424242;
-  let running = true;
-  const server = http.createServer((request, response) => {
-    if (request.method === 'POST') {
-      running = false;
-      response.writeHead(202).end();
-      return;
-    }
-    response.writeHead(200, { 'content-type': 'application/json' });
-    response.end(JSON.stringify({ csrf: 'invented-csrf' }));
-  });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  ownedFixture(t).add(() => {
-    server.closeAllConnections();
-    server.close();
-  });
-  const url = `http://127.0.0.1:${server.address().port}`;
+  const { url, alive } = await acknowledgingRuntime(t, pid);
   const stateFile = path.join(directory, 'state.json');
   await updateOwnedSessions(paths, () => [
     {
@@ -265,11 +250,42 @@ test('a stop removes the start-up log of a ready runtime that acknowledged its s
     },
   ]);
   const identityOf = (candidate) => (candidate === pid ? 'invented identity' : null);
-  const alive = (candidate) => candidate === pid && running;
   const report = await stopOwnedSessions({ paths, pids: [pid], identityOf, alive });
   assert.deepEqual(report.remaining, []);
   assert.equal(report.stopped[0].graceful, true);
   await assert.rejects(fsp.access(log), { code: 'ENOENT' });
+});
+
+// @test-kind contract: stop describes a runtime that answered at its published URL as status does, not as starting
+test('a stop reports the URL of a serving runtime whose ownership record still holds the start-up placeholder', async (t) => {
+  const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-placeholder-stop-')));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const paths = miragePaths({ stateDir: directory, runtime: { kind: 'model-driven' }, siteName: 'invented' });
+  const pid = 424243;
+  const { url, alive } = await acknowledgingRuntime(t, pid);
+  const stateFile = path.join(directory, 'state.json');
+  const discovery = path.join(paths.discoveryRoot, `session-${pid}.json`);
+  await fsp.mkdir(paths.discoveryRoot, { recursive: true });
+  // The runtime published its URL; its ownership record was never moved past the record written before readiness.
+  await fsp.writeFile(discovery, JSON.stringify({ pid, url, stateFile }));
+  await updateOwnedSessions(paths, () => [
+    {
+      pid,
+      processIdentity: 'invented identity',
+      discovery,
+      url: null,
+      stateFile,
+      ready: false,
+      identity: { stateFile, runtime: { kind: 'model-driven' } },
+    },
+  ]);
+  const identityOf = (candidate) => (candidate === pid ? 'invented identity' : null);
+  const report = await stopOwnedSessions({ paths, pids: [pid], identityOf, alive });
+  assert.deepEqual(report.remaining, []);
+  assert.deepEqual(
+    report.stopped.map((item) => [item.pid, item.url, item.graceful, item.wasReady]),
+    [[pid, url, true, true]],
+  );
 });
 
 // @test-kind contract: a stop that reports a runtime stopped has released the runtime's port
@@ -294,6 +310,21 @@ test('a stop that had to end a runtime which refused its shutdown returns after 
   const binding = await portBinding(port);
   assert.equal(binding.free, true, `the port of the stopped runtime can be bound (${binding.code ?? 'bound'})`);
 });
+
+// A stand-in runtime for a pid double that is alive until it acknowledges the shutdown request.
+async function acknowledgingRuntime(t, pid) {
+  let running = true;
+  const { url } = await standInRuntime(t, (request, response) => {
+    if (request.method === 'POST') {
+      running = false;
+      response.writeHead(202).end();
+      return;
+    }
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ csrf: 'invented-csrf' }));
+  });
+  return { url, alive: (candidate) => candidate === pid && running };
+}
 
 // A stand-in runtime at a loopback URL that answers each request with `respond`.
 async function standInRuntime(t, respond) {

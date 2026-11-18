@@ -199,7 +199,7 @@
   globalThis.__portalSimulation ||= {};
   globalThis.__portalSimulation.compatibility ||= {};
   globalThis.__portalSimulation.compatibility.jqueryUiDialogMode = 'local-compatibility';
-  console.info('Local jQuery UI dialog compatibility active for source-used dialog behavior.');
+  console.info('Local jQuery UI dialog compatibility active for source-used dialog behaviour.');
   /** Re-attach this adapter whenever a later script replaces window.jQuery. */
   // BEGIN generated jQuery watcher
   function watchJQuery(registry, attach) {

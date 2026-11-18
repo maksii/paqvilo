@@ -12,29 +12,35 @@ const organisation = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
 const contact = '99999999-8888-7777-6666-555555555555';
 const blueprintBytes = Buffer.from('{"owner":"preserve exact bytes"}\r\n');
 
+// The fixture mirrors a toolkit checkout (root) holding the example; commands run from the checkout as documented.
 async function fixture(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-security-cli-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
-  for (const dir of ['portal-security', 'dataverse', 'data', '.paqvilo/dataverse'])
-    await fs.mkdir(path.join(root, dir), { recursive: true });
-  for (const name of ['deploy.mjs', 'blueprint.mjs', 'reference-projections.mjs'])
-    await fs.copyFile(
-      new URL(`../examples/company-operations/portal-security/${name}`, import.meta.url),
-      path.join(root, 'portal-security', name),
-    );
+  const example = path.join(root, 'examples/company-operations');
+  for (const dir of ['portal-security', 'dataverse', 'data'])
+    await fs.mkdir(path.join(example, dir), { recursive: true });
+  await fs.mkdir(path.join(root, '.paqvilo/dataverse'), { recursive: true });
+  for (const name of [
+    'portal-security/deploy.mjs',
+    'portal-security/blueprint.mjs',
+    'portal-security/reference-projections.mjs',
+    'cli.mjs',
+    'paths.mjs',
+  ])
+    await fs.copyFile(new URL(`../examples/company-operations/${name}`, import.meta.url), path.join(example, name));
   await fs.copyFile(
     new URL('../examples/company-operations/dataverse/manifest.json', import.meta.url),
-    path.join(root, 'dataverse/manifest.json'),
+    path.join(example, 'dataverse/manifest.json'),
   );
   const base = await fs.readFile(new URL('../examples/company-operations/data/catalogue.json', import.meta.url));
-  await fs.writeFile(path.join(root, 'data/catalogue.json'), base);
+  await fs.writeFile(path.join(example, 'data/catalogue.json'), base);
   const selected = JSON.parse(base);
   selected.version = 'invented-explicit-catalogue';
   selected.personas = [{ key: 'invented-selected-persona', contactId: contact, webRoles: ['EMPLOYEE'] }];
   await fs.writeFile(path.join(root, 'selected.json'), JSON.stringify(selected));
-  const blueprint = path.join(root, 'portal-security/blueprint.json');
+  const blueprint = path.join(example, 'portal-security/blueprint.json');
   await fs.writeFile(blueprint, blueprintBytes);
-  const ownerFile = path.join(root, 'portal-security/owner-untracked.txt');
+  const ownerFile = path.join(example, 'portal-security/owner-untracked.txt');
   await fs.writeFile(ownerFile, 'owner content');
   const connection = path.join(root, '.paqvilo/dataverse/provisioning.connection.json');
   await fs.writeFile(connection, JSON.stringify({ organisationId: organisation }));
@@ -70,22 +76,23 @@ async function fixture(t) {
   );
   return {
     root,
+    example,
     connection,
     calls,
-    run: (args, deny = false) =>
+    run: (args, deny = false, cwd = root) =>
       boundedCommand(
         t,
         process.execPath,
-        ['--import', pathToFileURL(hook).href, path.join(root, 'portal-security/deploy.mjs'), ...args],
+        ['--import', pathToFileURL(hook).href, path.join(example, 'portal-security/deploy.mjs'), ...args],
         {
-          cwd: root,
+          cwd,
           env: { ...process.env, DEPLOY_DENY_CONNECTION: deny ? '1' : '0' },
         },
       ),
     async preserved() {
       assert.ok((await fs.readFile(blueprint)).equals(blueprintBytes), 'tracked blueprint bytes changed');
       assert.ok(
-        (await fs.readFile(path.join(root, 'data/catalogue.json'))).equals(base),
+        (await fs.readFile(path.join(example, 'data/catalogue.json'))).equals(base),
         'base catalogue bytes changed',
       );
       assert.equal(await fs.readFile(ownerFile, 'utf8'), 'owner content');
@@ -121,6 +128,22 @@ test('explicit catalogue plan uses its distinct persona and safe default connect
     calls.filter((c) => c.kind === 'list' && c.value.startsWith('contacts(')).map((c) => c.value),
     [`contacts(${contact})/powerpagecomponent_mspp_webrole_contact?$select=powerpagecomponentid,name`],
   );
+  assert.deepEqual(
+    calls.filter((c) => c.kind === 'connection').map((c) => c.value),
+    [f.connection],
+  );
+  await f.preserved();
+});
+
+test('the default connection resolves from the toolkit checkout whatever the working directory', async (t) => {
+  const f = await fixture(t);
+  const result = await f.run(['--site', site, '--catalogue', path.join(f.root, 'selected.json')], false, f.example);
+  assert.equal(result.status, 0, result.stderr);
+  const calls = (await fs.readFile(f.calls, 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.deepEqual(
+    calls.filter((c) => c.kind === 'connection').map((c) => c.value),
+    [f.connection],
+  );
   await f.preserved();
 });
 
@@ -139,8 +162,9 @@ test('ambiguous or malformed arguments reject before connection and leave all so
     [...valid, '--connection', ''],
   ]) {
     const result = await f.run(args, true);
-    assert.notEqual(result.status, 0, JSON.stringify(args));
-    assert.doesNotMatch(result.stderr, /CONNECTION MODULE LOADED/);
+    assert.equal(result.status, 1, JSON.stringify(args));
+    assert.match(result.stderr, /^[^\n]+\n$/, 'one line on stderr');
+    assert.doesNotMatch(result.stderr, /CONNECTION MODULE LOADED|\n\s+at |ERR_PARSE_ARGS/);
     await f.preserved();
   }
   await assert.rejects(fs.stat(f.calls), { code: 'ENOENT' });
@@ -148,12 +172,15 @@ test('ambiguous or malformed arguments reject before connection and leave all so
 
 test('help needs no schema, catalogue, blueprint or connection and causes no evidence writes', async (t) => {
   const f = await fixture(t);
-  for (const target of ['dataverse', 'data', '.paqvilo', 'portal-security/blueprint.json', 'selected.json'])
+  for (const target of ['dataverse', 'data', 'portal-security/blueprint.json'])
+    await fs.rm(path.join(f.example, target), { recursive: true, force: true });
+  for (const target of ['.paqvilo', 'selected.json'])
     await fs.rm(path.join(f.root, target), { recursive: true, force: true });
   const result = await f.run(['--help'], true);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /--catalogue FILE/);
   await assert.rejects(fs.stat(path.join(f.root, '.paqvilo')), { code: 'ENOENT' });
+  await assert.rejects(fs.stat(path.join(f.example, '.paqvilo')), { code: 'ENOENT' });
   await assert.rejects(fs.stat(f.calls), { code: 'ENOENT' });
 });
 
@@ -186,6 +213,6 @@ test('failed organisation verification preserves all source bytes before site in
     calls.map((call) => call.kind),
     ['connection', 'verify'],
   );
-  await assert.rejects(fs.stat(path.join(f.root, '.paqvilo/portal-security')), { code: 'ENOENT' });
+  await assert.rejects(fs.stat(path.join(f.example, '.paqvilo/portal-security')), { code: 'ENOENT' });
   await f.preserved();
 });

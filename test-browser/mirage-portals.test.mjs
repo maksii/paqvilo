@@ -291,6 +291,16 @@ function dropFirstStatusRead(server, gate, count = 1) {
         if (response.statusCode === 200) markServed();
       });
     }
+    if (gate.hold && statusRead) {
+      // One status read is answered only after the test releases it; `gate.onHold` reports that it arrived.
+      const released = gate.hold;
+      gate.hold = null;
+      gate.onHold?.();
+      released.then(() => {
+        for (const listener of listeners) listener.call(server, request, response);
+      });
+      return;
+    }
     for (const listener of listeners) listener.call(server, request, response);
   });
 }
@@ -441,6 +451,9 @@ test('the Tweaks card shows a runtime read that keeps failing after returning to
   gate.recording = true;
   gate.armed = true;
   await returnToClassic(env, { beforeRelease: () => gate.dropped });
+  // The panel can still show the runtime of the earlier visit when it is released. Opening Tweaks on that
+  // drawing would start a status read of its own, so wait until the failed read itself has been drawn.
+  await page.waitForFunction(() => document.getElementById('paqvilo-panel')?.dataset.runtime === 'failed');
   await env.openTab('tweaks');
   const readAgain = panel('[data-act="inspect-refresh"]').filter({ hasText: 'Read again' });
   // The attempts are used up: the failure is stored and drawn with its control.
@@ -449,7 +462,30 @@ test('the Tweaks card shows a runtime read that keeps failing after returning to
   assert.equal(gate.destroyed, 3, 'the immediate attempts after the return were all dropped');
   assert.equal(gate.served, 0, 'no status read followed the failed attempts without a request');
   const droppedPaths = gate.paths.length;
+  // Hold the status read that Read again starts: the redraw its request schedules then arrives while the failed
+  // read is still the stored runtime. The failure must stay on the Tweaks tab instead of moving to Overrides.
+  await page.locator('#paqvilo-panel').evaluate((host) => {
+    globalThis.__panelRenders = [];
+    host.addEventListener('paqvilo-panel-render', (event) => globalThis.__panelRenders.push(event.detail.tab));
+  });
+  let releaseStatus;
+  gate.hold = new Promise((resolve) => {
+    releaseStatus = resolve;
+  });
+  const statusHeld = new Promise((resolve) => {
+    gate.onHold = resolve;
+  });
   await readAgain.click();
+  await statusHeld;
+  // The click renders once itself; the next render is the redraw pushed while the read is held.
+  await page.waitForFunction(() => globalThis.__panelRenders.length >= 2);
+  assert.deepEqual(
+    [...new Set(await page.evaluate(() => globalThis.__panelRenders))],
+    ['tweaks'],
+    'a redraw during Read again keeps the Tweaks tab',
+  );
+  assert.equal(await panel('.empty').filter({ hasText: 'Mirage is not active' }).count(), 1);
+  releaseStatus();
   await expectAnonymousTweaks(t, page, panel);
   assert.ok(gate.served >= 1, 'Read again reached the Mirage status');
   assert.ok(

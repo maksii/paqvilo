@@ -524,3 +524,60 @@ test('model-driven navigation and real filesystem cleanup failures both survive 
   assert.equal(await servesAgentSession(blocker.discovery), false);
   assert.ok(setup.methods.every((method) => method === 'GET'));
 });
+
+// @test-kind contract: model-driven dev leaves native dialogs to the person and says what --no-reload does; Paqvilo's own designed behaviour on the invented loopback app.
+test('a headed model-driven session leaves a native confirm open for the person and says live reload is paused', async (t) => {
+  const setup = await fixture(t);
+  const browser = await chromium.launch({
+    channel: setup.channel === 'chromium' ? undefined : setup.channel,
+    headless: true,
+  });
+  setup.owner.add(() => browser.close());
+  const context = await browser.newContext({ proxy: setup.network.proxy });
+  // The run owns this context as it would own a headed browser it launched: the configuration is not headless.
+  const open = async () => ({
+    context,
+    attached: false,
+    debugPort: null,
+    profile: { kind: 'named', name: 'invented' },
+    close: () => context.close(),
+  });
+  const logs = [];
+  let installed;
+  const ready = new Promise((resolve) => {
+    installed = resolve;
+  });
+  const original = { log: console.log, error: console.error };
+  console.log = (line) => {
+    logs.push(String(line));
+    if (/overlay installed/.test(line)) installed();
+  };
+  console.error = () => {};
+  setup.owner.add(() => Object.assign(console, original));
+  const startup = { phase() {}, complete() {}, fail() {}, close() {} };
+  const settled = run(null, { project: setup.project, url: setup.origin, 'no-reload': true, startup }, ['dev'], {
+    open,
+  }).then(
+    () => null,
+    (error) => error,
+  );
+  await Promise.race([ready, settled]);
+  const page = context.pages()[0];
+  assert.ok(page, 'the session opened its app tab');
+  const cdp = await context.newCDPSession(page);
+  await cdp.send('Page.enable');
+  const opening = new Promise((resolve) => cdp.once('Page.javascriptDialogOpening', resolve));
+  const answer = page.evaluate(() => confirm('Discard the invented draft?'));
+  assert.equal((await opening).message, 'Discard the invented draft?');
+  // The person's answer: without a dialog listener Playwright dismissed the dialog itself and confirm() returned false.
+  await cdp.send('Page.handleJavaScriptDialog', { accept: true }).catch(() => {});
+  assert.equal(await answer, true, 'the confirm waits for and returns the answer given in the browser');
+  await context.close();
+  assert.equal(await settled, null);
+  Object.assign(console, original);
+  assert.equal(context.listenerCount('dialog'), 0, 'the dialog policy is removed when the session stops');
+  assert.ok(
+    logs.some((line) => /Live reload is paused \(--no-reload\)/.test(line) && !/to reload\.$/.test(line)),
+    JSON.stringify(logs),
+  );
+});

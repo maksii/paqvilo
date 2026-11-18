@@ -97,6 +97,39 @@ export function addonHandlerExtension(handlers) {
       }
       api.addonHandlers = handlers;
     },
+    // A pack handler is a declared answer, not the platform's behaviour: every message it answers is at contract.
+    describe: () => ({
+      name: 'dataverse-addon-handlers',
+      version: 1,
+      kind: 'dataverse-extension',
+      level: 'contract',
+      operations: [...handlers.keys()].map((name) => ({ name, level: 'contract' })),
+      reason: 'Routes add-on messages to trusted pack dataverseMessages handlers; their answers are pack-declared.',
+      requires: [],
+      principal: 'caller',
+      stateOwner: 'pack',
+      lifecycle: 'per-request',
+    }),
+  };
+}
+
+// Per API: add-on message name -> whether its module gave it an own handler (registerAddon `handle`). Read by addonLevel.
+const addonOwnHandlers = new WeakMap();
+
+/**
+ * The capability level an add-on message takes regardless of its module's rating, or null when the module rates it:
+ * a trusted pack handler answers it (contract), or it has no own handler and answers its default error (inventory).
+ * null as well for a name registerAddon did not register on this api.
+ */
+export function addonLevel(api, name) {
+  const own = api ? addonOwnHandlers.get(api)?.get(name) : undefined;
+  if (own === undefined) return null;
+  if (api.addonHandlers?.has(name))
+    return { level: 'contract', reason: 'Answered by a trusted pack dataverseMessages handler.' };
+  if (own) return null;
+  return {
+    level: 'inventory',
+    reason: 'No local behaviour: answers its documented default error unless a trusted pack handler replaces it.',
   };
 }
 
@@ -105,6 +138,8 @@ export function addonHandlerExtension(handlers) {
 // fallback is a function that returns the error to throw when neither a pack handler nor handle answers.
 export function registerAddon(api, spec) {
   const { name, kind, binding, entity, signature, csdl, handle: own, fallback } = spec;
+  if (!addonOwnHandlers.has(api)) addonOwnHandlers.set(api, new Map());
+  addonOwnHandlers.get(api).set(name, Boolean(own));
   api.registry.register({
     name,
     kind,

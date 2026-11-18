@@ -1,3 +1,4 @@
+import { requiredArgument } from './required-argument.mjs';
 const SCRIPT_OR_STYLE_TYPES = new Set([
   'text/javascript',
   'application/javascript',
@@ -218,8 +219,11 @@ function staticResourceProof({ base, before, replacement, cdpRecords, origin, pa
 
 /** Reconcile missing browser final events without claiming response consumption. */
 export function reconcileSupersededRead(
-  request,
-  { cdpRecords, audit, origin, identity, frameEvents = [], currentFrames = [] },
+  request = requiredArgument('reconcileSupersededRead(request, options)', 'a recorded request'),
+  { cdpRecords, audit, origin, identity, frameEvents = [], currentFrames = [] } = requiredArgument(
+    'reconcileSupersededRead(request, options)',
+    'an options object with cdpRecords',
+  ),
 ) {
   if (!['GET', 'HEAD'].includes(request.method) || request.completedAt || request.failure || request.stream)
     return null;

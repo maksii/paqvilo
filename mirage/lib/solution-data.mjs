@@ -1,3 +1,4 @@
+import { requiredArgument } from './required-argument.mjs';
 import { applyCustomColumns } from './dataverse-custom-columns.mjs';
 import { reconcilePermissionDiagnostics, compactBuiltinPresets } from './data.mjs';
 import { scanSolutionSources, buildSolutionSchema, tableFields, tableColumnDefaults } from './solution-schema.mjs';
@@ -304,8 +305,8 @@ const fieldsWithoutProvenance = (schema, name) => tableFields(schema, name, { pr
  * and `schemaComplete`) for Web API attribute validation.
  */
 export function applySolutionData(
-  state,
-  metadata,
+  state = requiredArgument('applySolutionData(state, metadata)', 'a runtime state'),
+  metadata = requiredArgument('applySolutionData(state, metadata)', 'the importSolutionData result'),
   { webApiTables, environmentVariables, connectionReferences, presetLibrary, owned = false } = {},
 ) {
   const input = {
@@ -356,13 +357,15 @@ export function applySolutionData(
     ...(Object.keys(seeded).length ? { seededRows: seeded } : {}),
     ...(relationshipsTaken.length ? { relationshipMappings: relationshipsTaken } : {}),
   };
-  // Solution diagnostics describe the current layers only; earlier imports are replaced.
+  // Solution diagnostics describe the current layers only; earlier imports are replaced: a stored finding this apply
+  // reports again (a re-applied layer's connector or inventory warning) is the earlier import's copy of it.
+  const current = [...importDiagnostics, ...metadata.diagnostics];
+  const reported = new Set(current.map((d) => JSON.stringify(d)));
   result.simulator.importDiagnostics = [
     ...(result.simulator.importDiagnostics ?? []).filter(
-      (d) => !resolved.has(d.id) && !String(d.code ?? '').startsWith('SOLUTION_'),
+      (d) => !resolved.has(d.id) && !String(d.code ?? '').startsWith('SOLUTION_') && !reported.has(JSON.stringify(d)),
     ),
-    ...importDiagnostics,
-    ...metadata.diagnostics,
+    ...current,
   ];
   applyPresetMappings(result.presets, metadata.mappings);
   return reconcilePermissionDiagnostics(applyCustomColumns(result));

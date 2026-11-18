@@ -185,6 +185,7 @@ const TABLE_DEFS = {
       isduplicatedetectionenabled: BOOL,
       localeid: INT,
       languagecode: INT,
+      fullnameconventioncode: INT,
     },
   },
   businessunit: {
@@ -353,13 +354,18 @@ function ownershipKind(value) {
   return undefined;
 }
 
-/** 'user' | 'org'. Table object ownership, then mapping ownership, then an ownerid field marks user-owned. */
+/**
+ * 'user' | 'org'. Table object ownership, then mapping ownership, then an ownerid field marks user-owned, then the
+ * standard table reference (account, contact: UserOwned) for a standard table whose Solution export declares neither.
+ */
 export function ownershipOf(logical, table, mapping) {
   if (TABLE_DEFS[logical]) return 'org';
   return (
     ownershipKind(table?.ownership) ??
     ownershipKind(mapping?.ownership) ??
-    (Object.hasOwn(mapping?.fields ?? {}, 'ownerid') ? 'user' : 'org')
+    (Object.hasOwn(mapping?.fields ?? {}, 'ownerid') ? 'user' : undefined) ??
+    ownershipKind(standardTableDef(logical)?.ownershipType) ??
+    'org'
   );
 }
 
@@ -462,8 +468,10 @@ const INTERSECT_PARENT = {
   transformationparametermapping: 'importmap',
   msdyn_aiconfiguration: 'msdyn_aimodel',
 };
-// Timezone tables are platform reads open to every enabled user without a privilege (assumed; not documented).
-const PUBLIC_READ = new Set(['timezonedefinition', 'timezonerule', 'timezonelocalizedname']);
+// Timezone tables are platform reads open to every enabled user without a privilege (assumed; not documented). The
+// privilege catalogue declares no privileges of its own (EntityDefinitions: OwnershipType None, Privileges []) and no parent
+// gates it, so the platform has no privilege to demand for reading it; writes stay refused.
+const PUBLIC_READ = new Set(['timezonedefinition', 'timezonerule', 'timezonelocalizedname', 'privilege']);
 // Customer addresses follow their parent account or contact (objecttypecode). Without a row (create, lists) either parent's privilege passes.
 // ponytail: create (no row) checks either parent's privilege, not the body's parent; records would need to pass the body to narrow it.
 const FOLLOWS_PARENT = new Set(['activityparty', 'customeraddress']);
@@ -1044,6 +1052,8 @@ function seedSecurity(store, settings, schema) {
     isduplicatedetectionenabled: settings.duplicateDetection !== false,
     localeid: settings.localeId ?? 1033,
     languagecode: settings.localeId ?? 1033,
+    // The full name order (dataverse-person-name.mjs); the observed environment reports 1, First Name.
+    fullnameconventioncode: 1,
   });
   insertMissing(rowsOf(store, 'businessunit'), 'businessunitid', {
     businessunitid: root,
@@ -2109,6 +2119,12 @@ export function createPrincipals(store, settings = {}) {
           .filter(([name]) => callerMap.has(name))
           .map(([name, depth]) => [name, Math.min(depth, callerMap.get(name))]),
       );
+    },
+
+    /** The 403 privilege refusal for `user`, stating the user's own role and privilege counts and the table's object type code. */
+    deniedError(user, name, logical) {
+      requireSubject(user);
+      return privilegeDenied(idx(), settings, user, logical, name);
     },
 
     businessUnitChain(businessUnitId) {

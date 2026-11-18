@@ -96,7 +96,7 @@ export const PLATFORM_SETTINGS = Object.freeze([
       type,
       defaultValue: null,
       access: 'Organization setting',
-      coverage: 'Catalogue only; behavior not simulated',
+      coverage: 'Catalogue only; behaviour not simulated',
       source: organization,
       description:
         'Feature-documented organization option. Stored and reported for scenario provenance; changing it does not invent the associated service.',

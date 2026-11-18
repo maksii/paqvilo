@@ -1,10 +1,11 @@
 import { connectRuntime } from './runtime.mjs';
 import { createPortalSession } from './sessions.mjs';
+import { requiredArgument } from '../lib/required-argument.mjs';
 
-async function launch(options) {
+async function launch(options, call) {
   const { origin, config, site, fetchImpl, personaKey, scenario, instanceKey, returnUrl } = options;
-  if (!personaKey && !scenario) throw new Error('Choose personaKey or scenario');
-  if (personaKey && scenario) throw new Error('Choose either personaKey or scenario');
+  if (!personaKey && !scenario) requiredArgument(call, 'personaKey or scenario');
+  if (personaKey && scenario) throw new Error(`${call} requires either personaKey or scenario, not both.`);
   const parent = await connectRuntime({
     origin,
     config,
@@ -25,7 +26,7 @@ async function launch(options) {
  * returned client uses the actual context origin, never a hard-coded port.
  * close() ends only this visitor; context disposal is an explicit parent API. */
 export async function createPersonaSession(options = {}) {
-  const { opened, description } = await launch(options);
+  const { opened, description } = await launch(options, 'createPersonaSession(options)');
   const client = await createPortalSession({ ...options, origin: opened.origin, contactId: opened.contactId });
   return Object.freeze({ ...client, persona: description });
 }
@@ -33,8 +34,11 @@ export async function createPersonaSession(options = {}) {
 /** Creates a fresh Playwright BrowserContext with declared locale, time zone,
  * viewport and colour scheme, then installs the local identity cookie. Caller
  * owns context.close(); shared runtimes live until explicitly stopped. */
-export async function createPersonaBrowserContext(browser, options = {}) {
-  const { opened, description } = await launch(options);
+export async function createPersonaBrowserContext(
+  browser = requiredArgument('createPersonaBrowserContext(browser, options)', 'a Playwright browser'),
+  options = {},
+) {
+  const { opened, description } = await launch(options, 'createPersonaBrowserContext(browser, options)');
   const context = await browser.newContext({ ...opened.browser, ...options.browserOptions });
   try {
     const separator = opened.cookieHeader.indexOf('=');

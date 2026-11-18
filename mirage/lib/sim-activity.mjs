@@ -9,7 +9,8 @@ import { exportedTraceIds, otlpSpan, writeChunk } from './sim-trace-routes.mjs';
 const LOG_LIMIT = 500;
 const LOG_LIMIT_MAX = 50_000;
 const REFS_MAX = 100;
-const LOG_TYPE = /^[a-z][a-z-]{0,39}$/;
+/** The types of a log line (server.mjs publishLog), the values the logs `type` filter accepts. */
+const LOG_TYPES = Object.freeze(['startup', 'request', 'liquid', 'data', 'plugin', 'diagnostic', 'reload']);
 const SOURCE_REF = /^[\w:.-]{1,256}$/;
 // Query keys that shape an export without filtering what it matches.
 const SHAPING = new Set(['format', 'traces', 'limit', 'page', 'pageSize', 'order', 'sort']);
@@ -35,9 +36,14 @@ export function logPage(lines, query, { retain, latest, dropped }) {
     .split(',')
     .map((type) => type.trim())
     .filter(Boolean);
-  const bad = types.find((type) => !LOG_TYPE.test(type));
+  const bad = types.find((type) => !LOG_TYPES.includes(type));
   if (bad !== undefined)
-    throw refused(400, 'InvalidLogFilter', `type names a log line type (got ${JSON.stringify(bad)}).`, 'type');
+    throw refused(
+      400,
+      'InvalidLogFilter',
+      `type must be one of ${LOG_TYPES.join(', ')} (got ${JSON.stringify(bad)}).`,
+      'type',
+    );
   const traceId = query.get('traceId')?.trim() || null;
   const matching = lines.filter(
     (line) =>

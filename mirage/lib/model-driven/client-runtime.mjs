@@ -251,7 +251,10 @@ export function batchResponses(body, boundary) {
  * change set (all or nothing). Unknown operations answer the organization's own 404 error. */
 export function createWebApiExecute(host, assertLive = () => {}) {
   const tableOf = (entity) => {
-    const table = host.tables?.[entity];
+    // The caller's usersettings row is served by the organization (staff-session.mjs) without an imported table.
+    const table =
+      host.tables?.[entity] ??
+      (entity === 'usersettings' ? { entitySet: 'usersettingscollection', idColumn: 'systemuserid' } : undefined);
     if (!table?.entitySet) throw executeError(`Xrm.WebApi.execute: table ${entity} is not imported.`, 400);
     return table;
   };
@@ -456,7 +459,23 @@ export function createWebApiExecute(host, assertLive = () => {}) {
     for (const item of requests) results.push(...(Array.isArray(item) ? await changeSet(item) : [await execute(item)]));
     return results;
   }
-  return { execute, executeMultiple, toHttp };
+  // The caller's own usersettings row is served by the organization (staff-session.mjs), not by an imported table:
+  // the record methods reach it through the same Web API bridge as execute, which refuses another user's row.
+  async function userSettings(id, { method = 'GET', options = '', data } = {}) {
+    if (typeof host.webApi !== 'function')
+      throw executeError('Xrm.WebApi usersettings needs the host Web API bridge.', 501, 'WebApiExecuteUnavailable');
+    if (!/^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/.test(bareId(id)))
+      throw executeError('Xrm.WebApi usersettings needs the systemuserid of the row.', 400);
+    if (data !== undefined && (!data || typeof data !== 'object' || Array.isArray(data)))
+      throw executeError('Xrm.WebApi.updateRecord needs a data object.', 400);
+    const http = {
+      method,
+      path: `${API_ROOT}/usersettingscollection(${bareId(id)})${options}`,
+      ...(data === undefined ? {} : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(data) }),
+    };
+    return response(http, await send(http));
+  }
+  return { execute, executeMultiple, toHttp, userSettings };
 }
 
 /** Validated Xrm.Navigation.navigateTo input. entityrecord, entitylist and
@@ -1385,11 +1404,13 @@ export function createFormClientRuntime(hostInput) {
     assertLive();
     return result;
   };
+  const ownUserSettings = (entity) => entity === 'usersettings' && !Object.hasOwn(host.tables ?? {}, entity);
   const onlineWebApi = client(
     {
       retrieveRecord: async (entity, id, options = '') => {
         if (typeof options !== 'string' || (options && !options.startsWith('?')))
           throw new Error('Xrm.WebApi query options must start with ?.');
+        if (ownUserSettings(entity)) return (await operations.userSettings(id, { options })).json();
         return request(entity, id, { query: { scope: 'odata', options } });
       },
       retrieveMultipleRecords: async (entity, options = '', maxPageSize) => {
@@ -1418,6 +1439,10 @@ export function createFormClientRuntime(hostInput) {
         return { id: result.row[host.tables[entity].idColumn], entityType: entity };
       },
       updateRecord: async (entity, id, data) => {
+        if (ownUserSettings(entity)) {
+          await operations.userSettings(id, { method: 'PATCH', data });
+          return { id, entityType: entity };
+        }
         if (host.metadata) await prepareTable(entity);
         const values = writeData(data, host.tables[entity], host.tables);
         const current = await request(entity, id);

@@ -1,7 +1,7 @@
 import { parseDataverseDecimalString } from './dataverse-decimal-input.mjs';
-import { readFile, mkdir, rename, open, unlink, rm } from 'node:fs/promises';
+import { mkdir, rename, rm } from 'node:fs/promises';
 import { dirname, join, resolve, basename } from 'node:path';
-import { randomUUID, createHash } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { isDeepStrictEqual, types as utilTypes } from 'node:util';
 import { cloneStateData } from './state-clone.mjs';
@@ -36,6 +36,13 @@ import { customerAddressColumns, relationshipsOf, standardTableDef } from './dat
 import { ownershipOf, traceDecision } from './dataverse-security.mjs';
 import { countWork, trackWork, workOf } from './work-counter.mjs';
 import { StateStorage } from './state-storage.mjs';
+import {
+  lockCompanion,
+  recoverWriterLock,
+  releaseWriterLock,
+  takeWriterLock,
+  writerLockBusyMessage,
+} from './transactional-files.mjs';
 import { RowTransaction, validateRowIndex, assignRowValues } from './row-transaction.mjs';
 import {
   LazyBackup,
@@ -1427,8 +1434,13 @@ export class DataStore {
     ids = systemIds,
     unpublished = false,
     ownedState = false,
+    // Receives a WRITER_LOCK_RECLAIMED diagnostic whenever the state file's lock, left by a writer that has ended, is
+    // reclaimed; each is also kept in lockRecoveries.
+    onLockRecovery = null,
   } = {}) {
     this.file = file;
+    this.onLockRecovery = onLockRecovery;
+    this.lockRecoveries = [];
     // The record pipeline's time and GUID source (runtime-clock.mjs); createOrganizationRuntime shares it with its API.
     this.clock = clock;
     this.ids = ids;
@@ -1522,6 +1534,8 @@ export class DataStore {
     }
     if (this.file) {
       this.ensureStorage();
+      // A lock left by a writer that has ended is reclaimed (and reported) at start; any other lock stays.
+      await recoverWriterLock(this.file, { onReclaim: (entry) => this.reportLockRecovery(entry) });
       try {
         if (restoredState !== undefined) {
           if (!(restoredStorage instanceof StateStorage) || restoredStorage.file !== this.file)
@@ -1851,29 +1865,18 @@ export class DataStore {
         return this.#saveState(selectedState);
       }
     }
-    const lockPath = `${this.file}.lock`,
-      lockToken = `${process.pid}:${randomUUID()}`,
-      temp = `${this.file}.${randomUUID()}.tmp`;
-    let lockHandle;
+    // The writer lock (transactional-files.mjs) names this process; a lock whose writer has ended is reclaimed first.
+    let lock, temp;
     let writeFailed = false;
     let writeFailure;
     let cleanupFailure;
     try {
       await (async () => {
-        try {
-          lockHandle = await open(lockPath, 'wx', 0o600);
-        } catch (error) {
-          if (error.code === 'EEXIST')
-            throw new DataError(
-              'Local state is being written by another process; retry after it finishes',
-              409,
-              'StateConflict',
-            );
-          throw error;
-        }
-        await lockHandle.writeFile(`${lockToken}\n`);
-        await lockHandle.close();
-        lockHandle = null;
+        const taken = await takeWriterLock(this.file, { onReclaim: (entry) => this.reportLockRecovery(entry) });
+        if (taken.busy) throw new DataError(writerLockBusyMessage(taken.busy), 409, 'StateConflict');
+        lock = taken;
+        // Named by the lock's owner, so a reclaim of this lock discards exactly this unpublished checkpoint.
+        temp = lockCompanion(this.file, lock.owner, 'tmp');
 
         await this.storage.assertUnchanged();
         const initialization = transactionFrameOf(this);
@@ -1911,15 +1914,14 @@ export class DataStore {
       writeFailed = true;
       writeFailure = error;
     } finally {
-      if (lockHandle) await lockHandle.close().catch(() => {});
-      await rm(temp, { force: true }).catch(() => {});
-      // Remove only the lock this save created. Never infer staleness or
-      // delete a lock owned by another process.
-      try {
-        if ((await readFile(lockPath, 'utf8')) === `${lockToken}\n`) await unlink(lockPath);
-      } catch (error) {
-        if (error.code !== 'ENOENT') cleanupFailure = error;
-      }
+      if (temp) await rm(temp, { force: true }).catch(() => {});
+      // Remove only the lock this save created; another process's lock is never removed here.
+      if (lock)
+        try {
+          await releaseWriterLock(this.file, lock);
+        } catch (error) {
+          cleanupFailure = error;
+        }
     }
     if (writeFailed && cleanupFailure) {
       throw new AggregateError([writeFailure, cleanupFailure], 'Local state save and lock cleanup failed', {
@@ -1928,6 +1930,14 @@ export class DataStore {
     }
     if (writeFailed) throw writeFailure;
     if (cleanupFailure) throw cleanupFailure;
+  }
+  reportLockRecovery(entry) {
+    this.lockRecoveries.push(entry);
+    try {
+      this.onLockRecovery?.(entry);
+    } catch {
+      /* observer only */
+    }
   }
   recordSave(durationMs, mode) {
     this.lastSave = { durationMs: Math.round(durationMs * 100) / 100, mode };
@@ -2414,20 +2424,12 @@ export class DataStore {
       this.recordGarbageCollection = { skipped: 'directory-identity' };
       return this.recordGarbageCollection;
     }
-    const lockPath = this.file ? this.file + '.lock' : null,
-      token = `${process.pid}:${randomUUID()}\n`;
     let lock;
     try {
-      if (lockPath) {
-        try {
-          lock = await open(lockPath, 'wx', 0o600);
-        } catch (error) {
-          if (error.code === 'EEXIST') return { skipped: 'active-writer' };
-          throw error;
-        }
-        await lock.writeFile(token);
-        await lock.close();
-        lock = null;
+      if (this.file) {
+        const taken = await takeWriterLock(this.file, { onReclaim: (entry) => this.reportLockRecovery(entry) });
+        if (taken.busy) return { skipped: 'active-writer' };
+        lock = taken;
         await this.storage.assertUnchanged();
       }
       const encoded = encodeRecordReferences({ op: 'section', key: 'state', value: this.state });
@@ -2442,12 +2444,11 @@ export class DataStore {
       this.recordCleanupError = error;
       return { skipped: 'collection-failed', code: error.code ?? 'RecordCleanup' };
     } finally {
-      await lock?.close().catch(() => {});
-      if (lockPath)
+      if (lock)
         try {
-          if ((await readFile(lockPath, 'utf8')) === token) await unlink(lockPath);
+          await releaseWriterLock(this.file, lock);
         } catch (error) {
-          if (error.code !== 'ENOENT') this.recordCleanupError = error;
+          this.recordCleanupError = error;
         }
     }
   }
@@ -3370,7 +3371,7 @@ export class DataStore {
       );
   }
   /**
-   * The lowercase names a table filter value stands for (DV-N4-2): the logical name and the entity set name of the mapped
+   * The lowercase names a table filter value stands for: the logical name and the entity set name of the mapped
    * table it names either way (any case), else the value itself.
    */
   entityNames(name) {
@@ -6990,18 +6991,26 @@ export class DataStore {
       ...(options.omitConcurrencyBehavior ? { omitConcurrencyBehavior: true } : {}),
     });
   }
-  async applyPreset(name, { generatedPresets = this.presetLibrary, returnSnapshot = true } = {}) {
+  /** startup: the tables a declared pack DATA file owns keep the file's rows (pack DATA is authoritative at startup). */
+  async applyPreset(name, { generatedPresets = this.presetLibrary, returnSnapshot = true, startup = false } = {}) {
     const preset = resolvePreset(this.state, name, generatedPresets, this.recordContext());
     if (!preset) throw new DataError(`Unknown preset ${name}`, 404);
     if (preset.personaCatalog !== undefined) validatePersonaCatalog(preset.personaCatalog, `Preset ${name}`);
-    return this.transact(
-      () => {
-        applyPresetSections(this.state, preset, { owned: true });
-        this.state = normalizeState(this.state, this.presetLibrary, this.platformConfig, true);
-        return returnSnapshot ? this.state : undefined;
-      },
-      { cloneResult: returnSnapshot },
-    );
+    const owned = startup ? this.storageAdapter?.dataOwned : null;
+    const transaction = () =>
+      this.transact(
+        () => {
+          const fileRows = owned ? Object.entries(this.state.tables ?? {}).filter(([table]) => owned(table)) : [];
+          applyPresetSections(this.state, preset, { owned: true });
+          if (fileRows.length) this.state.tables ??= {};
+          for (const [table, rows] of fileRows) this.state.tables[table] = rows;
+          this.state = normalizeState(this.state, this.presetLibrary, this.platformConfig, true);
+          return returnSnapshot ? this.state : undefined;
+        },
+        { cloneResult: returnSnapshot },
+      );
+    // A preset's table mappings are declared schema, accepted at every simulation level (simulation-persistence.mjs).
+    return this.storageAdapter ? this.storageAdapter.presetApplication(transaction) : transaction();
   }
   /**
    * Evaluate FetchXML for an identity. options.profile "webapi" applies the
@@ -7430,7 +7439,7 @@ export class DataStore {
 
 function boundedInt(value, name) {
   const n = Number(value);
-  if (!Number.isSafeInteger(n) || n < 0) throw new DataError(`${name} must be a nonnegative integer`);
+  if (!Number.isSafeInteger(n) || n < 0) throw new DataError(`${name} must be a non-negative integer`);
   return n;
 }
 function project(row, select) {

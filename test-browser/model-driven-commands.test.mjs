@@ -1,3 +1,4 @@
+// @test-kind contract: model-driven custom commands and the identity preflight are Paqvilo's own designed behaviour on invented loopback pages.
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -114,12 +115,14 @@ test('explicit custom commands await async results, keep values browser-only and
 });
 
 test('identity preflight requires the exact native privilege and one enabled server user; no roles-name bypass', async (t) => {
-  let reads = 0;
+  let reads = 0,
+    eligibility = '';
   const objectId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
   const server = http.createServer((request, response) => {
     if (request.url.startsWith('/api/')) {
       reads++;
       assert.match(request.url, /systemusers/);
+      eligibility = new URL(request.url, 'http://invented.invalid').searchParams.get('$filter');
       response
         .writeHead(200, { 'content-type': 'application/json' })
         .end(JSON.stringify({ value: [{ azureactivedirectoryobjectid: objectId, fullname: 'Invented delegate' }] }));
@@ -151,6 +154,13 @@ test('identity preflight requires the exact native privilege and one enabled ser
       },
     };
     window.privileges = {};
+    // The native app wraps fetch and reads its first argument as a string (observed: "a.indexOf is not a function"
+    // for a URL object); this fixture wrapper does the same.
+    const nativeFetch = window.fetch;
+    window.fetch = (input, init) => {
+      if (input.indexOf('/api/') < 0) throw new Error('unexpected request');
+      return nativeFetch(input, init);
+    };
     window.Xrm = {
       Utility: {
         getGlobalContext: () => ({
@@ -172,6 +182,9 @@ test('identity preflight requires the exact native privilege and one enabled ser
   });
   assert.equal(await page.evaluate(verifyModelDrivenIdentity, input), true);
   assert.equal(reads, 1);
+  // Dataverse impersonates application users too (observed live: createdby is the application user), so only an
+  // enabled user with this exact directory object ID is required.
+  assert.equal(eligibility, `azureactivedirectoryobjectid eq ${objectId} and isdisabled eq false`);
   assert.equal(
     await page.evaluate(() => document.getElementById('paqvilo-model-inspector').__paqModelIdentityLabel),
     'Invented delegate',

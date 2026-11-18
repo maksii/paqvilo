@@ -4,7 +4,13 @@ import path from 'node:path';
 
 // Only pinned npm's typed in-process lifecycle is progress. Console text is never an admission.
 process.once('disconnect', () => process.exit(1));
-if (!process.connected) throw new Error('Audit observer requires its owning parent.');
+// Run directly (with --help or anything else) there is no parent: one line says what to run, before any work.
+if (!process.connected) {
+  console.error(
+    'audit-observer.mjs is not an entry point: scripts/audit-process.mjs loads it into npm with --import. Run npm run audit:dependencies instead.',
+  );
+  process.exit(1);
+}
 const config = await new Promise((resolve) => process.once('message', resolve));
 if (config?.v !== 1 || typeof config.nonce !== 'string' || config.nonce.length !== 64)
   throw new Error('Missing audit observer configuration.');

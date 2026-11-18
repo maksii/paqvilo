@@ -47,7 +47,10 @@ export async function runSetup(args) {
     if (entries.some((item) => typeof item === 'string' && !item.trim()))
       throw new Error(`--${key} must not be empty or whitespace`);
   }
-  if (values.config && values.project) throw new Error('Select --config or --project.');
+  if (values.config && values.project)
+    throw new Error(
+      `--config ${values.config} and --project ${values.project} are alternatives; select one: --config for a catalogue or --project for a standalone Mirage project.`,
+    );
   if (values.port !== undefined && (!/^\d+$/.test(values.port) || Number(values.port) > 65535))
     throw new Error('--port must be an integer between 0 and 65535');
   const server = await startSetupServer({
@@ -67,7 +70,9 @@ export async function runSetup(args) {
         ? JSON.stringify({
             schemaVersion: 1,
             url: server.url,
+            // config names the project file too, as before; project names it accurately.
             config: values.config ?? values.project ?? './paqvilo.config.yml',
+            ...(values.project ? { project: values.project } : {}),
           })
         : `setup       ${server.url}\nLocal project configuration. Ctrl+C to stop.`,
     );

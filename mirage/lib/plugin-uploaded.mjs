@@ -1,6 +1,6 @@
 // Registered plug-in assemblies whose bytes were uploaded through the registration API (pluginassembly.content, directly or
 // from a pluginpackage) run in the CLR host by default, as the platform runs registered plug-ins (user decision C08, docs:
-// mirage/docs/dataverse-plugins.md "Uploaded assemblies run like native"). The runtime is built from the stored bytes only:
+// mirage/docs/dataverse-plugins.md "Uploaded assemblies run by default"). The runtime is built from the stored bytes only:
 // the assembly and, for a package, the other lib/ assemblies of the same target framework are written into an owned
 // directory under the cache root, next to the toolchain's Microsoft.Xrm.Sdk.dll, and the host is compiled there
 // (plugin-clr.mjs buildClrRuntime). Nothing else is loaded. A step whose assembly cannot be loaded fails the way a

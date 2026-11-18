@@ -1485,3 +1485,39 @@ describe('dataverse API change tracking and shares inside batches', () => {
     assert.equal((await expired.json()).error.code, '0x80044352');
   });
 });
+
+// @test-kind contract: a runtime host supplies its organization; the listener reports refusals to that organization's log
+describe('Dataverse API on a supplied organization', () => {
+  it('logs an unknown application token request to the organization log', async () => {
+    const { createOrganizationRuntime } = await import('../lib/dataverse-organization.mjs');
+    const store = await new DataStore({ state: emptyState() }).init();
+    const lines = [];
+    const settings = dataverseSettings({ enabled: true, port: 0, tds: { enabled: false } });
+    const organization = await createOrganizationRuntime({
+      store,
+      settings,
+      log: (message, details) => lines.push({ message, details }),
+    });
+    const api = await startDataverseApi({ organization, host: '127.0.0.1' });
+    try {
+      const response = await fetch(`${api.origin}/${api.tenantId}/oauth2/v2.0/token`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          grant_type: 'client_credentials',
+          client_id: '99999999-0000-4000-8000-000000000001',
+          client_secret: 'invented',
+          scope: `${api.origin}/.default`,
+        }),
+      });
+      assert.equal(response.status, 400);
+      const refused = lines.find((line) => line.message === 'dataverse token refused: unknown application');
+      assert.ok(refused, 'the refusal reaches the organization log');
+      assert.equal(refused.details.clientId, '99999999-0000-4000-8000-000000000001');
+      assert.equal(JSON.stringify(lines).includes('invented'), false);
+    } finally {
+      await api.close();
+      await organization.close();
+    }
+  });
+});

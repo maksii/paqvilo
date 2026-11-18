@@ -193,6 +193,82 @@ export function parseRollupFormula(text) {
   return rule;
 }
 
+// ---- Companion columns
+
+const INTEGER_RANGE = { minValue: -2147483648, maxValue: 2147483647 };
+const relabel = (labels, text) =>
+  Object.fromEntries(Object.entries(labels ?? {}).map(([lcid, label]) => [lcid, text(label)]));
+// One companion as the platform creates it: labels and descriptions derive from the rollup column's display name.
+function companion(column, { suffix, label, description, dataverseType, facts: extra, field }) {
+  const schemaName = `${column.schemaName ?? column.name}_${suffix}`;
+  return {
+    dataverseType,
+    validForCreate: false,
+    validForUpdate: false,
+    validForRead: true,
+    schemaName,
+    ...field,
+    columnMetadata: {
+      type: dataverseType,
+      schemaName,
+      labels: relabel(column.labels, (text) => `${text} (${label})`),
+      descriptionLabels: relabel(column.labels, description),
+      validForCreate: false,
+      validForUpdate: false,
+      validForRead: true,
+      sourceType: 0,
+      ...(column.isCustomField === undefined ? {} : { isCustomField: column.isCustomField }),
+      ...(column.customTable === undefined ? {} : { customTable: column.customTable }),
+      ...extra,
+    },
+    dataverseMetadata: {
+      FormulaDefinition: null,
+      CanBeSecuredForRead: false,
+      CanBeSecuredForCreate: false,
+      CanBeSecuredForUpdate: false,
+    },
+  };
+}
+
+/**
+ * The field definitions with the platform companions of every rollup column (SourceType 2): <column>_date (DateTime,
+ * UserLocal) and <column>_state (Integer), read-only simple columns. Solution exports do not list them; a declared
+ * companion keeps its own facts over these. A row that holds no companion value (it predates the column or comes from a
+ * data pack) reads null, as a never-calculated row does natively; only a row created through Mirage is stamped state 0.
+ */
+export function withRollupCompanions(fields) {
+  let result = fields;
+  for (const [name, definition] of Object.entries(fields ?? {})) {
+    const column = { name, ...facts(definition) };
+    if (Number(enumValue(column.sourceType ?? column.SourceType)) !== ROLLUP) continue;
+    if (result === fields) result = { ...fields };
+    const generated = {
+      [`${name}_date`]: companion(column, {
+        suffix: 'Date',
+        label: 'Last Updated On',
+        description: (text) => `Last Updated time of rollup field ${text}.`,
+        dataverseType: 'datetime',
+        facts: { format: 'datetime', imeMode: 'inactive' },
+        field: { dateTimeBehavior: 'UserLocal' },
+      }),
+      [`${name}_state`]: companion(column, {
+        suffix: 'State',
+        label: 'State',
+        description: (text) => `State of rollup field ${text}.`,
+        dataverseType: 'int',
+        facts: { format: 'none', ...INTEGER_RANGE },
+      }),
+    };
+    for (const [key, value] of Object.entries(generated)) {
+      const declared = fields[key];
+      result[key] = declared
+        ? { ...value, ...declared, columnMetadata: { ...value.columnMetadata, ...declared.columnMetadata } }
+        : value;
+    }
+  }
+  return result;
+}
+
 // ---- Aggregation
 
 const asNumber = (value) => {

@@ -150,6 +150,7 @@ test('Actions groups, reasons, label-only favorites, inert results, responsive l
   const { page, update, errors } = await fixture(t);
   await page.getByRole('tab', { name: 'Actions', exact: true }).click();
   await page.getByRole('button', { name: 'Favorite Read values', exact: true }).click();
+  await page.getByText('Not available here (1)', { exact: true }).click();
   await page.getByRole('button', { name: /^Open table/ }).click();
   assert.equal(await page.getByRole('button', { name: 'Run action', exact: true }).isDisabled(), true);
   assert.equal(await page.getByText('Native navigation is unavailable.', { exact: true }).last().isVisible(), true);
@@ -293,7 +294,7 @@ test('late native operation errors replace only the current completed result and
       .__paqModelActions.followup(window.firstResultId, { status: 'error', message: 'OLD_RESULT_MUST_NOT_REPLACE' }),
   );
   assert.equal(await page.getByText('OLD_RESULT_MUST_NOT_REPLACE', { exact: true }).count(), 0);
-  await page.getByRole('button', { name: 'Clear', exact: true }).click();
+  await page.getByRole('button', { name: 'Dismiss result', exact: true }).click();
   await page.evaluate(() =>
     document.getElementById('paqvilo-panel').__paqModelActions.followup(window.uiRequests.at(-1).requestId, {
       status: 'error',
@@ -422,5 +423,83 @@ test('Custom commands retain drafts and caret, import without execution, run asy
   await page.waitForFunction(() => window.importExecuted === true);
   await page.evaluate(() => document.getElementById('paqvilo-panel').__paqModelInspector.dispose());
   assert.equal(await page.locator('#paqvilo-panel').count(), 0);
+  assert.deepEqual(errors, []);
+});
+
+test('a selected action opens under its row, its result offers the paired reversal and Dismiss, and unavailable actions stay collapsed', async (t) => {
+  const { page, update, errors } = await fixture(t);
+  const actions = [
+    ...update.actions,
+    { id: 'form:show-logical-names', label: 'Logical names', group: 'Inspect', description: 'Show names.', inputs: [] },
+    {
+      id: 'form:clear-logical-names',
+      label: 'Clear logical names',
+      group: 'Inspect',
+      description: 'Remove.',
+      inputs: [],
+    },
+    { id: 'form:record-id', label: 'Record ID', group: 'Inspect', description: 'Saved record GUID.', inputs: [] },
+  ];
+  await page.evaluate(modelDrivenActionsUi, {
+    ...update,
+    actions,
+    availability: actions.map((action) => ({
+      id: action.id,
+      available: !['open', 'form:record-id'].includes(action.id),
+      reason: action.id === 'form:record-id' ? 'Save the record first; this form has no saved record yet.' : 'No.',
+    })),
+  });
+  await page.getByRole('tab', { name: 'Actions', exact: true }).click();
+  // Unavailable actions are gathered in one collapsed group instead of mixing with what works on this page.
+  assert.equal(await page.getByText('Not available here (2)', { exact: true }).isVisible(), true);
+  assert.equal(await page.getByRole('button', { name: /^Record ID/ }).isVisible(), false);
+  await page.getByRole('button', { name: /^Logical names/ }).click();
+  const placement = await page.locator('#paqvilo-panel').evaluate((host) => {
+    const root = host.shadowRoot,
+      row = [...root.querySelectorAll('.actions-item')].find((node) => node.textContent.startsWith('Logical names')),
+      run = [...root.querySelectorAll('button')].find((node) => node.textContent === 'Run action');
+    return {
+      adjacent: row.nextElementSibling?.contains(run) === true,
+      gap: run.getBoundingClientRect().top - row.getBoundingClientRect().bottom,
+    };
+  });
+  assert.equal(placement.adjacent, true, 'the action form follows the clicked row');
+  assert.ok(placement.gap >= 0 && placement.gap < 120, `Run action sits under the clicked row (gap ${placement.gap})`);
+  await page.getByRole('button', { name: 'Run action', exact: true }).click();
+  await page.getByRole('heading', { name: 'Invented result', exact: true }).waitFor();
+  assert.equal(
+    await page.locator('.actions-item + .actions-inline .actions-result h3').textContent(),
+    'Invented result',
+    'the result appears with the action that produced it',
+  );
+  await page.locator('.actions-result').getByRole('button', { name: 'Clear logical names', exact: true }).click();
+  await page.waitForFunction(() => window.uiRequests.at(-1)?.action === 'form:clear-logical-names');
+  await page.getByRole('heading', { name: 'Invented result', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Dismiss result', exact: true }).click();
+  assert.equal(await page.locator('.actions-result').isVisible(), false);
+  assert.equal(await page.locator('.actions-status').textContent(), '');
+  await page.getByText('Not available here (2)', { exact: true }).click();
+  await page.getByRole('button', { name: /^Record ID/ }).click();
+  assert.equal(await page.getByRole('button', { name: 'Run action', exact: true }).isDisabled(), true);
+  assert.deepEqual(errors, []);
+});
+
+test('a result stays in the view that ran it and does not follow to Identity or Custom', async (t) => {
+  const { page, errors } = await fixture(t);
+  await page.getByRole('tab', { name: 'Actions', exact: true }).click();
+  await page.getByRole('button', { name: /^Read values/ }).click();
+  await page.getByRole('button', { name: 'Run action', exact: true }).click();
+  await page.getByRole('heading', { name: 'Invented result', exact: true }).waitFor();
+  const views = page.locator('#paqvilo-panel').getByRole('button', { name: 'Custom', exact: true });
+  await views.click();
+  assert.equal(
+    await page.locator('.actions-result').isVisible(),
+    false,
+    'the Custom view does not show the Actions result',
+  );
+  assert.equal(await page.locator('.actions-status').isVisible(), false);
+  await page.locator('#paqvilo-panel').getByRole('button', { name: 'Actions', exact: true }).last().click();
+  await page.getByRole('button', { name: /^Read values/ }).click();
+  assert.equal(await page.getByRole('heading', { name: 'Invented result', exact: true }).isVisible(), true);
   assert.deepEqual(errors, []);
 });

@@ -8,6 +8,8 @@ import { solutionWatchFilter } from '../../mirage/lib/solution-roots.mjs';
 import { standaloneMirageConfiguration } from '../standalone-mirage.mjs';
 import { startAgentServer } from '../agent-server.mjs';
 import { openBrowser, refreshDocument } from '../browser.mjs';
+import { logBrowserProfile } from './dev.mjs';
+import { devDialogs } from '../dev-dialogs.mjs';
 import { interceptOrigins } from '../intercept.mjs';
 import { createInspectionProvenanceTransport } from '../inspection-provenance-transport.mjs';
 import { startModelDrivenInspector } from '../model-driven-inspector.mjs';
@@ -188,9 +190,14 @@ function validateRunTimeout(args) {
 }
 
 export function validateModelDrivenArguments(args, action = 'dev') {
-  if (!['inspect', 'dev'].includes(action)) throw new Error('model-driven accepts inspect or dev.');
+  if (!['inspect', 'dev'].includes(action))
+    throw new Error(`Unknown model-driven action "${action}"; use inspect or dev.`);
   if (action === 'inspect') validateInspectOptions(args);
-  if (!args.project) throw new Error('model-driven requires --project with selected Solution sources.');
+  // The CLI runs dev when no action is named, so the message names the action it checked and the valid ones.
+  if (!args.project)
+    throw new Error(
+      `model-driven ${action} requires --project <file> with the selected Solution sources; actions: inspect, dev (default: dev).`,
+    );
   if (args.env && args.url) throw new Error('Choose --env or --url, not both.');
   if (action === 'dev') validateStartupTimeout(args);
   if (action === 'dev') validateRunTimeout(args);
@@ -220,6 +227,29 @@ export function modelDrivenEventPage(imported, args = {}) {
     ...page,
     ...(page.nextCursor ? { nextCursorToken: Buffer.from(JSON.stringify(page.nextCursor)).toString('base64url') } : {}),
   };
+}
+
+/** The text report of `model-driven inspect`: counts, the target and what needs attention; `--json` prints the rest. */
+export function modelDrivenInspectText(report) {
+  const events = report.clientEvents ?? {},
+    registrations = events.registrations?.length ?? 0;
+  const lines = [
+    `${report.resources.length} declared Solution resources; ${report.unbound.length} require exact native resource mappings.`,
+    `Target: ${report.selectedTarget} ${report.origin} (${report.targets.length} declared)${report.localSimulation ? ' · local simulation' : ''}`,
+    `Client event registrations: ${registrations}${events.complete === false ? ' (incomplete)' : ''}${events.truncated ? ' (more with --event-cursor)' : ''}`,
+  ];
+  if (report.unbound.length)
+    lines.push(
+      'Need a resource mapping (--resource-map):',
+      ...report.unbound.map((name) => `  ${typeof name === 'string' ? name : name.name}`),
+    );
+  const diagnostics = [...(report.diagnostics ?? []), ...(events.diagnostics ?? [])];
+  if (diagnostics.length)
+    lines.push('Diagnostics:', ...diagnostics.map((item) => `  ${item.code}: ${item.message ?? ''}`.trimEnd()));
+  if (!report.trustedExtensions)
+    lines.push('model-driven dev needs modelDriven.trustedExtensions: true in the project to run these sources.');
+  lines.push('Use --json for the full report.');
+  return lines.join('\n');
 }
 
 // The terminal names the one departure from a target origin (a sign-in or redirect) and its return, so a person
@@ -257,7 +287,7 @@ export async function closeStartup(deadline, progress) {
   progress?.close();
 }
 
-export default async function run(_cfg, args, [action = 'dev'] = []) {
+export default async function run(_cfg, args, [action = 'dev'] = [], { open = openBrowser } = {}) {
   validateModelDrivenArguments(args, action);
   const originalProgress = action === 'dev' ? (args.startup ?? startupProgress()) : null;
   const deadline = action === 'dev' ? startupDeadline(args['startup-timeout'], { clock: args.startupClock }) : null;
@@ -277,7 +307,7 @@ export default async function run(_cfg, args, [action = 'dev'] = []) {
     },
   };
   try {
-    return await runModelDriven(args, action, progress, deadline);
+    return await runModelDriven(args, action, progress, deadline, open);
   } catch (error) {
     progress?.fail(cleanError(error));
     throw error;
@@ -339,9 +369,9 @@ export async function closeModelDrivenResources(steps, onError) {
   return failures;
 }
 
-/* NOSONAR */ async function runModelDriven(args, action, progress, deadline) {
+/* NOSONAR */ async function runModelDriven(args, action, progress, deadline, open) {
   const startupWait = (work, disposeLate) => (deadline ? deadline.wait(work, disposeLate) : work);
-  progress?.phase('configuration');
+  // Start-up progress and its deadline both begin in the configuration phase; announcing it again printed it twice.
   const project = await startupWait(loadProjectConfig(args.project));
   const selection = modelDrivenTargets(project, args),
     selected = selection.selected;
@@ -379,11 +409,7 @@ export async function closeModelDrivenResources(steps, onError) {
       localSimulation: Boolean(args['local-simulation']),
       clientEvents: modelDrivenEventPage(imported, args),
     };
-    if (args.json) console.log(JSON.stringify(report));
-    else
-      console.log(
-        `${report.resources.length} declared Solution resources; ${report.unbound.length} require exact native resource mappings.\n${JSON.stringify(report, null, 2)}`,
-      );
+    console.log(args.json ? JSON.stringify(report) : modelDrivenInspectText(report));
     return 0;
   }
   if (!project.modelDriven?.trustedExtensions)
@@ -396,16 +422,26 @@ export async function closeModelDrivenResources(steps, onError) {
     throw new Error('--timeout must be 1..3600000 milliseconds.');
   const cfg = { ...standaloneMirageConfiguration(project, args), origin };
   progress?.phase('browser setup');
-  const { context, close, attached, debugPort } = await startupWait(
-    openBrowser(cfg, { debugPort: cfg.browser.debugPort }),
+  const { context, close, attached, debugPort, profile } = await startupWait(
+    open(cfg, { debugPort: cfg.browser.debugPort }),
     (opened) => opened.close(),
   );
+  logBrowserProfile(attached, cfg, profile);
   const provenance = createInspectionProvenanceTransport(
     context,
     targets.map((target) => ({ origin: target.origin, mirage: Boolean(args['local-simulation']) })),
   );
   cfg.provenanceSlot = provenance.slot;
   cfg.domProvenanceSlot = provenance.domSlot;
+  // The person answers a native confirm or before-unload prompt in the headed browser, as in portal dev; without a
+  // dialog listener Playwright would dismiss every one of them at once. Each target's agent records the dialog.
+  const agentSessions = new Map();
+  const stopDialogs = devDialogs(context, {
+    configs: new Map(targets.map((target) => [target.origin, cfg])),
+    attached,
+    headless: cfg.browser.headless === true,
+    sessionFor: (targetOrigin) => agentSessions.get(targetOrigin),
+  });
   let release,
     watcher,
     timer,
@@ -458,6 +494,7 @@ export async function closeModelDrivenResources(steps, onError) {
         cfg: { ...cfg, origin: target.origin, siteName: target.siteName, envName: target.envName },
         rel: String,
       });
+      agentSessions.set(target.origin, agentSession);
       const agent = await startAgentServer({
         session: agentSession,
         context,
@@ -671,7 +708,11 @@ export async function closeModelDrivenResources(steps, onError) {
     if (timeout) timer = setTimeout(stop, timeout);
     if (loaded)
       console.log(
-        'Model-driven overlay installed; document loaded. Sign-in and native application readiness remain unverified. Edit a declared Solution webresource or mapped PCF resource to reload.',
+        `Model-driven overlay installed; document loaded. Sign-in and native application readiness remain unverified. ${
+          args['no-reload']
+            ? 'Live reload is paused (--no-reload): a saved declared Solution webresource or mapped PCF resource is read again but the app tab is not reloaded; reload the tab yourself or turn on live reload in the panel.'
+            : 'Edit a declared Solution webresource or mapped PCF resource to reload.'
+        }`,
       );
     else if (page.isClosed()) {
       // A closed page ends the session, whatever the browser still shows; the finally block then closes the browser.
@@ -695,6 +736,7 @@ export async function closeModelDrivenResources(steps, onError) {
     browser?.off('disconnected', stop);
     page?.off('close', stop);
     page?.off('framenavigated', onNavigation);
+    stopDialogs();
     const cleanupFailures = await cleanupModelDrivenSession(
       {
         startupTimedOut: ['startup_timeout', 'startup_cancelled'].includes(primaryFailure?.code),

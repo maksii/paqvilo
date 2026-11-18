@@ -313,7 +313,7 @@ test('admin: record and configuration CRUD, routing, identity, presets, errors, 
   assert.equal(await editor.isVisible(), true, 'the editor is open while the saved record is being read back');
   refreshRelease.resolve();
   await editor.waitFor({ state: 'hidden' });
-  // D-M-11: the record search sits in the toolbar row.
+  // the record search sits in the toolbar row.
   await page.locator('#record-search').fill('updated');
   assert.equal(await page.locator('tbody tr').count(), 1);
   await page.getByRole('button', { name: 'Delete c2' }).click();

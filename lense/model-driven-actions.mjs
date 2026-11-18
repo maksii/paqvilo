@@ -215,7 +215,7 @@ const definitions = [
     'identity:users',
     'Find native users',
     'Workflows',
-    'Read active non-application users for an explicit acting-as selection.',
+    'Read enabled users, application users included, for an explicit acting-as selection.',
     'native-read',
     ['metadata'],
     [{ name: 'query', label: 'Name or domain contains', type: 'text', default: '', maxLength: 100 }],

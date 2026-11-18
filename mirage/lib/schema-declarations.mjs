@@ -2,6 +2,7 @@
 // business labels, table prefixes or generated dependencies are embedded.
 import { tableFields } from './solution-schema.mjs';
 import { inspectionBudget, chargeSchemaMetadata } from './inspection-budget.mjs';
+import { requiredArgument } from './required-argument.mjs';
 
 const plain = (value) => value && [Object.prototype, null].includes(Object.getPrototypeOf(value));
 const name = (value) =>
@@ -115,7 +116,10 @@ function appendTableDeclarations(table, context) {
 }
 
 /** Return deterministic .d.ts text for local fixture authoring, plus explicit unresolved-type diagnostics. */
-export function generateSchemaDeclarations(schema, { tables = Object.keys(schema?.tables ?? {}) } = {}) {
+export function generateSchemaDeclarations(
+  schema = requiredArgument('generateSchemaDeclarations(schema, options)', 'an imported schema with tables'),
+  { tables = Object.keys(schema?.tables ?? {}) } = {},
+) {
   if (
     !plain(schema?.tables) ||
     !Array.isArray(tables) ||

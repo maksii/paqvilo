@@ -2,11 +2,19 @@ import fs from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { readCatalogue, readManifest, validateCatalogue } from 'paqvilo/dataverse';
 import { extendReferenceCatalogue } from './portal-security/reference-projections.mjs';
-import { parseArgs } from 'node:util';
 import path from 'node:path';
-const { values: args } = parseArgs({
-  options: { schema: { type: 'string' }, catalogue: { type: 'string' }, out: { type: 'string' } },
-});
+import { cli } from './cli.mjs';
+const { values: args } = cli(
+  `Usage: node prepare-stress-data.mjs [--schema FILE] [--catalogue FILE] [--out FILE]   (npm run stress:prepare)
+
+Adds the P-STRESS persona to the base catalogue. Offline.
+
+  --schema FILE     manifest to read (default: dataverse/manifest.json in this example)
+  --catalogue FILE  base catalogue (default: data/catalogue.json in this example)
+  --out FILE        output file (default: data/stress-catalogue.json in this example)
+Relative paths given as arguments resolve from the working directory.`,
+  { schema: { type: 'string' }, catalogue: { type: 'string' }, out: { type: 'string' } },
+);
 const catalogue = await readCatalogue(
     args.catalogue ? path.resolve(args.catalogue) : new URL('./data/catalogue.json', import.meta.url),
   ),

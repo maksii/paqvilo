@@ -1,6 +1,16 @@
-import { connectionPath, id } from './registration.mjs';
+import { id } from './registration.mjs';
 import { loadConnection, connectedClient } from '../../../lense/dataverse/index.mjs';
-const connection = await loadConnection(connectionPath());
+import { cli } from '../cli.mjs';
+import { connectionHelp, defaultConnection } from '../paths.mjs';
+const { values } = cli(
+  `Usage: node examples/company-operations/plugins/provision-owner-team.mjs [--connection FILE]
+
+Run from the toolkit checkout. Creates or reconciles the ChainNode owner role and team in the live environment (writes).
+
+${connectionHelp('  --connection FILE  ')}`,
+  { connection: { type: 'string' } },
+);
+const connection = await loadConnection(values.connection ?? defaultConnection);
 const c = connectedClient(connection);
 const who = await c.verify(connection.organisationId);
 const roleId = id('fixture/ownerrole'),

@@ -80,7 +80,8 @@ async function loadGestureTrace(origin, load = (url) => import(/* @vite-ignore *
 }
 
 export function configure({ app, origin = '', onEvent, loadModule } = {}) {
-  if (typeof app !== 'string' || !app.trim()) throw new Error('A non-empty app name is required.');
+  // Also the answer to a bare configure(): it names the call and the one required option.
+  if (typeof app !== 'string' || !app.trim()) throw new TypeError('configure({ app }) requires a non-empty app name.');
   if (typeof origin !== 'string')
     throw new Error('Origin must be an HTTP(S) origin without a path, query, or fragment.');
   if (onEvent !== undefined && typeof onEvent !== 'function') throw new Error('onEvent must be a function.');
@@ -182,6 +183,14 @@ export async function getToken(resource) {
 const entityPath = (name) => {
   if (typeof name !== 'string' || !/^[a-z][a-z0-9_]*$/i.test(name))
     throw new Error('Entity set must be a Dataverse identifier.');
+  return name;
+};
+// The SDK's customapi request names an operation and carries no target record, so only unbound operations fit it.
+const operationPath = (name) => {
+  if (typeof name !== 'string' || !/^[a-z][a-z0-9_]*$/i.test(name))
+    throw new Error(
+      `executeDataverseAction takes the name of an unbound action or function (for example WhoAmI), not ${JSON.stringify(name) ?? String(name)}; bound actions and functions are not supported.`,
+    );
   return name;
 };
 const key = (id) => `(${encodeURIComponent(String(id).replace(/[{}]/g, ''))})`;
@@ -335,7 +344,7 @@ export const dataClient = {
   },
   executeDataverseAction: async (operationName, body) => ({
     data: (
-      await call(`dataverse/${entityPath(operationName)}`, {
+      await call(`dataverse/${operationPath(operationName)}`, {
         method: 'POST',
         body: body ?? {},
         headers: { 'x-sim-code-app-operation': 'customapi' },

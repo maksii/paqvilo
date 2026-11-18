@@ -28,7 +28,7 @@ test('Operations admin discovers exports, saves a local response and restores it
   );
   await form.locator('[name=mode]').selectOption('mock');
   await form.locator('[name=body]').fill('{"reviewed":"browser"}');
-  await form.getByRole('button', { name: 'Save local behavior' }).click();
+  await form.getByRole('button', { name: 'Save local behaviour' }).click();
   await page.getByRole('button', { name: 'Use source default' }).waitFor();
   const result = await (await fetch(app.url + '/_api/serverlogics/sample')).json();
   assert.deepEqual(JSON.parse(result.data), { reviewed: 'browser' });

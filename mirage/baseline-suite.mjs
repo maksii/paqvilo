@@ -5,6 +5,7 @@ import {
   ensureCaptureDestination,
 } from './baseline-paths.mjs';
 import { assertToolOptions, mirageToolHelp } from './tool-registry.mjs';
+import { readJsonOption } from './lib/path-options.mjs';
 /**
  * Baseline suite: capture every scenario of a matrix on one side into deterministic evidence
  * folders, then compare sides with the allowlist.
@@ -26,7 +27,7 @@ import { loopbackFetch } from './lib/dataverse-webhooks.mjs';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
-import { parseToolCommand } from './tool-options.mjs';
+import { assertToolPaths, parseToolCommand } from './tool-options.mjs';
 import { runMutatingHook, MUTATING_HOOK_FAILURE } from './baseline-hooks.mjs';
 import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -54,10 +55,19 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // `--only a,b,c` or `--only @file` selects scenarios. A list file holds one scenario per line: the first
 // whitespace-delimited token is the id, so "id<tab>reason" and "id  # reason" lines work; `#` comments and blank
 // lines are skipped. A list that yields no id is an error (a silently empty selection captures or compares nothing).
+function readOnlyListFile(file) {
+  try {
+    return readFileSync(file, 'utf8');
+  } catch (error) {
+    if (error.code !== 'ENOENT' && error.code !== 'EISDIR') throw error;
+    throw new Error(`--only @${file}: no scenario list file at ${path.resolve(file)}.`, { cause: error });
+  }
+}
+
 export const list = (value) => {
   if (!value) return null;
   const ids = String(value).startsWith('@')
-    ? readFileSync(String(value).slice(1), 'utf8')
+    ? readOnlyListFile(String(value).slice(1))
         .split(/\r?\n/)
         .map((line) => line.replace(/#.*/, '').trim().split(/\s+/)[0])
         .filter(Boolean)
@@ -89,6 +99,35 @@ export function validateMatrix(matrix) {
   if (matrix.live?.cdpUrl !== undefined && typeof matrix.live.cdpUrl !== 'string')
     throw new Error('matrix.live.cdpUrl must be a string.');
   return matrix;
+}
+
+/**
+ * Every record alias the selected scenarios, their personas' probes and the live set-up steps use must have a value
+ * before any hook, runtime or browser work: an unknown alias otherwise fails only after the mutating hooks ran.
+ */
+function assertRecordAliases(matrix, only, ids, idsOption) {
+  for (const [alias, value] of Object.entries(ids))
+    if (!['string', 'number'].includes(typeof value))
+      throw new Error(`--ids ${idsOption}: record alias ${alias} must be a string or number.`);
+  const missing = new Map();
+  const visit = (value, owner) => {
+    if (typeof value === 'string') {
+      for (const [, alias] of value.matchAll(/\{id:([\w.-]+)\}/g))
+        if (!Object.hasOwn(ids, alias)) missing.set(alias, missing.get(alias) ?? owner);
+    } else if (value && typeof value === 'object') for (const item of Object.values(value)) visit(item, owner);
+  };
+  const scenarios = matrix.scenarios.filter((scenario) => !only || only.includes(scenario.id));
+  for (const scenario of scenarios) visit(scenario, `scenario ${scenario.id}`);
+  for (const name of new Set(scenarios.map((scenario) => scenario.persona ?? 'anonymous')))
+    visit(matrix.personas?.[name], `persona ${name}`);
+  visit(matrix.live, 'matrix.live');
+  if (!missing.size) return;
+  const [[alias, owner]] = missing;
+  const others = missing.size > 1 ? ` (and ${missing.size - 1} more)` : '';
+  throw new Error(
+    `The ${owner} uses record alias {id:${alias}}${others}, which ` +
+      (idsOption ? `--ids ${idsOption} does not define.` : 'needs --ids FILE with the fixture record ids.'),
+  );
 }
 
 /** Folder of one scenario on one side: <out>/<scenario id segments>/<label>. */
@@ -460,13 +499,13 @@ async function liveSide({
       // Project hooks may retry their own known-safe operations; a generic retry could duplicate a partial write.
       await runMutatingHook('liveReset', matrix.hooks?.liveReset, options);
     },
-    async capture(scenario, { outDir, outputRoot, ids, label, meta }) {
+    async capture(scenario, { outDir, outputRoot, ids, meta }) {
       const result = await runInBridge(scenario, { ids });
       return writeCapture(result, {
         outDir,
         outputRoot,
         origin: matrix.origin,
-        side: label,
+        side: 'live',
         scenarioId: scenario.id,
         meta: {
           ...meta,
@@ -541,7 +580,10 @@ async function mirageSide({ matrix, config, site, env, source, state, headed, wo
     origin: matrix.origin ?? 'https://baseline.invalid',
     workDir,
   });
-  const identity = createIdentityController(owned.url);
+  const identity = createIdentityController(owned.url, {
+    mirrorHint: "set the persona's mirageContact or matrix.mirage.identity.contactId in the matrix",
+    signInHint: "set the persona's mirageContact in the matrix",
+  });
   // Headless Chromium hides scrollbars (width 0) while the live capture's headed Edge has a 15 px one, which shows as
   // body padding-right when a dialog opens: keep the scrollbar so both sides measure the same.
   const { browser, context, status } = await openSideBrowser(owned, () =>
@@ -631,7 +673,7 @@ async function mirageSide({ matrix, config, site, env, source, state, headed, wo
       });
       if (!config.ok) throw new Error(`Mirage configuration failed (${config.status})`);
     },
-    async capture(scenario, { outDir, outputRoot, ids, label, meta }) {
+    async capture(scenario, { outDir, outputRoot, ids, meta }) {
       await context.clearCookies();
       const cookie = identity.cookie();
       if (cookie) await context.addCookies([{ name: cookie.name, value: cookie.value, url: owned.url }]);
@@ -647,7 +689,7 @@ async function mirageSide({ matrix, config, site, env, source, state, headed, wo
           outDir,
           outputRoot,
           ids,
-          side: label,
+          side: 'mirage',
           matrix,
           allowWrites: true,
           meta: {
@@ -778,7 +820,9 @@ function uncertainMutatingHook(error) {
           outputRoot: outDir,
           ids,
           label,
+          // meta.json keeps `side` as live|mirage; the folder label (--label) is its own field.
           meta: {
+            label,
             persona: personaName,
             component: scenario.component ?? null,
             variation: scenario.variation ?? null,
@@ -841,12 +885,16 @@ function assertKnownScenarioIds(matrix, only) {
 async function main() {
   const { values, positionals } = parseToolCommand('baseline-suite', process.argv.slice(2), { allowPositionals: true });
   const action = positionals[0];
-  if (positionals.length !== 1 || !['capture', 'compare'].includes(action))
-    throw new Error(mirageToolHelp('baseline-suite').trimEnd());
-  assertToolOptions('baseline-suite', values);
+  if (action !== undefined && !['capture', 'compare'].includes(action))
+    throw new Error(
+      `Unknown baseline-suite action "${action}"; use capture or compare. Run paqvilo mirage baseline-suite --help for options.`,
+    );
+  if (positionals.length !== 1) throw new Error(mirageToolHelp('baseline-suite').trimEnd());
+  assertToolOptions('baseline-suite', values, [], { paths: false });
   if (action === 'capture') assertCaptureSelection(values);
+  assertToolPaths('baseline-suite', values);
   const matrixFile = path.resolve(values.matrix);
-  const matrix = validateMatrix(JSON.parse(await fs.readFile(matrixFile, 'utf8')));
+  const matrix = validateMatrix(await readJsonOption('matrix', matrixFile));
   const outDir = path.resolve(values.out);
   const only = list(values.only);
   assertKnownScenarioIds(matrix, only);
@@ -858,9 +906,12 @@ async function runCaptureAction({ action, values, matrix, matrixFile, outDir, on
   // `run` is a short token scenarios embed in values that must be unique per run yet equal on both sides.
   const ids = {
     run: matrix.runToken ?? 'r1',
-    ...(values.ids ? JSON.parse(await fs.readFile(values.ids, 'utf8')) : {}),
+    ...(values.ids ? await readJsonOption('ids', values.ids) : {}),
   };
+  assertRecordAliases(matrix, only, ids, values.ids);
   const label = validateCaptureLabel(values.label ?? values.side);
+  // The output-boundary (linked folder) preflight is a safety check and runs first; the source requirement follows,
+  // still before any runtime or browser work.
   for (const scenario of matrix.scenarios.filter((item) => !only || only.includes(item.id)))
     await ensureCaptureDestination(scenarioDir(outDir, scenario, label), outDir, { create: false });
   await ensureCaptureDestination(path.join(outDir, '_sign-in'), outDir, { create: false });
@@ -871,6 +922,10 @@ async function runCaptureAction({ action, values, matrix, matrixFile, outDir, on
     create: false,
     files: [`run-${label}.json`, `run-${label}-${startedAt.replaceAll(':', '')}.json`],
   });
+  if (values.side === 'mirage' && !values.source && !values.site)
+    throw new Error(
+      `A mirage capture needs the portal source: --source DIR or --config FILE --site ID.\n${mirageToolHelp('baseline-suite')}`.trimEnd(),
+    );
   let side;
   if (values.side === 'live') {
     if (!matrix.origin) throw new Error('matrix.origin (HTTPS reference origin) is required for the live side.');

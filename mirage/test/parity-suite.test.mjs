@@ -46,6 +46,7 @@ import {
   compareBytes,
   letterCase,
   tagShape,
+  CORE_SCENARIOS_FILE,
   __testing,
 } from '../parity-suite.mjs';
 import { makeTemporaryDirectory, ownedFixture } from '../testing/owned-fixture.mjs';
@@ -96,6 +97,33 @@ test('isolated baseline identity imports stay on the owned loopback runtime rega
   });
   assert.equal(response.status, 200);
   assert.equal(owned.app.store.state.tables.contact[0].fullname, 'Synthetic persona');
+});
+
+// @test-kind contract: an isolated comparison runtime serves original asset bytes, without appended debugger metadata.
+test('an isolated comparison runtime serves web files without appended source maps', async (t) => {
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'baseline-owned-bytes-'));
+  let owned;
+  ownedFixture(t).add(async () => {
+    await owned?.app.close();
+    await fs.rm(root, { recursive: true, force: true });
+  });
+  const sourceDir = path.join(root, 'source');
+  await fs.mkdir(path.join(sourceDir, 'web-files'), { recursive: true });
+  await fs.writeFile(path.join(sourceDir, 'website.yml'), 'adx_websiteid: invented\nadx_name: Invented fixture');
+  await fs.writeFile(
+    path.join(sourceDir, 'web-files/theme.webfile.yml'),
+    'adx_webfileid: theme\nadx_name: theme.css\nadx_partialurl: theme.css\nfilename: theme.css\nmimetype: text/css',
+  );
+  await fs.writeFile(path.join(sourceDir, 'web-files/theme.css'), 'body{color:navy}');
+  owned = await startIsolatedMirage({
+    sourceDir,
+    origin: 'https://reference.example.invalid',
+    workDir: path.join(root, 'runtime'),
+    solutionRoots: [],
+  });
+  const response = await fetch(owned.url + '/theme.css');
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), 'body{color:navy}');
 });
 
 // @test-kind tooling: normalisers generalise identifiers, dates, tokens and origins
@@ -591,10 +619,110 @@ test('parity-suite refuses a selection that names no known scenario or leaves no
   const unknown = refuse('--only', 'typo-scenario');
   assert.equal(unknown.status, 2, unknown.stderr);
   assert.match(unknown.stderr, /Unknown scenario ids: typo-scenario/);
+  assert.match(unknown.stderr, /--list/);
   const empty = refuse('--tags', 'no-such-tag');
   assert.equal(empty.status, 2, empty.stderr);
   assert.match(empty.stderr, /No scenario selected\./);
+  const state = refuse('--state', path.join(root, 'missing-state.json'));
+  assert.equal(state.status, 1, state.stderr);
+  assert.match(state.stderr, /^--state file not found: .*missing-state\.json\. Pass an existing file\.\n$/);
   await assert.rejects(fs.access(path.join(root, 'out')));
+});
+
+// @test-kind contract: an argument error prints the user's own path verbatim; runtime-derived error text stays normalised and redacted
+test('parity-suite prints a path error verbatim and still redacts tokens and GUIDs in a runtime error', async (t) => {
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'parity-suite-messages-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const guid = '0b1c2d3e-4f50-4617-8293-a4b5c6d7e8f9';
+  const script = fileURLToPath(new URL('../parity-suite.mjs', import.meta.url));
+  const run = (...args) =>
+    spawnSync(
+      process.execPath,
+      [script, '--out', path.join(root, 'out'), '--origin', 'https://reference.example.invalid', ...args],
+      { encoding: 'utf8', timeout: CLI_HANG_GUARD_MS },
+    );
+  const source = path.join(root, 'source');
+  await fs.mkdir(source);
+  const missing = path.join(root, guid, 'missing.json');
+  const state = run('--source', source, '--state', missing);
+  assert.equal(state.status, 1, state.stderr);
+  assert.equal(state.stderr, `--state file not found: ${missing}. Pass an existing file.\n`);
+
+  // The runtime's state names a source directory whose path carries a bearer-like token and a GUID.
+  const token = 'Bearer ' + 'a1B2c3D4e5'.repeat(5);
+  const server = http.createServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    res.end(
+      JSON.stringify({
+        config: { mode: 'local', pageMode: 'local', endpoints: [] },
+        status: { sourceDir: path.join(root, `${token} ${guid}`, 'absent') },
+      }),
+    );
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const { spawn } = await import('node:child_process');
+  const child = spawn(
+    process.execPath,
+    [
+      script,
+      '--local',
+      `http://127.0.0.1:${server.address().port}`,
+      '--out',
+      path.join(root, 'out'),
+      '--origin',
+      'https://reference.example.invalid',
+    ],
+    { stdio: ['ignore', 'ignore', 'pipe'] },
+  );
+  let stderr = '';
+  child.stderr.setEncoding('utf8').on('data', (chunk) => (stderr += chunk));
+  const [code] = await once(child, 'exit');
+  assert.notEqual(code, 0, stderr);
+  assert.match(stderr, /Bearer \{token\} \{guid\}/);
+  assert.ok(!stderr.includes(guid), stderr);
+  assert.ok(!stderr.includes('a1B2c3D4e5'.repeat(5)), stderr);
+});
+
+// @test-kind contract: --list prints id, tags and title of the selected scenarios, needs no --out and starts nothing
+test('parity-suite --list prints the selected scenario ids, tags and titles without a run', async (t) => {
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'parity-suite-list-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const plan = path.join(root, 'plan.json');
+  await fs.writeFile(
+    plan,
+    JSON.stringify({
+      version: 1,
+      scenarios: [
+        { id: 'invented-a', kind: 'anonymous', path: '/', tags: ['one', 'two'], title: 'Invented page' },
+        { id: 'invented-b', kind: 'anonymous', path: '/b/', tags: ['two'], title: 'Second invented page' },
+      ],
+    }),
+  );
+  const list = (...args) =>
+    spawnSync(process.execPath, [fileURLToPath(new URL('../parity-suite.mjs', import.meta.url)), '--list', ...args], {
+      encoding: 'utf8',
+      timeout: CLI_HANG_GUARD_MS,
+      cwd: root,
+    });
+  const files = list('--scenarios', plan);
+  assert.equal(files.status, 0, files.stderr);
+  assert.equal(files.stdout, 'invented-a\tone,two\tInvented page\ninvented-b\ttwo\tSecond invented page\n');
+  const filtered = list('--scenarios', plan, '--exclude-tags', 'one');
+  assert.equal(filtered.stdout, 'invented-b\ttwo\tSecond invented page\n');
+  const core = list();
+  assert.equal(core.status, 0, core.stderr);
+  const ids = core.stdout
+    .trimEnd()
+    .split('\n')
+    .map((line) => line.split('\t')[0]);
+  const corePlan = JSON.parse(await fs.readFile(CORE_SCENARIOS_FILE, 'utf8'));
+  assert.deepEqual(
+    ids,
+    corePlan.scenarios.map((scenario) => scenario.id),
+  );
+  assert.deepEqual(await fs.readdir(root), ['plan.json']);
 });
 
 // @test-kind tooling: every delta kind the comparers push is listed in DELTA_KINDS, so classification rules can name it
@@ -1639,4 +1767,48 @@ test('a capture is retried only for the exact lost-context messages of the DevTo
   ])
     assert.equal(pageContextLost(new Error(message)), false, message);
   assert.equal(pageContextLost(undefined), false);
+});
+
+// @test-kind contract: the identity controller's refusals end with the caller's own hint, so baseline-suite never names a parity-suite flag
+test('identity controller refusals name the hint of the calling command', async (t) => {
+  const { createIdentityController } = await import('../parity-suite.mjs');
+  const server = http.createServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ defaultPersona: null }));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  await assert.rejects(createIdentityController(origin).signInAs(undefined), {
+    message: 'The local runtime offers no default persona for signed-in scenarios; pass --persona-contact.',
+  });
+  const baseline = createIdentityController(origin, { mirrorHint: 'set A', signInHint: 'set B' });
+  await assert.rejects(baseline.signInAs(undefined), {
+    message: 'The local runtime offers no default persona for signed-in scenarios; set B.',
+  });
+  await assert.rejects(baseline.mirror({ roles: [] }), {
+    message: 'Persona mirroring needs a local synthetic contact; set A.',
+  });
+});
+
+// @test-kind contract: page-dom ignores every attribute and element only the toolkit adds (render-provenance.mjs).
+test('page-dom trees and shells ignore toolkit provenance attributes and injected elements', async () => {
+  const { compareShell } = await import('../parity-suite.mjs');
+  const live = element('main', { id: 'content' }, [
+    element('h1', {}, [text('Title')]),
+    element('p', {}, [text('Body')]),
+  ]);
+  const local = element('main', { id: 'content', 'data-paqvilo-source': 'proof:1' }, [
+    element('h1', { 'data-paqvilo-source': 'proof:2', 'data-sim-local-only': 'true' }, [text('Title')]),
+    element('img', { hidden: '', 'data-paqvilo-frame-ready': '' }),
+    element('p', { 'data-paqvilo-source': 'proof:3' }, [text('Body')]),
+  ]);
+  assert.deepEqual(compareTrees(prepareTree(live), prepareTree(local)).deltas, []);
+  const shell = (body) => ({ title: 'T', html: [['lang', 'en']], body, resources: [] });
+  assert.deepEqual(compareShell(shell([]), shell([['data-paqvilo-source', 'proof:0']])).deltas, []);
+});
+
+// @test-kind contract: a page that never navigated records about:blank, not its opaque origin "null" plus "blank".
+test('redacted URLs keep about:blank truthful', () => {
+  assert.equal(redactUrl('about:blank', { origins: ['https://portal.example'], keepPaging: true }), 'about:blank');
 });

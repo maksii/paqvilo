@@ -2,7 +2,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
-import { protectSecret } from './connection.mjs';
+import { existingPathError, protectSecret } from './connection.mjs';
+import { requiredArgument } from '../../mirage/lib/required-argument.mjs';
 
 const limit = 256 * 1024;
 function target(file, purpose) {
@@ -41,7 +42,14 @@ function plaintext(value, purpose) {
 /** Encrypt caller-owned JSON with the Windows user's DPAPI key. No plaintext
  * file or fallback is created. Save before an external operation consumes the
  * generated credential; exclusive mode prevents accidental credential rotation. */
-export async function saveProtectedState(file, value, { purpose, exclusive = true } = {}) {
+export async function saveProtectedState(
+  file = requiredArgument(
+    'saveProtectedState(file, value, { purpose })',
+    'a protected state file path under .paqvilo/',
+  ),
+  value,
+  { purpose, exclusive = true } = {},
+) {
   file = target(file, purpose);
   if (typeof exclusive !== 'boolean') throw new Error('Protected state exclusive must be Boolean.');
   const text = plaintext(value, purpose),
@@ -63,7 +71,10 @@ export async function saveProtectedState(file, value, { purpose, exclusive = tru
     await handle.sync();
     await handle.close();
     handle = null;
-    if (exclusive) await fs.link(temporary, file);
+    if (exclusive)
+      await fs.link(temporary, file).catch((error) => {
+        throw error.code === 'EEXIST' ? existingPathError(file) : error;
+      });
     else
       for (let attempt = 0; ; attempt++) {
         try {
@@ -84,7 +95,10 @@ export async function saveProtectedState(file, value, { purpose, exclusive = tru
 }
 /** Decrypt into memory only. Purpose is checked inside the authenticated DPAPI
  * payload as well as public metadata; never log the returned caller-owned value. */
-export async function loadProtectedState(file, { purpose } = {}) {
+export async function loadProtectedState(
+  file = requiredArgument('loadProtectedState(file, { purpose })', 'a protected state file path under .paqvilo/'),
+  { purpose } = {},
+) {
   file = target(file, purpose);
   const handle = await fs.open(file, 'r');
   let record;

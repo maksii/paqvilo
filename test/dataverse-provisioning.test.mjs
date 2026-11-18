@@ -123,6 +123,9 @@ async function serverFixture(t) {
     requests: [],
     organisationId: randomUUID(),
     failCreate: false,
+    platformPrimaryNameLength: null, // the primary-name MaxLength a table create stores, when the platform overrides it
+    retainPrimaryNameUpdate: true,
+    tableUpdates: [],
   };
   const send = (res, status, data) => {
     res.writeHead(status, { 'Content-Type': 'application/json' });
@@ -222,6 +225,8 @@ async function serverFixture(t) {
         for (const attribute of actual.Attributes) {
           attribute.MetadataId = randomUUID();
           attribute.LogicalName = attribute.SchemaName.toLowerCase();
+          if (attribute.IsPrimaryName && state.platformPrimaryNameLength)
+            attribute.MaxLength = state.platformPrimaryNameLength;
         }
         state.tables.set(actual.LogicalName, actual);
       } else if (route.endsWith('/Attributes')) {
@@ -255,6 +260,31 @@ async function serverFixture(t) {
             (c) =>
               c.objectid === body.ComponentId && c.componenttype === body.ComponentType && c._solutionid_value === sid,
           );
+        // As observed on Dataverse: a whole table root (behaviour 0) lists none of its subcomponents separately.
+        const wholeRootOf = (table) =>
+          state.components.some(
+            (c) =>
+              c.componenttype === 1 &&
+              c.rootcomponentbehavior === 0 &&
+              c._solutionid_value === sid &&
+              c.objectid === table?.MetadataId,
+          );
+        const ownerTable = (id) =>
+          [...state.tables.values()].find(
+            (table) =>
+              table.Attributes.some((a) => a.MetadataId === id) ||
+              table.Keys.some((k) => k.MetadataId === id) ||
+              state.relationships.some((r) => r.MetadataId === id && r.ReferencingEntity === table.LogicalName) ||
+              state.forms.get(id)?.objecttypecode === table.LogicalName,
+          );
+        if (body.ComponentType === 1 && body.DoNotIncludeSubcomponents === false) {
+          if (existing) existing.rootcomponentbehavior = 0;
+          const table = [...state.tables.values()].find((t) => t.MetadataId === body.ComponentId);
+          state.components = state.components.filter(
+            (c) => c.componenttype === 1 || c._solutionid_value !== sid || ownerTable(c.objectid) !== table,
+          );
+        }
+        if (body.ComponentType !== 1 && wholeRootOf(ownerTable(body.ComponentId))) return send(res, 200, {});
         if (!existing)
           state.components.push({
             solutioncomponentid: randomUUID(),
@@ -285,12 +315,27 @@ async function serverFixture(t) {
       });
       return res.end();
     }
+    if (req.method === 'PUT' && /^EntityDefinitions\([0-9a-f-]{36}\)$/.test(route)) {
+      const table = [...state.tables.values()].find((t) => route.includes(t.MetadataId));
+      assert.equal(req.headers['mscrm.mergelabels'], 'true');
+      assert.equal(body['@odata.type'], 'Microsoft.Dynamics.CRM.EntityMetadata');
+      assert.equal(body.Attributes, undefined, 'a table update does not carry its columns');
+      state.tableUpdates.push(body);
+      for (const name of ['DisplayName', 'DisplayCollectionName', 'Description']) table[name] = body[name];
+      return send(res, 204, {});
+    }
     if (req.method === 'PUT' && route.includes('/Attributes(')) {
       const table = state.tables.get(route.match(/LogicalName='([^']+)'/)[1]),
         id = route.match(/Attributes\(([0-9a-f-]+)\)/)[1],
         index = table.Attributes.findIndex((a) => a.MetadataId === id);
       assert.equal(req.headers['mscrm.mergelabels'], 'true');
-      assert.equal(body['@odata.type'], 'Microsoft.Dynamics.CRM.LookupAttributeMetadata');
+      assert.ok(
+        ['Microsoft.Dynamics.CRM.LookupAttributeMetadata', 'Microsoft.Dynamics.CRM.StringAttributeMetadata'].includes(
+          body['@odata.type'],
+        ),
+      );
+      if (body['@odata.type'] === 'Microsoft.Dynamics.CRM.StringAttributeMetadata' && !state.retainPrimaryNameUpdate)
+        return send(res, 204, {});
       table.Attributes[index] = body;
       return send(res, 200, {});
     }
@@ -403,6 +448,7 @@ test('remote plan is read-only; apply creates, retains membership and has a muta
   assert.ok(expectedActionKeys.length > 0);
   assert.deepEqual(again.entries.map((entry) => entry.key).sort(), expectedActionKeys);
   assert.ok(again.entries.every((e) => e.status === 'exists'));
+  assert.equal(again.state, 'Unchanged', 'a run that wrote nothing does not report Created');
   assert.equal(state.requests.filter((r) => r.method === 'POST').length, posts);
   assert.equal((await checkKeys(manifest, client)).ready, false);
   state.tables.get('tst_node').Keys[0].EntityKeyIndexStatus = 'Active';
@@ -455,10 +501,143 @@ test('drift and organisation mismatch block writes before mutation', async (t) =
   state.tables.get('tst_node').Attributes.find((a) => a.SchemaName === 'tst_code').MaxLength = 100;
   await assert.rejects(
     applyManifest(manifest, { client, expectedOrganisationId: state.organisationId }),
-    /incompatible/,
+    /incompatible component\(s\): column:tst_node\.tst_code \(MaxLength\)/,
   );
   await assert.rejects(applyManifest(manifest, { client, expectedOrganisationId: randomUUID() }), /differs/);
   assert.equal(state.requests.filter((r) => r.method === 'POST').length, writes);
+});
+
+// @test-kind contract: a remote plan names each declared property that differs, with declared and actual values
+test('remote plan names the drifted property with its declared and actual values', async (t) => {
+  const { state, client } = await serverFixture(t),
+    manifest = fixtureManifest();
+  await applyManifest(manifest, { client, expectedOrganisationId: state.organisationId });
+  state.tables.get('tst_node').Attributes.find((a) => a.LogicalName === 'tst_name').MaxLength = 850;
+  state.tables.get('tst_node').Attributes.find((a) => a.LogicalName === 'tst_code').MaxLength = 100;
+  const plan = await planManifest(manifest, { client });
+  const differences = Object.fromEntries(
+    plan.actions.filter((a) => a.status === 'drift').map((a) => [a.key, a.differences]),
+  );
+  assert.deepEqual(differences, {
+    'table:tst_node': [{ property: 'Attributes[tst_name].MaxLength', declared: 160, actual: 850 }],
+    'column:tst_node.tst_code': [{ property: 'MaxLength', declared: 40, actual: 100 }],
+  });
+  assert.ok(plan.actions.filter((a) => a.status !== 'drift').every((a) => a.differences === undefined));
+  await assert.rejects(
+    scopeSolutionRoots(manifest, client),
+    /before solution scoping: table:tst_node \(Attributes\[tst_name\]\.MaxLength\) differs/,
+  );
+});
+
+// @test-kind contract: label-only drift is named in the plan, refused by apply, and changed only with updateLabels
+test('apply --update-labels changes only the drifted display labels of declared tables and columns', async (t) => {
+  const { state, client } = await serverFixture(t),
+    manifest = fixtureManifest();
+  await applyManifest(manifest, { client, expectedOrganisationId: state.organisationId });
+  const node = state.tables.get('tst_node'),
+    code = node.Attributes.find((a) => a.LogicalName === 'tst_code');
+  const relabel = (labelled, name, text) => {
+    labelled[name] = { LocalizedLabels: [{ Label: text, LanguageCode: 1033 }] };
+  };
+  relabel(node, 'DisplayName', 'Nodereference');
+  relabel(node, 'DisplayCollectionName', 'Nodereferences');
+  relabel(
+    node.Attributes.find((a) => a.LogicalName === 'tst_name'),
+    'DisplayName',
+    'Old name',
+  );
+  relabel(code, 'DisplayName', 'Kode');
+  const plan = await planManifest(manifest, { client });
+  assert.equal(plan.summary.drift, 2);
+  assert.equal(plan.summary.labelDrift, 2);
+  const table = plan.actions.find((a) => a.key === 'table:tst_node');
+  assert.equal(table.labelsOnly, true);
+  assert.deepEqual(table.differences, [
+    { property: 'DisplayName.LocalizedLabels[1033].Label', declared: 'Node', actual: 'Nodereference' },
+    { property: 'DisplayCollectionName.LocalizedLabels[1033].Label', declared: 'Nodes', actual: 'Nodereferences' },
+    { property: 'Attributes[tst_name].DisplayName.LocalizedLabels[1033].Label', declared: 'Name', actual: 'Old name' },
+  ]);
+  const writes = () => state.requests.filter((r) => r.method !== 'GET').length;
+  const before = writes();
+  await assert.rejects(
+    applyManifest(manifest, { client, expectedOrganisationId: state.organisationId }),
+    /2 incompatible component\(s\): table:tst_node \(DisplayName\.LocalizedLabels\[1033\]\.Label, .*Only display labels differ: rerun apply with --update-labels/,
+  );
+  assert.equal(writes(), before, 'without the option nothing is written');
+
+  const journal = await applyManifest(manifest, {
+    client,
+    expectedOrganisationId: state.organisationId,
+    updateLabels: true,
+  });
+  assert.equal(journal.state, 'Updated');
+  assert.deepEqual(
+    journal.entries.filter((e) => e.status === 'labels-updated').map((e) => e.key),
+    ['table:tst_node', 'column:tst_node.tst_code'],
+  );
+  assert.equal(
+    journal.entries.find((e) => e.key === 'column:tst_node.tst_code').labels[0].before,
+    'Kode',
+    'the journal keeps the replaced label',
+  );
+  assert.equal(state.tableUpdates.length, 1);
+  assert.equal(code.MaxLength, 40);
+  assert.equal(state.requests.filter((r) => r.method === 'POST' && r.route === 'EntityDefinitions').length, 2);
+  assert.equal((await planManifest(manifest, { client })).summary.drift, 0);
+
+  // A structural difference beside a label is never changed, with or without the option.
+  relabel(node, 'DisplayName', 'Nodereference');
+  node.Attributes.find((a) => a.LogicalName === 'tst_code').MaxLength = 41;
+  const mixed = writes();
+  const drifted = await planManifest(manifest, { client });
+  assert.equal(drifted.summary.labelDrift, 1, 'only the table drifts in labels alone');
+  await assert.rejects(
+    applyManifest(manifest, { client, expectedOrganisationId: state.organisationId, updateLabels: true }),
+    /1 incompatible component\(s\): column:tst_node\.tst_code \(MaxLength\)\. Inspect a remote plan/,
+  );
+  assert.equal(writes(), mixed);
+});
+
+// @test-kind observation: live developer environment, 2026-11-18: a table create stored the primary-name MaxLength as 850 for a declared 160; a follow-up attribute PUT set 160 and it persisted through publish
+test('apply sets the declared primary-name length the platform overrode on create, and verifies it', async (t) => {
+  const { state, client } = await serverFixture(t),
+    manifest = fixtureManifest();
+  state.platformPrimaryNameLength = 850;
+  const journal = await applyManifest(manifest, { client, expectedOrganisationId: state.organisationId });
+  assert.equal(journal.state, 'Created');
+  for (const table of ['tst_node', 'tst_leaf']) {
+    assert.equal(state.tables.get(table).Attributes.find((a) => a.LogicalName === 'tst_name').MaxLength, 160);
+    assert.deepEqual(journal.entries.find((e) => e.key === `table:${table}`).primaryNameLength, {
+      declared: 160,
+      created: 850,
+      updated: 160,
+    });
+  }
+  const puts = state.requests.filter(
+    (r) => r.method === 'PUT' && r.body['@odata.type'].endsWith('StringAttributeMetadata'),
+  );
+  assert.equal(puts.length, 2);
+  assert.ok(puts.every((r) => r.solution === 'FictionalSchema' && r.body.MaxLength === 160));
+  assert.equal((await planManifest(manifest, { client })).summary.drift, 0);
+  state.platformPrimaryNameLength = null;
+  const { state: kept, client: keptClient } = await serverFixture(t);
+  const unchanged = await applyManifest(manifest, { client: keptClient, expectedOrganisationId: kept.organisationId });
+  assert.ok(unchanged.entries.every((e) => e.primaryNameLength === undefined));
+  assert.equal(
+    kept.requests.filter((r) => r.method === 'PUT' && r.body['@odata.type'].endsWith('StringAttributeMetadata')).length,
+    0,
+  );
+});
+
+// @test-kind observation: live developer environment, 2026-11-18: the primary-name MaxLength stored on create differs from the declared one; apply must not continue when an update is not retained
+test('apply stops and names the table when the platform does not retain the primary-name length', async (t) => {
+  const { state, client } = await serverFixture(t);
+  state.platformPrimaryNameLength = 850;
+  state.retainPrimaryNameUpdate = false;
+  await assert.rejects(
+    applyManifest(fixtureManifest(), { client, expectedOrganisationId: state.organisationId }),
+    /did not retain the declared primary-name maxLength 160 of tst_node \(it stores 850\)/,
+  );
 });
 
 // @test-kind security+contract: solution scoping refuses metadata drift before replacing any membership
@@ -488,6 +667,44 @@ test('remote plan lists the membership apply writes: root re-scoping and a missi
   assert.equal(plan.summary.membershipAdd, 1);
   assert.equal(plan.summary.blocked, 0);
   assert.ok(state.requests.slice(requests).every((r) => r.method === 'GET'));
+  const repaired = await applyManifest(manifest, { client, expectedOrganisationId: state.organisationId });
+  assert.equal(repaired.state, 'Updated', 'membership repair without a create reports Updated');
+});
+
+test('a table declared includeAllSubcomponents keeps its whole root and apply converges to an empty plan', async (t) => {
+  const { state, client } = await serverFixture(t),
+    manifest = fixtureManifest();
+  manifest.tables[1].includeAllSubcomponents = true;
+  const rootOf = (table) =>
+    state.components.find((c) => c.componenttype === 1 && c.objectid === state.tables.get(table).MetadataId);
+  const created = await applyManifest(manifest, { client, expectedOrganisationId: state.organisationId });
+  assert.equal(created.state, 'Created');
+  assert.equal(rootOf('tst_leaf').rootcomponentbehavior, 0, 'the declared whole table keeps every subcomponent');
+  assert.equal(rootOf('tst_node').rootcomponentbehavior, 1, 'other tables stay narrowed to their listed parts');
+  const posts = () => state.requests.filter((r) => r.method === 'POST').length;
+  for (let run = 0; run < 2; run++) {
+    const plan = await planManifest(manifest, { client });
+    assert.deepEqual(plan.membership, [], 'nothing pending after apply');
+    const before = posts();
+    const again = await applyManifest(manifest, { client, expectedOrganisationId: state.organisationId });
+    assert.equal(again.state, 'Unchanged');
+    assert.equal(posts(), before, 'a converged apply writes nothing');
+  }
+  // A narrowed whole table (for example by an older toolkit) is planned and applied as a widening, not a narrowing.
+  rootOf('tst_leaf').rootcomponentbehavior = 1;
+  const drifted = await planManifest(manifest, { client });
+  assert.deepEqual(
+    drifted.membership.map((e) => [e.operation, e.table, e.subcomponents]),
+    [['membership:scope-root', 'tst_leaf', 'all']],
+  );
+  assert.equal(
+    (await applyManifest(manifest, { client, expectedOrganisationId: state.organisationId })).state,
+    'Updated',
+  );
+  assert.equal(rootOf('tst_leaf').rootcomponentbehavior, 0);
+  assert.deepEqual((await planManifest(manifest, { client })).membership, []);
+  manifest.tables[1].includeAllSubcomponents = 'yes';
+  assert.throws(() => validateManifest(manifest), /includeAllSubcomponents must be boolean/);
 });
 
 test('remote plan blocks apply before its first write when a table root is undeclared', async (t) => {
@@ -560,12 +777,15 @@ test('acknowledged table and lookup creates reconcile transient metadata read ab
   };
   const journal = await applyManifest(fixtureManifest(), { client, expectedOrganisationId: state.organisationId });
   assert.equal(journal.state, 'Created');
-  // Both new tables' primary name columns and the one-to-many lookup (plain and typed reads) were each read absent once.
+  // Both new tables' primary name columns (plain and typed reads) and the one-to-many lookup (plain and typed reads)
+  // were each read absent once.
   assert.deepEqual([...missed].sort(), [
     "EntityDefinitions(LogicalName='tst_leaf')/Attributes(LogicalName='tst_name')",
+    "EntityDefinitions(LogicalName='tst_leaf')/Attributes(LogicalName='tst_name')/Microsoft.Dynamics.CRM.StringAttributeMetadata",
     "EntityDefinitions(LogicalName='tst_leaf')/Attributes(LogicalName='tst_nodeid')",
     "EntityDefinitions(LogicalName='tst_leaf')/Attributes(LogicalName='tst_nodeid')/Microsoft.Dynamics.CRM.LookupAttributeMetadata",
     "EntityDefinitions(LogicalName='tst_node')/Attributes(LogicalName='tst_name')",
+    "EntityDefinitions(LogicalName='tst_node')/Attributes(LogicalName='tst_name')/Microsoft.Dynamics.CRM.StringAttributeMetadata",
   ]);
   assert.equal(state.requests.filter((r) => r.method === 'POST' && r.route === 'EntityDefinitions').length, 2);
   assert.equal(state.requests.filter((r) => r.method === 'POST' && r.route === 'RelationshipDefinitions').length, 2);

@@ -9,10 +9,11 @@
 import { once } from 'node:events';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseToolCommand } from './tool-options.mjs';
+import { assertToolPaths, parseToolCommand } from './tool-options.mjs';
 import { mirageToolHelp } from './tool-registry.mjs';
 import { connectRuntime, runtimeOrigin } from './testing/runtime.mjs';
-import { checkTraceFilters, idMatches, searchText, traceFailed } from './lib/trace-store.mjs';
+import { TRACE_EXPORT_MAX, checkTraceFilters, idMatches, searchText, traceFailed } from './lib/trace-store.mjs';
+import { mergeTraceSettings } from './lib/trace-settings.mjs';
 
 const ACTIONS = new Set(['list', 'show', 'spans', 'stats', 'settings', 'clear', 'flush', 'export', 'watch']);
 // The span filters, which watch also applies to the frames it receives.
@@ -66,7 +67,7 @@ function settingsChange(values) {
 }
 
 // list and spans print local time (YYYY-MM-DD HH:MM:SS.mmm) with the zone named once in the STARTED header, as the _sim
-// Monitor does (DV-N4-18); --utc prints the ISO UTC instant instead. ponytail: one offset (now's) for the header, so a
+// Monitor does; --utc prints the ISO UTC instant instead. ponytail: one offset (now's) for the header, so a
 // list spanning a daylight-saving change shows the rows of the other side in local time under the current offset.
 const pad = (value, width = 2) => String(value).padStart(width, '0');
 const zoneLabel = (date = new Date()) => {
@@ -337,7 +338,7 @@ const invocationStreams = (stdout, stderr) => ({
 });
 
 const SHOW_USAGE =
-  'trace show needs one TRACE_ID (or a unique prefix of at least 8 characters of the id), or --latest.';
+  'trace show needs one TRACE_ID (or a unique prefix of at least 8 hexadecimal characters of the id), or --latest.';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const PREFIX = /^[0-9a-f]{8}[0-9a-f-]*$/i;
 
@@ -385,10 +386,30 @@ function validateRuntimeSource(values) {
     }
 }
 
-function createTraceFilters(filtered, values) {
+const EXPORT_FORMATS = ['json', 'ndjson', 'otlp', 'bundle'];
+const refusedValue = (code, message, parameter) =>
+  Object.assign(new RangeError(message), { status: 400, code, parameter });
+
+// The store's own checks (InvalidTraceFilter naming the parameter), the export format and the settings change are
+// refused before connecting, as the runtime would refuse them (exit 2); the runtime checks again.
+function createTraceFilters(filtered, values, change) {
   const filters = Object.fromEntries(filtered.map((name) => [camel(name), values[name]]));
-  // The store's own check (InvalidTraceFilter naming the parameter), before connecting; the runtime checks again.
   checkTraceFilters(filters);
+  const limit = values.limit;
+  if (limit && !(/^\d+$/.test(limit) && Number(limit) >= 1 && Number(limit) <= TRACE_EXPORT_MAX))
+    throw refusedValue('InvalidTraceFilter', `limit must be an integer from 1 to ${TRACE_EXPORT_MAX}.`, 'limit');
+  if (values.format !== undefined && !EXPORT_FORMATS.includes(values.format))
+    throw refusedValue(
+      'InvalidTraceFilter',
+      `format must be one of ${EXPORT_FORMATS.join(', ')} (got ${JSON.stringify(values.format)}).`,
+      'format',
+    );
+  if (change)
+    try {
+      mergeTraceSettings({}, change);
+    } catch (error) {
+      throw refusedValue('InvalidTraceSettings', error.message, undefined);
+    }
   return filters;
 }
 
@@ -436,6 +457,8 @@ async function showTree(client, id, filters) {
   const { values, positionals } = parseToolCommand('trace', argv, { allowPositionals: true });
   if (values.help) return io.print(mirageToolHelp('trace').trim());
   const [action, ...rest] = positionals;
+  if (action !== undefined && !ACTIONS.has(action))
+    throw invalid(`Unknown trace subcommand '${action}'. Choose ${[...ACTIONS].join(', ')}.`);
   if (!ACTIONS.has(action)) throw usage();
   progress.command = action;
   validateTracePositionals(action, rest, values.latest);
@@ -443,7 +466,8 @@ async function showTree(client, id, filters) {
     change = settingsChange(values);
   validateTraceFilters(action, filtered, change, values.latest);
   validateTraceOptions(action, values);
-  const filters = createTraceFilters(filtered, values);
+  assertToolPaths('trace', values);
+  const filters = createTraceFilters(filtered, values, change);
   progress.accepted = true;
   const client = await connectRuntime({
     origin: values.origin,

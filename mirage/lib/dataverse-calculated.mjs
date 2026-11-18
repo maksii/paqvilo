@@ -370,6 +370,63 @@ function relatedRow(store, mapping, row, lookup) {
   return target ? storedRow(store, target, value) : null;
 }
 
+function parsedFormula(state, table, column, formula) {
+  const key = `${table}.${column}\u0000${formula}`;
+  if (!state.parsed.has(key)) state.parsed.set(key, parseCalculatedFormula(formula));
+  return state.parsed.get(key);
+}
+
+// The tables a lookup column can point to: its declared targets and its N:1 relationship (relatedRow reads one of them).
+function lookupTargets(api, table, lookup) {
+  const store = api.store;
+  const mapping = store.resolveMapping(table);
+  const declared = store.fieldDefinitions(table, api.metadataFields)?.[lookup]?.targets ?? [];
+  const related = Object.values(mapping.relationships ?? {})
+    .filter((rel) => rel.many === false && rel.from === lookup)
+    .map((rel) => rel.entity);
+  const targets = new Set();
+  for (const target of [...declared, ...related]) {
+    try {
+      targets.add(store.resolveMapping(target).logicalName);
+    } catch {
+      // A target without a mapping has no rows to read.
+    }
+  }
+  return [...targets];
+}
+
+// The number of calculated columns in the longest chain a column reads through, itself included (a pack override or an
+// unsupported formula counts as one); a cycle is Infinity. Memoised per table revision (metadata and mappings).
+function chainDepth(api, state, table, column) {
+  const revision = api.store.tablesRevision([]);
+  if (state.chains?.revision !== revision) state.chains = { revision, depths: new Map() };
+  const { depths } = state.chains;
+  const visiting = new Set();
+  const depthOf = (logical, name) => {
+    const key = `${logical}.${name}`;
+    if (depths.has(key)) return depths.get(key);
+    if (visiting.has(key)) return Infinity;
+    visiting.add(key);
+    const calculated = calculatedColumnsOf(api, logical);
+    const { ast } = state.overrides[key] ? {} : parsedFormula(state, logical, name, calculated[name]);
+    const reads = [];
+    const collect = (node) => {
+      if (node.kind === 'field') reads.push([logical, node.column]);
+      if (node.kind === 'parent')
+        for (const target of lookupTargets(api, logical, node.lookup)) reads.push([target, node.column]);
+      for (const arg of node.args ?? []) collect(arg);
+    };
+    if (ast) collect(ast);
+    let depth = 1;
+    for (const [target, read] of reads)
+      if (Object.hasOwn(calculatedColumnsOf(api, target), read)) depth = Math.max(depth, 1 + depthOf(target, read));
+    visiting.delete(key);
+    depths.set(key, depth);
+    return depth;
+  };
+  return depthOf(table, column);
+}
+
 // row is the read copy: a chained calculated column reads computed (a column reading itself reads null).
 function computeColumn(api, state, c, mapping, row, column, formula) {
   const table = mapping.logicalName;
@@ -392,16 +449,19 @@ function computeColumn(api, state, c, mapping, row, column, formula) {
     });
     return null;
   }
-  const key = `${table}.${column}\u0000${formula}`;
-  if (!state.parsed.has(key)) state.parsed.set(key, parseCalculatedFormula(formula));
-  const parsed = state.parsed.get(key);
-  // A chain of calculated columns is at most 5 deep.
-  if (state.depth >= MAX_CHAIN) {
+  const parsed = parsedFormula(state, table, column, formula);
+  // A chain of calculated columns is at most 5 deep, decided from the definitions alone (never from which columns a read
+  // copy already settled). The live depth only guards recursion the definitions do not show (a lookup to an undeclared target).
+  const chain = chainDepth(api, state, table, column);
+  if (chain > MAX_CHAIN || state.depth >= MAX_DEPTH) {
     report(state, {
       code: 'CALCULATED_UNSUPPORTED',
       table,
       column,
-      message: `The column is calculated through more than ${MAX_CHAIN} chained calculated columns. The column reads as null.`,
+      message:
+        chain === Infinity
+          ? 'The column is calculated through a cycle of calculated columns. The column reads as null.'
+          : `The column is calculated through more than ${MAX_CHAIN} chained calculated columns. The column reads as null.`,
     });
     return null;
   }
@@ -427,9 +487,7 @@ function computeColumn(api, state, c, mapping, row, column, formula) {
 // column or another calculated column (the subset has no Now() or logical-column node); such an order is ignored.
 function sortable(api, state, logical, column) {
   const calculated = calculatedColumnsOf(api, logical);
-  const key = `${logical}.${column}\u0000${calculated[column]}`;
-  if (!state.parsed.has(key)) state.parsed.set(key, parseCalculatedFormula(calculated[column]));
-  const { ast } = state.parsed.get(key);
+  const { ast } = parsedFormula(state, logical, column, calculated[column]);
   const blocked = (node) =>
     node.kind === 'parent' ||
     (node.kind === 'field' && Object.hasOwn(calculated, node.column)) ||
@@ -484,6 +542,7 @@ function reset(api) {
   state.parsed.clear();
   state.reporter.clear();
   state.depth = 0;
+  state.chains = null;
   if (state.provider) api.store.setComputedColumns('dataverse-calculated', state.provider);
 }
 

@@ -3,6 +3,18 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+// The help contract of scripts/script-help.mjs, inline: the site build test runs this file without its siblings.
+const [arg] = process.argv.slice(2);
+if (arg === '--help' || arg === '-h') {
+  console.log(`Usage: npm run site:build   (node scripts/build-site.mjs)
+Replaces dist/pages with the public site files, docs/assets images and site/media recordings, and checks every
+project-site link. Offline. Takes no options; --help prints this help.`);
+  process.exit(0);
+}
+if (arg) {
+  console.error(`build-site: unknown option ${arg} (see --help).`);
+  process.exit(1);
+}
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const output = path.join(root, 'dist', 'pages');
 // Rebuild only the generated directory; stale files must never enter a Pages artifact.

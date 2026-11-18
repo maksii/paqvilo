@@ -2,9 +2,34 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 
-// User-approved 2026-11-17. This accepts risk in five pinned development graphs; it does not fix Picomatch.
-// The clock dependency is in-memory only for policy tests. The CLI never takes a time or policy override.
-const policy = JSON.parse(fs.readFileSync(new URL('./dependency-risk-acceptance.json', import.meta.url), 'utf8'));
+// dependency-risk-acceptance.json holds at most one owner-approved, time-limited acceptance pinned to exact development
+// graphs; the empty object `{}` means no acceptance is in force. The clock and policy parameters are in-memory only for
+// policy tests. The CLI never takes a time or policy override.
+const livePolicy = JSON.parse(fs.readFileSync(new URL('./dependency-risk-acceptance.json', import.meta.url), 'utf8'));
+const pinnedHashes = ['manifestSha256', 'lockSha256', 'findingGraphSha256', 'normalizedSecurityReportSha256'];
+
+// The acceptance in force, or null for `{}`. Anything else that is not a complete entry throws, so it fails the audit.
+function acceptanceInForce(policy) {
+  if (object(policy) && Object.keys(policy).length === 0) return null;
+  if (
+    !object(policy) ||
+    typeof policy.advisory !== 'string' ||
+    !policy.advisory ||
+    typeof policy.approvedOn !== 'string' ||
+    !policy.approvedOn ||
+    typeof policy.approval !== 'string' ||
+    !policy.approval ||
+    !Number.isFinite(Date.parse(policy.expiresAt)) ||
+    !Number.isFinite(Date.parse(policy.evidenceCapturedAt)) ||
+    !object(policy.projects) ||
+    Object.keys(policy.projects).length === 0 ||
+    Object.values(policy.projects).some(
+      (entry) => !object(entry) || pinnedHashes.some((key) => !/^[0-9a-f]{64}$/.test(entry[key] ?? '')),
+    )
+  )
+    throw new Error('Invalid scripts/dependency-risk-acceptance.json: use {} or one complete pinned acceptance.');
+  return policy;
+}
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 // Cryptographic fingerprints retain UTF-16 ordinal key order, independently of the host locale.
 function compareCanonicalKeys(left, right) {
@@ -114,8 +139,9 @@ export function unchangedAuditInputs(before, after) {
   return ['manifest', 'lock', 'auditedLock'].every((key) => before[key].equals(after[key]));
 }
 
-export function matchesApprovedRiskInputs(project, evidence) {
-  const expected = Object.hasOwn(policy.projects, project) && policy.projects[project];
+export function matchesApprovedRiskInputs(project, evidence, policy = livePolicy) {
+  const accepted = acceptanceInForce(policy);
+  const expected = accepted !== null && Object.hasOwn(accepted.projects, project) && accepted.projects[project];
   return Boolean(
     expected &&
     Buffer.isBuffer(evidence?.manifest) &&
@@ -162,11 +188,18 @@ function findingGraph(report, manifest, lockfile) {
   );
 }
 
-export function temporaryRiskAcceptance(project, report, status, evidence, { now = Date.now } = {}) {
+export function temporaryRiskAcceptance(
+  project,
+  report,
+  status,
+  evidence,
+  { now = Date.now, policy = livePolicy } = {},
+) {
   const reject = (reason) => ({ accepted: false, reason });
-  const expected = Object.hasOwn(policy.projects, project) && policy.projects[project];
-  if (!expected) return reject('project is outside the approved temporary scope');
   try {
+    if (acceptanceInForce(policy) === null) return reject('no temporary risk acceptance is in force');
+    const expected = Object.hasOwn(policy.projects, project) && policy.projects[project];
+    if (!expected) return reject('project is outside the approved temporary scope');
     validateAuditReport(report, status);
     const currentTime = now();
     const capturedAt = Date.parse(policy.evidenceCapturedAt);
@@ -180,7 +213,7 @@ export function temporaryRiskAcceptance(project, report, status, evidence, { now
       currentTime >= expiresAt
     )
       return reject('temporary acceptance expired or current UTC time evidence is invalid');
-    if (!matchesApprovedRiskInputs(project, evidence))
+    if (!matchesApprovedRiskInputs(project, evidence, policy))
       return reject('manifest, canonical lock or actual audited lock differs from the approved bytes');
     const manifest = JSON.parse(evidence.manifest);
     const lockfile = JSON.parse(evidence.lock);

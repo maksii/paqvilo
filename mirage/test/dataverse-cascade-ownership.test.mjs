@@ -84,3 +84,34 @@ test("a cascaded Assign to a team through a synchronous SDK call sets the child'
   assert.equal(child().owninguser ?? null, null);
   assert.equal(child().owningbusinessunit?.id, bu);
 });
+
+// @test-kind contract: a standard user-owned table (account: UserOwned in the standard table reference) takes an owner
+// through the polymorphic ownerid lookup even when its Solution export declares no ownerid column or relationship
+test('ownerid@odata.bind assigns a standard user-owned table whose export declares no owner relationship', async (t) => {
+  const ACCOUNT = '55555555-5555-4555-8555-555555555521';
+  const fixture = await contractModuleFixture(t, {
+    extension: EXTENSION,
+    mappings: {
+      account: {
+        logicalName: 'account',
+        entitySet: 'accounts',
+        idColumn: 'accountid',
+        fields: { name: { dataverseType: 'nvarchar' } },
+      },
+    },
+    tables: { account: [{ accountid: ACCOUNT, name: 'Invented account' }] },
+  });
+  const { store, request, json } = fixture;
+  const unit = { id: store.state.tables.businessunit[0].businessunitid, logical_name: 'businessunit' };
+  store.state.tables.systemuser.push({ systemuserid: ONE, fullname: 'Invented one', businessunitid: unit });
+  store.state.tables.team.push({ teamid: TEAM, name: 'Invented team', teamtype: 0, businessunitid: unit });
+  const row = () => store.state.tables.account.find((item) => item.accountid === ACCOUNT);
+  await json(await request('PATCH', `/accounts(${ACCOUNT})`, { 'ownerid@odata.bind': `/systemusers(${ONE})` }), 200);
+  assert.equal(row().ownerid.id, ONE);
+  assert.equal(row().owninguser?.id, ONE);
+  await json(await request('PATCH', `/accounts(${ACCOUNT})`, { 'ownerid@odata.bind': `/teams(${TEAM})` }), 200);
+  assert.equal(row().ownerid.id, TEAM);
+  assert.equal(row().owningteam?.id, TEAM);
+  const read = await json(await request('GET', `/accounts(${ACCOUNT})?$select=_ownerid_value`), 200);
+  assert.equal(read._ownerid_value, TEAM);
+});

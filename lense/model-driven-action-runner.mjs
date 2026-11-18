@@ -408,7 +408,7 @@ export function modelDrivenActionAvailability({ origin, actions = [] }) {
       if (typeof query !== 'string' || query.length > 100 || /[\x00-\x1f\x7f]/.test(query))
         fail('Enter a user search of at most 100 characters.', 'error');
       const filter =
-        'isdisabled eq false and applicationid eq null' +
+        'isdisabled eq false and azureactivedirectoryobjectid ne null' +
         (query.trim()
           ? ` and (contains(fullname,'${query.trim().replaceAll("'", "''")}') or contains(domainname,'${query.trim().replaceAll("'", "''")}'))`
           : '');
@@ -434,7 +434,7 @@ export function modelDrivenActionAvailability({ origin, actions = [] }) {
           'Active native users',
           ['Name', 'Domain', 'User ID', 'Directory object ID'],
           choices.map((user) => [user.name, user.domain, user.id, user.objectId]),
-          'Only enabled non-application users with directory identities are selectable. Showing at most 100 results.',
+          'Enabled users with a Microsoft Entra object ID, application users included. Showing at most 100 results.',
         ),
         users: choices,
       };
@@ -513,12 +513,24 @@ export function modelDrivenActionAvailability({ origin, actions = [] }) {
           label.type = 'button';
           label.textContent = name;
           label.dataset.paqModelLogicalName = '';
+          label.title = `Copy ${name}`;
           label.style.cssText =
-            'font:11px Consolas,monospace;color:#005a9e;background:#eff6fc;border:1px solid #c7e0f4;padding:2px 4px;';
+            'font:11px Consolas,monospace;color:#005a9e;background:#eff6fc;border:1px solid #c7e0f4;padding:2px 4px;align-self:center;flex:none;height:auto;margin-right:4px;cursor:copy;';
+          // The click answers on the label itself: it says the name was copied, or that the browser refused.
+          const answer = (text) => {
+            label.textContent = text;
+            clearTimeout(label.paqAnswer);
+            label.paqAnswer = setTimeout(() => {
+              label.textContent = name;
+            }, 1500);
+          };
           label.addEventListener('click', (event) => {
             event.preventDefault();
             event.stopPropagation();
-            navigator.clipboard?.writeText(name).catch(() => {});
+            Promise.resolve(navigator.clipboard?.writeText(name) ?? Promise.reject(new Error('no clipboard'))).then(
+              () => answer(`${name} ✓ copied`),
+              () => answer(`${name}: copy blocked`),
+            );
           });
           node.prepend(label);
           state.labels.push(label);
@@ -648,13 +660,22 @@ export function modelDrivenActionAvailability({ origin, actions = [] }) {
     } else if (action === 'form:refresh-autosave-off') {
       requireForm();
       if (!form.data.refresh) fail('Native form refresh is unavailable.');
-      if (
-        safe(() => form.data.entity.getIsDirty()) &&
-        !globalThis.confirm('Discard unsaved changes and refresh this native record?')
-      )
-        fail('The draft was kept.', 'cancelled');
+      // On a dirty form the native app asks itself (Unsaved changes: Save and continue, Discard changes or close), so
+      // Lense adds no second prompt. The refresh settles either way; the form state and the saved record's modifiedon
+      // say which answer was given.
+      const dirty = safe(() => form.data.entity.getIsDirty()) === true,
+        id = safe(() => recordId()),
+        savedAt = async () =>
+          id ? (await get(`${(await metadata(entity())).EntitySetName}(${id})?$select=modifiedon`)).modifiedon : null;
+      const before = dirty ? await savedAt() : null;
       await form.data.refresh(false);
-      outcome = result('Record refreshed', 'Refreshed without saving. Autosave behavior was not changed.');
+      if (dirty && safe(() => form.data.entity.getIsDirty()) === true)
+        fail('The draft was kept: the native Unsaved changes prompt was closed.', 'cancelled');
+      const saved = dirty && before !== null && (await savedAt()) !== before;
+      let message = 'Refreshed without saving. Autosave behavior was not changed.';
+      if (saved) message = 'The native prompt saved the draft (Save and continue), then the record was refreshed.';
+      else if (dirty) message = 'Refreshed without saving; the draft was discarded. Autosave behavior was not changed.';
+      outcome = result('Record refreshed', message);
     } else if (action === 'form:clone-record') {
       requireForm();
       if (!xrm?.Navigation?.openForm) fail('Native create-form navigation is unavailable.');

@@ -2147,6 +2147,26 @@ test("None-owned and intersect tables take their parent's privilege noun", () =>
   }
 });
 
+// @test-kind unproven: environment metadata shows the privilege table declares no privileges (OwnershipType None, Privileges []), which proves the metadata fact, not the access outcome
+test('the privilege table declares no privilege of its own: any principal reads it, nobody writes it', async () => {
+  const store = await standardSeeded();
+  const p = createPrincipals(store, SETTINGS);
+  const admin = p.resolve({ oid: ADMIN_OID }).user,
+    none = p.resolve({ oid: NOROLE_OID }).user;
+  for (const user of [admin, none])
+    assert.equal(p.authorize({ user, entity: 'privilege', operation: 'read' }), DEPTH.Global);
+  assert.equal(p.readFilter({ user: none, entity: 'privilege' }), null);
+  assert.throws(
+    () => p.authorize({ user: admin, entity: 'privilege', operation: 'create' }),
+    denial('PrivilegeDenied', '0x80040220'),
+  );
+  // Tables that declare privileges stay gated for a principal without roles.
+  assert.throws(
+    () => p.authorize({ user: none, entity: 'role', operation: 'read' }),
+    denial('PrivilegeDenied', '0x80040220'),
+  );
+});
+
 // Startup wiring: the Solution schema is passed to seeding and to the principals (dataverse-api), so a check with no schema argument
 // names the privilege the way the seeding did. The table's SchemaName differs from its capitalised logical name.
 test('a Solution table seeded at startup: the create check with no schema argument uses the same SchemaName as the seeding', async () => {
