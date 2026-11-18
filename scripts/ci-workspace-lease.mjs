@@ -93,8 +93,10 @@ function takeClaim(claim) {
         fs.renameSync(staged, claim);
         return true;
       } catch (error) {
-        if (!['EEXIST', 'ENOTEMPTY', 'EPERM', 'EACCES'].includes(error.code) || !fs.existsSync(claim)) throw error;
-        if (!removeEndedClaim(claim)) return false;
+        // The holder may have released the claim between the refused move and this look: then move again, once.
+        const released = !fs.existsSync(claim);
+        if (!['EEXIST', 'ENOTEMPTY', 'EPERM', 'EACCES'].includes(error.code) || (released && attempt)) throw error;
+        if (!released && !removeEndedClaim(claim)) return false;
       }
     }
     return false;

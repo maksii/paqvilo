@@ -404,3 +404,25 @@ test('a recorded PID reused by a process that ended while its identity was read 
     false,
   );
 });
+
+test('a lane joins the lease when the membership guard is released while its own claim is refused', async (t) => {
+  const directory = checkout(t),
+    environment = {};
+  const release = await acquireCiWorkspaceLease(directory, environment);
+  ownedFixture(t).add(release);
+  // Two lanes start together: the move of this lane's claim is refused while the other lane holds the guard, and that
+  // lane has released it by the time the refusal is inspected.
+  const rename = fs.renameSync;
+  let refused = 0;
+  t.mock.method(fs, 'renameSync', (from, to) => {
+    if (path.basename(String(to)) === 'membership' && refused === 0) {
+      refused += 1;
+      throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' });
+    }
+    return rename(from, to);
+  });
+  const finish = await acquireCiWorkspaceLease(directory, { ...environment }, { inherit: true });
+  assert.equal(refused, 1);
+  await finish();
+  await release();
+});
