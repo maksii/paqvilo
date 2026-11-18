@@ -95,7 +95,7 @@ export class OverlaySession extends EventEmitter {
     return session;
   }
 
-  /** @param {Awaited<ReturnType<import('./config.mjs').loadConfig>>} cfg */
+  /** @param {Awaited<ReturnType<typeof import('./config.mjs').loadConfig>>} cfg */
   constructor(cfg, prepared = {}) {
     super();
     this.cfg = cfg;

@@ -6,7 +6,7 @@ import path from 'node:path';
 import { once } from 'node:events';
 import { before, after } from 'node:test';
 import { chromium } from 'playwright-core';
-import ts from 'typescript';
+import { syntaxNodes } from '../../test/estree.mjs';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
 import { signInContext } from '../testing/session.mjs';
@@ -49,12 +49,24 @@ export function appOrigins(sim, origin) {
 
 const MODULE_BASE = 'http://served.invalid';
 
+const MODULE_REFERENCES = new Set([
+  'ImportDeclaration',
+  'ExportNamedDeclaration',
+  'ExportAllDeclaration',
+  'ImportExpression',
+]);
+// The specifier text of a module reference: a string literal, or a template literal without substitutions.
+const specifierOf = ({ source }) =>
+  source?.type === 'TemplateLiteral' && !source.expressions.length ? source.quasis[0].value.cooked : source?.value;
+
 // Every relative module specifier a source file imports: static, side-effect, re-export and literal dynamic imports.
+// Text that is not a JavaScript module (JSON, a stylesheet) has no module references.
 const relativeImports = (source) =>
-  ts
-    .preProcessFile(source, true, true)
-    .importedFiles.map((file) => file.fileName)
-    .filter((specifier) => /^\.\.?\//.test(specifier));
+  syntaxNodes(source)
+    .filter((node) => MODULE_REFERENCES.has(node.type))
+    .map(specifierOf)
+    .filter((specifier) => typeof specifier === 'string' && /^\.\.?\//.test(specifier))
+    .toArray();
 
 /**
  * The modules an entry module imports, transitively, keyed by the path each is served at: the entry at `servedPath`,

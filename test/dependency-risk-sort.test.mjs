@@ -7,7 +7,6 @@ import path from 'node:path';
 import { Linter } from 'eslint';
 import parser from '@typescript-eslint/parser';
 import sonarjs from 'eslint-plugin-sonarjs';
-import ts from 'typescript';
 import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
 
 const source = fs.readFileSync(new URL('../scripts/dependency-risk-acceptance.mjs', import.meta.url), 'utf8');
@@ -17,15 +16,22 @@ function findings(t, text) {
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const filename = path.join(directory, 'policy.mjs');
   fs.writeFileSync(filename, text);
-  const program = ts.createProgram([filename], {
-    allowJs: true,
-    checkJs: true,
-    noEmit: true,
-    typeRoots: [],
-    target: ts.ScriptTarget.ESNext,
-    module: ts.ModuleKind.NodeNext,
-    moduleResolution: ts.ModuleResolutionKind.NodeNext,
-  });
+  fs.writeFileSync(
+    path.join(directory, 'tsconfig.json'),
+    JSON.stringify({
+      compilerOptions: {
+        allowJs: true,
+        checkJs: true,
+        noEmit: true,
+        typeRoots: [],
+        target: 'esnext',
+        module: 'nodenext',
+        moduleResolution: 'nodenext',
+      },
+      files: ['policy.mjs'],
+    }),
+  );
+  const program = parser.createProgram('tsconfig.json', directory);
   return new Linter({ cwd: directory }).verify(
     text,
     [

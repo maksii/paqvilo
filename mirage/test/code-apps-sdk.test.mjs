@@ -1,8 +1,8 @@
 // @test-kind unproven: local model of the code-apps SDK executor and its partial clients; no native recording yet.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { tsc } from '../../test/tsc.mjs';
 import { createCodeAppSdkExecutor } from '../lib/code-apps-sdk.js';
 
 test('SDK executor maps source names, forwards options, and preserves pagination', async () => {
@@ -163,24 +163,17 @@ test('partial SDK clients fail unimplemented features with explicit NotSimulated
 
 // @test-kind tooling: verifies the public SDK declaration compiles for a strict consumer.
 test('SDK declaration accepts a strict TypeScript consumer with a partial client', () => {
-  const compiler = fileURLToPath(new URL('../../node_modules/typescript/bin/tsc', import.meta.url));
   const fixture = fileURLToPath(new URL('./fixtures/code-apps-sdk-consumer.mts', import.meta.url));
-  assert.doesNotThrow(() =>
-    execFileSync(
-      process.execPath,
-      [
-        compiler,
-        '--strict',
-        '--noEmit',
-        '--module',
-        'nodenext',
-        '--moduleResolution',
-        'nodenext',
-        '--target',
-        'es2022',
-        fixture,
-      ],
-      { stdio: 'pipe' },
-    ),
-  );
+  const checked = tsc([
+    '--strict',
+    '--noEmit',
+    '--module',
+    'nodenext',
+    '--moduleResolution',
+    'nodenext',
+    '--target',
+    'es2022',
+    fixture,
+  ]);
+  assert.equal(checked.status, 0, checked.output);
 });

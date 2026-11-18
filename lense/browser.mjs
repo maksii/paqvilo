@@ -23,7 +23,7 @@ const BROWSER_CLOSE_GUARD_MS = 30_000;
 const DEBUGGER_POLL_MS = 200;
 
 /**
- * @param {Awaited<ReturnType<import('./config.mjs').loadConfig>>} cfg
+ * @param {Awaited<ReturnType<typeof import('./config.mjs').loadConfig>>} cfg
  * @param {{headless?: boolean, profileDir?: string, debugPort?: number, hangGuardMs?: number, closeGuardMs?: number}} [overrides]
  * @returns {Promise<{context: import('playwright-core').BrowserContext, attached: boolean, close: () => Promise<void>}>}
  */

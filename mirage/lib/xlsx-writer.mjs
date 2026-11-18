@@ -7,7 +7,7 @@ const XML_HEADER = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
 const SHEET_NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
 const REL_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
 const PACKAGE_RELS_NS = 'http://schemas.openxmlformats.org/package/2006/relationships';
-const ILLEGAL_XML_CHARACTERS = /[^\t\n\r -퟿-�\u{10000}-\u{10FFFF}]/gu;
+const ILLEGAL_XML_CHARACTERS = /[^\t\n\r -\uD7FF\uE000-\uFFFD\u{10000}-\u{10FFFF}]/gu;
 const FORBIDDEN_SHEET_NAME_CHARACTERS = /[[\]:*?/\\]/g;
 const XML_ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' };
 const DOS_DATE_1980 = 0x0021;

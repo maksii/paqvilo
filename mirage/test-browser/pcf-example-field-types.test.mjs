@@ -1,10 +1,12 @@
+// @test-kind contract: the shipped example field controls' own designed behaviour (typed outputs, nulls, choices, disabled state, cleanup) under a locally built component context.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
 import { once } from 'node:events';
-import ts from 'typescript';
+import { transformWithOxc } from 'vite';
+import { fileURLToPath } from 'node:url';
 import { sharedBrowser } from './shared-browser.mjs';
 import { ownedFixture } from '../testing/owned-fixture.mjs';
 const chrome = sharedBrowser();
@@ -16,11 +18,13 @@ test('each manifest field example loads independently and keeps typed outputs, n
     if (!file.href.startsWith(root.href)) return response.writeHead(404).end();
     try {
       const source = await fs.readFile(file, 'utf8');
-      response.writeHead(200, { 'content-type': 'text/javascript' }).end(
-        ts.transpileModule(source, {
-          compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
-        }).outputText,
-      );
+      // Each source is transpiled on its own; the example's tsconfig (and its build dependencies) is not consulted.
+      const { code } = await transformWithOxc(source, fileURLToPath(file), {
+        target: 'es2022',
+        tsconfig: false,
+        sourcemap: false,
+      });
+      response.writeHead(200, { 'content-type': 'text/javascript' }).end(code);
     } catch {
       response.writeHead(404).end();
     }

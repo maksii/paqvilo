@@ -40,8 +40,10 @@ four PCF controls, the SDK client packages), the NuGet SDK gates and plug-in pro
 - **PCF peers.** pcf-scripts declares TypeScript 4/5 and ESLint 8/9 peers, which cap the PCF examples' TypeScript and
   ESLint versions. Installs do not bypass peer validation. The PCF projects override `applicationinsights`,
   `@opentelemetry/instrumentation-http` and `minimatch` to remove inherited advisories.
-- **TypeScript 7** needs upstream parser support (typescript-eslint) before the root can move; Dependabot ignores
-  TypeScript major updates.
+- **TypeScript 7** removes the compiler library API that typescript-eslint and eslint-plugin-sonarjs load. Both cap
+  TypeScript below 6.1 (a peer range and a direct dependency), so the root stays on TypeScript 6 until both accept 7;
+  Dependabot ignores TypeScript major updates. Repository code does not load the compiler as a library: tests
+  type-check through its command line (`test/tsc.mjs`) and source inspection uses Vite's parser.
 - **Portal runtime libraries.** jQuery 3.7.1, Moment 2.31.0 and the Bootstrap compatibility layer reproduce the portal
   runtime surface; Dependabot ignores jQuery and Moment so routine upgrades do not change emulator behavior.
 - **Plug-in examples** keep their `net462` deployment target; their compiler advances with the SDK. The solution
@@ -56,5 +58,6 @@ four PCF controls, the SDK client packages), the NuGet SDK gates and plug-in pro
 Upstream metadata: [Node releases](https://nodejs.org/dist/index.json),
 [.NET releases](https://builds.dotnet.microsoft.com/dotnet/release-metadata/releases-index.json),
 [pcf-scripts](https://registry.npmjs.org/pcf-scripts/latest),
-[typescript-eslint](https://registry.npmjs.org/typescript-eslint/latest) and
+[typescript-eslint](https://registry.npmjs.org/typescript-eslint/latest),
+[eslint-plugin-sonarjs](https://registry.npmjs.org/eslint-plugin-sonarjs/latest) and
 [GitHub runner images](https://github.com/actions/runner-images).
