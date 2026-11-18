@@ -446,7 +446,7 @@ const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // The client parses Int64 values past 2^53 as their exact digits, so a string fixture value compares exactly.
 function sameValue(live, want) {
   if (typeof want === 'string' && typeof live === 'string')
-    return GUID.test(want) ? live.toLowerCase() === want.toLowerCase() : live.replace(/\r\n/g, '\n') === want;
+    return GUID.test(want) ? live.toLowerCase() === want.toLowerCase() : live.replaceAll('\r\n', '\n') === want;
   if (typeof want === 'number' && typeof live === 'number')
     return Math.abs(live - want) <= 1e-9 * Math.max(1, Math.abs(want));
   if (typeof want === 'string' && typeof live === 'number') return String(live) === want;

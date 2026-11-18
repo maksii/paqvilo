@@ -129,4 +129,4 @@ function print(value, pad, prefix, suffix) {
 }
 
 /** JSON text exactly as the repository's Prettier configuration formats it, so regeneration leaves no diff. */
-export const formatJson = (value) => print(JSON.parse(JSON.stringify(value)), '', '', '') + '\n';
+export const formatJson = (value) => print(JSON.parse(JSON.stringify(value)), '', '', '') + '\n'; // NOSONAR: JSON round trip semantics differ from structuredClone
