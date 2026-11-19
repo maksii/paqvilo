@@ -10,6 +10,7 @@ import { navigationCommitBudget } from '../lib/navigation-budget.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { preserveNavigationEvidence } from '../test/navigation-evidence-fixture.mjs';
 import { PROCESS_SLOTS } from '../test/process-slots.mjs';
+import { ACCEPTANCE_HANG_GUARD_MS } from './shared-browser.mjs';
 
 function fixtureApi(pathname, res, fallback) {
   if (!pathname.startsWith('/__sim/api/')) return false;
@@ -437,7 +438,7 @@ async function gatedSubmitFlow(
 const TESTS_IN_PARALLEL = Math.min(4, PROCESS_SLOTS);
 // The runner's action budget for these flows, not a product budget under test. Tests that assert a budget set their
 // own; the rest keep this one, so no step ends by elapsed time on a loaded host. Order is controlled by gates.
-const HANG_GUARD_ACTION_MS = 120_000;
+const HANG_GUARD_ACTION_MS = ACCEPTANCE_HANG_GUARD_MS;
 // The reserve a wait used, recomputed from the remaining budget that wait recorded. Only the first wait of a
 // budget is measured this way: later hops of a chain reuse its reserve.
 function reserveFor(wait) {
@@ -684,12 +685,13 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
     const result = await runAcceptance({
       localUrl: `http://127.0.0.1:${server.address().port}`,
       outputDir: path.join(directory, 'evidence'),
+      timeout: HANG_GUARD_ACTION_MS,
       flows: kinds.map((kind) => ({
         name: kind,
         steps: [
           { action: 'navigate', path: '/' + kind },
           // A refused or failed write can stay pending until settlement ends. Neither step asserts a deadline, so both
-          // keep the runner's action budget.
+          // keep the hang guard.
           { action: 'click', frame: '#child', selector: '#send' },
           { action: 'settle' },
         ],

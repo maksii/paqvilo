@@ -6670,6 +6670,7 @@ export async function createSimulator(options) {
           frameReadiness.decorate(injectLocalHead(document, localOverrides), {
             path: url.pathname,
             observed: config().observed ?? portal.observed,
+            head: req.method === 'HEAD',
           }),
           csrf,
           renderedRevision,

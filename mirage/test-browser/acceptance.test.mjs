@@ -14,14 +14,14 @@ import {
 } from '../../test-browser/helpers/fixture-diagnostics.mjs';
 import { signInContext } from '../testing/session.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
-import { loopbackServer } from './shared-browser.mjs';
+import { ACCEPTANCE_HANG_GUARD_MS, loopbackServer } from './shared-browser.mjs';
 import { PROCESS_SLOTS } from '../test/process-slots.mjs';
 
 // Each test launches its own browser. Respect the lane's process budget as well as the outer file concurrency.
 const TESTS_IN_PARALLEL = Math.min(4, PROCESS_SLOTS);
 // The runner's action budget for every flow here. Steps that are meant to fail set their own shorter budget; the
 // rest keep this one, so a loaded host never ends a step by elapsed time.
-const ACTION_BUDGET_MS = 120_000;
+const ACTION_BUDGET_MS = ACCEPTANCE_HANG_GUARD_MS;
 const diagnosticFixtures = new WeakMap();
 function ownAcceptanceFixture(t, root) {
   const fixture = { root, registration: null, completedReports: 0 };

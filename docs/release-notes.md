@@ -262,6 +262,9 @@ this session.` A trusted CLR plug-in descriptor with
 - Mirage no longer ends with a V8 fatal error when a worker thread finishes, and a listener error is recorded as
   `LISTENER_ERROR` instead of ending the process.
 - Trace timelines stay correct after a system clock step (VM or WSL time sync, laptop resume).
+- Modal and quick view frames on a slow or loaded machine no longer report loaded before their form scripts ran: the 5 s
+  limit of Mirage's frame load ordering starts when the page requests its marker image, once its parser-blocking
+  scripts have run, not when the document is served.
 - Stored dates (record `createdon` and `modifiedon`, audit, async jobs, flow runs, approvals, queue items) no longer go
   backwards when the system clock steps back by up to 5 s (VM or WSL time sync). A larger change, such as
   `fixedClock.set` to an earlier hour, is honoured, and applying a preset or replacing the state starts from the clock

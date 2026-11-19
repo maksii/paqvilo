@@ -90,8 +90,12 @@ the attach-file control) successful controls to the form action, including modal
   attribute enablement and a desktop binding; list and subgrid PCF hosting keeps the native grid
   ([code components](code-components.md)).
 - Modal and quick-view documents hold the browser's `load` event with a pending image until jQuery's ready promise and
-  one more macrotask (DOMContentLoaded without jQuery); a throwing ready callback does not block others. It fails open
-  after 5 s with `FRAME_READY_TIMEOUT`, and `FRAME_LOAD_ORDERING` records the release order. Set
+  one more macrotask (DOMContentLoaded without jQuery); a throwing ready callback does not block others. A marker script
+  at the end of the body requests the image once every parser-blocking script before it has arrived and run, so
+  delivery time does not count: the hold fails open 5 s after that request with `FRAME_READY_TIMEOUT`, and
+  `FRAME_LOAD_ORDERING` records the release order. A page whose inline script is blocked (a site
+  `Content-Security-Policy` without `'unsafe-inline'`) is not held; after 60 s `FRAME_READY_TIMEOUT` with ordering
+  `never-requested` reports it. Set
   `observed.modalLoadOrdering: immediate` (with evidence) to opt out. This stabilizes local timing only.
 - A form subgrid on Document Locations renders the local document control
   ([SharePoint](sharepoint.md#adapter-a-dataverse-document-integration)).

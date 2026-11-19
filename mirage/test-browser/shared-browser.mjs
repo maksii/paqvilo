@@ -14,6 +14,12 @@ import { ownedFixture, drainFixture } from '../testing/owned-fixture.mjs';
 import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 
 /**
+ * Hang guard only: runAcceptance's `timeout` for a run whose test asserts no deadline. The runner's 15 s default is a
+ * product budget, and a loaded host can spend it on one navigation; a test that asserts a deadline passes its own.
+ */
+export const ACCEPTANCE_HANG_GUARD_MS = 120_000;
+
+/**
  * Launches one browser for the calling test file; `page(t)` opens a fresh context that closes with the test, among the
  * test's ownedFixture closers and so before its directories are removed (node:test runs t.after hooks first in, first out).
  */

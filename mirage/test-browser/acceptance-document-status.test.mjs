@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { runAcceptance } from '../acceptance.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
-import { loopbackServer } from './shared-browser.mjs';
+import { ACCEPTANCE_HANG_GUARD_MS, loopbackServer } from './shared-browser.mjs';
 
 // /hidden removes its navigation timing entries, so nothing in the page records the status it was served with.
 const PAGES = {
@@ -44,6 +44,7 @@ test('a navigate step reads the committed document status when page.goto answers
   const result = await runAcceptance({
     localUrl: origin,
     outputDir: root,
+    timeout: ACCEPTANCE_HANG_GUARD_MS,
     flows: [
       {
         name: 'observable',
