@@ -67,11 +67,14 @@ function recordingHandler(writes, respond) {
 // result: settle() requires a finite timeout.
 const STEP_GUARD_MS = 600_000;
 
-async function openDriver(t, directory, reference, frame, options = {}) {
+async function openDriver(t, directory, reference, frame, { coClient = false, ...options } = {}) {
   const { context, cdpUrl } = await launchOwnedBrowser(path.join(directory, 'profile'));
+  // A second debugging client that resumes every target the moment it is attached, ahead of the driver.
+  const resuming = coClient ? await openResumingClient(cdpUrl) : null;
   let driver;
   ownedFixture(t).add(async () => {
     await driver?.close();
+    await resuming?.close();
     await context.close();
     await closeServer(reference);
     await closeServer(frame);
@@ -102,39 +105,91 @@ fetch('/nested-save', { method: 'POST', body: 'x' }).catch(() => {}).finally(() 
 </script>`;
 
 /**
+ * The driver's guards of the popups opened in the browser, in creation order. `decided(n)` settles once the driver has
+ * decided each of the first n popups: the browser acknowledged the driver's auto-attach of it (every frame or worker it
+ * creates from then on waits for the driver), or the driver resumed or closed it without that, or the popup sent a
+ * request before the driver had attached it. Another debugging client (the test's own Playwright connection, on
+ * Chromium) can resume a popup before the driver guards it, and the frames it creates meanwhile are stopped only by the
+ * write net, so a fixture that asserts the page interception serves a popup's document once it is decided. A driver
+ * that stops guarding popups opens the gate too, and the test then fails on its named assertions.
+ */
+function popupGuards() {
+  const decisions = [];
+  const decide = (index) => (decisions[index] ??= Promise.withResolvers());
+  return {
+    decide,
+    created: 0,
+    decided: (count) => Promise.all(Array.from({ length: count }, (_, index) => decide(index).promise)),
+  };
+}
+
+/**
  * The driver's WebSocket, unchanged except that it records the fate of each named write: the fate settles, naming the
  * session kind, when the driver fails a paused request whose path is that write's. The type of every attached target is
- * added to `targetTypes`.
+ * added to `targetTypes`, and the driver's decision on each popup to `guards`. A popup's auto-attach is sent only once
+ * `holdAutoAttach` settles.
  */
-function recordFailedWrites(fates, targetTypes = new Set()) {
+function recordFailedWrites(fates, targetTypes = new Set(), { guards = popupGuards(), holdAutoAttach = null } = {}) {
   const key = (sessionId, requestId) => `${sessionId ?? 'browser'}:${requestId}`;
   return class FailedWrites extends WebSocket {
     #pausedPaths = new Map();
+    #popupTargets = new Map();
+    #attachedPopups = new Set();
+    #popupSessions = new Map();
+    #autoAttachCommands = new Map();
     constructor(url) {
       super(url);
       // Registered before the driver's handler, so a paused request is recorded before the driver answers it.
-      this.addEventListener('message', (event) => {
-        const { method, params, sessionId } = JSON.parse(event.data);
-        if (method === 'Target.attachedToTarget') targetTypes.add(params.targetInfo.type);
-        if (method === 'Fetch.requestPaused')
-          this.#pausedPaths.set(key(sessionId, params.requestId), new URL(params.request.url).pathname);
-      });
+      this.addEventListener('message', (event) => this.#observe(JSON.parse(event.data)));
+    }
+    #observe({ id, method, params, sessionId }) {
+      if (method === 'Target.attachedToTarget') targetTypes.add(params.targetInfo.type);
+      // The browser announces a popup (discovered by the write net) before any client can attach or resume it.
+      if (method === 'Target.targetCreated' && params.targetInfo.type === 'page' && params.targetInfo.openerId)
+        this.#popupTargets.set(params.targetInfo.targetId, guards.created++);
+      // A popup the driver's browser session auto-attached (an explicit attach is not waiting for a debugger).
+      if (method === 'Target.attachedToTarget' && !sessionId && params.waitingForDebugger) {
+        const index = this.#popupTargets.get(params.targetInfo.targetId);
+        if (index !== undefined) this.#popupSessions.set(params.sessionId, index);
+        this.#attachedPopups.add(params.targetInfo.targetId);
+      }
+      if (this.#autoAttachCommands.has(id)) guards.decide(this.#autoAttachCommands.get(id)).resolve();
+      // A popup request on the browser session before the driver attached the popup: it runs unguarded.
+      if (method === 'Fetch.requestPaused' && !sessionId && !this.#attachedPopups.has(params.frameId))
+        this.#decided(this.#popupTargets.get(params.frameId));
+      if (method === 'Target.targetDestroyed') this.#decided(this.#popupTargets.get(params.targetId));
+      if (method === 'Fetch.requestPaused')
+        this.#pausedPaths.set(key(sessionId, params.requestId), new URL(params.request.url).pathname);
+    }
+    #decided(index) {
+      if (index !== undefined) guards.decide(index).resolve();
     }
     send(data) {
-      const { method, params, sessionId } = JSON.parse(data);
+      const { id, method, params, sessionId } = JSON.parse(data);
       if (method === 'Fetch.failRequest')
         fates
           .get(this.#pausedPaths.get(key(sessionId, params.requestId)))
           ?.resolve(sessionId ? 'blocked by the page interception' : 'blocked by the write net');
-      super.send(data);
+      // A popup the driver resumes or closes is decided, guarded or not.
+      if (method === 'Runtime.runIfWaitingForDebugger') this.#decided(this.#popupSessions.get(sessionId));
+      if (method === 'Target.closeTarget') this.#decided(this.#popupTargets.get(params.targetId));
+      const popupAutoAttach = method === 'Target.setAutoAttach' && this.#popupSessions.has(sessionId);
+      if (popupAutoAttach) this.#autoAttachCommands.set(id, this.#popupSessions.get(sessionId));
+      if (!popupAutoAttach || !holdAutoAttach) {
+        super.send(data);
+        return;
+      }
+      holdAutoAttach.then(() => {
+        if (this.readyState === WebSocket.OPEN) super.send(data);
+      });
     }
   };
 }
 
 /**
  * A fixture server handler: a write resolves its fate as reached and is recorded in `writes`; a report resolves its
- * arrival; /all-reported is answered "done" once every report has arrived; any other read is answered with
- * `respond(url)` as HTML.
+ * arrival; /all-reported is answered "done" once every report has arrived; any other read is answered with what
+ * `respond(url)` resolves to, as HTML.
  */
 function fateHandler({ writes, fates, reports }, respond) {
   return async (req, res) => {
@@ -155,7 +210,7 @@ function fateHandler({ writes, fates, reports }, respond) {
       return;
     }
     res.setHeader('content-type', 'text/html; charset=utf-8');
-    res.end(respond(req.url));
+    res.end(await respond(req.url));
   };
 }
 
@@ -170,13 +225,20 @@ test('a cross-site frame and a popup opened by a reference page send no write th
   const reports = withResolvers(['/frame-reported', '/popup-reported', '/nested-reported']);
   const frame = await listen(fateHandler({ writes: posts.frame, fates, reports }, () => framePage));
   const frameOrigin = `http://localhost:${frame.address().port}`;
-  const pages = { '/popup': popupPage, '/nested': nestedPage };
+  const guards = popupGuards();
+  // Each popup's document is served once the driver has decided it and every popup opened before it.
+  const pages = { '/popup': [1, popupPage], '/nested': [2, nestedPage] };
   const reference = await listen(
-    fateHandler({ writes: posts.reference, fates, reports }, (url) => pages[url] ?? referencePage(frameOrigin)),
+    fateHandler({ writes: posts.reference, fates, reports }, async (url) => {
+      if (!pages[url]) return referencePage(frameOrigin);
+      const [popups, page] = pages[url];
+      await guards.decided(popups);
+      return page;
+    }),
   );
   const targetTypes = new Set();
   const driver = await openDriver(t, directory, reference, frame, {
-    WebSocketImpl: recordFailedWrites(fates, targetTypes),
+    WebSocketImpl: recordFailedWrites(fates, targetTypes, { guards }),
   });
   // The probe's read is answered once all three children reported, each after its own write attempt settled.
   const observation = await driver.page('/', {
@@ -314,46 +376,76 @@ const openerFramePage = `<!doctype html><title>Portal</title><main>Reference pag
 window.open('/popup-frame', 'popup-frame');
 </script>`;
 
-// @test-kind security: a cross-site frame inside a popup of the driver sends no write, and its interception routes end with the popup
-test('a cross-site frame inside a popup of the driver sends no write, and no interception route outlives the popup', async (t) => {
-  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-mirage-popup-frame-'));
-  const posts = { reference: [], frame: [] };
-  const fates = withResolvers(['/frame-save']);
-  const reports = withResolvers(['/frame-reported']);
-  const frame = await listen(fateHandler({ writes: posts.frame, fates, reports }, () => framePage));
-  const frameOrigin = `http://localhost:${frame.address().port}`;
-  const reference = await listen(
-    fateHandler({ writes: posts.reference, fates, reports }, (url) =>
-      url === '/popup-frame' ? framedPopupPage(frameOrigin) : openerFramePage,
-    ),
-  );
-  const targetTypes = new Set();
-  const driver = await openDriver(t, directory, reference, frame, {
-    WebSocketImpl: recordFailedWrites(fates, targetTypes),
+// Another client resumes the popup the moment it is attached, and the driver's guard of the popup (its auto-attach) is
+// sent only once the popup's document is held for it, or, when no fixture holds it, once the frame's write has met its
+// fate. A guarded popup's frame meets the driver's frame interception. A frame the popup created before its guard is the
+// order the browser-session write net exists for: the net stops its write and reports it under the opener tab.
+const popupFrameCases = [
+  {
+    name: 'a cross-site frame inside a popup of the driver sends no write, and no interception route outlives the popup',
+    guardedDocument: true,
+    fate: 'blocked by the page interception',
+  },
+  {
+    name: 'a cross-site frame a popup creates before the driver guards the popup is stopped by the write net and reported for the tab',
+    guardedDocument: false,
+    fate: 'blocked by the write net',
+  },
+];
+
+for (const { name, guardedDocument, fate } of popupFrameCases) {
+  // @test-kind security: a cross-site frame inside a popup of the driver sends no write, whether the popup is guarded before the frame exists or after, and its interception routes end with the popup
+  test(name, async (t) => {
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-mirage-popup-frame-'));
+    const posts = { reference: [], frame: [] };
+    const fates = withResolvers(['/frame-save']);
+    const reports = withResolvers(['/frame-reported']);
+    const frame = await listen(fateHandler({ writes: posts.frame, fates, reports }, () => framePage));
+    const frameOrigin = `http://localhost:${frame.address().port}`;
+    const guards = popupGuards();
+    const popupHeld = Promise.withResolvers();
+    const reference = await listen(
+      fateHandler({ writes: posts.reference, fates, reports }, async (url) => {
+        if (url !== '/popup-frame') return openerFramePage;
+        if (guardedDocument) {
+          popupHeld.resolve();
+          await guards.decided(1);
+        }
+        return framedPopupPage(frameOrigin);
+      }),
+    );
+    const targetTypes = new Set();
+    const driver = await openDriver(t, directory, reference, frame, {
+      coClient: true,
+      WebSocketImpl: recordFailedWrites(fates, targetTypes, {
+        guards,
+        holdAutoAttach: Promise.race([popupHeld.promise, fates.get('/frame-save').promise]),
+      }),
+    });
+    const observation = await driver.page('/', {
+      roots: ['main'],
+      settleMs: 0,
+      quietMs: 300,
+      probeExpression: 'fetch("/all-reported").then((response) => response.text())',
+    });
+    assert.ok(
+      targetTypes.has('iframe'),
+      'the frame inside the popup ran in its own process, under its own frame session',
+    );
+    assert.equal(observation.probeValue, 'done', 'the frame inside the popup reported after its write attempt settled');
+    assert.deepEqual(
+      await settledFates(fates),
+      { '/frame-save': fate },
+      'the write of the frame inside the popup was stopped by the driver',
+    );
+    assert.deepEqual(posts, { reference: [], frame: [] }, 'no write of the framed popup reached a fixture server');
+    assert.ok(
+      observation.blockedWrites.some((item) => item.method === 'POST' && /frame-save/.test(item.url)),
+      'the write of the frame inside the popup is named as blocked for the tab that opened the popup',
+    );
+    assert.equal(await driver.remainingRoutes(), 0, 'the popup closed, so no interception route remains for it');
   });
-  const observation = await driver.page('/', {
-    roots: ['main'],
-    settleMs: 0,
-    quietMs: 300,
-    probeExpression: 'fetch("/all-reported").then((response) => response.text())',
-  });
-  assert.ok(
-    targetTypes.has('iframe'),
-    'the frame inside the popup ran in its own process, under its own frame session',
-  );
-  assert.equal(observation.probeValue, 'done', 'the frame inside the popup reported after its write attempt settled');
-  assert.deepEqual(
-    await settledFates(fates),
-    { '/frame-save': 'blocked by the page interception' },
-    'the write of the frame inside the popup was stopped by the driver',
-  );
-  assert.deepEqual(posts, { reference: [], frame: [] }, 'no write of the framed popup reached a fixture server');
-  assert.ok(
-    observation.blockedWrites.some((item) => /frame-save/.test(item.url)),
-    'the write of the frame inside the popup is named as blocked',
-  );
-  assert.equal(await driver.remainingRoutes(), 0, 'the popup closed, so no interception route remains for it');
-});
+}
 
 // @test-kind tooling: the signed-in driver sends If-None-Match with a read, so a conditional read gets the reference's conditional answer
 test('the signed-in driver sends the If-None-Match header of a conditional read', async (t) => {
@@ -779,19 +871,23 @@ test('a dedicated worker of a popup opened by the page runs, and its write is re
   const fates = withResolvers(['/worker-save']);
   // The worker's read is its report: it is sent after the worker's write attempt has settled, whatever its outcome.
   const reports = withResolvers(['/worker-read']);
+  const guards = popupGuards();
   const popupServer = await listen((req, res) => {
     if (req.url === '/worker.js') {
       res.setHeader('content-type', 'text/javascript');
       res.end(workerScript);
       return;
     }
-    fateHandler({ writes: posts.popup, fates, reports }, () => workerPopupPage)(req, res);
+    // The popup's document, and with it its worker, is served once the driver has decided the popup.
+    fateHandler({ writes: posts.popup, fates, reports }, () => guards.decided(1).then(() => workerPopupPage))(req, res);
   });
   const popupOrigin = `http://localhost:${popupServer.address().port}`;
   const reference = await listen(
     fateHandler({ writes: posts.reference, fates, reports }, () => workerOpenerPage(popupOrigin)),
   );
-  const driver = await openDriver(t, directory, reference, popupServer, { WebSocketImpl: recordFailedWrites(fates) });
+  const driver = await openDriver(t, directory, reference, popupServer, {
+    WebSocketImpl: recordFailedWrites(fates, new Set(), { guards }),
+  });
   // The probe's read is answered once the popup's worker has reported.
   const observation = await driver.page('/', {
     roots: ['main'],

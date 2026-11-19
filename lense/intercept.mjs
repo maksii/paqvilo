@@ -195,7 +195,7 @@ function settlesWithin(promise, ms, clock) {
  * @param {import('playwright-core').BrowserContext} context
  * @param {string} origin only requests to this origin are intercepted
  * @param {(route: object) => Promise<void>} handler
- * @param {{bypassCSP?: boolean, ownsPage?: (page: object) => boolean, onError?: (error: Error) => void, clock?: {setTimeout: Function, clearTimeout: Function}}} [options] report failures on later tabs; ownership is checked before changing browser settings; clock arms the guards that end a setup (30 s) or release (5 s) command that never answers (default: the global timers)
+ * @param {{bypassCSP?: boolean, ownsPage?: (page: object) => boolean, onError?: (error: Error) => void, clock?: {setTimeout: Function, clearTimeout: Function}}} [options] report failures on later tabs; ownership is checked before changing browser settings; clock arms the guards that end a setup (30 s) or release (5 s) command that never answers, and is passed to the attachment for its own command guards (default: the global timers)
  * @returns {Promise<() => Promise<void>>} releases this overlay's interception sessions
  */
 export async function interceptOrigin(context, origin, handler, options = {}) {
@@ -526,7 +526,7 @@ export async function interceptOrigins(
         const report = (error) => {
           if (!stopped && !record.closed) provenanceIncomplete(error);
         };
-        const opening = Promise.resolve().then(() => onAttach({ page, cdp, configure, report }));
+        const opening = Promise.resolve().then(() => onAttach({ page, cdp, configure, report, clock }));
         opening
           .then((attachment) => {
             if (record.closed)

@@ -1133,7 +1133,8 @@ async function processInstances(api, c) {
     found.push(...(await instanceRowsOf(api, c, mapping, lookup, entityId)));
   }
   // Equal modifiedon (whole seconds) lists the later inserted row first (table order; across flows, the later flow's).
-  found.reverse().sort((x, y) => (Date.parse(y.modifiedon) || 0) - (Date.parse(x.modifiedon) || 0));
+  found.reverse();
+  found.sort((x, y) => (Date.parse(y.modifiedon) || 0) - (Date.parse(x.modifiedon) || 0));
   return collection(c, found);
 }
 

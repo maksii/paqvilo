@@ -165,7 +165,7 @@ export function createDomProvenanceTransport(context, configs) {
   const registries = registryAccess({ kind: 'script', slot, bootstrap, secret, releaseKey });
   return {
     slot,
-    async onAttach({ cdp, configure, report }) {
+    async onAttach({ cdp, configure, report, clock = globalThis }) {
       const controller = new AbortController();
       setMaxListeners(0, controller.signal);
       const contexts = new Map(),
@@ -206,7 +206,7 @@ export function createDomProvenanceTransport(context, configs) {
         let release, timer;
         const expired = new Promise((resolve) => {
           release = () => resolve(null);
-          timer = setTimeout(() => {
+          timer = clock.setTimeout(() => {
             lost(new Error(`${method} did not answer within ${COMMAND_HANG_MS} ms`));
             release();
           }, COMMAND_HANG_MS);
@@ -221,7 +221,7 @@ export function createDomProvenanceTransport(context, configs) {
             expired,
           ]);
         } finally {
-          clearTimeout(timer);
+          clock.clearTimeout(timer);
           ending?.removeEventListener('abort', release);
         }
       };

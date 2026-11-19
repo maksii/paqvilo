@@ -236,7 +236,7 @@ export function createPortalProvenanceTransport(context, configs, { onDescriptor
   const registries = registryAccess({ kind: 'page', slot, bootstrap, secret, releaseKey });
   return {
     slot,
-    async onAttach({ cdp, configure, report }) {
+    async onAttach({ cdp, configure, report, clock = globalThis }) {
       const controller = new AbortController();
       setMaxListeners(0, controller.signal);
       const contexts = new Map(),
@@ -259,7 +259,7 @@ export function createPortalProvenanceTransport(context, configs, { onDescriptor
       const send = async (method, params = {}, rejected = null) => {
         let timer, onAbort;
         const aborted = new Promise((resolve) => {
-          timer = setTimeout(() => {
+          timer = clock.setTimeout(() => {
             lost(new Error(`${method} did not answer within ${COMMAND_HANG_MS} ms`));
             resolve(null);
           }, COMMAND_HANG_MS);
@@ -269,7 +269,7 @@ export function createPortalProvenanceTransport(context, configs, { onDescriptor
         try {
           return await Promise.race([cdp.send(method, params).catch(() => rejected), aborted]);
         } finally {
-          clearTimeout(timer);
+          clock.clearTimeout(timer);
           controller.signal.removeEventListener('abort', onAbort);
         }
       };

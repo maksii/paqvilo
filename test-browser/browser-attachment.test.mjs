@@ -263,11 +263,12 @@ async function pendingResponseEdit(t, { delayRequestObservation = false, release
   // Names the step a cut or failed run was waiting on; a run that reaches its end reports nothing.
   let stage = 'fixture',
     crashed = false,
-    repairResult;
+    repairResult,
+    repairOutcome;
   const { browser, origin } = await lateInspectionFixture(t, '<!doctype html><input id="draft">', async () => {
     if (stage !== 'done')
       t.diagnostic(
-        `pending-response edit stopped at: ${stage}; page crashed: ${crashed}; repairLateDocument returned: ${JSON.stringify(repairResult) ?? 'not observed'}`,
+        `pending-response edit stopped at: ${stage}; page crashed: ${crashed}; repairLateDocument returned: ${JSON.stringify(repairResult) ?? 'not observed'}; repair navigation: ${repairOutcome ?? 'pending'}`,
       );
     releaseObservation?.();
     release?.();
@@ -298,6 +299,24 @@ async function pendingResponseEdit(t, { delayRequestObservation = false, release
   await page.goto(origin);
   stage = 'initial focus';
   await page.locator('#draft').focus();
+  // Input.insertText reaching the browser before the corrective response does not order them in the renderer: a
+  // commit processed first replaces the document, the edit never reaches it, and Chromium never answers the command.
+  // The page's first beforeinput listener holds the renderer in a synchronous request until the browser has
+  // accepted the response, so the edit is applied, and cancels, with the answered response pending in the browser.
+  const editApplying = Promise.withResolvers(),
+    accepted = Promise.withResolvers();
+  if (releaseWithEdit)
+    await page.evaluate(() =>
+      addEventListener(
+        'beforeinput',
+        () => {
+          const request = new XMLHttpRequest();
+          request.open('GET', '/edit-applying', false);
+          request.send();
+        },
+        { capture: true, once: true },
+      ),
+    );
   stage = 'interception setup';
   let requested, reported, settled, repairRequest;
   const held = new Promise((resolve) => {
@@ -307,7 +326,10 @@ async function pendingResponseEdit(t, { delayRequestObservation = false, release
       reported = resolve;
     }),
     completed = new Promise((resolve) => {
-      settled = resolve;
+      settled = (outcome) => {
+        repairOutcome ??= outcome;
+        resolve(outcome);
+      };
     });
   const gate = new Promise((resolve) => {
     release = resolve;
@@ -342,14 +364,19 @@ async function pendingResponseEdit(t, { delayRequestObservation = false, release
     context,
     origin,
     async (route) => {
-      if (route.request().isNavigationRequest()) {
+      const navigation = route.request().isNavigationRequest();
+      if (new URL(route.request().url()).pathname === '/edit-applying') {
+        editApplying.resolve();
+        await accepted.promise;
+      } else if (navigation) {
         requested();
         await gate;
       }
-      await route.fulfill({
+      const acknowledged = await route.fulfill({
         headers: { 'content-type': 'text/html' },
         body: '<!doctype html><input id="draft"><script>window.localPreview=true</script>',
       });
+      if (navigation) accepted.resolve(acknowledged);
     },
     { onError: reported },
   );
@@ -368,8 +395,18 @@ async function pendingResponseEdit(t, { delayRequestObservation = false, release
     editingStarted = true;
     stage = 'insertText';
     const typing = page.keyboard.insertText('draft entered after repair started');
-    // The held response reaches the browser while it still applies the edit's cancellation.
-    if (releaseWithEdit) release();
+    if (releaseWithEdit) {
+      stage = 'edit applying in the old document';
+      await editApplying.promise;
+      release();
+      stage = 'corrective response accepted';
+      assert.equal(
+        await accepted.promise,
+        true,
+        'the browser accepts the corrective response before the edit cancels it',
+      );
+      stage = 'insertText';
+    }
     await typing;
     stage = 'insertText answered';
   })();
