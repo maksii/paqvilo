@@ -17,6 +17,7 @@ import { recordedIdentityNow } from '../lense/process-identity.mjs';
 import { ownedSessions } from '../lense/commands/mirage.mjs';
 import { workspace, fixtureStatusURL, alive, stopped } from './mirage-stop-workspace.mjs';
 import { runtimeHost, runMirage, hintCommands } from './helpers/mirage-in-process.mjs';
+import { SCENARIO_HANG_GUARD_MS } from './helpers/bounded-command.mjs';
 
 const execute = promisify(execFile);
 
@@ -99,42 +100,47 @@ async function hostileHints(t, work) {
 }
 
 // One test per native shell: each replays for real once.
+// Hang guard only: four shell replays, a real start, its detached runtime and the shell replay that stops it.
 for (const shell of nativeShells)
-  test(`${shell} hands every hint over as the argv it holds, and its replay stops a detached runtime that outlived its start`, async (t) => {
-    if (!(await shellInstalled(shell))) return t.skip(`${shell} is not installed`);
-    const work = await workspace(t);
-    const elsewhere = path.join(work.directory, 'empty replay directory');
-    await fs.mkdir(elsewhere);
-    const { project, literal, hints } = await hostileHints(t, work);
-    // The shell runs each hint with the toolkit replaced by a program that prints the argv it was given.
-    await Promise.all(
-      hints.map(async (hint) => {
-        const printed = (await work.replay(hint, true, elsewhere, shell)).stdout.trim().split(/\r?\n/);
-        assert.deepEqual(printed.map(JSON.parse), hintCommands(hint).commands, hint);
-      }),
-    );
-    assert.ok(
-      hintCommands(hints[1]).commands[0].includes(literal),
-      'the complete project path is one argument of the hint',
-    );
-    // The real command line starts a real runtime and ends; the runtime keeps answering.
-    const session = await work.start([
-      '--project',
-      project,
-      '--state',
-      path.join(work.directory, 'real.json'),
-      '--port',
-      '0',
-    ]);
-    assert.equal(session.started, true);
-    const record = await recordOf(session);
-    const status = await (await fetch(fixtureStatusURL(session))).json();
-    assert.equal(status.runtime.kind, 'model-driven');
-    assert.equal(status.simulation.level, 'dry-run');
-    await work.replay(session.stop, false, elsewhere, shell);
-    await stopped(session);
-    await assertEnded(record);
-  });
+  test(
+    `${shell} hands every hint over as the argv it holds, and its replay stops a detached runtime that outlived its start`,
+    { timeout: SCENARIO_HANG_GUARD_MS },
+    async (t) => {
+      if (!(await shellInstalled(shell))) return t.skip(`${shell} is not installed`);
+      const work = await workspace(t);
+      const elsewhere = path.join(work.directory, 'empty replay directory');
+      await fs.mkdir(elsewhere);
+      const { project, literal, hints } = await hostileHints(t, work);
+      // The shell runs each hint with the toolkit replaced by a program that prints the argv it was given.
+      await Promise.all(
+        hints.map(async (hint) => {
+          const printed = (await work.replay(hint, true, elsewhere, shell)).stdout.trim().split(/\r?\n/);
+          assert.deepEqual(printed.map(JSON.parse), hintCommands(hint).commands, hint);
+        }),
+      );
+      assert.ok(
+        hintCommands(hints[1]).commands[0].includes(literal),
+        'the complete project path is one argument of the hint',
+      );
+      // The real command line starts a real runtime and ends; the runtime keeps answering.
+      const session = await work.start([
+        '--project',
+        project,
+        '--state',
+        path.join(work.directory, 'real.json'),
+        '--port',
+        '0',
+      ]);
+      assert.equal(session.started, true);
+      const record = await recordOf(session);
+      const status = await (await fetch(fixtureStatusURL(session))).json();
+      assert.equal(status.runtime.kind, 'model-driven');
+      assert.equal(status.simulation.level, 'dry-run');
+      await work.replay(session.stop, false, elsewhere, shell);
+      await stopped(session);
+      await assertEnded(record);
+    },
+  );
 
 /** What the lifecycle reads of a discovery record: the keys and the kind of each value. */
 const shapeOf = (record) =>
@@ -188,44 +194,54 @@ async function stopsGracefully(work, session, selectors) {
   await assert.rejects(fs.access(session.discovery), { code: 'ENOENT' }, 'a runtime that shut down removed its record');
 }
 
-test('a real portal runtime publishes and answers what its double does, reports its own administration address and shuts down when asked', async (t) => {
-  const work = await workspace(t);
-  const selectors = (name) => {
-    const config = path.join(work.directory, name, 'catalogue.json');
-    return ['--config', config, '--repo', work.alternate, '--port', '0'];
-  };
-  for (const name of ['real', 'double']) await work.writeCatalogue(selectors(name)[1]);
-  const session = await sameContract(t, work, selectors);
-  await alive(session);
-  // The printed administration address is the one the runtime reports on its own admin port.
-  const reported = await (await fetch(new URL('/_sim/api/status', session.url))).json();
-  assert.equal(session.adminUrl, reported.adminUrl);
-  assert.notEqual(new URL(session.adminUrl).port, new URL(session.url).port);
-  await stopsGracefully(work, session, selectors('real').slice(0, 4));
-});
+// Hang guard only: it runs real CLI commands and the runtimes they start; on a loaded slow host that is slow, not hung.
+test(
+  'a real portal runtime publishes and answers what its double does, reports its own administration address and shuts down when asked',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const work = await workspace(t);
+    const selectors = (name) => {
+      const config = path.join(work.directory, name, 'catalogue.json');
+      return ['--config', config, '--repo', work.alternate, '--port', '0'];
+    };
+    for (const name of ['real', 'double']) await work.writeCatalogue(selectors(name)[1]);
+    const session = await sameContract(t, work, selectors);
+    await alive(session);
+    // The printed administration address is the one the runtime reports on its own admin port.
+    const reported = await (await fetch(new URL('/_sim/api/status', session.url))).json();
+    assert.equal(session.adminUrl, reported.adminUrl);
+    assert.notEqual(new URL(session.adminUrl).port, new URL(session.url).port);
+    await stopsGracefully(work, session, selectors('real').slice(0, 4));
+  },
+);
 
-test('a real standalone catalogue runtime publishes and answers what its double does, reads the catalogue it was started from and shuts down when asked', async (t) => {
-  const work = await workspace(t);
-  const selectors = (name) => [
-    '--config',
-    path.join(work.directory, name, 'catalogue.yml'),
-    '--site',
-    'first',
-    '--port',
-    '0',
-  ];
-  for (const name of ['real', 'double']) {
-    await fs.mkdir(path.join(work.directory, name));
-    await fs.writeFile(
-      selectors(name)[1],
-      'sites:\n  first:\n    mirage:\n      runtime: {kind: model-driven}\n      simulation: {level: dry-run}\n',
-    );
-  }
-  const session = await sameContract(t, work, selectors);
-  const setup = await (await fetch(new URL('/_setup/api/status', session.url))).json();
-  assert.equal(setup.layers.shared.file, selectors('real')[1]);
-  await stopsGracefully(work, session, selectors('real').slice(0, 4));
-});
+// Hang guard only: it runs real CLI commands and the runtimes they start; on a loaded slow host that is slow, not hung.
+test(
+  'a real standalone catalogue runtime publishes and answers what its double does, reads the catalogue it was started from and shuts down when asked',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const work = await workspace(t);
+    const selectors = (name) => [
+      '--config',
+      path.join(work.directory, name, 'catalogue.yml'),
+      '--site',
+      'first',
+      '--port',
+      '0',
+    ];
+    for (const name of ['real', 'double']) {
+      await fs.mkdir(path.join(work.directory, name));
+      await fs.writeFile(
+        selectors(name)[1],
+        'sites:\n  first:\n    mirage:\n      runtime: {kind: model-driven}\n      simulation: {level: dry-run}\n',
+      );
+    }
+    const session = await sameContract(t, work, selectors);
+    const setup = await (await fetch(new URL('/_setup/api/status', session.url))).json();
+    assert.equal(setup.layers.shared.file, selectors('real')[1]);
+    await stopsGracefully(work, session, selectors('real').slice(0, 4));
+  },
+);
 
 // @test-kind security+contract: owned status probes admit only a numeric port on the fixed HTTP loopback endpoint
 test('owned status probes admit only a numeric port on the fixed HTTP loopback endpoint', () => {

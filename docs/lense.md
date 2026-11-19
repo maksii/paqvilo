@@ -152,7 +152,10 @@ exit status.
   is set). A second signal is absorbed; a third writes `Forced exit: cleanup did not finish.` and exits 130 (SIGINT) or
   143 (SIGTERM).
 - `mirage start` refuses settings that differ from a live runtime owning the same state file, naming its pid and file;
-  stop it or pass `--state <other file>`. `mirage status` and `mirage stop` select runtimes by the
+  stop it or pass `--state <other file>`. A runtime recorded on another host (Windows and WSL, or runners sharing a
+  checkout) is never listed, selected, pruned or signalled here, and a start on its state file is refused; when that
+  host no longer runs it, delete its entry from the ownership file the message names. `mirage stop` exits 2 only for a
+  selected runtime of this host it could not verify. `mirage status` and `mirage stop` select runtimes by the
   [scoping rule](../mirage/docs/toolkit-integration.md#which-runtimes-status-and-stop-select). If `mirage dev` is
   killed instead of closed, its browser closes but the runtimes it started keep running: `mirage status` lists them and
   `mirage stop` stops them. Each `mirage` action accepts only the options its `--help` lists; another fails with

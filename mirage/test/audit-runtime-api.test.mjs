@@ -8,6 +8,7 @@ import http from 'node:http';
 import { createSimulator } from '../api.mjs';
 import { readStateFile } from '../lib/state-storage.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 
 async function fixture(t, options = {}) {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-audit-runtime-api-'));
@@ -179,18 +180,23 @@ test('diagnostics endpoint includes import diagnostics counted by status and exp
   assert.ok(app.state().diagnostics.some((item) => item.code === diagnostic.code));
 });
 
-test('reset reuses project confinement defaults while returning runtime changes to their seed', async (t) => {
-  const { app, call } = await fixture(t, { contentPolicyDefaults: { confinePortalPages: true } });
-  assert.match((await fetch(app.url)).headers.get('content-security-policy'), /connect-src 'self'/);
-  const changed = await call('/__sim/api/config', 'PATCH', { confinePortalPages: false });
-  assert.equal(changed.status, 200, await changed.text());
-  assert.equal((await fetch(app.url)).headers.get('content-security-policy'), null);
-  const reset = await call('/__sim/api/reset', 'POST', {});
-  assert.equal(reset.status, 200, await reset.text());
-  assert.equal(app.state().config.confinePortalPages, true);
-  assert.equal(app.state().config.contentPolicySource, 'project defaults');
-  assert.match((await fetch(app.url)).headers.get('content-security-policy'), /connect-src 'self'/);
-});
+// Hang guard only: it drives a runtime, the CLI or child processes through this file's fixtures; on a loaded slow host that is slow, not hung.
+test(
+  'reset reuses project confinement defaults while returning runtime changes to their seed',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const { app, call } = await fixture(t, { contentPolicyDefaults: { confinePortalPages: true } });
+    assert.match((await fetch(app.url)).headers.get('content-security-policy'), /connect-src 'self'/);
+    const changed = await call('/__sim/api/config', 'PATCH', { confinePortalPages: false });
+    assert.equal(changed.status, 200, await changed.text());
+    assert.equal((await fetch(app.url)).headers.get('content-security-policy'), null);
+    const reset = await call('/__sim/api/reset', 'POST', {});
+    assert.equal(reset.status, 200, await reset.text());
+    assert.equal(app.state().config.confinePortalPages, true);
+    assert.equal(app.state().config.contentPolicySource, 'project defaults');
+    assert.match((await fetch(app.url)).headers.get('content-security-policy'), /connect-src 'self'/);
+  },
+);
 
 test('both administration aliases use the JSON error contract when the origin is rejected', async (t) => {
   const { app } = await fixture(t);

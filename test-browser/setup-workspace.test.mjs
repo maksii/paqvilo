@@ -16,6 +16,8 @@ import { startSetupServer } from '../lense/setup/server.mjs';
 import { createSimulator } from '../mirage/server.mjs';
 import { startOnFreePort } from './helpers/debug-port.mjs';
 import { setupNotice } from './helpers/setup-notice.mjs';
+import { browserClosed, stopOwnedChild } from './helpers/workspace-task.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../test/helpers/bounded-command.mjs';
 
 // These cases exercise the All settings view of /_setup/ (Quick setup is the default for a new browser).
 const allSettings = (page) =>
@@ -45,10 +47,14 @@ async function newPage(t, options) {
 async function temporary(t) {
   const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-setup-browser-'));
   t.resources = [];
-  t.after(async () => {
-    await drainFixture(t.resources.toReversed());
-    await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-  });
+  // Hang guard only: the drain waits for owned processes to stop; a hook gets the lane timeout without its own.
+  t.after(
+    async () => {
+      await drainFixture(t.resources.toReversed());
+      await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    },
+    { timeout: SCENARIO_HANG_GUARD_MS },
+  );
   return directory;
 }
 
@@ -127,6 +133,376 @@ test('background preview polling preserves an unsaved settings draft', async (t)
     fetch('/_setup/api/preview', { headers: { accept: 'application/json' } }).then((r) => r.json()),
   );
   assert.equal(await input.inputValue(), './unsaved-draft');
+});
+
+// ---- Presses and repaints. A repaint replaces the pressed control, and a click whose press began on a replaced node
+// is lost; these cases hold the answer that repaints until the control is pressed.
+const GATE = 'x-paqvilo-test-gate';
+const YAML_SAVE = 'form[data-form=yaml] button[type=submit]';
+const noPreview = (data) => ({ ...data, sessions: [] });
+// A preview found running for the site "example"; its live views are read through the relay, answered below.
+const livePreview = (data) => ({ ...data, sessions: [{ site: 'example', ready: true, url: 'http://127.0.0.1:9/' }] });
+const isRelay = (name) => (response) => new URL(response.url()).pathname === `/_setup/api/runtime/${name}`;
+/**
+ * Holds the page's preview polls. Install before goto: the status read while loading passes, every later poll waits
+ * for handled(). Relay reads of a found preview are refused at once unless `relay` routes them.
+ */
+async function holdPreviewPolls(t, page, { relay } = {}) {
+  const queue = [];
+  let arrived = null,
+    loaded = false,
+    closed = false;
+  t.resources.push(() => {
+    closed = true;
+    for (const release of queue.splice(0)) release(null);
+  });
+  await page.route('**/_setup/api/runtime/**', (route) =>
+    relay ? relay(route) : route.fulfill({ status: 503, json: { error: { message: 'No fixture runtime.' } } }),
+  );
+  await page.route('**/_setup/api/preview', async (route) => {
+    const request = route.request();
+    if (closed || !loaded || request.method() !== 'GET' || request.headers()[GATE]) {
+      loaded ||= request.method() === 'GET' && !request.headers()[GATE];
+      return route.continue();
+    }
+    const answer = await new Promise((resolve) => {
+      queue.push(resolve);
+      arrived?.();
+      arrived = null;
+    });
+    if (!answer) return route.continue().catch(() => {});
+    const response = await route.fetch();
+    await route.fulfill({ response, json: answer(await response.json()) });
+  });
+  return {
+    /** Answers the next poll with answer(server answer) and resolves once the page has handled it. */
+    async handled(answer = (data) => data, { relayed = false } = {}) {
+      if (!queue.length) {
+        const arrival = new Promise((resolve) => {
+          arrived = resolve;
+        });
+        await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+        await arrival;
+      }
+      const answered = page.waitForResponse(
+          (item) => item.url().endsWith('/_setup/api/preview') && !item.request().headers()[GATE],
+        ),
+        // A change of the found preview rereads its status and packs before the page repaints.
+        reads = relayed ? Promise.all(['status', 'packs'].map((name) => page.waitForResponse(isRelay(name)))) : null;
+      queue.shift()(answer);
+      await (await answered).finished();
+      await reads;
+      await gate(page);
+    },
+  };
+}
+// The page handles an answer in a task queued when its body arrived; an answer it requests now arrives after it, so
+// the handling (and any repaint) has run when this returns.
+const gate = (page) =>
+  page.evaluate(
+    (header) =>
+      fetch('/_setup/api/preview', { headers: { accept: 'application/json', [header]: '1' } }).then((r) => r.json()),
+    GATE,
+  );
+/** Counts configuration writes; each waits until the returned release(). */
+async function holdWrites(t, page) {
+  const writes = { count: 0 };
+  let release;
+  const saving = new Promise((resolve) => {
+    release = resolve;
+  });
+  t.resources.push(() => release());
+  await page.route('**/_setup/api/config', async (route) => {
+    writes.count++;
+    await saving;
+    await route.continue();
+  });
+  writes.release = release;
+  return writes;
+}
+async function pointerDownOn(page, locator) {
+  await locator.scrollIntoViewIfNeeded();
+  const box = await locator.boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+}
+/** After the press ended on the YAML Save: it started saving, the save succeeds and wrote once. */
+async function assertSavedOnce(page, writes, end) {
+  const response = page.waitForResponse(
+    (item) => item.url().endsWith('/_setup/api/config') && item.request().method() === 'POST',
+  );
+  await end();
+  assert.equal(await page.locator('#content').getAttribute('aria-busy'), 'true', 'the pressed Save started saving');
+  writes.release();
+  assert.equal((await response).ok(), true);
+  await setupNotice(page, /^Saved\./);
+  assert.equal(writes.count, 1);
+}
+const markSave = (page) =>
+  page.evaluate((selector) => {
+    globalThis.markedSave = document.querySelector(selector);
+  }, YAML_SAVE);
+const markedSaveShown = (page) => page.evaluate(() => globalThis.markedSave.isConnected);
+async function advancedPage(t, sites) {
+  const work = await temporary(t);
+  await prepareProject(work, { name: 'press-poll', noPack: true, ...(sites ? { sites } : {}) });
+  const server = await startSetupServer({ directory: work, processEnv: {} });
+  t.resources.push(() => server.close());
+  const page = await newPage(t);
+  await allSettings(page);
+  return { page, server };
+}
+const opened = (page) =>
+  page.waitForFunction(() => document.querySelector('#content')?.getAttribute('aria-busy') === null);
+
+test('the first preview poll leaves a pressed Save in place so its click saves once', async (t) => {
+  const { page, server } = await advancedPage(t);
+  const polls = await holdPreviewPolls(t, page),
+    writes = await holdWrites(t, page);
+  await page.goto(server.url + '#advanced');
+  await opened(page);
+  await pointerDownOn(page, page.locator(YAML_SAVE));
+  await polls.handled(noPreview);
+  await assertSavedOnce(page, writes, () => page.mouse.up());
+});
+
+test('the first preview poll after loading does not repaint an unchanged preview state', async (t) => {
+  const { page, server } = await advancedPage(t);
+  const polls = await holdPreviewPolls(t, page);
+  await page.goto(server.url + '#advanced');
+  await opened(page);
+  await markSave(page);
+  await polls.handled(noPreview);
+  assert.equal(await markedSaveShown(page), true, 'the poll found what loading showed and left the page alone');
+});
+
+test('a preview change during a press is applied by a later poll, after the click saved', async (t) => {
+  const { page, server } = await advancedPage(t, ['example']);
+  const polls = await holdPreviewPolls(t, page),
+    writes = await holdWrites(t, page);
+  await page.goto(server.url + '#advanced');
+  await opened(page);
+  await pointerDownOn(page, page.locator(YAML_SAVE));
+  await polls.handled(livePreview, { relayed: true });
+  await assertSavedOnce(page, writes, () => page.mouse.up());
+  await markSave(page);
+  await polls.handled(livePreview, { relayed: true });
+  assert.equal(await markedSaveShown(page), false, 'the deferred preview change repaints on the next poll');
+});
+
+test('a press that ends without pointerup no longer holds back preview repaints', async (t) => {
+  const { page, server } = await advancedPage(t, ['example']);
+  const polls = await holdPreviewPolls(t, page);
+  await page.goto(server.url + '#advanced');
+  await opened(page);
+  const ends = {
+    'window blur': () => globalThis.dispatchEvent(new Event('blur')),
+    'context menu': () => document.body.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })),
+    'pointer moving with no button': () =>
+      document.body.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, buttons: 0 })),
+  };
+  let live = false;
+  for (const [name, end] of Object.entries(ends)) {
+    await markSave(page);
+    await pointerDownOn(page, page.locator('#advanced h2').first());
+    await page.evaluate(end);
+    live = !live;
+    await polls.handled(live ? livePreview : noPreview, { relayed: live });
+    assert.equal(await markedSaveShown(page), false, `${name} ends the press, so the preview change repaints`);
+    await page.mouse.up();
+  }
+});
+
+test('a held Space on Save keeps it in place through a preview change so its activation saves once', async (t) => {
+  const { page, server } = await advancedPage(t, ['example']);
+  const polls = await holdPreviewPolls(t, page),
+    writes = await holdWrites(t, page);
+  await page.goto(server.url + '#advanced');
+  await opened(page);
+  await page.locator(YAML_SAVE).focus();
+  await page.keyboard.down('Space');
+  await polls.handled(livePreview, { relayed: true });
+  await assertSavedOnce(page, writes, () => page.keyboard.up('Space'));
+});
+
+/** Runs trigger, which reloads the status, and asserts the load finished: the page is no longer busy. */
+async function assertLoaded(page, trigger) {
+  const reads = ['status', 'quick'].map((name) =>
+    page.waitForResponse((item) => new URL(item.url()).pathname === `/_setup/api/${name}`),
+  );
+  await trigger();
+  for (const read of reads) await (await read).finished();
+  await gate(page);
+  assert.deepEqual(
+    await page.evaluate(() => ({
+      busy: document.querySelector('#content').getAttribute('aria-busy'),
+      refresh: document.querySelector('#refresh').disabled,
+    })),
+    { busy: null, refresh: false },
+    'the load finished',
+  );
+}
+// A draft makes Refresh ask before it discards it.
+async function unsavedDraft(page) {
+  const yaml = page.locator('form[data-form=yaml] textarea');
+  await yaml.fill((await yaml.inputValue()) + '\n# unsaved draft\n');
+}
+
+test('Enter held on Refresh does not hold back the load it started', async (t) => {
+  const { page, server } = await advancedPage(t);
+  await page.goto(server.url + '#advanced');
+  await opened(page);
+  await page.locator('#refresh').focus();
+  // Enter clicks on keydown; its release is not needed to finish anything.
+  await assertLoaded(page, () => page.keyboard.down('Enter'));
+  await page.keyboard.up('Enter');
+});
+
+test('Enter on Refresh with unsaved changes and an accepted dialog loads, and a following save works', async (t) => {
+  const { page, server } = await advancedPage(t);
+  await page.goto(server.url + '#advanced');
+  await opened(page);
+  await unsavedDraft(page);
+  page.once('dialog', (dialog) => dialog.accept());
+  await page.locator('#refresh').focus();
+  // The Enter key is still down while the dialog answers: its release went to the dialog.
+  await assertLoaded(page, () => page.keyboard.down('Enter'));
+  await page.keyboard.up('Enter');
+  await saveForm(page, page.locator('form[data-form=yaml]'));
+});
+
+test('Space held on a button when a dialog opens leaves no press that blocks the load', async (t) => {
+  const { page, server } = await advancedPage(t);
+  await page.goto(server.url + '#advanced');
+  await opened(page);
+  await unsavedDraft(page);
+  await page.locator(YAML_SAVE).focus();
+  await page.keyboard.down('Space');
+  page.once('dialog', (dialog) => dialog.accept());
+  // Its release would go to the dialog; the page never sees it.
+  await assertLoaded(page, () => page.locator('#refresh').click());
+  await page.evaluate(() => document.activeElement?.blur());
+  await page.keyboard.up('Space');
+  await saveForm(page, page.locator('form[data-form=yaml]'));
+});
+
+test('a preview start answer arriving during a press leaves the pressed control in place', async (t) => {
+  const work = await temporary(t);
+  await prepareProject(work, { name: 'press-start', sites: ['example'], noPack: true });
+  const server = await startSetupServer({ directory: work, processEnv: {} });
+  t.resources.push(() => server.close());
+  const page = await newPage(t);
+  let arrived, release;
+  const started = new Promise((resolve) => {
+      arrived = resolve;
+    }),
+    answer = new Promise((resolve) => {
+      release = resolve;
+    });
+  t.resources.push(() => release());
+  // Polls are held, so only the start answer repaints the steps while the test presses.
+  await holdPreviewPolls(t, page);
+  // The start is refused by the fixture: nothing starts, and the answer still repaints the steps.
+  await page.route('**/_setup/api/preview', async (route) => {
+    if (route.request().method() !== 'POST') return route.fallback();
+    arrived();
+    await answer;
+    await route.fulfill({ status: 500, json: { error: { message: 'Fixture refused the start.' } } });
+  });
+  await page.goto(server.url);
+  await opened(page);
+  await page.locator('#quick [data-preview=start]').click();
+  await started;
+  await pointerDownOn(page, page.locator('#quick [data-quick-edit=kind]'));
+  const answered = page.waitForResponse(
+    (item) => item.url().endsWith('/_setup/api/preview') && item.request().method() === 'POST',
+  );
+  release();
+  await (await answered).finished();
+  await gate(page);
+  await page.mouse.up();
+  assert.equal(await page.locator('#quick-kind form').count(), 1, 'the pressed Change opened its step');
+});
+
+/**
+ * Every website of the page runs (each poll finds them ready), so the page reads runtime details through the relay.
+ * hold(start) runs start; the next relay status read waits, and hold() resolves once it arrived and the page handled
+ * the live map read started with it. release() answers the held read and resolves once the page
+ * has handled its answer. Other relay reads are refused at once.
+ */
+async function runningWebsites(t, page, sites) {
+  let arrived,
+    answer,
+    holding = false;
+  t.resources.push(() => answer?.());
+  await page.route('**/_setup/api/runtime/**', async (route) => {
+    if (holding && new URL(route.request().url()).pathname === '/_setup/api/runtime/status') {
+      holding = false;
+      await new Promise((resolve) => {
+        answer = resolve;
+        arrived();
+      });
+    }
+    await route.fulfill({ status: 503, json: { error: { message: 'No fixture runtime.' } } });
+  });
+  await page.route('**/_setup/api/preview', async (route) => {
+    if (route.request().method() !== 'GET') return route.continue();
+    const response = await route.fetch(),
+      data = await response.json();
+    await route.fulfill({
+      response,
+      json: { ...data, sessions: sites.map((site) => ({ site, ready: true, url: 'http://127.0.0.1:9/' })) },
+    });
+  });
+  return {
+    async hold(start) {
+      holding = true;
+      const read = new Promise((resolve) => {
+          arrived = resolve;
+        }),
+        // The step also reads the live map; its refused answer repaints the page before the test presses anything.
+        map = page.waitForResponse(isRelay('dashboard'));
+      await Promise.all([start(), read]);
+      await (await map).finished();
+      await gate(page);
+    },
+    async release() {
+      // The packs read was refused at once; the held status read is the last one the page waits for.
+      const status = page.waitForResponse(isRelay('status'));
+      answer();
+      await (await status).finished();
+      await gate(page);
+    },
+  };
+}
+
+test('runtime details read after choosing another website leave a pressed Save in place', async (t) => {
+  const { page, server } = await advancedPage(t, ['example', 'second']);
+  const websites = await runningWebsites(t, page, ['example', 'second']),
+    writes = await holdWrites(t, page);
+  await page.goto(server.url + '#advanced');
+  await opened(page);
+  await websites.hold(() =>
+    page.locator('#run-site').evaluate((select) => {
+      select.value = 'second';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    }),
+  );
+  await pointerDownOn(page, page.locator(YAML_SAVE));
+  await websites.release();
+  await assertSavedOnce(page, writes, () => page.mouse.up());
+});
+
+test('runtime details read after switching to Quick setup leave a pressed Change in place', async (t) => {
+  const { page, server } = await advancedPage(t, ['example']);
+  const websites = await runningWebsites(t, page, ['example']);
+  await page.goto(server.url + '#advanced');
+  await opened(page);
+  await websites.hold(() => page.locator('[data-view=quick]').first().click());
+  await pointerDownOn(page, page.locator('#quick [data-quick-edit=kind]'));
+  await websites.release();
+  await page.mouse.up();
+  assert.equal(await page.locator('#quick-kind form').count(), 1, 'the pressed Change opened its step');
 });
 
 test('setup UI configures a demo and opens its Mirage setup flow', async (t) => {
@@ -391,13 +767,16 @@ test('Lense dev exposes a setup panel link on a loopback fixture and closes its 
         () => undefined,
       );
   t.resources.push(async () => {
+    let closing = false;
     if (remote) {
       const cdp = await remote.newBrowserCDPSession().catch(() => null);
-      await cdp?.send('Browser.close').catch(() => {});
+      if (cdp) closing = await browserClosed(remote, cdp);
       await remote.close().catch(() => {});
     }
-    if (child?.exitCode === null) child.kill('SIGTERM');
-    await exited;
+    // Closing its browser is dev's own stop, and dev then removes what its browser left in the temporary directory.
+    // Only a dev whose browser could not be asked to close is ended at once; one that does not stop after its browser
+    // closed is ended by the hang guard of stopOwnedChild and fails the test.
+    if (child) await stopOwnedChild(child, exited, { graceful: closing });
     // Whatever answers on the released port afterwards, on a busy host, is not this project's setup server.
     if (setupUrl) assert.notEqual(await setupProject(), configFile, 'the owned setup server stops with dev');
   });
@@ -553,8 +932,18 @@ test('setup shows real loading and save feedback, prevents duplicate writes and 
   const site = page.locator('form[data-form=runtime][data-site=example]');
   await site.locator('[name=port]').fill('0');
   await saveForm(page, site);
-  assert.equal(await page.locator('details[data-section-key="runtime-example"]').evaluate((node) => node.open), true);
-  assert.equal(await site.locator('button[type=submit]').evaluate((node) => node === document.activeElement), true);
+  // Read in one page task. locator.evaluate() resolves its element and evaluates it in two round trips; a repaint
+  // between the two round trips moves the focus to the replacing button, so the resolved node would be the replaced one.
+  assert.deepEqual(
+    await page.evaluate(() => {
+      const buttons = document.querySelectorAll('form[data-form=runtime][data-site=example] button[type=submit]');
+      return {
+        open: document.querySelector('details[data-section-key="runtime-example"]')?.open,
+        focused: buttons.length === 1 && buttons[0] === document.activeElement,
+      };
+    }),
+    { open: true, focused: true },
+  );
   // A hung local write must release the editor without silently retrying an unknown outcome.
   await page.clock.install();
   let releaseTimeout,

@@ -6,7 +6,6 @@ import { adminServes, appsPath } from '../../mirage/lib/admin-origin.mjs';
 import { renderSettings } from '../../mirage/lib/render-settings.mjs';
 import fsSync from 'node:fs';
 import net from 'node:net';
-import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -29,6 +28,7 @@ import { guardShutdownSignals } from '../signal-forwarding.mjs';
 import {
   endRecordedWindowsProcess,
   isAlive,
+  lockHost,
   newStartIdentity,
   processIdentityAsync,
   recordedIdentityNow,
@@ -50,8 +50,9 @@ const recordedIdentity = (pid, { signal, recorded } = {}) => recordedIdentityNow
  * How the lifecycle commands reach the operating system's processes, as one object a caller may replace in part:
  * `spawnRuntime` starts a runtime, `identityOf` reads the identity of the process that holds a recorded PID,
  * `alive` says whether a PID is running, `kill` signals one, `openChannel` opens the endpoint a starting runtime
- * announces itself on, `portAvailable` says whether a loopback port can be bound, and `commandHint` formats the
- * commands a report advertises. The default export `mirage`
+ * announces itself on, `portAvailable` says whether a loopback port can be bound, `commandHint` formats the
+ * commands a report advertises, and `probeTimeout` replaces the limit a status gives each runtime to answer (`null`:
+ * none). The default export `mirage`
  * takes it as its fourth argument and hands it to every start, stop and status it performs, so the selection, reuse
  * and hint logic of a command runs unchanged against runtimes that are not operating-system processes.
  */
@@ -71,7 +72,8 @@ const hostOf = (host = {}) => {
     stop: (options) => stopOwnedSessions({ ...options, ...processes }),
     status: (paths, options) => {
       const { kill: ignoredKill, ...read } = processes; // NOSONAR: binding is excluded from the rest object
-      return mirageStatus(paths, { ...options, ...read });
+      const probe = host.probeTimeout === undefined ? {} : { probeTimeout: host.probeTimeout };
+      return mirageStatus(paths, { ...probe, ...options, ...read });
     },
   };
 };
@@ -112,13 +114,39 @@ export const DEFAULT_PATHS = Object.freeze(miragePaths());
 const RECORD_FOLDERS = 'record-folders.json';
 const ownershipFolder = (paths) => path.dirname(path.dirname(paths.ownershipFile));
 
-async function readRecordFolders(stateDir) {
+/** A folder as samePath compares it: its real path, letter case ignored on Windows. */
+const canonicalPath = (value) => {
+  const real = realpath(value);
+  return process.platform === 'win32' ? real.toLowerCase() : real;
+};
+/** The folders of `list` without repeats (by canonical path), first spelling kept. */
+const uniqueFolders = (list) => {
+  const seen = new Set();
+  return list.filter((folder) => {
+    const key = canonicalPath(folder);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+};
+
+/** Every folder a note records, as written. */
+async function notedFolders(stateDir) {
+  let value;
   try {
-    const value = JSON.parse(await fs.readFile(path.join(stateDir, 'mirage', RECORD_FOLDERS), 'utf8'));
-    return Array.isArray(value) ? value.filter((item) => typeof item === 'string' && path.isAbsolute(item)) : [];
+    value = JSON.parse(await fs.readFile(path.join(stateDir, 'mirage', RECORD_FOLDERS), 'utf8'));
   } catch {
     return [];
   }
+  return Array.isArray(value) ? value.filter((item) => typeof item === 'string' && path.isAbsolute(item)) : [];
+}
+
+/**
+ * The noted folders that exist now, each once: a missing folder (removed, or on a drive not mounted now) holds no
+ * record to read. It is skipped on one cheap check and stays in the note for a later read.
+ */
+async function readRecordFolders(stateDir) {
+  return uniqueFolders((await notedFolders(stateDir)).filter((item) => isDirectory(item)));
 }
 
 /**
@@ -132,7 +160,8 @@ async function rememberRecordFolder(paths, cwd = process.cwd()) {
   if (samePath(folder, local)) return;
   if (!['.paqvilo', 'paqvilo.config.yml', 'package.json'].some((name) => fsSync.existsSync(path.join(cwd, name))))
     return;
-  const known = await readRecordFolders(local);
+  // Every noted folder is kept, also one missing now: it may be on a drive that is mounted again later.
+  const known = uniqueFolders(await notedFolders(local));
   if (known.some((item) => samePath(item, folder))) return;
   await fs.mkdir(path.join(local, 'mirage'), { recursive: true });
   // ponytail: last writer wins when two starts race; a lost note only hides a runtime from this folder's bare status.
@@ -140,19 +169,23 @@ async function rememberRecordFolder(paths, cwd = process.cwd()) {
 }
 
 /** The ownership folders the selection rule above reads, the selection's own first. */
-async function recordFolders(paths, projectFile = null) {
+export async function recordFolders(paths, projectFile = null) {
   const folders = [ownershipFolder(paths), path.join(process.cwd(), '.paqvilo')];
   if (projectFile) folders.push(path.join(path.dirname(path.resolve(projectFile)), '.paqvilo'));
   const noted = [];
   for (const folder of folders) noted.push(...(await readRecordFolders(folder)));
   folders.push(...noted);
-  const unique = folders.filter((folder, index) => folders.findIndex((other) => samePath(other, folder)) === index);
-  return [paths, ...unique.slice(1).map((stateDir) => miragePaths({ stateDir }))];
+  return [
+    paths,
+    ...uniqueFolders(folders)
+      .slice(1)
+      .map((stateDir) => miragePaths({ stateDir })),
+  ];
 }
 export const DEFAULT_PORT = 8787;
 const DEFAULT_STARTUP_TIMEOUT = 120_000;
 // Start-up progress extends the silence bound, but never past this absolute cap.
-const STARTUP_ABSOLUTE_CAP = 600_000;
+export const STARTUP_ABSOLUTE_CAP = 600_000;
 const STOP_DEADLINE = 5000;
 const ACTIONS = ['init', 'start', 'dev', 'status', 'inspect', 'stop'];
 export function validateMirageAction(action) {
@@ -213,7 +246,8 @@ const realpath = (target) => {
   }
 };
 /** Shared with Solution discovery, so repeated orderings reuse parsed Solution files. */
-const SOLUTION_ORDER_CACHE = path.join(process.cwd(), '.paqvilo', 'simulator', 'cache', 'solution-discovery.json');
+// Resolved at each use from the working directory of that command, as the other `.paqvilo` paths are.
+const solutionOrderCache = () => path.join(process.cwd(), '.paqvilo', 'simulator', 'cache', 'solution-discovery.json');
 const solutionOrderOf = (cfg) => (cfg?.mirageConfig?.solutionOrder === 'explicit' ? 'explicit' : 'derived');
 const sameOrder = (a, b) => a.length === b.length && a.every((item, index) => samePath(item, b[index]));
 const rootNames = (roots) => roots.map((root) => path.basename(root)).join(' → ');
@@ -223,7 +257,7 @@ const rootNames = (roots) => roots.map((root) => path.basename(root)).join(' →
  * data scaffold apply: a root exporting a table's full definition precedes roots that only
  * extend it; independent roots keep name order. Cycles are added to `diagnostics`.
  */
-export async function derivedSolutionOrder(roots, { diagnostics = [], cacheFile = SOLUTION_ORDER_CACHE } = {}) {
+export async function derivedSolutionOrder(roots, { diagnostics = [], cacheFile = solutionOrderCache() } = {}) {
   const resolved = [...new Set(roots.map((root) => path.resolve(root)))];
   if (resolved.length < 2 || resolved.some((root) => !isDirectory(root))) return resolved;
   const { scanSolutionSources } = await import('../../mirage/lib/solution-schema.mjs');
@@ -445,8 +479,12 @@ async function saveOwnedSessions(paths, sessions, { signal } = {}) {
 const REUSED_AFTER_MS = 2000;
 
 const lockStamp = (platform) => (platform === 'linux' ? Date.now() : performance.timeOrigin + performance.now());
-/** Where this process takes its locks: its operating system and machine name. */
-const lockHost = () => `${process.platform}/${os.hostname()}`;
+/**
+ * Whether a runtime record (an ownership entry or a discovery file) was written on another host than `here`, as a
+ * lock is: its PID names a process in another process namespace (Windows and WSL, or several runners sharing one
+ * checkout), so it is never judged, pruned, removed or signalled here. A record without `host` counts as local.
+ */
+const foreignRecord = (record, here) => typeof record?.host === 'string' && record.host !== here;
 
 /** Field 22 of /proc/<pid>/stat (`self`: this process): the start in clock ticks since boot, or null when unread. */
 async function procStartTicks(pid) {
@@ -877,21 +915,81 @@ async function probeRuntime(url, fallbackSite = null, { signal, timeout = 2500 }
   return outcome(PROBE_REFUSED);
 }
 
+const platformOf = (host) => String(host).split('/', 1)[0];
+const recordKey = (entry) => `${entry.pid} ${entry.processIdentity}`;
+
+/**
+ * Which ownership records are another host's: `(entry) => boolean`. A record stamped with this platform under another
+ * machine name is this machine's own, written before its name changed (macOS renames itself with the network), when
+ * its process is alive here with its full recorded identity: on Windows a start token (128 random bits, held by the
+ * live runtime and shown on its command line before any signal), on macOS its start time to the second. Linux records
+ * are never taken over: containers on one kernel share PID numbers and start ticks, so an identity there does not tell
+ * hosts apart. Every other record stamped with another host stays foreign.
+ */
+async function foreignJudge(entries, { hostName, alive = isAlive, identityOf = recordedIdentity, signal }) {
+  const here = platformOf(hostName);
+  const adopted = new Set();
+  for (const entry of entries) {
+    if (!foreignRecord(entry, hostName) || platformOf(entry.host) !== here || !entry.processIdentity) continue;
+    if (here !== 'darwin' && !startTokenOf(entry.processIdentity)) continue;
+    if (!alive(entry.pid)) continue;
+    if ((await identityOf(entry.pid, { signal, recorded: entry.processIdentity })) === entry.processIdentity)
+      adopted.add(recordKey(entry));
+  }
+  return (entry) => foreignRecord(entry, hostName) && !adopted.has(recordKey(entry));
+}
+
+/**
+ * Whether a discovery record belongs to another host than `hostName`. A runtime stamps its discovery file with its
+ * host, which decides, unless a record this machine took over under its earlier name (`isForeign`) names that file
+ * with that host. A file without a host (an older runtime's) is foreign when a foreign ownership record names it and
+ * no local record does. Unreadable ownership records name none: the commands that need them read and report them.
+ */
+async function foreignDiscoveries(paths, hostName, isForeign, alive = isAlive) {
+  const owned = paths.ownershipFile ? await ownedSessions(paths).catch(() => []) : [];
+  const foreign = isForeign ?? (await foreignJudge(owned, { hostName, alive }));
+  const named = (wanted) =>
+    new Set(
+      owned
+        .filter((entry) => entry.discovery && foreign(entry) === wanted)
+        .map((entry) => path.resolve(entry.discovery)),
+    );
+  // Hosts with one PID number name the same file: a local record of it keeps an unstamped file local.
+  const local = named(false),
+    elsewhere = named(true);
+  const renamed = new Map(
+    owned
+      .filter((entry) => entry.discovery && foreignRecord(entry, hostName) && !foreign(entry))
+      .map((entry) => [path.resolve(entry.discovery), entry.host]),
+  );
+  return (record, file) =>
+    typeof record?.host === 'string'
+      ? foreignRecord(record, hostName) && renamed.get(path.resolve(file)) !== record.host
+      : elsewhere.has(path.resolve(file)) && !local.has(path.resolve(file));
+}
+
 /**
  * Discovered Mirage portals; `probe` asks each live process whether its runtime answers. `ready` is true for a runtime
  * that answered; `probe` says what the question showed (see probeRuntime), so a caller can tell a runtime that gave
  * no answer in time from one that is not ready.
  */
-export async function discoveries(paths = DEFAULT_PATHS, { probe = true, signal, probeTimeout, alive = isAlive } = {}) {
+export async function discoveries(
+  paths = DEFAULT_PATHS,
+  { probe = true, signal, probeTimeout, alive = isAlive, hostName = lockHost(), isForeign } = {},
+) {
   const sessions = [];
+  const foreign = await foreignDiscoveries(paths, hostName, isForeign, alive);
   for (const { record, file } of await discoveryRecords(paths, { signal })) {
     signal?.throwIfAborted();
+    // Another host's runtime: its PID says nothing here, so it is neither listed nor removed.
+    if (foreign(record, file)) continue;
     const processAlive = alive(record.pid);
     if (!processAlive) {
       await fs.rm(file, { force: true }).catch(() => {});
       continue;
     }
-    const { portals, ...base } = record;
+    // The machine name stays in the record: the sessions a status or start reports do not publish it.
+    const { portals, host: ignoredHost, ...base } = record; // NOSONAR: binding is excluded from the rest object
     const entries = Array.isArray(portals) ? portals.map((portal) => ({ ...base, ...portal, id: portal.id })) : [base];
     for (const entry of entries) {
       signal?.throwIfAborted();
@@ -962,15 +1060,36 @@ async function requestShutdown(url, { signal } = {}) {
   kill = process.kill,
   signal,
   interrupt,
+  hostName = lockHost(),
 } = {}) {
   const folders = sourceDirs ?? (sourceDir ? [sourceDir] : []);
   const owned = await ownedSessions(paths);
   const records = await discoveryRecords(paths);
+  const isForeign = await foreignJudge(owned, { hostName, alive, identityOf, signal });
+  const elsewhere = await foreignDiscoveries(paths, hostName, isForeign, alive);
   const stale = [],
     targets = [],
     unverified = [];
   const current = (entry) => identityOf(entry.pid, { signal, recorded: entry.processIdentity });
-  await classifyOwnedTargets(owned, { alive, current, folders, pids, stale, targets, unverified });
+  await classifyOwnedTargets(owned, {
+    alive,
+    current,
+    folders,
+    pids,
+    stale,
+    targets,
+    unverified,
+    isForeign,
+    ownershipFile: paths.ownershipFile,
+  });
+  // A discovery file another host's runtime wrote under the same PID number is never removed or asked to shut down.
+  const foreignFile = async (file) => {
+    try {
+      return elsewhere(JSON.parse(await fs.readFile(file, 'utf8')), file);
+    } catch {
+      return false;
+    }
+  };
   // A runtime that did not acknowledge its shutdown, or did not exit after it, is ended: only while its PID still has
   // the recorded identity. Windows ends a process at once on either signal and reads it as exited before its listening
   // port is released, so there one helper checks the identity, ends the process and waits for the observed exit
@@ -996,7 +1115,7 @@ async function requestShutdown(url, { signal } = {}) {
   };
   const results = [];
   for (const entry of targets) {
-    const record = records.find((item) => item.record.pid === entry.pid)?.record;
+    const record = records.find((item) => item.record.pid === entry.pid && !elsewhere(item.record, item.file))?.record;
     // The recorded URL is ours; a discovery URL is only used while ours is not known yet (starting).
     const urls = [
       ...new Set(
@@ -1040,7 +1159,7 @@ async function requestShutdown(url, { signal } = {}) {
   }
   const removedDiscoveries = [];
   for (const { record, file } of await discoveryRecords(paths)) {
-    if (alive(record.pid)) continue;
+    if (elsewhere(record, file) || alive(record.pid)) continue;
     await fs.rm(file, { force: true });
     removedDiscoveries.push(file);
   }
@@ -1048,7 +1167,11 @@ async function requestShutdown(url, { signal } = {}) {
   for (const entry of forget) {
     if (!entry.discovery || removedDiscoveries.includes(entry.discovery) || alive(entry.pid)) continue;
     const relative = path.relative(paths.discoveryRoot, entry.discovery);
-    if (/^session-\d+\.json$/.test(relative) && fsSync.existsSync(entry.discovery)) {
+    if (
+      /^session-\d+\.json$/.test(relative) &&
+      fsSync.existsSync(entry.discovery) &&
+      !(await foreignFile(entry.discovery))
+    ) {
       await fs.rm(entry.discovery, { force: true });
       removedDiscoveries.push(entry.discovery);
     }
@@ -1087,7 +1210,12 @@ async function requestShutdown(url, { signal } = {}) {
       .map(({ entry, graceful, url, ready }) => ({ ...describe(entry), url: url ?? null, graceful, wasReady: ready })),
     remaining: remaining.map(describe),
     pruned: stale.map(({ entry, reason }) => ({ ...describe(entry), reason })),
-    unverified: unverified.map(({ entry, reason }) => ({ ...describe(entry), reason })),
+    // `foreignHost`: kept because another host recorded it; it is never part of a selection (stopExitStatus).
+    unverified: unverified.map(({ entry, reason, foreignHost }) => ({
+      ...describe(entry),
+      reason,
+      ...(foreignHost ? { foreignHost } : {}),
+    })),
     removedDiscoveries,
     writesFiles: recorded ? [paths.ownershipFile] : [],
   };
@@ -1113,11 +1241,14 @@ function hasExited(pid, alive = isAlive) {
 const stillRunning = (report) =>
   `Mirage process ${report.remaining.map((item) => item.pid).join(', ')} is still running: it could not be ended, or its start identity could not be read. Run the stop again, or end the process by its ID.`;
 
-async function classifyOwnedTargets(owned, { alive, current, folders, pids, stale, targets, unverified }) {
+async function classifyOwnedTargets(
+  owned,
+  { alive, current, folders, pids, stale, targets, unverified, isForeign, ownershipFile },
+) {
   for (const entry of owned) {
-    const status = await inspectOwnedTarget(entry, { alive, current });
+    const status = await inspectOwnedTarget(entry, { alive, current, isForeign, ownershipFile });
     if (status.kind === 'unverified') {
-      unverified.push({ entry, reason: status.reason });
+      unverified.push({ entry, reason: status.reason, foreignHost: status.foreignHost === true });
       continue;
     }
     if (status.kind === 'stale') {
@@ -1128,7 +1259,14 @@ async function classifyOwnedTargets(owned, { alive, current, folders, pids, stal
   }
 }
 
-async function inspectOwnedTarget(entry, { alive, current: read }) {
+/** Why stop leaves another host's record, and the way out when that host is gone. */
+const foreignStopReason = (entry, ownershipFile) =>
+  `it was started on ${entry.host}; stop it there. If it no longer runs on ${entry.host} (the host was renamed or removed), delete its entry from ${ownershipFile}`;
+
+async function inspectOwnedTarget(entry, { alive, current: read, isForeign, ownershipFile }) {
+  // Its PID names a process of another host: whether it runs can only be judged there, so its record stays.
+  if (isForeign(entry))
+    return { kind: 'unverified', foreignHost: true, reason: foreignStopReason(entry, ownershipFile) };
   const running = alive(entry.pid);
   // A record without an identity is never read: nothing could be compared with it.
   const current = running && entry.processIdentity ? await read(entry) : null;
@@ -1153,10 +1291,13 @@ function isSelectedOwnedTarget(entry, pids, folders) {
 /** Sessions with ownership, project and portal information merged from both record kinds. */
 export async function mirageStatus(
   paths = DEFAULT_PATHS,
-  { identityOf = recordedIdentity, alive = isAlive, signal, probeTimeout } = {},
+  { identityOf = recordedIdentity, alive = isAlive, signal, probeTimeout, hostName = lockHost() } = {},
 ) {
-  const owned = await ownedSessions(paths);
-  const found = await discoveries(paths, { signal, probeTimeout, alive });
+  // Another host's records name processes this one cannot see: they are its status to list.
+  const recorded = await ownedSessions(paths);
+  const isForeign = await foreignJudge(recorded, { hostName, alive, identityOf, signal });
+  const owned = recorded.filter((entry) => !isForeign(entry));
+  const found = await discoveries(paths, { signal, probeTimeout, alive, hostName, isForeign });
   // Each record's PID is read once, against the identity that record names.
   const reads = new Map();
   const ours = (entry) => {
@@ -1594,8 +1735,11 @@ async function stopSelected(host, paths, pids, projectFile = null) {
 async function selectedSessionPids(paths, cfg, kind, selectedProject = null, selection = {}, sourceDir = null) {
   const selectedCatalogue = catalogueIdentity(cfg);
   const scoped = Boolean(selectedCatalogue);
-  const candidates = (await ownedSessionsIn(await recordFolders(paths, selectedProject?.configFile))).filter((entry) =>
-    matchesSessionCandidate(entry, { kind, selection, sourceDir, selectedProject }),
+  const recorded = await ownedSessionsIn(await recordFolders(paths, selectedProject?.configFile));
+  // As status lists them: another host's runtime is never part of a selection here.
+  const isForeign = await foreignJudge(recorded, { hostName: lockHost() });
+  const candidates = recorded.filter(
+    (entry) => !isForeign(entry) && matchesSessionCandidate(entry, { kind, selection, sourceDir, selectedProject }),
   );
   const siteName = selectedCatalogue?.siteName;
   const exactLegacyTarget =
@@ -1695,8 +1839,8 @@ function siteSelectionLabel(cfg, args) {
  * A selected session that could not be verified is still running, so the stop is not complete. The status is
  * returned rather than thrown: the report has already been printed, and a thrown error would append a second JSON document.
  */
-function stopExitStatus(report, pids) {
-  return report.unverified.some((item) => pids.includes(item.pid)) ? 2 : 0;
+export function stopExitStatus(report, pids) {
+  return report.unverified.some((item) => !item.foreignHost && pids.includes(item.pid)) ? 2 : 0;
 }
 
 /** A nested observation, such as headers: "page name=value; webFile name=value, name=value". */
@@ -1874,6 +2018,8 @@ export async function start(
     kill = process.kill,
     openChannel = openStartChannel,
     portAvailable: available = portAvailable,
+    // The host this start records its runtime on (lockHost); another host's records are foreign to it.
+    hostName = lockHost(),
   } = {},
 ) {
   let interrupted = false,
@@ -1910,6 +2056,8 @@ export async function start(
       kill,
       openChannel,
       available,
+      hostName,
+      ownershipFile: paths.ownershipFile,
       check,
       signal: controller.signal,
       cancelled: () => interrupted,
@@ -1978,15 +2126,29 @@ export async function start(
   startup.check();
   args.startup?.phase('existing runtime and ownership', cfg.siteName);
   const owned = await ownedSessions(paths);
+  // Another host's runtime is never reused: this host cannot reach or judge its process.
+  startup.isForeign = await foreignJudge(owned, {
+    hostName: startup.hostName,
+    alive: startup.alive,
+    identityOf: startup.identityOf,
+    signal: startup.signal,
+  });
+  const local = owned.filter((item) => !startup.isForeign(item));
   // Listing local records is cheap. Probe only runtimes eligible for this
   // launch; unrelated listeners can each consume the full probe timeout.
-  const candidates = (await discoveries(paths, { probe: false, signal: startup.signal, alive: startup.alive })).filter(
-    (session) => isReusableRuntimeCandidate(session, owned, identity),
-  );
+  const candidates = (
+    await discoveries(paths, {
+      probe: false,
+      signal: startup.signal,
+      alive: startup.alive,
+      hostName: startup.hostName,
+      isForeign: startup.isForeign,
+    })
+  ).filter((session) => isReusableRuntimeCandidate(session, local, identity));
   startup.check();
   let existing;
   for (const session of candidates) {
-    const owner = owned.find(
+    const owner = local.find(
       (item) =>
         item.pid === session.pid &&
         item.discovery === session.discovery &&
@@ -2065,15 +2227,26 @@ export async function start(
   await logHandle.close();
   child.unref();
   const discovery = path.join(paths.discoveryRoot, `session-${child.pid}.json`);
+  // The record of this child: another host's record may carry the same PID number.
+  const childRecord = (item) => item.pid === child.pid && !startup.isForeign(item);
+  // Removes the child's discovery file, unless another host's runtime with this PID number wrote that file.
+  const removeOwnDiscovery = async () => {
+    try {
+      if (foreignRecord(JSON.parse(await fs.readFile(discovery, 'utf8')), startup.hostName)) return;
+    } catch {
+      /* missing or incomplete: the child's own, or nothing */
+    }
+    await fs.rm(discovery, { force: true }).catch(() => {});
+  };
   let registered = false;
   startup.cleanup(async () => {
     await channel.close().catch(() => {});
-    await fs.rm(discovery, { force: true }).catch(() => {});
+    await removeOwnDiscovery();
     // No ownership entry was published if cancellation interrupted its lock
     // acquisition. Published records get a bounded best-effort cleanup; a
     // contended foreign lock must not hold the cancelled command open.
     if (registered)
-      await updateOwnedSessions(paths, (sessions) => sessions.filter((item) => item.pid !== child.pid), {
+      await updateOwnedSessions(paths, (sessions) => sessions.filter((item) => !childRecord(item)), {
         signal: AbortSignal.timeout(1000),
       }).catch(() => {});
   });
@@ -2095,10 +2268,16 @@ export async function start(
   await updateOwnedSessions(
     paths,
     (sessions) => [
-      ...otherSessionsForStart(sessions, identity, child.pid, { alive: startup.alive, identities }),
+      ...otherSessionsForStart(sessions, identity, child.pid, {
+        alive: startup.alive,
+        identities,
+        isForeign: startup.isForeign,
+        ownershipFile: paths.ownershipFile,
+      }),
       {
         pid: child.pid,
         processIdentity: childIdentity,
+        host: startup.hostName,
         sourceDir: identity.sourceDir,
         project: identity.project,
         portal: identity.portal,
@@ -2139,10 +2318,10 @@ export async function start(
         /* already exited */
       }
     }
-    await fs.rm(discovery, { force: true }).catch(() => {});
+    await removeOwnDiscovery();
     await updateOwnedSessions(
       paths,
-      (sessions) => sessions.filter((item) => !(item.pid === child.pid && item.processIdentity === childIdentity)),
+      (sessions) => sessions.filter((item) => !(childRecord(item) && item.processIdentity === childIdentity)),
       { signal: startup.signal },
     ).catch(() => {});
   };
@@ -2160,10 +2339,13 @@ export async function start(
       startup.check(); /* the runtime has not written its discovery file yet */
       return null;
     }
+    // Another host's runtime with this PID number wrote it: this child has not published its record yet.
+    if (foreignRecord(record, startup.hostName)) return null;
     const portal = Array.isArray(record.portals)
       ? (record.portals.find((item) => item.id === (identity.portal ?? '')) ?? record.portals[0])
       : null;
-    const { portals: ignoredPortals, ...base } = record; // NOSONAR: binding is excluded from the rest object or is a placeholder
+    // The machine name stays in the records: a start report does not publish it.
+    const { portals: ignoredPortals, host: ignoredHost, ...base } = record; // NOSONAR: binding is excluded from the rest object or is a placeholder
     const session = { ...base, ...portal, id: portal?.id, discovery, processAlive: true, ready: false, runtime: null };
     session.runtime = await readRuntime(session.url, session.id ?? cfg.siteName, {
       signal: startup.signal,
@@ -2175,10 +2357,11 @@ export async function start(
     await updateOwnedSessions(
       paths,
       (sessions) => [
-        ...sessions.filter((item) => item.pid !== session.pid),
+        ...sessions.filter((item) => !(item.pid === session.pid && !startup.isForeign(item))),
         {
           pid: session.pid,
           processIdentity: childIdentity,
+          host: startup.hostName,
           sourceDir: session.sourceDir,
           project: identity.project,
           portal: session.id ?? identity.portal,
@@ -2348,9 +2531,27 @@ function stateFileConflict(entry, identity) {
   );
 }
 
-/** A live runtime with a verified start identity owns this state file with other settings: its saves would be overwritten. */
-async function refuseStateFileOwner(owned, identity, { signal, identityOf, alive = isAlive }) {
+/** A runtime recorded on another host on this state file: this host can neither judge nor stop its process. */
+function foreignStateFileOwner(entry, identity, ownershipFile) {
+  return new Error(
+    `Mirage pid ${entry.pid} on ${entry.host} is recorded for state file ${identity.stateFile}; this host cannot see or stop that process. Stop it on ${entry.host} (which also clears its record) or pass --state <other file>. If it no longer runs on ${entry.host} (the host was renamed or removed), delete its entry from ${ownershipFile}.`,
+  );
+}
+
+/**
+ * A live runtime with a verified start identity owns this state file with other settings: its saves would be
+ * overwritten. A runtime recorded on another host on this state file refuses any start here.
+ */
+async function refuseStateFileOwner(
+  owned,
+  identity,
+  { signal, identityOf, alive = isAlive, isForeign, ownershipFile },
+) {
   for (const entry of owned) {
+    if (isForeign(entry)) {
+      if (sharesStateFile(entry, identity.stateFile)) throw foreignStateFileOwner(entry, identity, ownershipFile);
+      continue;
+    }
     if (!entry.processIdentity || !alive(entry.pid) || !sharesStateFile(entry, identity.stateFile)) continue;
     if (identityMatches(entry.identity, identity)) continue;
     if ((await identityOf(entry.pid, { signal, recorded: entry.processIdentity })) === entry.processIdentity)
@@ -2365,6 +2566,7 @@ async function refuseStateFileOwner(owned, identity, { signal, identityOf, alive
 async function rivalIdentities(paths, { childPid, identity, startup }) {
   const identities = new Map();
   for (const item of await ownedSessions(paths)) {
+    if (startup.isForeign(item)) continue;
     if (item.pid === childPid || !item.processIdentity || !startup.alive(item.pid)) continue;
     if (sharesStateFile(item, identity.stateFile))
       identities.set(item.pid, {
@@ -2378,12 +2580,23 @@ async function rivalIdentities(paths, { childPid, identity, startup }) {
 /**
  * Runs under the ownership lock, where a concurrent start's record is visible: a live rival on this state file
  * refuses the start, whose child the caller then stops. A record whose PID no longer carries its start identity
- * belongs to an exited runtime, so it is dropped instead. A record whose identity cannot be read is kept.
+ * belongs to an exited runtime, so it is dropped instead. A record whose identity cannot be read is kept. Another
+ * host's record is always kept, and refuses the start when it is on this state file.
  * The identities come from `identities`, read before the lock, so this stays synchronous.
  */
-function otherSessionsForStart(sessions, identity, startedPid, { alive = isAlive, identities = new Map() } = {}) {
+function otherSessionsForStart(
+  sessions,
+  identity,
+  startedPid,
+  { alive = isAlive, identities = new Map(), isForeign, ownershipFile } = {},
+) {
   const kept = [];
   for (const item of sessions) {
+    if (isForeign(item)) {
+      if (sharesStateFile(item, identity.stateFile)) throw foreignStateFileOwner(item, identity, ownershipFile);
+      kept.push(item);
+      continue;
+    }
     if (item.pid === startedPid) continue;
     const state = rivalState(item, identity, { alive, identities });
     if (state === 'rival') throw stateFileConflict(item, identity);
@@ -3422,8 +3635,10 @@ function outsideSelection(entries) {
 /** The live toolkit-owned runtimes recorded in the folders the selection reads that it does not select. */
 async function othersOf(host, paths, selection) {
   const folders = await recordFolders(paths, selection.project?.configFile);
-  const entries = (await ownedSessionsIn(folders)).filter(
-    (entry) => !selection.pids.includes(entry.pid) && host.alive(entry.pid),
+  const recorded = await ownedSessionsIn(folders);
+  const isForeign = await foreignJudge(recorded, { hostName: lockHost(), alive: host.alive });
+  const entries = recorded.filter(
+    (entry) => !isForeign(entry) && !selection.pids.includes(entry.pid) && host.alive(entry.pid),
   );
   return outsideSelection(entries);
 }
@@ -3888,6 +4103,11 @@ function printSessions(sessions) {
     `pid ${session.pid}`,
   ].filter(Boolean);
   console.log(`    ${details.join(' · ')}`);
+  // Ready on the evidence of its own record, without an answer now: what only the answer reports is unknown.
+  if (session.ready && session.probe === PROBE_NO_ANSWER)
+    console.log(
+      '    the runtime did not answer this status in time, so its site, pages and preset are not shown; run the status again',
+    );
   if (session.runtime?.startupPreset?.name)
     console.log(
       `    preset ${session.runtime.startupPreset.name}: ${session.runtime.startupPreset.applied ? 'applied at startup' : 'kept existing state'} (${session.runtime.startupPreset.mode})`,

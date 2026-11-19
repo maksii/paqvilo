@@ -8,6 +8,7 @@ import os from 'node:os';
 import { createSimulator } from '../server.mjs';
 import { createPortalSession, runSessionMatrix, connectRuntime } from '../testing.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 
 const guid = (index) => `10000000-0000-0000-0000-${String(index).padStart(12, '0')}`;
 async function fixture(t, { liveBridge, template } = {}) {
@@ -79,96 +80,101 @@ async function fixture(t, { liveBridge, template } = {}) {
   ownedFixture(t).add(() => app.close());
   return { app, contacts };
 }
-test('ten cookie-isolated visitors read and write through real portal handlers without identity leakage', async (t) => {
-  const { app, contacts } = await fixture(t),
-    runtime = await connectRuntime({ origin: app.url }),
-    sessions = await Promise.all(
-      // No client deadline: ten visitors share one runtime, and how long a request waits on a busy host decides nothing.
-      contacts.map((contact) =>
-        runtime.createSession({ id: contact.contactid, contactId: contact.contactid, timeoutMs: 0 }),
-      ),
+// Hang guard only: ten visitor sessions that read and write through one runtime.
+test(
+  'ten cookie-isolated visitors read and write through real portal handlers without identity leakage',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const { app, contacts } = await fixture(t),
+      runtime = await connectRuntime({ origin: app.url }),
+      sessions = await Promise.all(
+        // No client deadline: ten visitors share one runtime, and how long a request waits on a busy host decides nothing.
+        contacts.map((contact) =>
+          runtime.createSession({ id: contact.contactid, contactId: contact.contactid, timeoutMs: 0 }),
+        ),
+      );
+    ownedFixture(t).add(() => sessions.forEach((session) => session.close()));
+    const cases = [
+      {
+        id: 'liquid',
+        run: async (session, { index }) => {
+          const expected = guid(Number(session.id.slice(-12)) + 100),
+            response = await session.request('/');
+          assert.equal(response.status, 200);
+          const html = await response.text();
+          assert.match(html, new RegExp(`<actor>${session.id}</actor>`));
+          assert.match(html, new RegExp(`<records>${expected}</records>`));
+          return { actor: session.id, record: expected, index };
+        },
+      },
+      {
+        id: 'read',
+        run: async (session) => {
+          const response = await session.json('/_api/widgets?$select=widgetid,name');
+          assert.equal(response.status, 200);
+          assert.deepEqual(
+            response.body.value.map((row) => row.widgetid),
+            [guid(Number(session.id.slice(-12)) + 100)],
+          );
+          return { actor: session.id, count: response.body.value.length };
+        },
+      },
+      {
+        id: 'update',
+        run: async (session) => {
+          const expected = guid(Number(session.id.slice(-12)) + 100),
+            response = await session.json(`/_api/widgets(${expected})`, {
+              method: 'PATCH',
+              body: { name: 'Changed ' + session.id },
+            });
+          assert.equal(response.status, 204);
+          return { actor: session.id, status: response.status };
+        },
+      },
+    ];
+    const report = await runSessionMatrix({ sessions, cases, concurrency: 10 });
+    assert.equal(report.completed, 30, JSON.stringify(report.results.filter((row) => row.state !== 'completed')));
+    assert.equal(report.failed, 0);
+    assert.equal(report.peakConcurrency, 10);
+    assert.deepEqual(
+      report.results.slice(0, 10).map((row) => row.sessionId),
+      contacts.map((contact) => contact.contactid),
     );
-  ownedFixture(t).add(() => sessions.forEach((session) => session.close()));
-  const cases = [
-    {
-      id: 'liquid',
-      run: async (session, { index }) => {
-        const expected = guid(Number(session.id.slice(-12)) + 100),
-          response = await session.request('/');
-        assert.equal(response.status, 200);
-        const html = await response.text();
-        assert.match(html, new RegExp(`<actor>${session.id}</actor>`));
-        assert.match(html, new RegExp(`<records>${expected}</records>`));
-        return { actor: session.id, record: expected, index };
-      },
-    },
-    {
-      id: 'read',
-      run: async (session) => {
-        const response = await session.json('/_api/widgets?$select=widgetid,name');
-        assert.equal(response.status, 200);
-        assert.deepEqual(
-          response.body.value.map((row) => row.widgetid),
-          [guid(Number(session.id.slice(-12)) + 100)],
-        );
-        return { actor: session.id, count: response.body.value.length };
-      },
-    },
-    {
-      id: 'update',
-      run: async (session) => {
-        const expected = guid(Number(session.id.slice(-12)) + 100),
-          response = await session.json(`/_api/widgets(${expected})`, {
-            method: 'PATCH',
-            body: { name: 'Changed ' + session.id },
-          });
-        assert.equal(response.status, 204);
-        return { actor: session.id, status: response.status };
-      },
-    },
-  ];
-  const report = await runSessionMatrix({ sessions, cases, concurrency: 10 });
-  assert.equal(report.completed, 30, JSON.stringify(report.results.filter((row) => row.state !== 'completed')));
-  assert.equal(report.failed, 0);
-  assert.equal(report.peakConcurrency, 10);
-  assert.deepEqual(
-    report.results.slice(0, 10).map((row) => row.sessionId),
-    contacts.map((contact) => contact.contactid),
-  );
-  assert.deepEqual(
-    app.store.tableRows('widget').map((row) => row.name),
-    contacts.map((contact) => 'Changed ' + contact.contactid),
-  );
-  const denied = await sessions[0].json(`/_api/widgets(${guid(102)})`, {
-    method: 'PATCH',
-    body: { name: 'Cross visitor' },
-  });
-  assert.equal(denied.status, 403);
-  assert.equal(app.store.tableRows('widget')[1].name, 'Changed ' + contacts[1].contactid);
-  const description = await sessions[0].session();
-  assert.equal(description.contactId, contacts[0].contactid);
-  assert.equal(Object.hasOwn(description, 'cookie'), false);
-  assert.doesNotMatch(JSON.stringify(sessions[0]), /cookie|csrf/);
-  const readEvidence = await sessions[1].json('/_api/widgets?$select=widgetid');
-  assert.ok(readEvidence.traceId);
-  const audit = await runtime.audit({ correlationId: readEvidence.traceId, contactId: contacts[1].contactid });
-  assert.ok(audit.items.length);
-  assert.ok(audit.items.every((item) => item.identity.contactId === contacts[1].contactid));
-  assert.deepEqual(
-    (await runtime.exportAudit({ correlationId: readEvidence.traceId, contactId: contacts[1].contactid })).items,
-    audit.items,
-  );
-  assert.ok(Array.isArray((await runtime.diagnostics()).diagnostics));
-  await sessions[0].signOut();
-  assert.equal((await sessions[1].session()).contactId, contacts[1].contactid);
-  assert.equal((await sessions[0].session()).signedIn, false);
-  await assert.rejects(sessions[1].request('/_sim/api/state'), /administration/);
-  await assert.rejects(sessions[1].request('https://example.invalid'), /relative/);
-  await assert.rejects(sessions[1].request('/', { headers: { cookie: 'other' } }), /owned/);
-  app.store.state.simulator.mode = 'live';
-  await assert.rejects(createPortalSession({ origin: app.url }), /local Mirage/);
-  assert.equal((await sessions[1].request('/')).status, 409);
-});
+    assert.deepEqual(
+      app.store.tableRows('widget').map((row) => row.name),
+      contacts.map((contact) => 'Changed ' + contact.contactid),
+    );
+    const denied = await sessions[0].json(`/_api/widgets(${guid(102)})`, {
+      method: 'PATCH',
+      body: { name: 'Cross visitor' },
+    });
+    assert.equal(denied.status, 403);
+    assert.equal(app.store.tableRows('widget')[1].name, 'Changed ' + contacts[1].contactid);
+    const description = await sessions[0].session();
+    assert.equal(description.contactId, contacts[0].contactid);
+    assert.equal(Object.hasOwn(description, 'cookie'), false);
+    assert.doesNotMatch(JSON.stringify(sessions[0]), /cookie|csrf/);
+    const readEvidence = await sessions[1].json('/_api/widgets?$select=widgetid');
+    assert.ok(readEvidence.traceId);
+    const audit = await runtime.audit({ correlationId: readEvidence.traceId, contactId: contacts[1].contactid });
+    assert.ok(audit.items.length);
+    assert.ok(audit.items.every((item) => item.identity.contactId === contacts[1].contactid));
+    assert.deepEqual(
+      (await runtime.exportAudit({ correlationId: readEvidence.traceId, contactId: contacts[1].contactid })).items,
+      audit.items,
+    );
+    assert.ok(Array.isArray((await runtime.diagnostics()).diagnostics));
+    await sessions[0].signOut();
+    assert.equal((await sessions[1].session()).contactId, contacts[1].contactid);
+    assert.equal((await sessions[0].session()).signedIn, false);
+    await assert.rejects(sessions[1].request('/_sim/api/state'), /administration/);
+    await assert.rejects(sessions[1].request('https://example.invalid'), /relative/);
+    await assert.rejects(sessions[1].request('/', { headers: { cookie: 'other' } }), /owned/);
+    app.store.state.simulator.mode = 'live';
+    await assert.rejects(createPortalSession({ origin: app.url }), /local Mirage/);
+    assert.equal((await sessions[1].request('/')).status, 409);
+  },
+);
 test('local-only visitor refuses outbound reads when mode changes during its render', async (t) => {
   let liveCalls = 0;
   const liveBridge = {
@@ -228,52 +234,57 @@ test('documented identity scopes preserve cookie precedence and configured fallb
   assert.equal(await actor(), '');
 });
 
-test('runtime experiment controls change local policy and keep concurrent instances independent', async (t) => {
-  // The two independent runtimes start concurrently; each owns its directory and closes before it is removed.
-  const [left, right] = await Promise.all([fixture(t), fixture(t)]),
-    [runtime, other] = await Promise.all([
-      connectRuntime({ origin: left.app.url }),
-      connectRuntime({ origin: right.app.url }),
-    ]);
-  const visitor = await runtime.createSession({ contactId: left.contacts[0].contactid }),
-    otherVisitor = await other.createSession({ contactId: right.contacts[0].contactid });
-  ownedFixture(t).add(() => {
-    visitor.close();
-    otherVisitor.close();
-  });
-  await runtime.setSiteSetting('Webapi/widget/enabled', 'False');
-  assert.equal((await visitor.json('/_api/widgets?$select=widgetid')).status, 404);
-  assert.equal((await otherVisitor.json('/_api/widgets?$select=widgetid')).status, 200);
-  await runtime.resetSiteSetting('Webapi/widget/enabled');
-  assert.equal((await visitor.json('/_api/widgets?$select=widgetid')).status, 200);
-  await runtime.setPlatformSettings({ QueryLinkEntityLimit: 30 });
-  assert.equal((await runtime.platformSettings()).find((item) => item.key === 'QueryLinkEntityLimit').value, 30);
-  assert.equal((await other.platformSettings()).find((item) => item.key === 'QueryLinkEntityLimit').value, 15);
-  await runtime.resetPlatformSetting('QueryLinkEntityLimit');
-  const preset = {
-    id: 'parallel-case',
-    name: 'Parallel case',
-    platformOverrides: { QueryLinkEntityLimit: 25 },
-    portalOverrides: {
-      settings: { 'Webapi/widget/enabled': 'False' },
-      snippets: { 'Banner/Text': 'Local experiment' },
-    },
-  };
-  await runtime.saveExperiment(preset);
-  assert.equal((await runtime.experiments('parallel-case')).name, preset.name);
-  assert.ok((await runtime.experiments()).some((item) => item.id === preset.id));
-  await runtime.applyExperiment(preset.id);
-  assert.equal((await visitor.json('/_api/widgets?$select=widgetid')).status, 404);
-  assert.equal((await runtime.platformSettings()).find((item) => item.key === 'QueryLinkEntityLimit').value, 25);
-  await runtime.resetSiteSetting('Webapi/widget/enabled');
-  await runtime.resetSnippet('Banner/Text');
-  await runtime.resetPlatformSetting('QueryLinkEntityLimit');
-  await runtime.deleteExperiment(preset.id);
-  assert.equal((await visitor.json('/_api/widgets?$select=widgetid')).status, 200);
-  assert.equal(left.app.store.state.tables.widget.length, 10);
-  assert.equal((await visitor.session()).contactId, left.contacts[0].contactid);
-  assert.equal(right.app.store.state.tables.widget.length, 10);
-});
+// Hang guard only: it drives a runtime, the CLI or child processes through this file's fixtures; on a loaded slow host that is slow, not hung.
+test(
+  'runtime experiment controls change local policy and keep concurrent instances independent',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    // The two independent runtimes start concurrently; each owns its directory and closes before it is removed.
+    const [left, right] = await Promise.all([fixture(t), fixture(t)]),
+      [runtime, other] = await Promise.all([
+        connectRuntime({ origin: left.app.url }),
+        connectRuntime({ origin: right.app.url }),
+      ]);
+    const visitor = await runtime.createSession({ contactId: left.contacts[0].contactid }),
+      otherVisitor = await other.createSession({ contactId: right.contacts[0].contactid });
+    ownedFixture(t).add(() => {
+      visitor.close();
+      otherVisitor.close();
+    });
+    await runtime.setSiteSetting('Webapi/widget/enabled', 'False');
+    assert.equal((await visitor.json('/_api/widgets?$select=widgetid')).status, 404);
+    assert.equal((await otherVisitor.json('/_api/widgets?$select=widgetid')).status, 200);
+    await runtime.resetSiteSetting('Webapi/widget/enabled');
+    assert.equal((await visitor.json('/_api/widgets?$select=widgetid')).status, 200);
+    await runtime.setPlatformSettings({ QueryLinkEntityLimit: 30 });
+    assert.equal((await runtime.platformSettings()).find((item) => item.key === 'QueryLinkEntityLimit').value, 30);
+    assert.equal((await other.platformSettings()).find((item) => item.key === 'QueryLinkEntityLimit').value, 15);
+    await runtime.resetPlatformSetting('QueryLinkEntityLimit');
+    const preset = {
+      id: 'parallel-case',
+      name: 'Parallel case',
+      platformOverrides: { QueryLinkEntityLimit: 25 },
+      portalOverrides: {
+        settings: { 'Webapi/widget/enabled': 'False' },
+        snippets: { 'Banner/Text': 'Local experiment' },
+      },
+    };
+    await runtime.saveExperiment(preset);
+    assert.equal((await runtime.experiments('parallel-case')).name, preset.name);
+    assert.ok((await runtime.experiments()).some((item) => item.id === preset.id));
+    await runtime.applyExperiment(preset.id);
+    assert.equal((await visitor.json('/_api/widgets?$select=widgetid')).status, 404);
+    assert.equal((await runtime.platformSettings()).find((item) => item.key === 'QueryLinkEntityLimit').value, 25);
+    await runtime.resetSiteSetting('Webapi/widget/enabled');
+    await runtime.resetSnippet('Banner/Text');
+    await runtime.resetPlatformSetting('QueryLinkEntityLimit');
+    await runtime.deleteExperiment(preset.id);
+    assert.equal((await visitor.json('/_api/widgets?$select=widgetid')).status, 200);
+    assert.equal(left.app.store.state.tables.widget.length, 10);
+    assert.equal((await visitor.session()).contactId, left.contacts[0].contactid);
+    assert.equal(right.app.store.state.tables.widget.length, 10);
+  },
+);
 
 test('session matrix bounds concurrency, cancels without retries and serializes durable result callbacks', async () => {
   const visitors = Array.from({ length: 10 }, (_, index) => ({ id: 'visitor' + index, request: () => {} })),

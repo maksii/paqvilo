@@ -13,6 +13,7 @@ import { assertAcceptanceCapabilities, runAcceptance } from '../acceptance.mjs';
 import { ownedFixture, drainFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { composeHostDescription } from '../lib/organization-host.mjs';
 import { fixedClock } from '../testing.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 
 async function standalone(t, options = {}) {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'host-capabilities-'));
@@ -155,44 +156,49 @@ test('portal state carries the registry summary; preflight answers over HTTP and
   assertCoreSeams(await sim.preflight());
 });
 
+// Hang guard only: one case is two starts of a standalone host over one state file.
 for (const persistent of [false, true])
-  test(`${persistent ? 'persistent' : 'dry-run'} host supports first-send, scheduled delivery and outbox with explicit restart semantics`, async (t) => {
-    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'host-messaging-lifetime-'));
-    ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
-    const clock = fixedClock();
-    const options = {
-      clock,
-      stateFile: path.join(root, 'state.json'),
-      simulation: { level: persistent ? 'simulation' : 'dry-run' },
-    };
-    const sim = await standalone(t, options);
-    const { bus } = sim.organization.providers.messaging;
-    await bus.send('fixture', { first: true });
-    const [message] = await bus.receive('fixture');
-    assert.ok(message.lockToken);
-    await bus.complete(message.lockToken);
-    assert.equal(bus.peek('fixture').length, 0);
-    await bus.send('fixture', { scheduled: true }, { scheduledEnqueueTime: clock.now() + 1000 });
-    assert.deepEqual(await bus.receive('fixture'), []);
-    clock.advance(1000);
-    const [scheduled] = await bus.receive('fixture');
-    assert.deepEqual(scheduled.body, { scheduled: true });
-    await bus.complete(scheduled.lockToken);
-    await bus.send('fixture', { retained: true });
-    await sim.organization.providers.outbox.capture({
-      channel: 'email',
-      to: ['fixture@example.invalid'],
-      body: 'local capture',
-    });
-    const captured = await (await fetch(`${sim.url}/_sim/api/outbox`)).json();
-    assert.equal(captured.entries.length, 1);
-    await sim.close();
-    const restarted = await standalone(t, options);
-    assert.equal(restarted.organization.providers.messaging.bus.peek('fixture').length, persistent ? 1 : 0);
-    const after = await (await fetch(`${restarted.url}/_sim/api/outbox`)).json();
-    assert.equal(after.entries.length, persistent ? 1 : 0);
-    if (!persistent) await assert.rejects(fs.stat(options.stateFile), { code: 'ENOENT' });
-  });
+  test(
+    `${persistent ? 'persistent' : 'dry-run'} host supports first-send, scheduled delivery and outbox with explicit restart semantics`,
+    { timeout: SCENARIO_HANG_GUARD_MS },
+    async (t) => {
+      const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'host-messaging-lifetime-'));
+      ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
+      const clock = fixedClock();
+      const options = {
+        clock,
+        stateFile: path.join(root, 'state.json'),
+        simulation: { level: persistent ? 'simulation' : 'dry-run' },
+      };
+      const sim = await standalone(t, options);
+      const { bus } = sim.organization.providers.messaging;
+      await bus.send('fixture', { first: true });
+      const [message] = await bus.receive('fixture');
+      assert.ok(message.lockToken);
+      await bus.complete(message.lockToken);
+      assert.equal(bus.peek('fixture').length, 0);
+      await bus.send('fixture', { scheduled: true }, { scheduledEnqueueTime: clock.now() + 1000 });
+      assert.deepEqual(await bus.receive('fixture'), []);
+      clock.advance(1000);
+      const [scheduled] = await bus.receive('fixture');
+      assert.deepEqual(scheduled.body, { scheduled: true });
+      await bus.complete(scheduled.lockToken);
+      await bus.send('fixture', { retained: true });
+      await sim.organization.providers.outbox.capture({
+        channel: 'email',
+        to: ['fixture@example.invalid'],
+        body: 'local capture',
+      });
+      const captured = await (await fetch(`${sim.url}/_sim/api/outbox`)).json();
+      assert.equal(captured.entries.length, 1);
+      await sim.close();
+      const restarted = await standalone(t, options);
+      assert.equal(restarted.organization.providers.messaging.bus.peek('fixture').length, persistent ? 1 : 0);
+      const after = await (await fetch(`${restarted.url}/_sim/api/outbox`)).json();
+      assert.equal(after.entries.length, persistent ? 1 : 0);
+      if (!persistent) await assert.rejects(fs.stat(options.stateFile), { code: 'ENOENT' });
+    },
+  );
 
 test('strict acceptance refuses a required capability that is not executable before any browser starts', async (t) => {
   const sim = await portal();

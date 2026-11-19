@@ -52,6 +52,14 @@ function settleWithTest(t, pending) {
 }
 async function fixture(t) {
   const root = await tempDir('paq-startup-cancel-');
+  // A start runs in this process: from an empty folder of the test, never the checkout, where a start notes its record
+  // folder and every status and stop of another test process run there would read it. Restored by a closer, so a
+  // failing removal cannot leave the working directory changed.
+  const cwd = path.join(root, 'empty');
+  await fs.mkdir(cwd);
+  const previous = process.cwd();
+  process.chdir(cwd);
+  ownedFixture(t).add(() => process.chdir(previous));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const paths = miragePaths({ stateDir: root });
   await fs.mkdir(paths.discoveryRoot, { recursive: true });

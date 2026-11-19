@@ -7,6 +7,7 @@ import { personaFixture, contactId } from './fixtures/persona-catalog.mjs';
 import { createSimulator } from '../server.mjs';
 import { connectRuntime } from '../testing/runtime.mjs';
 import { createPersonaSession } from '../testing/personas.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 
 test('catalogue API joins pack/state entries, native groups work without JavaScript and state management uses CAS', async (t) => {
   const f = await personaFixture(t),
@@ -94,51 +95,59 @@ test('persona shortcuts reject unsafe redirects and require a CSRF post', async 
   assert.equal(missingCsrf.status, 403);
 });
 
-test('isolated contexts reuse setup, preserve parent and support stop/restart and resource limits', async (t) => {
-  const { app, call, sourceDir } = await personaFixture(t, { personaContexts: { maxInstances: 2 }, sourceMaps: false });
-  await fs.mkdir(path.join(sourceDir, 'web-files'), { recursive: true });
-  await fs.writeFile(
-    path.join(sourceDir, 'web-files/debug.webfile.yml'),
-    'adx_webfileid: debug\nadx_name: debug.js\nadx_partialurl: debug.js\n',
-  );
-  await fs.writeFile(path.join(sourceDir, 'web-files/debug.js'), 'window.inventedDebug = true;');
-  await app.reload();
-  const { response, value: one } = await call('/personas/launch', 'POST', { personaKey: 'person-2' });
-  assert.equal(response.status, 200, JSON.stringify(one));
-  assert.equal(one.isolated, true);
-  assert.notEqual(one.origin, app.url);
-  assert.equal(one.contactId, contactId(2));
-  assert.equal(one.browser.locale, 'fr-FR');
-  assert.equal(
-    await fetch(one.origin + '/debug.js').then((response) => response.text()),
-    'window.inventedDebug = true;',
-    'isolated persona runtimes inherit the original-byte debugger policy',
-  );
-  const child = await fetch(one.origin + '/_sim/api/state?summary=1').then((r) => r.json());
-  assert.equal(child.config.environmentVariables.sample_Url, 'Context variable');
-  assert.equal(child.config.deploymentProfilePin.profile, 'test');
-  assert.match(
-    await fetch(one.url, { headers: { cookie: one.cookieHeader } }).then((r) => r.text()),
-    /Context greeting/,
-  );
-  assert.match(await fetch(app.url).then((r) => r.text()), /Development/);
-  assert.equal(app.state().config.environmentVariables?.sample_Url, undefined);
-  const shared = (await call('/personas/launch', 'POST', { personaKey: 'person-2' })).value;
-  assert.equal(shared.id, one.id);
-  const separate = (await call('/personas/launch', 'POST', { personaKey: 'person-2', instanceKey: 'test-2' })).value;
-  assert.notEqual(separate.origin, one.origin);
-  const full = await call('/personas/launch', 'POST', { personaKey: 'person-2', instanceKey: 'test-3' });
-  assert.equal(full.response.status, 409);
-  assert.equal((await call('/persona-runtimes')).value.items.length, 2);
-  assert.equal((await call('/persona-runtimes/' + one.id, 'DELETE')).response.status, 200);
-  await assert.rejects(fetch(one.origin));
-  const again = await call('/personas/launch', 'POST', { scenario: 'review-flow' });
-  assert.equal(again.response.status, 200);
-  assert.equal(again.value.path, '/?scenario=review');
-  await app.close();
-  await assert.rejects(fetch(separate.origin));
-  await assert.rejects(fetch(again.value.origin));
-});
+// Hang guard only: it drives a runtime, the CLI or child processes through this file's fixtures; on a loaded slow host that is slow, not hung.
+test(
+  'isolated contexts reuse setup, preserve parent and support stop/restart and resource limits',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const { app, call, sourceDir } = await personaFixture(t, {
+      personaContexts: { maxInstances: 2 },
+      sourceMaps: false,
+    });
+    await fs.mkdir(path.join(sourceDir, 'web-files'), { recursive: true });
+    await fs.writeFile(
+      path.join(sourceDir, 'web-files/debug.webfile.yml'),
+      'adx_webfileid: debug\nadx_name: debug.js\nadx_partialurl: debug.js\n',
+    );
+    await fs.writeFile(path.join(sourceDir, 'web-files/debug.js'), 'window.inventedDebug = true;');
+    await app.reload();
+    const { response, value: one } = await call('/personas/launch', 'POST', { personaKey: 'person-2' });
+    assert.equal(response.status, 200, JSON.stringify(one));
+    assert.equal(one.isolated, true);
+    assert.notEqual(one.origin, app.url);
+    assert.equal(one.contactId, contactId(2));
+    assert.equal(one.browser.locale, 'fr-FR');
+    assert.equal(
+      await fetch(one.origin + '/debug.js').then((response) => response.text()),
+      'window.inventedDebug = true;',
+      'isolated persona runtimes inherit the original-byte debugger policy',
+    );
+    const child = await fetch(one.origin + '/_sim/api/state?summary=1').then((r) => r.json());
+    assert.equal(child.config.environmentVariables.sample_Url, 'Context variable');
+    assert.equal(child.config.deploymentProfilePin.profile, 'test');
+    assert.match(
+      await fetch(one.url, { headers: { cookie: one.cookieHeader } }).then((r) => r.text()),
+      /Context greeting/,
+    );
+    assert.match(await fetch(app.url).then((r) => r.text()), /Development/);
+    assert.equal(app.state().config.environmentVariables?.sample_Url, undefined);
+    const shared = (await call('/personas/launch', 'POST', { personaKey: 'person-2' })).value;
+    assert.equal(shared.id, one.id);
+    const separate = (await call('/personas/launch', 'POST', { personaKey: 'person-2', instanceKey: 'test-2' })).value;
+    assert.notEqual(separate.origin, one.origin);
+    const full = await call('/personas/launch', 'POST', { personaKey: 'person-2', instanceKey: 'test-3' });
+    assert.equal(full.response.status, 409);
+    assert.equal((await call('/persona-runtimes')).value.items.length, 2);
+    assert.equal((await call('/persona-runtimes/' + one.id, 'DELETE')).response.status, 200);
+    await assert.rejects(fetch(one.origin));
+    const again = await call('/personas/launch', 'POST', { scenario: 'review-flow' });
+    assert.equal(again.response.status, 200);
+    assert.equal(again.value.path, '/?scenario=review');
+    await app.close();
+    await assert.rejects(fetch(separate.origin));
+    await assert.rejects(fetch(again.value.origin));
+  },
+);
 
 test('public testing clients resolve personas and scenarios for independent parallel visitors', async (t) => {
   const { app } = await personaFixture(t);

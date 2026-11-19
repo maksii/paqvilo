@@ -137,6 +137,15 @@ test('normalisers generalise identifiers, dates, tokens and origins', () => {
   assert.equal(normalizeText('12 October 2025'), '{date}');
 });
 
+// @test-kind security: a token is replaced whole before its parts can be read as other identifiers
+test('a token that holds a GUID or a "/" is replaced as one token', () => {
+  // Replacing the GUID first, or ending a token at "/", would leave the rest of the secret in the text.
+  const aroundGuid = `${'a1B2c3D4e5'.repeat(2)}${GUID_A}${'a1B2c3D4e5'.repeat(2)}`;
+  assert.equal(normalizeText(`key ${aroundGuid} end`), 'key {token} end');
+  const base64 = `${'Zm9v'.repeat(6)}/${'YmFy'.repeat(6)}+${'cXV4'.repeat(3)}==`;
+  assert.equal(normalizeText(`key ${base64} end`), 'key {token} end');
+});
+
 // @test-kind tooling: URL redaction keeps names and shapes but never query values
 test('URL redaction keeps names and shapes but never query values', () => {
   assert.equal(
@@ -648,15 +657,16 @@ test('parity-suite prints a path error verbatim and still redacts tokens and GUI
   assert.equal(state.status, 1, state.stderr);
   assert.equal(state.stderr, `--state file not found: ${missing}. Pass an existing file.\n`);
 
-  // The runtime's state names a source directory whose path carries a bearer-like token and a GUID. The GUID ends
-  // in a space: joined to the next segment by "/" it would be one 40-character run, replaced as a token on POSIX only.
+  // The runtime's state names a source directory whose path carries a bearer-like token and a GUID. Spaces set both
+  // apart from the path: joined to a neighbouring segment by "/" either would be part of one run of 40 or more
+  // characters, which is replaced as a token on POSIX only (and for "Bearer" only under a long temporary directory).
   const token = 'Bearer ' + 'a1B2c3D4e5'.repeat(5);
   const server = http.createServer((req, res) => {
     res.setHeader('content-type', 'application/json');
     res.end(
       JSON.stringify({
         config: { mode: 'local', pageMode: 'local', endpoints: [] },
-        status: { sourceDir: path.join(root, `${token} ${guid} source`, 'absent') },
+        status: { sourceDir: path.join(root, `source ${token} ${guid} source`, 'absent') },
       }),
     );
   });

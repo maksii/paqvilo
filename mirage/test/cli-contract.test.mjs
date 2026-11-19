@@ -10,6 +10,7 @@ import { MIRAGE_CORE_COMMANDS, MIRAGE_DATA_USAGE, MIRAGE_TOOLS, mirageToolHelp }
 import { assertReportOutput } from '../lib/report-output.mjs';
 import { runMirageCommand } from '../cli-command.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { operationBudget } from '../../test/helpers/operation-budget.mjs';
 
 // hang guard only: a blocked synchronous child cannot be ended by the test runner
 const CLI_HANG_GUARD_MS = 170_000;
@@ -20,6 +21,10 @@ const run = (program, ...args) =>
     encoding: 'utf8',
     timeout: CLI_HANG_GUARD_MS,
   });
+// Every child has its own hang guard. An asynchronous test that runs several of them declares their finite budget: on a
+// loaded slow host each is slow but none hung, and the lane's 180 s hang guard would otherwise fail the test at its
+// next await. A synchronous test cannot be interrupted, so it needs none.
+const commandBatch = (commands) => ({ timeout: operationBudget(commands, CLI_HANG_GUARD_MS) });
 const fixture = path.join(root, 'mirage/test/fixtures/wet-boew-bilingual');
 // The Mirage command's entry function with its output captured, shaped like the spawnSync result the assertions read.
 const runMirage = async (...args) => {
@@ -76,7 +81,7 @@ test('render and matrix limits reject invalid values before running', () => {
   }
 });
 
-test('manual tool parsers reject missing option values and invalid timeouts', async () => {
+test('manual tool parsers reject missing option values and invalid timeouts', commandBatch(7), async () => {
   const query = run('mirage/query-inventory.mjs', '--portal', '--json');
   assert.equal(query.status, 1);
   assert.match(JSON.parse(query.stdout).error.message, /--portal/);
@@ -189,7 +194,7 @@ test('JSON and preflight detection respect option values and the terminator', as
   assert.equal(tool.stdout, '');
 });
 
-test('JSON tools report missing inputs without reading a configured site', async () => {
+test('JSON tools report missing inputs without reading a configured site', commandBatch(9), async () => {
   const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-cli-empty-'));
   try {
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_')));
@@ -289,73 +294,81 @@ test('data counts fail before resolving a missing catalogue', async () => {
 });
 
 // @test-kind contract+security: conformance output cannot replace its inputs through direct or hard-linked paths
-test('conformance output cannot replace suite or rules through direct or hard-linked paths', async () => {
-  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-conformance-'));
-  try {
-    const suite = path.join(dir, 'suite.json'),
-      rules = path.join(dir, 'rules.json'),
-      alias = path.join(dir, 'alias.json');
-    const suiteData = JSON.stringify({ tests: [] }),
-      rulesData = JSON.stringify({ rules: [] });
-    await fs.writeFile(suite, suiteData);
-    await fs.writeFile(rules, rulesData);
-    await fs.link(suite, alias);
-    for (const out of [suite, rules, alias]) {
-      const result = run('mirage/liquid-conformance.mjs', '--suite', suite, '--rules', rules, '--out', out, '--json');
-      assert.equal(result.status, 2);
-      assert.match(JSON.parse(result.stdout).error.message, /--out must not refer to the suite or rules/);
-      assert.equal(await fs.readFile(suite, 'utf8'), suiteData);
-      assert.equal(await fs.readFile(rules, 'utf8'), rulesData);
-    }
-  } finally {
-    await fs.rm(dir, { recursive: true, force: true });
-  }
-});
-
-test('bootstrap and Liquid report outputs preserve portal sources and catalogue aliases', async () => {
-  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-report-boundary-'));
-  try {
-    const source = path.join(dir, 'portal');
-    await fs.cp(fixture, source, { recursive: true });
-    const sourceFile = path.join(source, 'website.yml');
-    const sourceBytes = await fs.readFile(sourceFile);
-    const sourceLink = path.join(dir, 'source-link.yml');
-    await fs.link(sourceFile, sourceLink);
-    const config = path.join(dir, 'catalogue.yml');
-    await fs.writeFile(
-      config,
-      JSON.stringify({
-        sourceRoot: dir,
-        defaultSite: 'sample',
-        sites: { sample: { source: 'portal', environments: { dev: 'https://invented.example.invalid' } } },
-      }),
-    );
-    const configBytes = await fs.readFile(config);
-    const configLink = path.join(dir, 'config-link.yml');
-    await fs.link(config, configLink);
-    for (const [tool, selector, outputFlag] of [
-      ['bootstrap-report', ['--config', config, '--site', 'sample'], '--output'],
-      ['liquid-inventory', ['--config', config, '--site', 'sample'], '--out'],
-    ]) {
-      for (const output of [sourceFile, sourceLink, config, configLink]) {
-        const result = run(`mirage/${tool}.mjs`, ...selector, outputFlag, output, '--json');
-        assert.ok(result.status > 0, `${tool}: ${output}`);
-        assert.match(JSON.parse(result.stdout).error.message, /Report output must/);
-        assert.equal(result.stderr, '');
-        assert.deepEqual(await fs.readFile(sourceFile), sourceBytes);
-        assert.deepEqual(await fs.readFile(config), configBytes);
+test(
+  'conformance output cannot replace suite or rules through direct or hard-linked paths',
+  commandBatch(3),
+  async () => {
+    const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-conformance-'));
+    try {
+      const suite = path.join(dir, 'suite.json'),
+        rules = path.join(dir, 'rules.json'),
+        alias = path.join(dir, 'alias.json');
+      const suiteData = JSON.stringify({ tests: [] }),
+        rulesData = JSON.stringify({ rules: [] });
+      await fs.writeFile(suite, suiteData);
+      await fs.writeFile(rules, rulesData);
+      await fs.link(suite, alias);
+      for (const out of [suite, rules, alias]) {
+        const result = run('mirage/liquid-conformance.mjs', '--suite', suite, '--rules', rules, '--out', out, '--json');
+        assert.equal(result.status, 2);
+        assert.match(JSON.parse(result.stdout).error.message, /--out must not refer to the suite or rules/);
+        assert.equal(await fs.readFile(suite, 'utf8'), suiteData);
+        assert.equal(await fs.readFile(rules, 'utf8'), rulesData);
       }
-      const output = path.join(dir, `${tool}.json`);
-      const good = run(`mirage/${tool}.mjs`, ...selector, outputFlag, output, '--json');
-      assert.equal(good.status, 0, good.stderr || good.stdout);
-      assert.doesNotThrow(() => JSON.parse(good.stdout));
-      const written = await fs.readFile(output, 'utf8');
-      assert.doesNotThrow(() => JSON.parse(written));
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
     }
-  } finally {
-    await fs.rm(dir, { recursive: true, force: true });
-  }
-});
+  },
+);
+
+test(
+  'bootstrap and Liquid report outputs preserve portal sources and catalogue aliases',
+  commandBatch(10),
+  async () => {
+    const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-report-boundary-'));
+    try {
+      const source = path.join(dir, 'portal');
+      await fs.cp(fixture, source, { recursive: true });
+      const sourceFile = path.join(source, 'website.yml');
+      const sourceBytes = await fs.readFile(sourceFile);
+      const sourceLink = path.join(dir, 'source-link.yml');
+      await fs.link(sourceFile, sourceLink);
+      const config = path.join(dir, 'catalogue.yml');
+      await fs.writeFile(
+        config,
+        JSON.stringify({
+          sourceRoot: dir,
+          defaultSite: 'sample',
+          sites: { sample: { source: 'portal', environments: { dev: 'https://invented.example.invalid' } } },
+        }),
+      );
+      const configBytes = await fs.readFile(config);
+      const configLink = path.join(dir, 'config-link.yml');
+      await fs.link(config, configLink);
+      for (const [tool, selector, outputFlag] of [
+        ['bootstrap-report', ['--config', config, '--site', 'sample'], '--output'],
+        ['liquid-inventory', ['--config', config, '--site', 'sample'], '--out'],
+      ]) {
+        for (const output of [sourceFile, sourceLink, config, configLink]) {
+          const result = run(`mirage/${tool}.mjs`, ...selector, outputFlag, output, '--json');
+          assert.ok(result.status > 0, `${tool}: ${output}`);
+          assert.match(JSON.parse(result.stdout).error.message, /Report output must/);
+          assert.equal(result.stderr, '');
+          assert.deepEqual(await fs.readFile(sourceFile), sourceBytes);
+          assert.deepEqual(await fs.readFile(config), configBytes);
+        }
+        const output = path.join(dir, `${tool}.json`);
+        const good = run(`mirage/${tool}.mjs`, ...selector, outputFlag, output, '--json');
+        assert.equal(good.status, 0, good.stderr || good.stdout);
+        assert.doesNotThrow(() => JSON.parse(good.stdout));
+        const written = await fs.readFile(output, 'utf8');
+        assert.doesNotThrow(() => JSON.parse(written));
+      }
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  },
+);
 
 // @test-kind contract+security: render never overwrites portal sources or linked workspace state
 test('render refuses to overwrite a portal source or linked workspace state before startup', async () => {
@@ -522,28 +535,32 @@ test('render-sweep refuses a symbolic link at render-sweep.txt into the sources 
   assert.equal(result.status, 2);
 });
 
-test('tool usage errors show the paqvilo mirage form that mirage --help prints, never a node mirage/ path', async () => {
-  for (const name of ['query-inventory', 'liquid-conformance']) {
-    const result = run(`mirage/${name}.mjs`);
-    assert.ok(result.status > 0, name);
-    assert.ok(result.stderr.includes(mirageToolHelp(name).trimEnd()), `${name}: ${result.stderr}`);
-    assert.doesNotMatch(result.stderr, /node mirage\//);
-  }
-  const help = run('mirage/bootstrap-report.mjs', '--help');
-  assert.equal(help.stdout, mirageToolHelp('bootstrap-report'));
-  const data = await runMirage('data', 'bogus');
-  assert.equal(data.status, 1);
-  // An unknown data action is one line naming it and the valid ones; the usage is for --help.
-  assert.equal(
-    data.stderr.trim(),
-    'Unknown data action "bogus"; use generate or scaffold. Run paqvilo mirage data --help for options.',
-  );
-  // No action is named as missing, in the same form; a positional was not given.
-  const bare = await runMirage('data');
-  assert.equal(bare.status, 1);
-  assert.equal(
-    bare.stderr.trim(),
-    'Missing data action; use generate or scaffold. Run paqvilo mirage data --help for options.',
-  );
-  assert.ok((await runMirage('--help')).stdout.includes(`  ${MIRAGE_DATA_USAGE}\n`));
-});
+test(
+  'tool usage errors show the paqvilo mirage form that mirage --help prints, never a node mirage/ path',
+  commandBatch(3),
+  async () => {
+    for (const name of ['query-inventory', 'liquid-conformance']) {
+      const result = run(`mirage/${name}.mjs`);
+      assert.ok(result.status > 0, name);
+      assert.ok(result.stderr.includes(mirageToolHelp(name).trimEnd()), `${name}: ${result.stderr}`);
+      assert.doesNotMatch(result.stderr, /node mirage\//);
+    }
+    const help = run('mirage/bootstrap-report.mjs', '--help');
+    assert.equal(help.stdout, mirageToolHelp('bootstrap-report'));
+    const data = await runMirage('data', 'bogus');
+    assert.equal(data.status, 1);
+    // An unknown data action is one line naming it and the valid ones; the usage is for --help.
+    assert.equal(
+      data.stderr.trim(),
+      'Unknown data action "bogus"; use generate or scaffold. Run paqvilo mirage data --help for options.',
+    );
+    // No action is named as missing, in the same form; a positional was not given.
+    const bare = await runMirage('data');
+    assert.equal(bare.status, 1);
+    assert.equal(
+      bare.stderr.trim(),
+      'Missing data action; use generate or scaffold. Run paqvilo mirage data --help for options.',
+    );
+    assert.ok((await runMirage('--help')).stdout.includes(`  ${MIRAGE_DATA_USAGE}\n`));
+  },
+);

@@ -11,6 +11,7 @@ import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 import { tempDir, withoutToolkitEnvironment } from './fixture.mjs';
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import { ownedChildren } from './helpers/owned-children.mjs';
+import { SCENARIO_HANG_GUARD_MS } from './helpers/bounded-command.mjs';
 
 const toolkit = fileURLToPath(new URL('../', import.meta.url));
 const environment = Object.fromEntries(
@@ -70,32 +71,42 @@ async function fixture(root, site = 'portal') {
   await fs.writeFile(path.join(directory, 'Home.webpage.copy.html'), '<h1>Owned fixture content</h1>');
 }
 
-test('untouched source-free pack tests and smoke remain lightweight; strict requires declared executed cases', async (t) => {
-  const root = await project(t);
-  const [unit, starter, strict] = await Promise.all([
-    run(root, ['--test', 'pack/test/pack.test.mjs']),
-    run(root),
-    run(root, ['tools/test-browser.mjs', '--strict']),
-  ]);
-  assert.equal(unit.code, 0, unit.output);
-  assert.equal(starter.code, 0, starter.output);
-  assert.equal(strict.code, 1, strict.output);
-  assert.match(strict.output, /Missing: portal/);
-});
+// Hang guard only: it drives a runtime, the CLI or child processes through this file's fixtures; on a loaded slow host that is slow, not hung.
+test(
+  'untouched source-free pack tests and smoke remain lightweight; strict requires declared executed cases',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const root = await project(t);
+    const [unit, starter, strict] = await Promise.all([
+      run(root, ['--test', 'pack/test/pack.test.mjs']),
+      run(root),
+      run(root, ['tools/test-browser.mjs', '--strict']),
+    ]);
+    assert.equal(unit.code, 0, unit.output);
+    assert.equal(starter.code, 0, starter.output);
+    assert.equal(strict.code, 1, strict.output);
+    assert.match(strict.output, /Missing: portal/);
+  },
+);
 
-test('a populated fixture smoke passes, strict still requires declared executed cases, and smoke state stays outside the fixture', async (t) => {
-  const root = await project(t);
-  await fixture(root);
-  const [smoke, smokeStrict] = await Promise.all([run(root), run(root, ['tools/test-browser.mjs', '--strict'])]);
-  assert.equal(smoke.code, 0, smoke.output);
-  assert.equal(smokeStrict.code, 1, 'HTTP 200 does not count as meaningful acceptance');
-  assert.match(smokeStrict.output, /Missing: portal/);
-  assert.deepEqual(
-    (await fs.readdir(path.join(root, 'test-browser/fixtures/portal'))).sort(),
-    ['.gitkeep', 'Home.webpage.copy.html', 'Home.webpage.yml', 'website.yml', 'web-pages'].sort(),
-    'smoke state stays outside fixture sources',
-  );
-});
+test(
+  'a populated fixture smoke passes, strict still requires declared executed cases, and smoke state stays outside the fixture',
+  // Hang guard only: a generated project and two runs of its test runner, each starting a runtime of its own.
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const root = await project(t);
+    await fixture(root);
+    const [smoke, smokeStrict] = await Promise.all([run(root), run(root, ['tools/test-browser.mjs', '--strict'])]);
+    assert.equal(smoke.code, 0, smoke.output);
+    assert.equal(smokeStrict.code, 1, 'HTTP 200 does not count as meaningful acceptance');
+    assert.match(smokeStrict.output, /Missing: portal/);
+    assert.deepEqual(
+      (await fs.readdir(path.join(root, 'test-browser/fixtures/portal'))).sort(),
+      ['.gitkeep', 'Home.webpage.copy.html', 'Home.webpage.yml', 'website.yml', 'web-pages'].sort(),
+      'smoke state stays outside fixture sources',
+    );
+  },
+);
 
 for (const noPack of [false, true])
   test(`empty smoke skips without importing a runtime or pack, while populated fixtures still load them${noPack ? ' (no pack)' : ''}`, async (t) => {
@@ -191,91 +202,101 @@ test('empty acceptance discovery stays valid for starter checks and cannot pass 
   assert.equal(emptyStrict.code, 1, 'empty discovery cannot pass strict');
 });
 
-test('a malformed nonempty fixture fails rather than silently skipping in lightweight or strict validation', async (t) => {
-  const root = await project(t, { noPack: true });
-  await fs.writeFile(path.join(root, 'test-browser/fixtures/portal/website.yml'), 'adx_websiteid: [broken');
-  for (const result of await Promise.all(
-    [[], ['--strict']].map((args) => run(root, ['tools/test-browser.mjs', ...args])),
-  )) {
-    assert.notEqual(result.code, 0, result.output);
-    // The smoke case itself ran and failed: neither a crash of the runner nor a skipped case.
-    assert.match(result.output, /\bfail 1\b/, result.output);
-    assert.match(result.output, /\bskipped 0\b/, result.output);
-  }
-});
+test(
+  'a malformed nonempty fixture fails rather than silently skipping in lightweight or strict validation',
+  // Hang guard only: a generated project and two runs of its test runner, each starting a runtime of its own.
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const root = await project(t, { noPack: true });
+    await fs.writeFile(path.join(root, 'test-browser/fixtures/portal/website.yml'), 'adx_websiteid: [broken');
+    for (const result of await Promise.all(
+      [[], ['--strict']].map((args) => run(root, ['tools/test-browser.mjs', ...args])),
+    )) {
+      assert.notEqual(result.code, 0, result.output);
+      // The smoke case itself ran and failed: neither a crash of the runner nor a skipped case.
+      assert.match(result.output, /\bfail 1\b/, result.output);
+      assert.match(result.output, /\bskipped 0\b/, result.output);
+    }
+  },
+);
 
-test('site-bound recipe applies distinct platform and deployment defaults and attaches intended configured or dynamic origins', async (t) => {
-  const root = await project(t, { noPack: true });
-  withoutToolkitEnvironment(t);
-  const config = path.join(root, 'synthetic.config.yml'),
-    sites = {};
-  for (const [index, site] of ['alpha', 'beta'].entries()) {
-    await fixture(root, site);
-    const source = path.join(root, 'test-browser/fixtures', site);
-    await fs.writeFile(path.join(source, 'Home.webpage.copy.html'), '<h1>{{ snippets.Greeting }}</h1>');
-    await fs.writeFile(
-      path.join(source, 'Greeting.contentsnippet.yml'),
-      'adx_contentsnippetid: greeting\nadx_name: Greeting\nadx_value: Exported',
-    );
-    await fs.writeFile(
-      path.join(root, `${site}.json`),
-      JSON.stringify({
-        adx_contentsnippet: [{ adx_contentsnippetid: 'greeting', adx_value: `${site} profile content` }],
-      }),
-    );
-    sites[site] = {
-      source: path.relative(root, source),
-      defaultEnv: 'local',
-      environments: { local: 'http://127.0.0.1:1' },
-      mirage: {
-        port: 0,
-        solutionRoots: [],
-        platform: {
-          QueryLinkEntityLimit: 8 + index,
-          evidence: 'Invented test configuration; no hosted behavior claimed',
+// Hang guard only: it starts a simulator and drives it through its reloads; on a loaded slow host that is slow, not hung.
+test(
+  'site-bound recipe applies distinct platform and deployment defaults and attaches intended configured or dynamic origins',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const root = await project(t, { noPack: true });
+    withoutToolkitEnvironment(t);
+    const config = path.join(root, 'synthetic.config.yml'),
+      sites = {};
+    for (const [index, site] of ['alpha', 'beta'].entries()) {
+      await fixture(root, site);
+      const source = path.join(root, 'test-browser/fixtures', site);
+      await fs.writeFile(path.join(source, 'Home.webpage.copy.html'), '<h1>{{ snippets.Greeting }}</h1>');
+      await fs.writeFile(
+        path.join(source, 'Greeting.contentsnippet.yml'),
+        'adx_contentsnippetid: greeting\nadx_name: Greeting\nadx_value: Exported',
+      );
+      await fs.writeFile(
+        path.join(root, `${site}.json`),
+        JSON.stringify({
+          adx_contentsnippet: [{ adx_contentsnippetid: 'greeting', adx_value: `${site} profile content` }],
+        }),
+      );
+      sites[site] = {
+        source: path.relative(root, source),
+        defaultEnv: 'local',
+        environments: { local: 'http://127.0.0.1:1' },
+        mirage: {
+          port: 0,
+          solutionRoots: [],
+          platform: {
+            QueryLinkEntityLimit: 8 + index,
+            evidence: 'Invented test configuration; no hosted behavior claimed',
+          },
+          confinePortalPages: index === 0,
+          deploymentProfiles: { default: 'local', profiles: { local: { pages: `${site}.json` } } },
         },
-        confinePortalPages: index === 0,
-        deploymentProfiles: { default: 'local', profiles: { local: { pages: `${site}.json` } } },
-      },
-    };
-  }
-  await fs.writeFile(config, YAML.stringify({ sourceRoot: '.', defaultSite: 'alpha', sites }));
-  const { siteMirage, attachSite } = await import(pathToFileURL(path.join(root, 'support/site.mjs')));
-  const apps = [];
-  ownedFixture(t).add(async () => {
-    for (const app of apps) await app.close();
-  });
-  for (const [index, site] of ['alpha', 'beta'].entries()) {
-    const context = await siteMirage(site, { config: pathToFileURL(config) });
-    const app = await context.createSimulator({
-      stateFile: path.join(root, `${site}-state.json`),
-      port: 0,
-      watch: false,
+      };
+    }
+    await fs.writeFile(config, YAML.stringify({ sourceRoot: '.', defaultSite: 'alpha', sites }));
+    const { siteMirage, attachSite } = await import(pathToFileURL(path.join(root, 'support/site.mjs')));
+    const apps = [];
+    ownedFixture(t).add(async () => {
+      for (const app of apps) await app.close();
     });
-    apps.push(app);
-    assert.match(await (await fetch(app.url)).text(), new RegExp(`${site} profile content`));
-    assert.equal(app.state().config.confinePortalPages, index === 0);
-    const attached = await attachSite(site, { config: pathToFileURL(config), origin: app.url });
-    assert.equal(attached.origin, app.url);
-    assert.equal(
-      (await attached.platformSettings()).find((row) => row.key === 'QueryLinkEntityLimit').value,
-      8 + index,
+    for (const [index, site] of ['alpha', 'beta'].entries()) {
+      const context = await siteMirage(site, { config: pathToFileURL(config) });
+      const app = await context.createSimulator({
+        stateFile: path.join(root, `${site}-state.json`),
+        port: 0,
+        watch: false,
+      });
+      apps.push(app);
+      assert.match(await (await fetch(app.url)).text(), new RegExp(`${site} profile content`));
+      assert.equal(app.state().config.confinePortalPages, index === 0);
+      const attached = await attachSite(site, { config: pathToFileURL(config), origin: app.url });
+      assert.equal(attached.origin, app.url);
+      assert.equal(
+        (await attached.platformSettings()).find((row) => row.key === 'QueryLinkEntityLimit').value,
+        8 + index,
+      );
+      sites[site].mirage.port = Number(new URL(app.url).port);
+    }
+    await fs.writeFile(config, YAML.stringify({ sourceRoot: '.', defaultSite: 'alpha', sites }));
+    await assert.rejects(
+      attachSite('alpha', { config: pathToFileURL(config), origin: apps[1].url }),
+      /does not match the selected catalogue site/,
     );
-    sites[site].mirage.port = Number(new URL(app.url).port);
-  }
-  await fs.writeFile(config, YAML.stringify({ sourceRoot: '.', defaultSite: 'alpha', sites }));
-  await assert.rejects(
-    attachSite('alpha', { config: pathToFileURL(config), origin: apps[1].url }),
-    /does not match the selected catalogue site/,
-  );
-  await assert.rejects(
-    attachSite('unknown', { config: pathToFileURL(config), origin: apps[0].url }),
-    /configured site/,
-  );
-  for (const [index, site] of ['alpha', 'beta'].entries()) {
-    const attached = await attachSite(site, { config: pathToFileURL(config) });
-    assert.equal(attached.origin, apps[index].url);
-    assert.equal(typeof attached.close, 'undefined', 'attachment cannot stop caller-owned runtime');
-    assert.match(await (await fetch(apps[index].url)).text(), new RegExp(`${site} profile content`));
-  }
-});
+    await assert.rejects(
+      attachSite('unknown', { config: pathToFileURL(config), origin: apps[0].url }),
+      /configured site/,
+    );
+    for (const [index, site] of ['alpha', 'beta'].entries()) {
+      const attached = await attachSite(site, { config: pathToFileURL(config) });
+      assert.equal(attached.origin, apps[index].url);
+      assert.equal(typeof attached.close, 'undefined', 'attachment cannot stop caller-owned runtime');
+      assert.match(await (await fetch(apps[index].url)).text(), new RegExp(`${site} profile content`));
+    }
+  },
+);

@@ -341,7 +341,9 @@ unique strings of 1–160 characters; `statusOnly` and `unordered` must be boole
   timing for the same method and exact URL can raise it to that chain's duration plus 1 s.
   `navigationWaits` records `commitReserveMs`, `commitReservePolicy` (`bounded-write-fallback`,
   `comparable-navigation-chain`, `explicit`), `comparableNavigationMs`, `writeHoldAllowanceMs` and
-  `actionRemainingMs`. Redirect hops share one write-wait budget.
+  `actionRemainingMs`. Redirect hops share one write-wait budget: on a later hop, `writeHoldAllowanceMs` is
+  what is left of that shared hold when the hop is paused (0 once it has ended), not a new budget of the
+  step that is running then.
 - `verifyParity({ timeout, readinessTimeout })`: page loads default to 30000 ms; selector, font and
   network-idle readiness default to the smaller of `timeout` and 5000 ms.
 - Owned loopback `/__sim/events` and `/__sim/frame-ready/<uuid>` requests stay in network observations

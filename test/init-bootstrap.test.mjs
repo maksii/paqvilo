@@ -12,6 +12,7 @@ import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 import { tempDir } from './fixture.mjs';
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import { ownedChildren } from './helpers/owned-children.mjs';
+import { SCENARIO_HANG_GUARD_MS } from './helpers/bounded-command.mjs';
 
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 const cleanEnv = () =>
@@ -176,67 +177,72 @@ test('generated bootstrap installs local dependencies once, uses unchanged lockf
   assert.deepEqual(registry.paths, [], 'offline local dependency preparation never accesses a registry');
 });
 
-test('setup readiness resolves configured, personal and explicit browser choices without importing sources or contacting portals', async (t) => {
-  const directory = await workspace(t),
-    portal = await countingOrigin(t);
-  const configFile = path.join(directory, 'paqvilo.config.yml'),
-    marker = path.join(directory, 'pack-executed');
-  await fs.writeFile(
-    path.join(directory, 'pack.mjs'),
-    "import fs from 'node:fs'; fs.writeFileSync(new URL('./pack-executed',import.meta.url),'unexpected'); throw new Error('Must not execute');",
-  );
-  await fs.writeFile(path.join(directory, 'profile.json'), 'Malformed deployment value sentinel');
-  await fs.writeFile(
-    configFile,
-    YAML.stringify({
-      sourceRoot: './missing-exports',
-      defaultSite: 'invented',
-      sites: {
-        invented: {
-          source: 'missing-portal',
-          defaultEnv: 'dev',
-          environments: { dev: portal.origin },
-          mirage: {
-            dataPacks: ['./pack.mjs'],
-            deploymentProfiles: { profiles: { nonselected: { pages: './profile.json' } } },
+// Hang guard only: it runs real CLI commands and the runtimes they start; on a loaded slow host that is slow, not hung.
+test(
+  'setup readiness resolves configured, personal and explicit browser choices without importing sources or contacting portals',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const directory = await workspace(t),
+      portal = await countingOrigin(t);
+    const configFile = path.join(directory, 'paqvilo.config.yml'),
+      marker = path.join(directory, 'pack-executed');
+    await fs.writeFile(
+      path.join(directory, 'pack.mjs'),
+      "import fs from 'node:fs'; fs.writeFileSync(new URL('./pack-executed',import.meta.url),'unexpected'); throw new Error('Must not execute');",
+    );
+    await fs.writeFile(path.join(directory, 'profile.json'), 'Malformed deployment value sentinel');
+    await fs.writeFile(
+      configFile,
+      YAML.stringify({
+        sourceRoot: './missing-exports',
+        defaultSite: 'invented',
+        sites: {
+          invented: {
+            source: 'missing-portal',
+            defaultEnv: 'dev',
+            environments: { dev: portal.origin },
+            mirage: {
+              dataPacks: ['./pack.mjs'],
+              deploymentProfiles: { profiles: { nonselected: { pages: './profile.json' } } },
+            },
           },
         },
-      },
-      browser: { channel: 'chromium' },
-    }),
-  );
-  const check = async (expected, { env = {}, args = [] } = {}) => {
-    const result = await run([cli, 'doctor', '--setup', '--config', configFile, '--json', ...args], {
-      cwd: directory,
-      env: { ...cleanEnv(), ...env },
-    });
-    const report = JSON.parse(result.stdout);
-    assert.equal(report.command, 'setup', result.stdout);
-    assert.equal(report.offline, true);
-    assert.equal(report.prerequisites.browser.channel, expected);
-    assert.equal(report.prerequisites.browser.launchVerified, false);
-    assert.equal(result.stdout.includes('Malformed deployment value sentinel'), false);
-  };
-  await check('chromium');
-  await fs.writeFile(path.join(directory, '.env'), 'PAQVILO_BROWSER=chrome\n');
-  const invalid = (browser) =>
-    run([cli, 'doctor', '--setup', '--config', configFile, '--browser=' + browser, '--json'], {
-      cwd: directory,
-      env: cleanEnv(),
-    });
-  const [, , , ...rejected] = await Promise.all([
-    check('chrome'),
-    check('msedge', { env: { PAQVILO_BROWSER: 'msedge' } }),
-    check('chromium', { env: { PAQVILO_BROWSER: 'msedge' }, args: ['--browser', 'chromium'] }),
-    invalid(''),
-    invalid('unexpected'),
-  ]);
-  for (const result of rejected) {
-    assert.equal(result.status, 1);
-    assert.equal(JSON.parse(result.stdout).error.code, 'SETUP_CHECK_FAILED');
-    assert.match(JSON.parse(result.stdout).error.message, /--browser must be/);
-  }
-  assert.equal(await exists(path.join(directory, 'missing-exports')), false);
-  assert.equal(await exists(marker), false, 'registered pack code was not imported');
-  assert.equal(portal.count(), 0, 'browser presence checks never contact configured portals');
-});
+        browser: { channel: 'chromium' },
+      }),
+    );
+    const check = async (expected, { env = {}, args = [] } = {}) => {
+      const result = await run([cli, 'doctor', '--setup', '--config', configFile, '--json', ...args], {
+        cwd: directory,
+        env: { ...cleanEnv(), ...env },
+      });
+      const report = JSON.parse(result.stdout);
+      assert.equal(report.command, 'setup', result.stdout);
+      assert.equal(report.offline, true);
+      assert.equal(report.prerequisites.browser.channel, expected);
+      assert.equal(report.prerequisites.browser.launchVerified, false);
+      assert.equal(result.stdout.includes('Malformed deployment value sentinel'), false);
+    };
+    await check('chromium');
+    await fs.writeFile(path.join(directory, '.env'), 'PAQVILO_BROWSER=chrome\n');
+    const invalid = (browser) =>
+      run([cli, 'doctor', '--setup', '--config', configFile, '--browser=' + browser, '--json'], {
+        cwd: directory,
+        env: cleanEnv(),
+      });
+    const [, , , ...rejected] = await Promise.all([
+      check('chrome'),
+      check('msedge', { env: { PAQVILO_BROWSER: 'msedge' } }),
+      check('chromium', { env: { PAQVILO_BROWSER: 'msedge' }, args: ['--browser', 'chromium'] }),
+      invalid(''),
+      invalid('unexpected'),
+    ]);
+    for (const result of rejected) {
+      assert.equal(result.status, 1);
+      assert.equal(JSON.parse(result.stdout).error.code, 'SETUP_CHECK_FAILED');
+      assert.match(JSON.parse(result.stdout).error.message, /--browser must be/);
+    }
+    assert.equal(await exists(path.join(directory, 'missing-exports')), false);
+    assert.equal(await exists(marker), false, 'registered pack code was not imported');
+    assert.equal(portal.count(), 0, 'browser presence checks never contact configured portals');
+  },
+);

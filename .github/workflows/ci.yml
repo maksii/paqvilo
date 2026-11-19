@@ -166,7 +166,7 @@ jobs:
     if: needs.changes.outputs.runtime == 'true'
     name: Unit tests (Node 26, ${{ matrix.suite }}${{ matrix.shard && format(' {0}', matrix.shard) || '' }})
     runs-on: ubuntu-26.04
-    timeout-minutes: 40
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -234,7 +234,7 @@ jobs:
     if: needs.changes.outputs.runtime == 'true'
     name: Browser tests (Node 26, ${{ matrix.os }}, ${{ matrix.channel }}, ${{ matrix.suite }}${{ matrix.shard && format(' {0}', matrix.shard) || '' }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 40
+    timeout-minutes: 60
     env:
       PAQ_CI_BROWSER: ${{ matrix.channel }}
     strategy:
@@ -324,7 +324,7 @@ jobs:
     if: needs.changes.outputs.runtime == 'true'
     name: Windows unit tests (Node 26, ${{ matrix.suite }}${{ matrix.shard && format(' {0}', matrix.shard) || '' }})
     runs-on: windows-2025
-    timeout-minutes: 40
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:

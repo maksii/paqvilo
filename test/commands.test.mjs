@@ -10,9 +10,10 @@ import { createInterface } from 'node:readline';
 import { createFixture, SITE, tempDirSync } from './fixture.mjs';
 import { inspectCheckout } from '../lense/commands/doctor.mjs';
 import { paqviloPrefix } from '../lense/command-hint.mjs';
+import { runMirage } from './helpers/mirage-in-process.mjs';
 import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
-import { boundedCommand, COMMAND_HANG_GUARD_MS } from './helpers/bounded-command.mjs';
+import { boundedCommand, COMMAND_HANG_GUARD_MS, SCENARIO_HANG_GUARD_MS } from './helpers/bounded-command.mjs';
 import { operationBudget, countOperations } from './helpers/operation-budget.mjs';
 import { ownStartedRuntimes } from './helpers/mirage-runtimes.mjs';
 import { ownedChildren } from './helpers/owned-children.mjs';
@@ -24,10 +25,14 @@ before(() => {
 // A command still running when its test was stopped holds files of the fixture: it is ended, and its exit observed,
 // before the fixture is removed.
 const children = ownedChildren();
-after(async () => {
-  await children.end();
-  fx.cleanup();
-});
+after(
+  async () => {
+    await children.end();
+    fx.cleanup();
+  },
+  // Hang guard only: ending the children of a stopped test and removing the fixture.
+  { timeout: SCENARIO_HANG_GUARD_MS },
+);
 const cli = fileURLToPath(new URL('../lense/cli.mjs', import.meta.url));
 const env = Object.fromEntries(
   Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_') && !key.startsWith('GIT_')),
@@ -81,60 +86,65 @@ const runWithEnv = (extra, ...args) =>
       ),
   );
 
-test('doctor Mirage gate diagnoses an invalid default profile and names every catalogue-relative file', async () => {
-  const config = fx.file('profile-doctor.json'),
-    first = fx.file('profile-first.json'),
-    second = fx.file('profile-second.json');
-  fs.writeFileSync(first, JSON.stringify({ EnvironmentVariables: [{ SchemaName: 'sample_one', Value: 'one' }] }));
-  fs.writeFileSync(second, JSON.stringify({ EnvironmentVariables: [{ SchemaName: 'sample_two', Value: 'two' }] }));
-  fs.writeFileSync(
-    config,
-    JSON.stringify({
-      sites: {
-        test: {
-          source: '.',
-          environments: { dev: 'https://portal.example.test' },
-          mirage: {
-            port: 0,
-            deploymentProfiles: {
-              default: 'dev',
-              profiles: { dev: { environmentVariables: ['profile-first.json', 'profile-second.json'] } },
+// Hang guard only: it drives a runtime, the CLI or child processes through this file's fixtures; on a loaded slow host that is slow, not hung.
+test(
+  'doctor Mirage gate diagnoses an invalid default profile and names every catalogue-relative file',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async () => {
+    const config = fx.file('profile-doctor.json'),
+      first = fx.file('profile-first.json'),
+      second = fx.file('profile-second.json');
+    fs.writeFileSync(first, JSON.stringify({ EnvironmentVariables: [{ SchemaName: 'sample_one', Value: 'one' }] }));
+    fs.writeFileSync(second, JSON.stringify({ EnvironmentVariables: [{ SchemaName: 'sample_two', Value: 'two' }] }));
+    fs.writeFileSync(
+      config,
+      JSON.stringify({
+        sites: {
+          test: {
+            source: '.',
+            environments: { dev: 'https://portal.example.test' },
+            mirage: {
+              port: 0,
+              deploymentProfiles: {
+                default: 'dev',
+                profiles: { dev: { environmentVariables: ['profile-first.json', 'profile-second.json'] } },
+              },
             },
           },
         },
-      },
-    }),
-  );
-  const valid = await run('doctor', '--config', config, '--mirage', '--json');
-  assert.equal(valid.status, 0, valid.stdout + valid.stderr);
-  fs.writeFileSync(second, '{invalid');
-  const [plain, gated] = await Promise.all([
-    run('doctor', '--config', config),
-    run('doctor', '--config', config, '--mirage', '--json'),
-  ]);
-  assert.equal(plain.status, 0, plain.stdout + plain.stderr);
-  assert.match(
-    plain.stdout,
-    /environmentVariables profile-first.json: found, environmentVariables profile-second.json: found/,
-  );
-  assert.equal(gated.status, 1, gated.stdout + gated.stderr);
-  const report = JSON.parse(gated.stdout);
-  assert.equal(report.ready, false);
-  assert.equal(report.reports[0].lenseReady, true);
-  assert.equal(report.reports[0].mirage.ready, false);
-  const [profile] = report.reports[0].mirage.deploymentProfiles.profiles;
-  assert.deepEqual(
-    profile.files.map((item) => [path.basename(item.file), item.exists]),
-    [
-      ['profile-first.json', true],
-      ['profile-second.json', true],
-    ],
-  );
-  assert.deepEqual(
-    [profile.valid, profile.error.file, profile.error.parserCode],
-    [false, 'profile-second.json', 'JSON_SYNTAX_ERROR'],
-  );
-});
+      }),
+    );
+    const valid = await run('doctor', '--config', config, '--mirage', '--json');
+    assert.equal(valid.status, 0, valid.stdout + valid.stderr);
+    fs.writeFileSync(second, '{invalid');
+    const [plain, gated] = await Promise.all([
+      run('doctor', '--config', config),
+      run('doctor', '--config', config, '--mirage', '--json'),
+    ]);
+    assert.equal(plain.status, 0, plain.stdout + plain.stderr);
+    assert.match(
+      plain.stdout,
+      /environmentVariables profile-first.json: found, environmentVariables profile-second.json: found/,
+    );
+    assert.equal(gated.status, 1, gated.stdout + gated.stderr);
+    const report = JSON.parse(gated.stdout);
+    assert.equal(report.ready, false);
+    assert.equal(report.reports[0].lenseReady, true);
+    assert.equal(report.reports[0].mirage.ready, false);
+    const [profile] = report.reports[0].mirage.deploymentProfiles.profiles;
+    assert.deepEqual(
+      profile.files.map((item) => [path.basename(item.file), item.exists]),
+      [
+        ['profile-first.json', true],
+        ['profile-second.json', true],
+      ],
+    );
+    assert.deepEqual(
+      [profile.valid, profile.error.file, profile.error.parserCode],
+      [false, 'profile-second.json', 'JSON_SYNTAX_ERROR'],
+    );
+  },
+);
 
 test('offline doctor diagnoses the extract and unavailable baseline without fetch', (t) => {
   t.mock.method(globalThis, 'fetch', () => {
@@ -160,7 +170,13 @@ test('offline doctor skips the baseline with a note in a repository without comm
   t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }));
   fs.cpSync(fx.dir, dir, { recursive: true, filter: (source) => path.basename(source) !== '.git' });
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^GIT_/i.test(key)));
-  execFileSync('git', ['init', '-q'], { cwd: dir, env, stdio: 'ignore', windowsHide: true });
+  execFileSync('git', ['init', '-q'], {
+    cwd: dir,
+    env,
+    stdio: 'ignore',
+    windowsHide: true,
+    timeout: COMMAND_HANG_GUARD_MS,
+  });
   const cfg = {
     siteName: 'test',
     envName: 'dev',
@@ -192,7 +208,13 @@ test('standalone CLI resolves the baseline in the portal repository and discover
   assert.equal(
     report.reports[0].baseline.commit,
     // Without inherited GIT_* variables: a Git hook's GIT_DIR would name the toolkit repository instead.
-    execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.dir, env, encoding: 'utf8', windowsHide: true }).trim(),
+    execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: fx.dir,
+      env,
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: COMMAND_HANG_GUARD_MS,
+    }).trim(),
   );
   assert.equal(listed.status, 0, listed.stdout + listed.stderr);
   assert.equal(JSON.parse(listed.stdout).sourceRoot, fx.dir);
@@ -234,109 +256,133 @@ test('Mirage status is available as a structured toolkit command', async () => {
   assert.deepEqual(report.sessions, [], 'no runtime of this fixture is running');
 });
 
-test('Mirage start waits for runtime readiness and exposes page dependency context', async (t) => {
-  const config = fx.file('mirage-runtime-catalogue.yml');
-  fs.writeFileSync(
-    config,
-    `defaultSite: test\nsites:\n  test:\n    source: .\n    environments:\n      dev: https://portal.example.com\n    mirage:\n      observed:\n        loginPath: /SignIn\n        evidence: notes/observed-signin.json\n`,
-  );
-  let stopped;
-  const stop = () => (stopped ??= run('mirage', 'stop', '--config', config, '--repo', fx.dir, '--json'));
-  // Register before starting: readiness and hint assertions must not leak the
-  // owned runtime or leave the shared fixture locked if they fail.
-  ownedFixture(t).add(async () => {
-    const result = await stop();
-    assert.equal(result.status, 0, result.stdout + result.stderr);
-  });
-  // The command's own startup timeout ends a start that never becomes ready, so a failed start stops its runtime.
-  const started = await run(
-    'mirage',
-    'start',
-    '--config',
-    config,
-    '--repo',
-    fx.dir,
-    '--port',
-    '0',
-    '--startup-timeout',
-    '120000',
-    '--json',
-  );
-  assert.equal(started.status, 0, started.stdout + started.stderr);
-  const startupEvents = started.stderr
-    .trim()
-    .split(/\r?\n/)
-    .filter((line) => line.startsWith('{'))
-    .map((line) => JSON.parse(line))
-    .filter((event) => event.type === 'startup');
-  assert.equal(startupEvents[0].phase, 'configuration');
-  assert.equal(startupEvents[0].status, 'started');
-  assert.equal(startupEvents.at(-1).status, 'complete');
-  assert.match(startupEvents.at(-1).detail, /runtime listening/);
-  assert.ok(
-    startupEvents.every(
-      (event, index) => index === 0 || event.totalElapsedMs >= startupEvents[index - 1].totalElapsedMs,
-    ),
-  );
-  const session = JSON.parse(started.stdout);
-  assert.equal(session.ok, true);
-  assert.equal(session.ready, true);
-  assert.equal(session.owned, true);
-  assert.equal(session.started, true);
-  // The printed administration address is the one the runtime reports on its own admin port, not the portal port.
-  const reported = await (await fetch(new URL('/_sim/api/status', session.url))).json();
-  assert.equal(session.adminUrl, reported.adminUrl);
-  assert.notEqual(new URL(session.adminUrl).port, new URL(session.url).port);
-  assert.ok(path.isAbsolute(session.stateFile));
-  assert.ok(session.stateFile.startsWith(path.join(path.dirname(config), '.paqvilo') + path.sep));
-  // The hint starts the way paqvilo runs where the command ran (lense/command-hint.mjs): here the toolkit checkout.
-  assert.ok(session.stop.startsWith(`${paqviloPrefix().join(' ')} mirage stop --config `), session.stop);
-  assert.ok(session.stop.includes(config), 'the hint retains the exact selected catalogue');
-  assert.ok(session.stop.includes('--site test'));
-  assert.ok(session.stop.includes('--port ' + new URL(session.url).port));
-  assert.equal(
-    session.runtime.liveWrites,
-    'disabled',
-    'without --allow-live-writes no live write can leave the runtime',
-  );
-  try {
-    const response = await fetch(new URL('/_sim/api/page-resources?path=/', session.url));
-    assert.equal(response.status, 200, response.body);
-    const resources = await response.json();
-    assert.equal(resources.path, '/');
-    assert.ok(Array.isArray(resources.dependencies));
-    assert.ok(Array.isArray(resources.sourceRoots));
-    // The Mirage reads the catalogue this command resolved (--config), so the site's
-    // observed behaviour reaches the runtime.
-    const state = await (await fetch(new URL('/_sim/api/state?summary=1', session.url))).json();
-    assert.deepEqual(state.status.bootstrap.observed, { loginPath: '/SignIn', evidence: 'notes/observed-signin.json' });
-    assert.deepEqual(
-      [state.status.bootstrap.signInPath.path, state.status.bootstrap.signInPath.source],
-      ['/SignIn', 'observed'],
+// Hang guard only: one scenario of a real runtime start, two status commands and the stop of that runtime.
+test(
+  'Mirage start waits for runtime readiness and exposes page dependency context',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const config = fx.file('mirage-runtime-catalogue.yml');
+    fs.writeFileSync(
+      config,
+      `defaultSite: test\nsites:\n  test:\n    source: .\n    environments:\n      dev: https://portal.example.com\n    mirage:\n      observed:\n        loginPath: /SignIn\n        evidence: notes/observed-signin.json\n`,
     );
-    // One status at a time: each asks the runtime for its facts, and two askers at once delay each other's answer.
-    const statusJson = await run('mirage', 'status', '--config', config, '--repo', fx.dir, '--json');
-    const statusText = await run('mirage', 'status', '--config', config, '--repo', fx.dir);
-    const listed = JSON.parse(statusJson.stdout).sessions.find((item) => item.pid === session.pid);
-    assert.equal(listed.owned, true);
-    assert.equal(listed.ready, true);
-    assert.equal(listed.stateFile, session.stateFile);
-    assert.equal(listed.adminUrl, session.adminUrl);
-    assert.ok(Object.hasOwn(listed, 'project') && Object.hasOwn(listed, 'portal'));
-    assert.equal(listed.runtime.liveWrites, 'disabled');
-    assert.match(statusText.stdout, /live writes disabled/);
-  } finally {
-    const result = await stop();
-    assert.equal(result.status, 0, result.stdout + result.stderr);
-  }
-  const report = JSON.parse((await stopped).stdout);
-  assert.deepEqual(
-    report.stopped.map((item) => item.pid),
-    [session.pid],
-  );
-  assert.equal(report.stopped[0].graceful, true);
-  assert.equal(report.remaining.length, 0);
-});
+    let stopped;
+    const stop = () => (stopped ??= run('mirage', 'stop', '--config', config, '--repo', fx.dir, '--json'));
+    // Register before starting: readiness and hint assertions must not leak the
+    // owned runtime or leave the shared fixture locked if they fail.
+    ownedFixture(t).add(async () => {
+      const result = await stop();
+      assert.equal(result.status, 0, result.stdout + result.stderr);
+    });
+    // The command's own startup timeout ends a start that never becomes ready, so a failed start stops its runtime.
+    const started = await run(
+      'mirage',
+      'start',
+      '--config',
+      config,
+      '--repo',
+      fx.dir,
+      '--port',
+      '0',
+      '--startup-timeout',
+      '120000',
+      '--json',
+    );
+    assert.equal(started.status, 0, started.stdout + started.stderr);
+    const startupEvents = started.stderr
+      .trim()
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith('{'))
+      .map((line) => JSON.parse(line))
+      .filter((event) => event.type === 'startup');
+    assert.equal(startupEvents[0].phase, 'configuration');
+    assert.equal(startupEvents[0].status, 'started');
+    assert.equal(startupEvents.at(-1).status, 'complete');
+    assert.match(startupEvents.at(-1).detail, /runtime listening/);
+    assert.ok(
+      startupEvents.every(
+        (event, index) => index === 0 || event.totalElapsedMs >= startupEvents[index - 1].totalElapsedMs,
+      ),
+    );
+    const session = JSON.parse(started.stdout);
+    assert.equal(session.ok, true);
+    assert.equal(session.ready, true);
+    assert.equal(session.owned, true);
+    assert.equal(session.started, true);
+    // The printed administration address is the one the runtime reports on its own admin port, not the portal port.
+    const reported = await (await fetch(new URL('/_sim/api/status', session.url))).json();
+    assert.equal(session.adminUrl, reported.adminUrl);
+    assert.notEqual(new URL(session.adminUrl).port, new URL(session.url).port);
+    assert.ok(path.isAbsolute(session.stateFile));
+    assert.ok(session.stateFile.startsWith(path.join(path.dirname(config), '.paqvilo') + path.sep));
+    // The hint starts the way paqvilo runs where the command ran (lense/command-hint.mjs): here the toolkit checkout.
+    assert.ok(session.stop.startsWith(`${paqviloPrefix().join(' ')} mirage stop --config `), session.stop);
+    assert.ok(session.stop.includes(config), 'the hint retains the exact selected catalogue');
+    assert.ok(session.stop.includes('--site test'));
+    assert.ok(session.stop.includes('--port ' + new URL(session.url).port));
+    assert.equal(
+      session.runtime.liveWrites,
+      'disabled',
+      'without --allow-live-writes no live write can leave the runtime',
+    );
+    try {
+      const response = await fetch(new URL('/_sim/api/page-resources?path=/', session.url));
+      assert.equal(response.status, 200, response.body);
+      const resources = await response.json();
+      assert.equal(resources.path, '/');
+      assert.ok(Array.isArray(resources.dependencies));
+      assert.ok(Array.isArray(resources.sourceRoots));
+      // The Mirage reads the catalogue this command resolved (--config), so the site's
+      // observed behaviour reaches the runtime.
+      const state = await (await fetch(new URL('/_sim/api/state?summary=1', session.url))).json();
+      assert.deepEqual(state.status.bootstrap.observed, {
+        loginPath: '/SignIn',
+        evidence: 'notes/observed-signin.json',
+      });
+      assert.deepEqual(
+        [state.status.bootstrap.signInPath.path, state.status.bootstrap.signInPath.source],
+        ['/SignIn', 'observed'],
+      );
+      // One status at a time: each asks the runtime for its facts, and two askers at once delay each other's answer.
+      // The status command asks the runtime with its interactive limit. A runtime that answers later than that on a
+      // loaded host stays listed as ready, without the details of an answer (test/mirage-status-probe.test.mjs): the
+      // commands are asserted on the listing, and the details on the same status command run in process without the
+      // limit (the host's probeTimeout).
+      const statusJson = await run('mirage', 'status', '--config', config, '--repo', fx.dir, '--json');
+      const statusText = await run('mirage', 'status', '--config', config, '--repo', fx.dir);
+      assert.equal(statusText.status, 0, statusText.stdout + statusText.stderr);
+      assert.match(statusText.stdout, new RegExp(String.raw`^ready · toolkit managed .*\n.* pid ${session.pid}$`, 'm'));
+      const listed = JSON.parse(statusJson.stdout).sessions.find((item) => item.pid === session.pid);
+      assert.equal(listed.owned, true);
+      assert.equal(listed.ready, true);
+      assert.equal(listed.stateFile, session.stateFile);
+      assert.equal(listed.adminUrl, session.adminUrl);
+      assert.ok(Object.hasOwn(listed, 'project') && Object.hasOwn(listed, 'portal'));
+      const unlimited = { host: { probeTimeout: null } };
+      const answeredJson = await runMirage(
+        ['mirage', 'status', '--config', config, '--repo', fx.dir, '--json'],
+        unlimited,
+      );
+      const answeredText = await runMirage(['mirage', 'status', '--config', config, '--repo', fx.dir], unlimited);
+      assert.equal(answeredJson.status, 0, answeredJson.stdout + answeredJson.stderr);
+      assert.equal(answeredText.status, 0, answeredText.stdout + answeredText.stderr);
+      const answered = JSON.parse(answeredJson.stdout).sessions.find((item) => item.pid === session.pid);
+      assert.equal(answered.ready, true);
+      assert.equal(answered.runtime.liveWrites, 'disabled');
+      assert.match(answeredText.stdout, /live writes disabled/);
+    } finally {
+      const result = await stop();
+      assert.equal(result.status, 0, result.stdout + result.stderr);
+    }
+    const report = JSON.parse((await stopped).stdout);
+    assert.deepEqual(
+      report.stopped.map((item) => item.pid),
+      [session.pid],
+    );
+    assert.equal(report.stopped[0].graceful, true);
+    assert.equal(report.remaining.length, 0);
+  },
+);
 
 // Nine CLI commands: help, agent help and seven rejected invocations.
 test(
@@ -754,151 +800,156 @@ test(
   },
 );
 
-test('mirage stop ends owned starting processes, prunes stale records and never touches other programs', async (t) => {
-  const { stopOwnedSessions, mirageStatus, ownedSessions, processIdentity } =
-    await import('../lense/commands/mirage.mjs');
-  const root = tempDirSync('paqvilo-mirage-owned-');
-  const paths = {
-    discoveryRoot: path.join(root, 'simulator'),
-    ownershipFile: path.join(root, 'mirage', 'sessions.json'),
-    logRoot: path.join(root, 'logs'),
-  };
-  fs.mkdirSync(paths.discoveryRoot, { recursive: true });
-  fs.mkdirSync(path.dirname(paths.ownershipFile), { recursive: true });
-  const idle = () =>
-    spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true });
-  // Another program on a PID a record names: it answers a line on its input for as long as it runs. Whether a PID is
-  // in use says nothing about which process holds it, so the test asks the process itself.
-  const answering = () =>
-    spawn(
-      process.execPath,
-      ['-e', "process.stdin.on('data', () => console.log('here')); setInterval(() => {}, 1000)"],
-      {
+// Hang guard only: it runs real child processes; on a loaded slow host that is slow, not hung.
+test(
+  'mirage stop ends owned starting processes, prunes stale records and never touches other programs',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const { stopOwnedSessions, mirageStatus, ownedSessions, processIdentity } =
+      await import('../lense/commands/mirage.mjs');
+    const root = tempDirSync('paqvilo-mirage-owned-');
+    const paths = {
+      discoveryRoot: path.join(root, 'simulator'),
+      ownershipFile: path.join(root, 'mirage', 'sessions.json'),
+      logRoot: path.join(root, 'logs'),
+    };
+    fs.mkdirSync(paths.discoveryRoot, { recursive: true });
+    fs.mkdirSync(path.dirname(paths.ownershipFile), { recursive: true });
+    const idle = () =>
+      spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true });
+    // Another program on a PID a record names: it answers a line on its input for as long as it runs. Whether a PID is
+    // in use says nothing about which process holds it, so the test asks the process itself.
+    const answering = () =>
+      spawn(
+        process.execPath,
+        ['-e', "process.stdin.on('data', () => console.log('here')); setInterval(() => {}, 1000)"],
+        {
+          stdio: ['pipe', 'pipe', 'ignore'],
+          windowsHide: true,
+        },
+      );
+    const answers = async (child) => {
+      const answer = once(child.stdout, 'data');
+      child.stdin.write('\n');
+      return String((await Promise.race([answer, once(child, 'exit').then(() => ['exited'])]))[0]).trim();
+    };
+    const starting = idle(),
+      unrelated = answering(),
+      finished = idle();
+    // The exit of the starting process is observed as the event of this child.
+    const startingExit = once(starting, 'exit');
+    let identityGuard;
+    ownedFixture(t).add(() =>
+      Promise.all(
+        [starting, unrelated, finished, identityGuard].filter(Boolean).map(async (child) => {
+          if (child.exitCode !== null || child.signalCode !== null) return;
+          const closed = once(child, 'close');
+          child.kill();
+          await closed;
+        }),
+      ),
+    );
+    ownedFixture(t).remove(() => fs.rmSync(root, { recursive: true, force: true }));
+    await Promise.all([starting, unrelated, finished].map((child) => once(child, 'spawn')));
+    if (process.platform === 'win32') {
+      // Windows can recycle a terminated PID into a concurrent process probe. Retaining
+      // process handles keeps these two fixture PIDs reserved until the death assertions finish.
+      const guardScript = [
+        `$fixtures = @(Get-Process -Id ${starting.pid},${finished.pid} -ErrorAction Stop)`,
+        'foreach ($fixture in $fixtures) { $null = $fixture.Handle }',
+        "[Console]::Out.WriteLine('retained')",
+        '$null = [Console]::In.ReadLine()',
+        'foreach ($fixture in $fixtures) { $fixture.Dispose() }',
+      ].join('; ');
+      identityGuard = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', guardScript], {
         stdio: ['pipe', 'pipe', 'ignore'],
         windowsHide: true,
-      },
-    );
-  const answers = async (child) => {
-    const answer = once(child.stdout, 'data');
-    child.stdin.write('\n');
-    return String((await Promise.race([answer, once(child, 'exit').then(() => ['exited'])]))[0]).trim();
-  };
-  const starting = idle(),
-    unrelated = answering(),
-    finished = idle();
-  // The exit of the starting process is observed as the event of this child.
-  const startingExit = once(starting, 'exit');
-  let identityGuard;
-  ownedFixture(t).add(() =>
-    Promise.all(
-      [starting, unrelated, finished, identityGuard].filter(Boolean).map(async (child) => {
-        if (child.exitCode !== null || child.signalCode !== null) return;
-        const closed = once(child, 'close');
-        child.kill();
-        await closed;
-      }),
-    ),
-  );
-  ownedFixture(t).remove(() => fs.rmSync(root, { recursive: true, force: true }));
-  await Promise.all([starting, unrelated, finished].map((child) => once(child, 'spawn')));
-  if (process.platform === 'win32') {
-    // Windows can recycle a terminated PID into a concurrent process probe. Retaining
-    // process handles keeps these two fixture PIDs reserved until the death assertions finish.
-    const guardScript = [
-      `$fixtures = @(Get-Process -Id ${starting.pid},${finished.pid} -ErrorAction Stop)`,
-      'foreach ($fixture in $fixtures) { $null = $fixture.Handle }',
-      "[Console]::Out.WriteLine('retained')",
-      '$null = [Console]::In.ReadLine()',
-      'foreach ($fixture in $fixtures) { $fixture.Dispose() }',
-    ].join('; ');
-    identityGuard = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', guardScript], {
-      stdio: ['pipe', 'pipe', 'ignore'],
-      windowsHide: true,
-    });
-    const reader = createInterface({ input: identityGuard.stdout, crlfDelay: Infinity });
-    try {
-      const [ready] = await Promise.race([
-        once(reader, 'line', { signal: t.signal }),
-        once(identityGuard, 'exit').then(([code]) => {
-          throw new Error(`Fixture process-handle guard exited before readiness (${code})`);
-        }),
-      ]);
-      assert.equal(ready, 'retained');
-    } finally {
-      reader.close();
+      });
+      const reader = createInterface({ input: identityGuard.stdout, crlfDelay: Infinity });
+      try {
+        const [ready] = await Promise.race([
+          once(reader, 'line', { signal: t.signal }),
+          once(identityGuard, 'exit').then(([code]) => {
+            throw new Error(`Fixture process-handle guard exited before readiness (${code})`);
+          }),
+        ]);
+        assert.equal(ready, 'retained');
+      } finally {
+        reader.close();
+      }
     }
-  }
-  finished.kill();
-  await once(finished, 'exit');
-  const sourceDir = path.join(root, 'portal');
-  const discovery = (pid) => path.join(paths.discoveryRoot, `session-${pid}.json`);
-  fs.writeFileSync(
-    paths.ownershipFile,
-    JSON.stringify({
-      version: 1,
-      sessions: [
-        {
-          pid: starting.pid,
-          processIdentity: processIdentity(starting.pid),
-          sourceDir,
-          discovery: discovery(starting.pid),
-          url: null,
-          ready: false,
-        },
-        {
-          pid: finished.pid,
-          processIdentity: 'start-time-of-an-exited-mirage',
-          sourceDir,
-          discovery: discovery(finished.pid),
-          url: 'http://127.0.0.1:9/',
-          ready: true,
-        },
-        {
-          pid: unrelated.pid,
-          processIdentity: 'start-time-of-an-earlier-process-with-this-pid',
-          sourceDir,
-          discovery: discovery(unrelated.pid),
-          url: 'http://127.0.0.1:9/',
-          ready: true,
-        },
-      ],
-    }),
-  );
-  const status = await mirageStatus(paths);
-  assert.deepEqual(
-    status.map((item) => [item.pid, item.starting, item.owned]),
-    [[starting.pid, true, true]],
-    'an owned process that has not announced itself is listed as starting',
-  );
-  fs.writeFileSync(
-    discovery(finished.pid),
-    JSON.stringify({ pid: finished.pid, url: 'http://127.0.0.1:9/', sourceDir }),
-  );
-  fs.writeFileSync(
-    discovery(unrelated.pid),
-    JSON.stringify({ pid: unrelated.pid, url: 'http://127.0.0.1:9/', sourceDir }),
-  );
-  const report = await stopOwnedSessions({ paths, sourceDir });
-  assert.deepEqual(
-    report.stopped.map((item) => [item.pid, item.graceful, item.wasReady]),
-    [[starting.pid, false, false]],
-  );
-  assert.deepEqual(report.remaining, []);
-  assert.deepEqual(
-    report.pruned.map((item) => item.pid).sort((a, b) => a - b),
-    [finished.pid, unrelated.pid].sort((a, b) => a - b),
-  );
-  assert.equal(report.pruned.find((item) => item.pid === finished.pid).reason, 'process exited');
-  assert.match(report.pruned.find((item) => item.pid === unrelated.pid).reason, /another program/);
-  await startingExit;
-  assert.equal(await answers(unrelated), 'here', 'a reused PID belongs to another program and is never signalled');
-  assert.equal(fs.existsSync(discovery(finished.pid)), false, 'discovery files of exited processes are removed');
-  assert.equal(fs.existsSync(discovery(unrelated.pid)), true, 'a live process keeps its discovery file');
-  assert.deepEqual(await ownedSessions(paths), []);
-  const repeated = await stopOwnedSessions({ paths, pids: [unrelated.pid] });
-  assert.deepEqual([repeated.stopped, repeated.pruned, repeated.remaining], [[], [], []]);
-  assert.equal(await answers(unrelated), 'here');
-});
+    finished.kill();
+    await once(finished, 'exit');
+    const sourceDir = path.join(root, 'portal');
+    const discovery = (pid) => path.join(paths.discoveryRoot, `session-${pid}.json`);
+    fs.writeFileSync(
+      paths.ownershipFile,
+      JSON.stringify({
+        version: 1,
+        sessions: [
+          {
+            pid: starting.pid,
+            processIdentity: processIdentity(starting.pid),
+            sourceDir,
+            discovery: discovery(starting.pid),
+            url: null,
+            ready: false,
+          },
+          {
+            pid: finished.pid,
+            processIdentity: 'start-time-of-an-exited-mirage',
+            sourceDir,
+            discovery: discovery(finished.pid),
+            url: 'http://127.0.0.1:9/',
+            ready: true,
+          },
+          {
+            pid: unrelated.pid,
+            processIdentity: 'start-time-of-an-earlier-process-with-this-pid',
+            sourceDir,
+            discovery: discovery(unrelated.pid),
+            url: 'http://127.0.0.1:9/',
+            ready: true,
+          },
+        ],
+      }),
+    );
+    const status = await mirageStatus(paths);
+    assert.deepEqual(
+      status.map((item) => [item.pid, item.starting, item.owned]),
+      [[starting.pid, true, true]],
+      'an owned process that has not announced itself is listed as starting',
+    );
+    fs.writeFileSync(
+      discovery(finished.pid),
+      JSON.stringify({ pid: finished.pid, url: 'http://127.0.0.1:9/', sourceDir }),
+    );
+    fs.writeFileSync(
+      discovery(unrelated.pid),
+      JSON.stringify({ pid: unrelated.pid, url: 'http://127.0.0.1:9/', sourceDir }),
+    );
+    const report = await stopOwnedSessions({ paths, sourceDir });
+    assert.deepEqual(
+      report.stopped.map((item) => [item.pid, item.graceful, item.wasReady]),
+      [[starting.pid, false, false]],
+    );
+    assert.deepEqual(report.remaining, []);
+    assert.deepEqual(
+      report.pruned.map((item) => item.pid).sort((a, b) => a - b),
+      [finished.pid, unrelated.pid].sort((a, b) => a - b),
+    );
+    assert.equal(report.pruned.find((item) => item.pid === finished.pid).reason, 'process exited');
+    assert.match(report.pruned.find((item) => item.pid === unrelated.pid).reason, /another program/);
+    await startingExit;
+    assert.equal(await answers(unrelated), 'here', 'a reused PID belongs to another program and is never signalled');
+    assert.equal(fs.existsSync(discovery(finished.pid)), false, 'discovery files of exited processes are removed');
+    assert.equal(fs.existsSync(discovery(unrelated.pid)), true, 'a live process keeps its discovery file');
+    assert.deepEqual(await ownedSessions(paths), []);
+    const repeated = await stopOwnedSessions({ paths, pids: [unrelated.pid] });
+    assert.deepEqual([repeated.stopped, repeated.pruned, repeated.remaining], [[], [], []]);
+    assert.equal(await answers(unrelated), 'here');
+  },
+);
 
 test('mirage start refuses a port held by another program before spawning anything', async (t) => {
   const { createServer } = await import('node:net');

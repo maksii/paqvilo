@@ -17,6 +17,7 @@ import { developmentScript, developmentWorkflows } from '../lense/project-workfl
 import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 import { tempDir } from './fixture.mjs';
 import { ownedChildren } from './helpers/owned-children.mjs';
+import { SCENARIO_HANG_GUARD_MS } from './helpers/bounded-command.mjs';
 
 const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
 
@@ -277,7 +278,12 @@ test('adoption detects effective private-path unignore rules without creating or
     true,
     'a valid starter works before Git initialization',
   );
-  const git = spawnSync('git', ['-C', directory, 'init', '-q'], { env, encoding: 'utf8', windowsHide: true });
+  const git = spawnSync('git', ['-C', directory, 'init', '-q'], {
+    env,
+    encoding: 'utf8',
+    windowsHide: true,
+    timeout: CLI_HANG_GUARD_MS,
+  });
   assert.equal(git.status, 0, git.stderr);
   assert.equal(inspectProjectAdoption(directory, { config: configFile, processEnv: {} }).ok, true);
   await fs.appendFile(path.join(directory, '.gitignore'), '!.paqvilo/\n!.env\n!paqvilo.config.local.yml\n');
@@ -286,6 +292,7 @@ test('adoption detects effective private-path unignore rules without creating or
     env,
     encoding: 'utf8',
     windowsHide: true,
+    timeout: CLI_HANG_GUARD_MS,
   });
   assert.equal(ignored.status, 1, 'Git confirms each overridden private path is unignored');
   const adoption = inspectProjectAdoption(directory, { config: configFile, processEnv: {} });
@@ -368,7 +375,12 @@ test('a Git command that exited has answered, also when writing its input failed
 
 test('targeted private exceptions require review even when representative Git probes remain excluded', async (t) => {
   const { directory } = await fixture(t);
-  const git = spawnSync('git', ['-C', directory, 'init', '-q'], { env, encoding: 'utf8', windowsHide: true });
+  const git = spawnSync('git', ['-C', directory, 'init', '-q'], {
+    env,
+    encoding: 'utf8',
+    windowsHide: true,
+    timeout: CLI_HANG_GUARD_MS,
+  });
   assert.equal(git.status, 0, git.stderr);
   await fs.appendFile(path.join(directory, '.gitignore'), '!.paqvilo/\n.paqvilo/*\n!.paqvilo/private-discovery.json\n');
   const inspect = (input) =>
@@ -377,6 +389,7 @@ test('targeted private exceptions require review even when representative Git pr
       env,
       encoding: 'utf8',
       windowsHide: true,
+      timeout: CLI_HANG_GUARD_MS,
     });
   assert.equal(inspect('.paqvilo/readiness-private-probe\n').status, 0, 'the generic probe is still ignored');
   assert.equal(inspect('.paqvilo/private-discovery.json\n').status, 1, 'a different private file is unignored');
@@ -397,7 +410,13 @@ test('targeted private exceptions require review even when representative Git pr
 // @test-kind security: adoption reports indexed private paths without altering them
 test('adoption reports indexed private paths even when ignore rules are correct without altering the index or private files', async (t) => {
   const { directory } = await fixture(t);
-  const git = (args) => spawnSync('git', ['-C', directory, ...args], { env, encoding: 'utf8', windowsHide: true });
+  const git = (args) =>
+    spawnSync('git', ['-C', directory, ...args], {
+      env,
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: CLI_HANG_GUARD_MS,
+    });
   assert.equal(git(['init', '-q']).status, 0);
   await write(directory, '.env', 'INVENTED_PRIVATE_FILE_DO_NOT_READ=fixture');
   await write(directory, '.ENV.FIXTURE', 'INVENTED_CASE_VARIANT_DO_NOT_READ');
@@ -430,7 +449,13 @@ test('completion follows the platform path case rules for private paths and the 
   await write(directory, '.ENV.FIXTURE', 'TODO(paqvilo-init): private alias must not be scanned');
   await write(directory, '.PAQVILO/private.txt', 'TODO(paqvilo-init): private evidence alias must not be scanned');
   await write(directory, '.ENV.EXAMPLE', 'TODO(paqvilo-init): public example should be scanned');
-  const git = (args) => spawnSync('git', ['-C', directory, ...args], { env, encoding: 'utf8', windowsHide: true });
+  const git = (args) =>
+    spawnSync('git', ['-C', directory, ...args], {
+      env,
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: CLI_HANG_GUARD_MS,
+    });
   assert.equal(git(['init', '-q']).status, 0);
   assert.equal(git(['add', '-f', '.ENV.FIXTURE', '.PAQVILO/private.txt', '.ENV.EXAMPLE']).status, 0);
   const markers = scaffoldMarkers(directory);
@@ -485,40 +510,47 @@ test('readiness validates project-owned paths without importing project packs', 
   );
 });
 
-test('public readiness errors and mode conflicts are structured and do not create a project', async (t) => {
-  const { directory } = await fixture(t);
-  const conflicts = [
-    [['--ready', '--check'], /separate operations/],
-    [['--ready', '--refresh-editor'], /separate operations/],
-    [['--ready', '--site', 'other'], /Generation options cannot be combined/],
-  ];
-  const malformed = ['{"SECRET_INPUT":', 'true', '[]'];
-  for (const [index, contents] of malformed.entries()) await write(directory, `malformed-${index}.json`, contents);
-  const absent = path.join(directory, 'not-created');
-  const [missing, unavailable, ...results] = await Promise.all([
-    run(absent, '--ready', '--json'),
-    run(directory, '--ready', '--config', 'missing.json', '--json'),
-    ...conflicts.map(([args]) => run(directory, ...args, '--json')),
-    ...malformed.map((_contents, index) => run(directory, '--ready', '--config', `malformed-${index}.json`, '--json')),
-  ]);
-  for (const [index, [args, message]] of conflicts.entries()) {
-    const result = results[index];
-    assert.equal(result.status, 1, args.join(' '));
-    assert.equal(JSON.parse(result.stdout).ok, false);
-    assert.match(JSON.parse(result.stdout).error.message, message);
-  }
-  for (const [index, contents] of malformed.entries()) {
-    const result = results[conflicts.length + index];
-    assert.equal(result.status, 1, contents);
-    assert.equal(JSON.parse(result.stdout).ok, false, contents);
-    assert.doesNotMatch(result.stdout + result.stderr, /SECRET_INPUT|node:internal/);
-  }
-  assert.equal(unavailable.status, 1);
-  assert.ok(JSON.parse(unavailable.stdout).adoption.diagnostics.some((item) => item.code === 'CATALOGUE_MISSING'));
-  assert.equal(missing.status, 1);
-  assert.equal(JSON.parse(missing.stdout).ok, false);
-  await assert.rejects(fs.access(absent), { code: 'ENOENT' });
-});
+// Hang guard only: it drives a runtime, the CLI or child processes through this file's fixtures; on a loaded slow host that is slow, not hung.
+test(
+  'public readiness errors and mode conflicts are structured and do not create a project',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const { directory } = await fixture(t);
+    const conflicts = [
+      [['--ready', '--check'], /separate operations/],
+      [['--ready', '--refresh-editor'], /separate operations/],
+      [['--ready', '--site', 'other'], /Generation options cannot be combined/],
+    ];
+    const malformed = ['{"SECRET_INPUT":', 'true', '[]'];
+    for (const [index, contents] of malformed.entries()) await write(directory, `malformed-${index}.json`, contents);
+    const absent = path.join(directory, 'not-created');
+    const [missing, unavailable, ...results] = await Promise.all([
+      run(absent, '--ready', '--json'),
+      run(directory, '--ready', '--config', 'missing.json', '--json'),
+      ...conflicts.map(([args]) => run(directory, ...args, '--json')),
+      ...malformed.map((_contents, index) =>
+        run(directory, '--ready', '--config', `malformed-${index}.json`, '--json'),
+      ),
+    ]);
+    for (const [index, [args, message]] of conflicts.entries()) {
+      const result = results[index];
+      assert.equal(result.status, 1, args.join(' '));
+      assert.equal(JSON.parse(result.stdout).ok, false);
+      assert.match(JSON.parse(result.stdout).error.message, message);
+    }
+    for (const [index, contents] of malformed.entries()) {
+      const result = results[conflicts.length + index];
+      assert.equal(result.status, 1, contents);
+      assert.equal(JSON.parse(result.stdout).ok, false, contents);
+      assert.doesNotMatch(result.stdout + result.stderr, /SECRET_INPUT|node:internal/);
+    }
+    assert.equal(unavailable.status, 1);
+    assert.ok(JSON.parse(unavailable.stdout).adoption.diagnostics.some((item) => item.code === 'CATALOGUE_MISSING'));
+    assert.equal(missing.status, 1);
+    assert.equal(JSON.parse(missing.stdout).ok, false);
+    await assert.rejects(fs.access(absent), { code: 'ENOENT' });
+  },
+);
 
 test('readiness performs no fetch and path-only inspection never reads deployment bodies', async (t) => {
   const { directory } = await fixture(t);

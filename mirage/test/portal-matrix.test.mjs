@@ -20,6 +20,7 @@ import {
 } from '../portal-matrix.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { renderSweep } from '../render-sweep.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 
 async function tree(t, files) {
   const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'portal-matrix-'));
@@ -629,23 +630,28 @@ async function portalStages(t, id) {
   return { portal, out };
 }
 
-test('matrix runs every portal stage for the standard portal of a two-portal project', async (t) => {
-  const { portal: standard, out } = await portalStages(t, 'std');
-  assert.equal(standard.import.format, 'standard');
-  // Contact read is granted to Authenticated Users only: anonymous 403, the signed-in coverage contact 200.
-  assert.equal(standard.runtime.webApiProbe.results[0].status, 403);
-  assert.equal(standard.scaffold.webApiProbe.results[0].status, 403);
-  assert.equal(standard.scaffold.webApiProbeCoverage.results[0].status, 200);
-  // The restricted page sends anonymous visitors to sign-in and renders for the signed-in coverage contact.
-  const fresh = JSON.parse(await fs.readFile(path.join(out, 'std', 'sweep.json'), 'utf8')).runs;
-  assert.equal(fresh[0].results.find((result) => result.url === '/work/').status, 302);
-  const scaffolded = JSON.parse(await fs.readFile(path.join(out, 'std', 'scaffold.json'), 'utf8')).runs;
-  const work = (persona) =>
-    scaffolded.find((run) => run.persona === persona).results.find((result) => result.url === '/work/').status;
-  assert.equal(work('scaffold anonymous'), 302);
-  assert.equal(work('scaffold all-roles'), 200);
-  assert.equal(standard.scaffold.runs[1].identity.authenticated, true);
-});
+// Hang guard only: it drives a runtime, the CLI or child processes through this file's fixtures; on a loaded slow host that is slow, not hung.
+test(
+  'matrix runs every portal stage for the standard portal of a two-portal project',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const { portal: standard, out } = await portalStages(t, 'std');
+    assert.equal(standard.import.format, 'standard');
+    // Contact read is granted to Authenticated Users only: anonymous 403, the signed-in coverage contact 200.
+    assert.equal(standard.runtime.webApiProbe.results[0].status, 403);
+    assert.equal(standard.scaffold.webApiProbe.results[0].status, 403);
+    assert.equal(standard.scaffold.webApiProbeCoverage.results[0].status, 200);
+    // The restricted page sends anonymous visitors to sign-in and renders for the signed-in coverage contact.
+    const fresh = JSON.parse(await fs.readFile(path.join(out, 'std', 'sweep.json'), 'utf8')).runs;
+    assert.equal(fresh[0].results.find((result) => result.url === '/work/').status, 302);
+    const scaffolded = JSON.parse(await fs.readFile(path.join(out, 'std', 'scaffold.json'), 'utf8')).runs;
+    const work = (persona) =>
+      scaffolded.find((run) => run.persona === persona).results.find((result) => result.url === '/work/').status;
+    assert.equal(work('scaffold anonymous'), 302);
+    assert.equal(work('scaffold all-roles'), 200);
+    assert.equal(standard.scaffold.runs[1].identity.authenticated, true);
+  },
+);
 
 /** A catalogue site over the standard export whose startup preset (empty-local) has the given presetMode. */
 async function presetSite(t, presetMode) {

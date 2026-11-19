@@ -11,7 +11,7 @@ import { operationBudget, countOperations } from './helpers/operation-budget.mjs
 
 function ciFixture(t) {
   const directory = tempDirSync('paq-ci-receipt-command-');
-  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const write = (relative, content) => {
     const file = path.join(directory, relative);
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -62,6 +62,7 @@ function commitReceiptFixture({ directory, env }, message) {
       env,
       encoding: 'utf8',
       windowsHide: true,
+      timeout: COMMAND_HANG_GUARD_MS,
     });
     assert.equal(result.status, 0, result.stderr);
     return result.stdout.trim();
@@ -73,7 +74,13 @@ function commitReceiptFixture({ directory, env }, message) {
 }
 
 function receiptFixtureIdentity({ directory, env }, git) {
-  const dotnet = spawnSync('dotnet', ['--version'], { cwd: directory, env, encoding: 'utf8', windowsHide: true });
+  const dotnet = spawnSync('dotnet', ['--version'], {
+    cwd: directory,
+    env,
+    encoding: 'utf8',
+    windowsHide: true,
+    timeout: COMMAND_HANG_GUARD_MS,
+  });
   return {
     tree: git('rev-parse', 'HEAD^{tree}'),
     node: process.version,
@@ -232,6 +239,11 @@ test(
   { timeout: operationBudget(2, COMMAND_HANG_GUARD_MS) },
   async (t) => {
     const { directory, write, env } = ciFixture(t);
+    // The full run reaches the validation lanes, where local Windows validation creates paqvilo-validation-temporary
+    // under its temporary directory (runnerTemporaryDirectory in scripts/ci.mjs). The commands get a temporary
+    // directory inside the fixture, ignored by its .gitignore, so the fixture's removal covers what they create.
+    env.TEMP = env.TMP = path.join(directory, '.paqvilo', 'temporary');
+    fs.mkdirSync(env.TEMP, { recursive: true });
     // Keep the command fixture small: its full plan has the CodeQL and SDK gates,
     // with readiness supplied by invented fixtures. Production lane selection is
     // independently covered by the contribution-gate and parity suites.

@@ -258,18 +258,47 @@ test('a same-address navigation supersedes a pending late-document repair', asyn
   assert.equal(await page.locator('#draft').inputValue(), 'new document draft');
 });
 
-async function pendingResponseEdit(t, { delayRequestObservation = false } = {}) {
+async function pendingResponseEdit(t, { delayRequestObservation = false, releaseWithEdit = false } = {}) {
   let detach, release, attaching, releaseObservation;
+  // Names the step a cut or failed run was waiting on; a run that reaches its end reports nothing.
+  let stage = 'fixture',
+    crashed = false,
+    repairResult;
   const { browser, origin } = await lateInspectionFixture(t, '<!doctype html><input id="draft">', async () => {
+    if (stage !== 'done')
+      t.diagnostic(
+        `pending-response edit stopped at: ${stage}; page crashed: ${crashed}; repairLateDocument returned: ${JSON.stringify(repairResult) ?? 'not observed'}`,
+      );
     releaseObservation?.();
     release?.();
     if (attaching) detach = await attaching;
     await detach?.();
   });
-  const context = await browser.newContext({ serviceWorkers: 'block' }),
-    page = await context.newPage();
+  stage = 'new context';
+  const context = await browser.newContext({ serviceWorkers: 'block' });
+  // Observes the answer of the repair call only; every command and answer passes through unchanged.
+  const attach = context.newCDPSession.bind(context);
+  t.mock.method(context, 'newCDPSession', async (...args) => {
+    const cdp = await attach(...args),
+      send = cdp.send.bind(cdp);
+    cdp.send = async (method, params) => {
+      const answer = await send(method, params);
+      if (method === 'Runtime.callFunctionOn' && params.functionDeclaration?.startsWith('function repairLateDocument'))
+        repairResult = answer.exceptionDetails ? 'exception' : answer.result?.value;
+      return answer;
+    };
+    return cdp;
+  });
+  stage = 'new page';
+  const page = await context.newPage();
+  page.on('crash', () => {
+    crashed = true;
+  });
+  stage = 'initial goto';
   await page.goto(origin);
+  stage = 'initial focus';
   await page.locator('#draft').focus();
+  stage = 'interception setup';
   let requested, reported, settled, repairRequest;
   const held = new Promise((resolve) => {
       requested = resolve;
@@ -328,9 +357,21 @@ async function pendingResponseEdit(t, { delayRequestObservation = false } = {}) 
   const editing = (async () => {
     // Fetch and Playwright observe this navigation through separate CDP sessions.
     // Cancellation can only be asserted through Playwright after it knows the request.
+    stage = 'Fetch pause and Playwright request (held: false, observed: false)';
+    held.then(() => {
+      if (!editingStarted) stage = stage.replace('held: false', 'held: true');
+    });
+    observed.promise.then(() => {
+      if (!editingStarted) stage = stage.replace('observed: false', 'observed: true');
+    });
     await Promise.all([held, observed.promise]);
     editingStarted = true;
-    await page.keyboard.insertText('draft entered after repair started');
+    stage = 'insertText';
+    const typing = page.keyboard.insertText('draft entered after repair started');
+    // The held response reaches the browser while it still applies the edit's cancellation.
+    if (releaseWithEdit) release();
+    await typing;
+    stage = 'insertText answered';
   })();
   if (delayRequestObservation) {
     await Promise.all([held, observationHeld.promise]);
@@ -340,17 +381,24 @@ async function pendingResponseEdit(t, { delayRequestObservation = false } = {}) 
   }
   await editing;
   release();
+  stage = 'attaching';
   detach = await attaching;
+  stage = 'requestfailed or load of the repair';
   assert.equal(await completed, 'cancelled', 'the old document cannot commit a replacement after accepting an edit');
+  stage = 'inputValue';
   assert.equal(await page.locator('#draft').inputValue(), 'draft entered after repair started');
+  stage = 'draft warning';
   assert.equal((await warning).code, 'reload_required');
   assert.equal(page.url(), origin + '/');
+  stage = 'final goto';
   await page.goto(origin);
+  stage = 'final evaluate';
   assert.equal(
     await page.evaluate(() => window.localPreview),
     true,
     'explicit navigation still applies the complete overlay',
   );
+  stage = 'done';
 }
 
 test('editing while a corrective response is pending cancels only that repair and preserves the draft', async (t) => {
@@ -359,6 +407,10 @@ test('editing while a corrective response is pending cancels only that repair an
 
 test('pending-response editing waits for Playwright request delivery after the Fetch pause', async (t) => {
   await pendingResponseEdit(t, { delayRequestObservation: true });
+});
+
+test('a corrective response answered together with the cancelling edit still reports the reload warning', async (t) => {
+  await pendingResponseEdit(t, { releaseWithEdit: true });
 });
 
 test('late repair distinguishes pristine native controls from edited form state', async (t) => {

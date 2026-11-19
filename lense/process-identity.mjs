@@ -7,7 +7,14 @@ import fsSync from 'node:fs';
 import fs from 'node:fs/promises';
 import crypto from 'node:crypto';
 import net from 'node:net';
+import os from 'node:os';
 import { execFile, spawnSync } from 'node:child_process';
+
+/**
+ * The host a process number belongs to: its operating system and machine name. Records of locks and runtimes carry it,
+ * since a PID means nothing in another process namespace (Windows and WSL, or hosts sharing one folder).
+ */
+export const lockHost = () => `${process.platform}/${os.hostname()}`;
 
 /** True when the process exists (EPERM: it exists but belongs to another account). */
 export function isAlive(pid) {

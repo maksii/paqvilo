@@ -533,7 +533,9 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
                   commitReserveMs: reserve,
                   commitReservePolicy: budget.policy,
                   comparableNavigationMs: budget.comparableMs ?? null,
-                  writeHoldAllowanceMs: Math.max(0, remaining - reserve),
+                  // What is left of the chain's shared hold, not of the step that happens to run when this hop is
+                  // paused: a later hop can be paused between steps or in the next step, whose deadline is later.
+                  writeHoldAllowanceMs: Math.max(0, budgetDeadline - now),
                   actionRemainingMs: Number.isFinite(actionDeadline) ? Math.max(0, actionDeadline - Date.now()) : null,
                 });
               }

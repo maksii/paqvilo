@@ -1,3 +1,4 @@
+// @test-kind contract: the simulator's local override administration (settings, snippets, web roles, reset); no native capture is cited
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -7,6 +8,7 @@ import { createSimulator } from '../server.mjs';
 import { applyPortalOverrides, validatePortalOverrides } from '../lib/portal-overrides.mjs';
 import { signInHeaders } from '../testing/session.mjs';
 import { ownedFixture, ownedClose, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 
 // persist: a state file, for the test that restarts from it; the others run in memory (a state file costs a full
 // serialization and fsync per transaction).
@@ -101,48 +103,57 @@ test('local web role changes control contact memberships and actual API read gra
   assert.equal(fixture.app.portal.records.find((row) => row.id === 'reader').adx_authenticatedusersrole, false);
 });
 
-test('admin settings/snippets affect Liquid and API, persist/reload, reset to current source and require CSRF', async (t) => {
-  const fixture = await setupPortalOverrides(t, { persist: true });
-  const state = await (await fetch(fixture.app.url + '/_sim/api/state?summary=1')).json();
-  assert.equal(state.config.portalSnippets[0].value, 'Source greeting');
-  // Portal API reads run as a browser session with the Reader role (a session role override).
-  const reader = () => ({ headers: signInHeaders(fixture.app, 'person', { roles: ['Reader'] }) });
-  const mutate = async (kind, id, value, method = 'PATCH') =>
-    fetch(fixture.app.url + '/_sim/api/' + kind + '/' + encodeURIComponent(id), {
-      method,
-      headers: {
-        'content-type': 'application/json',
-        'x-sim-csrf': (await (await fetch(fixture.app.url + '/__sim/api/state?summary=1')).json()).csrf,
-      },
-      ...(method === 'DELETE' ? {} : { body: JSON.stringify({ value }) }),
-    });
-  assert.equal((await mutate('portal-settings', 'Theme', 42)).status, 400);
-  assert.match(await (await fetch(fixture.app.url + '/')).text(), /Source greeting/);
-  assert.equal(
-    (await fetch(fixture.app.url + '/_sim/api/portal-snippets/Greeting', { method: 'PATCH', body: '{"value":"bad"}' }))
-      .status,
-    403,
-  );
-  assert.equal((await mutate('portal-snippets', 'Greeting', '{{ settings.Theme }} local')).status, 200);
-  assert.equal((await mutate('portal-settings', 'Theme', 'Custom theme')).status, 200);
-  assert.match(await (await fetch(fixture.app.url + '/')).text(), /Custom theme local/);
-  assert.equal((await fetch(fixture.app.url + '/_api/items', reader())).status, 200);
-  assert.equal((await mutate('portal-settings', 'Webapi/item/enabled', 'false')).status, 200);
-  assert.equal((await fetch(fixture.app.url + '/_api/items', reader())).status, 404);
-  await fixture.restart();
-  assert.match(await (await fetch(fixture.app.url + '/')).text(), /Custom theme local/);
-  await fs.writeFile(
-    path.join(fixture.directory, 'content-snippets/Greeting.contentsnippet.value.html'),
-    'Fresh source',
-  );
-  await fixture.app.reload();
-  assert.match(await (await fetch(fixture.app.url + '/')).text(), /Custom theme local/);
-  assert.equal((await mutate('portal-snippets', 'Greeting', undefined, 'DELETE')).status, 200);
-  assert.match(await (await fetch(fixture.app.url + '/')).text(), /Fresh source/);
-  assert.equal((await mutate('portal-settings', 'Theme', null)).status, 200);
-  assert.equal(fixture.app.portal.settings.Theme, undefined);
-  assert.equal(
-    await fs.readFile(path.join(fixture.directory, 'sitesetting.yml'), 'utf8'),
-    fixture.files['sitesetting.yml'],
-  );
-});
+// Hang guard only: it drives a runtime, the CLI or child processes through this file's fixtures; on a loaded slow host that is slow, not hung.
+test(
+  'admin settings/snippets affect Liquid and API, persist/reload, reset to current source and require CSRF',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const fixture = await setupPortalOverrides(t, { persist: true });
+    const state = await (await fetch(fixture.app.url + '/_sim/api/state?summary=1')).json();
+    assert.equal(state.config.portalSnippets[0].value, 'Source greeting');
+    // Portal API reads run as a browser session with the Reader role (a session role override).
+    const reader = () => ({ headers: signInHeaders(fixture.app, 'person', { roles: ['Reader'] }) });
+    const mutate = async (kind, id, value, method = 'PATCH') =>
+      fetch(fixture.app.url + '/_sim/api/' + kind + '/' + encodeURIComponent(id), {
+        method,
+        headers: {
+          'content-type': 'application/json',
+          'x-sim-csrf': (await (await fetch(fixture.app.url + '/__sim/api/state?summary=1')).json()).csrf,
+        },
+        ...(method === 'DELETE' ? {} : { body: JSON.stringify({ value }) }),
+      });
+    assert.equal((await mutate('portal-settings', 'Theme', 42)).status, 400);
+    assert.match(await (await fetch(fixture.app.url + '/')).text(), /Source greeting/);
+    assert.equal(
+      (
+        await fetch(fixture.app.url + '/_sim/api/portal-snippets/Greeting', {
+          method: 'PATCH',
+          body: '{"value":"bad"}',
+        })
+      ).status,
+      403,
+    );
+    assert.equal((await mutate('portal-snippets', 'Greeting', '{{ settings.Theme }} local')).status, 200);
+    assert.equal((await mutate('portal-settings', 'Theme', 'Custom theme')).status, 200);
+    assert.match(await (await fetch(fixture.app.url + '/')).text(), /Custom theme local/);
+    assert.equal((await fetch(fixture.app.url + '/_api/items', reader())).status, 200);
+    assert.equal((await mutate('portal-settings', 'Webapi/item/enabled', 'false')).status, 200);
+    assert.equal((await fetch(fixture.app.url + '/_api/items', reader())).status, 404);
+    await fixture.restart();
+    assert.match(await (await fetch(fixture.app.url + '/')).text(), /Custom theme local/);
+    await fs.writeFile(
+      path.join(fixture.directory, 'content-snippets/Greeting.contentsnippet.value.html'),
+      'Fresh source',
+    );
+    await fixture.app.reload();
+    assert.match(await (await fetch(fixture.app.url + '/')).text(), /Custom theme local/);
+    assert.equal((await mutate('portal-snippets', 'Greeting', undefined, 'DELETE')).status, 200);
+    assert.match(await (await fetch(fixture.app.url + '/')).text(), /Fresh source/);
+    assert.equal((await mutate('portal-settings', 'Theme', null)).status, 200);
+    assert.equal(fixture.app.portal.settings.Theme, undefined);
+    assert.equal(
+      await fs.readFile(path.join(fixture.directory, 'sitesetting.yml'), 'utf8'),
+      fixture.files['sitesetting.yml'],
+    );
+  },
+);

@@ -10,133 +10,145 @@ import { parseDemoOptions, prepareDemo } from '../lense/commands/demo.mjs';
 import { tempDir, withoutToolkitEnvironment } from './fixture.mjs';
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import { ownStartedRuntimes } from './helpers/mirage-runtimes.mjs';
-import { boundedCommand, COMMAND_HANG_GUARD_MS } from './helpers/bounded-command.mjs';
+import { boundedCommand, RUNTIME_COMMAND_HANG_GUARD_MS, SCENARIO_HANG_GUARD_MS } from './helpers/bounded-command.mjs';
 import { countOperations, operationBudget } from './helpers/operation-budget.mjs';
 
 const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
 
-test('demo copies an editable project, preserves source edits on repeat and refuses unrelated folders', async (t) => {
-  const root = await tempDir('paqvilo-demo-');
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
-  const directory = path.join(root, 'example');
-  assert.equal((await prepareDemo(directory)).created, true);
-  const template = path.join(directory, 'portal/web-files/demo.css');
-  await fs.writeFile(template, 'My local changes');
-  assert.equal((await prepareDemo(directory)).created, false);
-  assert.equal(await fs.readFile(template, 'utf8'), 'My local changes');
-  const manifest = JSON.parse(await fs.readFile(path.join(directory, 'package.json'), 'utf8'));
-  const toolkit = JSON.parse(await fs.readFile(new URL('../package.json', import.meta.url), 'utf8'));
-  assert.equal(manifest.devDependencies.paqvilo, toolkit.version, 'the copy depends on this published toolkit version');
-  assert.match(manifest.devDependencies.yaml, /^\d/);
-  assert.match(manifest.devDependencies['playwright-core'], /^\d/);
-  const example = JSON.parse(await fs.readFile(new URL('../examples/project/package.json', import.meta.url), 'utf8'));
-  assert.equal(manifest.devDependencies['@microsoft/power-apps'], example.devDependencies['@microsoft/power-apps']);
-  for (const name of ['code-app:mirage', 'code-app:dev']) assert.equal(manifest.scripts[name], example.scripts[name]);
-  for (const dependency of ['yaml', 'playwright-core']) {
-    assert.equal(manifest.devDependencies[dependency], toolkit.dependencies[dependency]);
-    assert.equal(example.devDependencies[dependency], toolkit.dependencies[dependency]);
-  }
-  const guidance = await fs.readFile(path.join(directory, 'AGENTS.md'), 'utf8');
-  assert.match(guidance, /npm run dev/);
-  assert.match(guidance, /npm test/);
-  assert.doesNotMatch(guidance, /npm run (?:setup|validate)/);
-  assert.equal((await fs.readFile(path.join(directory, 'portal/web-files/theme.css'), 'utf8')).includes('\r'), false);
-  assert.match(manifest.scripts['dev:debug'], /--debug-port 9222/);
-  const workspace = JSON.parse(await fs.readFile(path.join(directory, 'paqvilo-demo.code-workspace'), 'utf8'));
-  assert.equal(workspace.folders[0].path, '.');
-  const tasks = JSON.parse(await fs.readFile(path.join(directory, '.vscode/tasks.json'), 'utf8'));
-  const launch = JSON.parse(await fs.readFile(path.join(directory, '.vscode/launch.json'), 'utf8'));
-  const labels = new Set(tasks.tasks.map((task) => task.label));
-  for (const configuration of launch.configurations) {
-    assert.equal(configuration.type, 'msedge');
-    assert.equal(configuration.request, 'attach', 'debugger reuses the toolkit browser');
-    if (configuration.preLaunchTask) assert.ok(labels.has(configuration.preLaunchTask));
-  }
-  for (const task of tasks.tasks) {
-    if (task.dependsOn) assert.ok(labels.has(task.dependsOn));
-    if (task.isBackground)
-      assert.ok(
-        new RegExp(task.problemMatcher.background.endsPattern).test(
-          'edit a file under the sources and the browser follows.',
-        ),
-      );
-  }
-  await fs.writeFile(path.join(directory, '.vscode/tasks.json'), '{"myTask":true}');
-  await fs.writeFile(path.join(directory, 'AGENTS.md'), 'My project guidance');
-  await fs.unlink(path.join(directory, '.vscode/launch.json'));
-  await fs.unlink(path.join(directory, 'paqvilo-demo.code-workspace'));
-  await prepareDemo(directory);
-  assert.equal(await fs.readFile(path.join(directory, '.vscode/tasks.json'), 'utf8'), '{"myTask":true}');
-  assert.equal(await fs.readFile(path.join(directory, 'AGENTS.md'), 'utf8'), 'My project guidance');
-  await fs.unlink(path.join(directory, 'AGENTS.md'));
-  await prepareDemo(directory);
-  assert.equal(await fs.readFile(path.join(directory, 'AGENTS.md'), 'utf8'), guidance);
-  await fs.access(path.join(directory, '.vscode/launch.json'));
-  await fs.access(path.join(directory, 'paqvilo-demo.code-workspace'));
-  const cliDirectory = path.join(root, 'cli-example');
-  const scaffold = execFileSync(
-    process.execPath,
-    [
-      fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url)),
-      'mirage',
-      'demo',
-      '--scaffold',
-      '--dir',
-      cliDirectory,
-    ],
-    { cwd: root, encoding: 'utf8', timeout: CLI_HANG_GUARD_MS, windowsHide: true },
-  );
-  assert.match(scaffold, /No runtime was started/);
-  assert.match(scaffold, /paqvilo-demo\.code-workspace/);
-  const cliManifest = JSON.parse(await fs.readFile(path.join(cliDirectory, 'package.json'), 'utf8'));
-  assert.equal(cliManifest.devDependencies['@microsoft/power-apps'], example.devDependencies['@microsoft/power-apps']);
-  for (const name of ['code-app:mirage', 'code-app:dev'])
-    assert.equal(cliManifest.scripts[name], example.scripts[name]);
-  await fs.access(path.join(cliDirectory, 'code-app/server.mjs'));
-  await fs.access(path.join(cliDirectory, 'code-app/solution/Entities/x_item/Entity.xml'));
-  assert.deepEqual(await fs.readdir(path.join(directory, '.paqvilo')), ['demo.json']);
-  await fs.access(path.join(directory, 'solution/Entities/Account/Entity.xml'));
-  await fs.access(path.join(directory, 'metadata/Other/Relationships.xml'));
-  await fs.access(path.join(directory, 'components/DataversePlugins/AccountRules.cs'));
-  await fs.access(
-    path.join(
-      directory,
-      'solution/PluginAssemblies/PaqviloDemoPlugins-B4700000-0000-4000-8000-370000000001/PaqviloDemoPlugins.dll',
-    ),
-  );
-  for (const output of ['bin', 'obj'])
-    await assert.rejects(fs.access(path.join(directory, 'components/DataversePlugins', output)), { code: 'ENOENT' });
-  for (const file of [
-    'deployment/PaqviloDemoSample.zip',
-    'deployment/PaqviloDemoCodeComponents.zip',
-    'deployment/demo-data.zip',
-    'deployment/configure.mjs',
-    'cli.mjs',
-    'editor-workspace.mjs',
-    'code-solution/Other/Solution.xml',
-    'code-app/server.mjs',
-    'code-app/mirage.mjs',
-    'code-app/app.js',
-    'code-app/index.html',
-    'code-app/power.config.json',
-    'code-app/solution/Other/Solution.xml',
-    'code-app/solution/Entities/x_item/Entity.xml',
-    'test/baseline-code-app-sdk.test.mjs',
-    'components/pcf-field-types/ExampleAccountFields/index.ts',
-    'components/pcf-field-types/ExampleAccountFields/ControlManifest.Input.xml',
-  ]) {
-    await fs.access(path.join(directory, file));
-  }
-  const fixtures = JSON.parse(await fs.readFile(path.join(directory, 'pack/fixtures.json'), 'utf8'));
-  assert.equal(fixtures.account.length, 12);
-  assert.equal(fixtures.contact.length, 24);
-  const unrelated = path.join(root, 'existing-project');
-  await fs.mkdir(unrelated);
-  await fs.writeFile(path.join(unrelated, 'important.txt'), 'Keep me');
-  await assert.rejects(prepareDemo(unrelated), /No files were changed/);
-  assert.deepEqual(await fs.readdir(unrelated), ['important.txt']);
-  await assert.rejects(prepareDemo(path.join(unrelated, 'important.txt')), /regular directory/);
-});
+// Hang guard only: the copies and installs of this scenario run long on a loaded host, past the lane's limit.
+test(
+  'demo copies an editable project, preserves source edits on repeat and refuses unrelated folders',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const root = await tempDir('paqvilo-demo-');
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const directory = path.join(root, 'example');
+    assert.equal((await prepareDemo(directory)).created, true);
+    const template = path.join(directory, 'portal/web-files/demo.css');
+    await fs.writeFile(template, 'My local changes');
+    assert.equal((await prepareDemo(directory)).created, false);
+    assert.equal(await fs.readFile(template, 'utf8'), 'My local changes');
+    const manifest = JSON.parse(await fs.readFile(path.join(directory, 'package.json'), 'utf8'));
+    const toolkit = JSON.parse(await fs.readFile(new URL('../package.json', import.meta.url), 'utf8'));
+    assert.equal(
+      manifest.devDependencies.paqvilo,
+      toolkit.version,
+      'the copy depends on this published toolkit version',
+    );
+    assert.match(manifest.devDependencies.yaml, /^\d/);
+    assert.match(manifest.devDependencies['playwright-core'], /^\d/);
+    const example = JSON.parse(await fs.readFile(new URL('../examples/project/package.json', import.meta.url), 'utf8'));
+    assert.equal(manifest.devDependencies['@microsoft/power-apps'], example.devDependencies['@microsoft/power-apps']);
+    for (const name of ['code-app:mirage', 'code-app:dev']) assert.equal(manifest.scripts[name], example.scripts[name]);
+    for (const dependency of ['yaml', 'playwright-core']) {
+      assert.equal(manifest.devDependencies[dependency], toolkit.dependencies[dependency]);
+      assert.equal(example.devDependencies[dependency], toolkit.dependencies[dependency]);
+    }
+    const guidance = await fs.readFile(path.join(directory, 'AGENTS.md'), 'utf8');
+    assert.match(guidance, /npm run dev/);
+    assert.match(guidance, /npm test/);
+    assert.doesNotMatch(guidance, /npm run (?:setup|validate)/);
+    assert.equal((await fs.readFile(path.join(directory, 'portal/web-files/theme.css'), 'utf8')).includes('\r'), false);
+    assert.match(manifest.scripts['dev:debug'], /--debug-port 9222/);
+    const workspace = JSON.parse(await fs.readFile(path.join(directory, 'paqvilo-demo.code-workspace'), 'utf8'));
+    assert.equal(workspace.folders[0].path, '.');
+    const tasks = JSON.parse(await fs.readFile(path.join(directory, '.vscode/tasks.json'), 'utf8'));
+    const launch = JSON.parse(await fs.readFile(path.join(directory, '.vscode/launch.json'), 'utf8'));
+    const labels = new Set(tasks.tasks.map((task) => task.label));
+    for (const configuration of launch.configurations) {
+      assert.equal(configuration.type, 'msedge');
+      assert.equal(configuration.request, 'attach', 'debugger reuses the toolkit browser');
+      if (configuration.preLaunchTask) assert.ok(labels.has(configuration.preLaunchTask));
+    }
+    for (const task of tasks.tasks) {
+      if (task.dependsOn) assert.ok(labels.has(task.dependsOn));
+      if (task.isBackground)
+        assert.ok(
+          new RegExp(task.problemMatcher.background.endsPattern).test(
+            'edit a file under the sources and the browser follows.',
+          ),
+        );
+    }
+    await fs.writeFile(path.join(directory, '.vscode/tasks.json'), '{"myTask":true}');
+    await fs.writeFile(path.join(directory, 'AGENTS.md'), 'My project guidance');
+    await fs.unlink(path.join(directory, '.vscode/launch.json'));
+    await fs.unlink(path.join(directory, 'paqvilo-demo.code-workspace'));
+    await prepareDemo(directory);
+    assert.equal(await fs.readFile(path.join(directory, '.vscode/tasks.json'), 'utf8'), '{"myTask":true}');
+    assert.equal(await fs.readFile(path.join(directory, 'AGENTS.md'), 'utf8'), 'My project guidance');
+    await fs.unlink(path.join(directory, 'AGENTS.md'));
+    await prepareDemo(directory);
+    assert.equal(await fs.readFile(path.join(directory, 'AGENTS.md'), 'utf8'), guidance);
+    await fs.access(path.join(directory, '.vscode/launch.json'));
+    await fs.access(path.join(directory, 'paqvilo-demo.code-workspace'));
+    const cliDirectory = path.join(root, 'cli-example');
+    const scaffold = execFileSync(
+      process.execPath,
+      [
+        fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url)),
+        'mirage',
+        'demo',
+        '--scaffold',
+        '--dir',
+        cliDirectory,
+      ],
+      { cwd: root, encoding: 'utf8', timeout: CLI_HANG_GUARD_MS, windowsHide: true },
+    );
+    assert.match(scaffold, /No runtime was started/);
+    assert.match(scaffold, /paqvilo-demo\.code-workspace/);
+    const cliManifest = JSON.parse(await fs.readFile(path.join(cliDirectory, 'package.json'), 'utf8'));
+    assert.equal(
+      cliManifest.devDependencies['@microsoft/power-apps'],
+      example.devDependencies['@microsoft/power-apps'],
+    );
+    for (const name of ['code-app:mirage', 'code-app:dev'])
+      assert.equal(cliManifest.scripts[name], example.scripts[name]);
+    await fs.access(path.join(cliDirectory, 'code-app/server.mjs'));
+    await fs.access(path.join(cliDirectory, 'code-app/solution/Entities/x_item/Entity.xml'));
+    assert.deepEqual(await fs.readdir(path.join(directory, '.paqvilo')), ['demo.json']);
+    await fs.access(path.join(directory, 'solution/Entities/Account/Entity.xml'));
+    await fs.access(path.join(directory, 'metadata/Other/Relationships.xml'));
+    await fs.access(path.join(directory, 'components/DataversePlugins/AccountRules.cs'));
+    await fs.access(
+      path.join(
+        directory,
+        'solution/PluginAssemblies/PaqviloDemoPlugins-B4700000-0000-4000-8000-370000000001/PaqviloDemoPlugins.dll',
+      ),
+    );
+    for (const output of ['bin', 'obj'])
+      await assert.rejects(fs.access(path.join(directory, 'components/DataversePlugins', output)), { code: 'ENOENT' });
+    for (const file of [
+      'deployment/PaqviloDemoSample.zip',
+      'deployment/PaqviloDemoCodeComponents.zip',
+      'deployment/demo-data.zip',
+      'deployment/configure.mjs',
+      'cli.mjs',
+      'editor-workspace.mjs',
+      'code-solution/Other/Solution.xml',
+      'code-app/server.mjs',
+      'code-app/mirage.mjs',
+      'code-app/app.js',
+      'code-app/index.html',
+      'code-app/power.config.json',
+      'code-app/solution/Other/Solution.xml',
+      'code-app/solution/Entities/x_item/Entity.xml',
+      'test/baseline-code-app-sdk.test.mjs',
+      'components/pcf-field-types/ExampleAccountFields/index.ts',
+      'components/pcf-field-types/ExampleAccountFields/ControlManifest.Input.xml',
+    ]) {
+      await fs.access(path.join(directory, file));
+    }
+    const fixtures = JSON.parse(await fs.readFile(path.join(directory, 'pack/fixtures.json'), 'utf8'));
+    assert.equal(fixtures.account.length, 12);
+    assert.equal(fixtures.contact.length, 24);
+    const unrelated = path.join(root, 'existing-project');
+    await fs.mkdir(unrelated);
+    await fs.writeFile(path.join(unrelated, 'important.txt'), 'Keep me');
+    await assert.rejects(prepareDemo(unrelated), /No files were changed/);
+    assert.deepEqual(await fs.readdir(unrelated), ['important.txt']);
+    await assert.rejects(prepareDemo(path.join(unrelated, 'important.txt')), /regular directory/);
+  },
+);
 
 /** Every file under `directory` with one of the extensions, skipping installed packages. */
 async function treeFiles(directory, extensions) {
@@ -408,7 +420,7 @@ test('demo command prints help and parse errors with the same exit codes and mes
 
 test(
   'every demo start restores the sample dataset and keeps source edits',
-  { timeout: operationBudget(4, COMMAND_HANG_GUARD_MS) },
+  { timeout: operationBudget(4, RUNTIME_COMMAND_HANG_GUARD_MS) },
   async (t) => {
     withoutToolkitEnvironment(t);
     const root = await tempDir('paqvilo-demo-reset-');
@@ -423,14 +435,20 @@ test(
     const literal = /DEMO_PRESET_ARGUMENTS = Object\.freeze\((\[[^\]]*\])\)/.exec(command)[1];
     const presetArguments = JSON.parse(literal.replaceAll("'", '"'));
     const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
+    const ownershipFile = path.join(directory, '.paqvilo', 'mirage', 'sessions.json');
     const run = countOperations(t, 4, (...args) =>
-      boundedCommand(t, process.execPath, [cli, 'mirage', ...args, '--config', config, '--site', 'example'], {
-        cwd: directory,
-      }),
+      boundedCommand(
+        t,
+        process.execPath,
+        [cli, 'mirage', ...args, '--config', config, '--site', 'example'],
+        { cwd: directory },
+        { guardMs: RUNTIME_COMMAND_HANG_GUARD_MS },
+      ),
     );
     const start = async () => {
       const result = await run('start', '--port', '0', ...presetArguments, '--json');
-      ownStartedRuntimes(t, result.stdout);
+      // A start ended by its hang guard names no runtime, but it recorded the runtime in this project's records.
+      ownStartedRuntimes(t, result.stdout, { ownershipFile });
       assert.equal(result.status, 0, result.stdout + result.stderr);
       return JSON.parse(result.stdout);
     };

@@ -245,6 +245,8 @@ test('folder response becomes the picker data and website selection retains its 
     request: async () => data,
     kindText: () => 'Website export',
     esc: String,
+    // No control is pressed: the list is written at once.
+    released: async () => {},
   });
   await open('');
   assert.strictEqual(picker.data, data);

@@ -10,28 +10,53 @@ import { PROFILE_RELEASE_RETRIES } from './profile-cleanup.mjs';
 import { drainFixture } from '../../mirage/testing/owned-fixture.mjs';
 import { browserChannel } from '../../mirage/lib/browser-launch.mjs';
 import { recordedRuntimeOwner } from '../../test/helpers/mirage-runtimes.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
+
+// Hang guard only: a child whose browser accepted the close stops on its own; one still running after this is ended
+// and reported as a failure, and the caller's drain goes on.
+const GRACEFUL_EXIT_HANG_GUARD_MS = SCENARIO_HANG_GUARD_MS / 2;
+// Hang guard only: the teardown waits for the task to stop; a hook gets the lane timeout unless it has its own.
+const HOOK_HANG_GUARD = { timeout: SCENARIO_HANG_GUARD_MS };
+/**
+ * Stops an owned child and resolves once it has closed: its stdio drained, not merely exited. After a delivered
+ * graceful shutdown (its attached browser accepted the close) the child stops on its own and is awaited, so it removes
+ * what it owns. A child that has not closed by `hangGuardMs` (GRACEFUL_EXIT_HANG_GUARD_MS; a test of the guard
+ * passes a short one) is ended, and the stop then throws.
+ */
+export async function stopOwnedChild(
+  child,
+  closed,
+  { graceful = false, hangGuardMs = GRACEFUL_EXIT_HANG_GUARD_MS } = {},
+) {
+  const running = () => child.exitCode === null && child.signalCode === null;
+  if (graceful && running()) {
+    let timer;
+    const expired = await Promise.race([
+      closed.then(() => false),
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve(true), hangGuardMs);
+        timer.unref();
+      }),
+    ]);
+    clearTimeout(timer);
+    if (!expired) return closed;
+    child.kill('SIGTERM');
+    await closed;
+    throw new Error('the child did not exit after its browser closed');
+  }
+  if (running()) child.kill('SIGTERM');
+  return closed;
+}
 
 /**
- * Stops an owned child and resolves once it has closed: its stdio drained, not merely exited. After a requested
- * graceful shutdown (the attached browser was asked to close) the child gets GRACEFUL_EXIT_MS to exit on its own.
+ * Asks a connected browser to close; true when the close was delivered: the browser answered, or the connection
+ * dropped under the request because the browser was closing.
  */
-const GRACEFUL_EXIT_MS = 5000;
-export async function stopOwnedChild(child, closed, { graceful = false } = {}) {
-  if (graceful && child.exitCode === null && child.signalCode === null) {
-    let timer;
-    try {
-      await Promise.race([
-        closed,
-        new Promise((resolve) => {
-          timer = setTimeout(resolve, GRACEFUL_EXIT_MS);
-        }),
-      ]);
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-  if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
-  return closed;
+export function browserClosed(browser, session) {
+  return session.send('Browser.close').then(
+    () => true,
+    (error) => error.name === 'TargetClosedError' || !browser.isConnected(),
+  );
 }
 
 /** Returns the arguments with the browser choice and headless flag replaced; other arguments keep their order. */
@@ -89,10 +114,8 @@ export function runWorkspaceTask(t, { cli, args, cwd, env, task, stop, work, cle
       async () => {
         if (!browser) return;
         const session = await browser.newBrowserCDPSession().catch(() => null);
-        if (session) {
-          requestedBrowserClose = true;
-          await session.send('Browser.close').catch(() => {});
-        }
+        // The close is delivered when the browser answers or drops the connection as it closes.
+        if (session) requestedBrowserClose = await browserClosed(browser, session);
         await browser.close().catch(() => {});
       },
       () => child && stopOwnedChild(child, closed, { graceful: requestedBrowserClose }),
@@ -111,7 +134,7 @@ export function runWorkspaceTask(t, { cli, args, cwd, env, task, stop, work, cle
       cleanup,
     ]);
     await fs.rm(work, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES });
-  });
+  }, HOOK_HANG_GUARD);
   return {
     get output() {
       return output;

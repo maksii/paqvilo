@@ -19,6 +19,7 @@ import {
   writerLockBusyMessage,
 } from '../lib/transactional-files.mjs';
 import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 
 const CHILD = fileURLToPath(new URL('./fixtures/writer-lock-child.mjs', import.meta.url));
 const HOST = `${process.platform}/${os.hostname()}`;
@@ -130,31 +131,36 @@ for (const [mode, gates] of [
   ['state', STATE_GATES],
 ])
   for (const gate of gates)
-    test(`a ${mode} writer killed at ${gate.name} is recovered and reported by the next start, which then writes`, async (t) => {
-      const { root, options, dataFile, stateFile } = await project(t, mode);
-      const writer = await gatedWriter(t, options, gate);
-      await writer.kill();
-      const sim = await createSimulator(options);
-      ownedFixture(t).add(() => sim.close());
-      // The reclaim is a runtime finding, served by the diagnostics API.
-      const { diagnostics } = await (await fetch(`${sim.url}/_sim/api/diagnostics`)).json();
-      const reclaimed = diagnostics.filter((entry) => entry.code === 'WRITER_LOCK_RECLAIMED');
-      assert.ok(reclaimed.length > 0, JSON.stringify(diagnostics));
-      for (const entry of reclaimed) {
-        assert.equal(entry.ownerPid, writer.child.pid);
-        assert.match(entry.message, new RegExp(`process ${writer.child.pid}`));
-      }
-      const names = () => sim.store.state.tables.x_item.map((row) => row.x_name);
-      assert.deepEqual(names(), gate.committed ? ['Interrupted'] : []);
-      await sim.store.create('x_item', { x_name: 'After restart' }, { admin: true });
-      assert.deepEqual(names(), gate.committed ? ['Interrupted', 'After restart'] : ['After restart']);
-      if (mode === 'pack')
-        assert.deepEqual(
-          JSON.parse(await fs.readFile(dataFile, 'utf8')).items.map((row) => row.x_name),
-          names(),
-        );
-      assert.deepEqual(await leftovers(root, path.dirname(stateFile)), []);
-    });
+    // Hang guard only: a gated writer process that is killed, and a simulator start that recovers its lock.
+    test(
+      `a ${mode} writer killed at ${gate.name} is recovered and reported by the next start, which then writes`,
+      { timeout: SCENARIO_HANG_GUARD_MS },
+      async (t) => {
+        const { root, options, dataFile, stateFile } = await project(t, mode);
+        const writer = await gatedWriter(t, options, gate);
+        await writer.kill();
+        const sim = await createSimulator(options);
+        ownedFixture(t).add(() => sim.close());
+        // The reclaim is a runtime finding, served by the diagnostics API.
+        const { diagnostics } = await (await fetch(`${sim.url}/_sim/api/diagnostics`)).json();
+        const reclaimed = diagnostics.filter((entry) => entry.code === 'WRITER_LOCK_RECLAIMED');
+        assert.ok(reclaimed.length > 0, JSON.stringify(diagnostics));
+        for (const entry of reclaimed) {
+          assert.equal(entry.ownerPid, writer.child.pid);
+          assert.match(entry.message, new RegExp(`process ${writer.child.pid}`));
+        }
+        const names = () => sim.store.state.tables.x_item.map((row) => row.x_name);
+        assert.deepEqual(names(), gate.committed ? ['Interrupted'] : []);
+        await sim.store.create('x_item', { x_name: 'After restart' }, { admin: true });
+        assert.deepEqual(names(), gate.committed ? ['Interrupted', 'After restart'] : ['After restart']);
+        if (mode === 'pack')
+          assert.deepEqual(
+            JSON.parse(await fs.readFile(dataFile, 'utf8')).items.map((row) => row.x_name),
+            names(),
+          );
+        assert.deepEqual(await leftovers(root, path.dirname(stateFile)), []);
+      },
+    );
 
 test('a live writer keeps its lock: the conflict names its process, and the lock is reclaimed once it has ended', async (t) => {
   const { options, dataFile } = await project(t, 'pack');

@@ -56,14 +56,38 @@ A `--runtime model-driven` or `--runtime dataverse-api` start for a catalogue si
 to the folder it was started in: `status` and `stop` without selectors select it there, so a bare `stop` stops it.
 `status` labels each runtime with the site it was started for (`[a]`), also when two sites share a source folder.
 
-`stop` stops exactly what `status` lists; both report other toolkit-owned runtimes recorded in the same state folder
-under `others`, each with the `status` command that selects it. A runtime whose `mirage dev` process was killed keeps
+`stop` stops exactly what `status` lists, and keeps the records of runtimes started on another host (below); both
+report other toolkit-owned runtimes recorded in the same state folder under `others`, each with the `status` command
+that selects it. A runtime whose `mirage dev` process was killed keeps
 running and is still selected by these rules. A runtime started in the foreground (`mirage serve`) has no ownership
 record: `status` labels it `foreground`, and `stop` leaves it running and names it with its URL and PID (`foreground` in
 `--json`), for example `1 foreground runtime is not stopped by stop: http://127.0.0.1:<port> (pid <n>); press Ctrl+C in
 its terminal.` End it with Ctrl+C in its terminal. `status` and `stop` with a `--config` file that has since been
 removed still select the runtimes recorded for it; `stop` prints
 `Stopped 1 toolkit-owned Mirage session(s) for the removed catalogue <path>.` and one `stopped <url>` line per runtime.
+
+Ownership records and discovery files (`session-<pid>.json`) name the host that wrote them (`<platform>/<machine
+name>`), because a process ID means nothing on another host: Windows and WSL, or runners that share one checkout or home
+folder. A record or discovery file from another host is not listed by `status`, is never part of a `status` or `stop`
+selection, is never pruned, removed or signalled, and no shutdown request is sent to its URL. `stop` keeps it and
+reports it under `unverified` with `foreignHost: true` and the reason `it was started on <host>; stop it there. If it no
+longer runs on <host> (the host was renamed or removed), delete its entry from <ownership file>`. `stop` exits 2 only
+when a selected runtime of this host could not be verified, never because of another host's record, also one with the
+same PID number. A `start` on its state file is refused with `Mirage pid <n> on <host> is recorded for state file
+<file>; this host cannot see or stop that process.` followed by the same ways out. Offline state writes (`mirage data`
+imports and scaffolds) refuse such a state file too. A record or discovery file without a host counts as this host's.
+
+A record stamped with this platform under another machine name, written before the machine's name changed (macOS
+renames itself with the network), counts as this host's while its process runs here with its full recorded identity:
+on Windows the runtime's random start token, on macOS its start time. Linux records keep their host, because containers
+on one kernel share PID numbers and start times. Offline state writes do not make this exception: they refuse the state
+file of any record stamped with another host name.
+
+The sessions `status --json` and `start --json` report carry no `host` field; the stop reason and the start refusal
+name the host.
+
+`status` notes a runtime it lists as ready from its record that did not answer this status in time:
+`the runtime did not answer this status in time, so its site, pages and preset are not shown; run the status again`.
 
 `paqvilo mirage portal-matrix --project <project.yml> --out .paqvilo/matrix` (or `--config <catalogue>`) reports
 import, bootstrap and render coverage for every declared portal, each runtime on its own temporary state. A successful

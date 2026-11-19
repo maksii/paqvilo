@@ -11,6 +11,7 @@ import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
 import { signInContext } from '../testing/session.mjs';
 import { ownedFixture, drainFixture } from '../testing/owned-fixture.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 
 /**
  * Launches one browser for the calling test file; `page(t)` opens a fresh context that closes with the test, among the
@@ -18,10 +19,15 @@ import { ownedFixture, drainFixture } from '../testing/owned-fixture.mjs';
  */
 export function sharedBrowser(launchOptions) {
   let browser;
-  before(async () => {
-    browser = await chromium.launch(browserLaunchOptions(launchOptions));
-  });
-  after(() => browser?.close());
+  // Hang guard only: a hook without its own timeout gets the lane's, which a browser start or close on a loaded slow
+  // host overran while still progressing.
+  before(
+    async () => {
+      browser = await chromium.launch(browserLaunchOptions(launchOptions));
+    },
+    { timeout: SCENARIO_HANG_GUARD_MS },
+  );
+  after(() => browser?.close(), { timeout: SCENARIO_HANG_GUARD_MS });
   return {
     get browser() {
       return browser;
@@ -243,7 +249,8 @@ export function eventLog(t, { message = 'The expected event did not arrive' } = 
 /** A test-context stand-in whose cleanups run in the file's after hook, for fixtures shared by read-only tests. */
 export function fileScope() {
   const cleanups = [];
-  after(() => drainFixture(cleanups.toReversed()));
+  // Hang guard only: the file's shared fixtures close here, which on a loaded slow host is slow, not hung.
+  after(() => drainFixture(cleanups.toReversed()), { timeout: SCENARIO_HANG_GUARD_MS });
   return {
     after: (cleanup) => {
       cleanups.push(cleanup);

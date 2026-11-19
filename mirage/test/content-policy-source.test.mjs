@@ -1,3 +1,4 @@
+// @test-kind contract: project, portal and catalogue content-policy settings are Paqvilo configuration; no native capture is cited
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -8,6 +9,7 @@ import { createSimulator } from '../server.mjs';
 import { createMirageContext } from '../api.mjs';
 import { loadProjectConfig } from '../lib/project-config.mjs';
 import { ownedFixture, ownedClose, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 
 async function portal(t) {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-content-policy-'));
@@ -18,79 +20,84 @@ async function portal(t) {
   return root;
 }
 
-test('persisted project policy retains its value but reports current default drift consistently', async (t) => {
-  const root = await portal(t),
-    stateFile = path.join(root, 'local-state.json');
-  let app = ownedClose(
-    t,
-    await createSimulator({
-      sourceDir: root,
-      stateFile,
-      watch: false,
-      contentPolicyDefaults: { confinePortalPages: true },
-    }),
-  );
-  assert.equal(app.state().config.contentPolicySource, 'project defaults');
-  await app.store.compact();
-  await app.close();
-  app = ownedClose(
-    t,
-    await createSimulator({
-      sourceDir: root,
-      stateFile,
-      watch: false,
-      contentPolicyDefaults: { confinePortalPages: false },
-    }),
-  );
-  assert.equal(app.state().config.confinePortalPages, true);
-  assert.equal(app.state().config.contentPolicySource, 'runtime state (project default differs)');
-  assert.equal(
-    (await (await fetch(app.url + '/__sim/api/status')).json()).contentPolicySource,
-    'runtime state (project default differs)',
-  );
-  assert.equal(
-    JSON.parse(readFileSync(stateFile)).simulator.contentPolicySource,
-    'project defaults',
-    'reporting does not rewrite persisted provenance',
-  );
-  const changed = await fetch(app.url + '/_sim/api/config', {
-    method: 'PATCH',
-    headers: { 'content-type': 'application/json', 'x-sim-csrf': app.state().csrf },
-    body: JSON.stringify({ pageMode: 'local' }),
-  });
-  assert.equal(changed.status, 200, await changed.text());
-  await app.store.compact();
-  assert.equal(JSON.parse(readFileSync(stateFile)).simulator.contentPolicySource, 'project defaults');
-  await app.close();
-  app = ownedClose(
-    t,
-    await createSimulator({
-      sourceDir: root,
-      stateFile,
-      watch: false,
-      contentPolicyDefaults: { confinePortalPages: true },
-    }),
-  );
-  assert.equal(app.state().config.contentPolicySource, 'project defaults');
-  await app.close();
-  app = ownedClose(
-    t,
-    await createSimulator({
-      sourceDir: root,
-      stateFile,
-      watch: false,
-      contentPolicyDefaults: { externalAssets: false },
-    }),
-  );
-  assert.equal(
-    app.state().config.contentPolicySource,
-    'runtime state (project default differs)',
-    'removing the confined default also counts as drift when another policy default remains',
-  );
-  await app.close();
-  app = ownedClose(t, await createSimulator({ sourceDir: root, stateFile, watch: false }));
-  assert.equal(app.state().config.contentPolicySource, 'project defaults (no longer configured)');
-});
+// Hang guard only: it starts a simulator and drives it through its reloads; on a loaded slow host that is slow, not hung.
+test(
+  'persisted project policy retains its value but reports current default drift consistently',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const root = await portal(t),
+      stateFile = path.join(root, 'local-state.json');
+    let app = ownedClose(
+      t,
+      await createSimulator({
+        sourceDir: root,
+        stateFile,
+        watch: false,
+        contentPolicyDefaults: { confinePortalPages: true },
+      }),
+    );
+    assert.equal(app.state().config.contentPolicySource, 'project defaults');
+    await app.store.compact();
+    await app.close();
+    app = ownedClose(
+      t,
+      await createSimulator({
+        sourceDir: root,
+        stateFile,
+        watch: false,
+        contentPolicyDefaults: { confinePortalPages: false },
+      }),
+    );
+    assert.equal(app.state().config.confinePortalPages, true);
+    assert.equal(app.state().config.contentPolicySource, 'runtime state (project default differs)');
+    assert.equal(
+      (await (await fetch(app.url + '/__sim/api/status')).json()).contentPolicySource,
+      'runtime state (project default differs)',
+    );
+    assert.equal(
+      JSON.parse(readFileSync(stateFile)).simulator.contentPolicySource,
+      'project defaults',
+      'reporting does not rewrite persisted provenance',
+    );
+    const changed = await fetch(app.url + '/_sim/api/config', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', 'x-sim-csrf': app.state().csrf },
+      body: JSON.stringify({ pageMode: 'local' }),
+    });
+    assert.equal(changed.status, 200, await changed.text());
+    await app.store.compact();
+    assert.equal(JSON.parse(readFileSync(stateFile)).simulator.contentPolicySource, 'project defaults');
+    await app.close();
+    app = ownedClose(
+      t,
+      await createSimulator({
+        sourceDir: root,
+        stateFile,
+        watch: false,
+        contentPolicyDefaults: { confinePortalPages: true },
+      }),
+    );
+    assert.equal(app.state().config.contentPolicySource, 'project defaults');
+    await app.close();
+    app = ownedClose(
+      t,
+      await createSimulator({
+        sourceDir: root,
+        stateFile,
+        watch: false,
+        contentPolicyDefaults: { externalAssets: false },
+      }),
+    );
+    assert.equal(
+      app.state().config.contentPolicySource,
+      'runtime state (project default differs)',
+      'removing the confined default also counts as drift when another policy default remains',
+    );
+    await app.close();
+    app = ownedClose(t, await createSimulator({ sourceDir: root, stateFile, watch: false }));
+    assert.equal(app.state().config.contentPolicySource, 'project defaults (no longer configured)');
+  },
+);
 
 test('project confinement seeds new states and a saved runtime setting wins on restart', async (t) => {
   const root = await portal(t),

@@ -32,6 +32,7 @@ import { workspace, cli, stopped } from './mirage-stop-workspace.mjs';
 import { processesNaming, trackedCliEnded } from './mirage-reaper.mjs';
 import { captureConsoleOutput, readyRuntime } from './helpers/mirage-session-doubles.mjs';
 import { listenerBehindOpenHandles, portBinding } from './helpers/mirage-runtimes.mjs';
+import { SCENARIO_HANG_GUARD_MS } from './helpers/bounded-command.mjs';
 
 const standalone = (directory) => [
   'mirage',
@@ -59,80 +60,90 @@ test('a closed CLI stays ended when its PID is reused', () => {
 });
 
 // @test-kind tooling: workspace cleanup on a failed or timed-out test ends a CLI still starting and the runtime it launched
-test('workspace cleanup on a failed or timed-out test ends a CLI still starting and the runtime it launched', async (t) => {
-  const work = await workspace(t);
-  // The CLI launches and records its runtime, reports it on stdout, then blocks before answering,
-  // as a CLI does when the test times out during its start.
-  const formatter = pathToFileURL(fileURLToPath(new URL('../lense/stop-command.mjs', import.meta.url))).href;
-  // A standalone start records its runtime under <cwd>/.paqvilo/mirage/sessions.json.
-  const replacement = `import fs from 'node:fs';import path from 'node:path';export {listenerPort} from ${JSON.stringify(formatter + '?original')};function hang(){const sessions=JSON.parse(fs.readFileSync(path.join(process.cwd(),'.paqvilo','mirage','sessions.json'),'utf8')).sessions;fs.writeSync(1,JSON.stringify(sessions.map(({pid,url,processIdentity})=>({pid,url,processIdentity})))+'\\n');Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0)}export {hang as mirageCommandHint,hang as mirageStopCommand};`;
-  const hooks = path.join(work.directory, 'hang-after-launch.mjs');
-  fs.writeFileSync(
-    hooks,
-    `import {registerHooks} from 'node:module';registerHooks({resolve(specifier,context,next){const result=next(specifier,context);return result.url===${JSON.stringify(formatter)}?{url:${JSON.stringify('data:text/javascript,' + encodeURIComponent(replacement))},shortCircuit:true}:result}});`,
-  );
-  const { child, result } = work.launchCli(standalone(work.directory), {
-    NODE_OPTIONS: '--import=' + pathToFileURL(hooks).href,
-  });
-  const [line] = await once(readline.createInterface({ input: child.stdout }), 'line');
-  // A line other than the recorded runtime is the output of a start that did not reach its hint: the failure shows that
-  // line, and the CLI is not awaited, because a hung CLI never ends.
-  if (!line.startsWith('[{"pid":'))
-    assert.fail(`The start did not report one recorded runtime before its hint: ${line}`);
-  const [session] = JSON.parse(line);
-  // The identity the start recorded, not the PID alone, says whether that runtime runs: the PID of an ended process
-  // is given to another program later.
-  const recorded = () => recordedIdentityNow(session.pid, session.processIdentity);
-  assert.equal(await recorded(), session.processIdentity, 'the hung CLI has a running runtime');
-  // What the owned fixture runs after a failure or timeout.
-  await work.dispose();
-  assert.notEqual((await result).status, 0, 'the hung CLI was ended');
-  assert.equal(child.exitCode !== null || child.signalCode !== null, true);
-  assert.notEqual(await recorded(), session.processIdentity, 'its runtime was stopped');
-  await stopped(session);
-});
+// Hang guard only: it runs real CLI commands and the runtimes they start; on a loaded slow host that is slow, not hung.
+test(
+  'workspace cleanup on a failed or timed-out test ends a CLI still starting and the runtime it launched',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const work = await workspace(t);
+    // The CLI launches and records its runtime, reports it on stdout, then blocks before answering,
+    // as a CLI does when the test times out during its start.
+    const formatter = pathToFileURL(fileURLToPath(new URL('../lense/stop-command.mjs', import.meta.url))).href;
+    // A standalone start records its runtime under <cwd>/.paqvilo/mirage/sessions.json.
+    const replacement = `import fs from 'node:fs';import path from 'node:path';export {listenerPort} from ${JSON.stringify(formatter + '?original')};function hang(){const sessions=JSON.parse(fs.readFileSync(path.join(process.cwd(),'.paqvilo','mirage','sessions.json'),'utf8')).sessions;fs.writeSync(1,JSON.stringify(sessions.map(({pid,url,processIdentity})=>({pid,url,processIdentity})))+'\\n');Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0)}export {hang as mirageCommandHint,hang as mirageStopCommand};`;
+    const hooks = path.join(work.directory, 'hang-after-launch.mjs');
+    fs.writeFileSync(
+      hooks,
+      `import {registerHooks} from 'node:module';registerHooks({resolve(specifier,context,next){const result=next(specifier,context);return result.url===${JSON.stringify(formatter)}?{url:${JSON.stringify('data:text/javascript,' + encodeURIComponent(replacement))},shortCircuit:true}:result}});`,
+    );
+    const { child, result } = work.launchCli(standalone(work.directory), {
+      NODE_OPTIONS: '--import=' + pathToFileURL(hooks).href,
+    });
+    const [line] = await once(readline.createInterface({ input: child.stdout }), 'line');
+    // A line other than the recorded runtime is the output of a start that did not reach its hint: the failure shows that
+    // line, and the CLI is not awaited, because a hung CLI never ends.
+    if (!line.startsWith('[{"pid":'))
+      assert.fail(`The start did not report one recorded runtime before its hint: ${line}`);
+    const [session] = JSON.parse(line);
+    // The identity the start recorded, not the PID alone, says whether that runtime runs: the PID of an ended process
+    // is given to another program later.
+    const recorded = () => recordedIdentityNow(session.pid, session.processIdentity);
+    assert.equal(await recorded(), session.processIdentity, 'the hung CLI has a running runtime');
+    // What the owned fixture runs after a failure or timeout.
+    await work.dispose();
+    assert.notEqual((await result).status, 0, 'the hung CLI was ended');
+    assert.equal(child.exitCode !== null || child.signalCode !== null, true);
+    assert.notEqual(await recorded(), session.processIdentity, 'its runtime was stopped');
+    await stopped(session);
+  },
+);
 
 // `after start`: the test process dies once its CLI has started and recorded a runtime.
 // `during start`: it dies while the CLI is still starting. On Windows the CLI then dies with it (a
 // libuv child joins its parent's kill-on-close job), so a runtime it launched has no record.
 // @test-kind tooling: cancellation and cleanup for each authored lifecycle case
 for (const moment of ['after start', 'during start'])
-  test(`an abruptly ended test process leaves its workspace to the reaper (${moment})`, async (t) => {
-    const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-reaped-')));
-    t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
-    const reaper = new URL('./mirage-reaper.mjs', import.meta.url).href;
-    // A stand-in test process: it starts the reaper and a tracked CLI that launches a runtime, and is
-    // then killed. The reaper inherits its stdout, so the stream ends only once the reaper finished.
-    const script = `import {startReaper} from ${JSON.stringify(reaper)};import {execFile} from 'node:child_process';import {once} from 'node:events';import fs from 'node:fs';const [directory,cli,args,moment]=process.argv.slice(1);const reaper=startReaper(directory);let output='';const child=execFile(process.execPath,[cli,...JSON.parse(args)],{cwd:directory,windowsHide:true},(error,stdout)=>{output=stdout});await reaper.track(child);let cliClosed=false;if(moment==='after start'){await once(child,'close');cliClosed=true;output=JSON.parse(output).pid}fs.writeSync(1,JSON.stringify({cli:child.pid,cliClosed,runtime:output||null})+'\\n');process.kill(process.pid,'SIGKILL');`;
-    const stand = spawn(
-      process.execPath,
-      ['--input-type=module', '-e', script, directory, cli, JSON.stringify(standalone(directory)), moment],
-      { stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true },
-    );
-    let written = '';
-    stand.stdout.setEncoding('utf8').on('data', (chunk) => (written += chunk));
-    await once(stand.stdout, 'end');
-    const [started, report] = written.trim().split('\n').map(JSON.parse);
-    t.diagnostic(JSON.stringify(report));
-    if (moment === 'after start') assert.equal(started.cliClosed, true, 'the CLI was observed to close');
-    // Once a child closes, Windows can reuse its PID for an unrelated process. Match the unique workspace instead.
-    const named = await processesNaming(directory);
-    assert.equal(
-      trackedCliEnded(started.cli, started.cliClosed, (pid) => named.includes(pid)),
-      true,
-      'the tracked CLI ended',
-    );
-    assert.equal(named.includes(started.cli), false, 'the reaper waited for the CLI belonging to this workspace');
-    if (moment === 'after start') {
-      assert.equal(typeof started.runtime, 'number', 'the CLI started a runtime');
-      assert.deepEqual(report.reaped, [started.runtime], 'the reaper stopped the recorded runtime');
-    }
-    assert.deepEqual(report.left, []);
-    for (const pid of [...report.reaped, ...report.strays])
-      assert.equal(named.includes(pid), false, 'the stopped workspace process is no longer present');
-    assert.deepEqual(named, [], 'no process names the workspace any longer');
-    assert.equal(fs.existsSync(directory), false, 'the reaper removed the workspace');
-  });
+  // Hang guard only: it runs real CLI commands and the runtimes they start; on a loaded slow host that is slow, not hung.
+  test(
+    `an abruptly ended test process leaves its workspace to the reaper (${moment})`,
+    { timeout: SCENARIO_HANG_GUARD_MS },
+    async (t) => {
+      const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-reaped-')));
+      t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+      const reaper = new URL('./mirage-reaper.mjs', import.meta.url).href;
+      // A stand-in test process: it starts the reaper and a tracked CLI that launches a runtime, and is
+      // then killed. The reaper inherits its stdout, so the stream ends only once the reaper finished.
+      const script = `import {startReaper} from ${JSON.stringify(reaper)};import {execFile} from 'node:child_process';import {once} from 'node:events';import fs from 'node:fs';const [directory,cli,args,moment]=process.argv.slice(1);const reaper=startReaper(directory);let output='';const child=execFile(process.execPath,[cli,...JSON.parse(args)],{cwd:directory,windowsHide:true},(error,stdout)=>{output=stdout});await reaper.track(child);let cliClosed=false;if(moment==='after start'){await once(child,'close');cliClosed=true;output=JSON.parse(output).pid}fs.writeSync(1,JSON.stringify({cli:child.pid,cliClosed,runtime:output||null})+'\\n');process.kill(process.pid,'SIGKILL');`;
+      const stand = spawn(
+        process.execPath,
+        ['--input-type=module', '-e', script, directory, cli, JSON.stringify(standalone(directory)), moment],
+        { stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true },
+      );
+      let written = '';
+      stand.stdout.setEncoding('utf8').on('data', (chunk) => (written += chunk));
+      await once(stand.stdout, 'end');
+      const [started, report] = written.trim().split('\n').map(JSON.parse);
+      t.diagnostic(JSON.stringify(report));
+      if (moment === 'after start') assert.equal(started.cliClosed, true, 'the CLI was observed to close');
+      // Once a child closes, Windows can reuse its PID for an unrelated process. Match the unique workspace instead.
+      const named = await processesNaming(directory);
+      assert.equal(
+        trackedCliEnded(started.cli, started.cliClosed, (pid) => named.includes(pid)),
+        true,
+        'the tracked CLI ended',
+      );
+      assert.equal(named.includes(started.cli), false, 'the reaper waited for the CLI belonging to this workspace');
+      if (moment === 'after start') {
+        assert.equal(typeof started.runtime, 'number', 'the CLI started a runtime');
+        assert.deepEqual(report.reaped, [started.runtime], 'the reaper stopped the recorded runtime');
+      }
+      assert.deepEqual(report.left, []);
+      for (const pid of [...report.reaped, ...report.strays])
+        assert.equal(named.includes(pid), false, 'the stopped workspace process is no longer present');
+      assert.deepEqual(named, [], 'no process names the workspace any longer');
+      assert.equal(fs.existsSync(directory), false, 'the reaper removed the workspace');
+    },
+  );
 
 // @test-kind tooling: a live unrelated process does not count as a workspace CLI when a PID is reused
 test('a live unrelated process does not count as a workspace CLI when a PID is reused', async (t) => {
@@ -827,7 +838,16 @@ test('a runtime that exits during the development teardown prints nothing and ke
 // @test-kind contract: a session that start() returns for a started runtime carries the runtime's exit as a non-enumerable promise
 test('a session started by start() carries the runtime exit as a non-enumerable promise', async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-dev-started-exit-'));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  // The start runs in this process: from an empty folder of the test, never the checkout, where a start notes its
+  // record folder and every status and stop of another test process run there would read it.
+  const cwd = path.join(dir, 'empty');
+  fs.mkdirSync(cwd);
+  const previous = process.cwd();
+  process.chdir(cwd);
+  t.after(() => {
+    process.chdir(previous);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
   const paths = miragePaths({ stateDir: dir });
   fs.mkdirSync(paths.discoveryRoot, { recursive: true });
   const url = await readyRuntime(t, () => {});

@@ -229,14 +229,204 @@ test('draft cancellation bindings are bounded and removed after normal or failed
   }
 });
 
+/**
+ * A tab whose late repair is reloading; `cancelled` is what the page's draft tracker reports when asked, once `answer`
+ * settles. With `repairRefused` the repair call is refused after the page has run it.
+ */
+async function reloadingRepair({ cancelled, answer, repairRefused = false }) {
+  const fake = fakeBrowser(),
+    tab = fake.openTab(ORIGIN + '/form'),
+    errors = [];
+  const send = tab.cdp.send;
+  tab.cdp.send = async (method, params) => {
+    const result = await send(method, params);
+    if (method === 'Runtime.evaluate' && params.expression.includes('cancelled')) {
+      await answer;
+      return { result: { value: cancelled } };
+    }
+    if (repairRefused && method === 'Runtime.callFunctionOn') throw new Error('Invented lost execution context');
+    return result;
+  };
+  const detach = await interceptOrigin(fake.context, ORIGIN, (route) => route.fallback(), {
+    onError: (error) => errors.push(error),
+  });
+  assert.equal(tab.page.reloads, 1, 'the late document repair ran in the page');
+  const reads = () =>
+    fake.sent.filter((item) => item.method === 'Runtime.evaluate' && item.expression.includes('cancelled'));
+  const name = fake.sent.findLast((item) => item.method === 'Runtime.addBinding').name;
+  return { tab, errors, detach, reads, name };
+}
+
+test('a cancelled repair whose notification is lost is read when the repair stops loading', async () => {
+  const { tab, errors, detach, reads, name } = await reloadingRepair({ cancelled: true });
+  // No Runtime.bindingCalled arrives: Chromium dropped it while the session moved between documents.
+  tab.cdp.emit('Page.frameStoppedLoading', { frameId: 'main' });
+  await setImmediate();
+  assert.equal(reads().length, 1);
+  assert.deepEqual(
+    errors.map((error) => error.code),
+    ['reload_required'],
+  );
+  // A restored main context, a late notification and another stop report nothing more.
+  tab.cdp.emit('Runtime.executionContextCreated', {
+    context: { id: 7, auxData: { frameId: 'main', isDefault: true } },
+  });
+  tab.cdp.emit('Runtime.bindingCalled', { name, payload: 'cancelled' });
+  tab.cdp.emit('Page.frameStoppedLoading', { frameId: 'main' });
+  await setImmediate();
+  assert.equal(errors.length, 1, 'exactly one reload warning');
+  await detach();
+});
+
+test('a restored main context reads a cancelled repair; subframes and other worlds do not', async () => {
+  const { tab, errors, detach, reads } = await reloadingRepair({ cancelled: true });
+  tab.cdp.emit('Page.frameStoppedLoading', { frameId: 'child' });
+  tab.cdp.emit('Runtime.executionContextCreated', {
+    context: { id: 8, auxData: { frameId: 'main', isDefault: false } },
+  });
+  await setImmediate();
+  assert.equal(reads().length, 0);
+  tab.cdp.emit('Runtime.executionContextCreated', {
+    context: { id: 9, auxData: { frameId: 'main', isDefault: true } },
+  });
+  await setImmediate();
+  assert.deepEqual(
+    errors.map((error) => error.code),
+    ['reload_required'],
+  );
+  await detach();
+});
+
+test('a repair that was not cancelled, or whose document committed, reports no warning', async () => {
+  const { tab, errors, detach, reads } = await reloadingRepair({ cancelled: false });
+  tab.cdp.emit('Page.frameStoppedLoading', { frameId: 'main' });
+  await setImmediate();
+  assert.equal(reads().length, 1);
+  tab.cdp.emit('Page.frameNavigated', { frame: { id: 'main', loaderId: 'repaired' } });
+  tab.cdp.emit('Page.frameStoppedLoading', { frameId: 'main' });
+  await setImmediate();
+  assert.equal(reads().length, 1, 'the committed document replaced the tracker of the repaired one');
+  assert.deepEqual(errors, []);
+  await detach();
+  assert.equal(tab.cdp.listenerCount('Page.frameStoppedLoading'), 0);
+  assert.equal(tab.cdp.listenerCount('Runtime.executionContextCreated'), 0);
+  assert.equal(tab.cdp.listenerCount('Page.frameNavigated'), 0);
+});
+
+test('a cancellation answered after the repaired document committed reports no warning', async () => {
+  const answer = Promise.withResolvers();
+  const { tab, errors, detach, reads, name } = await reloadingRepair({ cancelled: true, answer: answer.promise });
+  tab.cdp.emit('Page.frameStoppedLoading', { frameId: 'main' });
+  await setImmediate();
+  assert.equal(reads().length, 1, 'the read is in flight');
+  tab.cdp.emit('Page.frameNavigated', { frame: { id: 'main', loaderId: 'repaired' } });
+  // Both channels can still deliver the old document's cancellation after the commit.
+  tab.cdp.emit('Runtime.bindingCalled', { name, payload: 'cancelled' });
+  answer.resolve();
+  await setImmediate();
+  assert.deepEqual(errors, []);
+  await detach();
+});
+
+test('a refused repair call and its cancelled document report one warning', async () => {
+  const { tab, errors, detach } = await reloadingRepair({ cancelled: true, repairRefused: true });
+  assert.deepEqual(
+    errors.map((error) => error.code),
+    ['reload_required'],
+    'the refused call of a current document asks for a reload',
+  );
+  tab.cdp.emit('Page.frameStoppedLoading', { frameId: 'main' });
+  await setImmediate();
+  assert.equal(errors.length, 1, 'exactly one reload warning');
+  await detach();
+});
+
+test('a refusal that arrives while the tab is released is not reported as a tab failure', async () => {
+  const fake = fakeBrowser(),
+    tab = fake.openTab(),
+    errors = [];
+  const send = tab.cdp.send,
+    refusal = Promise.withResolvers(),
+    sent = Promise.withResolvers();
+  tab.cdp.send = async (name, params) => {
+    const result = await send(name, params);
+    if (name !== 'Fetch.fulfillRequest') return result;
+    sent.resolve();
+    await refusal.promise;
+    throw new Error('Invented refusal during release');
+  };
+  const answered = Promise.withResolvers();
+  const detach = await interceptOrigin(
+    fake.context,
+    ORIGIN,
+    async (route) => answered.resolve(await route.fulfill({ body: '<p>Invented</p>' })),
+    { onError: (error) => errors.push(error) },
+  );
+  pause(tab);
+  await sent.promise;
+  const releasing = detach();
+  refusal.resolve();
+  assert.equal(await answered.promise, false);
+  await releasing;
+  assert.ok(fake.answers('paused').some((answer) => answer.method === 'Fetch.failRequest'));
+  assert.deepEqual(errors, []);
+});
+
+test('a refused answer for a request that still exists fails it and reports the refusal', async () => {
+  for (const method of ['Fetch.fulfillRequest', 'Fetch.continueRequest']) {
+    const fake = fakeBrowser(),
+      tab = fake.openTab(),
+      errors = [],
+      published = [];
+    const send = tab.cdp.send;
+    tab.cdp.send = (name, params) =>
+      name === method
+        ? send(name, params).then(() => Promise.reject(new Error('Invented invalid header')))
+        : send(name, params);
+    const answered = Promise.withResolvers();
+    const detach = await interceptOrigin(
+      fake.context,
+      ORIGIN,
+      async (route) => {
+        answered.resolve(
+          await (method === 'Fetch.fulfillRequest'
+            ? route.fulfill({ body: '<p>Invented</p>', provenance: { proofId: 'invented' } })
+            : route.fallback()),
+        );
+      },
+      {
+        onError: (error) => errors.push(error),
+        onAttach: () => ({ publishProvenance: (_event, proof) => published.push(proof) }),
+      },
+    );
+    pause(tab);
+    assert.equal(await answered.promise, false);
+    assert.deepEqual(
+      fake.answers('paused').map((answer) => [answer.method, answer.errorReason]),
+      [
+        [method, undefined],
+        ['Fetch.failRequest', 'Failed'],
+      ],
+      'the request is not left paused',
+    );
+    assert.equal(errors.length, 1);
+    assert.equal(errors[0].phase, method);
+    assert.match(errors[0].message, /refused .*Invented invalid header.*was failed/);
+    assert.doesNotMatch(errors[0].message, /portal\.example\.com/);
+    assert.deepEqual(published, [], 'a refused fulfillment publishes no proof even though its request still existed');
+    await detach();
+  }
+});
+
 test('only acknowledged fulfillments publish a proof; cancellation and protocol rejection never publish', async () => {
   for (const outcome of ['acknowledged', 'rejected', 'aborted']) {
     const fake = fakeBrowser(),
       tab = fake.openTab(),
       published = [];
     const nativeSend = tab.cdp.send;
+    // A cancelled navigation no longer exists, so the browser refuses every answer for it.
     tab.cdp.send = (method, params) =>
-      method === 'Fetch.fulfillRequest' && outcome === 'rejected'
+      method.startsWith('Fetch.') && method !== 'Fetch.enable' && outcome === 'rejected'
         ? Promise.reject(new Error('Invented navigation cancellation'))
         : nativeSend(method, params);
     const acknowledgments = [];

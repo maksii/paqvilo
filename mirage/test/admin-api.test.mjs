@@ -10,6 +10,7 @@ import path from 'node:path';
 import { createSimulator } from '../server.mjs';
 import { presetId, presetBody, syntheticPresetPack } from './fixtures/lazy-preset-pack.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 
 const FILES = {
   'website.yml': 'adx_websiteid: site\nadx_name: Admin API fixture\nadx_headerwebtemplateid: header',
@@ -341,65 +342,70 @@ test('personas are listed, created with memberships and selected, with validatio
   assert.equal(personas.personas.length, 2);
 });
 
-test('scenarios combine preset, persona and permissions in one state change and survive reset', async (t) => {
-  const { app, call } = await setup(t);
-  assert.equal(
-    (await call('/__sim/api/scenarios', 'POST', { id: 'bad id', name: 'x', preset: 'two-contacts' })).status,
-    400,
-  );
-  assert.equal((await call('/__sim/api/scenarios', 'POST', { id: 'empty', name: 'Nothing' })).status, 400);
-  assert.equal(
-    (await call('/__sim/api/scenarios', 'POST', { id: 'ghost', name: 'Ghost', preset: 'missing-preset' })).status,
-    400,
-  );
-  const revision = app.state().status.revision;
-  const created = await call('/__sim/api/scenarios', 'POST', {
-    id: 'blair-open',
-    name: 'Blair in sandbox',
-    preset: 'two-contacts',
-    persona: { contactId: 'blair' },
-    permissionMode: 'permissive',
-  });
-  assert.equal(created.status, 201);
-  assert.equal(app.state().status.revision, revision, 'saving a definition does not reload portal pages');
-  assert.equal(
-    (await call('/__sim/api/scenarios', 'POST', { id: 'blair-open', name: 'Duplicate', permissionMode: 'enforce' }))
-      .status,
-    409,
-  );
-  const applied = await call('/__sim/api/scenarios/blair-open/apply', 'POST', {});
-  assert.equal(applied.status, 200);
-  assert.equal(app.state().status.revision, revision + 1, 'preset, persona and permissions apply as one reload');
-  assert.equal(app.state().config.identity.contactId, 'blair');
-  assert.equal(app.state().config.permissionMode, 'permissive');
-  assert.equal(app.state().data.contact.length, 2);
-  assert.equal(applied.json.activeScenario.id, 'blair-open');
-  await call('/__sim/api/scenarios', 'POST', {
-    id: 'missing-persona',
-    name: 'Missing',
-    persona: { contactId: 'nobody' },
-  });
-  const failed = await call('/__sim/api/scenarios/missing-persona/apply', 'POST', {});
-  assert.equal(failed.status, 409);
-  assert.equal(app.state().config.identity.contactId, 'blair', 'a failed scenario changes nothing');
-  assert.equal(
-    (await call('/__sim/api/scenarios/blair-open', 'PATCH', { description: 'Edited' })).json.scenarios.find(
-      (item) => item.id === 'blair-open',
-    ).description,
-    'Edited',
-  );
-  assert.equal((await call('/__sim/api/reset', 'POST', {})).status, 200);
-  assert.deepEqual(
-    app.state().config.scenarios.map((item) => item.id),
-    ['blair-open', 'missing-persona'],
-  );
-  assert.equal(app.state().config.activeScenario, undefined);
-  assert.equal((await call('/__sim/api/scenarios/missing-persona', 'DELETE')).status, 200);
-  assert.deepEqual(
-    (await call('/__sim/api/scenarios')).json.scenarios.map((item) => item.id),
-    ['blair-open'],
-  );
-});
+// Hang guard only: a simulator start, scenario applies that each reload the portal, and a reset.
+test(
+  'scenarios combine preset, persona and permissions in one state change and survive reset',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const { app, call } = await setup(t);
+    assert.equal(
+      (await call('/__sim/api/scenarios', 'POST', { id: 'bad id', name: 'x', preset: 'two-contacts' })).status,
+      400,
+    );
+    assert.equal((await call('/__sim/api/scenarios', 'POST', { id: 'empty', name: 'Nothing' })).status, 400);
+    assert.equal(
+      (await call('/__sim/api/scenarios', 'POST', { id: 'ghost', name: 'Ghost', preset: 'missing-preset' })).status,
+      400,
+    );
+    const revision = app.state().status.revision;
+    const created = await call('/__sim/api/scenarios', 'POST', {
+      id: 'blair-open',
+      name: 'Blair in sandbox',
+      preset: 'two-contacts',
+      persona: { contactId: 'blair' },
+      permissionMode: 'permissive',
+    });
+    assert.equal(created.status, 201);
+    assert.equal(app.state().status.revision, revision, 'saving a definition does not reload portal pages');
+    assert.equal(
+      (await call('/__sim/api/scenarios', 'POST', { id: 'blair-open', name: 'Duplicate', permissionMode: 'enforce' }))
+        .status,
+      409,
+    );
+    const applied = await call('/__sim/api/scenarios/blair-open/apply', 'POST', {});
+    assert.equal(applied.status, 200);
+    assert.equal(app.state().status.revision, revision + 1, 'preset, persona and permissions apply as one reload');
+    assert.equal(app.state().config.identity.contactId, 'blair');
+    assert.equal(app.state().config.permissionMode, 'permissive');
+    assert.equal(app.state().data.contact.length, 2);
+    assert.equal(applied.json.activeScenario.id, 'blair-open');
+    await call('/__sim/api/scenarios', 'POST', {
+      id: 'missing-persona',
+      name: 'Missing',
+      persona: { contactId: 'nobody' },
+    });
+    const failed = await call('/__sim/api/scenarios/missing-persona/apply', 'POST', {});
+    assert.equal(failed.status, 409);
+    assert.equal(app.state().config.identity.contactId, 'blair', 'a failed scenario changes nothing');
+    assert.equal(
+      (await call('/__sim/api/scenarios/blair-open', 'PATCH', { description: 'Edited' })).json.scenarios.find(
+        (item) => item.id === 'blair-open',
+      ).description,
+      'Edited',
+    );
+    assert.equal((await call('/__sim/api/reset', 'POST', {})).status, 200);
+    assert.deepEqual(
+      app.state().config.scenarios.map((item) => item.id),
+      ['blair-open', 'missing-persona'],
+    );
+    assert.equal(app.state().config.activeScenario, undefined);
+    assert.equal((await call('/__sim/api/scenarios/missing-persona', 'DELETE')).status, 200);
+    assert.deepEqual(
+      (await call('/__sim/api/scenarios')).json.scenarios.map((item) => item.id),
+      ['blair-open'],
+    );
+  },
+);
 
 // @test-kind contract+unproven: administration routes are local; portal access and request behaviour have no native capture.
 test('page access rules can be overridden, added and reset locally and change page access', async (t) => {

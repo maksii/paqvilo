@@ -8,10 +8,12 @@ import { createSimulator } from '../server.mjs';
 import { clrHostPoolStatus } from '../lib/plugin-clr.mjs';
 import { ownedFixture } from '../testing/owned-fixture.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 
+// Hang guard only: it compiles and runs an original CLR plug-in through the .NET host; on a loaded slow host that is slow, not hung.
 test(
   'CLR mode changes reuse owned hosts, close disabled hosts and preserve another instance',
-  { skip: CLR_SKIP },
+  { skip: CLR_SKIP, timeout: SCENARIO_HANG_GUARD_MS },
   async (t) => {
     // The plug-in fixture's directory (CLR cache included) is removed only after the runtimes below have closed.
     const fixture = await pluginFixture(t),

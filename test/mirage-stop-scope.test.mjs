@@ -17,6 +17,7 @@ import mirage, { miragePaths, updateOwnedSessions } from '../lense/commands/mira
 import { standaloneMirageConfiguration } from '../lense/standalone-mirage.mjs';
 import { workspace, alive, stopped, portalProject } from './helpers/mirage-in-process.mjs';
 import { workspace as realWorkspace, alive as realAlive, stopped as realStopped } from './mirage-stop-workspace.mjs';
+import { SCENARIO_HANG_GUARD_MS } from './helpers/bounded-command.mjs';
 
 // @test-kind contract: plain project stop hints stay readable and stop only the advertised runtime from other directories
 test('plain project stop hints stay readable and stop only the advertised runtime from other directories', async (t) => {
@@ -108,11 +109,16 @@ test('standalone settings-only catalogues keep editor settings without claiming 
 });
 
 // One test per project edit, so the per-test limit covers a bounded number of runtimes.
+// Hang guard only: one edit is two real detached runtimes, a shell replaying the stop hint and up to three commands.
 // @test-kind security+contract: project stop hints survive valid path remaps, portal renames and removals without selecting a same-source sibling
 for (const edit of ['path-remap', 'portal-rename', 'portal-remove'])
-  test(`project stop hints survive valid path remaps, portal renames and removals without selecting a same-source sibling: ${edit}`, async (t) => {
-    await editedProjectHint(t, edit);
-  });
+  test(
+    `project stop hints survive valid path remaps, portal renames and removals without selecting a same-source sibling: ${edit}`,
+    { timeout: SCENARIO_HANG_GUARD_MS },
+    async (t) => {
+      await editedProjectHint(t, edit);
+    },
+  );
 
 async function editedProjectHint(t, edit) {
   const work = await realWorkspace(t);

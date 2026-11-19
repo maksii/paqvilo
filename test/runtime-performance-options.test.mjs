@@ -9,6 +9,7 @@ import {
   runPerformanceCli,
   runtimePerformance,
 } from '../scripts/runtime-performance.mjs';
+import { COMMAND_HANG_GUARD_MS, SCENARIO_HANG_GUARD_MS } from './helpers/bounded-command.mjs';
 
 test('heartbeat pauses are at least the probe before them, so the probes never take more than half of the wait', async () => {
   const durations = [40, 7, 3];
@@ -47,49 +48,54 @@ test('a heartbeat pause ends when the watched request completes', async () => {
   assert.equal(probes.length, 1);
 });
 
-test('performance workload and per-phase budgets reach the measured report without changing default qualification', async () => {
-  // Budgets sit far above any runner's timings: this checks that they reach the report, not this machine's speed.
-  const options = performanceOptionsFromArgs([
-    '--standalone',
-    '--tables',
-    '2',
-    '--records',
-    '20',
-    '--forms-per-table',
-    '2',
-    '--startup-budget',
-    '300000',
-    '--restart-budget',
-    '310000',
-    '--journal-budget',
-    '320000',
-    '--catalogue-budget',
-    '330000',
-    '--heartbeat-budget',
-    '60000',
-    '--data-budget',
-    '61000',
-  ]);
-  const report = await runtimePerformance(options);
-  assert.equal(report.portal, false);
-  assert.equal(report.records, 20);
-  assert.equal(report.formsPerTable, 2);
-  assert.deepEqual(
-    report.results.map((row) => row.startupBudgetMs),
-    [300000, 310000, 320000],
-  );
-  assert.deepEqual([report.catalogueBudgetMs, report.heartbeatBudgetMs, report.dataBudgetMs], [330000, 60000, 61000]);
-  assert.equal(report.strictBudgets, true, 'declared budgets keep the default strict qualification');
-  assert.deepEqual(report.findings, []);
-  for (const row of report.results) {
-    assert.equal(row.actualRecords, 20);
-    assert.equal(row.inventory.forms, 4);
-    assert.ok(row.firstStatusMs >= 0);
-    assert.ok(row.eventLoop.maxMs >= 0);
-    assert.ok(row.processPeakRssBytes >= row.memory.rss);
-  }
-  assert.match(report.readiness, /API payload checks only/);
-});
+// Hang guard only: the whole probe workload: three startups, each with its catalogue, heartbeat and data reads.
+test(
+  'performance workload and per-phase budgets reach the measured report without changing default qualification',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async () => {
+    // Budgets sit far above any runner's timings: this checks that they reach the report, not this machine's speed.
+    const options = performanceOptionsFromArgs([
+      '--standalone',
+      '--tables',
+      '2',
+      '--records',
+      '20',
+      '--forms-per-table',
+      '2',
+      '--startup-budget',
+      '300000',
+      '--restart-budget',
+      '310000',
+      '--journal-budget',
+      '320000',
+      '--catalogue-budget',
+      '330000',
+      '--heartbeat-budget',
+      '60000',
+      '--data-budget',
+      '61000',
+    ]);
+    const report = await runtimePerformance(options);
+    assert.equal(report.portal, false);
+    assert.equal(report.records, 20);
+    assert.equal(report.formsPerTable, 2);
+    assert.deepEqual(
+      report.results.map((row) => row.startupBudgetMs),
+      [300000, 310000, 320000],
+    );
+    assert.deepEqual([report.catalogueBudgetMs, report.heartbeatBudgetMs, report.dataBudgetMs], [330000, 60000, 61000]);
+    assert.equal(report.strictBudgets, true, 'declared budgets keep the default strict qualification');
+    assert.deepEqual(report.findings, []);
+    for (const row of report.results) {
+      assert.equal(row.actualRecords, 20);
+      assert.equal(row.inventory.forms, 4);
+      assert.ok(row.firstStatusMs >= 0);
+      assert.ok(row.eventLoop.maxMs >= 0);
+      assert.ok(row.processPeakRssBytes >= row.memory.rss);
+    }
+    assert.match(report.readiness, /API payload checks only/);
+  },
+);
 
 test('performance CLI rejects unknown options and invalid budgets before creating fixtures', () => {
   for (const args of [
@@ -120,33 +126,40 @@ test('the --large workload is the one the runtime performance guide documents', 
 });
 
 // @test-kind tooling: a repeated value option and too few records for the largest table count are invalid invocations
-test('the script prints its usage for --help and one line with exit code 2 for an invalid invocation', async () => {
-  const { spawnSync } = await import('node:child_process');
-  const script = new URL('../scripts/runtime-performance.mjs', import.meta.url);
-  const run = (...args) =>
-    spawnSync(process.execPath, [script.pathname.replace(/^\/([A-Za-z]:)/, '$1'), ...args], {
-      encoding: 'utf8',
-    });
-  const help = run('--help');
-  assert.equal(help.status, 0, help.stderr);
-  assert.match(help.stdout, /^Usage: node scripts\/runtime-performance\.mjs \[--quick \| --large\]/);
-  for (const [args, message] of [
-    [['--quick', '--large'], 'Choose --quick or --large, not both.'],
-    [['--bogus'], "Unknown option '--bogus'. Run with --help to see supported options."],
-    [['--records', '-1'], '--records must be a positive safe integer.'],
-    [['--records', '10', '--records', '20'], '--records may be given only once'],
-    [['--records', '10'], '--records must be at least 64, the largest --tables value: one record per table.'],
-    [
-      ['--tables', '2,4', '--records', '3'],
-      '--records must be at least 4, the largest --tables value: one record per table.',
-    ],
-  ]) {
-    const result = run(...args);
-    assert.equal(result.status, 2, args.join(' '));
-    assert.equal(result.stderr, `${message}\n`, args.join(' '));
-    assert.equal(result.stdout, '');
-  }
-});
+// Hang guard only: it runs real child processes; on a loaded slow host that is slow, not hung.
+test(
+  'the script prints its usage for --help and one line with exit code 2 for an invalid invocation',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async () => {
+    const { spawnSync } = await import('node:child_process');
+    const script = new URL('../scripts/runtime-performance.mjs', import.meta.url);
+    const run = (...args) =>
+      spawnSync(process.execPath, [script.pathname.replace(/^\/([A-Za-z]:)/, '$1'), ...args], {
+        encoding: 'utf8',
+        // Hang guard only: the test runner cannot end a test that waits in spawnSync.
+        timeout: COMMAND_HANG_GUARD_MS,
+      });
+    const help = run('--help');
+    assert.equal(help.status, 0, help.stderr);
+    assert.match(help.stdout, /^Usage: node scripts\/runtime-performance\.mjs \[--quick \| --large\]/);
+    for (const [args, message] of [
+      [['--quick', '--large'], 'Choose --quick or --large, not both.'],
+      [['--bogus'], "Unknown option '--bogus'. Run with --help to see supported options."],
+      [['--records', '-1'], '--records must be a positive safe integer.'],
+      [['--records', '10', '--records', '20'], '--records may be given only once'],
+      [['--records', '10'], '--records must be at least 64, the largest --tables value: one record per table.'],
+      [
+        ['--tables', '2,4', '--records', '3'],
+        '--records must be at least 4, the largest --tables value: one record per table.',
+      ],
+    ]) {
+      const result = run(...args);
+      assert.equal(result.status, 2, args.join(' '));
+      assert.equal(result.stderr, `${message}\n`, args.join(' '));
+      assert.equal(result.stdout, '');
+    }
+  },
+);
 
 // A loopback stub that answers at once, or holds every response until the client aborts the request.
 async function stubServer(t, { answer }) {

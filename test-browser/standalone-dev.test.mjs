@@ -14,6 +14,7 @@ import { startOnFreePort } from './helpers/debug-port.mjs';
 import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
 import { recordedRuntimeOwner } from '../test/helpers/mirage-runtimes.mjs';
 import { runningRuntimeOrigins } from './helpers/mirage-status.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../test/helpers/bounded-command.mjs';
 
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url)),
   execute = promisify(execFile);
@@ -46,136 +47,141 @@ function announced(child, pattern) {
   });
 }
 
-test('source-only public dev closes owned browser/runtime, preserves reused runtime and isolates a sibling', async (t) => {
-  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-standalone-dev-'));
-  const project = path.join(directory, 'owned.project.json'),
-    sibling = path.join(directory, 'sibling.project.json');
-  const source = path.join(directory, 'solution', 'AppModules', 'x_workspace', 'AppModule.xml');
-  await fs.mkdir(path.dirname(source), { recursive: true });
-  await fs.writeFile(
-    source,
-    `<AppModule><AppModuleId>${APP}</AppModuleId><UniqueName>x_workspace</UniqueName><LocalizedNames><LocalizedName languagecode="1033" description="Dedicated local workspace"/></LocalizedNames><AppModuleComponents><AppModuleComponent type="1" schemaName="x_item"/></AppModuleComponents></AppModule>`,
-  );
-  const entity = path.join(directory, 'solution', 'Entities', 'x_item', 'Entity.xml');
-  await fs.mkdir(path.dirname(entity), { recursive: true });
-  await fs.writeFile(
-    entity,
-    '<Entity><Name>x_item</Name><EntityInfo><entity Name="x_item"><EntitySetName>x_items</EntitySetName><PrimaryIdAttribute>x_itemid</PrimaryIdAttribute><PrimaryNameAttribute>x_name</PrimaryNameAttribute><attributes><attribute PhysicalName="x_itemid"><Name>x_itemid</Name><Type>primarykey</Type></attribute><attribute PhysicalName="x_name"><Name>x_name</Name><Type>nvarchar</Type></attribute></attributes></entity></EntityInfo></Entity>',
-  );
-  const configuration = JSON.stringify({
-    version: 2,
-    runtime: { kind: 'model-driven', defaultApp: APP },
-    simulation: { level: 'dry-run' },
-    solutions: [{ id: 'core', path: './solution' }],
-  });
-  await fs.writeFile(project, configuration);
-  await fs.writeFile(sibling, configuration);
-  const commands = async (file, command, ...args) =>
-    JSON.parse(
-      (
-        await execute(process.execPath, [cli, 'mirage', command, '--project', file, '--json', ...args], {
-          cwd: directory,
-          windowsHide: true,
-          signal: t.signal,
-        })
-      ).stdout,
+// Hang guard only: two development sessions with their runtimes and browser, and a sibling runtime.
+test(
+  'source-only public dev closes owned browser/runtime, preserves reused runtime and isolates a sibling',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-standalone-dev-'));
+    const project = path.join(directory, 'owned.project.json'),
+      sibling = path.join(directory, 'sibling.project.json');
+    const source = path.join(directory, 'solution', 'AppModules', 'x_workspace', 'AppModule.xml');
+    await fs.mkdir(path.dirname(source), { recursive: true });
+    await fs.writeFile(
+      source,
+      `<AppModule><AppModuleId>${APP}</AppModuleId><UniqueName>x_workspace</UniqueName><LocalizedNames><LocalizedName languagecode="1033" description="Dedicated local workspace"/></LocalizedNames><AppModuleComponents><AppModuleComponent type="1" schemaName="x_item"/></AppModuleComponents></AppModule>`,
     );
-  const children = [],
-    browsers = [];
-  // Both projects keep their records in the same state folder, next to them.
-  const runtimes = recordedRuntimeOwner(path.join(directory, '.paqvilo', 'mirage', 'sessions.json'), {
-    report: (line) => t.diagnostic(line),
-  });
-  const closeBrowser = async (browser) => {
-    const cdp = await browser.newBrowserCDPSession();
-    await cdp.send('Browser.close').catch((error) => {
-      if (!/closed|disconnected/i.test(error.message)) throw error;
+    const entity = path.join(directory, 'solution', 'Entities', 'x_item', 'Entity.xml');
+    await fs.mkdir(path.dirname(entity), { recursive: true });
+    await fs.writeFile(
+      entity,
+      '<Entity><Name>x_item</Name><EntityInfo><entity Name="x_item"><EntitySetName>x_items</EntitySetName><PrimaryIdAttribute>x_itemid</PrimaryIdAttribute><PrimaryNameAttribute>x_name</PrimaryNameAttribute><attributes><attribute PhysicalName="x_itemid"><Name>x_itemid</Name><Type>primarykey</Type></attribute><attribute PhysicalName="x_name"><Name>x_name</Name><Type>nvarchar</Type></attribute></attributes></entity></EntityInfo></Entity>',
+    );
+    const configuration = JSON.stringify({
+      version: 2,
+      runtime: { kind: 'model-driven', defaultApp: APP },
+      simulation: { level: 'dry-run' },
+      solutions: [{ id: 'core', path: './solution' }],
     });
-  };
-  ownedFixture(t).add(async () => {
-    // While development still runs: a development command that ends removes its own record.
-    await runtimes.note();
-    for (const browser of browsers) if (browser.isConnected()) await closeBrowser(browser).catch(() => {});
-    for (const entry of children)
-      if (entry.child.exitCode === null) {
-        entry.child.kill('SIGTERM');
-        await Promise.race([entry.exited, new Promise((resolve) => setTimeout(resolve, 10000))]);
-      }
-    await runtimes.note();
-    await commands(project, 'stop').catch(() => {});
-    await commands(sibling, 'stop').catch(() => {});
-    try {
-      await runtimes.end();
-    } finally {
-      // Windows can keep files of an exited browser profile busy for a few seconds.
-      await fs.rm(directory, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES });
-    }
-  });
-  const siblingRuntime = await commands(sibling, 'start', '--port', '0');
-  const develop = async () => {
-    const { debugPort, child, exited, url } = await startOnFreePort(async (debugPort) => {
-      const child = spawn(
-        process.execPath,
-        [
-          cli,
-          'mirage',
-          'dev',
-          '--project',
-          project,
-          '--port',
-          '0',
-          '--browser',
-          browserChannel(),
-          '--profile',
-          'dedicated-fixture',
-          '--debug-port',
-          String(debugPort),
-          // Ownership and closing do not depend on a visible window; headed adds only a slower shutdown.
-          '--headless',
-        ],
-        { cwd: directory, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] },
+    await fs.writeFile(project, configuration);
+    await fs.writeFile(sibling, configuration);
+    const commands = async (file, command, ...args) =>
+      JSON.parse(
+        (
+          await execute(process.execPath, [cli, 'mirage', command, '--project', file, '--json', ...args], {
+            cwd: directory,
+            windowsHide: true,
+            signal: t.signal,
+          })
+        ).stdout,
       );
-      const exited = new Promise((resolve, reject) => {
-        child.once('exit', (code, signal) => resolve({ code, signal }));
-        child.once('error', reject);
-      });
-      children.push({ child, exited });
-      // The line is printed after the debugging port is confirmed and just before the first navigation.
-      const [, url] = await announced(child, /Opening (http:\/\/127\.0\.0\.1:\d+)\//);
-      return { debugPort, child, exited, url };
+    const children = [],
+      browsers = [];
+    // Both projects keep their records in the same state folder, next to them.
+    const runtimes = recordedRuntimeOwner(path.join(directory, '.paqvilo', 'mirage', 'sessions.json'), {
+      report: (line) => t.diagnostic(line),
     });
-    const browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`);
-    browsers.push(browser);
-    const [context] = browser.contexts();
-    const page = context.pages()[0] ?? (await context.waitForEvent('page'));
-    await page.waitForURL((address) => address.href.startsWith(url + '/main.aspx'));
-    await page.getByLabel('Application', { exact: true }).waitFor();
-    await page.waitForFunction(() =>
-      document.querySelector('#apps')?.textContent.includes('Dedicated local workspace'),
-    );
-    assert.equal(await page.getByLabel('Application', { exact: true }).textContent(), 'Dedicated local workspace');
-    await page.locator('#content table').waitFor();
-    assert.equal(await page.getByRole('link', { name: 'Project setup', exact: true }).count(), 0);
-    return { url, browser, child, exited };
-  };
-  // The project's own records say whether its runtime runs; its released port may already answer for another process.
-  const running = () => runningRuntimeOrigins(['--project', project], { cwd: directory, signal: t.signal });
-  const owned = await develop();
-  assert.ok((await running()).includes(owned.url), 'the runtime that dev started is recorded as running');
-  await closeBrowser(owned.browser);
-  assert.deepEqual(await owned.exited, { code: 0, signal: null });
-  assert.ok(!(await running()).includes(owned.url), 'dev stops the runtime it started');
-  assert.equal((await fetch(siblingRuntime.url + '/_sim/api/status')).status, 200);
+    const closeBrowser = async (browser) => {
+      const cdp = await browser.newBrowserCDPSession();
+      await cdp.send('Browser.close').catch((error) => {
+        if (!/closed|disconnected/i.test(error.message)) throw error;
+      });
+    };
+    ownedFixture(t).add(async () => {
+      // While development still runs: a development command that ends removes its own record.
+      await runtimes.note();
+      for (const browser of browsers) if (browser.isConnected()) await closeBrowser(browser).catch(() => {});
+      for (const entry of children)
+        if (entry.child.exitCode === null) {
+          entry.child.kill('SIGTERM');
+          await Promise.race([entry.exited, new Promise((resolve) => setTimeout(resolve, 10000))]);
+        }
+      await runtimes.note();
+      await commands(project, 'stop').catch(() => {});
+      await commands(sibling, 'stop').catch(() => {});
+      try {
+        await runtimes.end();
+      } finally {
+        // Windows can keep files of an exited browser profile busy for a few seconds.
+        await fs.rm(directory, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES });
+      }
+    });
+    const siblingRuntime = await commands(sibling, 'start', '--port', '0');
+    const develop = async () => {
+      const { debugPort, child, exited, url } = await startOnFreePort(async (debugPort) => {
+        const child = spawn(
+          process.execPath,
+          [
+            cli,
+            'mirage',
+            'dev',
+            '--project',
+            project,
+            '--port',
+            '0',
+            '--browser',
+            browserChannel(),
+            '--profile',
+            'dedicated-fixture',
+            '--debug-port',
+            String(debugPort),
+            // Ownership and closing do not depend on a visible window; headed adds only a slower shutdown.
+            '--headless',
+          ],
+          { cwd: directory, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] },
+        );
+        const exited = new Promise((resolve, reject) => {
+          child.once('exit', (code, signal) => resolve({ code, signal }));
+          child.once('error', reject);
+        });
+        children.push({ child, exited });
+        // The line is printed after the debugging port is confirmed and just before the first navigation.
+        const [, url] = await announced(child, /Opening (http:\/\/127\.0\.0\.1:\d+)\//);
+        return { debugPort, child, exited, url };
+      });
+      const browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`);
+      browsers.push(browser);
+      const [context] = browser.contexts();
+      const page = context.pages()[0] ?? (await context.waitForEvent('page'));
+      await page.waitForURL((address) => address.href.startsWith(url + '/main.aspx'));
+      await page.getByLabel('Application', { exact: true }).waitFor();
+      await page.waitForFunction(() =>
+        document.querySelector('#apps')?.textContent.includes('Dedicated local workspace'),
+      );
+      assert.equal(await page.getByLabel('Application', { exact: true }).textContent(), 'Dedicated local workspace');
+      await page.locator('#content table').waitFor();
+      assert.equal(await page.getByRole('link', { name: 'Project setup', exact: true }).count(), 0);
+      return { url, browser, child, exited };
+    };
+    // The project's own records say whether its runtime runs; its released port may already answer for another process.
+    const running = () => runningRuntimeOrigins(['--project', project], { cwd: directory, signal: t.signal });
+    const owned = await develop();
+    assert.ok((await running()).includes(owned.url), 'the runtime that dev started is recorded as running');
+    await closeBrowser(owned.browser);
+    assert.deepEqual(await owned.exited, { code: 0, signal: null });
+    assert.ok(!(await running()).includes(owned.url), 'dev stops the runtime it started');
+    assert.equal((await fetch(siblingRuntime.url + '/_sim/api/status')).status, 200);
 
-  const background = await commands(project, 'start', '--port', '0'),
-    reused = await develop();
-  assert.equal(reused.url, background.url);
-  await closeBrowser(reused.browser);
-  assert.deepEqual(await reused.exited, { code: 0, signal: null });
-  assert.equal((await fetch(background.url + '/_sim/api/status')).status, 200);
-  // The test's teardown ends what this stop leaves running, although it removes the records.
-  await runtimes.note();
-  await commands(project, 'stop');
-  assert.equal((await fetch(siblingRuntime.url + '/_sim/api/status')).status, 200);
-  assert.equal(await fs.readFile(project, 'utf8'), configuration);
-});
+    const background = await commands(project, 'start', '--port', '0'),
+      reused = await develop();
+    assert.equal(reused.url, background.url);
+    await closeBrowser(reused.browser);
+    assert.deepEqual(await reused.exited, { code: 0, signal: null });
+    assert.equal((await fetch(background.url + '/_sim/api/status')).status, 200);
+    // The test's teardown ends what this stop leaves running, although it removes the records.
+    await runtimes.note();
+    await commands(project, 'stop');
+    assert.equal((await fetch(siblingRuntime.url + '/_sim/api/status')).status, 200);
+    assert.equal(await fs.readFile(project, 'utf8'), configuration);
+  },
+);

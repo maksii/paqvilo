@@ -3,9 +3,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { withProcessSlot } from '../mirage/test/process-slots.mjs';
+import { boundedCommand, COMMAND_HANG_GUARD_MS } from './helpers/bounded-command.mjs';
+import { operationBudget } from './helpers/operation-budget.mjs';
 import { tempDir } from './fixture.mjs';
 
 const cli = fileURLToPath(new URL('../mirage/cli.mjs', import.meta.url));
@@ -45,7 +45,7 @@ async function fixture(t) {
   });
   const stateDir = path.join(root, 'state');
   await fs.mkdir(stateDir);
-  return { root, portal, solution, stateDir, run: (...args) => runIn({ root, stateDir }, 'preflight', ...args) };
+  return { root, portal, solution, stateDir, run: (...args) => runIn(t, { root, stateDir }, 'preflight', ...args) };
 }
 
 const env = () =>
@@ -54,27 +54,26 @@ const env = () =>
   );
 // Every run uses an empty state directory and the fixture root as cwd, so a write outside it cannot reach the checkout.
 // Runs are independent and start concurrently; each resolves with its exit status and output.
-const runIn = ({ root, stateDir }, command, ...args) =>
-  withProcessSlot(
-    () =>
-      new Promise((resolve) => {
-        execFile(
-          process.execPath,
-          [cli, command, ...args, ...(command === 'preflight' ? [] : ['--state-dir', stateDir])],
-          { cwd: root, encoding: 'utf8', windowsHide: true, env: env() },
-          (error, stdout, stderr) =>
-            resolve({
-              status: error ? error.code : 0,
-              signal: error?.signal ?? null,
-              killed: error?.killed ?? false,
-              stdout,
-              stderr,
-            }),
-        );
-      }),
+// Every run has its own hang guard, counted from the moment it holds a process slot. Each test declares the finite
+// budget of its runs: on a small loaded host they run one at a time, each slow but none hung, and the lane's 180 s
+// hang guard would otherwise cut the queue.
+const runIn = async (t, { root, stateDir }, command, ...args) => {
+  const { status, error, stdout, stderr } = await boundedCommand(
+    t,
+    process.execPath,
+    [cli, command, ...args, ...(command === 'preflight' ? [] : ['--state-dir', stateDir])],
+    { cwd: root, env: env() },
   );
+  return { status, signal: error?.signal ?? null, killed: error?.killed ?? false, stdout, stderr };
+};
+const commandBatch = (commands) => ({ timeout: operationBudget(commands, COMMAND_HANG_GUARD_MS) });
 
-test('mirage preflight reports a placeholder flow and blocks on it only with --strict or a scenario', async (t) => {
+test(
+  'mirage preflight reports a placeholder flow and blocks on it only with --strict or a scenario',
+  commandBatch(5),
+  placeholderFlow,
+);
+async function placeholderFlow(t) {
   const { root, portal, solution, stateDir, run } = await fixture(t);
   const flowScenario = path.join(root, 'flow-scenario.json'),
     pageScenario = path.join(root, 'page-scenario.json');
@@ -120,9 +119,14 @@ test('mirage preflight reports a placeholder flow and blocks on it only with --s
   );
   assert.doesNotMatch(plain.stdout, /"(url|port|origin)":\s*"?http/);
   assert.deepEqual(await fs.readdir(stateDir), []);
-});
+}
 
-test('a Solution root that fails to load prints its loader message on the blocking solution-source row', async (t) => {
+test(
+  'a Solution root that fails to load prints its loader message on the blocking solution-source row',
+  commandBatch(4),
+  unloadableSolutionRoot,
+);
+async function unloadableSolutionRoot(t) {
   const { root, portal, run } = await fixture(t);
   const unreadable = path.join(root, 'unreadable'),
     empty = path.join(root, 'empty');
@@ -145,16 +149,16 @@ test('a Solution root that fails to load prints its loader message on the blocki
       `${reason}: the text line carries the loader message\n${text.stdout}`,
     );
   }
-});
+}
 
-test('mirage preflight exits 2 on an invocation error', async (t) => {
+test('mirage preflight exits 2 on an invocation error', commandBatch(3), async (t) => {
   const { root, solution, stateDir, run } = await fixture(t);
   const scenario = path.join(root, 'broken.json');
   await fs.writeFile(scenario, JSON.stringify({ requires: 'cloud-flow:*' }));
   const [result, sourceForApi, serve] = await Promise.all([
     run('--runtime', 'dataverse-api', '--solution-root', solution, '--scenario', scenario, '--json'),
     run('--runtime', 'dataverse-api', '--source', solution),
-    runIn({ root, stateDir }, 'serve', '--source', 'preflight', '--invented-flag'),
+    runIn(t, { root, stateDir }, 'serve', '--source', 'preflight', '--invented-flag'),
   ]);
   assert.equal(result.status, 2, result.stdout + result.stderr);
   assert.match(JSON.parse(result.stdout).error.message, /scenario\.id/);

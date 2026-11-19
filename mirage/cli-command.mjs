@@ -1,5 +1,5 @@
 import { registerRuntimeShutdown } from './lib/runtime-shutdown.mjs';
-import { holdStartToken } from '../lense/process-identity.mjs';
+import { holdStartToken, lockHost } from '../lense/process-identity.mjs';
 import { startChannelReporter } from '../lense/start-channel.mjs';
 import fs from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
@@ -821,6 +821,8 @@ Live access uses the selected connected browser identity. Exact parity requires 
             JSON.stringify(
               {
                 pid: process.pid,
+                // The machine this number belongs to: on a shared folder another host must not read it as its own.
+                host: lockHost(),
                 runtime,
                 project: project?.configFile ?? null,
                 sourceDir: null,
@@ -994,6 +996,8 @@ Live access uses the selected connected browser identity. Exact parity requires 
           JSON.stringify(
             {
               pid: process.pid,
+              // The machine this number belongs to: on a shared folder another host must not read it as its own.
+              host: lockHost(),
               project: project.configFile,
               portals: sessions.map(({ portal, simulator, stateFile }) => ({
                 id: portal.id,
@@ -1344,6 +1348,8 @@ Live access uses the selected connected browser identity. Exact parity requires 
                 JSON.stringify(
                   {
                     pid: process.pid,
+                    // The machine this number belongs to: on a shared folder another host must not read it as its own.
+                    host: lockHost(),
                     url: simulator.url,
                     adminUrl: adminEntryOf(simulator),
                     appsUrl: simulator.appsUrl,

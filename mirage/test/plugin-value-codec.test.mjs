@@ -16,6 +16,7 @@ import { pluginValueCases } from './fixtures/plugin-value-cases.mjs';
 import { attachClrSteps } from './fixtures/plugin-pipeline.mjs';
 import { prepareClrRuntime } from '../lib/plugin-clr.mjs';
 import { CLR_SKIP, clrSdk, compileClr, retypeClrRuntime } from './fixtures/clr-sdk.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 const id = '11111111-1111-4111-8111-111111111111',
   other = '22222222-2222-4222-8222-222222222222';
 function storeOf() {
@@ -270,9 +271,10 @@ const specs = (name) => {
     check.replaceAll('((' + element + ')v)', '((' + element + '[])v)[0]'),
   ];
 };
+// Hang guard only: it compiles and runs an original CLR plug-in through the .NET host; on a loaded slow host that is slow, not hung.
 test(
   'original CLR and modifying JavaScript preserve the finite SDK type matrix in both directions',
-  { skip: CLR_SKIP },
+  { skip: CLR_SKIP, timeout: SCENARIO_HANG_GUARD_MS },
   async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-sdk-type-matrix-'));
     t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));

@@ -13,6 +13,7 @@ import { loadConfig } from '../lense/config.mjs';
 import { mirageReadiness } from '../lense/commands/mirage.mjs';
 import { toolkitCommandHint, runToolkit as run } from './toolkit-cli.mjs';
 import { runMirage } from './helpers/mirage-in-process.mjs';
+import { SCENARIO_HANG_GUARD_MS } from './helpers/bounded-command.mjs';
 // Reads of one catalogue state run concurrently: each CLI process costs a quarter of a second to start.
 const runAll = (...commands) => Promise.all(commands.map((args) => run(...args)));
 const json = (result) => {
@@ -67,80 +68,85 @@ function workspace(t) {
   return { work, config, write };
 }
 
-test('mirage.observed passes through the catalogue to list and doctor; a malformed block is reported', async (t) => {
-  withoutToolkitEnvironment(t);
-  const { config, write } = workspace(t);
-  write({ site: { observed: OBSERVED }, plain: {} });
-  assert.deepEqual((await loadConfig({ config, site: 'site', env: 'dev' })).mirageConfig.observed, OBSERVED);
-  assert.equal((await loadConfig({ config, site: 'plain', env: 'dev' })).mirageConfig.observed, null);
+// Hang guard only: it runs real CLI commands and the runtimes they start; on a loaded slow host that is slow, not hung.
+test(
+  'mirage.observed passes through the catalogue to list and doctor; a malformed block is reported',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    withoutToolkitEnvironment(t);
+    const { config, write } = workspace(t);
+    write({ site: { observed: OBSERVED }, plain: {} });
+    assert.deepEqual((await loadConfig({ config, site: 'site', env: 'dev' })).mirageConfig.observed, OBSERVED);
+    assert.equal((await loadConfig({ config, site: 'plain', env: 'dev' })).mirageConfig.observed, null);
 
-  const [list, printed] = await runAll(
-    ['list', '--config', config, '--json'],
-    ['doctor', '--config', config, '--site', 'site'],
-  );
-  const byId = Object.fromEntries(json(list).sites.map((site) => [site.name, site]));
-  assert.deepEqual(byId.site.mirage.resolved.observed, OBSERVED);
-  assert.equal(byId.plain.mirage.resolved.observed, null);
+    const [list, printed] = await runAll(
+      ['list', '--config', config, '--json'],
+      ['doctor', '--config', config, '--site', 'site'],
+    );
+    const byId = Object.fromEntries(json(list).sites.map((site) => [site.name, site]));
+    assert.deepEqual(byId.site.mirage.resolved.observed, OBSERVED);
+    assert.equal(byId.plain.mirage.resolved.observed, null);
 
-  const readiness = await mirageOf(config, 'site');
-  assert.deepEqual([readiness.observed, readiness.observedSource], [OBSERVED, 'catalogue']);
-  assert.deepEqual(readiness.errors, []);
-  assert.match(
-    printed.stdout,
-    /mirage observed \(catalogue\): loginPath \/SignIn, webApiInnerError all-errors \(evidence: notes\/observed-signin\.json\)/,
-  );
-  const plain = await mirageOf(config, 'plain');
-  assert.deepEqual([plain.observed, plain.observedSource], [null, null]);
+    const readiness = await mirageOf(config, 'site');
+    assert.deepEqual([readiness.observed, readiness.observedSource], [OBSERVED, 'catalogue']);
+    assert.deepEqual(readiness.errors, []);
+    assert.match(
+      printed.stdout,
+      /mirage observed \(catalogue\): loginPath \/SignIn, webApiInnerError all-errors \(evidence: notes\/observed-signin\.json\)/,
+    );
+    const plain = await mirageOf(config, 'plain');
+    assert.deepEqual([plain.observed, plain.observedSource], [null, null]);
 
-  // Observed response headers are validated (names lowercased) and printed per response kind.
-  write({
-    headers: {
-      observed: {
-        headers: {
-          page: { 'X-Content-Type-Options': 'nosniff' },
-          webFile: { 'access-control-allow-origin': 'https://embed.example.com' },
+    // Observed response headers are validated (names lowercased) and printed per response kind.
+    write({
+      headers: {
+        observed: {
+          headers: {
+            page: { 'X-Content-Type-Options': 'nosniff' },
+            webFile: { 'access-control-allow-origin': 'https://embed.example.com' },
+          },
+          evidence: 'notes/headers.json',
         },
-        evidence: 'notes/headers.json',
       },
-    },
-  });
-  const headersPrinted = await run('doctor', '--config', config, '--site', 'headers');
-  const headers = await mirageOf(config, 'headers');
-  assert.deepEqual(headers.observed, {
-    headers: {
-      page: { 'x-content-type-options': 'nosniff' },
-      webFile: { 'access-control-allow-origin': 'https://embed.example.com' },
-    },
-    evidence: 'notes/headers.json',
-  });
-  assert.match(
-    headersPrinted.stdout,
-    /mirage observed \(catalogue\): headers \(page x-content-type-options=nosniff; webFile access-control-allow-origin=https:\/\/embed\.example\.com\) \(evidence: notes\/headers\.json\)/,
-  );
+    });
+    const headersPrinted = await run('doctor', '--config', config, '--site', 'headers');
+    const headers = await mirageOf(config, 'headers');
+    assert.deepEqual(headers.observed, {
+      headers: {
+        page: { 'x-content-type-options': 'nosniff' },
+        webFile: { 'access-control-allow-origin': 'https://embed.example.com' },
+      },
+      evidence: 'notes/headers.json',
+    });
+    assert.match(
+      headersPrinted.stdout,
+      /mirage observed \(catalogue\): headers \(page x-content-type-options=nosniff; webFile access-control-allow-origin=https:\/\/embed\.example\.com\) \(evidence: notes\/headers\.json\)/,
+    );
 
-  // An observation without its evidence, or with a value the Mirage does not know, is a
-  // Mirage configuration error; a block that is not an object is rejected with the catalogue.
-  write({
-    site: { observed: { loginPath: '/SignIn' } },
-    other: { observed: { webApiInnerError: 'sometimes', evidence: 'notes/x.json' } },
-  });
-  const missing = await mirageOf(config, 'site');
-  assert.equal(missing.ready, false);
-  assert.match(
-    missing.errors.join('\n'),
-    /sites\.site\.mirage\.observed\.evidence must name the observation behind loginPath/,
-  );
-  const unknown = await mirageOf(config, 'other');
-  assert.match(
-    unknown.errors.join('\n'),
-    /sites\.other\.mirage\.observed\.webApiInnerError must be all-errors or dataverse-errors/,
-  );
-  write({ site: { observed: '/SignIn' } });
-  await assert.rejects(
-    loadConfig({ config, site: 'site', env: 'dev' }),
-    /sites\.site\.mirage\.observed must be an object/,
-  );
-});
+    // An observation without its evidence, or with a value the Mirage does not know, is a
+    // Mirage configuration error; a block that is not an object is rejected with the catalogue.
+    write({
+      site: { observed: { loginPath: '/SignIn' } },
+      other: { observed: { webApiInnerError: 'sometimes', evidence: 'notes/x.json' } },
+    });
+    const missing = await mirageOf(config, 'site');
+    assert.equal(missing.ready, false);
+    assert.match(
+      missing.errors.join('\n'),
+      /sites\.site\.mirage\.observed\.evidence must name the observation behind loginPath/,
+    );
+    const unknown = await mirageOf(config, 'other');
+    assert.match(
+      unknown.errors.join('\n'),
+      /sites\.other\.mirage\.observed\.webApiInnerError must be all-errors or dataverse-errors/,
+    );
+    write({ site: { observed: '/SignIn' } });
+    await assert.rejects(
+      loadConfig({ config, site: 'site', env: 'dev' }),
+      /sites\.site\.mirage\.observed must be an object/,
+    );
+  },
+);
 
 test('mirage init records observed behaviour on the project portal, and the project file then applies', async (t) => {
   const { work, config, write } = workspace(t);

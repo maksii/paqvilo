@@ -24,7 +24,11 @@ import { LENSE_OPTIONS, parseOptions } from '../../lense/cli-options.mjs';
 import { failureDocument, jsonEnvelope } from '../../lense/cli-envelope.mjs';
 import { newStartIdentity } from '../../lense/process-identity.mjs';
 import { START_CHANNEL_ENV, startChannelReporter } from '../../lense/start-channel.mjs';
-import { makeTemporaryDirectory, ownedFixture } from '../../mirage/testing/owned-fixture.mjs';
+import {
+  makeTemporaryDirectory,
+  makeTemporaryDirectorySync,
+  ownedFixture,
+} from '../../mirage/testing/owned-fixture.mjs';
 import { FILES } from '../fixture.mjs';
 
 export const cli = fileURLToPath(new URL('../../bin/paqvilo.mjs', import.meta.url));
@@ -349,11 +353,34 @@ const inTurn = (run) => {
 };
 
 /**
+ * Where a command runs when its test names no directory: an empty directory of this test process, never the toolkit
+ * checkout the tests are run from. A start run from a project folder notes its record folder in that folder's
+ * `.paqvilo` and every status and stop run there reads the noted folders (lense/commands/mirage.mjs recordFolders). In
+ * the checkout that note is shared by every test process, each with a process table of its own whose PIDs start at
+ * the same number: the stop of one process took the runtimes another had recorded for exited and removed their records.
+ */
+let ownDirectory = null;
+function neutralDirectory() {
+  if (!ownDirectory) {
+    ownDirectory = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-in-process-'));
+    process.once('exit', () => {
+      // At exit nothing can report a failure: a folder Windows still holds open stays in the temporary folder.
+      try {
+        fsSync.rmSync(ownDirectory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+      } catch {
+        /* left for the system's temporary-folder cleanup */
+      }
+    });
+  }
+  return ownDirectory;
+}
+
+/**
  * Runs `paqvilo <argv>` (a Mirage lifecycle command: `['mirage', action, ...options]`) in this process from `cwd`,
  * with the toolkit's settings removed from the environment as a clean shell has none, and returns what the command
  * line would: its exit status, standard output and standard error. `host` is the process table (runtimeHost).
  */
-export function runMirage(argv, { cwd = process.cwd(), host } = {}) {
+export function runMirage(argv, { cwd = neutralDirectory(), host } = {}) {
   return inTurn(async () => {
     assert.equal(argv[0], 'mirage', 'the in-process runner runs Mirage lifecycle commands');
     const stdout = [],

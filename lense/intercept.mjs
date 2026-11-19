@@ -39,6 +39,7 @@ const CDP_RELEASE_MS = 5_000;
 function installLateDraftTracker(slot, origins, binding) {
   if (window !== window.top || !origins.includes(location.origin) || window[slot]) return; // NOSONAR: preserve the page window receiver and binding
   let changed = false,
+    cancelled = false,
     pending = null;
   const navigation = window.navigation;
   const nativeStop = window.stop;
@@ -77,6 +78,7 @@ function installLateDraftTracker(slot, origins, binding) {
     changed = true;
     if (!pending) return;
     clear();
+    cancelled = true;
     // Abort the owned provisional navigation in this same browser turn before
     // the accepted edit can be replaced by its response. Let the edit proceed.
     stop();
@@ -97,6 +99,8 @@ function installLateDraftTracker(slot, origins, binding) {
     configurable: true,
     value: Object.freeze({
       dirty: () => changed,
+      // An accepted edit cancelled the owned repair. Read over DevTools, because the notification can be lost.
+      cancelled: () => cancelled,
       refreshBinding() {
         // A new execution context can initialize this early script before its
         // CDP binding is installed. Capture the admitted function before inspection,
@@ -269,6 +273,7 @@ export async function interceptOrigins(
     if (record.late) record.page.off('domcontentloaded', record.late);
     record.cdp.off('Fetch.requestPaused', record.onPaused);
     if (record.onDraftSignal) record.cdp.off('Runtime.bindingCalled', record.onDraftSignal);
+    for (const [name, listener] of record.repairListeners ?? []) record.cdp.off(name, listener);
     record.closing = (async () => {
       // Each DevTools answer is bounded: an unanswered command must not keep the release waiting.
       const step = async (label, action) => {
@@ -370,6 +375,19 @@ export async function interceptOrigins(
         event,
         isMainDocument,
         onFulfilled: (proof) => record.attachment?.publishProvenance?.(event, proof),
+        // A refusal while this tab is released is part of releasing it, not a tab failure.
+        onAnswerRejected: (method, error) =>
+          !stopped &&
+          !record.closed &&
+          diagnose(
+            Object.assign(
+              new Error(
+                `The browser refused ${method} for a paused ${RESOURCE_TYPES[event.resourceType] ?? 'other'} request: ${error.message}. The request was failed so the tab does not wait for it.`,
+                { cause: error },
+              ),
+              { scope: 'target', phase: method },
+            ),
+          ),
       });
       activeRoutes.add(route);
       record.routes.add(route);
@@ -417,24 +435,63 @@ export async function interceptOrigins(
       }
     };
     const configure = (method, params) => setupStep(method, () => cdp.send(method, params));
+    // Every initial-document warning of this tab goes through one latch: one tab, at most one warning.
+    const warnOnce = () => {
+      if (record.draftWarningSent) return;
+      record.draftWarningSent = true;
+      reloadRequired();
+    };
     try {
       mainFrameId = (await configure('Page.getFrameTree')).frameTree.frame.id;
       record.draftSlot = '__paqviloLateDraft_' + randomUUID().replaceAll('-', '');
       record.draftBinding = record.draftSlot + 'Changed';
+      // A cancellation reported after the repaired document committed belongs to a replaced document.
+      const warnCancelled = () => {
+        if (stopped || record.closed || record.repairCommitted || !matches(page.url())) return;
+        warnOnce();
+      };
       record.onDraftSignal = (event) => {
-        if (
-          !stopped &&
-          !record.closed &&
-          event.name === record.draftBinding &&
-          event.payload === 'cancelled' &&
-          !record.draftWarningSent &&
-          matches(page.url())
-        ) {
-          record.draftWarningSent = true;
-          reloadRequired();
-        }
+        if (event.name === record.draftBinding && event.payload === 'cancelled') warnCancelled();
       };
       cdp.on('Runtime.bindingCalled', record.onDraftSignal);
+      // The cancellation notification and the navigation it cancels travel separately. While a cancelled repair
+      // that has already been answered moves the DevTools session between documents, Chromium can drop the
+      // notification. The tracker keeps the cancellation, and it is read once the repair stops loading or the
+      // document's main context is reported again.
+      const readCancellation = async () => {
+        if (!record.repairPending || record.draftWarningSent || stopped || record.closed) return;
+        const answer = await cdp
+          .send('Runtime.evaluate', {
+            expression: `window[${JSON.stringify(record.draftSlot)}]?.cancelled?.() === true`,
+            returnByValue: true,
+          })
+          .catch(() => null);
+        if (answer?.result?.value === true) warnCancelled();
+      };
+      record.repairListeners = [
+        [
+          'Page.frameStoppedLoading',
+          ({ frameId }) => {
+            if (frameId === mainFrameId) void readCancellation();
+          },
+        ],
+        [
+          'Runtime.executionContextCreated',
+          ({ context }) => {
+            if (context?.auxData?.isDefault && context.auxData.frameId === mainFrameId) void readCancellation();
+          },
+        ],
+        [
+          // A committed document replaces the tracker; its navigation was intercepted, so no warning is owed.
+          'Page.frameNavigated',
+          ({ frame }) => {
+            if (frame?.id !== mainFrameId || !record.repairPending) return;
+            record.repairPending = false;
+            record.repairCommitted = true;
+          },
+        ],
+      ];
+      for (const [name, listener] of record.repairListeners) cdp.on(name, listener);
       const draftSource = `(${installLateDraftTracker.toString()})(${JSON.stringify(record.draftSlot)},${JSON.stringify([...allowed])},${JSON.stringify(record.draftBinding)})`;
       await configure('Page.enable');
       await configure('Runtime.enable');
@@ -532,7 +589,7 @@ export async function interceptOrigins(
           return;
         if (!objectId) {
           lateDone = true;
-          return reloadRequired();
+          return warnOnce();
         }
         // A loader admitted after the initial about:blank setup can have lost
         // its Runtime binding during the context transition. Re-establish this
@@ -542,6 +599,8 @@ export async function interceptOrigins(
         if (stopped || record.closed || sawDocument || page.isClosed()) return;
         // A late popup can be a POST result. Assign a new GET URL, never replay
         // that submission. A replaced loader cannot use this document handle.
+        // Set before the call: an edit can cancel the repair before its answer arrives.
+        record.repairPending = true;
         const result = await configure('Runtime.callFunctionOn', {
           objectId,
           functionDeclaration: repairLateDocument.toString(),
@@ -549,17 +608,18 @@ export async function interceptOrigins(
           returnByValue: true,
         });
         if (result.result?.value === 'reloading') lateDone = true;
+        else record.repairPending = false;
         if (
           (result.exceptionDetails || !['reloading', 'superseded'].includes(result.result?.value)) &&
           (await stillCurrent())
         ) {
           lateDone = true;
-          reloadRequired();
+          warnOnce();
         }
       } catch {
         if (await stillCurrent()) {
           lateDone = true;
-          reloadRequired();
+          warnOnce();
         }
       } finally {
         if (objectId) cdp.send('Runtime.releaseObject', { objectId }).catch(() => {});
@@ -624,7 +684,7 @@ export async function interceptOrigins(
   }
 }
 
-function makeRoute({ cdp, context, page, event, isMainDocument, onFulfilled }) {
+function makeRoute({ cdp, context, page, event, isMainDocument, onFulfilled, onAnswerRejected }) {
   const { requestId, request } = event;
   let fetched = false,
     headersChanged = false;
@@ -633,10 +693,20 @@ function makeRoute({ cdp, context, page, event, isMainDocument, onFulfilled }) {
   const send = (method, params) => {
     if (route.answered) return Promise.resolve(false);
     route.answered = true;
-    // the tab may have moved on or closed; nothing is waiting for the answer then
     return cdp.send(method, { requestId, ...params }).then(
       () => true,
-      () => false,
+      async (error) => {
+        // The tab may have moved on or closed; nothing is waiting for the answer then. A request that still
+        // exists would stay paused until interception stops: fail it, and report it only when it was still there.
+        if (method !== 'Fetch.failRequest') {
+          const failed = await cdp.send('Fetch.failRequest', { requestId, errorReason: 'Failed' }).then(
+            () => true,
+            () => false,
+          );
+          if (failed) onAnswerRejected?.(method, error);
+        }
+        return false;
+      },
     );
   };
   /** The body the browser sends with the request, or undefined. */

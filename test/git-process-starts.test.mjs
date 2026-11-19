@@ -11,6 +11,7 @@ import { OverlaySession } from '../lense/session.mjs';
 import { GitBaseline, gitDirectories, gitMarkerExists } from '../lense/git.mjs';
 import { watchSources } from '../lense/commands/dev.mjs';
 import { createFixture, SITE, tempDirSync } from './fixture.mjs';
+import { SCENARIO_HANG_GUARD_MS } from './helpers/bounded-command.mjs';
 
 const APP = 'web-files/app.js';
 const CSS = 'web-pages/home/content-pages/Home.en-US.webpage.custom_css.css';
@@ -307,94 +308,104 @@ async function followedBaseline(dir, spec, file, oracle = () => commitOf(dir, sp
   return { baseline, moved };
 }
 
-test('a followed HEAD baseline is the commit Git names after every way HEAD can move', async (t) => {
-  const fx = fixture(t);
-  const app = fx.file(APP);
-  const branch = git(fx.dir, 'rev-parse', '--abbrev-ref', 'HEAD');
-  const { baseline, moved } = await followedBaseline(fx.dir, 'HEAD', app);
-  const starts = gitStarts(t);
-  const commit = (text) => {
-    fx.write(APP, text);
-    fx.commit();
-  };
-  await moved('start');
-  assert.deepEqual(await starts.during(() => baseline.changedFilesAsync({ files: [app] })), ['diff']);
-  commit('window.edited = 1;');
-  await moved('commit');
-  git(fx.dir, 'switch', '-q', '-c', 'topic');
-  commit('window.edited = 2;');
-  await moved('commit on a new branch');
-  git(fx.dir, 'switch', '-q', branch);
-  await moved('checkout of the first branch');
-  git(fx.dir, 'checkout', '-q', '--detach', 'topic');
-  await moved('detached HEAD');
-  git(fx.dir, 'switch', '-q', branch);
-  git(fx.dir, 'pack-refs', '--all');
-  await moved('packed refs');
-  git(fx.dir, 'merge', '-q', '--ff-only', 'topic');
-  await moved('fast-forward of a packed branch');
-  git(fx.dir, 'reset', '-q', '--hard', 'HEAD~1');
-  await moved('hard reset');
-  git(fx.dir, 'update-ref', '-d', `refs/heads/${branch}`);
-  await moved('branch deleted (unborn HEAD)');
-  assert.equal(baseline.available, false);
-  git(fx.dir, 'update-ref', `refs/heads/${branch}`, 'topic');
-  await moved('branch recreated');
-  assert.equal(baseline.available, true);
-  // The first save after the baseline moved lists the paths of the new commit once; the next is one process again.
-  const scoped = () => baseline.changedFilesAsync({ files: [app] });
-  assert.deepEqual((await starts.during(scoped)).sort(), ['diff', 'ls-tree']);
-  assert.deepEqual(await starts.during(scoped), ['diff']);
-});
+// Hang guard only: one scenario of dozens of Git processes, one after another, over one repository.
+test(
+  'a followed HEAD baseline is the commit Git names after every way HEAD can move',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const fx = fixture(t);
+    const app = fx.file(APP);
+    const branch = git(fx.dir, 'rev-parse', '--abbrev-ref', 'HEAD');
+    const { baseline, moved } = await followedBaseline(fx.dir, 'HEAD', app);
+    const starts = gitStarts(t);
+    const commit = (text) => {
+      fx.write(APP, text);
+      fx.commit();
+    };
+    await moved('start');
+    assert.deepEqual(await starts.during(() => baseline.changedFilesAsync({ files: [app] })), ['diff']);
+    commit('window.edited = 1;');
+    await moved('commit');
+    git(fx.dir, 'switch', '-q', '-c', 'topic');
+    commit('window.edited = 2;');
+    await moved('commit on a new branch');
+    git(fx.dir, 'switch', '-q', branch);
+    await moved('checkout of the first branch');
+    git(fx.dir, 'checkout', '-q', '--detach', 'topic');
+    await moved('detached HEAD');
+    git(fx.dir, 'switch', '-q', branch);
+    git(fx.dir, 'pack-refs', '--all');
+    await moved('packed refs');
+    git(fx.dir, 'merge', '-q', '--ff-only', 'topic');
+    await moved('fast-forward of a packed branch');
+    git(fx.dir, 'reset', '-q', '--hard', 'HEAD~1');
+    await moved('hard reset');
+    git(fx.dir, 'update-ref', '-d', `refs/heads/${branch}`);
+    await moved('branch deleted (unborn HEAD)');
+    assert.equal(baseline.available, false);
+    git(fx.dir, 'update-ref', `refs/heads/${branch}`, 'topic');
+    await moved('branch recreated');
+    assert.equal(baseline.available, true);
+    // The first save after the baseline moved lists the paths of the new commit once; the next is one process again.
+    const scoped = () => baseline.changedFilesAsync({ files: [app] });
+    assert.deepEqual((await starts.during(scoped)).sort(), ['diff', 'ls-tree']);
+    assert.deepEqual(await starts.during(scoped), ['diff']);
+  },
+);
 
-test('scoped scans of a followed baseline list what a full Git scan lists for index and work tree changes', async (t) => {
-  const fx = fixture(t);
-  const app = fx.file(APP);
-  const original = fx.read(APP);
-  const baseline = new GitBaseline(fx.dir, 'HEAD');
-  baseline.followRepository(await gitDirectories(fx.dir));
-  await baseline.changedFilesAsync();
-  // The oracle is pinned to the same commit and scans everything with both Git listings each time.
-  const oracle = new GitBaseline(fx.dir, baseline.commit);
-  const starts = gitStarts(t);
-  const same = async (step, files, commands) => {
-    let seen;
-    const started = await starts.during(async () => {
-      seen = await baseline.changedFilesAsync({ files });
-    });
-    assert.deepEqual([...seen].sort(), [...oracle.changedFiles({ refreshRef: false })].sort(), step);
-    if (commands) assert.deepEqual(started.sort(), commands, `${step}: Git processes`);
-    return seen;
-  };
-  fx.write(APP, 'window.edited = 1;');
-  assert.ok((await same('edit', [app], ['diff', 'ls-tree'])).has(app));
-  git(fx.dir, 'stash', '-q');
-  assert.equal((await same('stash', [app], ['diff'])).has(app), false);
-  git(fx.dir, 'stash', 'pop', '-q');
-  git(fx.dir, 'add', APP);
-  assert.ok((await same('staged edit', [app], ['diff'])).has(app));
-  git(fx.dir, 'rm', '-q', '--cached', APP);
-  assert.ok((await same('a file of the commit that left the index', [app], ['diff'])).has(app));
-  fx.write(APP, original);
-  git(fx.dir, 'add', APP);
-  assert.equal((await same('staged back to the committed text', [app], ['diff'])).has(app), false);
-  const staged = fx.file('web-files/staged-new.js');
-  fx.write('web-files/staged-new.js', 'new');
-  git(fx.dir, 'add', 'web-files/staged-new.js');
-  assert.ok((await same('new file in the index', [staged], ['diff', 'ls-files'])).has(staged));
-  const ignored = fx.file('web-files/ignored.js');
-  fs.writeFileSync(path.join(fx.dir, '.gitignore'), 'web-files/ignored.js\n');
-  fx.write('web-files/ignored.js', 'ignored');
-  assert.equal((await same('ignored new file', [ignored, path.join(fx.dir, '.gitignore')])).has(ignored), false);
-  // A file of the commit replaced by a folder: what is saved below it is untracked.
-  fs.rmSync(app);
-  fs.mkdirSync(app);
-  fs.writeFileSync(path.join(app, 'inner.js'), 'inner');
-  assert.ok((await same('file replaced by a folder', [app], ['diff', 'ls-files'])).has(path.join(app, 'inner.js')));
-  fs.rmSync(app, { recursive: true });
-  fx.write(APP, original);
-  assert.equal((await same('folder replaced by the file', [app], ['diff'])).has(app), false);
-});
+// Hang guard only: it drives a runtime, the CLI or child processes through this file's fixtures; on a loaded slow host that is slow, not hung.
+test(
+  'scoped scans of a followed baseline list what a full Git scan lists for index and work tree changes',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const fx = fixture(t);
+    const app = fx.file(APP);
+    const original = fx.read(APP);
+    const baseline = new GitBaseline(fx.dir, 'HEAD');
+    baseline.followRepository(await gitDirectories(fx.dir));
+    await baseline.changedFilesAsync();
+    // The oracle is pinned to the same commit and scans everything with both Git listings each time.
+    const oracle = new GitBaseline(fx.dir, baseline.commit);
+    const starts = gitStarts(t);
+    const same = async (step, files, commands) => {
+      let seen;
+      const started = await starts.during(async () => {
+        seen = await baseline.changedFilesAsync({ files });
+      });
+      assert.deepEqual([...seen].sort(), [...oracle.changedFiles({ refreshRef: false })].sort(), step);
+      if (commands) assert.deepEqual(started.sort(), commands, `${step}: Git processes`);
+      return seen;
+    };
+    fx.write(APP, 'window.edited = 1;');
+    assert.ok((await same('edit', [app], ['diff', 'ls-tree'])).has(app));
+    git(fx.dir, 'stash', '-q');
+    assert.equal((await same('stash', [app], ['diff'])).has(app), false);
+    git(fx.dir, 'stash', 'pop', '-q');
+    git(fx.dir, 'add', APP);
+    assert.ok((await same('staged edit', [app], ['diff'])).has(app));
+    git(fx.dir, 'rm', '-q', '--cached', APP);
+    assert.ok((await same('a file of the commit that left the index', [app], ['diff'])).has(app));
+    fx.write(APP, original);
+    git(fx.dir, 'add', APP);
+    assert.equal((await same('staged back to the committed text', [app], ['diff'])).has(app), false);
+    const staged = fx.file('web-files/staged-new.js');
+    fx.write('web-files/staged-new.js', 'new');
+    git(fx.dir, 'add', 'web-files/staged-new.js');
+    assert.ok((await same('new file in the index', [staged], ['diff', 'ls-files'])).has(staged));
+    const ignored = fx.file('web-files/ignored.js');
+    fs.writeFileSync(path.join(fx.dir, '.gitignore'), 'web-files/ignored.js\n');
+    fx.write('web-files/ignored.js', 'ignored');
+    assert.equal((await same('ignored new file', [ignored, path.join(fx.dir, '.gitignore')])).has(ignored), false);
+    // A file of the commit replaced by a folder: what is saved below it is untracked.
+    fs.rmSync(app);
+    fs.mkdirSync(app);
+    fs.writeFileSync(path.join(app, 'inner.js'), 'inner');
+    assert.ok((await same('file replaced by a folder', [app], ['diff', 'ls-files'])).has(path.join(app, 'inner.js')));
+    fs.rmSync(app, { recursive: true });
+    fx.write(APP, original);
+    assert.equal((await same('folder replaced by the file', [app], ['diff'])).has(app), false);
+  },
+);
 
 /** Drain independent reads before any rejection can let fixture cleanup or the next mutation start. */
 async function readBaselinesTogether(pending) {
@@ -404,60 +415,65 @@ async function readBaselinesTogether(pending) {
   return results.map((result) => result.value);
 }
 
-test('followed branch, tag and merge-base baselines move with their refs and with HEAD', async (t) => {
-  const timings = gitPhaseTimings(t);
-  activeGitTimings = timings;
-  const starts = gitStarts(t, timings);
-  try {
-    const fx = fixture(t);
-    const app = fx.file(APP);
-    git(fx.dir, 'branch', 'deployed');
-    timings.phase('initial baselines');
-    const [named, forked] = await readBaselinesTogether([
-      followedBaseline(fx.dir, 'deployed', app),
-      followedBaseline(fx.dir, 'merge-base:deployed', app, () => resolved(fx.dir, 'merge-base', 'HEAD', 'deployed')),
-    ]);
-    const both = async (step) => {
-      timings.phase(step);
-      await readBaselinesTogether([named.moved(step), forked.moved(step)]);
-    };
-    const commit = (text) => {
-      fx.write(APP, text);
-      fx.commit();
-    };
-    timings.phase('commit on the working branch');
-    commit('window.local = 1;');
-    await both('commit on the working branch');
-    assert.deepEqual(await starts.during(() => named.baseline.changedFilesAsync({ files: [app] })), ['diff']);
-    assert.deepEqual(await starts.during(() => forked.baseline.changedFilesAsync({ files: [app] })), ['diff']);
-    timings.phase('branch moved to HEAD');
-    git(fx.dir, 'branch', '-f', 'deployed', 'HEAD');
-    await both('branch moved to HEAD');
-    timings.phase('packed branch moved back');
-    git(fx.dir, 'pack-refs', '--all');
-    commit('window.local = 2;');
-    git(fx.dir, 'branch', '-f', 'deployed', 'HEAD~1');
-    await both('packed branch moved back');
-    // A tag of the same name wins over the branch: Git resolves refs/tags before refs/heads.
-    timings.phase('tag shadows the branch');
-    git(fx.dir, 'tag', 'deployed', 'HEAD');
-    await both('tag shadows the branch');
-    assert.equal(named.baseline.commit, commitOf(fx.dir, 'HEAD'));
-    timings.phase('branch deleted');
-    git(fx.dir, 'tag', '-d', 'deployed');
-    git(fx.dir, 'branch', '-D', 'deployed');
-    await both('branch deleted');
-    assert.equal(named.baseline.available, false);
-    timings.phase('branch recreated');
-    git(fx.dir, 'branch', 'deployed', 'HEAD');
-    await both('branch recreated');
-    assert.equal(named.baseline.available, true);
-    timings.phase('complete');
-  } finally {
-    if (activeGitTimings === timings) activeGitTimings = null;
-    timings.report();
-  }
-});
+// Hang guard only: it drives a runtime, the CLI or child processes through this file's fixtures; on a loaded slow host that is slow, not hung.
+test(
+  'followed branch, tag and merge-base baselines move with their refs and with HEAD',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const timings = gitPhaseTimings(t);
+    activeGitTimings = timings;
+    const starts = gitStarts(t, timings);
+    try {
+      const fx = fixture(t);
+      const app = fx.file(APP);
+      git(fx.dir, 'branch', 'deployed');
+      timings.phase('initial baselines');
+      const [named, forked] = await readBaselinesTogether([
+        followedBaseline(fx.dir, 'deployed', app),
+        followedBaseline(fx.dir, 'merge-base:deployed', app, () => resolved(fx.dir, 'merge-base', 'HEAD', 'deployed')),
+      ]);
+      const both = async (step) => {
+        timings.phase(step);
+        await readBaselinesTogether([named.moved(step), forked.moved(step)]);
+      };
+      const commit = (text) => {
+        fx.write(APP, text);
+        fx.commit();
+      };
+      timings.phase('commit on the working branch');
+      commit('window.local = 1;');
+      await both('commit on the working branch');
+      assert.deepEqual(await starts.during(() => named.baseline.changedFilesAsync({ files: [app] })), ['diff']);
+      assert.deepEqual(await starts.during(() => forked.baseline.changedFilesAsync({ files: [app] })), ['diff']);
+      timings.phase('branch moved to HEAD');
+      git(fx.dir, 'branch', '-f', 'deployed', 'HEAD');
+      await both('branch moved to HEAD');
+      timings.phase('packed branch moved back');
+      git(fx.dir, 'pack-refs', '--all');
+      commit('window.local = 2;');
+      git(fx.dir, 'branch', '-f', 'deployed', 'HEAD~1');
+      await both('packed branch moved back');
+      // A tag of the same name wins over the branch: Git resolves refs/tags before refs/heads.
+      timings.phase('tag shadows the branch');
+      git(fx.dir, 'tag', 'deployed', 'HEAD');
+      await both('tag shadows the branch');
+      assert.equal(named.baseline.commit, commitOf(fx.dir, 'HEAD'));
+      timings.phase('branch deleted');
+      git(fx.dir, 'tag', '-d', 'deployed');
+      git(fx.dir, 'branch', '-D', 'deployed');
+      await both('branch deleted');
+      assert.equal(named.baseline.available, false);
+      timings.phase('branch recreated');
+      git(fx.dir, 'branch', 'deployed', 'HEAD');
+      await both('branch recreated');
+      assert.equal(named.baseline.available, true);
+      timings.phase('complete');
+    } finally {
+      if (activeGitTimings === timings) activeGitTimings = null;
+      timings.report();
+    }
+  },
+);
 
 test('a relative revision is resolved by Git on every scan and a full commit id never again', async (t) => {
   const fx = fixture(t);

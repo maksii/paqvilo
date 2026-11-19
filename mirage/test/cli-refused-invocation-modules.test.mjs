@@ -7,6 +7,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { makeTemporaryDirectory, ownedFixture } from '../testing/owned-fixture.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 
 const tool = (name) => fileURLToPath(new URL(`../${name}.mjs`, import.meta.url));
 // The modules a command needs and a refusal does not (cli.mjs loadCommandModules).
@@ -163,44 +164,49 @@ test('capture-stylesheets refuses more than 32 paths in one line before the runt
 });
 
 // @test-kind contract: mirage/docs/platform-resources.md: a capture reads the portal origin it was given, never a different reference origin kept in the state file
-test('a capture refuses a state file that routes live requests to another origin before it connects a browser', async (t) => {
-  const source = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-cli-capture-state-'));
-  ownedFixture(t).remove(() => fs.rm(source, { recursive: true, force: true }));
-  await fs.writeFile(
-    path.join(source, 'Home.webpage.yml'),
-    'adx_webpageid: home\nadx_name: Invented home\nadx_partialurl: /\n',
-  );
-  const state = path.join(source, 'state.json');
-  const capture = (origin) =>
-    resolvedModules(
-      t,
-      tool('cli'),
-      [
-        'capture-stylesheets',
-        '--stylesheet',
-        '/invented.css',
-        '--source',
-        source,
-        '--origin',
-        origin,
-        '--cdp',
-        'http://127.0.0.1:9',
-        '--state',
-        state,
-      ],
-      [],
+// Hang guard only: it drives a runtime, the CLI or child processes through this file's fixtures; on a loaded slow host that is slow, not hung.
+test(
+  'a capture refuses a state file that routes live requests to another origin before it connects a browser',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const source = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-cli-capture-state-'));
+    ownedFixture(t).remove(() => fs.rm(source, { recursive: true, force: true }));
+    await fs.writeFile(
+      path.join(source, 'Home.webpage.yml'),
+      'adx_webpageid: home\nadx_name: Invented home\nadx_partialurl: /\n',
     );
-  // The first capture creates the state with its origin, then finds no browser at the discard port.
-  const first = await capture('https://first.invalid');
-  assert.match(first.stderr, /Could not connect to the loopback browser debugging endpoint/);
-  const second = await capture('https://second.invalid');
-  assert.equal(second.code, 1);
-  assert.match(
-    second.stderr,
-    /capture-stylesheets: the state file .+ routes live requests to https:\/\/first\.invalid, not https:\/\/second\.invalid; pass --state with a state file for this portal\./,
-  );
-  assert.doesNotMatch(second.stderr, /Could not connect/);
-});
+    const state = path.join(source, 'state.json');
+    const capture = (origin) =>
+      resolvedModules(
+        t,
+        tool('cli'),
+        [
+          'capture-stylesheets',
+          '--stylesheet',
+          '/invented.css',
+          '--source',
+          source,
+          '--origin',
+          origin,
+          '--cdp',
+          'http://127.0.0.1:9',
+          '--state',
+          state,
+        ],
+        [],
+      );
+    // The first capture creates the state with its origin, then finds no browser at the discard port.
+    const first = await capture('https://first.invalid');
+    assert.match(first.stderr, /Could not connect to the loopback browser debugging endpoint/);
+    const second = await capture('https://second.invalid');
+    assert.equal(second.code, 1);
+    assert.match(
+      second.stderr,
+      /capture-stylesheets: the state file .+ routes live requests to https:\/\/first\.invalid, not https:\/\/second\.invalid; pass --state with a state file for this portal\./,
+    );
+    assert.doesNotMatch(second.stderr, /Could not connect/);
+  },
+);
 
 // @test-kind contract: docs/cli.md: a Mirage command keeps the toolkit's JSON codes for a missing catalogue, an unknown command and a repeated option, through paqvilo mirage and mirage/cli.mjs alike
 test('a Mirage command in a folder without a catalogue reports the toolkit codes in its JSON envelope', async (t) => {

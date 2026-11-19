@@ -136,15 +136,30 @@ function startedRuntimes(answer) {
  * ownership records — the check `mirage stop` itself makes — so a reused PID is never signalled. A runtime the
  * test's own stop ended (its record is gone, or its process has exited) is left alone. Call it as soon as the start
  * answer is available, before anything that can throw.
+ *
+ * A start that was ended before it answered (its hang guard, the end of its test) names no runtime, yet it records the
+ * runtime before it waits for readiness. With `ownershipFile`, the records file of the test's own state folder, the
+ * closer also ends every runtime that file still records. A runtime whose start was ended before it was recorded is
+ * not covered.
  * @returns {{pid: number, url: string, ownershipFile: string|undefined}[]} the runtimes it owns
  */
 export function ownStartedRuntimes(
   t,
   answer,
-  { identityOf = recordedIdentity, report = (line) => t.diagnostic(line) } = {},
+  { identityOf = recordedIdentity, report = (line) => t.diagnostic(line), ownershipFile } = {},
 ) {
   const runtimes = startedRuntimes(answer);
+  const recorded = ownershipFile ? recordedRuntimeOwner(ownershipFile, { identityOf, report }) : null;
   ownedFixture(t).add(async () => {
+    try {
+      await endStarted();
+    } finally {
+      await recorded?.note();
+      await recorded?.end();
+    }
+  });
+  return runtimes;
+  async function endStarted() {
     for (const runtime of runtimes) {
       if (!isAlive(runtime.pid)) continue;
       const records = runtime.ownershipFile ? await ownedSessions({ ownershipFile: runtime.ownershipFile }) : [];
@@ -159,8 +174,7 @@ export function ownStartedRuntimes(
         report,
       });
     }
-  });
-  return runtimes;
+  }
 }
 
 /**

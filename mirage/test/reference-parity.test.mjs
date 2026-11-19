@@ -16,6 +16,7 @@ import { normalizeContract, compareReferenceContracts as compareReferenceContrac
 import { createSimulator } from '../server.mjs';
 import { createPortalSession } from '../testing/sessions.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 
 const compareReferenceContracts = compareReferenceContractsImpl;
 const referenceFixtures = new WeakMap();
@@ -156,7 +157,13 @@ test('malformed reference options fail before local or reference reads instead o
   assert.equal(requests, 0);
 });
 
-test('reference parity uses explicit local visitors, membership and override roles without changing runtime identity', async (t) => {
+test(
+  'reference parity uses explicit local visitors, membership and override roles without changing runtime identity',
+  // Hang guard only: one scenario of many comparisons against one runtime, whose identity state changes between them.
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  explicitLocalVisitors,
+);
+async function explicitLocalVisitors(t) {
   const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'reference-visitor-'));
   ownReferenceFixture(t, directory);
   const compareReferenceContracts = (options) => compareFixture(t, options);
@@ -281,7 +288,7 @@ test('reference parity uses explicit local visitors, membership and override rol
   // Public anonymous reads retain normal exported-role permission checks.
   app.store.state.permissions[0].roles = ['Public'];
   assert.equal((await compareReferenceContracts(options)).passed, true);
-});
+}
 
 test('reference runner detects JSON/status/state mismatches, rejects writes and redacts query values', async (t) => {
   const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'reference-contract-'));

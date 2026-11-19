@@ -7,6 +7,10 @@ import os from 'node:os';
 import path from 'node:path';
 
 const owners = new WeakMap();
+// Hang guard only, of the after hook that drains a test's resources. node:test limits a hook without its own timeout to
+// --test-timeout, so on a loaded slow host the stop of an owned runtime was cut while still progressing and the
+// resources leaked. The guard only catches a cleanup that would never return.
+export const CLEANUP_HANG_GUARD_MS = 1_200_000;
 
 /**
  * Remove drained fixture state while Windows retires an already-closed browser handle. A sandboxed Windows browser
@@ -90,11 +94,14 @@ export function ownedFixture(context) {
     }
     fail(errors, 'Owned fixture directories failed to be removed.');
   };
-  context.after(() => {
-    closing = true;
-    drained = drain();
-    return drained;
-  });
+  context.after(
+    () => {
+      closing = true;
+      drained = drain();
+      return drained;
+    },
+    { timeout: CLEANUP_HANG_GUARD_MS },
+  );
   owners.set(context, owner);
   return owner;
 }

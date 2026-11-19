@@ -12,6 +12,7 @@ import { randomBytes } from 'node:crypto';
 import { inflateRawSync } from 'node:zlib';
 import { mirageStopCommand, mirageCommandHint, listenerPort } from '../lense/stop-command.mjs';
 import { tempDir } from './fixture.mjs';
+import { SCENARIO_HANG_GUARD_MS } from './helpers/bounded-command.mjs';
 
 const execute = promisify(execFile);
 const shells = process.platform === 'win32' ? ['cmd', 'cmd-delayed', 'powershell'] : ['posix'];
@@ -276,61 +277,69 @@ test('a compressed sixteen-target command fits CMD and attempts every target aft
   );
 });
 
-test('oversized incompressible commands use immutable file transport across shells', async (t) => {
-  const { directory, cli, bashFile, availableShells } = await collectorFixture(t, { reportCwd: true });
-  const selected = path.join(directory, "file runtime %PAQ_STOP_TEST% !PAQ_STOP_TEST! $ ` O'Brien & ^");
-  await fs.mkdir(selected);
-  const cwd = await fs.realpath(selected);
-  const commands = Array.from({ length: 6 }, (_, i) => [
-    'mirage',
-    'stop',
-    '--fixture',
-    String(i),
-    '--literal',
-    randomBytes(2048).toString('hex'),
-  ]);
-  const payloadFile = path.join(directory, "payload %PAQ_STOP_TEST% !PAQ_STOP_TEST! $ ` O'Brien & ^.json");
-  const stored = [];
-  const storePayload = (data) => {
-    stored.push(Buffer.from(data));
-    writeFileSync(payloadFile, data, { mode: 0o600 });
-    return payloadFile;
-  };
-  assert.throws(() => mirageCommandHint(commands, { cli, platform: 'win32' }), /copyable shell limit/);
-  assert.throws(() => mirageCommandHint(commands, { cli, storePayload: () => './relative.json' }), /absolute filename/);
-  for (const shell of availableShells) {
-    const platform = ['posix', 'git-bash'].includes(shell) ? 'linux' : 'win32';
-    const hint = mirageCommandHint(commands, { cli, platform, storePayload, cwd });
-    assert.ok(hint.length <= 8000, shell);
-    assert.doesNotMatch(hint, /[\r\n]/);
-    assert.deepEqual(
-      JSON.parse(stored.at(-1).toString('utf8')),
-      commands.map((args) => [cli, ...args]),
+// Hang guard only: three stop hints replayed in every available shell.
+test(
+  'oversized incompressible commands use immutable file transport across shells',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const { directory, cli, bashFile, availableShells } = await collectorFixture(t, { reportCwd: true });
+    const selected = path.join(directory, "file runtime %PAQ_STOP_TEST% !PAQ_STOP_TEST! $ ` O'Brien & ^");
+    await fs.mkdir(selected);
+    const cwd = await fs.realpath(selected);
+    const commands = Array.from({ length: 6 }, (_, i) => [
+      'mirage',
+      'stop',
+      '--fixture',
+      String(i),
+      '--literal',
+      randomBytes(2048).toString('hex'),
+    ]);
+    const payloadFile = path.join(directory, "payload %PAQ_STOP_TEST% !PAQ_STOP_TEST! $ ` O'Brien & ^.json");
+    const stored = [];
+    const storePayload = (data) => {
+      stored.push(Buffer.from(data));
+      writeFileSync(payloadFile, data, { mode: 0o600 });
+      return payloadFile;
+    };
+    assert.throws(() => mirageCommandHint(commands, { cli, platform: 'win32' }), /copyable shell limit/);
+    assert.throws(
+      () => mirageCommandHint(commands, { cli, storePayload: () => './relative.json' }),
+      /absolute filename/,
     );
-    assert.deepEqual(
-      await capture(hint, shell, directory, cli, bashFile, { batch: true }),
-      commands.map((args) => [cwd, ...args]),
-      shell,
+    for (const shell of availableShells) {
+      const platform = ['posix', 'git-bash'].includes(shell) ? 'linux' : 'win32';
+      const hint = mirageCommandHint(commands, { cli, platform, storePayload, cwd });
+      assert.ok(hint.length <= 8000, shell);
+      assert.doesNotMatch(hint, /[\r\n]/);
+      assert.deepEqual(
+        JSON.parse(stored.at(-1).toString('utf8')),
+        commands.map((args) => [cli, ...args]),
+      );
+      assert.deepEqual(
+        await capture(hint, shell, directory, cli, bashFile, { batch: true }),
+        commands.map((args) => [cwd, ...args]),
+        shell,
+      );
+      await fs.appendFile(payloadFile, ' ');
+      assert.deepEqual(
+        await capture(hint, shell, directory, cli, bashFile, { batch: true, expectedCode: 1 }),
+        [],
+        'changed file never invokes a child',
+      );
+      await fs.writeFile(payloadFile, Buffer.alloc(1024 * 1024 + 1));
+      assert.deepEqual(
+        await capture(hint, shell, directory, cli, bashFile, { batch: true, expectedCode: 1 }),
+        [],
+        'oversized replacement never invokes a child',
+      );
+    }
+    assert.equal(mirageCommandHint([], { cli }), null);
+    assert.throws(
+      () => mirageCommandHint([['mirage', 'stop', 'x'.repeat(1024 * 1024)]], { cli, storePayload }),
+      /byte limit/,
     );
-    await fs.appendFile(payloadFile, ' ');
-    assert.deepEqual(
-      await capture(hint, shell, directory, cli, bashFile, { batch: true, expectedCode: 1 }),
-      [],
-      'changed file never invokes a child',
-    );
-    await fs.writeFile(payloadFile, Buffer.alloc(1024 * 1024 + 1));
-    assert.deepEqual(
-      await capture(hint, shell, directory, cli, bashFile, { batch: true, expectedCode: 1 }),
-      [],
-      'oversized replacement never invokes a child',
-    );
-  }
-  assert.equal(mirageCommandHint([], { cli }), null);
-  assert.throws(
-    () => mirageCommandHint([['mirage', 'stop', 'x'.repeat(1024 * 1024)]], { cli, storePayload }),
-    /byte limit/,
-  );
-});
+  },
+);
 
 test('external command replay refuses a pipe before reading or executing any child', async (t) => {
   const { directory, cli } = await collectorFixture(t);

@@ -31,19 +31,26 @@ function lifecycle(t) {
   const host = runtimeHost(t);
   return { host, run: (...args) => runMirage(args, { host }) };
 }
-/** Runs a toolkit command as a process of its own; nothing limits how long it may take. */
+/**
+ * Runs a toolkit command as a process of its own, from an empty folder of its own (never the checkout, whose notes
+ * every test process would share); nothing limits how long it may take.
+ */
 function runCli(...args) {
-  return withProcessSlot(
-    () =>
-      new Promise((resolve) => {
+  return withProcessSlot(async () => {
+    const cwd = tempDirSync('paqvilo-portals-cwd-');
+    try {
+      return await new Promise((resolve) => {
         execFile(
           process.execPath,
           [cli, ...args],
-          { env, encoding: 'utf8', windowsHide: true },
+          { cwd, env, encoding: 'utf8', windowsHide: true },
           (error, stdout, stderr) => resolve({ status: error ? error.code : 0, stdout, stderr }),
         );
-      }),
-  );
+      });
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    }
+  });
 }
 const json = (result) => JSON.parse(result.stdout);
 /** The arguments after `mirage stop` of a readable single-line stop hint whose arguments need no quoting. */
@@ -179,7 +186,8 @@ test('mirage with portals=all refuses misplaced options and shared ports without
 
 test('mirage with portals=all starts one runtime per site, labels them in status and stops them together', async (t) => {
   const { config, host, run } = await allPortalsCatalogue(t);
-  let started = null;
+  let started = null,
+    passed = false;
   try {
     started = await run('mirage', 'start', '--config', config, '--startup-timeout', '120000', '--json');
     assert.equal(started.status, 0, started.stdout + started.stderr);
@@ -214,10 +222,12 @@ test('mirage with portals=all starts one runtime per site, labels them in status
       json(repeated).portals.map((item) => [item.pid, item.started]),
       portals.map((item) => [item.pid, false]),
     );
+    passed = true;
   } finally {
     const stopped = await run('mirage', 'stop', '--config', config, '--json');
-    assert.equal(stopped.status, 0, stopped.stdout + stopped.stderr);
-    if (started?.status === 0) {
+    // After a failure the stop still runs, but its checks must not replace the failure that ended the test.
+    if (passed) {
+      assert.equal(stopped.status, 0, stopped.stdout + stopped.stderr);
       const report = json(stopped);
       assert.deepEqual(
         report.stopped.map((item) => item.pid).sort(),
@@ -234,16 +244,19 @@ test('mirage with portals=all starts one runtime per site, labels them in status
 test('mirage start of one site with portals=all prints one readable stop command that stops every started portal', async (t) => {
   const { config, run } = await allPortalsCatalogue(t);
   const started = await run('mirage', 'start', '--config', config, '--site', 'classic', '--json');
-  let printed = null;
+  let printed = null,
+    passed = false;
   try {
     assert.equal(started.status, 0, started.stdout + started.stderr);
     printed = readableStopArguments(json(started).stop);
     assert.deepEqual(printed.slice(-4), ['--site', 'classic', '--portals', 'all']);
     assert.deepEqual(printed.slice(0, 2), ['--config', config]);
+    passed = true;
   } finally {
     const stopped = await run('mirage', 'stop', ...(printed ?? ['--config', config]), '--json');
-    assert.equal(stopped.status, 0, stopped.stdout + stopped.stderr);
-    if (started.status === 0)
+    // After a failure the stop still runs, but its checks must not replace the failure that ended the test.
+    if (passed) {
+      assert.equal(stopped.status, 0, stopped.stdout + stopped.stderr);
       assert.deepEqual(
         json(stopped)
           .stopped.map((item) => item.pid)
@@ -252,8 +265,50 @@ test('mirage start of one site with portals=all prints one readable stop command
           .portals.map((item) => item.pid)
           .sort(),
       );
+    }
   }
   assert.equal(json(started).portals.length, 2);
+});
+
+// @test-kind tooling: the runtime doubles of a test are a process table of its own, so no command run against another table may reach their records
+test('the in-process commands of one process table leave the records of the runtimes of another alone', async (t) => {
+  const mine = await allPortalsCatalogue(t);
+  const other = await allPortalsCatalogue(t);
+  const started = await mine.run('mirage', 'start', '--config', mine.config, '--json');
+  let passed = false;
+  try {
+    assert.equal(started.status, 0, started.stdout + started.stderr);
+    // The other table runs none of these PIDs: a command of its own that read their records would take the runtimes
+    // for exited and remove the records, as the commands of another test process did through the notes of a shared
+    // working directory.
+    const listing = await other.run('mirage', 'status', '--config', other.config, '--json');
+    assert.equal(listing.status, 0, listing.stdout + listing.stderr);
+    assert.deepEqual(json(listing).sessions, []);
+    const cleared = await other.run('mirage', 'stop', '--config', other.config, '--json');
+    assert.equal(cleared.status, 0, cleared.stdout + cleared.stderr);
+    const repeated = await mine.run('mirage', 'start', '--config', mine.config, '--json');
+    assert.equal(repeated.status, 0, repeated.stdout + repeated.stderr);
+    assert.deepEqual(
+      json(repeated).portals.map((item) => [item.pid, item.started]),
+      json(started).portals.map((item) => [item.pid, false]),
+      'the runtimes are still recorded and are reused',
+    );
+    passed = true;
+  } finally {
+    const stopped = await mine.run('mirage', 'stop', '--config', mine.config, '--json');
+    // After a failure the stop still runs, but its checks must not replace the failure that ended the test.
+    if (passed) {
+      assert.equal(stopped.status, 0, stopped.stdout + stopped.stderr);
+      assert.deepEqual(
+        json(stopped)
+          .stopped.map((item) => item.pid)
+          .sort(),
+        json(started)
+          .portals.map((item) => item.pid)
+          .sort(),
+      );
+    }
+  }
 });
 
 test('the dev selection offers one local target per running Mirage first, the selected site opening first, then the live targets', async (t) => {
@@ -455,7 +510,8 @@ test('a project with several portals refuses one state file and invalid port ran
 
 test('a project with several portals starts one runtime per portal on consecutive ports and stops them together', async (t) => {
   const { config, projectFile, host, run } = severalPortalProject(t);
-  let started = null;
+  let started = null,
+    passed = false;
   try {
     started = await run(
       'mirage',
@@ -500,6 +556,7 @@ test('a project with several portals starts one runtime per portal on consecutiv
       false,
     );
     assert.match(site.others.find((other) => other.pid === enhanced).status, /mirage status --project /);
+    passed = true;
   } finally {
     // The printed command when it is readable (asserted above); a failed assertion still stops by the selectors.
     let printed = null;
@@ -514,8 +571,9 @@ test('a project with several portals starts one runtime per portal on consecutiv
       ...(printed ?? ['--config', config, '--project', projectFile]),
       '--json',
     );
-    assert.equal(stopped.status, 0, stopped.stdout + stopped.stderr);
-    if (started?.status === 0)
+    // After a failure the stop still runs, but its checks must not replace the failure that ended the test.
+    if (passed) {
+      assert.equal(stopped.status, 0, stopped.stdout + stopped.stderr);
       assert.deepEqual(
         json(stopped)
           .stopped.map((item) => item.pid)
@@ -524,6 +582,7 @@ test('a project with several portals starts one runtime per portal on consecutiv
           .portals.map((item) => item.pid)
           .sort(),
       );
+    }
   }
 });
 

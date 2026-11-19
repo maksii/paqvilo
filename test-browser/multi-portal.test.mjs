@@ -286,8 +286,15 @@ test(
     context.pages().forEach(observe);
     context.on('page', observe);
     const logs = [];
+    // A tab whose initial document kept a draft is never overlaid until a manual reload: no overlaid commit follows.
+    const unoverlaid = new AbortController();
+    const log = (line) => {
+      logs.push(line);
+      if (/^WARN\b.*initial document opened before local interception was ready/.test(line))
+        unoverlaid.abort(new Error(`A tab kept a document the overlay did not serve: ${line}`));
+    };
     runtime = await step('initialize only the selected catalogue source', async (signal) => {
-      const started = await startDevSessions(context, selection, { log: (line) => logs.push(line), debugPort: null });
+      const started = await startDevSessions(context, selection, { log, debugPort: null });
       if (signal.aborted) {
         await started.close();
         signal.throwIfAborted();
@@ -341,6 +348,42 @@ test(
       assert.equal(await page.locator('#paqvilo-panel').count(), 1, 'one current panel owns the page');
       assert.equal(await page.locator('#theme').evaluate((node) => getComputedStyle(node).color), color);
     };
+    // Pages whose main-frame document the overlay served. A session emits 'hit' for every navigation it answers,
+    // also one without applied sources (which pageHits does not keep), and records it before fulfilling the response.
+    // Sessions activate lazily, so every record that joins runtime.active is tracked before it answers a request.
+    const navHits = new WeakSet();
+    const trackHits = (record) =>
+      record.session.on('hit', (hit) => {
+        if (hit.navigation && hit.page) navHits.add(hit.page);
+      });
+    for (const record of runtime.active.values()) trackHits(record);
+    const activate = runtime.active.set;
+    runtime.active.set = function (origin, record) {
+      trackHits(record);
+      return activate.call(this, origin, record);
+    };
+    // A tab opened while the runtime is live can request its first document before interception attaches. The
+    // interceptor then loads that document once more, which replaces a panel already drawn in it. Resolves with the
+    // tab on its first main-frame commit of a document the overlay served, which no late reload replaces. Call it in
+    // the same turn the tab is obtained. A popup is reported after its first commit: `reported` accepts that
+    // document when the overlay already served it (a late reload needs setup round trips after the report).
+    const overlaidDocument = (page, { reported = false } = {}) =>
+      new Promise((resolve, reject) => {
+        const signal = AbortSignal.any([stopped.signal, unoverlaid.signal]);
+        if (signal.aborted) return reject(signal.reason);
+        if (reported && navHits.has(page)) return resolve(page);
+        const settle = (finish, value) => {
+          page.off('framenavigated', committed);
+          signal.removeEventListener('abort', aborted);
+          finish(value);
+        };
+        const committed = (frame) => {
+          if (frame === page.mainFrame() && navHits.has(page)) settle(resolve, page);
+        };
+        const aborted = () => settle(reject, signal.reason);
+        page.on('framenavigated', committed);
+        signal.addEventListener('abort', aborted, { once: true });
+      });
     let switcher;
     await step('observe local initial application and catalogue choices', async () => {
       await main.goto(alphaDev.origin, { waitUntil: 'load' });
@@ -365,9 +408,10 @@ test(
     await step('activate the alternate environment through a popup', async () => {
       await main.goto(alphaDev.origin, { waitUntil: 'load' });
       await assertPortal(main, alphaDev, 'alpha-v1', 'rgb(10, 20, 30)');
-      const popupPromise = main.waitForEvent('popup');
-      await main.evaluate((url) => window.open(url, '_blank'), alphaTest.origin);
-      popup = await popupPromise;
+      [popup] = await Promise.all([
+        once(main, 'popup', { signal: stopped.signal }).then(([page]) => overlaidDocument(page, { reported: true })),
+        main.evaluate((url) => window.open(url, '_blank'), alphaTest.origin),
+      ]);
       await assertPortal(popup, alphaTest, 'alpha-v1', 'rgb(10, 20, 30)');
     });
     let betaPage, extraOne, extraTwo, foreignPage;
@@ -377,6 +421,9 @@ test(
         betaPage.goto(betaDev.origin),
         extraOne.goto(betaExtra.origin),
         extraTwo.goto(betaExtra.origin),
+        overlaidDocument(betaPage),
+        overlaidDocument(extraOne),
+        overlaidDocument(extraTwo),
       ]);
       await Promise.all([
         assertPortal(betaPage, betaDev, 'beta-v1', 'rgb(40, 50, 60)'),
@@ -739,24 +786,20 @@ test('actual dev CLI activates catalogue navigation and agent stop tears down th
   };
   ownedFixture(t).add(async () => {
     if (child && child.exitCode === null) {
-      if (lastDiscovery)
-        await fetch(lastDiscovery.endpoint + '/v1/stop', {
+      // A delivered stop ends the dev process and its browser; kill only when no stop was accepted.
+      const delivered =
+        lastDiscovery &&
+        (await fetch(lastDiscovery.endpoint + '/v1/stop', {
           method: 'POST',
           headers: { authorization: `Bearer ${lastDiscovery.token}`, 'content-type': 'application/json' },
           body: '{}',
-          signal: AbortSignal.timeout(2000),
-        }).catch(() => {});
-      const ended = await Promise.race([
-        childDone.then(
-          () => true,
-          () => true,
-        ),
-        new Promise((resolve) => setTimeout(resolve, 5000, false)),
-      ]);
-      if (!ended) {
-        child.kill();
-        await childDone.catch(() => {});
-      }
+          signal: AbortSignal.timeout(2000), // Hang guard only: an unanswered stop falls back to kill.
+        }).then(
+          (response) => response.ok,
+          () => false,
+        ));
+      if (!delivered) child.kill();
+      await childDone.catch(() => {});
     }
     for (const server of servers) {
       server.closeAllConnections();

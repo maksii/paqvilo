@@ -15,11 +15,12 @@ import { childOutput } from './helpers/child-output.mjs';
 import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
 import { startOnFreePort } from './helpers/debug-port.mjs';
 import { DEV_READY } from '../lense/dev-messages.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../test/helpers/bounded-command.mjs';
 import { recordedRuntimeOwner } from '../test/helpers/mirage-runtimes.mjs';
 
 // The whole walkthrough is one test of about a minute on an idle host. The lane's 300 s hang guard is shorter than
 // its duration on a loaded slow host, where it timed out while still progressing; this is its own hang guard.
-const WALKTHROUGH_HANG_GUARD_MS = 1_200_000;
+const WALKTHROUGH_HANG_GUARD_MS = SCENARIO_HANG_GUARD_MS;
 test(
   'demo command opens a populated browser, supports the walkthrough and stops its Mirage',
   {
@@ -32,6 +33,9 @@ test(
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_')));
     // The command of the latest start; a start that lost its debugging port has already exited.
     let child, output, exited, browser, releaseDemoRuntime;
+    // The step the walkthrough is in; cleanup reports it when the test ends anywhere but its last line.
+    let stage = 'fixture',
+      reached = () => ({});
     const closeOwnedBrowser = async () => {
       if (!browser?.isConnected()) return;
       const cdp = await browser.newBrowserCDPSession();
@@ -41,6 +45,8 @@ test(
       await disconnected;
     };
     ownedFixture(t).add(async () => {
+      // Read without waiting: the page may be the thing that stopped answering.
+      if (stage !== 'done') t.diagnostic(`Walkthrough stopped at: ${stage}; ${JSON.stringify(reached())}`);
       const ownershipFile = path.join(directory, '.paqvilo', 'mirage', 'sessions.json');
       const runtimes = recordedRuntimeOwner(ownershipFile, { report: (line) => t.diagnostic(line) });
       // While the demo still runs: a demo that ends removes its own record.
@@ -80,6 +86,7 @@ test(
         }
       }
     });
+    stage = 'demo command start';
     const debugPort = await startOnFreePort(async (port) => {
       child = spawn(
         process.execPath,
@@ -105,9 +112,11 @@ test(
       });
       return port;
     });
+    stage = 'CDP connection';
     browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`);
     const context = browser.contexts()[0];
     // The normal dev lifecycle creates and navigates the first tab itself.
+    stage = 'home tab';
     const home = (candidate) => /^http:\/\/127\.0\.0\.1:\d+\/$/.test(candidate.url());
     const page =
       context.pages().find(home) ??
@@ -129,6 +138,7 @@ test(
     assert.ok(page, 'the command must open and navigate a browser without a manual console link');
     // The tab can show the start page before the command's own startup navigation and resource wait finish;
     // interact only once the command reports the session ready.
+    stage = 'demo ready line';
     await output.waitFor(new RegExp(DEV_READY.replaceAll('.', String.raw`\.`)), { label: 'Demo reporting ready' });
     const url = new URL(page.url()).origin;
     // Keep the CLI's own interception intact. These authored sources and sign-in use only loopback.
@@ -143,11 +153,28 @@ test(
         form: resource?.searchParams.get('entityformid'),
       });
     });
+    // Paths only: a query can carry a sign-in value.
+    reached = () => ({ tabs: context.pages().map((tab) => tab.url().split(/[?#]/)[0]), errors });
+    // The page reloads itself on every published revision. Before the next navigation, wait until the runtime has no
+    // reload pending (from the first source notification it has seen), running or queued, then until the page renders
+    // its revision, so a late reload cannot replace the page the next step opens. Each status read waits for the
+    // previous answer. A reload that fails publishes no revision: the wait ends on its diagnostic, not at the hang guard.
+    const runtimeStatus = () => context.request.get(url + '/_sim/api/status').then((response) => response.json());
+    const reloadFailures = (status) => status.diagnostics?.byCode?.RELOAD_FAILED ?? 0;
+    const reloadsSettled = async (failuresBefore) => {
+      let status;
+      do {
+        status = await runtimeStatus();
+        assert.equal(reloadFailures(status), failuresBefore, 'a source reload failed (RELOAD_FAILED in /_sim/)');
+      } while (status.reloading || status.pendingReload);
+      await page.waitForFunction((expected) => window.__portalSimulation?.revision >= expected, status.revision);
+    };
     const evidence = async (name, current = page, fullPage = true) => {
       if (!process.env.PAQVILO_EVIDENCE_DIR) return;
       await fs.mkdir(process.env.PAQVILO_EVIDENCE_DIR, { recursive: true });
       await current.screenshot({ path: path.join(process.env.PAQVILO_EVIDENCE_DIR, `${name}.png`), fullPage });
     };
+    stage = 'anonymous home';
     await page.getByRole('heading', { name: 'Build it three ways. Understand every layer.' }).waitFor();
     const formIds = {};
     for (const mode of ['create', 'edit', 'read']) {
@@ -156,6 +183,7 @@ test(
       formIds[mode] = /^adx_entityformid:\s*(\S+)/m.exec(await fs.readFile(path.join(folder, metadata), 'utf8'))[1];
     }
     await evidence('demo-anonymous');
+    stage = 'sign-in page and runtime breakpoint';
     await page.getByRole('link', { name: 'Sign in to try CRUD', exact: true }).click();
     const runtimeDebugger = await context.newCDPSession(page);
     await runtimeDebugger.send('Debugger.enable');
@@ -178,6 +206,7 @@ test(
       .first()
       .click();
     signingIn.catch(() => {});
+    stage = 'sign-in until the home runtime script pauses';
     let authoredTarget;
     while (true) {
       const [pausedRuntime] = await runtimePaused;
@@ -200,11 +229,14 @@ test(
       '/approach/out-of-the-box/',
       'Authored markup is visible before the deferred local customization.',
     );
+    stage = 'sign-in release';
     await releaseDemoRuntime();
     await signingIn;
+    stage = 'home customization';
     await page.waitForFunction(
       () => document.querySelector('.demo-hero .demo-button')?.getAttribute('href') === '/approach/web-api/',
     );
+    stage = 'Web API account list';
     await page.getByRole('link', { name: 'Open the demo', exact: true }).click();
     await page
       .locator('[data-account-rows] tr')
@@ -232,6 +264,7 @@ test(
         throw cause;
       });
     assert.equal(await page.locator('[data-account-rows] tr').count(), 8);
+    stage = 'Web API account view';
     await page.getByRole('link', { name: 'Arcwell Services', exact: true }).click();
     const ready = () =>
       page
@@ -249,6 +282,7 @@ test(
     assert.equal(await page.locator('[data-field]').count(), 21);
     assert.equal(await page.locator('[data-contact-rows] tr').count(), 2);
     assert.equal(await page.locator('[data-note-list] .demo-note').count(), 2);
+    stage = 'Web API account edit and save';
     await page.getByRole('link', { name: 'Edit account', exact: true }).click();
     await ready();
     await page.locator('[name=pqvd_decimal]').fill('92.5');
@@ -259,6 +293,7 @@ test(
     assert.equal(await page.locator('[name=pqvd_decimal]').inputValue(), '92.5');
     assert.equal(await page.locator('[name=address1_city]').inputValue(), 'York');
     assert.ok(await page.locator('[name=pqvd_decimal]').isDisabled());
+    stage = 'Web API contact create';
     await page.getByRole('button', { name: 'New contact', exact: true }).click();
     const dialog = page.locator('[data-contact-dialog]');
     await dialog.locator('[name=firstname]').fill('Sam');
@@ -268,6 +303,7 @@ test(
     await dialog.waitFor({ state: 'hidden' });
     const contactRow = page.locator('[data-contact-rows] tr').filter({ hasText: 'Sam Browser' });
     await contactRow.waitFor();
+    stage = 'Web API contact view, edit and delete';
     await contactRow.getByRole('button', { name: 'View', exact: true }).click();
     await dialog.waitFor({ state: 'visible' });
     assert.ok(await dialog.locator('[name=lastname]').isDisabled());
@@ -281,6 +317,7 @@ test(
     await page.locator('[data-confirm-delete]').click();
     await contactRow.waitFor({ state: 'hidden' });
     assert.equal(await page.locator('[data-contact-rows] tr').count(), 2);
+    stage = 'Web API note add, download and delete';
     const noteForm = page.locator('[data-note-form]');
     await noteForm.locator('[name=subject]').fill('Browser note');
     await noteForm.locator('[name=notetext]').fill('Local acceptance note');
@@ -297,11 +334,13 @@ test(
     await note.getByRole('button', { name: 'Delete', exact: true }).click();
     await page.locator('[data-confirm-delete]').click();
     await note.waitFor({ state: 'hidden' });
+    stage = 'Web API deactivate and activate';
     await page.getByRole('button', { name: 'Deactivate account', exact: true }).click();
     await page.getByRole('button', { name: 'Activate account', exact: true }).waitFor();
     await page.getByRole('button', { name: 'Activate account', exact: true }).click();
     await page.getByRole('button', { name: 'Deactivate account', exact: true }).waitFor();
     await evidence('demo-account');
+    stage = 'native account page and Lense panel';
     await page.goto(url + '/approach/out-of-the-box/account/?id=a4300000-0000-4000-8000-000000001001&mode=edit');
     await page.locator('#Contacts tbody tr[data-id]').first().waitFor();
     const panel = page.locator('#paqvilo-panel');
@@ -316,7 +355,9 @@ test(
       .waitFor();
     await evidence('demo-inspect');
     await page.keyboard.press('Alt+Shift+P');
+    stage = 'CSS source reload';
     const css = path.join(directory, 'portal/web-files/demo.css');
+    const failuresBeforeSourceEdit = reloadFailures(await runtimeStatus());
     await fs.appendFile(css, '\nbody{--demo-source-proof:verified;}\n');
     await page
       .waitForFunction(
@@ -352,9 +393,13 @@ test(
         await evidence('demo-source-reload-failure').catch(() => {});
         throw cause;
       });
+    stage = 'CSS source reload settling';
+    await reloadsSettled(failuresBeforeSourceEdit);
+    stage = 'native list';
     await page.goto(url + '/approach/out-of-the-box/');
     await page.locator('.entity-grid tbody tr[data-id]').first().waitFor();
     assert.equal(await page.locator('.entity-grid tbody tr[data-id]').count(), 10);
+    stage = 'native account save';
     await page.goto(url + '/approach/out-of-the-box/account/?id=a4300000-0000-4000-8000-000000001001&mode=edit');
     await page.locator('#Contacts tbody tr[data-id]').first().waitFor();
     assert.equal(await page.locator('#Contacts tbody tr[data-id]').count(), 2);
@@ -362,6 +407,7 @@ test(
     await page.locator('#UpdateButton').click();
     await page.waitForURL((current) => !current.searchParams.has('mode'));
     assert.equal(await page.locator('#address1_city').inputValue(), 'Bristol');
+    stage = 'native contact create';
     await page.getByRole('link', { name: 'Edit account', exact: true }).click();
     await page.locator('#Contacts tbody tr[data-id]').first().waitFor();
     await page.getByText('New contact', { exact: true }).click();
@@ -378,6 +424,7 @@ test(
       'function',
       'the demo must provide its native dependency in the installed package',
     );
+    stage = 'native contact edit';
     await nativeRow.evaluate(async (row) => {
       row.scrollIntoView({ block: 'center', behavior: 'instant' });
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
@@ -388,6 +435,7 @@ test(
     await nativeEdit.locator('#jobtitle').fill('Native Director');
     await nativeEdit.locator('#UpdateButton').click();
     await page.locator('.modal-form-edit').waitFor({ state: 'hidden' });
+    stage = 'native contact details';
     await nativeRow.locator('a.details-link').first().click();
     const nativeRead = page.frameLocator(`iframe[src*="entityformid=${formIds.read}"]`);
     await nativeRead.locator('#jobtitle').waitFor();
@@ -398,6 +446,7 @@ test(
       .getByRole('button', { name: 'Close', exact: true })
       .first()
       .click();
+    stage = 'native contact delete';
     await nativeRow.evaluate(async (row) => {
       row.scrollIntoView({ block: 'center', behavior: 'instant' });
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
@@ -407,6 +456,7 @@ test(
     await page.locator('.modal-delete:visible').getByRole('button', { name: 'Delete', exact: true }).click();
     await nativeRow.waitFor({ state: 'hidden' });
     assert.equal(await page.locator('#Contacts tbody tr[data-id]').count(), 2);
+    stage = 'native note add';
     const nativeNotes = page.locator('#notescontrol .entity-notes');
     await nativeNotes.locator('.note').first().waitFor();
     await nativeNotes.getByRole('link', { name: 'Add a note', exact: true }).click();
@@ -418,6 +468,7 @@ test(
     await addNote.getByRole('button', { name: 'Add Note', exact: true }).click();
     const nativeNote = nativeNotes.locator('.note').filter({ hasText: 'Native browser note' });
     await nativeNote.waitFor();
+    stage = 'native note download, edit and delete';
     const nativeDownloadEvent = page.waitForEvent('download');
     await nativeNote.getByRole('link', { name: /native.txt/ }).click();
     const nativeDownload = await nativeDownloadEvent;
@@ -431,6 +482,7 @@ test(
     await nativeNotes.locator('.modal-deletenote:visible').getByRole('button', { name: 'Delete', exact: true }).click();
     await nativeNote.waitFor({ state: 'hidden' });
     await evidence('demo-native');
+    stage = 'PCF account view';
     await page.goto(url + '/approach/pcf/account/?id=a4300000-0000-4000-8000-000000001001');
     await ready();
     // The form is ready once its fields exist and its records loaded; the component marks itself ready on its own.
@@ -438,6 +490,7 @@ test(
     assert.equal(await page.locator('[data-pcf-ready=true]').count(), 1);
     assert.equal(await page.locator('.demo-pcf-field').count(), 14);
     assert.equal(await page.locator('[name=address1_city]').inputValue(), 'Bristol');
+    stage = 'PCF account edit and save';
     await page.getByRole('link', { name: 'Edit account', exact: true }).click();
     await ready();
     await page.locator('[name=pqvd_decimal]').fill('73.25');
@@ -446,6 +499,7 @@ test(
     await ready();
     assert.equal(await page.locator('[name=pqvd_decimal]').inputValue(), '73.25');
     assert.ok(await page.locator('[name=pqvd_decimal]').isDisabled());
+    stage = 'extended operations';
     await page.goto(url + '/extended/');
     await page.getByRole('button', { name: 'Calculate on server', exact: true }).click();
     await page.waitForFunction(() => document.querySelector('[data-estimate-result]')?.textContent.includes('"total"'));
@@ -460,6 +514,7 @@ test(
     assert.equal(JSON.parse(await page.locator('[data-flow-result]').textContent()).Location, 'Amsterdam');
     assert.equal(JSON.parse(await page.locator('[data-liquid-result]').textContent()).total, 388.8);
     await evidence('demo-extended');
+    stage = 'Web API query state';
     await page.goto(url + '/approach/web-api/');
     await page.locator('[data-account-rows] tr').first().waitFor();
     await page.getByRole('combobox', { name: 'View', exact: true }).selectOption('inactive');
@@ -478,15 +533,20 @@ test(
     await page.goBack();
     await page.waitForFunction(() => document.querySelectorAll('[data-account-rows] tr').length === 2);
     assert.equal(await page.locator('[name=search]').inputValue(), '');
+    stage = 'query-preserving CSS reload';
+    const failuresBeforeQueryEdit = reloadFailures(await runtimeStatus());
     await fs.appendFile(path.join(directory, 'portal/web-files/demo.css'), '\nbody{--demo-query-reload:preserved}\n');
     await page.waitForFunction(
       () =>
         document.body && getComputedStyle(document.body).getPropertyValue('--demo-query-reload').trim() === 'preserved',
     );
+    stage = 'query-preserving CSS reload settling';
+    await reloadsSettled(failuresBeforeQueryEdit);
     await page.locator('[data-account-rows] tr').first().waitFor();
     assert.equal(await page.locator('[name=view]').inputValue(), 'inactive');
     assert.equal(await page.locator('[data-account-rows] tr').count(), 2);
     // PCF uses the same workspace script and must restore shared query state too.
+    stage = 'PCF and invalid query state';
     await page.goto(url + '/approach/pcf/?view=inactive&search=' + encodeURIComponent(inactiveName) + '#accounts');
     await page.locator('[data-account-rows] tr').first().waitFor();
     assert.equal(await page.locator('[name=view]').inputValue(), 'inactive');
@@ -497,6 +557,7 @@ test(
     await page.locator('[data-account-rows] tr').first().waitFor();
     assert.equal(await page.locator('[name=view]').inputValue(), 'active');
     assert.equal(new URL(page.url()).searchParams.has('view'), false);
+    stage = 'administration page';
     const admin = await context.newPage();
     await admin.goto(url + '/_sim/#plugins');
     // The portal redirects the administration to its own listener; its requests run from there.
@@ -519,15 +580,21 @@ test(
       const presetResponse = await presetApplied;
       assert.equal(presetResponse.status(), 200, await presetResponse.text());
       const { revision } = await admin.evaluate(() => fetch('/_sim/api/status').then((response) => response.json()));
-      await page.waitForFunction((expected) => window.__portalSimulation?.revision === expected, revision);
+      stage = `preset ${id}: portal page rendering revision ${revision}`;
+      // Revisions only grow: a page that renders a later one (another reload was published meanwhile) also shows the
+      // preset, where an exact match would wait for a revision the page has already passed.
+      await page.waitForFunction((least) => window.__portalSimulation?.revision >= least, revision);
     };
+    stage = 'preset example-empty';
     await applyPreset('example-empty');
     await admin.getByText('Preset applied.', { exact: true }).waitFor();
     await page.locator('[data-account-empty]').waitFor({ state: 'visible' });
+    stage = 'preset example-demo';
     await applyPreset('example-demo');
     await admin.locator('#confirm').waitFor({ state: 'hidden' });
     await page.locator('[data-account-rows] tr').first().waitFor();
     assert.equal(await page.locator('[data-account-rows] tr').count(), 8);
+    stage = 'mobile layout and Entra launch';
     await admin.close();
     await page.setViewportSize({ width: 390, height: 844 });
     await evidence('demo-mobile');
@@ -550,6 +617,7 @@ test(
     assert.notEqual(launch.origin, url);
     // Launching a persona establishes its cookie. Sign out before exercising the
     // browser's provider flow, without clearing any other runtime's cookies.
+    stage = 'Entra editor sign-in';
     await page.goto(launch.origin + '/Account/Login/LogOff?ReturnUrl=%2FSignIn');
     await page.getByRole('button', { name: 'Demo Microsoft Entra', exact: true }).click();
     await page.getByRole('heading', { name: 'Choose a demo operator', exact: true }).waitFor();
@@ -584,6 +652,7 @@ test(
     }).then((response) => response.json());
     assert.equal(parentAfter.contactId, parentSession.contactId);
     assert.equal(parentAfter.provider, parentSession.provider);
+    stage = 'Entra sign-out';
     await page.setViewportSize({ width: 1280, height: 900 });
     await page.getByRole('link', { name: 'Sign out', exact: true }).click();
     await page.waitForURL(launch.origin + '/');
@@ -591,6 +660,7 @@ test(
       (await context.request.get(launch.origin + '/_sim/api/session').then((response) => response.json())).signedIn,
       false,
     );
+    stage = 'Entra reader sign-in and records';
     await page.goto(launch.origin + '/SignIn');
     await page.getByRole('button', { name: 'Demo Microsoft Entra', exact: true }).click();
     await page.getByRole('button', { name: 'Continue as Alex Demo 01', exact: true }).first().click();
@@ -628,6 +698,7 @@ test(
 
     // Ask the project's own runtime records rather than probing released ports afterwards,
     // which another process on a busy host may already have been given.
+    stage = 'runtime status';
     const liveRuntimes = async () => {
       const { stdout } = await promisify(execFile)(
         process.execPath,
@@ -643,9 +714,11 @@ test(
         .sort();
     };
     assert.ok((await liveRuntimes()).includes(url), 'the running demo runtime is recorded for this project');
+    stage = 'browser close and demo exit';
     await closeOwnedBrowser();
     const [code] = await exited;
     assert.equal(code, 0, output.text);
     assert.deepEqual(await liveRuntimes(), [], 'the demo stops every Mirage runtime it started');
+    stage = 'done';
   },
 );

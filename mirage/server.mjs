@@ -3327,7 +3327,7 @@ export async function createSimulator(options) {
       loadedImplementationFingerprint: implementationFingerprint,
       revision,
       reloading: Boolean(reloadPromise),
-      pendingReload: Boolean(reloadPromise) && reloadRequested,
+      pendingReload: watchNotified > watchCovered || (Boolean(reloadPromise) && reloadRequested),
       pageCount: portal.pages.length,
       diagnostics: { total: all.length, byCode: diagnosticsByCode(all) },
       audit: { retained: audit.entries.length, latestSequence: audit.sequence },
@@ -7708,6 +7708,10 @@ export async function createSimulator(options) {
     await closeAfterStartupFailure(cause);
   }
   let reloadRequested = false;
+  // Source notifications the watcher reported, and how many of them a published or failed reload has covered: status
+  // reads a reload as pending from the first notification on, through the debounce and the host settle before reload().
+  let watchNotified = 0,
+    watchCovered = 0;
   const changedPaths = new Set();
   let watchedLayers = '';
   const layerSignature = () =>
@@ -7718,13 +7722,22 @@ export async function createSimulator(options) {
   async function reload() {
     if (closing) return;
     // Settled outside the host change queue (as standalone-runtime.mjs does): a job's api.change would wait on a held queue.
-    await organizationHost.settle();
+    try {
+      await organizationHost.settle();
+    } catch (error) {
+      // No pass runs for the notifications seen so far: they fail as a failed pass does, and status returns to idle.
+      watchCovered = watchNotified;
+      recordDiagnostic({ code: 'RELOAD_FAILED', message: error.message });
+      throw error;
+    }
     if (closing) return;
     reloadRequested = true;
     if (reloadPromise) return reloadPromise;
     reloadPromise = (async () => {
       while (reloadRequested && !closing) {
         reloadRequested = false;
+        // The notifications this pass reads; a later one is covered by the next pass.
+        const notified = watchNotified;
         const previous = {
           portal,
           sourcePortal,
@@ -7786,7 +7799,13 @@ export async function createSimulator(options) {
             changed: changed.slice(0, 20),
             message: `Reloaded portal and solution sources (${changed.length} changed path(s)); mappings, schemas and the permission model were recompiled.`,
           });
-          if (watch && watchedLayers !== layerSignature()) await restartWatcher();
+          if (watch && watchedLayers !== layerSignature()) {
+            await restartWatcher();
+            // The restart cancelled the reload a notification during this pass scheduled, and the new watcher does not
+            // report it again: one more pass reads those paths.
+            if (watchNotified > notified) reloadRequested = true;
+          }
+          watchCovered = Math.max(watchCovered, notified);
           publishLog('reload', {
             revision,
             message: `Sources reloaded (revision ${revision}, ${changed.length} changed path(s)).`,
@@ -7809,6 +7828,7 @@ export async function createSimulator(options) {
           ({ solutionScan, solutionInventory, clientResources } = previous);
           organizationHost.canvas.records = previous.canvasRecords;
           organizationHost.canvas.diagnostics = previous.canvasDiagnostics;
+          watchCovered = Math.max(watchCovered, notified);
           recordDiagnostic({ code: 'RELOAD_FAILED', message: err.message });
           throw err;
         }
@@ -7870,6 +7890,7 @@ export async function createSimulator(options) {
     });
     watcher.on('all', (_event, file) => {
       if (closing) return;
+      watchNotified++;
       if (file) changedPaths.add(file);
       clearTimeout(watcherTimer);
       watcherTimer = setTimeout(() => {

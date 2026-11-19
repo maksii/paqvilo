@@ -10,6 +10,7 @@ import path from 'node:path';
 import { DATAVERSE_COMMAND_OPTIONS, DATAVERSE_OPTIONS } from '../lense/cli-options.mjs';
 import { privateJson } from '../lense/dataverse/connection.mjs';
 import { saveProtectedState } from '../lense/dataverse/index.mjs';
+import { SCENARIO_HANG_GUARD_MS } from './helpers/bounded-command.mjs';
 
 const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
 const bin = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
@@ -147,48 +148,53 @@ test('dataverse command help loads only the help guard modules and performs no f
   }
 });
 
-test('a missing input file of any dataverse command names its option, its path and what to do', async () => {
-  const manifest = path.join(fixture.root, 'manifest.json');
-  await fs.writeFile(manifest, '{}');
-  const state = path.join(fixture.root, '.paqvilo');
-  await fs.mkdir(state, { recursive: true });
-  const registration = path.join(state, 'registration.json');
-  await fs.writeFile(registration, '{}');
-  const valid = {
-    connection: fixture.connection,
-    manifest,
-    catalogue: manifest,
-    solution: 'invented',
-    out: path.join(fixture.root, 'absent', 'out.zip'),
-    registration,
-    'secret-file': path.join(state, 'secret.txt'),
-  };
-  const inputs = ['connection', 'manifest', 'catalogue', 'registration', 'secret-file'];
-  let cases = 0;
-  for (const command of commands) {
-    const { required, optional } = DATAVERSE_COMMAND_OPTIONS[command];
-    const creates = ['register', 'connect'].includes(command) ? ['connection'] : [];
-    for (const option of [...required, ...optional].filter((key) => inputs.includes(key) && !creates.includes(key))) {
-      // connect admits only paths under .paqvilo, so its missing file lies there too.
-      const missing = path.join(command === 'connect' ? '.paqvilo' : '', 'absent', `${option}.json`);
-      const selected = { ...valid, [option]: missing };
-      if (command === 'connect') selected.connection = path.join(state, `${command}-connection.json`);
-      const args = required.flatMap((key) => [`--${key}`, selected[key]]);
-      if (!required.includes(option)) args.push(`--${option}`, missing);
-      const result = run(command, ...args);
-      const expected = `--${option} ${missing} does not exist; check the path.`;
-      oneLineFailure(
-        result,
-        new RegExp(expected.replaceAll(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`)),
-        `${command} --${option}`,
-      );
-      cases++;
+// Hang guard only: it drives a runtime, the CLI or child processes through this file's fixtures; on a loaded slow host that is slow, not hung.
+test(
+  'a missing input file of any dataverse command names its option, its path and what to do',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async () => {
+    const manifest = path.join(fixture.root, 'manifest.json');
+    await fs.writeFile(manifest, '{}');
+    const state = path.join(fixture.root, '.paqvilo');
+    await fs.mkdir(state, { recursive: true });
+    const registration = path.join(state, 'registration.json');
+    await fs.writeFile(registration, '{}');
+    const valid = {
+      connection: fixture.connection,
+      manifest,
+      catalogue: manifest,
+      solution: 'invented',
+      out: path.join(fixture.root, 'absent', 'out.zip'),
+      registration,
+      'secret-file': path.join(state, 'secret.txt'),
+    };
+    const inputs = ['connection', 'manifest', 'catalogue', 'registration', 'secret-file'];
+    let cases = 0;
+    for (const command of commands) {
+      const { required, optional } = DATAVERSE_COMMAND_OPTIONS[command];
+      const creates = ['register', 'connect'].includes(command) ? ['connection'] : [];
+      for (const option of [...required, ...optional].filter((key) => inputs.includes(key) && !creates.includes(key))) {
+        // connect admits only paths under .paqvilo, so its missing file lies there too.
+        const missing = path.join(command === 'connect' ? '.paqvilo' : '', 'absent', `${option}.json`);
+        const selected = { ...valid, [option]: missing };
+        if (command === 'connect') selected.connection = path.join(state, `${command}-connection.json`);
+        const args = required.flatMap((key) => [`--${key}`, selected[key]]);
+        if (!required.includes(option)) args.push(`--${option}`, missing);
+        const result = run(command, ...args);
+        const expected = `--${option} ${missing} does not exist; check the path.`;
+        oneLineFailure(
+          result,
+          new RegExp(expected.replaceAll(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`)),
+          `${command} --${option}`,
+        );
+        cases++;
+      }
     }
-  }
-  assert.equal(cases, 25);
-  const directory = run('plan', '--manifest', fixture.root);
-  oneLineFailure(directory, /--manifest .+ is a directory; give a file path\./, 'directory');
-});
+    assert.equal(cases, 25);
+    const directory = run('plan', '--manifest', fixture.root);
+    oneLineFailure(directory, /--manifest .+ is a directory; give a file path\./, 'directory');
+  },
+);
 
 test('an exclusive --out that already exists is refused before contacting Dataverse', async () => {
   const existing = path.join(fixture.root, 'existing.json');

@@ -1,3 +1,4 @@
+// @test-kind contract: Mirage's own storage of source solution components (layers, baselines, restart and export); no native capture is cited
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -16,6 +17,7 @@ import { parseSchemaDocument, buildSolutionSchema } from '../lib/solution-schema
 import { importSolutionMetadata } from '../lib/solution-metadata.mjs';
 import { zipOf } from '../lib/dataverse-solutions.mjs';
 import { readSolutionAssetEntries } from '../lib/dataverse-solution-assets.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 
 const APP = '77777777-7777-4777-8777-777777777777';
 const FORM = '77777777-7777-4777-8777-777777777778';
@@ -417,7 +419,13 @@ async function client(sim, oldSecret) {
   };
 }
 
-test('selected source app/form API writes and tombstones update catalogue, retain sitemap and survive restart without source writes', async (t) => {
+test(
+  'selected source app/form API writes and tombstones update catalogue, retain sitemap and survive restart without source writes',
+  // Hang guard only: one scenario of three runtime starts over one export, with writes between them.
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  sourceWritesSurviveRestart,
+);
+async function sourceWritesSurviveRestart(t) {
   // The form id is edited into the export before the first start, so the fixture only writes its files.
   const fixture = await modelDrivenFixture(t, { dataverse: { enabled: true }, defer: true });
   const formFile = path.join(fixture.solutionDir, 'Entities/x_item/FormXml/main/item.xml');
@@ -497,85 +505,94 @@ test('selected source app/form API writes and tombstones update catalogue, retai
   );
   assert.equal(await fs.readFile(formFile, 'utf8'), beforeForm);
   assert.equal(await fs.readFile(appFile, 'utf8'), beforeApp);
-});
+}
 
-test('API archive import runs its model app, shares UI/API CRUD, restarts and exports into a fresh instance', async (t) => {
-  const appId = '88888888-8888-4888-8888-888888888881',
-    formId = '88888888-8888-4888-8888-888888888882',
-    viewId = '88888888-8888-4888-8888-888888888883';
-  const files = [
-    { name: '[Content_Types].xml', data: Buffer.from('<Types />') },
-    {
-      name: 'solution.xml',
-      data: Buffer.from(
-        '<ImportExportXml><SolutionManifest><UniqueName>new_runtimeapp</UniqueName><Version>1.0.0.0</Version><Managed>0</Managed><Publisher><UniqueName>new_fixturepublisher</UniqueName><CustomizationPrefix>new</CustomizationPrefix></Publisher></SolutionManifest></ImportExportXml>',
-      ),
-    },
-    {
-      name: 'customizations.xml',
-      data: Buffer.from(
-        `<ImportExportXml><Entities><Entity><Name LocalizedName="Runtime item" OriginalName="new_runtimeitem"/><EntityInfo><entity Name="new_runtimeitem"><OwnershipTypeMask>OrganizationOwned</OwnershipTypeMask><attributes><attribute PhysicalName="new_Name"><Type>nvarchar</Type><Name>new_Name</Name><LogicalName>new_name</LogicalName><DisplayMask>ValidForRead|ValidForForm|PrimaryName</DisplayMask><MaxLength>100</MaxLength></attribute></attributes></entity></EntityInfo><FormXml><systemform><formid>${formId}</formid><type>2</type><LocalizedNames><LocalizedName languagecode="1033" description="Runtime form"/></LocalizedNames><form><tabs><tab name="general"><columns><column><sections><section><rows><row><cell><control datafieldname="new_name" /></cell></row></rows></section></sections></column></columns></tab></tabs></form></systemform></FormXml><SavedQueries><savedquery><savedqueryid>${viewId}</savedqueryid><querytype>0</querytype><isdefault>1</isdefault><LocalizedNames><LocalizedName languagecode="1033" description="Runtime items"/></LocalizedNames><fetchxml><fetch><entity name="new_runtimeitem"><attribute name="new_name"/></entity></fetch></fetchxml><layoutxml><grid><row><cell name="new_name" width="240"/></row></grid></layoutxml></savedquery></SavedQueries></Entity></Entities><AppModules><AppModule><AppModuleId>${appId}</AppModuleId><UniqueName>new_runtime</UniqueName><Name>Runtime app</Name><SiteMap><Area Id="runtime"><Group Id="work"><SubArea Id="items" Entity="new_runtimeitem"/></Group></Area></SiteMap></AppModule></AppModules></ImportExportXml>`,
-      ),
-    },
-    { name: 'WebResources/new_opaque.js', data: Buffer.from('throw new Error("never execute imported scripts");\n') },
-  ];
-  const fixture = await modelDrivenFixture(t, { dataverse: { enabled: true } }),
-    connected = await client(fixture.sim);
-  const sourceAppFile = path.join(fixture.solutionDir, 'AppModules/x_example/AppModule.xml'),
-    sourceBefore = await fs.readFile(sourceAppFile, 'utf8');
-  await connected.read(
-    await connected.api('POST', '/ImportSolution', { CustomizationFile: zipOf(files).toString('base64') }),
-    204,
-  );
-  const catalogue = await connected.catalogue(),
-    app = catalogue.apps.find((app) => app.id === appId);
-  assert.equal(app.navigation[0].groups[0].items[0].entity, 'new_runtimeitem');
-  assert.equal(catalogue.tables.new_runtimeitem.forms[0].id, formId);
-  assert.equal(catalogue.tables.new_runtimeitem.views[0].id, viewId);
-  const created = await connected.read(
-    await fetch(`${fixture.sim.url}/_apps/api/tables/new_runtimeitem`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-sim-csrf': fixture.sim.csrf },
-      body: JSON.stringify({ new_name: 'Created in model app' }),
-    }),
-    201,
-  );
-  const recordId = created.row.new_runtimeitemid;
-  assert.equal(
-    (await connected.read(await connected.api('GET', `/new_runtimeitems(${recordId})`))).new_name,
-    'Created in model app',
-  );
-  await connected.read(
-    await connected.api('PATCH', `/new_runtimeitems(${recordId})`, { new_name: 'Changed through API' }),
-    204,
-  );
-  assert.equal(
-    (await connected.read(await fetch(`${fixture.sim.url}/_apps/api/tables/new_runtimeitem/${recordId}`))).row.new_name,
-    'Changed through API',
-  );
-  await fixture.sim.close();
-  const restarted = await fixture.start();
-  const again = await client(restarted, connected.secret);
-  assert.equal((await again.catalogue()).tables.new_runtimeitem.forms[0].id, formId);
-  assert.equal(
-    (await again.read(await again.api('GET', `/new_runtimeitems(${recordId})`))).new_name,
-    'Changed through API',
-  );
-  const exported = await again.read(
-    await again.api('POST', '/ExportSolution', { SolutionName: 'new_runtimeapp', Managed: false }),
-  );
-  assert.deepEqual(
-    readSolutionAssetEntries(Buffer.from(exported.ExportSolutionFile, 'base64')).find(
-      (entry) => entry.name === 'WebResources/new_opaque.js',
-    ).data,
-    files.at(-1).data,
-  );
-  const target = await modelDrivenFixture(t, { dataverse: { enabled: true } }),
-    fresh = await client(target.sim);
-  await fresh.read(await fresh.api('POST', '/ImportSolution', { CustomizationFile: exported.ExportSolutionFile }), 204);
-  const imported = await fresh.catalogue();
-  assert.deepEqual(imported.apps.find((app) => app.id === appId).navigation, app.navigation);
-  assert.equal(imported.tables.new_runtimeitem.forms[0].id, formId);
-  assert.equal(imported.tables.new_runtimeitem.views[0].id, viewId);
-  assert.equal(await fs.readFile(sourceAppFile, 'utf8'), sourceBefore);
-});
+// Hang guard only: one scenario of an archive import, a restart and an export into a second instance.
+test(
+  'API archive import runs its model app, shares UI/API CRUD, restarts and exports into a fresh instance',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const appId = '88888888-8888-4888-8888-888888888881',
+      formId = '88888888-8888-4888-8888-888888888882',
+      viewId = '88888888-8888-4888-8888-888888888883';
+    const files = [
+      { name: '[Content_Types].xml', data: Buffer.from('<Types />') },
+      {
+        name: 'solution.xml',
+        data: Buffer.from(
+          '<ImportExportXml><SolutionManifest><UniqueName>new_runtimeapp</UniqueName><Version>1.0.0.0</Version><Managed>0</Managed><Publisher><UniqueName>new_fixturepublisher</UniqueName><CustomizationPrefix>new</CustomizationPrefix></Publisher></SolutionManifest></ImportExportXml>',
+        ),
+      },
+      {
+        name: 'customizations.xml',
+        data: Buffer.from(
+          `<ImportExportXml><Entities><Entity><Name LocalizedName="Runtime item" OriginalName="new_runtimeitem"/><EntityInfo><entity Name="new_runtimeitem"><OwnershipTypeMask>OrganizationOwned</OwnershipTypeMask><attributes><attribute PhysicalName="new_Name"><Type>nvarchar</Type><Name>new_Name</Name><LogicalName>new_name</LogicalName><DisplayMask>ValidForRead|ValidForForm|PrimaryName</DisplayMask><MaxLength>100</MaxLength></attribute></attributes></entity></EntityInfo><FormXml><systemform><formid>${formId}</formid><type>2</type><LocalizedNames><LocalizedName languagecode="1033" description="Runtime form"/></LocalizedNames><form><tabs><tab name="general"><columns><column><sections><section><rows><row><cell><control datafieldname="new_name" /></cell></row></rows></section></sections></column></columns></tab></tabs></form></systemform></FormXml><SavedQueries><savedquery><savedqueryid>${viewId}</savedqueryid><querytype>0</querytype><isdefault>1</isdefault><LocalizedNames><LocalizedName languagecode="1033" description="Runtime items"/></LocalizedNames><fetchxml><fetch><entity name="new_runtimeitem"><attribute name="new_name"/></entity></fetch></fetchxml><layoutxml><grid><row><cell name="new_name" width="240"/></row></grid></layoutxml></savedquery></SavedQueries></Entity></Entities><AppModules><AppModule><AppModuleId>${appId}</AppModuleId><UniqueName>new_runtime</UniqueName><Name>Runtime app</Name><SiteMap><Area Id="runtime"><Group Id="work"><SubArea Id="items" Entity="new_runtimeitem"/></Group></Area></SiteMap></AppModule></AppModules></ImportExportXml>`,
+        ),
+      },
+      { name: 'WebResources/new_opaque.js', data: Buffer.from('throw new Error("never execute imported scripts");\n') },
+    ];
+    const fixture = await modelDrivenFixture(t, { dataverse: { enabled: true } }),
+      connected = await client(fixture.sim);
+    const sourceAppFile = path.join(fixture.solutionDir, 'AppModules/x_example/AppModule.xml'),
+      sourceBefore = await fs.readFile(sourceAppFile, 'utf8');
+    await connected.read(
+      await connected.api('POST', '/ImportSolution', { CustomizationFile: zipOf(files).toString('base64') }),
+      204,
+    );
+    const catalogue = await connected.catalogue(),
+      app = catalogue.apps.find((app) => app.id === appId);
+    assert.equal(app.navigation[0].groups[0].items[0].entity, 'new_runtimeitem');
+    assert.equal(catalogue.tables.new_runtimeitem.forms[0].id, formId);
+    assert.equal(catalogue.tables.new_runtimeitem.views[0].id, viewId);
+    const created = await connected.read(
+      await fetch(`${fixture.sim.url}/_apps/api/tables/new_runtimeitem`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-sim-csrf': fixture.sim.csrf },
+        body: JSON.stringify({ new_name: 'Created in model app' }),
+      }),
+      201,
+    );
+    const recordId = created.row.new_runtimeitemid;
+    assert.equal(
+      (await connected.read(await connected.api('GET', `/new_runtimeitems(${recordId})`))).new_name,
+      'Created in model app',
+    );
+    await connected.read(
+      await connected.api('PATCH', `/new_runtimeitems(${recordId})`, { new_name: 'Changed through API' }),
+      204,
+    );
+    assert.equal(
+      (await connected.read(await fetch(`${fixture.sim.url}/_apps/api/tables/new_runtimeitem/${recordId}`))).row
+        .new_name,
+      'Changed through API',
+    );
+    await fixture.sim.close();
+    const restarted = await fixture.start();
+    const again = await client(restarted, connected.secret);
+    assert.equal((await again.catalogue()).tables.new_runtimeitem.forms[0].id, formId);
+    assert.equal(
+      (await again.read(await again.api('GET', `/new_runtimeitems(${recordId})`))).new_name,
+      'Changed through API',
+    );
+    const exported = await again.read(
+      await again.api('POST', '/ExportSolution', { SolutionName: 'new_runtimeapp', Managed: false }),
+    );
+    assert.deepEqual(
+      readSolutionAssetEntries(Buffer.from(exported.ExportSolutionFile, 'base64')).find(
+        (entry) => entry.name === 'WebResources/new_opaque.js',
+      ).data,
+      files.at(-1).data,
+    );
+    const target = await modelDrivenFixture(t, { dataverse: { enabled: true } }),
+      fresh = await client(target.sim);
+    await fresh.read(
+      await fresh.api('POST', '/ImportSolution', { CustomizationFile: exported.ExportSolutionFile }),
+      204,
+    );
+    const imported = await fresh.catalogue();
+    assert.deepEqual(imported.apps.find((app) => app.id === appId).navigation, app.navigation);
+    assert.equal(imported.tables.new_runtimeitem.forms[0].id, formId);
+    assert.equal(imported.tables.new_runtimeitem.views[0].id, viewId);
+    assert.equal(await fs.readFile(sourceAppFile, 'utf8'), sourceBefore);
+  },
+);

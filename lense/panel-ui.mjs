@@ -332,6 +332,8 @@ function panelBrowserImpl(data) {
       pendingActions: new Map(),
     };
     const nativeFetch = globalThis.fetch.bind(globalThis);
+    // A change the runtime has seen but not reloaded yet: behind a running reload, or before one starts.
+    const pendingReloadText = (s) => (s.reloading ? 'another reload queued' : 'source change waiting to reload');
     const esc = (s) =>
       String(s ?? '').replace(
         /[&<>"']/g,
@@ -1110,7 +1112,7 @@ function panelBrowserImpl(data) {
       const scenario = s.activeScenario ? ` · scenario ${esc(s.activeScenario.name ?? s.activeScenario.id)}` : '';
       const auditHash = `audit?path=${encodeURIComponent(location.pathname)}`;
       return `<div class="card"><div class="path">Local Mirage <span class="dim">${esc(s.site ?? S.d.site)} · ${esc(s.format ?? 'portal source')}</span></div>
-        <div class="srcs"><span class="lbl2">Runtime</span><span class="dim" title="Source fingerprint ${esc(s.sourceFingerprint ?? 'unknown')}">revision ${esc(s.revision ?? '?')} · source ${esc(String(s.sourceFingerprint ?? '').slice(0, 8) || 'unknown')}</span>${s.reloading ? '<span class="c diff">reloading sources</span>' : ''}${s.pendingReload ? '<span class="c diff">another reload queued</span>' : ''}<button class="src" data-act="sim" data-hash="activity?tab=findings">${esc(s.diagnostics ?? 0)} diagnostics</button></div>
+        <div class="srcs"><span class="lbl2">Runtime</span><span class="dim" title="Source fingerprint ${esc(s.sourceFingerprint ?? 'unknown')}">revision ${esc(s.revision ?? '?')} · source ${esc(String(s.sourceFingerprint ?? '').slice(0, 8) || 'unknown')}</span>${s.reloading ? '<span class="c diff">reloading sources</span>' : ''}${s.pendingReload ? `<span class="c diff">${pendingReloadText(s)}</span>` : ''}<button class="src" data-act="sim" data-hash="activity?tab=findings">${esc(s.diagnostics ?? 0)} diagnostics</button></div>
         <div class="srcs"><span class="lbl2">${session ? 'Session' : 'Persona'}</span><span class="dim">${esc(who)} · ${esc((roles ?? []).join(', ') || 'no web roles')} · permissions ${esc(s.permissionMode ?? 'unknown')}${scenario}</span><button class="src" data-act="tab" data-v="tweaks">Change</button></div>
         <div class="srcs"><button class="src" data-act="admin">Open _sim administration</button><button class="src" data-act="sim" data-hash="${esc(auditHash)}">Requests for this page</button><button class="src" data-act="copypage">Copy local URL</button></div></div>`;
     };
@@ -2214,7 +2216,7 @@ function panelBrowserImpl(data) {
       const policyRow = policy
         ? `<div class="srcs"><span class="lbl2">Content policy</span><span class="dim" data-policy="${policyMode}">${esc(policy)} · ${esc(s.contentPolicySource ?? 'runtime state')}</span><button class="src" data-act="sim" data-hash="connection">Change in _sim</button></div>`
         : '';
-      out += `<div class="card"><div class="path">Mirage status</div><div class="srcs"><span class="lbl2">Source</span><span class="dim">${esc(s.sourceFingerprint ?? 'unknown')}</span></div><div class="srcs"><span class="lbl2">Revision</span><span class="dim">${esc(s.revision ?? '?')}${s.reloading ? ' · reloading sources' : ''}${s.pendingReload ? ' · another reload queued' : ''}</span><span class="lbl2">Diagnostics</span><span class="dim">${esc(s.diagnostics?.total ?? s.diagnostics ?? 0)}</span></div>${policyRow}</div>`;
+      out += `<div class="card"><div class="path">Mirage status</div><div class="srcs"><span class="lbl2">Source</span><span class="dim">${esc(s.sourceFingerprint ?? 'unknown')}</span></div><div class="srcs"><span class="lbl2">Revision</span><span class="dim">${esc(s.revision ?? '?')}${s.reloading ? ' · reloading sources' : ''}${s.pendingReload ? ' · ' + pendingReloadText(s) : ''}</span><span class="lbl2">Diagnostics</span><span class="dim">${esc(s.diagnostics?.total ?? s.diagnostics ?? 0)}</span></div>${policyRow}</div>`;
       return out;
     };
 

@@ -269,24 +269,51 @@ function keepPlace(paint) {
   const again = id && document.getElementById(id);
   if (again) window.scrollBy(0, again.getBoundingClientRect().top - top);
 }
-// While a button is pressed, polls leave the page alone, so the click lands on the button that was pressed.
+// While a pointer or a held Space presses, polls leave the page alone, so the click lands on the control that was
+// pressed. Repaints that cannot wait for a later poll run through whenReleased. Every way a press can end without its
+// release reaching the page (a native dialog, another window, a hidden tab) clears all presses, so a load or save
+// waiting for the release always goes on.
+const presses = new Set(),
+  afterPress = [];
 let pressing = false;
+function press(kind, down) {
+  if (down) presses.add(kind);
+  else presses.delete(kind);
+  pressing = presses.size > 0;
+  if (!pressing) for (const run of afterPress.splice(0)) run();
+}
+const whenReleased = (run) => (pressing ? afterPress.push(run) : run());
+// For an async step about to repaint: resolves at once, or when the press that is under way ends.
+const released = () => new Promise((resolve) => whenReleased(resolve));
+// The release waits one task, so the click of that press runs first.
+const releaseAfterClick = (kind) => setTimeout(() => press(kind, false));
+document.addEventListener('pointerdown', () => press('pointer', true), true);
+for (const type of ['pointerup', 'pointercancel'])
+  document.addEventListener(type, () => releaseAfterClick('pointer'), true);
+// A press can end without pointerup: a context menu opens, the window loses focus, or the button was released elsewhere.
+document.addEventListener('contextmenu', () => press('pointer', false), true);
 document.addEventListener(
-  'pointerdown',
-  () => {
-    pressing = true;
+  'pointermove',
+  (event) => {
+    if (event.buttons === 0 && presses.has('pointer')) press('pointer', false);
   },
   true,
 );
-for (const type of ['pointerup', 'pointercancel'])
-  document.addEventListener(
-    type,
-    () =>
-      setTimeout(() => {
-        pressing = false;
-      }),
-    true,
-  );
+function releaseAll() {
+  presses.clear();
+  press('pointer', false);
+}
+window.addEventListener('blur', releaseAll);
+document.addEventListener('visibilitychange', () => document.visibilityState === 'hidden' && releaseAll());
+// Space activates a button on keyup, so holding it presses that button. Enter clicks on keydown: nothing to keep.
+const pressKey = (event) => event.key === ' ' && event.target.closest?.('button, input[type=submit]');
+document.addEventListener('keydown', (event) => pressKey(event) && press('key', true), true);
+document.addEventListener('keyup', (event) => event.key === ' ' && releaseAfterClick('key'), true);
+// The page's own questions: the release of a key or button held when the dialog opens goes to the dialog.
+function ask(question) {
+  releaseAll();
+  return confirm(question);
+}
 function renderPreservingContext() {
   // Sections the user saw keep their open state; sections that appear for the first time take their default.
   const sections = [...document.querySelectorAll('#content details[data-section-key]')];
@@ -350,8 +377,12 @@ async function load() {
     // A successful load needs no banner: the status strip shows the result; errors and saves still report in #notice.
     state = await request('/_setup/api/status');
     await Promise.all([loadQuick(), pollPreview(true)]);
+    // This render shows the found preview, so the next poll repaints only when it starts or stops.
+    liveChanged();
     await loadRuntimeInfo();
     dirty = false;
+    // Links and summaries stay usable while loading; one being pressed keeps its click.
+    await released();
     renderPreservingContext();
     $('#notice').hidden = true;
     if (firstRender) {
@@ -403,6 +434,7 @@ async function save(payload) {
     dirty = false;
     savedAt = Date.now();
     if (!state.runtime && quickSession()?.ready) restartHint = true;
+    await released();
     renderPreservingContext();
     notice(view === 'quick' ? 'Saved.' : savedNotice(state.runtime));
     return true;
@@ -1365,7 +1397,8 @@ function refreshPreviewView(silent) {
   return shouldRefreshRuntimeInfo();
 }
 function renderPreviewStatusChange() {
-  if (!pending && !dirty && liveChanged()) renderPreservingContext();
+  // A pressed button is not replaced, so its click lands; a later poll repaints.
+  if (!pending && !dirty && !pressing && liveChanged()) renderPreservingContext();
 }
 async function pollPreview(silent = false) {
   if (previewPolling || !state || document.visibilityState !== 'visible') return;
@@ -1532,7 +1565,7 @@ async function previewAction(action) {
   if (
     action === 'stop' &&
     liveRuntime() &&
-    !confirm(
+    !ask(
       'This page is served by the preview. Stopping it also closes this page until you open setup again. Stop the preview?',
     )
   )
@@ -1563,8 +1596,11 @@ async function previewAction(action) {
   } catch (error) {
     previewError = error.message;
   }
-  refreshQuick(true);
-  refreshRun(true);
+  // The answer can arrive while another control is pressed: that click lands first.
+  whenReleased(() => {
+    refreshQuick(true);
+    refreshRun(true);
+  });
   clearTimeout(previewTimer);
   previewTimer = setTimeout(() => pollPreview(), 1500);
 }
@@ -1623,7 +1659,7 @@ function setView(next) {
   if (!state || firstRender) return;
   void Promise.all([view === 'quick' && !quick ? loadQuick() : null, pollPreview(true)]).then(async () => {
     await loadRuntimeInfo();
-    render();
+    whenReleased(render);
   });
   render();
 }
@@ -1707,6 +1743,8 @@ async function openFolder(folder) {
   else if (match) here.textContent = `This folder is a ${kindText(data.kind)}. Choose “Use this folder”.`;
   else if (data.kind) here.textContent = `This folder holds a ${kindText(data.kind)}, not a ${noun}.`;
   else here.textContent = `This folder is not a ${noun}. Open one of the folders below.`;
+  // The folder rows are buttons: a row pressed while this folder was read keeps its click.
+  await released();
   $('#folder-picker-list').innerHTML =
     (data.parent
       ? `<li><button type="button" class="folder-row" data-folder-open="${esc(data.parent)}"><span>↑ Up one folder</span></button></li>`
@@ -1740,7 +1778,7 @@ function useFolder() {
   if (
     PICK[kind].noun &&
     data.kind?.type !== kind &&
-    !confirm(`This folder does not look like a ${PICK[kind].noun}. Use it anyway?`)
+    !ask(`This folder does not look like a ${PICK[kind].noun}. Use it anyway?`)
   )
     return;
   const into = picker.into && document.getElementById(picker.into),
@@ -2714,9 +2752,11 @@ function handleRunSiteChange(target) {
   liveChanged();
   renderPreservingContext();
   void pollDashboard();
-  void loadRuntimeInfo().then(() => {
-    if (quickSite === target.value) renderPreservingContext();
-  });
+  void loadRuntimeInfo().then(() =>
+    whenReleased(() => {
+      if (quickSite === target.value) renderPreservingContext();
+    }),
+  );
   return true;
 }
 function handleFoundWebsiteChange(target) {
@@ -2743,7 +2783,7 @@ function handleRuntimePartChange(target) {
   if (yaml ? !Object.hasOwn(state.layers, target.value) : !['shared', 'personal'].includes(target.value)) return;
   if (
     dirty &&
-    !confirm(
+    !ask(
       yaml
         ? 'Discard unsaved form changes and open another document?'
         : 'Discard unsaved form changes and switch configuration layer?',
@@ -2951,7 +2991,7 @@ document.addEventListener('click', (event) => {
     setView('all');
   // Links to a document (a linked-project finding, a references-only row) open it in the YAML editor first.
   if (document_ && state?.layers[document_] && document_ !== (state.layers[yamlLayer] ? yamlLayer : layer)) {
-    if (dirty && !confirm('Discard unsaved form changes and open another document?')) {
+    if (dirty && !ask('Discard unsaved form changes and open another document?')) {
       event.preventDefault();
       return;
     }
@@ -3016,6 +3056,7 @@ const SUBMIT = {
     ) {
       await loadQuick();
       quickEditing = null;
+      await released();
       render();
       notice(
         `Created ${fileName(state.layers.shared.file)} in ${state.directory}. Check the folders it uses in step 2.`,
@@ -3562,7 +3603,7 @@ $('#content').addEventListener('submit', async (event) => {
   }
 });
 $('#refresh').addEventListener('click', () => {
-  if (!dirty || confirm('Discard unsaved form changes and reload status?')) void load();
+  if (!dirty || ask('Discard unsaved form changes and reload status?')) void load();
 });
 window.addEventListener('beforeunload', (event) => {
   if (dirty) {

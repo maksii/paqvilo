@@ -20,6 +20,7 @@ import { profileFixture } from './fixtures/deployment-profiles.mjs';
 import { ownedClose } from '../testing/owned-fixture.mjs';
 import { initProject, cliArgs, mirageReadiness } from '../../lense/commands/mirage.mjs';
 import { loadProjectConfig } from '../lib/project-config.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 
 // The simulator announces each finished source reload on /__sim/events ("event: reload"). The watcher's write-stability
 // and debounce windows make the time to a reload machine-dependent, so a test waits on these announcements, never a clock:
@@ -179,62 +180,67 @@ test('mapped files require correct PAC sections and reject duplicates, malformed
   );
 });
 
-test('runtime pins profiles atomically, retains overrides and pins across restart, and resets defaults', async (t) => {
-  const fixture = await profileFixture(t);
-  let app = ownedClose(t, await createSimulator({ ...fixture, watch: false }));
-  const call = async (route, body) => {
-    const response = await fetch(
-      `${app.url}/__sim/api${route}`,
-      body === undefined
-        ? {}
-        : {
-            method: 'PUT',
-            headers: { 'content-type': 'application/json', 'x-sim-csrf': app.csrf },
-            body: JSON.stringify(body),
-          },
+// Hang guard only: it starts a simulator and drives it through its reloads; on a loaded slow host that is slow, not hung.
+test(
+  'runtime pins profiles atomically, retains overrides and pins across restart, and resets defaults',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const fixture = await profileFixture(t);
+    let app = ownedClose(t, await createSimulator({ ...fixture, watch: false }));
+    const call = async (route, body) => {
+      const response = await fetch(
+        `${app.url}/__sim/api${route}`,
+        body === undefined
+          ? {}
+          : {
+              method: 'PUT',
+              headers: { 'content-type': 'application/json', 'x-sim-csrf': app.csrf },
+              body: JSON.stringify(body),
+            },
+      );
+      return { status: response.status, body: await response.json() };
+    };
+    const variable = () =>
+      app.state().data.environmentvariablevalue.find((row) => row.schemaname === 'sample_Url')?.value;
+    assert.equal(app.portal.snippets.Greeting, 'Development');
+    assert.equal(variable(), 'dev variable');
+    assert.equal(app.state().data.connectionreference[0].connectionid, 'dev-connection');
+    const before = (await call('/status')).body.sourceFingerprint;
+    assert.equal(
+      (await call('/environment/profiles', { profile: 'test', enabled: { connectionReferences: false } })).status,
+      200,
     );
-    return { status: response.status, body: await response.json() };
-  };
-  const variable = () =>
-    app.state().data.environmentvariablevalue.find((row) => row.schemaname === 'sample_Url')?.value;
-  assert.equal(app.portal.snippets.Greeting, 'Development');
-  assert.equal(variable(), 'dev variable');
-  assert.equal(app.state().data.connectionreference[0].connectionid, 'dev-connection');
-  const before = (await call('/status')).body.sourceFingerprint;
-  assert.equal(
-    (await call('/environment/profiles', { profile: 'test', enabled: { connectionReferences: false } })).status,
-    200,
-  );
-  assert.equal(app.portal.snippets.Greeting, 'Test');
-  assert.equal(variable(), 'test variable');
-  assert.equal(app.state().data.connectionreference.length, 0);
-  assert.notEqual((await call('/status')).body.sourceFingerprint, before);
-  assert.equal((await call('/environment/profiles', { profile: 'test', enabled: { pages: false } })).status, 400);
-  assert.equal(app.portal.snippets.Greeting, 'Test');
-  await call('/environment/variables/sample_Url', { value: 'Manual' });
-  assert.equal(variable(), 'Manual');
-  await app.close();
-  app = ownedClose(t, await createSimulator({ ...fixture, watch: false }));
-  assert.equal(app.portal.snippets.Greeting, 'Test');
-  assert.equal(variable(), 'Manual');
-  assert.equal((await call('/environment')).body.profileSelection.pinned, true);
-  const current = (await call('/status')).body.sourceFingerprint;
-  await fs.writeFile(path.join(fixture.root, 'profiles/dev-settings.json'), '{broken');
-  assert.equal((await call('/environment/profiles', null)).status, 400);
-  assert.equal(app.portal.snippets.Greeting, 'Test');
-  assert.equal((await call('/status')).body.sourceFingerprint, current);
-  await fs.writeFile(
-    path.join(fixture.root, 'profiles/dev-settings.json'),
-    fixture.files['profiles/dev-settings.json'],
-  );
-  await call('/environment/profiles', null);
-  assert.equal(app.portal.snippets.Greeting, 'Development');
-  assert.equal(variable(), 'Manual');
-  await call('/environment/variables/sample_Url', { value: null });
-  assert.equal(variable(), 'dev variable');
-  for (const [name, content] of Object.entries(fixture.files).filter(([name]) => name.startsWith('portal/')))
-    assert.equal(await fs.readFile(path.join(fixture.root, name), 'utf8'), content);
-});
+    assert.equal(app.portal.snippets.Greeting, 'Test');
+    assert.equal(variable(), 'test variable');
+    assert.equal(app.state().data.connectionreference.length, 0);
+    assert.notEqual((await call('/status')).body.sourceFingerprint, before);
+    assert.equal((await call('/environment/profiles', { profile: 'test', enabled: { pages: false } })).status, 400);
+    assert.equal(app.portal.snippets.Greeting, 'Test');
+    await call('/environment/variables/sample_Url', { value: 'Manual' });
+    assert.equal(variable(), 'Manual');
+    await app.close();
+    app = ownedClose(t, await createSimulator({ ...fixture, watch: false }));
+    assert.equal(app.portal.snippets.Greeting, 'Test');
+    assert.equal(variable(), 'Manual');
+    assert.equal((await call('/environment')).body.profileSelection.pinned, true);
+    const current = (await call('/status')).body.sourceFingerprint;
+    await fs.writeFile(path.join(fixture.root, 'profiles/dev-settings.json'), '{broken');
+    assert.equal((await call('/environment/profiles', null)).status, 400);
+    assert.equal(app.portal.snippets.Greeting, 'Test');
+    assert.equal((await call('/status')).body.sourceFingerprint, current);
+    await fs.writeFile(
+      path.join(fixture.root, 'profiles/dev-settings.json'),
+      fixture.files['profiles/dev-settings.json'],
+    );
+    await call('/environment/profiles', null);
+    assert.equal(app.portal.snippets.Greeting, 'Development');
+    assert.equal(variable(), 'Manual');
+    await call('/environment/variables/sample_Url', { value: null });
+    assert.equal(variable(), 'dev variable');
+    for (const [name, content] of Object.entries(fixture.files).filter(([name]) => name.startsWith('portal/')))
+      assert.equal(await fs.readFile(path.join(fixture.root, name), 'utf8'), content);
+  },
+);
 
 test('optional sections disable cleanly, project variables win case-insensitively, and bootstrap reports apply defaults', async (t) => {
   const fixture = await profileFixture(t);
@@ -263,38 +269,43 @@ test('optional sections disable cleanly, project variables win case-insensitivel
   assert.equal(active.connectionReferences.length, 0);
 });
 
-test('external profile changes reload local rendering and seeded values with a new fingerprint', async (t) => {
-  const fixture = await profileFixture(t);
-  // Ordered file-list mappings must participate in normal watched development.
-  for (const profile of Object.values(fixture.deploymentProfiles.profiles)) {
-    profile.environmentVariables = [profile.environmentVariables];
-    profile.connectionReferences = [profile.connectionReferences];
-  }
-  const app = await createSimulator({ ...fixture, watch: true });
-  fixture.onCleanup(() => app.close());
-  const reloaded = await reloadEvents(app, fixture);
-  const status = async () => await (await fetch(app.url + '/__sim/api/status')).json();
-  const fingerprint = (await status()).sourceFingerprint;
-  await fs.writeFile(
-    path.join(fixture.root, 'profiles/dev.yml'),
-    'adx_contentsnippet:\n- adx_contentsnippetid: greeting\n  adx_value: Reloaded',
-  );
-  await reloaded(
-    async () => app.portal.snippets.Greeting === 'Reloaded' && (await status()).sourceFingerprint !== fingerprint,
-  );
-  assert.equal(app.portal.snippets.Greeting, 'Reloaded');
-  assert.notEqual((await status()).sourceFingerprint, fingerprint);
-  await fs.writeFile(
-    path.join(fixture.root, 'profiles/dev-settings.json'),
-    JSON.stringify({
-      EnvironmentVariables: [{ SchemaName: 'sample_Url', Value: 'Reloaded variable' }],
-      ConnectionReferences: [],
-    }),
-  );
-  await reloaded(() => app.state().data.environmentvariablevalue[0].value === 'Reloaded variable');
-  assert.equal(app.state().data.environmentvariablevalue[0].value, 'Reloaded variable');
-  assert.equal(app.state().data.connectionreference.length, 0);
-});
+// Hang guard only: a runtime start and two source reloads that follow file-watcher events.
+test(
+  'external profile changes reload local rendering and seeded values with a new fingerprint',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const fixture = await profileFixture(t);
+    // Ordered file-list mappings must participate in normal watched development.
+    for (const profile of Object.values(fixture.deploymentProfiles.profiles)) {
+      profile.environmentVariables = [profile.environmentVariables];
+      profile.connectionReferences = [profile.connectionReferences];
+    }
+    const app = await createSimulator({ ...fixture, watch: true });
+    fixture.onCleanup(() => app.close());
+    const reloaded = await reloadEvents(app, fixture);
+    const status = async () => await (await fetch(app.url + '/__sim/api/status')).json();
+    const fingerprint = (await status()).sourceFingerprint;
+    await fs.writeFile(
+      path.join(fixture.root, 'profiles/dev.yml'),
+      'adx_contentsnippet:\n- adx_contentsnippetid: greeting\n  adx_value: Reloaded',
+    );
+    await reloaded(
+      async () => app.portal.snippets.Greeting === 'Reloaded' && (await status()).sourceFingerprint !== fingerprint,
+    );
+    assert.equal(app.portal.snippets.Greeting, 'Reloaded');
+    assert.notEqual((await status()).sourceFingerprint, fingerprint);
+    await fs.writeFile(
+      path.join(fixture.root, 'profiles/dev-settings.json'),
+      JSON.stringify({
+        EnvironmentVariables: [{ SchemaName: 'sample_Url', Value: 'Reloaded variable' }],
+        ConnectionReferences: [],
+      }),
+    );
+    await reloaded(() => app.state().data.environmentvariablevalue[0].value === 'Reloaded variable');
+    assert.equal(app.state().data.environmentvariablevalue[0].value, 'Reloaded variable');
+    assert.equal(app.state().data.connectionreference.length, 0);
+  },
+);
 
 test('no-profile pin restores source values, removes owned seeds only and preserves manual snippet overrides', async (t) => {
   const fixture = await profileFixture(t);

@@ -2,7 +2,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { boundedCommand, COMMAND_HANG_GUARD_MS } from './helpers/bounded-command.mjs';
+import { boundedCommand, COMMAND_HANG_GUARD_MS, RUNTIME_COMMAND_HANG_GUARD_MS } from './helpers/bounded-command.mjs';
+import { STARTUP_ABSOLUTE_CAP } from '../lense/commands/mirage.mjs';
 import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 
@@ -105,4 +106,38 @@ test('fixture cleanup drains the owned child before deleting state and preserves
   assert.equal(result.stdout, 'out');
   assert.equal(result.stderr, 'diagnostic');
   assert.equal(removed, true);
+});
+
+test('a runtime command is ended by the guard its caller names, not by the default one', async (t) => {
+  const { fixture } = context(t);
+  let seen;
+  const execute = (_file, _args, options, callback) => {
+    seen = options.timeout;
+    const child = Object.assign(new EventEmitter(), { exitCode: 0, signalCode: null });
+    queueMicrotask(() => {
+      callback(null, 'started', '');
+      child.emit('close', 0, null);
+    });
+    return child;
+  };
+  const slot = (start, _limit, options) => withProcessSlot(start, 1, options);
+  const guardMs = RUNTIME_COMMAND_HANG_GUARD_MS;
+  const result = await boundedCommand(fixture, 'invented', [], {}, { execute, slot, guardMs });
+  assert.equal(result.status, 0);
+  assert.equal(seen, RUNTIME_COMMAND_HANG_GUARD_MS);
+  assert.ok(RUNTIME_COMMAND_HANG_GUARD_MS > STARTUP_ABSOLUTE_CAP, 'above the start-up cap of mirage start');
+});
+
+test('a CI test job outlasts one hung test and its hung cleanup, so the failure is still printed', async () => {
+  const { parse } = await import('yaml');
+  const { readFileSync } = await import('node:fs');
+  const { CLEANUP_HANG_GUARD_MS } = await import('../mirage/testing/owned-fixture.mjs');
+  const { SCENARIO_HANG_GUARD_MS } = await import('./helpers/bounded-command.mjs');
+  const { jobs } = parse(readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8'));
+  // The lane itself: the slowest one takes about a quarter of an hour on a hosted runner.
+  const lane = 15 * 60_000;
+  for (const name of ['test', 'browser', 'windows']) {
+    const limit = jobs[name]['timeout-minutes'] * 60_000;
+    assert.ok(limit >= SCENARIO_HANG_GUARD_MS + CLEANUP_HANG_GUARD_MS + lane, `${name}: ${limit} ms`);
+  }
 });

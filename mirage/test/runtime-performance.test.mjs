@@ -76,6 +76,7 @@ test('paged FetchXML projects only returned rows while preserving counts, cookie
   assert.deepEqual(stored.x_details, { invented: [1449] }, 'Structured values are detached copies');
 });
 import { settleFileTimes } from './support/file-times.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 
 test('unchanged isolated composition clones each business graph once and owned replacement saves zero bytes', async (t) => {
   const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-copy-count-'));
@@ -1115,8 +1116,8 @@ test('catalogue yields to status while retaining one security read and releases 
 // response, 1,000 ms per status heartbeat and first grid or record read), while the ordinary suite checks invariants
 // instead of elapsed time. The suite therefore runs the probe with those budgets in recording mode: a miss on a loaded
 // machine is a finding, never a failure, but every finding must be an honest latency record. Recording mode aborts no
-// request at its budget, so no finding is an error; a failed request still fails the test. The runner's --test-timeout
-// is the hang guard.
+// request at its budget, so no finding is an error; a failed request still fails the test. The startup cases
+// carry their own hang guard; for the other probe run the runner's --test-timeout is the hang guard.
 const PROBE = { budgetMs: 30000, heartbeatBudgetMs: 1000, strictBudgets: false };
 function assertLatencyFindingsOnly(report) {
   assert.deepEqual(
@@ -1132,44 +1133,50 @@ function assertLatencyFindingsOnly(report) {
   }
 }
 
+// Hang guard only: one case is three startups (fresh, unchanged, grown journal), each measured to its end.
 for (const portal of [false, true])
-  test(`${portal ? 'portal' : 'standalone'} fresh, unchanged and grown-journal startup retains bootstrap data and reports costs`, async (t) => {
-    // The reuse assertions below concern files written moments ago.
-    settleFileTimes(t);
-    const report = await runtimePerformance({ ...PROBE, scales: [2], records: 32, portal });
-    assertLatencyFindingsOnly(report);
+  test(
+    `${portal ? 'portal' : 'standalone'} fresh, unchanged and grown-journal startup retains bootstrap data and reports costs`,
+    { timeout: SCENARIO_HANG_GUARD_MS },
+    (t) => startupPhases(t, portal),
+  );
+async function startupPhases(t, portal) {
+  // The reuse assertions below concern files written moments ago.
+  settleFileTimes(t);
+  const report = await runtimePerformance({ ...PROBE, scales: [2], records: 32, portal });
+  assertLatencyFindingsOnly(report);
+  assert.deepEqual(
+    report.results.map((result) => result.generated),
+    [1, 0, 0],
+  );
+  assert.deepEqual(
+    report.results.map((result) => result.preset.applied),
+    [true, false, false],
+  );
+  assert.ok(
+    report.results.every(
+      (result) => result.rows === 16 && result.timings.stateRestoreMs >= 0 && result.timings.organizationMs >= 0,
+    ),
+  );
+  assert.ok(report.results[1].timings.solutionCache.hits > 0);
+  assert.equal(report.results[1].timings.solutionCache.misses, 0);
+  assert.equal(report.results[2].timings.stateRestore.journal, true);
+  for (const result of report.results) {
+    assert.equal(result.metadataTransport.length, 4);
+    assert.ok(result.metadataTransport.every((read) => read.bytes > 0 && read.parseMs >= 0));
     assert.deepEqual(
-      report.results.map((result) => result.generated),
-      [1, 0, 0],
+      result.progress
+        .filter((entry) =>
+          ['state-restore', 'state-composition', 'preset', 'organization', 'listener', 'listener-ready'].includes(
+            entry.phase,
+          ),
+        )
+        .map((entry) => entry.phase),
+      ['state-restore', 'state-composition', 'preset', 'organization', 'listener', 'listener-ready'],
     );
-    assert.deepEqual(
-      report.results.map((result) => result.preset.applied),
-      [true, false, false],
-    );
-    assert.ok(
-      report.results.every(
-        (result) => result.rows === 16 && result.timings.stateRestoreMs >= 0 && result.timings.organizationMs >= 0,
-      ),
-    );
-    assert.ok(report.results[1].timings.solutionCache.hits > 0);
-    assert.equal(report.results[1].timings.solutionCache.misses, 0);
-    assert.equal(report.results[2].timings.stateRestore.journal, true);
-    for (const result of report.results) {
-      assert.equal(result.metadataTransport.length, 4);
-      assert.ok(result.metadataTransport.every((read) => read.bytes > 0 && read.parseMs >= 0));
-      assert.deepEqual(
-        result.progress
-          .filter((entry) =>
-            ['state-restore', 'state-composition', 'preset', 'organization', 'listener', 'listener-ready'].includes(
-              entry.phase,
-            ),
-          )
-          .map((entry) => entry.phase),
-        ['state-restore', 'state-composition', 'preset', 'organization', 'listener', 'listener-ready'],
-      );
-      assert.ok(result.progress.every((entry, i) => entry.elapsedMs >= (result.progress[i - 1]?.elapsedMs ?? 0)));
-    }
-  });
+    assert.ok(result.progress.every((entry, i) => entry.elapsedMs >= (result.progress[i - 1]?.elapsedMs ?? 0)));
+  }
+}
 
 test('optional source-volume probe retains every form and the exact requested records on a small fixture', async () => {
   assert.ok(LARGE_PERFORMANCE_OPTIONS.scales[0] * (1 + LARGE_PERFORMANCE_OPTIONS.formsPerTable) + 2 > 10000);

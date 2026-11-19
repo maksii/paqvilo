@@ -15,6 +15,7 @@ import { importModelDrivenProject } from '../../lense/model-driven.mjs';
 import { importCodeComponents, takeAdmittedFiles } from '../lib/code-components.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { mapLimit } from '../lib/solution-cache.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 
 const descriptor = (name, file) =>
   `<WebResource><Name>${name}</Name><WebResourceType>3</WebResourceType><FileName>${file}</FileName></WebResource>`;
@@ -29,23 +30,28 @@ async function fixture(t, files) {
   return root;
 }
 
-test('unrelated form XML does not consume the executable asset entry budget', async (t) => {
-  const root = await fixture(t, {
-    'WebResources/events.js': 'window.Invented = {};',
-    'WebResources/events.js.data.xml': descriptor('x_/events.js', 'WebResources/events.js'),
-  });
-  const forms = path.join(root, 'Entities/x_wide/FormXml/main');
-  await fs.mkdir(forms, { recursive: true });
-  await mapLimit(
-    Array.from({ length: 10001 }, (_, i) => i),
-    32,
-    (i) => fs.writeFile(path.join(forms, 'form-' + i + '.xml'), '<systemform/>'),
-  );
-  const result = await importModelDrivenResources([{ type: 'directory', dir: root }]);
-  assert.equal(result.resources.length, 1);
-  assert.equal(result.resources[0].name, 'x_/events.js');
-  assert.deepEqual(result.diagnostics, []);
-});
+test(
+  'unrelated form XML does not consume the executable asset entry budget',
+  // Hang guard only: the fixture is 10,001 files written, read and removed.
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const root = await fixture(t, {
+      'WebResources/events.js': 'window.Invented = {};',
+      'WebResources/events.js.data.xml': descriptor('x_/events.js', 'WebResources/events.js'),
+    });
+    const forms = path.join(root, 'Entities/x_wide/FormXml/main');
+    await fs.mkdir(forms, { recursive: true });
+    await mapLimit(
+      Array.from({ length: 10001 }, (_, i) => i),
+      32,
+      (i) => fs.writeFile(path.join(forms, 'form-' + i + '.xml'), '<systemform/>'),
+    );
+    const result = await importModelDrivenResources([{ type: 'directory', dir: root }]);
+    assert.equal(result.resources.length, 1);
+    assert.equal(result.resources[0].name, 'x_/events.js');
+    assert.deepEqual(result.diagnostics, []);
+  },
+);
 
 test('selected unpacked and ZIP WebResources resolve declared filenames, layers and packed entity ribbons', async (t) => {
   const root = await fixture(t, {

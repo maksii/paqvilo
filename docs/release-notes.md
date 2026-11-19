@@ -358,6 +358,20 @@ this session.` A trusted CLR plug-in descriptor with
   session a native confirm or before-unload prompt waits for you; a headless session dismisses confirms, accepts
   before-unload prompts and records each one. **Discard and refresh** relies on the app's own unsaved-changes prompt
   instead of adding a second one.
+- Lense: when your edit cancels the late reload of a tab that opened before local interception was ready, the
+  `reload_required` warning is reported even when the browser drops the page's own notification, and at most once per
+  tab. A paused request whose answer the browser refuses is failed and reported instead of staying paused until
+  interception stops.
+- Lense setup page: a status refresh that arrives while a button is pressed, by pointer or by a held Space, waits
+  until the press ends, so the click is not lost.
+- Mirage lists: a click on a column header while the list is loading sorts, and header links are disabled only for
+  the load a sort click started, as on the portal. List loads and Bootstrap 5 note loads raise no jQuery global ajax
+  events.
+- Mirage: a source change reported while a reload restarts the watcher is reloaded instead of dropped. Status reports
+  `pendingReload` from the first change notification until its reload publishes, and a reload that fails before it
+  starts records `RELOAD_FAILED`.
+- `mirage acceptance`: on a later hop of a redirect chain, `writeHoldAllowanceMs` reports what is left of the shared
+  hold instead of a new step budget.
 
 ### Upgrade notes
 
@@ -390,6 +404,13 @@ this session.` A trusted CLR plug-in descriptor with
   `--all-scenarios`.
 - `mirage stop` exits 2 when it keeps a session it could not verify. A bare `mirage stop` also stops the runtimes
   started in the folder without a catalogue site.
+- Mirage ownership records and discovery files name the host that wrote them. On folders shared between hosts
+  (Windows and WSL, runners sharing a checkout), a runtime recorded on another host is no longer listed, selected,
+  pruned, removed or signalled, and no shutdown request reaches it: `mirage stop` keeps it with its reason
+  (`foreignHost: true` in `--json`) and does not exit 2 for it, and `mirage start` and offline state writes refuse its
+  state file. When that host is gone (renamed or removed), delete its entry from the ownership file the message names.
+  On Windows and macOS a runtime recorded before this machine's name changed counts as this machine's while its
+  recorded identity still verifies. The sessions of `status --json` and `start --json` carry no `host` field. `mirage status` notes a runtime that did not answer the status in time instead of showing an empty site.
 - In a folder without `paqvilo.config.yml`, commands no longer fall back to the bundled sample catalogue: they refuse
   with `CONFIG_NOT_FOUND`. Pass `--config`, or run `--source` or `--project` without `--site`.
 - `mirage acceptance --cdp` accepts only a loopback `http:` or `ws:` endpoint.

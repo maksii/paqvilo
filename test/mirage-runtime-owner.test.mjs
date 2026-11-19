@@ -20,6 +20,7 @@ import {
   recordedRuntimes,
 } from './helpers/mirage-runtimes.mjs';
 import { ownedHealthRequest } from './helpers/owned-health-request.mjs';
+import { SCENARIO_HANG_GUARD_MS } from './helpers/bounded-command.mjs';
 
 const execute = promisify(execFile);
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
@@ -27,59 +28,69 @@ const env = Object.fromEntries(
   Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_') && !key.startsWith('GIT_')),
 );
 
-test('the runtime owner ends a started runtime nobody stopped, and never a process without its start identity', async (t) => {
-  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-runtime-owner-'));
-  const project = path.join(directory, 'organization.project.json');
-  await fs.writeFile(
-    project,
-    JSON.stringify({ version: 2, runtime: { kind: 'model-driven' }, simulation: { level: 'dry-run' }, solutions: [] }),
-  );
-  const mirage = (action, ...args) =>
-    execute(process.execPath, [cli, 'mirage', action, '--project', project, ...args, '--json'], {
-      cwd: directory,
-      env,
-      windowsHide: true,
-    });
-  // The product's own stop is the last resort should the owner under test leave the runtime running.
-  ownedFixture(t).add(() => mirage('stop').catch(() => {}));
-  ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
-  const { stdout } = await mirage('start', '--port', '0');
-  // Should a case below fail before its own owner ends the runtime, the test's owner does.
-  ownStartedRuntimes(t, stdout);
-  const answer = JSON.parse(stdout);
-  const ownershipFile = answer.writesFiles.find((file) => file.endsWith(path.join('mirage', 'sessions.json')));
-  const recorded = (await ownedSessions({ ownershipFile })).find((entry) => entry.pid === answer.pid).processIdentity;
-  const port = Number(new URL(answer.url).port);
-  assert.ok(recorded, 'the start recorded the runtime identity');
-
-  const foreign = [];
-  await t.test('a PID whose identity is not the recorded one is not signalled, and the owner says so', (st) => {
-    const owned = ownStartedRuntimes(st, stdout, {
-      identityOf: () => 'an invented identity of another program',
-      report: (line) => foreign.push(line),
-    });
-    assert.deepEqual(
-      owned.map((runtime) => runtime.pid),
-      [answer.pid],
+// Hang guard only: a real runtime start, two owners of it and the end of its process.
+test(
+  'the runtime owner ends a started runtime nobody stopped, and never a process without its start identity',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-runtime-owner-'));
+    const project = path.join(directory, 'organization.project.json');
+    await fs.writeFile(
+      project,
+      JSON.stringify({
+        version: 2,
+        runtime: { kind: 'model-driven' },
+        simulation: { level: 'dry-run' },
+        solutions: [],
+      }),
     );
-  });
-  assert.equal(foreign.length, 1);
-  assert.match(foreign[0], new RegExp(`pid ${answer.pid} .*was not ended`));
-  assert.equal(isAlive(answer.pid), true, 'the process was left running');
-  assert.equal(await recordedIdentityNow(answer.pid, recorded), recorded);
-  const health = await ownedHealthRequest(t, new URL('/_sim/api/status', answer.url));
-  assert.equal(health.status, 200);
+    const mirage = (action, ...args) =>
+      execute(process.execPath, [cli, 'mirage', action, '--project', project, ...args, '--json'], {
+        cwd: directory,
+        env,
+        windowsHide: true,
+      });
+    // The product's own stop is the last resort should the owner under test leave the runtime running.
+    ownedFixture(t).add(() => mirage('stop').catch(() => {}));
+    ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+    const { stdout } = await mirage('start', '--port', '0');
+    // Should a case below fail before its own owner ends the runtime, the test's owner does.
+    ownStartedRuntimes(t, stdout);
+    const answer = JSON.parse(stdout);
+    const ownershipFile = answer.writesFiles.find((file) => file.endsWith(path.join('mirage', 'sessions.json')));
+    const recorded = (await ownedSessions({ ownershipFile })).find((entry) => entry.pid === answer.pid).processIdentity;
+    const port = Number(new URL(answer.url).port);
+    assert.ok(recorded, 'the start recorded the runtime identity');
 
-  const reports = [];
-  await t.test('a started runtime is ended after its test when nothing stopped it', (st) => {
-    ownStartedRuntimes(st, stdout, { report: (line) => reports.push(line) });
-  });
-  assert.deepEqual(reports, []);
-  assert.notEqual(await recordedIdentityNow(answer.pid, recorded), recorded, 'the runtime process has gone');
-  await health.closed;
-  const binding = await portBinding(port);
-  assert.equal(binding.free, true, `its port ${port} is free (${binding.code ?? 'bound'})`);
-});
+    const foreign = [];
+    await t.test('a PID whose identity is not the recorded one is not signalled, and the owner says so', (st) => {
+      const owned = ownStartedRuntimes(st, stdout, {
+        identityOf: () => 'an invented identity of another program',
+        report: (line) => foreign.push(line),
+      });
+      assert.deepEqual(
+        owned.map((runtime) => runtime.pid),
+        [answer.pid],
+      );
+    });
+    assert.equal(foreign.length, 1);
+    assert.match(foreign[0], new RegExp(`pid ${answer.pid} .*was not ended`));
+    assert.equal(isAlive(answer.pid), true, 'the process was left running');
+    assert.equal(await recordedIdentityNow(answer.pid, recorded), recorded);
+    const health = await ownedHealthRequest(t, new URL('/_sim/api/status', answer.url));
+    assert.equal(health.status, 200);
+
+    const reports = [];
+    await t.test('a started runtime is ended after its test when nothing stopped it', (st) => {
+      ownStartedRuntimes(st, stdout, { report: (line) => reports.push(line) });
+    });
+    assert.deepEqual(reports, []);
+    assert.notEqual(await recordedIdentityNow(answer.pid, recorded), recorded, 'the runtime process has gone');
+    await health.closed;
+    const binding = await portBinding(port);
+    assert.equal(binding.free, true, `its port ${port} is free (${binding.code ?? 'bound'})`);
+  },
+);
 
 /**
  * Starts an idle process of its own group with a records file naming it, as `mirage start` records a runtime: by a
@@ -187,6 +198,18 @@ test('a teardown owner keeps a failed read, ends what it noted, and then fails w
   assert.deepEqual(reports, []);
   await exited; // The process has gone: its exit was observed.
   await assert.doesNotReject(runtimes.end(), 'the read failure fails one end only');
+});
+
+test('a start that was ended before it answered leaves its recorded runtime to the owner of its records file', async (t) => {
+  const { child, exited, ownershipFile } = await recordedProcess(t);
+  const reports = [];
+  await t.test('the start printed nothing, and its test names the records file', (st) => {
+    assert.deepEqual(ownStartedRuntimes(st, '', { ownershipFile, report: (line) => reports.push(line) }), []);
+  });
+  assert.deepEqual(reports, []);
+  // The owner returned after the exit it waited for: a runtime left running fails here, not at the hang guard.
+  assert.equal(isAlive(child.pid), false, 'the recorded runtime was ended');
+  await exited; // The process has gone: its exit was observed.
 });
 
 test('a missing records file records no runtimes', async () => {

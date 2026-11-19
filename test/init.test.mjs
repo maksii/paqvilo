@@ -14,6 +14,8 @@ import { parseOptions, LENSE_OPTIONS } from '../lense/cli-options.mjs';
 import { createMirageContext } from '../mirage/api.mjs';
 import { DEV_READY, DEV_BACKGROUND } from '../lense/dev-messages.mjs';
 import { withProcessSlot } from '../mirage/test/process-slots.mjs';
+import { boundedCommand, COMMAND_HANG_GUARD_MS, SCENARIO_HANG_GUARD_MS } from './helpers/bounded-command.mjs';
+import { operationBudget, countOperations } from './helpers/operation-budget.mjs';
 import { tempDir } from './fixture.mjs';
 import { ownedChildren } from './helpers/owned-children.mjs';
 
@@ -387,135 +389,161 @@ test('generated browser runner ignores empty pack folders and propagates real te
   assert.match(result.stdout, /Expected synthetic failure/);
 });
 
-test('generated smoke exercises enhanced and code-site exports instead of silently skipping them', async (t) => {
-  // One generated project with both sites: one runner process serves both export formats.
-  const directory = await project(t);
-  await prepareProject(directory, { name: 'fixture', sites: ['enhanced', 'code-site'], noPack: true, noVscode: true });
-  for (const format of ['enhanced', 'code-site']) {
-    const destination = path.join(directory, 'test-browser/fixtures', format);
-    await fs.cp(fileURLToPath(new URL(`../test-browser/fixtures/${format}/`, import.meta.url)), destination, {
-      recursive: true,
+// Hang guard only: it drives a runtime, the CLI or child processes through this file's fixtures; on a loaded slow host that is slow, not hung.
+test(
+  'generated smoke exercises enhanced and code-site exports instead of silently skipping them',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    // One generated project with both sites: one runner process serves both export formats.
+    const directory = await project(t);
+    await prepareProject(directory, {
+      name: 'fixture',
+      sites: ['enhanced', 'code-site'],
+      noPack: true,
+      noVscode: true,
     });
-    await assert.rejects(fs.access(path.join(destination, 'website.yml')), { code: 'ENOENT' });
-  }
-  await fs.mkdir(path.join(directory, 'node_modules'));
-  await fs.symlink(
-    fileURLToPath(new URL('../', import.meta.url)),
-    path.join(directory, 'node_modules/paqvilo'),
-    process.platform === 'win32' ? 'junction' : 'dir',
-  );
-  const result = await node(['tools/test-browser.mjs'], { cwd: directory });
-  assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stdout, /pass 2/);
-  assert.match(result.stdout, /skipped 0/);
-  assert.match(result.stdout, /enhanced: local portal smoke/);
-  assert.match(result.stdout, /code-site: local portal smoke/);
-});
+    for (const format of ['enhanced', 'code-site']) {
+      const destination = path.join(directory, 'test-browser/fixtures', format);
+      await fs.cp(fileURLToPath(new URL(`../test-browser/fixtures/${format}/`, import.meta.url)), destination, {
+        recursive: true,
+      });
+      await assert.rejects(fs.access(path.join(destination, 'website.yml')), { code: 'ENOENT' });
+    }
+    await fs.mkdir(path.join(directory, 'node_modules'));
+    await fs.symlink(
+      fileURLToPath(new URL('../', import.meta.url)),
+      path.join(directory, 'node_modules/paqvilo'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+    const result = await node(['tools/test-browser.mjs'], { cwd: directory });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /pass 2/);
+    assert.match(result.stdout, /skipped 0/);
+    assert.match(result.stdout, /enhanced: local portal smoke/);
+    assert.match(result.stdout, /code-site: local portal smoke/);
+  },
+);
 
+// Thirteen commands, each with its own hang guard counted from the moment it holds a process slot. On a small loaded
+// host they run one at a time, each slow but none hung, and the lane's 180 s hang guard would otherwise cut the queue.
+const WRITE_PROTECTION_COMMANDS = 13;
 // @test-kind security: scaffold writes cannot replace unrelated content or follow symbolic output paths
-test('CLI help, JSON errors and exclusive writes protect unrelated content and symbolic paths', async (t) => {
-  const directory = await project(t);
-  const unrelated = path.join(directory, 'project');
-  await fs.mkdir(unrelated);
-  await fs.writeFile(path.join(unrelated, 'package.json'), '{"keep":true}\n');
-  const invalid = [
-    [['--name', '../escape'], /--name must be a lowercase slug/],
-    [['--site', 'con'], /--site must be a lowercase slug/],
-    [['--site', 'x', '--site', 'x'], /--site values must be unique/],
-    [['--pack', 'a', '--no-pack'], /--no-pack cannot be combined with --pack/],
-    [['--browser', 'firefox'], /--browser must be msedge, chrome or chromium/],
-    [['--workspace-only'], /--workspace-only requires --refresh-editor/],
-    [['--check', '--refresh-editor'], /separate operations/],
-    [['--wat'], /Unknown option '--wat'/],
-  ];
-  const [help, rootHelp, ...rejected] = await Promise.all([
-    run(directory, '--help'),
-    node([cli, '--help']),
-    ...invalid.map(([args]) => run(path.join(directory, 'invalid'), ...args, '--json')),
-  ]);
-  for (const [index, [args, message]] of invalid.entries()) {
-    assert.equal(rejected[index].status, 1, args.join(' '));
-    const report = JSON.parse(rejected[index].stdout);
-    assert.equal(report.ok, false, args.join(' '));
-    assert.match(report.error.message, message);
-  }
-  await assert.rejects(fs.access(path.join(directory, 'invalid')), { code: 'ENOENT' });
-  assert.match(help.stdout, /Unlike mirage init/);
-  assert.match(rootHelp.stdout, /paqvilo init/);
-  let result = await run(unrelated, '--name', 'sample', '--json');
-  assert.equal(result.status, 1);
-  assert.equal(JSON.parse(result.stdout).ok, false);
-  assert.equal(await read(unrelated, 'package.json'), '{"keep":true}\n');
-  result = await run(unrelated, '--name', 'sample', '--into-existing', '--json');
-  assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(JSON.parse(result.stdout).skipped, ['package.json']);
-  const before = await read(unrelated, 'paqvilo.config.yml');
-  result = await run(unrelated, '--name', 'sample', '--into-existing', '--json');
-  assert.equal(JSON.parse(result.stdout).created.length, 0);
-  assert.equal(await read(unrelated, 'paqvilo.config.yml'), before);
-  const linked = path.join(directory, 'linked');
-  await fs.symlink(unrelated, linked, process.platform === 'win32' ? 'junction' : 'dir');
-  await assert.rejects(prepareProject(linked, { name: 'sample', intoExisting: true }), /symbolic links/);
-  await assert.rejects(prepareProject(path.join(linked, 'child'), { name: 'sample' }), /symbolic links/);
-  const nested = path.join(directory, 'nested');
-  await fs.mkdir(nested);
-  await fs.symlink(unrelated, path.join(nested, 'pack'), process.platform === 'win32' ? 'junction' : 'dir');
-  await assert.rejects(prepareProject(nested, { name: 'sample', intoExisting: true }), /symbolic links/);
-  assert.deepEqual(await fs.readdir(nested), ['pack'], 'preflight refuses before writing any files');
-});
+test(
+  'CLI help, JSON errors and exclusive writes protect unrelated content and symbolic paths',
+  { timeout: operationBudget(WRITE_PROTECTION_COMMANDS, COMMAND_HANG_GUARD_MS) },
+  async (t) => {
+    const directory = await project(t);
+    const node = countOperations(t, WRITE_PROTECTION_COMMANDS, (args) =>
+      boundedCommand(t, process.execPath, args, { env }),
+    );
+    const run = (target, ...args) => node([cli, 'init', target, ...args]);
+    const unrelated = path.join(directory, 'project');
+    await fs.mkdir(unrelated);
+    await fs.writeFile(path.join(unrelated, 'package.json'), '{"keep":true}\n');
+    const invalid = [
+      [['--name', '../escape'], /--name must be a lowercase slug/],
+      [['--site', 'con'], /--site must be a lowercase slug/],
+      [['--site', 'x', '--site', 'x'], /--site values must be unique/],
+      [['--pack', 'a', '--no-pack'], /--no-pack cannot be combined with --pack/],
+      [['--browser', 'firefox'], /--browser must be msedge, chrome or chromium/],
+      [['--workspace-only'], /--workspace-only requires --refresh-editor/],
+      [['--check', '--refresh-editor'], /separate operations/],
+      [['--wat'], /Unknown option '--wat'/],
+    ];
+    const [help, rootHelp, ...rejected] = await Promise.all([
+      run(directory, '--help'),
+      node([cli, '--help']),
+      ...invalid.map(([args]) => run(path.join(directory, 'invalid'), ...args, '--json')),
+    ]);
+    for (const [index, [args, message]] of invalid.entries()) {
+      assert.equal(rejected[index].status, 1, args.join(' '));
+      const report = JSON.parse(rejected[index].stdout);
+      assert.equal(report.ok, false, args.join(' '));
+      assert.match(report.error.message, message);
+    }
+    await assert.rejects(fs.access(path.join(directory, 'invalid')), { code: 'ENOENT' });
+    assert.match(help.stdout, /Unlike mirage init/);
+    assert.match(rootHelp.stdout, /paqvilo init/);
+    let result = await run(unrelated, '--name', 'sample', '--json');
+    assert.equal(result.status, 1);
+    assert.equal(JSON.parse(result.stdout).ok, false);
+    assert.equal(await read(unrelated, 'package.json'), '{"keep":true}\n');
+    result = await run(unrelated, '--name', 'sample', '--into-existing', '--json');
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout).skipped, ['package.json']);
+    const before = await read(unrelated, 'paqvilo.config.yml');
+    result = await run(unrelated, '--name', 'sample', '--into-existing', '--json');
+    assert.equal(JSON.parse(result.stdout).created.length, 0);
+    assert.equal(await read(unrelated, 'paqvilo.config.yml'), before);
+    const linked = path.join(directory, 'linked');
+    await fs.symlink(unrelated, linked, process.platform === 'win32' ? 'junction' : 'dir');
+    await assert.rejects(prepareProject(linked, { name: 'sample', intoExisting: true }), /symbolic links/);
+    await assert.rejects(prepareProject(path.join(linked, 'child'), { name: 'sample' }), /symbolic links/);
+    const nested = path.join(directory, 'nested');
+    await fs.mkdir(nested);
+    await fs.symlink(unrelated, path.join(nested, 'pack'), process.platform === 'win32' ? 'junction' : 'dir');
+    await assert.rejects(prepareProject(nested, { name: 'sample', intoExisting: true }), /symbolic links/);
+    assert.deepEqual(await fs.readdir(nested), ['pack'], 'preflight refuses before writing any files');
+  },
+);
 
 // @test-kind security: project checks inspect definitions without executing external pack code or changing project files
-test('completion checks report schema, packs, origins, paths and markers without writing or importing packs', async (t) => {
-  const directory = await project(t);
-  const plan = await prepareProject(directory, { name: 'sample' });
-  const before = new Map(await Promise.all(plan.created.map(async (name) => [name, await read(directory, name)])));
-  const fresh = await run(directory, '--check', '--json');
-  assert.equal(fresh.status, 1);
-  assert.equal(
-    JSON.parse(fresh.stdout).todo.filter((item) => item.kind === 'marker').length,
-    await writtenMarkers(directory, plan.created),
-  );
-  for (const [name, body] of before) assert.equal(await read(directory, name), body);
-  await fs.writeFile(
-    path.join(directory, 'pack/pack.mjs'),
-    "throw new Error('Checker must not execute trusted modules');\n",
-  );
-  assert.doesNotThrow(() => checkProject(directory));
-  await fs.rm(path.join(directory, 'pack/pack.mjs'));
-  assert.ok(checkProject(directory).todo.some((item) => item.kind === 'missing-pack'));
-  await fs.writeFile(path.join(directory, 'pack/pack.mjs'), before.get('pack/pack.mjs'));
-  await fs.appendFile(path.join(directory, 'paqvilo.config.yml'), 'unknownSetting: true\n');
-  assert.ok(checkProject(directory).todo.some((item) => item.kind === 'schema' && /Unknown setting/.test(item.text)));
-  for (const [name, body] of before) {
-    const completed = body
-      .replace(/^.*TODO\(paqvilo-init\):.*$/gm, (line) => line.replace(/(?:#|\/\/) TODO\(paqvilo-init\):.*$/, ''))
-      .replaceAll('https://portal-dev.example.test', 'http://127.0.0.1:8787');
-    await fs.writeFile(path.join(directory, name), completed);
-  }
-  await fs.mkdir(path.join(directory, 'sources/portal-portal'), { recursive: true });
-  await fs.writeFile(path.join(directory, 'sources/portal-portal/website.yml'), 'adx_name: Invented\n');
-  await fs.writeFile(path.join(directory, '.env'), 'SECRET=TODO(paqvilo-init): do not read\n');
-  await fs.mkdir(path.join(directory, '.paqvilo'));
-  await fs.writeFile(path.join(directory, '.paqvilo/discovery.json'), 'TODO(paqvilo-init): do not read\n');
-  assert.equal(checkProject(directory).ok, true);
-  assert.equal(scaffoldWarning(directory), null);
-  const doctorArgs = [
-    cli,
-    'lense',
-    'doctor',
-    '--config',
-    path.join(directory, 'paqvilo.config.yml'),
-    '--all',
-    '--json',
-  ];
-  const [complete, doctor] = await Promise.all([run(directory, '--check', '--json'), node(doctorArgs)]);
-  assert.equal(complete.status, 0, complete.stdout);
-  assert.equal(JSON.parse(doctor.stdout).warnings, undefined);
-  await fs.appendFile(path.join(directory, 'README.md'), '\nTODO(paqvilo-init): complete this\n');
-  const warned = await node(doctorArgs);
-  assert.match(JSON.parse(warned.stdout).warnings[0], /init --check/);
-  assert.equal(warned.status, doctor.status, 'guidance does not alter doctor readiness');
-});
+// Hang guard only: it runs real CLI commands and the runtimes they start; on a loaded slow host that is slow, not hung.
+test(
+  'completion checks report schema, packs, origins, paths and markers without writing or importing packs',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const directory = await project(t);
+    const plan = await prepareProject(directory, { name: 'sample' });
+    const before = new Map(await Promise.all(plan.created.map(async (name) => [name, await read(directory, name)])));
+    const fresh = await run(directory, '--check', '--json');
+    assert.equal(fresh.status, 1);
+    assert.equal(
+      JSON.parse(fresh.stdout).todo.filter((item) => item.kind === 'marker').length,
+      await writtenMarkers(directory, plan.created),
+    );
+    for (const [name, body] of before) assert.equal(await read(directory, name), body);
+    await fs.writeFile(
+      path.join(directory, 'pack/pack.mjs'),
+      "throw new Error('Checker must not execute trusted modules');\n",
+    );
+    assert.doesNotThrow(() => checkProject(directory));
+    await fs.rm(path.join(directory, 'pack/pack.mjs'));
+    assert.ok(checkProject(directory).todo.some((item) => item.kind === 'missing-pack'));
+    await fs.writeFile(path.join(directory, 'pack/pack.mjs'), before.get('pack/pack.mjs'));
+    await fs.appendFile(path.join(directory, 'paqvilo.config.yml'), 'unknownSetting: true\n');
+    assert.ok(checkProject(directory).todo.some((item) => item.kind === 'schema' && /Unknown setting/.test(item.text)));
+    for (const [name, body] of before) {
+      const completed = body
+        .replace(/^.*TODO\(paqvilo-init\):.*$/gm, (line) => line.replace(/(?:#|\/\/) TODO\(paqvilo-init\):.*$/, ''))
+        .replaceAll('https://portal-dev.example.test', 'http://127.0.0.1:8787');
+      await fs.writeFile(path.join(directory, name), completed);
+    }
+    await fs.mkdir(path.join(directory, 'sources/portal-portal'), { recursive: true });
+    await fs.writeFile(path.join(directory, 'sources/portal-portal/website.yml'), 'adx_name: Invented\n');
+    await fs.writeFile(path.join(directory, '.env'), 'SECRET=TODO(paqvilo-init): do not read\n');
+    await fs.mkdir(path.join(directory, '.paqvilo'));
+    await fs.writeFile(path.join(directory, '.paqvilo/discovery.json'), 'TODO(paqvilo-init): do not read\n');
+    assert.equal(checkProject(directory).ok, true);
+    assert.equal(scaffoldWarning(directory), null);
+    const doctorArgs = [
+      cli,
+      'lense',
+      'doctor',
+      '--config',
+      path.join(directory, 'paqvilo.config.yml'),
+      '--all',
+      '--json',
+    ];
+    const [complete, doctor] = await Promise.all([run(directory, '--check', '--json'), node(doctorArgs)]);
+    assert.equal(complete.status, 0, complete.stdout);
+    assert.equal(JSON.parse(doctor.stdout).warnings, undefined);
+    await fs.appendFile(path.join(directory, 'README.md'), '\nTODO(paqvilo-init): complete this\n');
+    const warned = await node(doctorArgs);
+    assert.match(JSON.parse(warned.stdout).warnings[0], /init --check/);
+    assert.equal(warned.status, doctor.status, 'guidance does not alter doctor readiness');
+  },
+);
 
 test('editor refresh follows catalogue/.env/worktree paths and preserves edited files and alternatives', async (t) => {
   const directory = await project(t);

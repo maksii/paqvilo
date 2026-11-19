@@ -8,6 +8,7 @@ import YAML from 'yaml';
 import { createFixture } from './fixture.mjs';
 import { resolveDeploymentProfiles, loadDeploymentProfiles } from '../mirage/lib/deployment-profiles.mjs';
 import { withProcessSlot } from '../mirage/test/process-slots.mjs';
+import { SCENARIO_HANG_GUARD_MS } from './helpers/bounded-command.mjs';
 
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_')));
@@ -104,93 +105,103 @@ test('export-wide profile lint warns on an unbound profile and binding it fails 
 });
 
 // @test-kind contract: duplicate source keys gate Sources independently of Lense readiness
-test('duplicate source keys gate Sources independently of Lense readiness', async (t) => {
-  const fx = createFixture();
-  t.after(fx.cleanup);
-  fx.write('sitesetting.yml', '- adx_name: Before\n  adx_value: one\n  adx_name: After\n  adx_value: two\n');
-  const config = fx.file('sources-readiness.json');
-  fs.writeFileSync(
-    config,
-    JSON.stringify({
-      sourceRoot: fx.dir,
-      sites: {
-        invented: {
-          source: '.',
-          environments: { local: 'http://127.0.0.1:8787' },
-          mirage: { port: 0, solutionRoots: [] },
+// Hang guard only: it drives a runtime, the CLI or child processes through this file's fixtures; on a loaded slow host that is slow, not hung.
+test(
+  'duplicate source keys gate Sources independently of Lense readiness',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const fx = createFixture();
+    t.after(fx.cleanup);
+    fx.write('sitesetting.yml', '- adx_name: Before\n  adx_value: one\n  adx_name: After\n  adx_value: two\n');
+    const config = fx.file('sources-readiness.json');
+    fs.writeFileSync(
+      config,
+      JSON.stringify({
+        sourceRoot: fx.dir,
+        sites: {
+          invented: {
+            source: '.',
+            environments: { local: 'http://127.0.0.1:8787' },
+            mirage: { port: 0, solutionRoots: [] },
+          },
         },
-      },
-    }),
-  );
-  const run = (...args) => doctor(fx.dir, '--config', config, ...args);
-  const [json, gatedJson, text, gatedText, unknown] = await Promise.all([
-    run('--json'),
-    run('--mirage', '--json'),
-    run(),
-    run('--mirage'),
-    run('--site', 'nosuch', '--json'),
-  ]);
-  for (const [result, gated] of [
-    [json, false],
-    [gatedJson, true],
-  ]) {
-    const report = JSON.parse(result.stdout),
-      site = report.reports[0];
-    assert.equal(site.lenseReady, true);
-    assert.equal(site.sourcesReady, false);
-    assert.equal(report.ok, !gated);
-    assert.equal(result.status, gated ? 1 : 0);
-    if (gated) {
-      assert.ok(report.checks.includes('sources'));
-      assert.ok(report.errors.some((error) => error.message.startsWith('Sources:')));
-      assert.equal(report.errors[0].code, 'check_failed');
+      }),
+    );
+    const run = (...args) => doctor(fx.dir, '--config', config, ...args);
+    const [json, gatedJson, text, gatedText, unknown] = await Promise.all([
+      run('--json'),
+      run('--mirage', '--json'),
+      run(),
+      run('--mirage'),
+      run('--site', 'nosuch', '--json'),
+    ]);
+    for (const [result, gated] of [
+      [json, false],
+      [gatedJson, true],
+    ]) {
+      const report = JSON.parse(result.stdout),
+        site = report.reports[0];
+      assert.equal(site.lenseReady, true);
+      assert.equal(site.sourcesReady, false);
+      assert.equal(report.ok, !gated);
+      assert.equal(result.status, gated ? 1 : 0);
+      if (gated) {
+        assert.ok(report.checks.includes('sources'));
+        assert.ok(report.errors.some((error) => error.message.startsWith('Sources:')));
+        assert.equal(report.errors[0].code, 'check_failed');
+      }
     }
-  }
-  for (const result of [text, gatedText]) {
-    assert.match(result.stdout, /Lense ready · Sources NOT READY/);
-    assert.doesNotMatch(result.stdout, /Lense NOT READY/);
-  }
-  const answer = JSON.parse(unknown.stdout);
-  assert.equal(unknown.status, 1);
-  assert.equal(answer.errors[0].code, 'invalid_argument');
-  assert.match(answer.errors[0].message, /nosuch.*invented/);
-});
+    for (const result of [text, gatedText]) {
+      assert.match(result.stdout, /Lense ready · Sources NOT READY/);
+      assert.doesNotMatch(result.stdout, /Lense NOT READY/);
+    }
+    const answer = JSON.parse(unknown.stdout);
+    assert.equal(unknown.status, 1);
+    assert.equal(answer.errors[0].code, 'invalid_argument');
+    assert.match(answer.errors[0].message, /nosuch.*invented/);
+  },
+);
 
 // @test-kind contract: doctor JSON normalizes nested Mirage errors and aggregates only opted-in gating failures
-test('doctor JSON normalizes nested Mirage errors and aggregates only opted-in gating failures', async (t) => {
-  const fx = createFixture();
-  t.after(fx.cleanup);
-  const config = fx.file('mirage-doctor-catalogue.yml');
-  fs.writeFileSync(
-    config,
-    YAML.stringify({
-      sourceRoot: fx.dir,
-      sites: {
-        sample: {
-          source: '.',
-          environments: { local: 'http://127.0.0.1:8787' },
-          mirage: { project: 'missing-project.yml' },
+// Hang guard only: it drives a runtime, the CLI or child processes through this file's fixtures; on a loaded slow host that is slow, not hung.
+test(
+  'doctor JSON normalizes nested Mirage errors and aggregates only opted-in gating failures',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const fx = createFixture();
+    t.after(fx.cleanup);
+    const config = fx.file('mirage-doctor-catalogue.yml');
+    fs.writeFileSync(
+      config,
+      YAML.stringify({
+        sourceRoot: fx.dir,
+        sites: {
+          sample: {
+            source: '.',
+            environments: { local: 'http://127.0.0.1:8787' },
+            mirage: { project: 'missing-project.yml' },
+          },
         },
-      },
-    }),
-  );
-  const [optionalRun, gatedRun] = await Promise.all([
-    doctor(fx.dir, '--config', config, '--json'),
-    doctor(fx.dir, '--config', config, '--mirage', '--json'),
-  ]);
-  const optional = JSON.parse(optionalRun.stdout);
-  assert.equal(optionalRun.status, 0, optionalRun.stderr);
-  assert.equal(optional.ok, true);
-  assert.deepEqual(optional.errors, []);
-  assert.ok(optional.reports[0].mirage.errors.some((error) => error.message.includes('missing-project.yml')));
-  const gated = JSON.parse(gatedRun.stdout);
-  assert.equal(gatedRun.status, 1, gatedRun.stderr);
-  assert.equal(gated.ok, false);
-  assert.ok(gated.errors.some((error) => error.message.includes('missing-project.yml')));
-  const nested = gated.reports[0].mirage.errors;
-  assert.ok(nested.length > 0);
-  assert.ok(nested.every((error) => typeof error.code === 'string' && typeof error.message === 'string'));
-});
+      }),
+    );
+    const [optionalRun, gatedRun] = await Promise.all([
+      doctor(fx.dir, '--config', config, '--json'),
+      doctor(fx.dir, '--config', config, '--mirage', '--json'),
+    ]);
+    const optional = JSON.parse(optionalRun.stdout);
+    assert.equal(optionalRun.status, 0, optionalRun.stderr);
+    assert.equal(optional.ok, true);
+    assert.deepEqual(optional.errors, []);
+    assert.ok(optional.reports[0].mirage.errors.some((error) => error.message.includes('missing-project.yml')));
+    const gated = JSON.parse(gatedRun.stdout);
+    assert.equal(gatedRun.status, 1, gatedRun.stderr);
+    assert.equal(gated.ok, false);
+    assert.ok(gated.errors.some((error) => error.message.includes('missing-project.yml')));
+    const nested = gated.reports[0].mirage.errors;
+    assert.ok(nested.length > 0);
+    assert.ok(nested.every((error) => typeof error.code === 'string' && typeof error.message === 'string'));
+  },
+);
 
 // @test-kind contract: deployment-profile diagnostics use forward slashes for project-relative paths
 test('deployment-profile diagnostics use forward slashes for project-relative paths', async (t) => {

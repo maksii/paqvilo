@@ -14,6 +14,7 @@ import { DATAVERSE_CONNECTOR, createConnectorRuntime } from '../lib/connector-ru
 import { portalRecordWrites } from '../lib/form-service.mjs';
 import { dispatchSdkCall } from '../lib/plugin-clr.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 
 const CLIENT = '77777777-7777-4777-8777-777777777777';
 const CONTACT = '77777777-7777-4777-8777-000000000011';
@@ -361,101 +362,106 @@ test('the read projection is the same through the Web API, the SDK, the connecto
 // Associate and disassociate (a 1:N collection navigation) run the same pipeline on the Web API $ref, the SDK, the flow
 // connector and the portal /_api $ref: the relationship write, and the record hooks (here the audit hook's Associate 33 and
 // Disassociate 34 rows) once per association.
-test('associate and disassociate run the record hooks on the Web API, the SDK, the connector and the portal /_api', async (t) => {
-  const { sim, webApi, portal, sdk, connector } = await organization(t);
-  await sim.store.transact(() => {
-    for (const row of sim.store.state.tables.organization ?? []) row.isauditenabled = true;
-  });
-  const origin = sim.dataverse.origin + '/api/data/v9.2';
-  const pair = async (name) => {
-    const item = (await webApi('POST', '/x_items', { x_name: name, x_code: name })).body.x_itemid;
-    const line = (await webApi('POST', '/x_lines', { x_name: name })).body.x_lineid;
-    return { item, line };
-  };
-  const lineItem = (line) => {
-    const value = sim.store.tableRows('x_line').find((row) => row.x_lineid === line)?.x_itemid;
-    return value?.id ?? value ?? null;
-  };
-  const actions = (item) =>
-    sim.store
-      .tableRows('audit')
-      .filter((row) => String(row.objectid?.id ?? row.objectid).toLowerCase() === item && row.action >= 33)
-      .map((row) => row.action)
-      .sort();
-  const reference = (line) => ({
-    $type: 'EntityReferenceCollection',
-    values: [{ $type: 'EntityReference', logicalName: 'x_line', id: line }],
-  });
-  const relationship = { $type: 'Relationship', schemaName: 'x_item_x_line' };
-  const surfaces = {
-    web: async ({ item, line }) => {
-      assert.equal(
-        (await webApi('POST', `/x_items(${item})/x_item_lines/$ref`, { '@odata.id': `${origin}/x_lines(${line})` }))
-          .status,
-        204,
-      );
-      assert.equal(lineItem(line), item);
-      assert.equal((await webApi('DELETE', `/x_items(${item})/x_item_lines(${line})/$ref`)).status, 204);
-    },
-    // The SDK service and the connector run inside the caller's store transaction here, as a CLR plug-in's SDK calls run
-    // inside the write that triggered it: the asynchronous audit hook's remainder joins that transaction (outside one it
-    // finishes after the synchronous call, local-organization-service.mjs SDK_DEFERRED_EFFECT).
-    sdk: async ({ item, line }) => {
-      await sim.store.transact(() => sdk.associate('x_item', item, relationship, reference(line), true));
-      assert.equal(lineItem(line), item);
-      await sim.store.transact(() => sdk.associate('x_item', item, relationship, reference(line), false));
-    },
-    flow: async ({ item, line }) => {
-      const related = `${origin}/x_lines(${line})`;
-      const inWrite = (fn) => sim.store.transact(fn);
-      assert.equal(
-        (
-          await inWrite(() =>
-            connector('AssociateEntities', {
-              entityName: 'x_item',
-              recordId: item,
-              associationEntityRelationship: 'x_item_x_line',
-              '@odata.id': related,
-            }),
-          )
-        ).statusCode,
-        204,
-      );
-      assert.equal(lineItem(line), item);
-      assert.equal(
-        (
-          await inWrite(() =>
-            connector('DisassociateEntities', {
-              entityName: 'x_item',
-              recordId: item,
-              associationEntityRelationship: 'x_item_x_line',
-              $id: related,
-            }),
-          )
-        ).statusCode,
-        204,
-      );
-    },
-    portal: async ({ item, line }) => {
-      const posted = await portal('POST', `/x_items(${item})/x_item_lines/$ref`, {
-        '@odata.id': `${sim.url}/_api/x_lines(${line})`,
-      });
-      assert.equal(posted.status, 204, JSON.stringify(posted.body));
-      assert.equal(lineItem(line), item);
-      const removed = await portal('DELETE', `/x_items(${item})/x_item_lines(${line})/$ref`);
-      assert.equal(removed.status, 204, JSON.stringify(removed.body));
-    },
-  };
-  for (const [name, run] of Object.entries(surfaces)) {
-    const ids = await pair(name);
-    await run(ids);
-    // The audit hook remainder runs after the write commits.
-    await sim.store.flushCommittedEvents();
-    await sim.store.queue;
-    assert.equal(lineItem(ids.line), null, `${name} disassociated`);
-    assert.deepEqual(actions(ids.item), [33, 34], `${name} ran the association record hooks`);
-  }
-});
+// Hang guard only: it drives a runtime, the CLI or child processes through this file's fixtures; on a loaded slow host that is slow, not hung.
+test(
+  'associate and disassociate run the record hooks on the Web API, the SDK, the connector and the portal /_api',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const { sim, webApi, portal, sdk, connector } = await organization(t);
+    await sim.store.transact(() => {
+      for (const row of sim.store.state.tables.organization ?? []) row.isauditenabled = true;
+    });
+    const origin = sim.dataverse.origin + '/api/data/v9.2';
+    const pair = async (name) => {
+      const item = (await webApi('POST', '/x_items', { x_name: name, x_code: name })).body.x_itemid;
+      const line = (await webApi('POST', '/x_lines', { x_name: name })).body.x_lineid;
+      return { item, line };
+    };
+    const lineItem = (line) => {
+      const value = sim.store.tableRows('x_line').find((row) => row.x_lineid === line)?.x_itemid;
+      return value?.id ?? value ?? null;
+    };
+    const actions = (item) =>
+      sim.store
+        .tableRows('audit')
+        .filter((row) => String(row.objectid?.id ?? row.objectid).toLowerCase() === item && row.action >= 33)
+        .map((row) => row.action)
+        .sort();
+    const reference = (line) => ({
+      $type: 'EntityReferenceCollection',
+      values: [{ $type: 'EntityReference', logicalName: 'x_line', id: line }],
+    });
+    const relationship = { $type: 'Relationship', schemaName: 'x_item_x_line' };
+    const surfaces = {
+      web: async ({ item, line }) => {
+        assert.equal(
+          (await webApi('POST', `/x_items(${item})/x_item_lines/$ref`, { '@odata.id': `${origin}/x_lines(${line})` }))
+            .status,
+          204,
+        );
+        assert.equal(lineItem(line), item);
+        assert.equal((await webApi('DELETE', `/x_items(${item})/x_item_lines(${line})/$ref`)).status, 204);
+      },
+      // The SDK service and the connector run inside the caller's store transaction here, as a CLR plug-in's SDK calls run
+      // inside the write that triggered it: the asynchronous audit hook's remainder joins that transaction (outside one it
+      // finishes after the synchronous call, local-organization-service.mjs SDK_DEFERRED_EFFECT).
+      sdk: async ({ item, line }) => {
+        await sim.store.transact(() => sdk.associate('x_item', item, relationship, reference(line), true));
+        assert.equal(lineItem(line), item);
+        await sim.store.transact(() => sdk.associate('x_item', item, relationship, reference(line), false));
+      },
+      flow: async ({ item, line }) => {
+        const related = `${origin}/x_lines(${line})`;
+        const inWrite = (fn) => sim.store.transact(fn);
+        assert.equal(
+          (
+            await inWrite(() =>
+              connector('AssociateEntities', {
+                entityName: 'x_item',
+                recordId: item,
+                associationEntityRelationship: 'x_item_x_line',
+                '@odata.id': related,
+              }),
+            )
+          ).statusCode,
+          204,
+        );
+        assert.equal(lineItem(line), item);
+        assert.equal(
+          (
+            await inWrite(() =>
+              connector('DisassociateEntities', {
+                entityName: 'x_item',
+                recordId: item,
+                associationEntityRelationship: 'x_item_x_line',
+                $id: related,
+              }),
+            )
+          ).statusCode,
+          204,
+        );
+      },
+      portal: async ({ item, line }) => {
+        const posted = await portal('POST', `/x_items(${item})/x_item_lines/$ref`, {
+          '@odata.id': `${sim.url}/_api/x_lines(${line})`,
+        });
+        assert.equal(posted.status, 204, JSON.stringify(posted.body));
+        assert.equal(lineItem(line), item);
+        const removed = await portal('DELETE', `/x_items(${item})/x_item_lines(${line})/$ref`);
+        assert.equal(removed.status, 204, JSON.stringify(removed.body));
+      },
+    };
+    for (const [name, run] of Object.entries(surfaces)) {
+      const ids = await pair(name);
+      await run(ids);
+      // The audit hook remainder runs after the write commits.
+      await sim.store.flushCommittedEvents();
+      await sim.store.queue;
+      assert.equal(lineItem(ids.line), null, `${name} disassociated`);
+      assert.deepEqual(actions(ids.item), [33, 34], `${name} ran the association record hooks`);
+    }
+  },
+);
 
 // @test-kind unproven: contact Merge has no native capture; it follows native mergeAccount (account), where a type-only Merge writes only the subordinate
 test('Merge writes the subordinate through the pipeline (actor and row version stamps)', async (t) => {

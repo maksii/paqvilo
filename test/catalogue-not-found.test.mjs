@@ -5,7 +5,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
-import { boundedCommand } from './helpers/bounded-command.mjs';
+import { boundedCommand, COMMAND_HANG_GUARD_MS } from './helpers/bounded-command.mjs';
+import { operationBudget } from './helpers/operation-budget.mjs';
 import { hintCommands } from './helpers/mirage-in-process.mjs';
 import { tempDirSync } from './fixture.mjs';
 
@@ -13,6 +14,10 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 const bin = path.join(root, 'bin', 'paqvilo.mjs');
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_')));
 const run = (t, cwd, args) => boundedCommand(t, process.execPath, [bin, ...args], { cwd, env });
+// Every command has its own hang guard, counted from the moment it holds a process slot. A test that runs a batch
+// declares the batch's finite budget: on a small loaded host the commands run one at a time, each slow but none hung,
+// and the lane's 180 s hang guard would otherwise cut the queue.
+const commandBatch = (commands) => ({ timeout: operationBudget(commands, COMMAND_HANG_GUARD_MS) });
 
 function folder(t) {
   const directory = tempDirSync('paqvilo-no-catalogue-');
@@ -55,26 +60,30 @@ const COMMANDS = [
   [['mirage', 'bootstrap-report'], '--config <catalogue>'],
 ];
 
-test('every command in a folder without a catalogue refuses it as missing and leaves the toolkit checkout untouched', async (t) => {
-  const empty = folder(t);
-  const before = toolkitState();
-  const results = await Promise.all(COMMANDS.map(([args]) => run(t, empty, args)));
-  for (const [index, [args, alternatives]] of COMMANDS.entries()) {
-    const { status, stdout, stderr } = results[index];
-    const label = args.join(' ');
-    assert.notEqual(status, 0, `${label}: ${stdout}${stderr}`);
-    assert.match(
-      stderr,
-      new RegExp(
-        `No catalogue: ${escape(path.join(empty, 'paqvilo.config.yml'))} does not exist\\. Run in the folder that holds paqvilo\\.config\\.yml, or pass ${escape(alternatives)}\\.`,
-      ),
-      label,
-    );
-    assert.doesNotMatch(stdout + stderr, /portal\.example\.test|now working on/, label);
-  }
-  assert.deepEqual(fs.readdirSync(empty), [], 'nothing is written in the folder either');
-  assert.deepEqual(toolkitState(), before, 'the toolkit checkout .env and .paqvilo are unchanged');
-});
+test(
+  'every command in a folder without a catalogue refuses it as missing and leaves the toolkit checkout untouched',
+  commandBatch(COMMANDS.length),
+  async (t) => {
+    const empty = folder(t);
+    const before = toolkitState();
+    const results = await Promise.all(COMMANDS.map(([args]) => run(t, empty, args)));
+    for (const [index, [args, alternatives]] of COMMANDS.entries()) {
+      const { status, stdout, stderr } = results[index];
+      const label = args.join(' ');
+      assert.notEqual(status, 0, `${label}: ${stdout}${stderr}`);
+      assert.match(
+        stderr,
+        new RegExp(
+          `No catalogue: ${escape(path.join(empty, 'paqvilo.config.yml'))} does not exist\\. Run in the folder that holds paqvilo\\.config\\.yml, or pass ${escape(alternatives)}\\.`,
+        ),
+        label,
+      );
+      assert.doesNotMatch(stdout + stderr, /portal\.example\.test|now working on/, label);
+    }
+    assert.deepEqual(fs.readdirSync(empty), [], 'nothing is written in the folder either');
+    assert.deepEqual(toolkitState(), before, 'the toolkit checkout .env and .paqvilo are unchanged');
+  },
+);
 
 // Each command that takes --config, with a file that does not exist: [arguments before --config].
 const EXPLICIT = [
@@ -96,25 +105,29 @@ const EXPLICIT = [
   ['mirage', 'inspect'],
 ];
 
-test('a --config file that does not exist is refused with one line and a failure exit in every command', async (t) => {
-  const empty = folder(t);
-  const missing = path.join(empty, 'missing.yml');
-  const before = toolkitState();
-  const results = await Promise.all(EXPLICIT.map((args) => run(t, empty, [...args, '--config', missing])));
-  for (const [index, args] of EXPLICIT.entries()) {
-    const { status, stdout, stderr } = results[index];
-    const label = args.join(' ');
-    assert.notEqual(status, 0, `${label}: ${stdout}${stderr}`);
-    // A JSON document (agent, --json) escapes the path's backslashes.
-    const named = [missing, JSON.stringify(missing).slice(1, -1)].map(
-      (file) => `--config file not found: ${escape(file)}\\. Pass an existing file\\.`,
-    );
-    assert.match(stdout + stderr, new RegExp(named.join('|')), label);
-    assert.doesNotMatch(stdout + stderr, /ENOENT|\n\s+at /, label);
-  }
-  assert.deepEqual(fs.readdirSync(empty), []);
-  assert.deepEqual(toolkitState(), before);
-});
+test(
+  'a --config file that does not exist is refused with one line and a failure exit in every command',
+  commandBatch(EXPLICIT.length),
+  async (t) => {
+    const empty = folder(t);
+    const missing = path.join(empty, 'missing.yml');
+    const before = toolkitState();
+    const results = await Promise.all(EXPLICIT.map((args) => run(t, empty, [...args, '--config', missing])));
+    for (const [index, args] of EXPLICIT.entries()) {
+      const { status, stdout, stderr } = results[index];
+      const label = args.join(' ');
+      assert.notEqual(status, 0, `${label}: ${stdout}${stderr}`);
+      // A JSON document (agent, --json) escapes the path's backslashes.
+      const named = [missing, JSON.stringify(missing).slice(1, -1)].map(
+        (file) => `--config file not found: ${escape(file)}\\. Pass an existing file\\.`,
+      );
+      assert.match(stdout + stderr, new RegExp(named.join('|')), label);
+      assert.doesNotMatch(stdout + stderr, /ENOENT|\n\s+at /, label);
+    }
+    assert.deepEqual(fs.readdirSync(empty), []);
+    assert.deepEqual(toolkitState(), before);
+  },
+);
 
 test('a --source run without a catalogue borrows only the sample site defaults; init uses its runtime options', async (t) => {
   const empty = folder(t);

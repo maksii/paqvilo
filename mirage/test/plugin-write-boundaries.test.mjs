@@ -10,6 +10,7 @@ import { runPluginPhase, pluginPhaseRequiresCheckpoint } from '../lib/exported-p
 import { pluginFixture, pluginId } from './plugin-fixture.mjs';
 import { ownedFixture, ownedClose, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { signInHeaders } from '../testing/session.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 
 const member = { contactId: 'own-contact', roles: ['Member'] };
 const scopedState = () => ({
@@ -205,61 +206,66 @@ test('exported inert Create steps leave Parent-scoped basic form and Web API ins
   assert.deepEqual(app.store.snapshot(), before);
 });
 
-test('placeholder, disabled and target-only mock steps keep HTTP row writes journaled across restart', async (t) => {
-  const { app: fixtureApp, dir, portal, solution } = await pluginFixture(t);
-  const options = {
-    sourceDir: portal,
-    solutionRoots: [solution],
-    stateFile: path.join(dir, 'journal.json'),
-    persistence: { journalThresholdBytes: 0 },
-    watch: false,
-  };
-  let app = ownedClose(t, await createSimulator({ ...options, initial: fixtureApp.store.snapshot() }));
-  const csrf = app.csrf,
-    rowId = pluginId(80);
-  const admin = (route, body) =>
-    fetch(app.url + '/__sim/api' + route, {
-      method: 'PATCH',
-      headers: { 'content-type': 'application/json', 'x-sim-csrf': csrf },
-      body: JSON.stringify(body),
-    });
-  const write = async (method, route, body) => {
-    const response = await fetch(app.url + '/_api/' + route, {
-      method,
-      headers: { 'content-type': 'application/json', __RequestVerificationToken: csrf },
-      body: JSON.stringify(body),
-    });
-    assert.equal(response.status, 204, await response.text());
-  };
-  await write('POST', 'fx_widgets', { fx_widgetid: rowId, fx_title: 'initial' });
-  for (const mode of ['placeholder', 'disabled', 'mock']) {
-    if (mode !== 'placeholder')
-      for (const id of [7, 8])
-        assert.equal(
-          (
-            await admin('/operations/' + encodeURIComponent(`plugin-step:${pluginId(id)}`), {
-              mode,
-              ...(mode === 'mock' ? { body: { target: { fx_note: 'mock note' } } } : {}),
-            })
-          ).status,
-          200,
-        );
-    await write('PATCH', `fx_widgets(${rowId})`, { fx_title: mode });
-    assert.equal(app.store.lastSave.mode, 'journal', mode);
-  }
-  const audit = await (await fetch(app.url + '/__sim/api/audit?method=PATCH')).json();
-  assert.deepEqual(
-    audit.items.map((entry) => [entry.path, entry.saveMode]),
-    Array(3).fill([`/_api/fx_widgets(${rowId})`, 'journal']),
-  );
-  assert.ok(audit.items.every((entry) => entry.saveMs >= 0));
-  const expected = structuredClone(app.store.state.tables.fx_widget);
-  await app.close();
-  app = ownedClose(t, await createSimulator(options));
-  assert.deepEqual(app.store.state.tables.fx_widget, expected);
-  assert.equal(expected[0].fx_title, 'mock');
-  assert.equal(expected[0].fx_note, 'mock note');
-});
+// Hang guard only: it starts a simulator and drives it through its reloads; on a loaded slow host that is slow, not hung.
+test(
+  'placeholder, disabled and target-only mock steps keep HTTP row writes journaled across restart',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const { app: fixtureApp, dir, portal, solution } = await pluginFixture(t);
+    const options = {
+      sourceDir: portal,
+      solutionRoots: [solution],
+      stateFile: path.join(dir, 'journal.json'),
+      persistence: { journalThresholdBytes: 0 },
+      watch: false,
+    };
+    let app = ownedClose(t, await createSimulator({ ...options, initial: fixtureApp.store.snapshot() }));
+    const csrf = app.csrf,
+      rowId = pluginId(80);
+    const admin = (route, body) =>
+      fetch(app.url + '/__sim/api' + route, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json', 'x-sim-csrf': csrf },
+        body: JSON.stringify(body),
+      });
+    const write = async (method, route, body) => {
+      const response = await fetch(app.url + '/_api/' + route, {
+        method,
+        headers: { 'content-type': 'application/json', __RequestVerificationToken: csrf },
+        body: JSON.stringify(body),
+      });
+      assert.equal(response.status, 204, await response.text());
+    };
+    await write('POST', 'fx_widgets', { fx_widgetid: rowId, fx_title: 'initial' });
+    for (const mode of ['placeholder', 'disabled', 'mock']) {
+      if (mode !== 'placeholder')
+        for (const id of [7, 8])
+          assert.equal(
+            (
+              await admin('/operations/' + encodeURIComponent(`plugin-step:${pluginId(id)}`), {
+                mode,
+                ...(mode === 'mock' ? { body: { target: { fx_note: 'mock note' } } } : {}),
+              })
+            ).status,
+            200,
+          );
+      await write('PATCH', `fx_widgets(${rowId})`, { fx_title: mode });
+      assert.equal(app.store.lastSave.mode, 'journal', mode);
+    }
+    const audit = await (await fetch(app.url + '/__sim/api/audit?method=PATCH')).json();
+    assert.deepEqual(
+      audit.items.map((entry) => [entry.path, entry.saveMode]),
+      Array(3).fill([`/_api/fx_widgets(${rowId})`, 'journal']),
+    );
+    assert.ok(audit.items.every((entry) => entry.saveMs >= 0));
+    const expected = structuredClone(app.store.state.tables.fx_widget);
+    await app.close();
+    app = ownedClose(t, await createSimulator(options));
+    assert.deepEqual(app.store.state.tables.fx_widget, expected);
+    assert.equal(expected[0].fx_title, 'mock');
+    assert.equal(expected[0].fx_note, 'mock note');
+  },
+);
 
 test('only matching executable phases promote a row transaction, and arbitrary handler writes roll back', async (t) => {
   const root = await makeTemporaryDirectory(path.join(tmpdir(), 'paqvilo-plugin-checkpoint-'));

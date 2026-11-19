@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { once } from 'node:events';
 import { mirageStatus, miragePaths, updateOwnedSessions } from '../lense/commands/mirage.mjs';
+import { runMirage } from './helpers/mirage-in-process.mjs';
 
 // A runtime whose status answer is held until the test releases it; `asked` resolves when a probe has arrived.
 async function heldRuntime(t) {
@@ -111,4 +112,30 @@ test('the caller signal ends a status that waits without a probe limit', async (
   await asked;
   stop.abort(new Error('stage deadline'));
   await assert.rejects(status, /stage deadline/);
+});
+
+// The composed `mirage status` command (selection, then print) passes the probe limit its host names to every status
+// read: with `probeTimeout: null` it sets no limit at all (no AbortSignal.timeout) and prints what the runtime answered.
+test('the mirage command reads status with the probe limit of its host and prints the answer', async (t) => {
+  const { paths, server, answer } = await heldRuntime(t);
+  const limits = [];
+  const timeout = AbortSignal.timeout.bind(AbortSignal);
+  t.mock.method(AbortSignal, 'timeout', (ms) => {
+    limits.push(ms);
+    return timeout(ms);
+  });
+  const asked = once(server, 'asked');
+  const status = runMirage(['mirage', 'status', '--json'], {
+    cwd: path.dirname(path.dirname(paths.discoveryRoot)),
+    host: { probeTimeout: null },
+  });
+  await asked;
+  answer();
+  const result = await status;
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(limits, [], 'no probe limit was set');
+  const [session] = JSON.parse(result.stdout).sessions;
+  assert.equal(session.pid, process.pid);
+  assert.equal(session.ready, true);
+  assert.equal(session.runtime.site, 'Held');
 });
