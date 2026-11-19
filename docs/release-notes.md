@@ -272,6 +272,9 @@ this session.` A trusted CLR plug-in descriptor with
   `VERIFY_INTERRUPTED`.
 - Local sources reach slow-starting tabs and popups; element provenance no longer stays pending on scripts read with
   `fetch` or XHR.
+- Element provenance survives a DevTools session re-attach of an unchanged document; a page script can no longer read
+  the provenance keys or take the place of a provenance registry; an authored `debugger;` statement no longer pauses an
+  inspected tab.
 - `like` patterns, FetchXML, form XML, deeply nested `$filter` (400 above 100 levels) and malformed Canvas control
   versions can no longer hang the runtime.
 - Sign-in and sign-out `returnUrl` values can no longer redirect off the site.

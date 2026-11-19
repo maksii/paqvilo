@@ -16,6 +16,7 @@ const scope = { documentId: 'invented-document', frameId: 'top', uiEpoch: 1, sou
 const options = {
   slot: '__inventedDomReader',
   secret: 'invented-private-writer-secret',
+  notifyKey: 'invented-notification-key',
   binding: '__inventedDomBinding',
 };
 const proofFor = (id) => ({
@@ -131,6 +132,26 @@ async function fixture(
   return { page, writer, packets, packetsReach, script, query, resolve, barrier, origin };
 }
 
+test('the writer lists the newest pending notifications as sent, without resolved ones', async (t) => {
+  const fx = await fixture(t);
+  await fx.script(`for(let i=0;i<2100;i++)document.body.append(document.createElement('i'));`);
+  await fx.packetsReach(2100);
+  const sent = fx.packets.map((packet) => JSON.stringify(packet));
+  const first = fx.packets[0];
+  await fx.writer.evaluate((writer, { id, proof }) => writer.resolve(id, proof), {
+    id: first.id,
+    proof: proofFor(first.id),
+  });
+  const listed = (await fx.writer.evaluate((writer) => writer.pendingCallsites())).split('\n');
+  // The 2099 still pending exceed the 2048 listed: the newest are kept, oldest first, exactly as sent.
+  assert.equal(listed.length, 2048);
+  assert.deepEqual(
+    listed.map((text) => JSON.stringify(JSON.parse(text))),
+    sent.slice(-2048),
+  );
+  assert.equal(await fx.page.evaluate((slot) => typeof window[slot].pendingCallsites, options.slot), 'undefined');
+});
+
 test('creation, cloning, insertion and moves retain actual-node identity without emitting content or query values', async (t) => {
   const fx = await fixture(t);
   await fx.script(
@@ -188,7 +209,7 @@ test('creation, cloning, insertion and moves retain actual-node identity without
     ),
   );
   for (const packet of fx.packets) {
-    assert.deepEqual(Object.keys(packet).sort(), ['frames', 'id', 'relationship', 'secret', 'version']);
+    assert.deepEqual(Object.keys(packet).sort(), ['frames', 'id', 'key', 'relationship', 'version']);
     for (const frame of packet.frames)
       if (!frame.barrier) {
         assert.equal(/[?#]/.test(frame.url), false);

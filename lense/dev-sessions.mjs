@@ -263,7 +263,7 @@ export async function startDevSessions(
           }
         },
         onError: (error) => {
-          if (error.code === 'reload_required') {
+          if (error.code === 'reload_required' || error.code === 'provenance_unrecorded') {
             log(`WARN        ${error.message}`);
             return;
           }

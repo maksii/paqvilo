@@ -3,7 +3,7 @@ import { setMaxListeners } from 'node:events';
 import { installDomProvenance } from './dom-provenance.mjs';
 import { normalizeInspectionSourceRef } from './inspection-evidence.mjs';
 import { createResponseProofQueue } from './response-proof-queue.mjs';
-import { readEndedByContextClose, trackDefaultDocuments } from './portal-provenance-transport.mjs';
+import { readEndedByContextClose, registryAccess, trackDefaultDocuments } from './portal-provenance-transport.mjs';
 
 const unanswered = Symbol('unanswered');
 // A command or sideband read waits until it answers or the attachment is disposed (its page closed or interception
@@ -150,11 +150,14 @@ const frameLoaders = (tree) => {
 export function createDomProvenanceTransport(context, configs) {
   const targets = new Map(configs.map((cfg) => [new URL(cfg.origin).origin, cfg]));
   const slot = '__paqviloDom_' + randomBytes(16).toString('hex'),
-    secret = randomBytes(32).toString('hex');
+    secret = randomBytes(32).toString('hex'),
+    // Authenticates a callsite notification and nothing else: it never unlocks the writer.
+    notifyKey = randomBytes(32).toString('hex');
   const binding = '__paqviloDomEvent_' + randomBytes(16).toString('hex');
   // Closes a registry without its writer; unlike `secret` it cannot admit evidence.
   const releaseKey = randomBytes(32).toString('hex');
-  const bootstrap = `if(${JSON.stringify([...targets.keys()])}.includes(location.origin))(${installDomProvenance.toString()})(${JSON.stringify({ slot, secret, binding, releaseKey })});\n//# sourceURL=paqvilo-tool://dom-provenance`;
+  const bootstrap = `if(${JSON.stringify([...targets.keys()])}.includes(location.origin))(${installDomProvenance.toString()})(${JSON.stringify({ slot, secret, notifyKey, binding, releaseKey })});\n//# sourceURL=paqvilo-tool://dom-provenance`;
+  const registries = registryAccess({ kind: 'script', slot, bootstrap, secret, releaseKey });
   return {
     slot,
     async onAttach({ cdp, configure, report }) {
@@ -162,15 +165,22 @@ export function createDomProvenanceTransport(context, configs) {
       setMaxListeners(0, controller.signal);
       const contexts = new Map(),
         requests = new Map(),
-        descriptors = new Map();
+        descriptors = new Map(),
+        // The records of the last cleared contexts by frame. Chromium clears and re-reports the contexts of an unchanged
+        // document when it re-attaches the tab's DevTools session; the re-reported context of the same document
+        // (same frame and loader) continues the record's parsed scripts, proofs and pending callsites.
+        cleared = new Map();
       let loaders = new Map(),
         initial = new Map(),
         script,
         closed = false;
-      const { documents, tracking } = trackDefaultDocuments(targets);
+      const { documents, tracking: documentTracking } = trackDefaultDocuments(targets);
       const lost = (error) => {
         if (!closed) report?.(error);
       };
+      // `command` is declared below; the registry asks through it only after attachment.
+      const registry = registries({ ask: (method, params) => command(method, params, null), lost });
+      const tracking = [...documentTracking, ...registry.tracking];
       // A rejected command resolves to `rejected`; a command ended by disposal or the hang guard resolves to null.
       const command = async (method, params = {}, rejected = null) => {
         if (
@@ -178,6 +188,7 @@ export function createDomProvenanceTransport(context, configs) {
           ![
             'Runtime.callFunctionOn',
             'Runtime.evaluate',
+            'Runtime.getProperties',
             'Runtime.releaseObjectGroup',
             'Runtime.removeBinding',
             'Page.removeScriptToEvaluateOnNewDocument',
@@ -391,6 +402,35 @@ export function createDomProvenanceTransport(context, configs) {
         }
         flush(record).catch(() => {});
       };
+      // The re-reported context of an unchanged document continues the record of its cleared context. Entries the new
+      // context received since it was created are newer and win; each index keeps its bound.
+      const adopt = (record) => {
+        const previous = cleared.get(record.frameId);
+        cleared.delete(record.frameId);
+        if (previous?.loaderId !== record.loaderId) return false;
+        for (const [field, bound] of [
+          ['scripts', 512],
+          ['proofs', 256],
+          ['nodes', 2048],
+        ])
+          record[field] = new Map([...previous[field], ...record[field]].slice(-bound));
+        record.limitReason ??= previous.limitReason;
+        record.limitSent = previous.limitSent;
+        return true;
+      };
+      // A callsite notified while Chromium re-attached the session was dropped: the page still holds it pending, and its
+      // notification passes the same checks as a delivered one.
+      const recover = async (record) => {
+        const answer = await command('Runtime.callFunctionOn', {
+          objectId: record.objectId,
+          functionDeclaration: 'function(){return this.pendingCallsites()}',
+          returnByValue: true,
+        });
+        const text = answer?.result?.value;
+        if (typeof text === 'string' && text.length)
+          for (const payload of text.split('\n', 2048))
+            called({ name: binding, executionContextId: record.id, payload });
+      };
       const created = ({ context: execution }) => {
         if (
           closed ||
@@ -418,20 +458,12 @@ export function createDomProvenanceTransport(context, configs) {
           if (record.loaderId && record.loaderId === initial.get(record.frameId)) documents.delete(record.id);
           if (!record.loaderId || record.loaderId === initial.get(record.frameId)) return;
           loaders.set(record.frameId, record.loaderId);
-          for (let attempt = 0; attempt < 12 && !closed && !record.closed; attempt++) {
-            const result = await command('Runtime.evaluate', {
-              expression: `window[${JSON.stringify(slot)}]?.claim(${JSON.stringify(secret)})`,
-              contextId: record.id,
-              objectGroup: slot,
-              silent: true,
-            });
-            if (result?.result?.objectId) {
-              record.objectId = result.result.objectId;
-              admitDescriptors(record);
-              return;
-            }
-            await new Promise((resolve) => setTimeout(resolve, 10));
-          }
+          const returned = adopt(record);
+          const writer = await registry.claim(record.id, () => record.closed || closed);
+          if (!writer || closed || record.closed) return;
+          record.objectId = writer;
+          if (returned) await recover(record);
+          admitDescriptors(record);
         })().catch(() => {});
       };
       const destroy = ({ executionContextId }) => {
@@ -482,7 +514,7 @@ export function createDomProvenanceTransport(context, configs) {
           typeof data !== 'object' ||
           Array.isArray(data) ||
           data.version !== 1 ||
-          data.secret !== secret ||
+          data.key !== notifyKey ||
           typeof data.id !== 'string' ||
           !data.id.length ||
           data.id.length > 128 ||
@@ -540,6 +572,7 @@ export function createDomProvenanceTransport(context, configs) {
       };
       const detached = ({ frameId }) => {
         loaders.delete(frameId);
+        cleared.delete(frameId);
         acknowledgements.forget(frameId);
         for (const record of contexts.values())
           if (record.frameId === frameId) destroy({ executionContextId: record.id });
@@ -638,7 +671,14 @@ export function createDomProvenanceTransport(context, configs) {
         [
           'Runtime.executionContextsCleared',
           () => {
-            for (const record of contexts.values()) record.closed = true;
+            // Merged per frame: a second clear before the context returns keeps the record of the first.
+            for (const record of contexts.values()) {
+              record.closed = true;
+              if (!record.loaderId) continue;
+              cleared.delete(record.frameId);
+              if (cleared.size >= 128) cleared.delete(cleared.keys().next().value);
+              cleared.set(record.frameId, record);
+            }
             contexts.clear();
           },
         ],
@@ -658,21 +698,13 @@ export function createDomProvenanceTransport(context, configs) {
         if (script?.identifier)
           await command('Page.removeScriptToEvaluateOnNewDocument', { identifier: script.identifier });
         for (const [event, handler] of tracking) cdp.off(event, handler);
-        // A registry is retired through its context, not through its claimed writer: the writer of a claim that is
-        // still in flight never reaches this transport, and the browser runs this command after that claim.
-        await Promise.allSettled(
-          [...documents].map((contextId) =>
-            command('Runtime.evaluate', {
-              expression: `window[${JSON.stringify(slot)}]?.release?.(${JSON.stringify(releaseKey)})`,
-              contextId,
-              silent: true,
-              returnByValue: true,
-            }),
-          ),
-        );
+        // A registry is retired through its verified `release`, not through its claimed writer: the writer of a claim
+        // that is still in flight never reaches this transport, and a claim that follows the release finds it closed.
+        await Promise.allSettled([...documents].map((contextId) => registry.release(contextId)));
         controller.abort();
         documents.clear();
         contexts.clear();
+        cleared.clear();
         requests.clear();
         acknowledgements.clear();
         descriptors.clear();
@@ -691,6 +723,8 @@ export function createDomProvenanceTransport(context, configs) {
         await configure('Runtime.addBinding', { name: binding });
         script = await configure('Page.addScriptToEvaluateOnNewDocument', { source: bootstrap });
         await configure('Debugger.enable');
+        // Debugger reports parsed scripts; it never pauses the page, also not at an authored `debugger` statement.
+        await configure('Debugger.setSkipAllPauses', { skip: true });
         await configure('Runtime.enable');
       } catch (error) {
         await dispose();

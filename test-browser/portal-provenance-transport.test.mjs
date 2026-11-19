@@ -11,6 +11,7 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 import { interceptOrigin } from '../lense/intercept.mjs';
 import { createPortalProvenanceTransport } from '../lense/portal-provenance-transport.mjs';
+import { isRegistryCall } from './helpers/script-provenance-page.mjs';
 import { createPortalRenderer } from '../mirage/lib/liquid.mjs';
 import { xrayUi } from '../lense/xray-ui.mjs';
 
@@ -120,20 +121,38 @@ async function fixture(t, { mirage = false, delayDescriptor = false, holdRepair 
   const claimAnswered = Promise.withResolvers(),
     claimGate = Promise.withResolvers();
   let claimHoldArmed = false;
+  // The attachment's DevTools session, the default contexts it reported, every command the transport sent (in order)
+  // and the registry secret read from its claim, for replaying a session re-attach.
+  const session = { cdp: null, contexts: [], sent: [], secret: null, claims: [] };
   const onAttach = (options) => {
-    if (holdClaim) {
-      const send = options.cdp.send.bind(options.cdp);
-      options.cdp.send = async (method, params) => {
-        const answer = await send(method, params);
-        if (claimHoldArmed && method === 'Runtime.evaluate' && params?.expression?.includes('.claim(')) {
+    session.cdp = options.cdp;
+    options.cdp.on('Runtime.executionContextCreated', ({ context: execution }) => {
+      if (execution.auxData?.isDefault && execution.origin === origin) session.contexts.push(execution);
+    });
+    const send = options.cdp.send.bind(options.cdp);
+    options.cdp.send = async (method, params) => {
+      const entry = { method, params, answered: Promise.withResolvers() };
+      const index = session.sent.push(entry) - 1;
+      // The transport sends its secret only as the argument of the verified claim.
+      const claim = isRegistryCall(method, params, transport.slot);
+      if (claim) session.secret = params.arguments[0].value;
+      const answer = await send(method, params);
+      entry.answered.resolve(answer);
+      if (claim) {
+        if (holdClaim && claimHoldArmed) {
           // The browser has run the claim; only its answer is withheld.
           claimHoldArmed = false;
           claimAnswered.resolve();
           await claimGate.promise;
         }
-        return answer;
-      };
-    }
+        // A waiter receives the answer of the first claim sent after it was registered.
+        for (const waiter of session.claims.filter((waiter) => index >= waiter.after)) {
+          session.claims.splice(session.claims.indexOf(waiter), 1);
+          waiter.resolve(answer);
+        }
+      }
+      return answer;
+    };
     return transport.onAttach(options);
   };
   const acknowledgments = [];
@@ -256,6 +275,7 @@ async function fixture(t, { mirage = false, delayDescriptor = false, holdRepair 
     },
     claimHeld: claimAnswered.promise,
     releaseClaim: () => claimGate.resolve(),
+    session,
     slowEntered,
     releaseSlow,
     repairEntered,
@@ -288,6 +308,59 @@ test('successful fulfillment publishes private original-node proof before author
     document.body.append(button);
   });
   assert.equal((await fx.query()).facts.length, 0);
+});
+
+test('a proof waiting for its document is published after the unchanged document is re-reported with a cleared context', async (t) => {
+  const fx = await fixture(t, { holdClaim: true });
+  await fx.attach();
+  fx.holdNextClaim();
+  await fx.page.goto(fx.origin + '/accepted');
+  // The browser has run the registry claim of the document; its answer has not reached the transport.
+  await fx.claimHeld;
+  // The acknowledged proof waits for that claim.
+  assert.equal((await fx.acknowledgment('/accepted')).acknowledged, true);
+  const unchanged = fx.session.contexts.at(-1);
+  assert.ok(unchanged, 'the document reported its default context');
+  // The sequence Chromium sends when it re-attaches the tab's DevTools session on the unchanged document, cleared twice
+  // before the context returns.
+  const reclaimed = new Promise((resolve) => fx.session.claims.push({ after: fx.session.sent.length, resolve }));
+  fx.session.cdp.emit('Runtime.executionContextsCleared', {});
+  fx.session.cdp.emit('Runtime.executionContextsCleared', {});
+  fx.session.cdp.emit('Runtime.executionContextCreated', { context: unchanged });
+  const sentBefore = fx.session.sent.length;
+  fx.releaseClaim();
+  assert.ok((await reclaimed)?.result?.objectId, 'the transport claims the unchanged document again');
+  // After its claim the transport reads the frame tree once, then flushes: only a document that still has a waiting
+  // proof reads it again before publishing. Every microtask of each step has run before the next macrotask.
+  await new Promise((resolve) => setImmediate(resolve));
+  const frameTree = fx.session.sent.slice(sentBefore).find((entry) => entry.method === 'Page.getFrameTree');
+  await frameTree.answered.promise;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(
+    fx.session.sent.slice(sentBefore).filter((entry) => entry.method === 'Page.getFrameTree').length,
+    2,
+    'the proof that waited for the document is still waiting for it',
+  );
+  await fx.proved();
+  assert.equal((await fx.query()).facts[0].kind, 'lense-applied-literal');
+  assert.equal(await fx.page.evaluate((slot) => window[slot].claim('invented-wrong-secret'), fx.slot), null);
+});
+
+// @test-kind security: a registry retired by interception stop never hands its writer out again, even for its secret
+test('a released registry refuses the claim secret', async (t) => {
+  const fx = await fixture(t);
+  await fx.attach();
+  await fx.page.goto(fx.origin + '/accepted');
+  await fx.proved();
+  assert.match(fx.session.secret, /^[a-f0-9]{64}$/);
+  await fx.detach();
+  assert.equal(
+    await fx.page.evaluate(({ slot, secret }) => window[slot].claim(secret), {
+      slot: fx.slot,
+      secret: fx.session.secret,
+    }),
+    null,
+  );
 });
 
 test('Xray consumes actual acknowledged source proof independently of ownership and a cloned node cannot inherit it', async (t) => {

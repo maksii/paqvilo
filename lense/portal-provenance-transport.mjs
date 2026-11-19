@@ -1,6 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { setMaxListeners } from 'node:events';
-import { setTimeout as delay } from 'node:timers/promises';
 import { installPortalProvenanceRegistry } from './portal-element-provider.mjs';
 import { createResponseProofQueue } from './response-proof-queue.mjs';
 
@@ -40,6 +39,156 @@ export function trackDefaultDocuments(targets) {
   return { documents, tracking };
 }
 
+/**
+ * Where V8 locates a registry method of a bootstrap (`[[FunctionLocation]]`, zero-based): the opening parenthesis of
+ * its parameter list. The method's signature occurs once in the bootstrap.
+ */
+function methodLocation(source, signature) {
+  const index = source.indexOf(signature);
+  if (index < 0 || source.includes(signature, index + 1))
+    throw new Error(`a provenance bootstrap must contain ${signature} exactly once`);
+  const at = index + signature.indexOf('('),
+    before = source.slice(0, at);
+  const lineNumber = before.split('\n').length - 1;
+  return { lineNumber, columnNumber: at - (before.lastIndexOf('\n') + 1) };
+}
+
+/**
+ * The bootstrap script the browser parsed in each execution context, from `Debugger.scriptParsed`. It is identified
+ * by its content hash (SHA-256 of the source, as Chromium reports it): a page cannot compile a script with that hash
+ * because the source holds the registry secret. Bounded; a destroyed context forgets its script.
+ */
+function trackBootstrapScripts(bootstrap) {
+  const hash = createHash('sha256').update(bootstrap).digest('hex');
+  const scripts = new Map();
+  const tracking = [
+    [
+      'Debugger.scriptParsed',
+      (event) => {
+        if (event.hash !== hash || !event.executionContextId) return;
+        if (scripts.size >= 256 && !scripts.has(event.executionContextId)) scripts.delete(scripts.keys().next().value);
+        scripts.set(event.executionContextId, event.scriptId);
+      },
+    ],
+    ['Runtime.executionContextDestroyed', ({ executionContextId }) => scripts.delete(executionContextId)],
+  ];
+  return { scripts, tracking };
+}
+
+const ownDataFunction = (entry) =>
+  entry?.isOwn === true && !entry.get && !entry.set && entry.value?.type === 'function' && entry.value.objectId;
+const genuineSlot = (entry) =>
+  entry.isOwn === true &&
+  entry.writable === false &&
+  entry.configurable === false &&
+  !entry.get &&
+  !entry.set &&
+  entry.value?.type === 'object' &&
+  entry.value.objectId;
+
+/**
+ * Verifies the registry of one execution context without running page code and returns the object ids of its
+ * `methods` (name -> location in the bootstrap). The context's global must hold `slot` as an own, non-writable,
+ * non-configurable data property; that object must hold each method as an own data property whose function V8 locates
+ * at the method's place in the bootstrap script the browser parsed in this context (`script(contextId)`). A page cannot
+ * satisfy this with its own object: no function of its making, or of another document's bootstrap, has that location.
+ * `ask(method, params)` resolves to the answer, or to null when the command failed or ended.
+ * Resolves to `{ methods }`, to `{ absent: true }` when the context has no such slot (an uninstrumented document), to
+ * `{ invalid: reason }`, or to null when a command ended.
+ */
+async function verifyRegistry({ ask, contextId, slot, objectGroup, script, methods }) {
+  const global = await ask('Runtime.evaluate', { expression: 'this', contextId, objectGroup, silent: true });
+  if (!global?.result?.objectId) return null;
+  const own = await ask('Runtime.getProperties', {
+    objectId: global.result.objectId,
+    ownProperties: true,
+    generatePreview: false,
+  });
+  if (!Array.isArray(own?.result)) return null;
+  const entry = own.result.find((item) => item.name === slot);
+  if (!entry) return { absent: true };
+  if (!genuineSlot(entry)) return { invalid: 'slot' };
+  const members = await ask('Runtime.getProperties', { objectId: entry.value.objectId, ownProperties: true });
+  if (!Array.isArray(members?.result)) return null;
+  const found = {};
+  for (const [name, location] of Object.entries(methods)) {
+    const member = members.result.find((item) => item.name === name);
+    if (!ownDataFunction(member)) return { invalid: name };
+    const inner = await ask('Runtime.getProperties', { objectId: member.value.objectId, ownProperties: true });
+    if (!inner) return null;
+    const at = inner.internalProperties?.find((item) => item.name === '[[FunctionLocation]]')?.value?.value;
+    const parsed = script(contextId);
+    if (
+      !parsed ||
+      at?.scriptId !== parsed ||
+      at.lineNumber !== location.lineNumber ||
+      at.columnNumber !== location.columnNumber
+    )
+      return { invalid: name };
+    found[name] = member.value.objectId;
+  }
+  return { methods: found };
+}
+
+/** Calls a verified registry method with one argument: no page-controlled lookup happens between check and call. */
+const callRegistryMethod = (ask, objectId, value, objectGroup) =>
+  ask('Runtime.callFunctionOn', {
+    objectId,
+    functionDeclaration: 'function(value){return this(value)}',
+    arguments: [{ value }],
+    objectGroup,
+    silent: true,
+  });
+
+/**
+ * The verified access to the registries one bootstrap installs (`kind` names them in reports). Per attachment, with
+ * its `ask(method, params)` (answer, or null when the command failed or ended) and `lost(error)`: `tracking` lists the
+ * events that record the bootstrap script parsed in each context; `claim(contextId, ended)` resolves to the writer's
+ * object id, or null; `release(contextId)` closes the registry. The secret and the release key are sent only to the
+ * verified functions.
+ *
+ * One claim, after verifying the registry: the bootstrap runs synchronously while Chromium creates the main-world
+ * context (InspectorPageAgent::DidCreateMainWorldContext injects it, and Debugger.scriptParsed reports it first), and
+ * Runtime.evaluate is not one of the protocol methods that interrupt running script (ShouldInterruptForMethod in
+ * devtools_session.cc), so the verification runs after the bootstrap. A writer is always the bootstrap's own: only its
+ * verified claim receives the secret. A context without the slot is an uninstrumented document.
+ */
+export function registryAccess({ kind, slot, bootstrap, secret, releaseKey }) {
+  const claimAt = methodLocation(bootstrap, 'claim(value) {'),
+    releaseAt = methodLocation(bootstrap, 'release(value) {');
+  return ({ ask, lost }) => {
+    const { scripts, tracking } = trackBootstrapScripts(bootstrap);
+    const verify = (contextId, methods) =>
+      verifyRegistry({ ask, contextId, slot, objectGroup: slot, script: (id) => scripts.get(id), methods });
+    return {
+      tracking,
+      async claim(contextId, ended) {
+        const registry = await verify(contextId, { claim: claimAt });
+        if (ended() || registry?.absent) return null;
+        const writer = registry?.methods && (await callRegistryMethod(ask, registry.methods.claim, secret, slot));
+        if (writer?.result?.objectId) return writer.result.objectId;
+        if (ended()) return null;
+        // A page script in that document holds the registry's place: a reload brings it back, so it is not offered.
+        if (registry?.invalid)
+          lost(
+            Object.assign(
+              new Error(
+                `a page script holds the place of the ${kind} provenance registry in a document, so provenance for that document is not recorded`,
+              ),
+              { reloadHelps: false },
+            ),
+          );
+        else lost(new Error(`the ${kind} provenance registry of a document could not be claimed`));
+        return null;
+      },
+      async release(contextId) {
+        const registry = await verify(contextId, { release: releaseAt });
+        if (registry?.methods) await callRegistryMethod(ask, registry.methods.release, releaseKey, slot);
+      },
+    };
+  };
+}
+
 /** Private CDP writers admit descriptors only into the response's actual frame/loader. */
 export function createPortalProvenanceTransport(context, configs, { onDescriptor, domProvenanceSlot } = {}) {
   const targets = new Map(configs.map((cfg) => [new URL(cfg.origin).origin, cfg]));
@@ -47,7 +196,8 @@ export function createPortalProvenanceTransport(context, configs, { onDescriptor
   const secret = randomBytes(32).toString('hex');
   // Closes a registry without its writer; unlike `secret` it cannot admit evidence.
   const releaseKey = randomBytes(32).toString('hex');
-  const bootstrap = `if(${JSON.stringify([...targets.keys()])}.includes(location.origin))(${installPortalProvenanceRegistry.toString()})(${JSON.stringify({ slot, secret, domProvenanceSlot, releaseKey })});`;
+  const bootstrap = `if(${JSON.stringify([...targets.keys()])}.includes(location.origin))(${installPortalProvenanceRegistry.toString()})(${JSON.stringify({ slot, secret, domProvenanceSlot, releaseKey })});\n//# sourceURL=paqvilo-tool://portal-provenance`;
+  const registries = registryAccess({ kind: 'page', slot, bootstrap, secret, releaseKey });
   return {
     slot,
     async onAttach({ cdp, configure, report }) {
@@ -56,13 +206,19 @@ export function createPortalProvenanceTransport(context, configs, { onDescriptor
       const contexts = new Map(),
         requests = new Map(),
         pending = new Map();
-      const initialLoaders = new Map();
+      const initialLoaders = new Map(),
+        // The loader of each frame whose context was cleared. Chromium clears and re-reports the contexts of an unchanged
+        // document when it re-attaches the tab's DevTools session; the proofs still waiting for that document are kept
+        // for its re-reported context, and dropped once the frame reports another loader or detaches.
+        returning = new Map();
       let script,
         closed = false;
-      const { documents, tracking } = trackDefaultDocuments(targets);
+      const { documents, tracking: documentTracking } = trackDefaultDocuments(targets);
       const lost = (error) => {
         if (!closed) report?.(error);
       };
+      const registry = registries({ ask: (method, params) => send(method, params, null), lost });
+      const tracking = [...documentTracking, ...registry.tracking];
       // A rejected command resolves to `rejected`; a command ended by disposal or the hang guard resolves to null.
       const send = async (method, params = {}, rejected = null) => {
         let timer, onAbort;
@@ -137,12 +293,12 @@ export function createPortalProvenanceTransport(context, configs, { onDescriptor
           if (record.frameId === frameId && record.loaderId === loaderId) await flush(record);
         return true;
       };
-      const retire = (id) => {
+      const retire = (id, keepPending = false) => {
         const record = contexts.get(id);
         if (!record) return;
         record.closed = true;
         contexts.delete(id);
-        if (record.loaderId) pending.delete(record.frameId + ':' + record.loaderId);
+        if (record.loaderId && !keepPending) pending.delete(record.frameId + ':' + record.loaderId);
         if (record.objectId) send('Runtime.releaseObject', { objectId: record.objectId }).catch(() => {});
       };
       const created = ({ context: execution }) => {
@@ -169,28 +325,34 @@ export function createPortalProvenanceTransport(context, configs, { onDescriptor
           // their DOM retroactively or accept a page-created lookalike registry.
           // Such a document has no registry to retire either.
           if (loader && initialLoaders.get(record.frameId) === loader) documents.delete(record.id);
+          const previous = returning.get(record.frameId);
+          returning.delete(record.frameId);
+          if (previous && previous !== loader) pending.delete(record.frameId + ':' + previous);
           if (!loader || initialLoaders.get(record.frameId) === loader || record.closed || closed) return;
           record.loaderId = loader;
-          for (let attempt = 0; attempt < 12 && !record.closed && !closed; attempt++) {
-            const result = await send('Runtime.evaluate', {
-              contextId: record.id,
-              expression: `this[${JSON.stringify(slot)}]&&this[${JSON.stringify(slot)}].claim(${JSON.stringify(secret)})`,
-              returnByValue: false,
-              objectGroup: slot,
-            });
-            if (result?.result?.objectId) {
-              record.objectId = result.result.objectId;
-              break;
-            }
-            await delay(20, undefined, { signal: controller.signal }).catch(() => {});
-          }
+          const writer = await registry.claim(record.id, () => record.closed || closed);
+          if (!writer || record.closed || closed) return;
+          record.objectId = writer;
           if ((await currentLoader(record.frameId)) !== loader || record.closed || closed) return;
           await flush(record);
         })().catch(() => {});
       };
       const destroyed = ({ executionContextId }) => retire(executionContextId);
       const cleared = () => {
-        for (const id of [...contexts.keys()]) retire(id); // NOSONAR: snapshot copy guards against mutation while iterating
+        // Merged per frame: a second clear before the context returns keeps the loader of the first.
+        // Deleting the visited entry while iterating a Map is safe.
+        for (const [id, record] of contexts) {
+          if (record.loaderId) {
+            returning.delete(record.frameId);
+            if (returning.size >= 128) returning.delete(returning.keys().next().value);
+            returning.set(record.frameId, record.loaderId);
+          }
+          retire(id, Boolean(record.loaderId));
+        }
+      };
+      const detached = ({ frameId }) => {
+        returning.delete(frameId);
+        for (const key of pending.keys()) if (key.startsWith(frameId + ':')) pending.delete(key);
       };
       const requested = (event) => {
         if (closed || event.type !== 'Document') return;
@@ -262,6 +424,7 @@ export function createPortalProvenanceTransport(context, configs, { onDescriptor
         ['Runtime.executionContextCreated', created],
         ['Runtime.executionContextDestroyed', destroyed],
         ['Runtime.executionContextsCleared', cleared],
+        ['Page.frameDetached', detached],
         ['Network.requestWillBeSent', requested],
         ['Network.responseReceived', response],
       ];
@@ -275,26 +438,19 @@ export function createPortalProvenanceTransport(context, configs, { onDescriptor
         requests.clear();
         acknowledgements.clear();
         pending.clear();
+        returning.clear();
         // The bootstrap is removed first, while contexts are still tracked: a document that commits during disposal
         // announces its context before the removal is answered, so its registry is retired below as well.
         if (script?.identifier)
           await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: script.identifier });
         for (const [type, listener] of tracking) cdp.off(type, listener);
-        // A registry is retired through its context, not through its claimed writer: the writer of a claim that is
-        // still in flight never reaches this transport, and the browser runs this command after that claim.
-        await Promise.allSettled(
-          [...documents].map((contextId) =>
-            send('Runtime.evaluate', {
-              expression: `window[${JSON.stringify(slot)}]?.release?.(${JSON.stringify(releaseKey)})`,
-              contextId,
-              silent: true,
-              returnByValue: true,
-            }),
-          ),
-        );
+        // A registry is retired through its verified `release`, not through its claimed writer: the writer of a claim
+        // that is still in flight never reaches this transport, and the browser runs this command after that claim.
+        await Promise.allSettled([...documents].map((contextId) => registry.release(contextId)));
         documents.clear();
         await Promise.allSettled([
           send('Runtime.releaseObjectGroup', { objectGroup: slot }),
+          send('Debugger.disable'),
           send('Runtime.disable'),
           send('Page.disable'),
         ]);
@@ -304,6 +460,9 @@ export function createPortalProvenanceTransport(context, configs, { onDescriptor
         for (const [frameId, loader] of frames((await configure('Page.getFrameTree')).frameTree))
           initialLoaders.set(frameId, loader);
         for (const [type, listener] of [...tracking, ...listeners]) cdp.on(type, listener);
+        // Debugger reports which script the browser parsed in each context; it never pauses the page.
+        await configure('Debugger.enable');
+        await configure('Debugger.setSkipAllPauses', { skip: true });
         script = await configure('Page.addScriptToEvaluateOnNewDocument', { source: bootstrap });
         await configure('Runtime.enable');
       } catch (error) {

@@ -412,7 +412,7 @@ test('a refused answer for a request that still exists fails it and reports the 
     assert.equal(errors.length, 1);
     assert.equal(errors[0].phase, method);
     assert.match(errors[0].message, /refused .*Invented invalid header.*was failed/);
-    assert.doesNotMatch(errors[0].message, /portal\.example\.com/);
+    assert.equal(errors[0].message.includes(ORIGIN.slice('https://'.length)), false, 'the report names no address');
     assert.deepEqual(published, [], 'a refused fulfillment publishes no proof even though its request still existed');
     await detach();
   }
@@ -896,14 +896,23 @@ test('an attachment reports provenance it could not deliver while its tab is liv
   assert.equal(errors[0].phase, 'provenance');
   assert.match(
     errors[0].message,
-    /Local provenance for this tab is incomplete: Runtime\.callFunctionOn did not answer/,
+    /Local provenance for this tab is incomplete: Runtime\.callFunctionOn did not answer.*Reload this tab/,
+  );
+  // A loss that a reload cannot repair is reported under its own code, without the reload advice.
+  report(Object.assign(new Error('a page script holds the place of the registry'), { reloadHelps: false }));
+  await setImmediate();
+  assert.equal(errors.length, 2);
+  assert.equal(errors[1].code, 'provenance_unrecorded');
+  assert.equal(
+    errors[1].message,
+    'Local provenance for this tab is incomplete: a page script holds the place of the registry.',
   );
   tab.page.emit('close');
   report(new Error('late'));
   await dispose();
   report(new Error('later'));
   await setImmediate();
-  assert.equal(errors.length, 1);
+  assert.equal(errors.length, 2);
 });
 
 test('CSP is preserved unless bypass is explicitly requested', async () => {

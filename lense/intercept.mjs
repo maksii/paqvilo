@@ -242,18 +242,19 @@ export async function interceptOrigins(
       ),
     );
   // An attachment reports evidence it could not deliver to its document; a reload delivers it again.
-  const provenanceIncomplete = (error) =>
+  // A reload delivers lost provenance again, except where a page script keeps it from being recorded.
+  const provenanceIncomplete = (error) => {
+    const reload = error.reloadHelps !== false;
     diagnose(
       Object.assign(
         new Error(
-          `Local provenance for this tab is incomplete: ${error.message}. Reload this tab to deliver it again.`,
-          {
-            cause: error,
-          },
+          `Local provenance for this tab is incomplete: ${error.message}.${reload ? ' Reload this tab to deliver it again.' : ''}`,
+          { cause: error },
         ),
-        { code: 'reload_required', scope: 'target', phase: 'provenance' },
+        { code: reload ? 'reload_required' : 'provenance_unrecorded', scope: 'target', phase: 'provenance' },
       ),
     );
+  };
   const attached = new WeakSet();
   const sessions = new Map();
   const pendingAttachments = new Set();

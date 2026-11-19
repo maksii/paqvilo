@@ -12,7 +12,7 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 import { interceptOrigin } from '../lense/intercept.mjs';
 import { createInspectionProvenanceTransport } from '../lense/inspection-provenance-transport.mjs';
-import { scriptResourceProof, scriptSourceBody } from '../lense/script-source-evidence.mjs';
+import { inventedScope as scope, inventedScriptResource, isRegistryCall } from './helpers/script-provenance-page.mjs';
 import { createPortalRenderer } from '../mirage/lib/liquid.mjs';
 import { resolveInspectionEvidence } from '../lense/inspection-evidence.mjs';
 import { xrayUi } from '../lense/xray-ui.mjs';
@@ -22,12 +22,6 @@ before(async () => {
   browser = await chromium.launch(browserLaunchOptions({ headless: true }));
 });
 after(() => browser?.close());
-const scope = {
-  documentId: 'invented-document',
-  frameId: 'invented-frame',
-  uiEpoch: 1,
-  sourceRevision: 'invented-revision',
-};
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 
 async function fixture(
@@ -43,7 +37,6 @@ async function fixture(
   } = {},
 ) {
   const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-dom-response-'));
-  const file = path.join(directory, 'widget.js');
   const source =
     '\ufeff// Invented unicode \ud83e\uddea\r\n' +
     'window.makeWidget=function(){const node=document.createElement("button");node.id="created";document.body.appendChild(node);};\r\n' +
@@ -52,25 +45,7 @@ async function fixture(
     'window.cloneWidget=function(){const node=document.getElementById("created").cloneNode(true);node.id="clone";document.body.append(node);};\r\n' +
     'window.htmlWidget=function(){document.getElementById("markup").innerHTML="<strong id=html-created>Invented</strong>";};\r\n' +
     (bulk && !holdResolution ? `for(let i=0;i<${bulk};i++)makeWidget();\r\n` : '');
-  await fs.writeFile(file, source);
-  const sourceRef = {
-    id: 'web-file:invented-widget:$content',
-    key: 'web-file:invented-widget:$content',
-    componentKey: 'web-file:invented-widget',
-    kind: 'web-file',
-    ref: 'web-files/widget.js',
-    sourceRevision: scope.sourceRevision,
-    contentRevision: hash(Buffer.from(source)),
-    file,
-  };
-  const inspector = {
-    sourceIndexFor: async () => ({
-      sourceRevision: scope.sourceRevision,
-      sources: new Map([[sourceRef.id, sourceRef]]),
-    }),
-  };
-  const body = scriptSourceBody(await fs.readFile(file), file, { sourceMaps });
-  const proof = await scriptResourceProof(inspector, file, body);
+  const { body, proof } = await inventedScriptResource(directory, source, { sourceMaps });
   let html =
     '<!doctype html><html><body><b id="parser">Invented parser markup</b><aside id="moved"></aside><div id="markup"></div>' +
     (inline
@@ -180,12 +155,7 @@ async function fixture(
           const send = options.cdp.send.bind(options.cdp);
           options.cdp.send = async (method, params) => {
             const answer = await send(method, params);
-            if (
-              claimHoldArmed &&
-              method === 'Runtime.evaluate' &&
-              params?.expression?.includes(transport.domSlot) &&
-              params.expression.includes('.claim(')
-            ) {
+            if (claimHoldArmed && isRegistryCall(method, params, transport.domSlot)) {
               // The browser has run the claim; only its answer is withheld.
               claimHoldArmed = false;
               claimAnswered.resolve();
@@ -198,8 +168,7 @@ async function fixture(
           const send = options.cdp.send.bind(options.cdp);
           let held = false;
           options.cdp.send = async (method, params) => {
-            if (method === 'Runtime.evaluate' && params?.expression?.includes('.claim('))
-              for (const sent of claimWaiters.splice(0)) sent();
+            if (isRegistryCall(method, params, transport.domSlot)) for (const sent of claimWaiters.splice(0)) sent();
             if (method === 'Runtime.callFunctionOn' && params?.functionDeclaration?.includes('this.markLimited')) {
               if (rejectLimit) {
                 if (rejectedObject === params.objectId) afterRejectedLimit.push(params.functionDeclaration);
