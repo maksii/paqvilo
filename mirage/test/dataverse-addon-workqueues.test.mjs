@@ -302,6 +302,33 @@ describe('dataverse work-queue messages over HTTP', () => {
     assert.equal((await queueCall(Q.order, 'Dequeue', { request: '{}' })).status, 204);
   });
 
+  // A wall clock stepped back between two enqueues (lab night medium-20261119 saw ~1 s steps on WSL) never stamps the
+  // later item older, so Dequeue still serves the earlier enqueued one first.
+  it('dequeue stays FIFO across a wall clock stepped back between two enqueues', async () => {
+    const stepped = queueId(11);
+    await store.transact(() => {
+      store.state.tables.workqueue.push(queue(stepped));
+      // A finished item dated after the clock (an imported state) does not pin the stamps of new items.
+      store.state.tables.workqueueitem.push(
+        item(itemId(90), stepped, { statecode: 2, statuscode: 2, createdon: FUTURE }),
+      );
+    });
+    const enqueue = async (name) =>
+      (await queueCall(stepped, 'EnqueueWorkQueueItem', { workQueueItem: { name } })).body.workQueueItemId;
+    const earlier = await enqueue('earlier');
+    assert.equal(rowOf('workqueueitem', 'workqueueitemid', earlier).createdon, new Date(clock.now()).toISOString());
+    clock.advance(-1000);
+    try {
+      const later = await enqueue('later');
+      const served = [];
+      for (let i = 0; i < 2; i += 1)
+        served.push((await queueCall(stepped, 'Dequeue', { request: '{}' })).body.workqueueitemid);
+      assert.deepEqual(served, [earlier, later]);
+    } finally {
+      clock.advance(1000);
+    }
+  });
+
   it('dequeue skips delayed and expired items', async () => {
     const result = await queueCall(Q.delay, 'Dequeue', {});
     assert.equal(result.status, 200);

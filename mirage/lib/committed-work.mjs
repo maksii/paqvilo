@@ -1,5 +1,5 @@
 import v8 from 'node:v8';
-import { clockFunction, storeScheduler, systemClock, systemIds } from './runtime-clock.mjs';
+import { clockFunction, stampMs, storeScheduler, systemClock, systemIds } from './runtime-clock.mjs';
 import { runWithRequest } from './request-context.mjs';
 
 /** Drain all post-commit consumers to a common quiescent point. A consumer may
@@ -138,7 +138,8 @@ export function committedJobs(store) {
     closed = false;
   const scheduler = () => storeScheduler(store);
   const nowMs = () => clockFunction(store.clock ?? systemClock)();
-  const now = () => new Date(nowMs()).toISOString();
+  // A stored date, held across a small backward step of the wall clock (runtime-clock.mjs stampMs).
+  const now = () => new Date(stampMs(store, store.clock ?? systemClock)).toISOString();
   // A Ready row waits until its start time: the job's internal start latency (data startAfter, plugin-async.mjs; its
   // postponeuntil stays null as natively) or a postponeuntil; 0 when it is due.
   const waitOf = (row) => {
@@ -266,7 +267,7 @@ export function committedJobs(store) {
   // createdon is a Dataverse date-time: whole seconds. An entry may carry the time its operation created the job.
   const readyRows = (entries) => {
     const ids = store.ids ?? systemIds,
-      stamp = wholeSecond(clockFunction(store.clock ?? systemClock)());
+      stamp = wholeSecond(stampMs(store, store.clock ?? systemClock));
     return entries.map(({ id, kind, columns = {}, event, staging, ...rest }) => ({
       asyncoperationid: id ?? ids.uuid(),
       operationtype: SYSTEM_EVENT,

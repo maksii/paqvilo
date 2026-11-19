@@ -16,7 +16,7 @@ import { fromBulkDeleteJson, toFetchXml } from './dataverse-soap-query.mjs';
 import { dataverseIdentity, ownerColumns } from './dataverse-security.mjs';
 import { dataverseError, parseDataverseRoute, parsePrefer } from './dataverse-odata.mjs';
 import { isLoopbackUrl, loopbackFetch } from './dataverse-webhooks.mjs';
-import { createScheduler, systemIds } from './runtime-clock.mjs';
+import { createScheduler, stampMs, systemIds } from './runtime-clock.mjs';
 import { detached, jobOrigin } from './committed-work.mjs';
 import { tracedFetch } from './trace-hosts.mjs';
 
@@ -637,7 +637,8 @@ export async function install(
 ) {
   const { store } = api;
   seedMappings(store);
-  const stamp = () => new Date(api.clock()).toISOString();
+  // A stored date, held across a small backward step of the wall clock (runtime-clock.mjs stampMs).
+  const stamp = () => new Date(stampMs(store, api.clock)).toISOString();
   const uuid = () => (api.ids ?? systemIds).uuid();
   // Every write of the module settles the waiters of the jobs it completes, once the write has committed.
   const write = async (fn) => {
@@ -1096,7 +1097,9 @@ export async function install(
           name,
           postponeuntil,
           recurrencepattern: recurrence ? body.RecurrencePattern : null,
-          recurrencestarttime: recurrence ? (postponeuntil ?? new Date(api.clock()).toISOString()) : null,
+          recurrencestarttime: recurrence
+            ? (postponeuntil ?? new Date(stampMs(api.store, api.clock)).toISOString())
+            : null,
         },
       );
       return { status: 200, body: { JobId: jobId } };

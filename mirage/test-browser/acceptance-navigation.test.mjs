@@ -62,6 +62,8 @@ async function navigationFixture(
     settleTimeout,
     navigationCommitReserveMs,
     gateDocumentOnWrites = false,
+    // The document is answered only after the page's history change is observed, so it happens before the commit.
+    gateDocumentOnHistory = false,
     controlledLateWrites = late,
     scheduleDocumentResponse = setTimeout,
     customizeContext = null,
@@ -170,6 +172,14 @@ async function navigationFixture(
       });
       return;
     }
+    if (pathname === '/submit' && gateDocumentOnHistory) {
+      fixtureEvents.push('navigation');
+      void historyObserved.promise.then(() => {
+        fixtureEvents.push('document-response');
+        res.end('<p id="done">Saved</p>');
+      });
+      return;
+    }
     if (pathname === '/submit' && gateDocumentOnWrites) {
       void writesArrived.then(() => res.end('<p id="done">Saved</p>'));
       return;
@@ -227,10 +237,10 @@ async function navigationFixture(
     navigationCommitReserveMs,
     onNavigationHold,
     prepareContext:
-      noCommit || controlledLateWrites || customizeContext
+      noCommit || gateDocumentOnHistory || controlledLateWrites || customizeContext
         ? async (context) => {
             await customizeContext?.(context);
-            if (noCommit) {
+            if (noCommit || gateDocumentOnHistory) {
               let historyRecorded = false;
               context.on('page', (page) => {
                 page.on('framenavigated', (frame) => {
@@ -445,8 +455,13 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
     });
 
   test('writes completed before a document commits stay finished across a hash change', async (t) => {
-    const flow = await navigationFixture(t, { completed: true });
+    const flow = await navigationFixture(t, { completed: true, gateDocumentOnHistory: true });
     assert.equal(flow.passed, true, JSON.stringify(flow));
+    assert.deepEqual(
+      flow.fixtureEvents.filter((event) => ['history-observed', 'document-response'].includes(event)),
+      ['history-observed', 'document-response'],
+      'the hash change happens before the document commits',
+    );
     assert.equal(flow.navigationCancelledRequests?.length ?? 0, 0);
     assert.equal(flow.resources.filter((row) => /slow-/.test(row.url) && row.finished).length, 2);
   });

@@ -744,6 +744,35 @@ describe('knowledge versions, rollup, virtual events, composite data sources, ce
     assert.match((await errorOf(unknown, 404)).text, /0x80060370/);
   });
 
+  // A wall clock stepped back between two writes (lab night medium-20261119 saw ~1 s steps on WSL) never stamps the later
+  // instance older, and equal whole-second modifiedon lists the later inserted instance first.
+  it('RetrieveProcessInstances lists the later inserted instance first across a wall clock stepped back', async () => {
+    const instance = (new_samplebpfid, activestageid) =>
+      store.create(
+        'new_samplebpf',
+        { new_samplebpfid, bpf_contoso_widgetid: WIDGET_TWO, activestageid },
+        { admin: true },
+      );
+    // The collection read returns its rows in primary key order. The first pair is inserted in that order, the second in
+    // the reverse order, so neither the key order nor its reversal gives the insertion order the tie rule needs.
+    const first = await instance('94000000-0000-4000-8000-000000000001', STAGE_ONE);
+    clock.advance(-1000);
+    try {
+      const second = await instance('94000000-0000-4000-8000-000000000002', STAGE_TWO);
+      const third = await instance('94000000-0000-4000-8000-000000000004', STAGE_ONE);
+      const fourth = await instance('94000000-0000-4000-8000-000000000003', STAGE_TWO);
+      const instances = await (
+        await call(webApi(`RetrieveProcessInstances(EntityId=${WIDGET_TWO},EntityLogicalName='contoso_widget')`))
+      ).json();
+      assert.deepEqual(
+        instances.value.map((row) => row.new_samplebpfid),
+        [fourth, third, second, first].map((row) => row.new_samplebpfid),
+      );
+    } finally {
+      clock.advance(1000);
+    }
+  });
+
   it('SetProcess is in $metadata and answers 501 0x80040216 by default; the new messages are declared in $metadata', async () => {
     const metadata = await metadataText();
     for (const name of [

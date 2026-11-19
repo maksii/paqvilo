@@ -56,7 +56,9 @@ function methodLocation(source, signature) {
 /**
  * The bootstrap script the browser parsed in each execution context, from `Debugger.scriptParsed`. It is identified
  * by its content hash (SHA-256 of the source, as Chromium reports it): a page cannot compile a script with that hash
- * because the source holds the registry secret. Bounded; a destroyed context forgets its script.
+ * because the source holds the registry secret. Bounded; a destroyed context forgets its script, and cleared contexts
+ * forget theirs: context and script ids restart in a new renderer process, and a context that returns after a clear
+ * (session re-attach, back/forward cache restore) has its scripts reported again.
  */
 function trackBootstrapScripts(bootstrap) {
   const hash = createHash('sha256').update(bootstrap).digest('hex');
@@ -71,9 +73,19 @@ function trackBootstrapScripts(bootstrap) {
       },
     ],
     ['Runtime.executionContextDestroyed', ({ executionContextId }) => scripts.delete(executionContextId)],
+    ['Runtime.executionContextsCleared', () => scripts.clear()],
   ];
   return { scripts, tracking };
 }
+
+/** The origin of a frame's URL, or null when it has none. */
+export const originOf = (url) => {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
+};
 
 const ownDataFunction = (entry) =>
   entry?.isOwn === true && !entry.get && !entry.set && entry.value?.type === 'function' && entry.value.objectId;
@@ -94,7 +106,8 @@ const genuineSlot = (entry) =>
  * satisfy this with its own object: no function of its making, or of another document's bootstrap, has that location.
  * `ask(method, params)` resolves to the answer, or to null when the command failed or ended.
  * Resolves to `{ methods }`, to `{ absent: true }` when the context has no such slot (an uninstrumented document), to
- * `{ invalid: reason }`, or to null when a command ended.
+ * `{ invalid: reason }`, to `{ unparsed: true }` when the browser reported no bootstrap script for the context, or to
+ * null when a command ended.
  */
 async function verifyRegistry({ ask, contextId, slot, objectGroup, script, methods }) {
   const global = await ask('Runtime.evaluate', { expression: 'this', contextId, objectGroup, silent: true });
@@ -102,6 +115,10 @@ async function verifyRegistry({ ask, contextId, slot, objectGroup, script, metho
   const own = await ask('Runtime.getProperties', {
     objectId: global.result.objectId,
     ownProperties: true,
+    // Indexed properties of a window are its child frames' windows: materializing one gives a frame's initial empty
+    // document its context, and Chromium then keeps that window for the frame's first same-origin document, where no
+    // bootstrap runs. The slot is a named property; named frame access lives on the prototype chain, not here.
+    nonIndexedPropertiesOnly: true,
     generatePreview: false,
   });
   if (!Array.isArray(own?.result)) return null;
@@ -118,12 +135,9 @@ async function verifyRegistry({ ask, contextId, slot, objectGroup, script, metho
     if (!inner) return null;
     const at = inner.internalProperties?.find((item) => item.name === '[[FunctionLocation]]')?.value?.value;
     const parsed = script(contextId);
-    if (
-      !parsed ||
-      at?.scriptId !== parsed ||
-      at.lineNumber !== location.lineNumber ||
-      at.columnNumber !== location.columnNumber
-    )
+    // Without the browser's report of the bootstrap in this context nothing can be verified, and nothing is sent.
+    if (!parsed) return { unparsed: true };
+    if (at?.scriptId !== parsed || at.lineNumber !== location.lineNumber || at.columnNumber !== location.columnNumber)
       return { invalid: name };
     found[name] = member.value.objectId;
   }
@@ -144,7 +158,8 @@ const callRegistryMethod = (ask, objectId, value, objectGroup) =>
  * The verified access to the registries one bootstrap installs (`kind` names them in reports). Per attachment, with
  * its `ask(method, params)` (answer, or null when the command failed or ended) and `lost(error)`: `tracking` lists the
  * events that record the bootstrap script parsed in each context; `claim(contextId, ended)` resolves to the writer's
- * object id, or null; `release(contextId)` closes the registry. The secret and the release key are sent only to the
+ * object id, or null; `release(contextId)` closes the registry; `reused(frameId)` reports, once per frame until
+ * `forget(frameId)`, a document that took over the window of its frame's initial empty document. The secret and the release key are sent only to the
  * verified functions.
  *
  * One claim, after verifying the registry: the bootstrap runs synchronously while Chromium creates the main-world
@@ -158,6 +173,7 @@ export function registryAccess({ kind, slot, bootstrap, secret, releaseKey }) {
     releaseAt = methodLocation(bootstrap, 'release(value) {');
   return ({ ask, lost }) => {
     const { scripts, tracking } = trackBootstrapScripts(bootstrap);
+    const reusedFrames = new Set();
     const verify = (contextId, methods) =>
       verifyRegistry({ ask, contextId, slot, objectGroup: slot, script: (id) => scripts.get(id), methods });
     return {
@@ -184,6 +200,26 @@ export function registryAccess({ kind, slot, bootstrap, secret, releaseKey }) {
       async release(contextId) {
         const registry = await verify(contextId, { release: releaseAt });
         if (registry?.methods) await callRegistryMethod(ask, registry.methods.release, releaseKey, slot);
+      },
+      // When the initial empty document of a frame already has its context (page code touched the frame's window before
+      // its document committed), Chromium keeps that Window and context for the same-origin document that replaces it: it
+      // reports a navigation but no new context, and no bootstrap runs in the new document. Page code may have prepared
+      // that window, so no registry is installed into it. A later navigation of the frame gets a fresh window.
+      reused(frameId) {
+        if (reusedFrames.has(frameId)) return;
+        if (reusedFrames.size >= 256) reusedFrames.delete(reusedFrames.values().next().value);
+        reusedFrames.add(frameId);
+        lost(
+          Object.assign(
+            new Error(
+              `a document took over the window of its frame's initial empty document, so its ${kind} provenance is not recorded`,
+            ),
+            { reloadHelps: false },
+          ),
+        );
+      },
+      forget(frameId) {
+        reusedFrames.delete(frameId);
       },
     };
   };
@@ -331,7 +367,12 @@ export function createPortalProvenanceTransport(context, configs, { onDescriptor
           if (!loader || initialLoaders.get(record.frameId) === loader || record.closed || closed) return;
           record.loaderId = loader;
           const writer = await registry.claim(record.id, () => record.closed || closed);
-          if (!writer || record.closed || closed) return;
+          if (!writer) return;
+          // The record was retired while its claim was answered: the writer handle is not kept.
+          if (record.closed || closed) {
+            await send('Runtime.releaseObject', { objectId: writer });
+            return;
+          }
           record.objectId = writer;
           if ((await currentLoader(record.frameId)) !== loader || record.closed || closed) return;
           await flush(record);
@@ -350,7 +391,22 @@ export function createPortalProvenanceTransport(context, configs, { onDescriptor
           retire(id, Boolean(record.loaderId));
         }
       };
+      // Chromium ends the contexts of a frame's document before it reports the frame's next document, and announces
+      // the new document's context after that report. A context of the frame that is still live when the frame reports
+      // a document therefore holds that document in a reused window.
+      // A back/forward cache restore re-reports the restored document's context before its navigation: that context is
+      // the restored document's own and is claimed as usual.
+      const navigated = ({ frame, type }) => {
+        if (type === 'BackForwardCacheRestore') return;
+        for (const record of contexts.values())
+          if (record.frameId === frame?.id && !record.closed) {
+            retire(record.id);
+            // Only a document the transport would instrument lost its provenance.
+            if (targets.has(originOf(frame.url))) registry.reused(frame.id);
+          }
+      };
       const detached = ({ frameId }) => {
+        registry.forget(frameId);
         returning.delete(frameId);
         for (const key of pending.keys()) if (key.startsWith(frameId + ':')) pending.delete(key);
       };
@@ -424,6 +480,7 @@ export function createPortalProvenanceTransport(context, configs, { onDescriptor
         ['Runtime.executionContextCreated', created],
         ['Runtime.executionContextDestroyed', destroyed],
         ['Runtime.executionContextsCleared', cleared],
+        ['Page.frameNavigated', navigated],
         ['Page.frameDetached', detached],
         ['Network.requestWillBeSent', requested],
         ['Network.responseReceived', response],

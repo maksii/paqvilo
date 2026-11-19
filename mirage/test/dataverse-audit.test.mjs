@@ -340,6 +340,47 @@ test('record change history pages with a paging cookie and newest rows first', a
   assert.equal(page2.AuditDetails[1].NewValue.name, 'v0');
 });
 
+// Lab night medium-20261119 (WSL runners): the wall clock stepped back about a second between a create and its update,
+// so the update's row was stamped older and the history listed the create first. The history follows the write order, a
+// small step is held (runtime-clock.mjs stampMs), and a deliberate set-back or a future-dated stored row stays honest.
+test('a wall clock stepped back between two writes keeps the later audit row newest', async () => {
+  const api = await setup();
+  let now = CLOCK;
+  // One organization clock: the store's record stamps and the audit stamps read the same time.
+  api.clock = () => now;
+  api.store.clock = { now: api.clock };
+  // A stored row dated after the clock (an imported state) does not pin the stamps of new rows.
+  api.store.state.tables.audit.push({
+    auditid: 'imported',
+    objecttypecode: 'other',
+    createdon: '2099-01-01T00:00:00.000Z',
+  });
+  await api.store.create('widget', { name: 'A' }, IDENTITY);
+  await flush(api);
+  const id = widgetId(api);
+  now -= 1000;
+  await api.store.update('widget', id, { name: 'B' }, IDENTITY);
+  await flush(api);
+  now -= 3600000;
+  await api.store.update('widget', id, { name: 'C' }, IDENTITY);
+  await flush(api);
+  const [, created, updated, setBack] = auditRows(api);
+  assert.deepEqual(
+    [created.createdon, updated.createdon, setBack.createdon],
+    [new Date(CLOCK).toISOString(), new Date(CLOCK).toISOString(), new Date(CLOCK - 1000 - 3600000).toISOString()],
+    'a 1 s step is held at the last stamp; a 1 h set-back is honoured',
+  );
+  const details = (await history(api, id)).body.AuditDetailCollection.AuditDetails;
+  assert.deepEqual(
+    details.map((detail) => [detail.OldValue?.name ?? null, detail.NewValue.name]),
+    [
+      ['B', 'C'],
+      ['A', 'B'],
+      [null, 'A'],
+    ],
+  );
+});
+
 test('attribute change history and audit details return only the matching column', async () => {
   const api = await setup();
   await api.store.create('widget', { name: 'A', statecode: 0 }, IDENTITY);

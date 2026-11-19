@@ -3,7 +3,12 @@ import { setMaxListeners } from 'node:events';
 import { installDomProvenance } from './dom-provenance.mjs';
 import { normalizeInspectionSourceRef } from './inspection-evidence.mjs';
 import { createResponseProofQueue } from './response-proof-queue.mjs';
-import { readEndedByContextClose, registryAccess, trackDefaultDocuments } from './portal-provenance-transport.mjs';
+import {
+  originOf,
+  readEndedByContextClose,
+  registryAccess,
+  trackDefaultDocuments,
+} from './portal-provenance-transport.mjs';
 
 const unanswered = Symbol('unanswered');
 // A command or sideband read waits until it answers or the attachment is disposed (its page closed or interception
@@ -460,7 +465,12 @@ export function createDomProvenanceTransport(context, configs) {
           loaders.set(record.frameId, record.loaderId);
           const returned = adopt(record);
           const writer = await registry.claim(record.id, () => record.closed || closed);
-          if (!writer || closed || record.closed) return;
+          if (!writer) return;
+          // The record was retired while its claim was answered: the writer handle is not kept.
+          if (closed || record.closed) {
+            await command('Runtime.releaseObject', { objectId: writer });
+            return;
+          }
           record.objectId = writer;
           if (returned) await recover(record);
           admitDescriptors(record);
@@ -554,24 +564,29 @@ export function createDomProvenanceTransport(context, configs) {
         record.nodes.set(data.id, { id: data.id, relationship: data.relationship, frames });
         flush(record).catch(() => {});
       };
-      const navigated = ({ frame }) => {
-        if (frame?.id) {
-          for (const record of contexts.values())
-            if (record.frameId === frame.id && record.loaderId && record.loaderId !== frame.loaderId)
-              record.closed = true;
-          // Acknowledgements still waiting in this frame are kept: Fetch answers in the browser process, so the new
-          // document's own script can be acknowledged before this renderer notification arrives. Each one is admitted
-          // into the document its request notification names.
-          loaders.set(frame.id, frame.loaderId);
-          for (const record of contexts.values())
-            if (record.frameId === frame.id && !record.loaderId) {
-              record.loaderId = frame.loaderId;
-              admitDescriptors(record);
-            }
-        }
+      // Chromium ends the contexts of a frame's document before it reports the frame's next document, and announces the
+      // new document's context after that report: a context of the frame still live then holds the reported document in
+      // a reused window (see `reused`). Only a document the transport would instrument lost its provenance.
+      const retireReused = (frame) => {
+        for (const record of contexts.values())
+          if (record.frameId === frame.id && !record.closed) {
+            destroy({ executionContextId: record.id });
+            if (targets.has(originOf(frame.url))) registry.reused(frame.id);
+          }
+      };
+      const navigated = ({ frame, type }) => {
+        if (!frame?.id) return;
+        // A back/forward cache restore re-reports the restored document's own context before its navigation; that
+        // context is claimed as usual.
+        if (type !== 'BackForwardCacheRestore') retireReused(frame);
+        // Acknowledgements still waiting in this frame are kept: Fetch answers in the browser process, so the new
+        // document's own script can be acknowledged before this renderer notification arrives. Each one is admitted into
+        // the document its request notification names.
+        loaders.set(frame.id, frame.loaderId);
       };
       const detached = ({ frameId }) => {
         loaders.delete(frameId);
+        registry.forget(frameId);
         cleared.delete(frameId);
         acknowledgements.forget(frameId);
         for (const record of contexts.values())

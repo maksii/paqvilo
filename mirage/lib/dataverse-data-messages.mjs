@@ -4,6 +4,7 @@ import { cloneStateData } from './state-clone.mjs';
 // privilege names, and the asyncoperation operationtype values chosen below.
 import { randomUUID } from 'node:crypto';
 import { DataError } from './data-error.mjs';
+import { stampMs, systemClock } from './runtime-clock.mjs';
 import { contextUrl, parseDataverseRoute, parsePrefer } from './dataverse-odata.mjs';
 import { guidKey } from './dataverse-values.mjs';
 
@@ -15,7 +16,11 @@ import { requireMetadataPrivilege } from './dataverse-metadata-relationships.mjs
 
 const CRM = 'Microsoft.Dynamics.CRM.';
 const BIND = '@odata.bind';
-const nowIso = () => new Date().toISOString();
+// A stored date from the wall clock, held across a small backward step of it (runtime-clock.mjs stampMs).
+// These rows are stamped from the system clock, so they keep a hold of their own: sharing the store's hold would let
+// wall time into the stamps of a store that runs on a fixed clock.
+const systemStamps = {};
+const nowIso = () => new Date(stampMs(systemStamps, systemClock)).toISOString();
 const invalid = (message, innerCode = '0x80040203') => new DataError(message, 400, 'InvalidRequest', { innerCode });
 const bodyOf = (c) => {
   if (typeof c.body !== 'string') return c.body ?? {};

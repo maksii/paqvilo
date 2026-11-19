@@ -139,7 +139,9 @@ organization's metadata. Large datasets use far less memory.
   when the project defines it.
 - **Administration API.** HEAD answers every GET route; a 400 for a refused query parameter names it in `parameter`;
   the trace `host` filter accepts only the hosts it lists (`mirage trace` checks it and `export --format` before
-  connecting). A missing preset answers `Preset '<name>' not found` with where to list presets.
+  connecting). A missing preset answers `Preset '<name>' not found` with where to list presets. Each audit entry
+  records `startedHostMs`, its start on the host's monotonic clock, and `/_sim/api/audit/export` answers `hostMs`, that
+  clock read while serving.
 - **Help everywhere.** Every `paqvilo dataverse <command>`, every direct Mirage command and lifecycle action, and every
   repository script in `scripts/` that is run directly answer `--help` and `-h`; `mirage data --help` describes each
   option of `generate` and `scaffold`. `paqvilo --help` lists `--version`; `mirage --help` lists `--state-dir` and the
@@ -260,6 +262,15 @@ this session.` A trusted CLR plug-in descriptor with
 - Mirage no longer ends with a V8 fatal error when a worker thread finishes, and a listener error is recorded as
   `LISTENER_ERROR` instead of ending the process.
 - Trace timelines stay correct after a system clock step (VM or WSL time sync, laptop resume).
+- Stored dates (record `createdon` and `modifiedon`, audit, async jobs, flow runs, approvals, queue items) no longer go
+  backwards when the system clock steps back by up to 5 s (VM or WSL time sync). A larger change, such as
+  `fixedClock.set` to an earlier hour, is honoured, and applying a preset or replacing the state starts from the clock
+  again.
+- Record change history, flow run lists and pruning, and approval pruning follow write order. Among equal dates,
+  `RetrieveProcessInstances`, the personal wall and post comment lists show the later-inserted row first, and `Dequeue`
+  serves equal dates in enqueue order.
+- `mirage acceptance`: identity and preset steps let the page's queued requests settle before they leave the page, and
+  a system clock step no longer breaks the proof of superseded and authored-aborted reads.
 - `$pages.currentPage.forms.getAll()` lists forms by their `EntityFormControl_…` and `WebFormControl_…` wrappers, as
   Power Pages does: a form that shows only a message (record not found, success) is listed without controls, and modal
   and quick view documents list none. A form's `id` is the wrapper ID's part after the prefix, and `getFormById` takes
@@ -275,6 +286,10 @@ this session.` A trusted CLR plug-in descriptor with
 - Element provenance survives a DevTools session re-attach of an unchanged document; a page script can no longer read
   the provenance keys or take the place of a provenance registry; an authored `debugger;` statement no longer pauses an
   inspected tab.
+- A frame or popup document that takes over the window of its initial empty document (when page code touched that
+  window before the document committed) has no element provenance; the tab reports it once per frame for script and for
+  page provenance (`provenance_unrecorded`) without asking for a reload. Documents restored from the
+  back/forward cache keep theirs.
 - `like` patterns, FetchXML, form XML, deeply nested `$filter` (400 above 100 levels) and malformed Canvas control
   versions can no longer hang the runtime.
 - Sign-in and sign-out `returnUrl` values can no longer redirect off the site.

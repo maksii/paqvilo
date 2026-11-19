@@ -14,7 +14,7 @@ import { privateRecordEqual } from './record-clone.mjs';
 import { collectRecordGarbage } from './record-file-lease.mjs';
 import { syncDirectory } from './record-page-file.mjs';
 import { encodeRecordReferences } from './record-state.mjs';
-import { systemClock, systemIds } from './runtime-clock.mjs';
+import { releaseStamps, stampMs, systemClock, systemIds } from './runtime-clock.mjs';
 import { currentRequest } from './request-context.mjs';
 import { takeNativeFormContactAssociation } from './native-form-association.mjs';
 import { builtinPresets, resolvePreset, compactBuiltinPresets, applyPresetSections } from './presets.mjs';
@@ -2954,6 +2954,11 @@ export class DataStore {
     this.deleteGuards.add(fn);
     return () => this.deleteGuards.delete(fn);
   }
+  /** The record stamp (createdon, modifiedon) now, in whole seconds, held across a small backward step of the wall clock
+   * (runtime-clock.mjs stampMs) so a later write never looks older. */
+  recordStamp() {
+    return isoUtc(stampMs(this, this.clock));
+  }
   /** When and in which order an operation's PostOperation began: native creates its asynchronous jobs then, so a nested
    * operation's job is created after its caller's (corpus depth.json: job createdon and ids rise with Depth). */
   operationMark() {
@@ -3080,6 +3085,8 @@ export class DataStore {
           boundary.persistenceBackup ??= this.state;
         }
         this.state = next;
+        // A replaced state (preset apply, import, reset) is stamped from the clock again, not held at the old state's stamps.
+        releaseStamps(this);
         return returnSnapshot ? this.state : undefined;
       },
       { cloneResult: returnSnapshot, lazyReadSnapshot: true, skipSaveIfUnchanged },
@@ -5268,8 +5275,8 @@ export class DataStore {
       case 'sequence': {
         return this.evaluateSequence(args);
       }
-      case 'now':
-        return new Date(this.clock.now()).toISOString();
+      case 'now': // a value a plug-in writes to a row: held as record stamps are (runtime-clock.mjs stampMs)
+        return new Date(stampMs(this, this.clock)).toISOString();
       case 'split':
         return String(args[0] ?? '')
           .split(args[1] ?? ',')
@@ -5445,7 +5452,7 @@ export class DataStore {
       record: row,
       previous: previous ?? {},
       identity,
-      now: new Date(this.clock.now()).toISOString(),
+      now: new Date(stampMs(this, this.clock)).toISOString(),
     };
     const secondary = [];
     for (const p of this.state.plugins.filter(
@@ -6011,7 +6018,7 @@ export class DataStore {
       !this.rules(m.logicalName, 'create', identity).length
     )
       this.assertAllowed(m.logicalName, 'create', row, identity);
-    row.createdon ??= isoUtc(this.clock.now());
+    row.createdon ??= this.recordStamp();
     row.modifiedon ??= row.createdon;
     const derivedTargetColumns = new Set(
       [
@@ -6298,7 +6305,7 @@ export class DataStore {
    * stored version have a content-derived ETag, which changes with the row anyway).
    */
   touchRow(previous, row, systemColumns = null) {
-    row.modifiedon = isoUtc(this.clock.now());
+    row.modifiedon = this.recordStamp();
     if (systemColumns) Object.assign(row, systemColumns);
     // A caller that takes the row version itself (Dataverse's org-wide counter) keeps its value.
     if (systemColumns && 'versionnumber' in systemColumns) return row;
@@ -6588,8 +6595,8 @@ export class DataStore {
       throw new DataError('The partitionid value of an elastic table row cannot be changed.', 400, 'InvalidRequest');
     if (options.coerce) this.coerceRecord(mapping, row, options);
     assertElasticRecord(row);
-    row.createdon = previous?.createdon ?? isoUtc(this.clock.now());
-    row.modifiedon = isoUtc(this.clock.now());
+    row.modifiedon = this.recordStamp();
+    row.createdon = previous?.createdon ?? row.modifiedon;
     if (previous?.createdby) row.createdby = clone(previous.createdby);
     Object.assign(row, this.systemColumnsFor(options.systemColumns, mapping, row));
     const target = clone(row),
@@ -7005,6 +7012,7 @@ export class DataStore {
           if (fileRows.length) this.state.tables ??= {};
           for (const [table, rows] of fileRows) this.state.tables[table] = rows;
           this.state = normalizeState(this.state, this.presetLibrary, this.platformConfig, true);
+          releaseStamps(this); // as replaceState: the applied preset is stamped from the clock again
           return returnSnapshot ? this.state : undefined;
         },
         { cloneResult: returnSnapshot },

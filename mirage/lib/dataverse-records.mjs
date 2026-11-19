@@ -45,7 +45,7 @@ import { assertExpand, assertExpandText, childLinks } from './dataverse-expand.m
 import { FORMATTED, NAVIGATION, createWebApiFormatter } from './webapi-format.mjs';
 import { orderODataProperties } from './odata-property-order.mjs';
 import { baseCurrencyRow, ownershipOf, privilegeDeniedError, privilegeName, uuidV5 } from './dataverse-security.mjs';
-import { dateTimeBehavior, fieldKind, formattedValue, guidKey, isDateOnlyField, isoUtc } from './dataverse-values.mjs';
+import { dateTimeBehavior, fieldKind, formattedValue, guidKey, isDateOnlyField } from './dataverse-values.mjs';
 import { fixedScaleNumeric } from './exact-numeric.mjs';
 import {
   ADMIN_READ_COLUMNS,
@@ -3242,7 +3242,7 @@ export function createRecordHandlers({
   function bulkStampsInternal(c, logical, targets, update) {
     const context = internalContext(c),
       mapping = store.resolveMapping(logical),
-      now = isoUtc(store.clock.now());
+      now = store.recordStamp();
     return targets.map((target) => {
       const data = store.normalizeRecord(mapping, sdkValueToRecord(target), context.identity),
         created = {};
@@ -3276,7 +3276,7 @@ export function createRecordHandlers({
       stamps = [],
       derived = [];
     // Whole seconds, as a single write stamps them (touchRow, createdon ??= in data.mjs).
-    const now = isoUtc(store.clock.now());
+    const now = store.recordStamp();
     for (const target of raw) {
       const text = target[mapping.idColumn];
       if (update && text == null) throw invalid(`The ${mapping.idColumn} property is required.`);

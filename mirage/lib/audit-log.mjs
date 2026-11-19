@@ -216,6 +216,10 @@ const pathOnly = (value) => {
     return '/';
   }
 };
+/** The host's monotonic clock in milliseconds: one clock for every process on the host (libuv's hrtime reads
+ * CLOCK_MONOTONIC, QueryPerformanceCounter or mach_absolute_time), so a loopback runner can compare its own reading with
+ * an audit entry's whatever the wall clock did between them. Exact to the microsecond for years of uptime. */
+export const hostMonotonicMs = () => Number(process.hrtime.bigint()) / 1e6;
 const positive = (value, fallback, max) => Math.min(max, Math.max(1, Number.parseInt(value, 10) || fallback));
 // The trace ids one traceId filter may list (a page of Activities joins its audit entries in one call).
 const MAX_TRACE_IDS = 200;
@@ -294,6 +298,7 @@ export class AuditLog {
           }
         : {}),
       startedAt: new Date().toISOString(),
+      startedHostMs: hostMonotonicMs(),
       kind: auditKind(kind),
       method: limitText(method || 'GET', 12).toUpperCase(),
       path: pathOnly(path),
@@ -474,6 +479,9 @@ export class AuditLog {
   export(filters = {}) {
     return {
       generatedAt: new Date().toISOString(),
+      // Read while serving: a client that reads hostMonotonicMs before and after its request and finds this between the
+      // two shares the clock of the entries' startedHostMs (another VM, container or time namespace does not).
+      hostMs: hostMonotonicMs(),
       retained: this.entries.length,
       dropped: this.dropped,
       latestSequence: this.sequence,

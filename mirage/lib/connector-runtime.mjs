@@ -23,7 +23,7 @@ import { parseExpand, parseSelect } from './odata-query.mjs';
 import { registerSettingParser } from './config-keys.mjs';
 import { CONNECTION_REFERENCE, connectionsSettingParser } from './connection-settings.mjs';
 import { registerPackExport } from './pack-exports.mjs';
-import { createScheduler, MAX_TIMER_DELAY, storeScheduler } from './runtime-clock.mjs';
+import { createScheduler, MAX_TIMER_DELAY, stampMs, storeScheduler } from './runtime-clock.mjs';
 import {
   applyResponsePolicies,
   assertContinuationOrigin,
@@ -1352,6 +1352,8 @@ function approvalsProvider(store, { now, uuid }) {
   const requireStore = () =>
     store?.transact ? store : fail('ProviderUnavailable', 'The approvals provider needs the organization store.');
   const write = (fn) => requireStore().transact(() => fn(approvalsOf(store)), { nested: true });
+  // A stored date, held across a small backward step of the wall clock (runtime-clock.mjs stampMs).
+  const stamp = () => new Date(stampMs(store, now)).toISOString();
   const canWait = (context) => context.canSuspend || fail501();
   const fail501 = () => {
     throw new DataError(
@@ -1389,7 +1391,7 @@ function approvalsProvider(store, { now, uuid }) {
       itemLinkDescription: param(p, 'itemLinkDescription', wrapper) ?? null,
       status: 'Pending',
       responses: [],
-      requestDate: new Date(at).toISOString(),
+      requestDate: stamp(),
       timeoutAt: new Date(at + Math.max(1, context.waitTimeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS)).toISOString(),
       runId: context.runId ?? null,
       actionPath: context.actionPath ?? null,
@@ -1445,7 +1447,7 @@ function approvalsProvider(store, { now, uuid }) {
         const accepted = acceptedOutcomesOf(approval);
         if (!accepted.includes(outcome))
           throw new DataError(`The approval outcome must be one of: ${accepted.join(', ')}.`, 400, 'InvalidRequest');
-        const at = new Date(now()).toISOString();
+        const at = stamp();
         approval.answeredBy = [...answeredBy(approval), assignee];
         approval.responses.push({
           responder: responderOf(hasIdentity(responder) ? responder : assignee),
@@ -1466,7 +1468,7 @@ function approvalsProvider(store, { now, uuid }) {
         const approval = approvalNamed(all, id);
         if (approval?.status !== 'Pending') return false;
         approval.status = status;
-        approval.completionDate = new Date(now()).toISOString();
+        approval.completionDate = stamp();
         return true;
       });
     },

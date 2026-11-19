@@ -8,6 +8,7 @@ import { DataError } from './data-error.mjs';
 import { argsOf, callerColumns, registerAddon } from './dataverse-addon-common.mjs';
 import { parseDataverseRoute, parsePrefer } from './dataverse-odata.mjs';
 import { privilegeName } from './dataverse-security.mjs';
+import { stampMs } from './runtime-clock.mjs';
 import { parseXmlDocument, planFetch } from './fetchxml-engine.mjs';
 
 const STATE_QUEUED = 0;
@@ -140,7 +141,10 @@ function operations(api) {
             throw invalid('Input is not valid JSON.');
           }
         }
-        const at = api.clock();
+        // Held across a small backward step of the wall clock (runtime-clock.mjs stampMs): Dequeue serves equal priorities
+        // oldest createdon first and equal createdon in enqueue order, so a later item is never served first. The expiry and
+        // SLA dates derive from the same reading.
+        const at = stampMs(store, api.clock);
         const ttl = Number(queue.defaultitemtimetoliveinminutes) || 0;
         const slaPercent = Number(queue.slathresholdinpercentage) || 0;
         const row = {
@@ -246,7 +250,7 @@ function operations(api) {
           Object.assign(pick, {
             statecode: STATE_PROCESSING,
             statuscode: 1,
-            processingstarttime: iso(at),
+            processingstarttime: iso(stampMs(store, api.clock)),
             processinguser: user ? { id: user, logical_name: 'systemuser' } : null,
           });
           selected = { ...pick };
@@ -305,7 +309,6 @@ function operations(api) {
         need(c, 'workqueueitem', 'Write');
         const itemId = c.target.id;
         const entry = argsOf(c).item ?? {};
-        const at = api.clock();
         await write(() => {
           const row = rowIn('workqueueitem', 'workqueueitemid', itemId);
           let history = [];
@@ -315,7 +318,7 @@ function operations(api) {
           } catch {
             history = [];
           }
-          row.executioncontext = JSON.stringify([...history, { ...entry, createdon: iso(at) }]);
+          row.executioncontext = JSON.stringify([...history, { ...entry, createdon: iso(stampMs(store, api.clock)) }]);
         });
         return undefined;
       },

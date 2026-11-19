@@ -123,12 +123,13 @@ async function fixture(t, { mirage = false, delayDescriptor = false, holdRepair 
   let claimHoldArmed = false;
   // The attachment's DevTools session, the default contexts it reported, every command the transport sent (in order)
   // and the registry secret read from its claim, for replaying a session re-attach.
-  const session = { cdp: null, contexts: [], sent: [], secret: null, claims: [] };
+  const session = { cdp: null, contexts: [], scripts: [], sent: [], secret: null, claims: [] };
   const onAttach = (options) => {
     session.cdp = options.cdp;
     options.cdp.on('Runtime.executionContextCreated', ({ context: execution }) => {
       if (execution.auxData?.isDefault && execution.origin === origin) session.contexts.push(execution);
     });
+    options.cdp.on('Debugger.scriptParsed', (event) => session.scripts.push(event));
     const send = options.cdp.send.bind(options.cdp);
     options.cdp.send = async (method, params) => {
       const entry = { method, params, answered: Promise.withResolvers() };
@@ -327,6 +328,9 @@ test('a proof waiting for its document is published after the unchanged document
   fx.session.cdp.emit('Runtime.executionContextsCleared', {});
   fx.session.cdp.emit('Runtime.executionContextsCleared', {});
   fx.session.cdp.emit('Runtime.executionContextCreated', { context: unchanged });
+  // Chromium then reports the context's scripts again, with their earlier script ids.
+  for (const event of fx.session.scripts.filter(({ executionContextId }) => executionContextId === unchanged.id))
+    fx.session.cdp.emit('Debugger.scriptParsed', event);
   const sentBefore = fx.session.sent.length;
   fx.releaseClaim();
   assert.ok((await reclaimed)?.result?.objectId, 'the transport claims the unchanged document again');

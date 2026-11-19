@@ -1099,7 +1099,11 @@ async function instanceRowsOf(api, c, mapping, lookup, entityId) {
       readable.map((row) => row[mapping.idColumn]),
     )
   ).body;
-  return value.map((row) => ({ ...row, processstageid: stages.get(key(row[mapping.idColumn])) ?? null }));
+  // In the table's insertion order (the collection read orders by its own rules), for processInstances' tie rule.
+  const position = new Map(readable.map((row, index) => [key(row[mapping.idColumn]), index]));
+  return value
+    .map((row) => ({ ...row, processstageid: stages.get(key(row[mapping.idColumn])) ?? null }))
+    .sort((x, y) => position.get(key(x[mapping.idColumn])) - position.get(key(y[mapping.idColumn])));
 }
 
 // RetrieveProcessInstances. The instances of the activated flows on this entity, newest first. The caller needs read on the
@@ -1128,7 +1132,8 @@ async function processInstances(api, c) {
     if (!lookup) continue;
     found.push(...(await instanceRowsOf(api, c, mapping, lookup, entityId)));
   }
-  found.sort((x, y) => (Date.parse(y.modifiedon) || 0) - (Date.parse(x.modifiedon) || 0));
+  // Equal modifiedon (whole seconds) lists the later inserted row first (table order; across flows, the later flow's).
+  found.reverse().sort((x, y) => (Date.parse(y.modifiedon) || 0) - (Date.parse(x.modifiedon) || 0));
   return collection(c, found);
 }
 

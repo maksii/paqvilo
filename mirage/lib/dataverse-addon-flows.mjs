@@ -7,6 +7,7 @@
 // ponytail: flow plug-ins, machines and connector metadata have no store behind them: pack handler or featureNotEnabled only.
 import { randomUUID } from 'node:crypto';
 import { DataError } from './data-error.mjs';
+import { stampMs } from './runtime-clock.mjs';
 import {
   argsOf,
   featureNotEnabled,
@@ -357,7 +358,8 @@ function operations(api) {
   const tableOf = (logical) => (store.state.tables[logical] ??= []);
   const rowOf = (logical, id) => tableOf(logical).find((row) => sameId(row[`${logical}id`], id)) ?? null;
   const write = (fn) => api.change(() => store.transact(fn, { isolated: true }));
-  const stamp = () => new Date(api.clock()).toISOString();
+  // A stored date, held across a small backward step of the wall clock (runtime-clock.mjs stampMs).
+  const stamp = () => new Date(stampMs(store, api.clock)).toISOString();
   // The bound row. The router has already answered 404 for an unknown id (dataverse-api.mjs); this finds the state row to write.
   const boundRow = (c, logical) => {
     const row = rowOf(logical, c.target?.id);

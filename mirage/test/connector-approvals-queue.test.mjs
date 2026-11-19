@@ -127,6 +127,44 @@ test('respond completes the approval with the documented outcome and responses f
   assert.equal(waited.suspended, undefined);
 });
 
+// A wall clock stepped back between two completions (lab night medium-20261119 saw ~1 s steps on WSL) holds the later
+// completion at the earlier stamp (runtime-clock.mjs stampMs), and pruning lists equal stamps later created first, so the
+// newest finished approvals stay. A stored approval dated after the clock does not pin new stamps.
+test('a wall clock stepped back or a tied completion keeps the later completed approval newest for pruning', async (t) => {
+  const { store, clock } = await organization(t);
+  const runtime = createConnectorRuntime({ store });
+  await store.transact(() => {
+    ((store.state.simulator ??= {}).approvals ??= {}).imported = {
+      id: 'imported',
+      status: 'Approved',
+      completionDate: '2099-01-01T00:00:00.000Z',
+      requestDate: '2099-01-01T00:00:00.000Z',
+      responses: [],
+    };
+  });
+  const create = async (title) =>
+    (
+      await runtime.invoke({
+        connectorId: 'shared_approvals',
+        operationId: 'CreateAnApproval',
+        context: flow,
+        parameters: { ApprovalCreationInput: { title, assignedTo: 'a@example.test' } },
+      })
+    ).body.name;
+  const [first, second, third] = [await create('one'), await create('two'), await create('three')];
+  const at = new Date(clock.now()).toISOString();
+  await runtime.approvals.respond(first, { outcome: 'Approve' });
+  clock.advance(-1000);
+  await runtime.approvals.respond(second, { outcome: 'Approve' });
+  await runtime.approvals.close(third, 'Cancelled');
+  assert.deepEqual(
+    [first, second, third].map((id) => runtime.approvals.get(id).completionDate),
+    [at, at, at],
+  );
+  await createFlowRunStore({ store, limits: { keepRuns: 3 } }).prune();
+  assert.deepEqual(Object.keys(store.state.simulator.approvals).sort(), ['imported', second, third].sort());
+});
+
 test('an approval wait timeout marks the approval TimedOut and the run TimedOut', async (t) => {
   const { store, scheduler } = await organization(t);
   const runtime = createConnectorRuntime({ store });

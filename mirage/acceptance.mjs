@@ -14,7 +14,7 @@ import { chromium } from 'playwright-core';
 import { BROWSER_HANG_GUARD_MS, windowsLaunchOptions } from './lib/browser-launch.mjs';
 import { editRichText, assertRichText } from './lib/richtext-actions.mjs';
 import { reconcileSupersededRead, correlateNetworkConsole } from './lib/request-evidence.mjs';
-import { auditQuery } from './lib/audit-log.mjs';
+import { auditQuery, hostMonotonicMs } from './lib/audit-log.mjs';
 import { redactUrl } from './parity-suite.mjs';
 import {
   awaitWritesBeforeDocument,
@@ -23,7 +23,7 @@ import {
   frameState,
 } from './lib/navigation-settle.mjs';
 import { classifyNativeNetworkFailures } from './lib/native-network-baseline.mjs';
-import { observeReadAborts, reconcileIntentionalReadAbort } from './lib/intentional-abort.mjs';
+import { observeReadAborts, oneProofPerRecord, reconcileIntentionalReadAbort } from './lib/intentional-abort.mjs';
 import { answerRoute } from './lib/closed-route.mjs';
 import { openBrowserWriteNet, connectCdpTransport } from './lib/browser-write-net.mjs';
 import { readJsonOption } from './lib/path-options.mjs';
@@ -456,7 +456,7 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
               pending.has(request) ||
               (record.finished === false &&
                 request.failure()?.errorText === 'net::ERR_ABORTED' &&
-                Date.now() - record.endedAt <= 250)
+                performance.now() - record.endedTicks <= 250)
             );
           }),
           'frame-detached',
@@ -480,7 +480,7 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
                 (pending.has(request) ||
                   (record.finished === false &&
                     request.failure()?.errorText === 'net::ERR_ABORTED' &&
-                    Date.now() - record.endedAt <= 250))
+                    performance.now() - record.endedTicks <= 250))
               );
             }),
             'document-replaced',
@@ -561,6 +561,7 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
           frameEvents.push({
             event,
             observedAt: new Date().toISOString(),
+            observedTicks: performance.now(),
             ...(event === 'frameNavigated'
               ? {
                   frameId: value.frame.id,
@@ -594,6 +595,8 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
           method: event.request.method,
           startedAt: new Date(event.wallTime * 1000).toISOString(),
           startedTimestamp: event.timestamp,
+          // The runner's receipt on its monotonic clock, comparable with its Playwright request events (lib/request-evidence.mjs).
+          observedTicks: performance.now(),
           parentTrace: Object.entries(event.request.headers ?? {}).find(
             ([name]) => name.toLowerCase() === 'x-sim-parent-trace',
           )?.[1],
@@ -745,6 +748,8 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
           started: Date.now(),
         };
         Object.defineProperty(record, 'documentToken', { value: frameDocuments.get(frame) });
+        // The runner's monotonic clock, comparable with its receipt of the CDP send (lib/intentional-abort.mjs).
+        Object.defineProperty(record, 'startedTicks', { value: performance.now() });
         pending.set(request, record);
         requestRecords.set(request, record);
         const url = new URL(request.url());
@@ -752,6 +757,9 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
           method: record.method,
           path: url.origin === local.origin ? url.pathname + url.search : url.href,
           startedAt: new Date(record.started).toISOString(),
+          startedTicks: record.startedTicks,
+          // The host's monotonic clock, shared with the loopback server's audit entries (lib/audit-log.mjs).
+          startedHostMs: hostMonotonicMs(),
           parentTrace: request.headers()['x-sim-parent-trace'],
           identity: observedIdentity,
           stream: record.type === 'eventsource',
@@ -767,7 +775,9 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
         page.on(event, (request) => {
           const record = pending.get(request);
           if (record) {
-            record.durationMs = Date.now() - record.started;
+            // Elapsed time on the runner's monotonic clock; endedAt stays the reported wall timestamp.
+            Object.defineProperty(record, 'endedTicks', { value: performance.now() });
+            record.durationMs = Math.round(record.endedTicks - record.startedTicks);
             record.endedAt = Date.now();
             record.finished = event === 'requestfinished';
             pending.delete(request);
@@ -1015,7 +1025,10 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
             // signs this flow's browser context in through the session API: `roles` is a
             // manual role override and `contactId` alone signs in with that local contact's
             // memberships. Without `contactId` the step keeps the signed-in contact, else the
-            // configured persona's. The open page then reloads as the new identity.
+            // configured persona's. The open page then reloads as the new identity, so the work it queued under the
+            // old identity settles first, as before a navigate step.
+            await settle();
+            actionDeadline = Date.now() + actionTimeout;
             const current = await readState();
             const signedIn = await (await context.request.get(new URL('/__sim/api/session', local.origin).href)).json();
             const contactId =
@@ -1039,6 +1052,9 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
               await loadQuiet();
             }
           } else if (step.action === 'preset') {
+            // The step leaves the page for the simulator's access view; the work the page queued settles first.
+            await settle();
+            actionDeadline = Date.now() + actionTimeout;
             await page.goto(local.origin + '/__sim/#access');
             await page.getByLabel('Available preset', { exact: true }).selectOption(step.id);
             await page
@@ -1099,17 +1115,19 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
           unexpectedResponses = observation.failedResponses;
         observation.sourceAborts = sourceAborts;
         observation.sourceCancelledReads = [];
-        if (!isLive)
-          unexpectedRequests = unexpectedRequests.filter((failure) => {
-            const proof = reconcileIntentionalReadAbort(failure, {
+        if (!isLive) {
+          const proofs = unexpectedRequests.map((failure) =>
+            reconcileIntentionalReadAbort(failure, {
               resources: observation.resources,
               cdpRecords: [...cdpRecords.values()],
               sourceAborts,
               origin: local.origin,
-            });
-            if (proof) observation.sourceCancelledReads.push(proof);
-            return !proof;
-          });
+            }),
+          );
+          const proven = new Set(oneProofPerRecord(proofs.filter(Boolean)));
+          observation.sourceCancelledReads.push(...proven);
+          unexpectedRequests = unexpectedRequests.filter((_failure, index) => !proven.has(proofs[index]));
+        }
         if (!isLive && nativeNetworkBaseline) {
           const compared = await classifyNativeNetworkFailures(
             [...unexpectedRequests, ...unexpectedResponses],
@@ -1161,7 +1179,7 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
         observation.error = safeMessage(error.message);
         observation.pendingRequests = [...pending.values()].map((record) => ({
           ...record,
-          elapsedMs: Date.now() - record.started,
+          elapsedMs: Math.round(performance.now() - record.startedTicks),
         }));
         // The failure evidence has the flow's budget: the failed step's own deadline is spent, often by that failure.
         actionTimeout = timeout;
@@ -1226,7 +1244,9 @@ function reconcilePendingFrames({
   observedIdentity,
   frameEvents,
   currentFrames,
+  sharedHostClock,
 }) {
+  const found = [];
   for (const [request, record] of pending) {
     const proof = reconcileSupersededRead(proofInputs.get(request), {
       cdpRecords: [...cdpRecords.values()],
@@ -1235,13 +1255,24 @@ function reconcilePendingFrames({
       identity: observedIdentity,
       frameEvents,
       currentFrames,
+      sharedHostClock,
     });
-    if (proof) {
-      record.navigationObservation = proof;
-      observation.supersededReads ??= [];
-      observation.supersededReads.push(proof);
-      pending.delete(request);
-    }
+    if (proof) found.push({ request, record, proof });
+  }
+  // A browser record proves one pending read at most, also across checks.
+  const claimed = new Set((observation.supersededReads ?? []).map((proof) => proof.requestId));
+  const proven = new Set(
+    oneProofPerRecord(
+      found.map((row) => row.proof),
+      claimed,
+    ),
+  );
+  for (const { request, record, proof } of found) {
+    if (!proven.has(proof)) continue;
+    record.navigationObservation = proof;
+    observation.supersededReads ??= [];
+    observation.supersededReads.push(proof);
+    pending.delete(request);
   }
 }
 
@@ -1260,9 +1291,12 @@ async function reconcileFrameProof({
   observedIdentity,
   frameEvents,
 }) {
+  const before = hostMonotonicMs();
   const response = await fetch(localOrigin + '/__sim/api/audit/export', { signal: AbortSignal.timeout(timeout) });
   if (!response.ok) return;
   const audit = await response.json();
+  // The server read its host clock while serving: inside this bracket it is the runner's clock (not another VM's).
+  const sharedHostClock = audit.hostMs >= before && audit.hostMs <= hostMonotonicMs();
   const frameTree = await cdp.send('Page.getFrameTree');
   const currentFrames = flattenFrameTree(frameTree.frameTree);
   observation.finalFrameTree = currentFrames.map(({ id, parentId, loaderId }) => ({ id, parentId, loaderId }));
@@ -1276,6 +1310,7 @@ async function reconcileFrameProof({
     observedIdentity,
     frameEvents,
     currentFrames,
+    sharedHostClock,
   });
 }
 

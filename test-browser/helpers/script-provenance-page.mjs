@@ -51,7 +51,8 @@ export async function inventedScriptResource(directory, source, { sourceMaps = f
 }
 
 /**
- * A loopback page whose `/widget.js` is the acknowledged invented `source`, inspected through the real interception
+ * A loopback page whose `/widget.js` is the acknowledged invented `source` (`html` is the markup of every other path,
+ * or a function of the path that returns it), inspected through the real interception
  * and provenance transport. `onSession(cdp, transport)` sees the attachment's DevTools session before the transport attaches.
  * `onError` receives the interception's diagnostics. The page, context, interception and server are owned by the test.
  */
@@ -69,8 +70,10 @@ export async function scriptProvenancePage(t, browser, { html, source, onSession
   const page = await context.newPage();
   const origin = await listenOwnedServer(
     t,
-    http.createServer((_request, response) =>
-      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end(html),
+    http.createServer((request, response) =>
+      response
+        .writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+        .end(typeof html === 'function' ? html(new URL(request.url, 'http://invented.invalid').pathname) : html),
     ),
   );
   const transport = createInspectionProvenanceTransport(context, [{ origin }]);

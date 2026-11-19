@@ -3,6 +3,7 @@
 // Attachment bytes go to an optional storage provider (put/delete); rows keep metadata and the storage key, never bytes.
 import { randomUUID } from 'node:crypto';
 import { DataError } from './data-error.mjs';
+import { stampMs, systemClock } from './runtime-clock.mjs';
 import { registerSettingParser } from './config-keys.mjs';
 import { outboxSettings } from './outbox-settings.mjs';
 import { packCheck, registerPackExport } from './pack-exports.mjs';
@@ -109,8 +110,9 @@ export function createOutbox({
   if (!store || typeof store.transact !== 'function') throw new TypeError('createOutbox requires a DataStore');
   if (storage && (typeof storage.put !== 'function' || typeof storage.delete !== 'function'))
     throw new TypeError('Outbox storage must provide put and delete');
-  const now = () => +(clock?.now?.() ?? Date.now());
   const uuid = () => ids?.uuid?.() ?? randomUUID();
+  // Stored dates, held across a small backward step of the wall clock (runtime-clock.mjs stampMs).
+  const stamp = () => stampMs(store, clock ?? systemClock);
   const rowsOf = () => store.state.tables?.[OUTBOX_TABLE] ?? [];
   // The organization composes the table at startup (dataverse-organization.mjs INTERNAL_TABLES); this seed covers a bare store.
   const seed = () => {
@@ -166,7 +168,7 @@ export function createOutbox({
     async capture(entry = {}, { nested = false } = {}) {
       const { state, bodyType } = validateOutboxCapture(entry);
       const entryId = uuid(),
-        at = now(),
+        at = stamp(), // createdOn, held across a small backward clock step
         diagnostics = [],
         stored = [],
         flight = [];
@@ -248,11 +250,11 @@ export function createOutbox({
       return row ? view(row) : null;
     },
     markDelivered(entryId) {
-      return transition(entryId, 'delivered', { deliveredOn: new Date(now()).toISOString() });
+      return transition(entryId, 'delivered', { deliveredOn: new Date(stamp()).toISOString() });
     },
     markFailed(entryId, reason) {
       return transition(entryId, 'failed', {
-        failedOn: new Date(now()).toISOString(),
+        failedOn: new Date(stamp()).toISOString(),
         failureReason: text(reason, 'reason', 4000) ?? 'Failed',
       });
     },

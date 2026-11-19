@@ -175,6 +175,69 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
     assert.ok(result.flows[0].navigationCancelledRequests.every((row) => row.reason === 'document-replaced'));
   });
 
+  for (const step of [
+    { action: 'identity', roles: ['Reviewer'] },
+    { action: 'preset', id: 'demo' },
+  ])
+    test(`acceptance settles queued page work before the ${step.action} step leaves the page`, async (t) => {
+      const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-step-settle-'));
+      ownAcceptanceFixture(t, root);
+      // The page queues its read as a task after the click. The fixture answers it only when the runner asks for its
+      // audit proof, which the runner does only inside its settle loop while a request is open: a step that reloads
+      // or leaves the page without settling cancels the read instead.
+      let heldRead = null;
+      const { origin } = await loopbackServer(t, (req, res) => {
+        req.resume();
+        const route = new URL(req.url, 'http://fixture').pathname;
+        res.setHeader('content-type', route.startsWith('/__sim/api/') ? 'application/json' : 'text/html');
+        if (route === '/__sim/api/state')
+          return res.end(
+            JSON.stringify({
+              csrf: 'invented',
+              config: { mode: 'local', pageMode: 'local', endpoints: [] },
+              status: { sourceFingerprint: 'synthetic', implementationFingerprint: 'synthetic' },
+            }),
+          );
+        if (route === '/__sim/api/session') return res.end(JSON.stringify({ contactId: 'tester' }));
+        if (route === '/__sim/api/session/sign-in') return res.end(JSON.stringify({ roles: ['Reviewer'] }));
+        if (route === '/__sim/api/audit/export') {
+          heldRead?.end('refreshed');
+          heldRead = null;
+          return res.end(JSON.stringify({ events: [] }));
+        }
+        if (route === '/refresh') {
+          heldRead = res;
+          return;
+        }
+        if (route === '/__sim/')
+          return res.end(
+            `<label for="preset">Available preset</label><select id="preset"><option value="demo">Demo</option></select><button id="apply" type="button">Apply selected preset</button><div id="confirm" hidden><button id="confirmed" type="button">Apply preset</button></div><script>document.getElementById('apply').onclick=()=>document.getElementById('confirm').hidden=false;document.getElementById('confirmed').onclick=()=>document.getElementById('confirm').hidden=true</script>`,
+          );
+        res.end(
+          `<button id="refresh" type="button" onclick="setTimeout(()=>fetch('/refresh').then(response=>response.text()),0)">Refresh</button>`,
+        );
+      });
+      const result = await runAcceptance(t, {
+        timeout: ACTION_BUDGET_MS,
+        localUrl: origin,
+        outputDir: path.join(root, 'evidence'),
+        flows: [
+          {
+            name: `Queued work before ${step.action}`,
+            steps: [{ action: 'navigate', path: '/' }, { action: 'click', selector: '#refresh' }, step],
+          },
+        ],
+      });
+      assert.equal(result.passed, true, JSON.stringify(result.flows[0]));
+      assert.equal(
+        result.flows[0].resources.filter((resource) => resource.url === origin + '/refresh' && resource.finished)
+          .length,
+        1,
+        `the queued read finishes before the ${step.action} step leaves the page`,
+      );
+      assert.equal(result.flows[0].navigationCancelledRequests?.length ?? 0, 0);
+    });
+
   for (const [beforeNavigation, lateNavigation] of [
     [false, false],
     [true, false],
@@ -382,10 +445,13 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
       'adx_webpageid: home\nadx_name: Flows\nadx_partialurl: /\n',
     );
     // The script reads user.roles; after a native save postback (success message shown)
-    // it schedules a delayed refresh request that the runner must record as finished.
+    // it schedules a refresh request that the runner must record as finished. The refresh is a task queued when the
+    // document is ready, as the native success postMessage queues the parent's subgrid refresh, so it runs before
+    // any page turn the runner queues later. A refresh delayed by wall-clock time is not queued page work: whether it ran
+    // before the next step would depend on the host's speed.
     await fs.writeFile(
       path.join(directory, 'Home.webpage.copy.html'),
-      '<h1>Portal flows</h1><input id="async-default"><button id="initialize-default" type="button" onclick="setTimeout(() => document.getElementById(&quot;async-default&quot;).value = &quot;Initialized&quot;, 200)">Initialize default</button><input id="userroles" type="hidden" value="{{user.roles | join: \'|\'}}"><div id="script-roles"></div><script>document.getElementById("script-roles").textContent=document.getElementById("userroles").value;document.addEventListener("DOMContentLoaded",()=>setTimeout(()=>{if(document.getElementById("MessageLabel"))fetch("/save-followup").then(r=>r.json());},150));</script>{% if request.params.id %}{% entityform name: "Contact edit form" %}{% else %}{% entityform name: "Contact form" %}{% endif %}',
+      '<h1>Portal flows</h1><input id="async-default"><button id="initialize-default" type="button" onclick="setTimeout(() => document.getElementById(&quot;async-default&quot;).value = &quot;Initialized&quot;, 200)">Initialize default</button><input id="userroles" type="hidden" value="{{user.roles | join: \'|\'}}"><div id="script-roles"></div><script>document.getElementById("script-roles").textContent=document.getElementById("userroles").value;document.addEventListener("DOMContentLoaded",()=>setTimeout(()=>{if(document.getElementById("MessageLabel"))fetch("/save-followup").then(r=>r.json());},0));</script>{% if request.params.id %}{% entityform name: "Contact edit form" %}{% else %}{% entityform name: "Contact form" %}{% endif %}',
     );
     await fs.writeFile(
       path.join(directory, 'Contact.basicform.yml'),

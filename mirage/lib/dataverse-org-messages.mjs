@@ -471,11 +471,15 @@ function operations(api) {
       if (source !== null && Number(p.source) !== source) return false;
       return !pattern || pattern.test(p.text ?? '');
     });
+    // Equal createdon (whole seconds) follows the table's insertion order: the earlier inserted first ascending, the later
+    // inserted first otherwise.
+    if (!ascending) kept.reverse();
     kept.sort((a, b) => (TIME(a.createdon) - TIME(b.createdon)) * (ascending ? 1 : -1));
     const value = kept.slice((page - 1) * size, page * size).map((p) => ({
       ...p,
       Post_Comments: tableOf(store, 'postcomment')
         .filter((cm) => sameId(refId(cm.postid), p.postid))
+        .reverse() // equal createdon: the later inserted comment first
         .sort((a, b) => TIME(b.createdon) - TIME(a.createdon))
         .slice(0, comments),
     }));

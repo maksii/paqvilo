@@ -13,7 +13,7 @@ import {
   traceJob,
   wholeSecond,
 } from './committed-work.mjs';
-import { clockFunction, systemClock, systemIds } from './runtime-clock.mjs';
+import { clockFunction, stampMs, systemClock, systemIds } from './runtime-clock.mjs';
 import { createRequestContext, runWithRequest } from './request-context.mjs';
 import { PLUGIN_MAX_DEPTH, recordToSdkEntity } from './plugin-clr.mjs';
 import { multipleMessage } from './plugin-single-multiple.mjs';
@@ -169,7 +169,8 @@ function executionTimer(clock, wallNow) {
 
 function claimJob(store, id, item, systemJobs, diagnostic, { pluginAttempt = false } = {}) {
   const clockMs = () => clockFunction(store.clock ?? systemClock)();
-  const now = () => new Date(clockMs()).toISOString();
+  // A stored date, held across a small backward step of the wall clock (runtime-clock.mjs stampMs).
+  const now = () => new Date(stampMs(store, store.clock ?? systemClock)).toISOString();
   // UTC stamps follow the configured wall clock. System elapsed time follows the monotonic clock so a host
   // correction cannot make executiontimespan negative or inflate it. Virtual clocks retain their own elapsed time.
   const execution = executionTimer(store.clock, clockMs);

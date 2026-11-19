@@ -6,6 +6,7 @@
 import { randomUUID } from 'node:crypto';
 import dns from 'node:dns';
 import { DataError } from './data-error.mjs';
+import { stampMs, systemClock } from './runtime-clock.mjs';
 import { isLoopbackUrl, loopbackAddresses, loopbackFetch } from './dataverse-webhooks.mjs';
 import { ProviderError, requestBound } from './storage-provider.mjs';
 import { CODE, connectAmqp, decodeMessage, described, encodeMessage, sym } from './amqp-client.mjs';
@@ -263,7 +264,9 @@ export function createLocalMessageBus({
     async send(entity, body, { nested = false, ...options } = {}) {
       const { value, properties, messageId, scheduled } = messageInput(entity, body, options);
       return write((rows) => {
-        const at = now(),
+        // The send time, held across a small backward step of the wall clock (runtime-clock.mjs stampMs). Visibility is
+        // compared with the clock itself, so a held stamp never delays a message.
+        const at = stampMs(store, clock ?? systemClock),
           key = messageId ?? uuid();
         const existing = rows.find(
           (row) => (row.entity === entity || row.entity === entity + DEAD_LETTER_SUFFIX) && row.messageid === key,
@@ -278,7 +281,7 @@ export function createLocalMessageBus({
           sequencenumber: nextSequenceNumber(rows, entity),
           enqueuedon: iso(at),
           scheduledat: scheduled,
-          visibleat: scheduled ?? at,
+          visibleat: scheduled ?? Math.min(at, now()),
           deliverycount: 0,
           locktoken: null,
           lockeduntil: null,

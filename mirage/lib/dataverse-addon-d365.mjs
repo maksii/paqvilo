@@ -11,6 +11,7 @@ import { argsOf, idOf, registerAddon } from './dataverse-addon-common.mjs';
 import { readMessageRecords } from './dataverse-message-context.mjs';
 import { fromBulkDeleteJson, toFetchXml } from './dataverse-soap-query.mjs';
 import { privilegeName } from './dataverse-security.mjs';
+import { stampMs } from './runtime-clock.mjs';
 import { parseXmlDocument } from './fetchxml-engine.mjs';
 
 const key = (value) => String(value ?? '').toLowerCase();
@@ -177,12 +178,14 @@ function operations(api) {
     const root = rootOf(goal);
     await compute(root, new Set([key(root.goalid)]));
     authorizeGoals(api, c, plan);
-    const at = api.clock();
     await write(async () => {
       for (const { node, totals, suffix } of plan) {
         const target = Number(node[`target${suffix}`]) || 0;
         const actual = totals.actual ?? 0;
-        const fields = { lastrolledupdate: iso(at), percentage: target ? (actual / target) * 100 : 0 };
+        const fields = {
+          lastrolledupdate: iso(stampMs(api.store, api.clock)),
+          percentage: target ? (actual / target) * 100 : 0,
+        };
         for (const [attribute, value] of Object.entries(totals)) fields[`${attribute}${suffix}`] = value;
         await api.records.updateInternal(c, 'goal', node.goalid, fields, { authorized: true });
       }

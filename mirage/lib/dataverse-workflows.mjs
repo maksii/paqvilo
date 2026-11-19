@@ -8,7 +8,7 @@ import { createRequestContext, currentRequest, runWithRequest } from './request-
 //    export), a mock, or a placeholder that ends the job Canceled. Its writes are one store transaction.
 //  - A cloud flow (category 5) runs its exported definition through flow-runtime, as a job. Its activation is the workflow
 //    row's statecode, which workflowsWithActivation copies onto the exported flow map (the portal trigger path reads that map).
-import { systemIds } from './runtime-clock.mjs';
+import { stampMs, systemIds } from './runtime-clock.mjs';
 import path from 'node:path';
 import { DataError } from './data-error.mjs';
 import { invokeTrustedHandler } from './trusted-handler-invocation.mjs';
@@ -19,6 +19,9 @@ import { ownerColumns, uuidV5 } from './dataverse-security.mjs';
 import { committedJobs, liveJob, stageCommittedJobs, traceJob } from './committed-work.mjs';
 import { runTrackedFlow, inspectFlowTrigger } from './flow-runtime.mjs';
 import { pluginStepBypassed, pluginBypassOwnership } from './plugin-bypass.mjs';
+
+// A stored date, held across a small backward step of the wall clock (runtime-clock.mjs stampMs).
+const stampOf = (api) => new Date(stampMs(api.store, api.clock)).toISOString();
 
 const CATEGORY_WORKFLOW = 0;
 const CATEGORY_MODERN_FLOW = 5;
@@ -440,7 +443,7 @@ async function runClassic(api, config, run) {
     if (!run.realtime) throw canceled(choice.mode === 'disabled' ? DISABLED_MESSAGE : PLACEHOLDER_MESSAGE);
     return null;
   }
-  const startedon = new Date(api.clock()).toISOString();
+  const startedon = stampOf(api);
   if (choice.mode === 'mock') {
     config.diagnostic?.({
       code: 'WORKFLOW_MOCK',
@@ -487,7 +490,7 @@ function writeLog(store, api, run, { status, message = null, error = null, start
     status,
     stepname: 'Simulator',
     startedon,
-    completedon: new Date(api.clock()).toISOString(),
+    completedon: stampOf(api),
     regardingobjectid: run.regarding ? lookup(run.regarding.logicalName, run.regarding.id) : null,
     regardingobjecttypecode: run.regarding?.logicalName ?? null,
     message,
@@ -506,8 +509,8 @@ function writeProcessSession(store, api, run, error) {
     regardingobjecttypecode: run.regarding?.logicalName ?? null,
     errorcode: errorNumber(error),
     comments: error.message,
-    startedon: new Date(api.clock()).toISOString(),
-    completedon: new Date(api.clock()).toISOString(),
+    startedon: stampOf(api),
+    completedon: stampOf(api),
   });
 }
 
@@ -559,7 +562,7 @@ async function attempt(api, config, run) {
               status: LOG_STATUS.failed,
               message: error.message,
               error,
-              startedon: new Date(api.clock()).toISOString(),
+              startedon: stampOf(api),
             });
           if (run.realtime && run.row.syncworkflowlogonfailure) writeProcessSession(api.store, api, run, error);
         }),
@@ -928,7 +931,7 @@ function stageBackgroundRuns(api, config, events) {
 // then complete it Succeeded, Failed or Canceled. A row that left Ready (canceled through the Web API) is not run.
 async function runBackgroundJob(api, config, { id, payload, event }) {
   const { store } = api;
-  const stamp = () => new Date(api.clock()).toISOString();
+  const stamp = () => stampOf(api);
   let claimed = false;
   // The claim and the final state find the job row by id inside their transaction: each backs up only the tables it
   // reaches (DataStore#transact `tracked`), not the whole state.

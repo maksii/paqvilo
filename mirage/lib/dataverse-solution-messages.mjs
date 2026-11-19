@@ -16,6 +16,7 @@
 import { randomUUID } from 'node:crypto';
 import { registerInternalMessage } from './dataverse-addon-common.mjs';
 import { DataError } from './data-error.mjs';
+import { stampMs, systemClock } from './runtime-clock.mjs';
 import { contextUrl } from './dataverse-odata.mjs';
 import { whenJobSettled } from './dataverse-async.mjs';
 import { SECURITY_LAYERS, uuidV5 } from './dataverse-security.mjs';
@@ -196,7 +197,8 @@ const OPERATION_TYPE = { export: 202, deleteAndPromote: 207, uninstall: 208, sta
 const VERSION_DEFAULT = '1.0.0.0'; // NOSONAR: version string or loopback address, not a network target
 const tableOf = (store, name) => (store.state.tables[name] ??= []);
 const rowsOf = (store, name) => store.state.tables[name] ?? [];
-const stampOf = (api) => new Date(api.clock?.() ?? Date.now()).toISOString();
+// A stored date, held across a small backward step of the wall clock (runtime-clock.mjs stampMs).
+const stampOf = (api) => new Date(stampMs(api.store, api.clock ?? systemClock)).toISOString();
 const removeWhere = (list, predicate) => {
   for (let i = list.length - 1; i >= 0; i--) if (predicate(list[i])) list.splice(i, 1);
 };

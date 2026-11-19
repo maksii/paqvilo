@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DataError } from './data-error.mjs';
+import { stampMs, systemClock } from './runtime-clock.mjs';
 import { contextUrl } from './dataverse-odata.mjs';
 import { uuidV5 } from './dataverse-security.mjs';
 import { BULK_DUPLICATE_TYPE } from './dataverse-async.mjs';
@@ -403,7 +404,7 @@ const bulkDetectDuplicates = (api) => async (c) => {
           }
         }
       }
-      const now = new Date(api.clock ? api.clock() : Date.now()).toISOString();
+      const now = new Date(stampMs(api.store, api.clock ?? systemClock)).toISOString();
       await api.change(() =>
         store.transact(
           () => {

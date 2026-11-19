@@ -20,6 +20,7 @@
 import { randomUUID } from 'node:crypto';
 import { deflateRawSync } from 'node:zlib';
 import { DataError } from './data-error.mjs';
+import { stampMs, systemClock } from './runtime-clock.mjs';
 import { contextUrl } from './dataverse-odata.mjs';
 import { whenJobSettled } from './dataverse-async.mjs';
 import { readSolutionZip, parseSchemaDocument } from './solution-schema.mjs';
@@ -55,7 +56,6 @@ import { registerInternalMessage } from './dataverse-addon-common.mjs';
 import { securityDefinitions, mergeInventory } from './solution-inventory.mjs';
 import { importSolutionSecurity, ownerColumns } from './dataverse-security.mjs';
 import { nextRowVersion } from './dataverse-changes.mjs';
-import { isoUtc } from './dataverse-values.mjs';
 import {
   createOneToMany,
   createManyToMany,
@@ -80,7 +80,8 @@ const lower = (value) => String(value ?? '').toLowerCase();
 const sameGuid = (a, b) => lower(idOf(a)) === lower(idOf(b));
 const idOf = (value) => (value && typeof value === 'object' ? value.id : value);
 const invalid = (message) => new DataError(message, 400, 'InvalidRequest');
-const stamp = (api) => new Date(api.clock?.() ?? Date.now()).toISOString();
+// A stored date, held across a small backward step of the wall clock (runtime-clock.mjs stampMs).
+const stamp = (api) => new Date(stampMs(api.store, api.clock ?? systemClock)).toISOString();
 const rowsOf = (store, table) => store.state.tables?.[table] ?? [];
 
 // Seeded Dataverse-only tables: solution, publisher and importjob. The writable columns named
@@ -1225,7 +1226,7 @@ function writeJob(api, { jobId, archive, log, error, progress }) {
 // user. An existing row takes the import time as its modifiedon, whatever the payload says. Every row takes the store's next
 // row version, so a versionnumber in the payload is never kept.
 export function stampImportedRow(store, caller, row, mapping, { existing }) {
-  const now = isoUtc(store.clock.now());
+  const now = store.recordStamp();
   if (existing) {
     row.modifiedon = now;
   } else {

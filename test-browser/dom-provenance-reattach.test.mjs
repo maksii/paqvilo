@@ -3,6 +3,7 @@ import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import { isRegistryCall, scriptProvenancePage } from './helpers/script-provenance-page.mjs';
 
 let browser;
@@ -150,4 +151,59 @@ test('an authored debugger statement never pauses a page whose provenance uses t
     window.makeWidget('after');
   });
   assert.equal((await fx.verdict('after')).sourceRefs[0]?.relationship, 'created-by');
+});
+
+test('a document restored from the back/forward cache keeps proving script callsites and is not reported', async (t) => {
+  // Playwright disables the back/forward cache by default; an attached browser keeps it.
+  const cached = await chromium.launch({
+    ...browserLaunchOptions({ headless: true }),
+    ignoreDefaultArgs: ['--disable-back-forward-cache'],
+  });
+  const reports = [],
+    calls = [],
+    waiters = [];
+  const settle = () => {
+    for (const waiter of waiters.splice(0)) waiter();
+  };
+  const fx = await scriptProvenancePage(t, cached, {
+    html,
+    source,
+    onSession(cdp, transport) {
+      const send = cdp.send.bind(cdp);
+      cdp.send = async (method, params) => {
+        const answer = await send(method, params);
+        if (isRegistryCall(method, params, transport.domSlot) || isRegistryCall(method, params, transport.slot)) {
+          calls.push(method);
+          settle();
+        }
+        return answer;
+      };
+    },
+    onError(error) {
+      reports.push(error.message);
+      settle();
+    },
+  });
+  ownedFixture(t).add(() => cached.close());
+  await fx.page.goto(fx.origin + '/first');
+  assert.equal((await fx.verdict('created')).sourceRefs[0]?.relationship, 'created-by');
+  await fx.page.evaluate(() => window.addEventListener('pageshow', (event) => (window.restored = event.persisted)));
+  await fx.page.goto(fx.origin + '/second');
+  await fx.verdict('created');
+  const before = calls.length;
+  // A restore fires no load event, so the test waits for the restored address instead of goBack's load.
+  await fx.page.evaluate(() => history.back());
+  await fx.page.waitForFunction(() => location.pathname === '/first');
+  if ((await fx.page.evaluate(() => window.restored)) !== true) {
+    // Playwright's Chromium build has no back/forward cache, also with the flag removed; Edge has one.
+    t.skip('this browser did not restore the document from the back/forward cache');
+    return;
+  }
+  // Both transports claim the first document again, unless one reports it instead.
+  while (calls.length < before + 2 && !reports.length) await new Promise((resolve) => waiters.push(resolve));
+  assert.deepEqual(reports, [], 'a restore is not a reused window');
+  await fx.page.evaluate(() => window.makeWidget('later'));
+  const later = await fx.verdict('later');
+  assert.equal(later.sourceRefs[0]?.relationship, 'created-by', JSON.stringify(later));
+  assert.equal(later.sourceRefs[0].ref, 'web-files/widget.js');
 });

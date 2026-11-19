@@ -32,7 +32,8 @@ const isClaim = ({ method, params }) =>
  * A DevTools session whose frame tree reports `loader`; `hold()` makes the next frame-tree reads wait for the test.
  * Every context of a registered bootstrap gets that bootstrap's registry as the browser reports it: the parsed
  * bootstrap script, a global slot and its `claim` and `release` functions located in that script. `useRegistries()`
- * makes later contexts have no slot (`absent`) or a page-made lookalike whose functions lie elsewhere (`forged`).
+ * makes later contexts have no slot (`absent`), a page-made lookalike whose functions lie elsewhere (`forged`), or a
+ * registry whose bootstrap script the browser does not report (`unreported`).
  */
 function fakeSession() {
   const sent = [],
@@ -110,7 +111,7 @@ function fakeSession() {
   // The browser parses each bootstrap in a new context of a configured origin.
   cdp.emit = (event, payload) => {
     const delivered = emit(event, payload);
-    if (event === 'Runtime.executionContextCreated' && payload.context.origin === ORIGIN)
+    if (event === 'Runtime.executionContextCreated' && payload.context.origin === ORIGIN && registries !== 'unreported')
       bootstraps.forEach((bootstrap, index) =>
         emit('Debugger.scriptParsed', {
           executionContextId: payload.context.id,
@@ -339,6 +340,7 @@ for (const [kind, attach] of [
     for (const [registries, answer, expected, sent] of [
       ['absent', null, [], 0],
       ['forged', null, ['held'], 0],
+      ['unreported', null, ['claimed'], 0],
       ['genuine', { result: { type: 'object', subtype: 'null', value: null } }, ['claimed'], 1],
       ['genuine', new Error('Cannot find context with specified id'), ['claimed'], 1],
     ]) {
@@ -501,8 +503,14 @@ async function mirageDom(t) {
       )
       .flatMap(({ params }) => params.arguments[0].value)
       .find((entry) => entry.id === id)?.proof;
-  /** The next document of the frame: its commit notification, what follows it, its context and claimed registry, and its parsed script. */
+  let current = 9;
+  /**
+   * The next document of the frame, in Chromium's order: the end of the current document's context, the commit
+   * notification, what follows it, the new context and its claimed registry, and its parsed script.
+   */
   const commit = async (loaderId, executionContextId, afterCommit = () => {}) => {
+    session.cdp.emit('Runtime.executionContextDestroyed', { executionContextId: current });
+    current = executionContextId;
     session.cdp.emit('Page.frameNavigated', { frame: { id: 'main', loaderId } });
     afterCommit();
     session.navigate(loaderId);
@@ -839,5 +847,135 @@ test('disposal sends the release key only to a verified registry', async () => {
       false,
       `${create.name}: nothing is called on a registry that is not the bootstrap's own`,
     );
+  }
+});
+
+const tookOver = (kind) =>
+  `no reload: a document took over the window of its frame's initial empty document, so its ${kind} provenance is not recorded`;
+const kinds = new Map([
+  [attachedDom, 'script'],
+  [attachedPortalDocument, 'page'],
+]);
+
+test('a document that takes over the live context of its frame is reported once per frame, without reload advice, and never claimed', async (t) => {
+  for (const [attach, kind] of kinds) {
+    const { session, reports, open } = await attach(t);
+    const verifications = () => session.sent.filter(({ method }) => method === 'Runtime.getProperties').length;
+    // The initial empty document's context, whose bootstrap installed no registry.
+    session.useRegistries('absent');
+    open();
+    await settle(() => verifications() > 0);
+    await setImmediate();
+    // The same-origin document commits into that window: Chromium reports the navigation, and no new context.
+    session.useRegistries('genuine');
+    session.cdp.emit('Page.frameNavigated', {
+      frame: { id: 'main', loaderId: 'reused-loader', url: PAGE },
+      type: 'Navigation',
+    });
+    await setImmediate();
+    assert.deepEqual(reports, [tookOver(kind)], attach.name);
+    // Another document of the same frame takes over a live context again: the frame was already reported.
+    session.useRegistries('absent');
+    const before = verifications();
+    session.cdp.emit('Runtime.executionContextCreated', {
+      context: { id: 21, origin: ORIGIN, auxData: { isDefault: true, frameId: 'main' } },
+    });
+    await settle(() => verifications() > before);
+    await setImmediate();
+    session.cdp.emit('Page.frameNavigated', {
+      frame: { id: 'main', loaderId: 'next-reused-loader', url: PAGE },
+      type: 'Navigation',
+    });
+    await setImmediate();
+    assert.deepEqual(reports, [tookOver(kind)], `${attach.name}: one report per frame`);
+    assert.equal(session.sent.some(isClaim), false, `${attach.name}: nothing is claimed in a reused window`);
+  }
+});
+
+test('a document restored from the back/forward cache is claimed again and is not reported as a reused window', async (t) => {
+  for (const [attach] of kinds) {
+    const { session, reports, open } = await attach(t);
+    open();
+    await settle(() => session.sent.filter(isClaim).length === 1);
+    // Chromium's order for a restore: the contexts are cleared, the restored document's context is reported again,
+    // then its navigation of type BackForwardCacheRestore.
+    session.navigate('restored-loader');
+    session.cdp.emit('Runtime.executionContextsCleared', {});
+    const restored = session.sent.length;
+    session.cdp.emit('Runtime.executionContextCreated', {
+      context: { id: 23, origin: ORIGIN, auxData: { isDefault: true, frameId: 'main' } },
+    });
+    session.cdp.emit('Page.frameNavigated', {
+      frame: { id: 'main', loaderId: 'restored-loader' },
+      type: 'BackForwardCacheRestore',
+    });
+    await settle(() => session.sent.slice(restored).some(isClaim));
+    await setImmediate();
+    assert.equal(
+      session.sent
+        .slice(restored)
+        .some((command) => isClaim(command) && command.params.objectId.startsWith('method:23:')),
+      true,
+      `${attach.name}: the restored document is claimed`,
+    );
+    assert.deepEqual(reports, [], attach.name);
+  }
+});
+
+// @test-kind security: a registry is verified only against the bootstrap the browser reported for the current context;
+// after a renderer swap the same numeric context and script ids can name a page-made function at the claim location
+test('after the contexts are cleared, a reused context id with a lookalike at the old bootstrap location receives nothing', async (t) => {
+  for (const [attach] of kinds) {
+    const { session, open } = await attach(t);
+    open();
+    await settle(() => session.sent.filter(isClaim).length === 1);
+    const contextId = Number(session.sent.find(isClaim).params.objectId.split(':')[1]);
+    // A new renderer process restarts its ids: the next document's context has the same id, its functions report the
+    // same script id and location, and the browser reports no bootstrap for it.
+    session.cdp.emit('Runtime.executionContextsCleared', {});
+    session.useRegistries('unreported');
+    const after = session.sent.length;
+    session.cdp.emit('Runtime.executionContextCreated', {
+      context: { id: contextId, origin: ORIGIN, auxData: { isDefault: true, frameId: 'main' } },
+    });
+    await settle(() => session.sent.slice(after).some(({ method }) => method === 'Runtime.getProperties'));
+    await setImmediate();
+    await setImmediate();
+    assert.equal(
+      session.sent.slice(after).some(({ method }) => method === 'Runtime.callFunctionOn'),
+      false,
+      `${attach.name}: nothing is sent to the lookalike`,
+    );
+  }
+});
+
+test('a document without a target origin that takes over a live context is not reported', async (t) => {
+  for (const [attach] of kinds) {
+    const { session, reports, open } = await attach(t);
+    session.useRegistries('absent');
+    open();
+    await settle(() => session.sent.some(({ method }) => method === 'Runtime.getProperties'));
+    await setImmediate();
+    session.cdp.emit('Page.frameNavigated', {
+      frame: { id: 'main', loaderId: 'srcdoc-loader', url: 'about:srcdoc' },
+      type: 'Navigation',
+    });
+    await setImmediate();
+    assert.deepEqual(reports, [], attach.name);
+    assert.equal(session.sent.some(isClaim), false);
+  }
+});
+
+test('verifying a registry never reads the indexed properties of the page global, which are its frames windows', async (t) => {
+  for (const [attach] of kinds) {
+    const { session, open } = await attach(t);
+    open();
+    await settle(() => session.sent.some(isClaim));
+    const globalReads = session.sent.filter(
+      ({ method, params }) => method === 'Runtime.getProperties' && params.objectId.startsWith('global:'),
+    );
+    assert.ok(globalReads.length > 0, attach.name);
+    for (const { params } of globalReads)
+      assert.equal(params.nonIndexedPropertiesOnly, true, `${attach.name}: a frame window is never materialized`);
   }
 });

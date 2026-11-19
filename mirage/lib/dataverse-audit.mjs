@@ -4,7 +4,7 @@ import { organizationRecord } from './organization-context.mjs';
 // other modules call: writeAudit (shares, role privileges and role assignments) and recordUserAccess.
 // Writes come from the store's committed events (portal and /_sim/ writes too) and from the
 // afterWrite hook for N:N association.
-import { systemIds } from './runtime-clock.mjs';
+import { stampMs, systemIds } from './runtime-clock.mjs';
 import { DataError } from './data-error.mjs';
 import { parseEntityReference } from './data.mjs';
 import { contextUrl } from './dataverse-odata.mjs';
@@ -146,7 +146,7 @@ function auditRow(api, { entity, id, operation, action, mask = null, identity, t
     objecttypecode: entity,
     attributemask: mask,
     ...actorFields(api.store, identity),
-    createdon: new Date(api.clock()).toISOString(),
+    createdon: new Date(stampMs(api.store, api.clock)).toISOString(),
     transactionid: transactionId ?? (api.ids ?? systemIds).uuid(),
   };
 }
@@ -389,12 +389,12 @@ function targetOf(store, value) {
   return { mapping: resolve(parsed.set), id: parsed.id };
 }
 
-// Assumption: the history collection is ordered newest first.
+// Assumption: the history collection is ordered newest first. Rows are only appended (writeEntries), so newest first is the
+// table order reversed: a wall clock stepped back (an NTP or WSL time resync) between two writes cannot reorder them.
 const historyOf = (store, entity, id) =>
   rowsOf(store)
     .filter((row) => row.objecttypecode === entity && lower(plain(row.objectid)) === lower(id))
-    .reverse()
-    .sort((a, b) => b.createdon.localeCompare(a.createdon)); // newest first; ties keep the newer insertion first
+    .reverse();
 
 // Record-level read on the target row, as the platform checks it. A row that no longer exists leaves only the
 // entity-level privilege check, since its history stays readable.
