@@ -81,6 +81,33 @@ test('persona pickers: search/facets, pinning, shared routes, contact role picke
   await context.close();
 });
 
+// @test-kind contract: Paqvilo's own persona picker keeps a group the user folded or opened when an update comes before the browser's queued toggle event; the order is forced by pinning in the task of the click.
+test('a persona group folded or opened in the task of a picker update keeps that state', async (t) => {
+  const { app } = await personaFixture(t);
+  const context = await browser.newContext();
+  ownedFixture(t).add(() => context.close());
+  const page = await context.newPage();
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  await page.goto(app.url + '/_sim/#identity');
+  await workspaceSettled(page);
+  const picker = page.locator('#browser-persona-picker');
+  await picker.locator('[data-persona-result-count]').filter({ hasText: '60 of 60' }).waitFor();
+  const group = picker.locator('[data-persona-group]').first();
+  // The click changes the group at once and queues its toggle event; a pin updates the picker before it.
+  const clickThenUpdate = () =>
+    picker.evaluate((root) => {
+      root.querySelector('[data-persona-group] > summary').click();
+      root.querySelector('[data-persona-pin]').click();
+    });
+  const shown = await group.evaluate((node) => node.open);
+  await clickThenUpdate();
+  assert.equal(await group.evaluate((node) => node.open), !shown, 'the update undid what the click did');
+  await clickThenUpdate();
+  assert.equal(await group.evaluate((node) => node.open), shown);
+  assert.deepEqual(errors, []);
+});
+
 test('native grouped sign-in remains usable without JS; browser automation applies context options', async (t) => {
   const { app } = await personaFixture(t);
   const context = await browser.newContext({ javaScriptEnabled: false });

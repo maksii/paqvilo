@@ -989,9 +989,18 @@ function rerenderTable(key, search = false) {
     }
   }
 }
+// The open state each kit section was shown with. The browser queues a section's toggle event, which a section
+// replaced first never delivers here, so a render reads the sections the user changed before replacing them.
+const shownUiOpen = new WeakMap();
+function rememberUiOpen(root) {
+  for (const node of root?.querySelectorAll('details[data-ui-section]') ?? [])
+    if (shownUiOpen.has(node) && shownUiOpen.get(node) !== node.open) uiOpen.set(node.dataset.uiSection, node.open);
+}
 function applyUiOpen(root) {
-  for (const node of root.querySelectorAll('details[data-ui-section]'))
+  for (const node of root.querySelectorAll('details[data-ui-section]')) {
     if (uiOpen.has(node.dataset.uiSection)) node.open = uiOpen.get(node.dataset.uiSection);
+    shownUiOpen.set(node, node.open);
+  }
 }
 
 // A collapsible section: one title row with its (i) guidance and status badge; the guidance never sits inside the heading.
@@ -1306,6 +1315,7 @@ function refreshSystem(force = false) {
   const html = systemBody();
   if (!force && html === body.dataset.rendered) return;
   keepPlace(() => {
+    rememberUiOpen(body);
     body.innerHTML = html;
     body.dataset.rendered = html;
     applyUiOpen(body);
@@ -1445,6 +1455,9 @@ const liveChanged = () => {
   return changed;
 };
 function quickHtml() {
+  // The map's toggle event is queued: a repaint in the task of the click reads what the user chose from the map shown.
+  const shownMap = $('#quick details[data-section-key="quick-map"]');
+  if (shownMap) quickMapOpen = shownMap.open;
   const target = quickTarget(),
     session = quickSession(),
     live = isLive() ? dashboard : null;
@@ -1502,8 +1515,10 @@ function refreshQuick(force = false) {
   const html = quickHtml();
   if (!force && html === host.dataset.rendered) return;
   keepPlace(() => {
+    rememberUiOpen(host);
     host.innerHTML = html;
     host.dataset.rendered = html;
+    applyUiOpen(host);
     afterSystem();
   });
   syncShell();
@@ -1660,7 +1675,8 @@ function setView(next) {
   void Promise.all([view === 'quick' && !quick ? loadQuick() : null, pollPreview(true)]).then(async () => {
     await loadRuntimeInfo();
     // A draft started in the view just shown, or a save under way, is not replaced; a save repaints with these reads.
-    whenReleased(() => !dirty && !pending && render());
+    // A section opened or closed in the view just shown keeps that state.
+    whenReleased(() => !dirty && !pending && renderPreservingContext());
   });
   render();
 }
@@ -2552,6 +2568,7 @@ function renderViewSelection() {
     button.setAttribute('aria-pressed', String(button.dataset.view === view));
 }
 function renderView(created, personal, opened) {
+  rememberUiOpen($('#content'));
   const afterCreate = (body) =>
     created ? body : kit.notice('Create the configuration above first; this stage edits it.', 'neutral');
   const rail = $('#stage-rail');
@@ -2563,6 +2580,7 @@ function renderView(created, personal, opened) {
     $('#breadcrumb').textContent = 'Quick setup';
     $('#content').innerHTML =
       datalists() + `<section id="quick" class="panel quick" aria-label="Quick setup">${quickHtml()}</section>`;
+    applyUiOpen($('#content'));
     afterSystem();
     if (state.canEdit === false)
       for (const button of document.querySelectorAll('#content form[data-form] button[type=submit]'))

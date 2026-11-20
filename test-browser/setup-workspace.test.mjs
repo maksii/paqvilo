@@ -38,11 +38,19 @@ before(async () => {
   browser = await chromium.launch(browserOptions);
 });
 after(() => browser?.close());
-// Call after temporary(t): the context closes with the test's other resources.
+// Call after temporary(t): the context closes with the test's other resources, once the page's route handlers have
+// ended. A handler that a background poll started would otherwise read its response after the context disposed it.
 async function newPage(t, options) {
-  const context = await browser.newContext(options);
-  t.resources.push(() => context.close());
-  return context.newPage();
+  const context = await browser.newContext(options),
+    page = await context.newPage();
+  t.resources.push(async () => {
+    try {
+      await page.unrouteAll({ behavior: 'wait' });
+    } finally {
+      await context.close();
+    }
+  });
+  return page;
 }
 async function temporary(t) {
   const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-setup-browser-'));
@@ -74,6 +82,47 @@ test('setup fixture drains its browser after a sibling resource close fails and 
   await assert.rejects(hooks[0](), (error) => error === failure);
   assert.equal(page.isClosed(), true);
   assert.equal((await fs.stat(directory)).isDirectory(), true, 'failed draining retains fixture state');
+});
+// @test-kind tooling: the setup fixture owns the route handlers its page started; a handler is held until the fixture drains or the context closes, whichever comes first.
+test('setup fixture lets a held route handler end before it closes the context', async (t) => {
+  const hooks = [],
+    context = { after: (hook) => hooks.push(hook) },
+    held = Promise.withResolvers(),
+    release = Promise.withResolvers(),
+    events = [];
+  let cleanup;
+  const owner = ownedFixture(t);
+  owner.add(() => release.resolve());
+  owner.add(() => (cleanup ??= hooks[0]?.()));
+  await temporary(context);
+  const page = await newPage(context),
+    unrouteAll = page.unrouteAll.bind(page);
+  let behavior;
+  t.mock.method(page, 'unrouteAll', (...options) => {
+    behavior = options[0]?.behavior;
+    release.resolve();
+    return unrouteAll(...options);
+  });
+  page.context().on('close', () => {
+    events.push('context closed');
+    release.resolve();
+  });
+  await page.route('**/held', async (route) => {
+    held.resolve();
+    await release.promise;
+    await route.fulfill({ json: {} }).then(
+      () => events.push('handler ended'),
+      () => events.push('handler failed'),
+    );
+  });
+  await page.evaluate(() => {
+    fetch('http://127.0.0.1:9/held').catch(() => {});
+  });
+  await held.promise;
+  cleanup = hooks[0]();
+  await cleanup;
+  assert.equal(behavior, 'wait', 'the fixture waits for its route handlers');
+  assert.deepEqual(events, ['handler ended', 'context closed']);
 });
 async function localGit(directory, source) {
   await fs.cp(source, directory, { recursive: true });
@@ -503,6 +552,70 @@ test('runtime details read after switching to Quick setup leave a pressed Change
   await websites.release();
   await page.mouse.up();
   assert.equal(await page.locator('#quick-kind form').count(), 1, 'the pressed Change opened its step');
+});
+
+// @test-kind contract: the browser queues a section's toggle event; a Quick setup repaint in the task of the click replaces the map first, and the map keeps the user's choice (opened, it shows the live map).
+test('the Quick setup map opened or closed in the task of a repaint keeps that state', async (t) => {
+  const work = await temporary(t);
+  await prepareProject(work, { name: 'quick-map', sites: ['example'], noPack: true });
+  const server = await startSetupServer({ directory: work, processEnv: {} });
+  t.resources.push(() => server.close());
+  const page = await newPage(t);
+  // The found preview answers its live map read with an empty map; other relay reads are refused.
+  const polls = await holdPreviewPolls(t, page, {
+    relay: (route) =>
+      new URL(route.request().url()).pathname === '/_setup/api/runtime/dashboard'
+        ? route.fulfill({ json: { nodes: [] } })
+        : route.fulfill({ status: 503, json: { error: { message: 'No fixture runtime.' } } }),
+  });
+  await page.goto(server.url);
+  await opened(page);
+  const map = page.waitForResponse(isRelay('dashboard'));
+  await polls.handled(livePreview);
+  await (await map).finished();
+  await gate(page);
+  const results = [];
+  for (const from of [false, true]) {
+    results.push(
+      await page.evaluate(async (from) => {
+        const find = () => document.querySelector('#quick details[data-section-key="quick-map"]');
+        const toggled = (node) => new Promise((resolve) => node.addEventListener('toggle', resolve, { once: true }));
+        // The starting state, set the ordinary way: the toggle reaches the page before anything repaints.
+        if (find().open !== from) {
+          const node = find(),
+            done = toggled(node);
+          node.querySelector('summary').click();
+          await done;
+        }
+        const before = find(),
+          delivered = toggled(before);
+        before.querySelector('summary').click();
+        // A step's Change (or Cancel) repaints Quick setup in this task, before the browser delivers the click's toggle.
+        document.querySelector('#quick [data-quick-edit]').click();
+        const replaced = !before.isConnected;
+        await delivered;
+        const after = find();
+        return { replaced, open: after.open, live: !after.textContent.includes('Loading…') };
+      }, from),
+    );
+  }
+  assert.deepEqual(results, [
+    { replaced: true, open: true, live: true },
+    { replaced: true, open: false, live: false },
+  ]);
+  // A section inside the live map (its legend) keeps what the user chose across the same repaint.
+  const legend = await page.evaluate(async () => {
+    const map = document.querySelector('#quick details[data-section-key="quick-map"]'),
+      shown = new Promise((resolve) => map.addEventListener('toggle', resolve, { once: true }));
+    map.querySelector('summary').click();
+    await shown;
+    const find = () => document.querySelector('#quick details[data-ui-section="dashboard-legend"]'),
+      before = find();
+    before.querySelector('summary').click();
+    document.querySelector('#quick [data-quick-edit]').click();
+    return { replaced: !before.isConnected, open: find().open };
+  });
+  assert.deepEqual(legend, { replaced: true, open: true });
 });
 
 test('setup UI configures a demo and opens its Mirage setup flow', async (t) => {

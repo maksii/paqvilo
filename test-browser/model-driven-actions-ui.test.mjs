@@ -830,19 +830,9 @@ test('views switch with the segmented control, groups fold, commands are kit but
   await page.getByRole('button', { name: 'Favorite Read values', exact: true }).click();
   assert.equal(await group.getAttribute('open'), null, 'a redraw keeps the group folded');
   // A search holds every group open; that is not the user unfolding it, so clearing the search folds it again.
-  await group.evaluate((node) => {
-    const root = node.getRootNode();
-    root.__toggles = 0;
-    root.addEventListener('toggle', () => root.__toggles++, { capture: true });
-  });
   const find = page.getByPlaceholder('Find actions');
   await find.fill('e');
   assert.equal(await group.getAttribute('open'), '');
-  // The open state's toggle event is queued; wait until it has run, as the user's next keystroke would.
-  await group.evaluate((node) => {
-    const root = node.getRootNode();
-    return root.__toggles > 0 || new Promise((resolve) => root.addEventListener('toggle', resolve, { once: true }));
-  });
   await find.fill('');
   assert.equal(await group.getAttribute('open'), null, 'a search does not forget that the user folded the group');
   // Identity: its Run names the action and is the view's main (filled) button.
@@ -878,6 +868,34 @@ test('views switch with the segmented control, groups fold, commands are kit but
     '',
     'the chooser is back on New command',
   );
+  assert.deepEqual(errors, []);
+});
+
+// @test-kind contract: Paqvilo's own Actions panel keeps what the user folded or opened when a redraw comes before the browser's queued toggle event; the order is forced by redrawing in the task of the click.
+test('a group folded or opened in the task of a redraw keeps that state', async (t) => {
+  const { page, update, errors } = await fixture(t);
+  await page.getByRole('tab', { name: 'Actions', exact: true }).click();
+  const group = (name) => page.locator('details.actions-group', { has: page.locator('summary.gh', { hasText: name }) });
+  // The click changes the group at once and queues its toggle event; the availability update redraws before it.
+  const clickThenRedraw = (name) =>
+    group(name).evaluate((node, data) => {
+      node.querySelector('summary').click();
+      node.getRootNode().host.__paqModelActions.update(data);
+      return node.isConnected;
+    }, update);
+  assert.equal(await group(/^Open/).getAttribute('open'), '');
+  assert.equal(await clickThenRedraw(/^Open/), false, 'the update drew the group again');
+  assert.equal(await group(/^Open/).getAttribute('open'), null, 'the folded group was opened by the redraw');
+  assert.equal(await group(/^Not available here/).getAttribute('open'), null);
+  await clickThenRedraw(/^Not available here/);
+  assert.equal(
+    await group(/^Not available here/).getAttribute('open'),
+    '',
+    'the opened group was folded by the redraw',
+  );
+  // Opening the folded group again is remembered the same way.
+  await clickThenRedraw(/^Open/);
+  assert.equal(await group(/^Open/).getAttribute('open'), '');
   assert.deepEqual(errors, []);
 });
 

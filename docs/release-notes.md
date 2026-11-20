@@ -371,8 +371,9 @@ this session.` A trusted CLR plug-in descriptor with
   warning is reported once in diagnostics and preflight on both hosts.
 - An exported plug-in handler that answers a promise fails like its exception: a step handler with 400 `0x80040224`
   and the transaction rolled back, a plug-in type handler with `0x80040265` and its `SubErrorCode`.
-- The sign-in page remembers the persona that signed in as a recent choice. `mirage demo` restores the sample dataset
-  on every start and keeps source edits.
+- The sign-in page remembers the persona that signed in as a recent choice. A group of the persona picker folded or
+  opened just before the picker updates keeps that state. `mirage demo` restores the sample dataset on every start and
+  keeps source edits.
 - The standalone host's deployment-profile switch answers 501 with where to set `deploymentProfiles.default` and that
   a restart applies it.
 - Dataverse platform behaviour: each managed import adds a layer for every component, and managed tables, keys,
@@ -420,7 +421,8 @@ this session.` A trusted CLR plug-in descriptor with
   interception stops.
 - Lense setup page: a status refresh that arrives while a button is pressed, by pointer or by a held Space, waits
   until the press ends, so the click is not lost. Switching to All settings or choosing another project no longer
-  discards what is ticked or typed while the page is still reading the preview status.
+  discards what is ticked or typed while the page is still reading the preview status. A section opened or closed
+  just before the page repaints keeps that state.
 - Mirage lists: a click on a column header while the list is loading sorts, and header links are disabled only for
   the load a sort click started, as on the portal. List loads and Bootstrap 5 note loads raise no jQuery global ajax
   events.

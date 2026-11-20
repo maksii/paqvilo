@@ -106,6 +106,13 @@ export function modelDrivenActionsUi(data) {
     unavailableOpen = false;
   // Built-in groups the user folded, by group name.
   const foldedGroups = new Set();
+  // One reader per group of the last draw. The browser queues a group's toggle event, so what the user folded or
+  // opened is read from the groups themselves before they are replaced: a redraw that comes first keeps the choice.
+  let drawnGroups = [];
+  const rememberFolds = () => {
+    for (const read of drawnGroups) read();
+    drawnGroups = [];
+  };
   const requests = new Map(),
     // Page changes this panel made and has not undone, for a session whose runner reports none.
     applied = new Set(),
@@ -734,15 +741,11 @@ export function modelDrivenActionsUi(data) {
     // A group the user folded stays folded while this panel lives. A group a search or the selected
     // action holds open is not the user's choice, so that opening is not remembered.
     const groupOpen = (section, key, forced) => {
-      section.addEventListener(
-        'toggle',
-        () => {
-          if (forced && section.open) return;
-          if (section.open) foldedGroups.delete(key);
-          else foldedGroups.add(key);
-        },
-        { signal },
-      );
+      drawnGroups.push(() => {
+        if (forced && section.open) return;
+        if (section.open) foldedGroups.delete(key);
+        else foldedGroups.add(key);
+      });
     };
     // The filter chips: the pressed one, and Hidden with its count (shown only while something is hidden).
     function drawFilters(hiddenCount) {
@@ -787,14 +790,10 @@ export function modelDrivenActionsUi(data) {
       const section = make('details', null, 'actions-group actions-unavailable');
       const forced = Boolean(term) || unusable.some((action) => action.id === selectedAction);
       section.open = unavailableOpen || forced;
-      section.addEventListener(
-        'toggle',
-        () => {
-          if (forced && section.open) return;
-          unavailableOpen = section.open;
-        },
-        { signal },
-      );
+      drawnGroups.push(() => {
+        if (forced && section.open) return;
+        unavailableOpen = section.open;
+      });
       section.append(groupHeading('Not available here', unusable.length));
       if (unusable.some((action) => availability(action).needsRecord))
         section.append(
@@ -808,6 +807,7 @@ export function modelDrivenActionsUi(data) {
       // Run, star or eye), else to the search box when the row left the list.
       const focused = root.activeElement,
         focusKey = focused && list.contains(focused) ? focused.dataset.key : undefined;
+      rememberFolds();
       list.replaceChildren();
       const listed = (current.actions ?? []).filter((action) => !undoOnly.has(action.id)),
         hiddenCount = listed.filter((action) => hidden.has(action.label)).length;
@@ -1101,6 +1101,7 @@ export function modelDrivenActionsUi(data) {
         ),
       );
     }
+    rememberFolds();
     content.replaceChildren();
     if (view === 'Actions') renderActions();
     else if (view === 'Identity') renderIdentityView();

@@ -43,6 +43,8 @@ export function mountPersonaPicker(root, report, { filters = {}, onSelect, onFil
     frame;
   const groupNodes = [...root.querySelectorAll('[data-persona-group], [data-persona-subgroup]')];
   const openGroups = new Map(groupNodes.map((node) => [node, node.open]));
+  // Whether the last update opened the groups for a filter rather than as the user left them.
+  let filteredShown = false;
   const query = root.querySelector('[data-persona-query]');
   const defaultSection = root.querySelector('[data-persona-default]');
   if (defaultSection) root.insertBefore(defaultSection, root.querySelector('[data-persona-shortcuts="pinned"]'));
@@ -72,7 +74,14 @@ export function mountPersonaPicker(root, report, { filters = {}, onSelect, onFil
     }
     collectRows();
   };
+  // The browser queues a group's toggle event, so a group the user folded or opened since an unfiltered update is
+  // read from the group itself before the next update sets it again.
+  const rememberGroups = () => {
+    if (!filteredShown) for (const node of groupNodes) openGroups.set(node, node.open);
+    filteredShown = active();
+  };
   const update = (started = performance.now()) => {
+    rememberGroups();
     const matches = filterPersonaIndex(index, state),
       keys = new Set(matches.map((entry) => entry.key));
     const counts = new Map(),

@@ -140,17 +140,19 @@ for (const format of ['directory', 'archive']) {
   });
 }
 test('player reports source gaps and serializes actions, including a refused action snapshot', async (t) => {
-  let release, releaseSecond;
-  ownedFixture(t).add(() => {
+  let release, releaseSecond, page;
+  // The held action handlers end before the simulator and the browser close; a released one still reads its answer.
+  ownedFixture(t).add(async () => {
     release?.();
     releaseSecond?.();
+    await page?.unrouteAll({ behavior: 'wait' });
   });
   const sim = await canvasPlayerFixture(t, 'directory', { gaps: true });
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
   ownedFixture(t).add(() => browser.close());
   const context = await browser.newContext();
   await signInContext(context, sim, 'alex');
-  const page = await context.newPage();
+  page = await context.newPage();
   await page.goto(`${sim.url}/_apps/canvas/invented`);
   await page.getByTestId('canvas-start').click();
   await page.locator('[data-control="Next"]').waitFor();
