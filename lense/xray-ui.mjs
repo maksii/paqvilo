@@ -1785,9 +1785,10 @@ function xrayBrowserImpl(data) {
     // One header format in the hover summary, the card and the panel: "display name · logical name" for a component,
     // "file · tag" for an element only a file names (so Parent and Child change it), else the tag alone. Only the tag:
     // element IDs and classes can carry record data, and the title travels with selection events.
-    const ownerName = owner
-      ? [...new Set([owner.label ?? columnLabel(owner), owner.name].filter(Boolean))].join(' · ')
-      : '';
+    const ownerNames = owner ? [...new Set([owner.label ?? columnLabel(owner), owner.name].filter(Boolean))] : [];
+    // A component with one name (a web template the render identified) adds the tag, as a file match does: the title
+    // stays the same when the render's own proof arrives after the file match, and Parent and Child change it.
+    const ownerName = ownerNames.length === 1 ? ownerNames[0] + ' · ' + node.localName : ownerNames.join(' · ');
     const fileName = (exact ?? likelyRef)?.name;
     let title;
     if (ownerName || owner?.id) title = ownerName || owner.id;
@@ -2585,9 +2586,10 @@ function xrayBrowserImpl(data) {
     ]
       .map((item) => item?.getBoundingClientRect())
       .filter((box) => box?.width && box.height);
-    marks.style.clipPath = lenseBoxes.length
-      ? `path(evenodd, "M0 0H${innerWidth}V${innerHeight}H0Z${lenseBoxes.map((box) => `M${box.left} ${box.top}h${box.width}v${box.height}h${-box.width}Z`).join('')}")`
-      : '';
+    const holes = lenseBoxes
+      .map((box) => 'M' + box.left + ' ' + box.top + 'h' + box.width + 'v' + box.height + 'h' + -box.width + 'Z')
+      .join('');
+    marks.style.clipPath = holes ? `path(evenodd, "M0 0H${innerWidth}V${innerHeight}H0Z${holes}")` : '';
     updateMark(selectedMark, selected, 'var(--primary)');
     if (selected) placeCard(visibleRect(selected));
     let formContext = null;
@@ -2621,8 +2623,9 @@ function xrayBrowserImpl(data) {
         b = identity.b;
       // Measured at the left edge: a fixed box near the right edge would shrink and wrap.
       tip.style.left = '0px';
+      const tipSub = identity.sub ? '<div class="mono">' + esc(identity.sub) + '</div>' : '';
       tip.innerHTML = identity.matched
-        ? `<span class="note">${esc(identity.kind)}</span><b>${esc(identity.title)}</b>${identity.sub ? `<div class="mono">${esc(identity.sub)}</div>` : ''}${tooltipFormDetails(b)}`
+        ? `<span class="note">${esc(identity.kind)}</span><b>${esc(identity.title)}</b>${tipSub}${tooltipFormDetails(b)}`
         : `<b>${esc(identity.kind)}</b><span class="note">Click to see parent elements.</span>`;
       // Beside the element, left of it first: left-aligned text leaves the end of whatever precedes it empty, while
       // the next cell or value starts right after it. Below or above only when neither side has room.

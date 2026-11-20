@@ -428,7 +428,9 @@ export function inspectionEvidenceRuntime() {
       const verified = Boolean(
         row.ref.ref && (row.ref.sourceKey ?? row.ref.key) && row.ref.sourceRevision && row.ref.contentRevision,
       );
-      const { evidenceLabel: _label, ...ref } = row.ref;
+      // A component's file carries no evidence label of its own: its row already says how it was found.
+      const ref = { ...row.ref };
+      delete ref.evidenceLabel;
       return [{ ...ref, status: row.status === 'candidate' && status === 'exact' && verified ? 'exact' : row.status }];
     });
     return unique(refs, refKey);
@@ -570,7 +572,9 @@ export function inspectionEvidenceRuntime() {
     const evidenceOf = (fact) => ({
       id: fact.id,
       kind: fact.proof,
-      label: fact.label ?? proofLabels[fact.proof],
+      // A producer's reason is the fact's own meaning (pcf-form-factor-0): it stays the label tools read; the renderer
+      // words it for the page or leaves it out.
+      label: fact.label ?? fact.reason ?? proofLabels[fact.proof],
     });
     const { ownerRows, exactOwners, ownerConflicts, sourceFacts } = classifyInspectionFacts(facts);
     const ownerConflict = ownerEvidenceConflicts(exactOwners, ownerConflicts);
@@ -591,7 +595,12 @@ export function inspectionEvidenceRuntime() {
     // selected element's own component. A component Contained in also names stays: it is the page's context too.
     const ownerKey = componentKey(result.owner.component);
     result.facts = unique(
-      result.facts.filter((row) => !row.component || componentKey(row.component) !== ownerKey),
+      result.facts.filter(
+        (row) =>
+          !row.component ||
+          componentKey(row.component) !== ownerKey ||
+          !['contains', 'identity'].includes(row.relationship),
+      ),
       (row) => (row.component ? componentKey(row.component) + '\0' + row.relationship : '\0' + row.label),
     );
     sortInspectionEnclosing(result);

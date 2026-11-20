@@ -321,6 +321,12 @@ function panelBrowserImpl(data) {
       if (/^(?:woff2?|ttf|eot|otf)$/.test(ext)) return 'font';
       return 'web-file';
     };
+    /** A sentence without its closing full stop, to continue it ("No grant: read, create"). */
+    const withoutFullStop = (text) => {
+      const trimmed = String(text).trimEnd();
+      return trimmed.endsWith('.') ? trimmed.slice(0, -1) : trimmed;
+    };
+    const escapeRegExp = (text) => text.replaceAll(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
     // Words a row name uses for a kind: "JavaScript (en-US)" already says Script, "Project · table" says Table.
     const SAID = { Script: /script|\bjs\b/i, Style: /\bcss\b|style/i };
     /**
@@ -329,17 +335,17 @@ function panelBrowserImpl(data) {
      */
     const ico = (kind, tone = '', name = '') => {
       const [label, title] = kindLabel(kind) ?? [kind, kind];
-      const said =
-        Boolean(name) &&
-        (SAID[label] ?? new RegExp(`\\b${label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i')).test(name);
+      const said = Boolean(name) && (SAID[label] ?? new RegExp(String.raw`\b${escapeRegExp(label)}\b`, 'i')).test(name);
       const tip = title && (said || title !== label) ? ` title="${esc(title)}"` : '';
       return `<span class="ico${tone ? ' ' + tone : ''}"${tip}>${said ? '' : esc(label)}</span>`;
     };
     /** A kit icon in the kind column, for rows whose name says what they are (the Mirage tab). */
     const icoIcon = (name, title) => `<span class="ico icon" title="${esc(title)}">${icon(name)}</span>`;
     /** A path line: an ID segment reads "{…}", the full path is the tooltip (and what Copy copies). */
-    const pathLine = (value, marked = esc(displayPath(value))) =>
-      `<div class="sub path"${displayPath(value) === String(value) ? '' : ` title="${esc(value)}"`}><bdi>${marked}</bdi></div>`;
+    const pathLine = (value, marked = esc(displayPath(value))) => {
+      const tip = displayPath(value) === String(value) ? '' : ' title="' + esc(value) + '"';
+      return `<div class="sub path"${tip}><bdi>${marked}</bdi></div>`;
+    };
     /** An attribute only when it says something: no empty title, no title that repeats the visible text. */
     const attr = (name, value, visible = '') =>
       value && String(value) !== String(visible) ? ` ${name}="${esc(value)}"` : '';
@@ -637,8 +643,11 @@ function panelBrowserImpl(data) {
         // Every corner, then along each edge from it: a corner the page fills (a sign-in link, a footer card) gives way
         // to the nearest free place on the same edge. Fewest covered controls, then least covered area, then nearest
         // to a corner.
-        const better = (a, b) =>
-          a.count !== b.count ? a.count < b.count : a.area !== b.area ? a.area < b.area : a.offset < b.offset;
+        const better = (a, b) => {
+          if (a.count !== b.count) return a.count < b.count;
+          if (a.area !== b.area) return a.area < b.area;
+          return a.offset < b.offset;
+        };
         const at = (candidate) => ({
           ...score(
             candidate.h === 'left' ? candidate.dx : vw - candidate.dx - rect.width,
@@ -839,9 +848,10 @@ function panelBrowserImpl(data) {
             `<div class="row${s.empty ? ' off' : ''}" data-rel="${esc(s.rel)}" data-label="${esc(s.label)}">${ico(kindLabel(s.kind) ? s.kind : 'page-metadata', '', s.label)}<button class="main" data-act="open" title="Open ${esc(s.label)} in the editor"><div class="name"><span>${esc(s.label)}</span>${s.empty ? '<span class="what">empty</span>' : ''}</div>${pathLine(s.rel)}</button><div class="acts">${fileActs()}</div></div>`,
         );
         // A model-driven app has one address for every page: its table or form names the page, not /main.aspx.
+        const pageDir = d.page.dir ? ' &middot; ' + esc(d.page.dir) : '';
         out += d.modelDriven
           ? `<div class="card"><div class="path">${esc(d.page.title ?? d.page.name ?? '')}</div></div>`
-          : `<div class="card"><div class="path">${esc(d.page.path)} <span class="dim">&nbsp;${esc(d.page.name ?? '')}${d.page.dir ? ' &middot; ' + esc(d.page.dir) : ''}</span></div></div>`;
+          : `<div class="card"><div class="path">${esc(d.page.path)} <span class="dim">&nbsp;${esc(d.page.name ?? '')}${pageDir}</span></div></div>`;
         out += group('page-files', 'Page files', files);
       } else {
         out += `<div class="card"><div class="path">${esc(location.pathname)} <span class="dim">&nbsp;no web page with this address in the local sources</span></div></div>`;
@@ -1113,11 +1123,15 @@ function panelBrowserImpl(data) {
         // Only names: an app or form without one in your sources is left out (its ID is in the tooltip).
         const facts = [
           appName && `App: ${appName}`,
-          formName && `Form: ${formName}${formType ? ` (${formType})` : ''}`,
+          formName && 'Form: ' + formName + (formType ? ' (' + formType + ')' : ''),
         ].filter(Boolean);
         const ids = [c.appId && 'App ID ' + c.appId, c.formId && 'Form ID ' + c.formId].filter(Boolean).join(' · ');
         const tableLabel = c.entityLabel ?? table?.label ?? table?.displayName;
-        out += `<div class="card"><div class="path">${esc(tableLabel ?? c.entity ?? 'App context')}${tableLabel && c.entity ? ` <span class="dim">${esc(c.entity)}</span>` : ''}</div>${facts.length ? `<div class="sub" title="${esc(ids)}">${esc(facts.join(' · '))}</div>` : ''}</div>`;
+        const logical = tableLabel && c.entity ? ' <span class="dim">' + esc(c.entity) + '</span>' : '';
+        const factLine = facts.length
+          ? '<div class="sub" title="' + esc(ids) + '">' + esc(facts.join(' · ')) + '</div>'
+          : '';
+        out += `<div class="card"><div class="path">${esc(tableLabel ?? c.entity ?? 'App context')}${logical}</div>${factLine}</div>`;
       }
       const sections = [
         ['all', 'All', 'Show every group'],
@@ -1150,8 +1164,16 @@ function panelBrowserImpl(data) {
         if (access.allowed === true) verdict = '<span class="c ok">allowed</span>';
         else if (access.allowed === false) verdict = '<span class="c bad">denied</span>';
         const pageName = page.pageName ?? page.name ?? location.pathname;
+        // A live portal cannot say whether the persona may read the page: it says what it does not know instead.
+        const whyLine = why ? '<span class="dim">' + esc(why) + '</span>' : '';
+        const accessLine = live
+          ? '<div class="sub">' +
+            esc(report.evidence?.identity ?? 'Live web-role membership and record access are not known here.') +
+            '</div>'
+          : `<div class="srcs"><span class="lbl2">Current persona</span>${verdict}${whyLine}</div>`;
+        const hiddenState = page.publishingState?.visible === false ? ' (not visible)' : '';
         const publishing = page.publishingState?.name
-          ? `${page.publishingState.name}${page.publishingState.visible === false ? ' (not visible)' : ''}`
+          ? page.publishingState.name + hiddenState
           : 'Publishing state not set';
         const facts = [
           `Template: ${page.pageTemplateName ?? 'none'}`,
@@ -1160,7 +1182,7 @@ function panelBrowserImpl(data) {
         ].filter(Boolean);
         out += `<div class="card"><div class="path">${esc(pageName)} <span class="dim">${esc(page.url ?? '')}</span></div>
           <div class="sub">${esc(facts.join(' · '))}</div>
-          ${live ? `<div class="sub">${esc(report.evidence?.identity ?? 'Live web-role membership and record access are not known here.')}</div>` : `<div class="srcs"><span class="lbl2">Current persona</span>${verdict}${why ? `<span class="dim">${esc(why)}</span>` : ''}</div>`}</div>`;
+          ${accessLine}</div>`;
       } else if (!report.modelDriven)
         out += `<div class="card"><div class="path">${esc(location.pathname)} <span class="dim">&nbsp;no web page in your sources has this address</span></div></div>`;
       const keep = (...texts) => matches(...texts.map((text) => String(text ?? '')));
@@ -1278,7 +1300,7 @@ function panelBrowserImpl(data) {
             if (operations[op]?.reason)
               byReason.set(operations[op].reason, [...(byReason.get(operations[op].reason) ?? []), op]);
           const reasons = [...byReason]
-            .map(([reason, ops]) => `${reason.replace(/[.\s]+$/, '')}: ${ops.join(', ')}`)
+            .map(([reason, ops]) => `${withoutFullStop(reason)}: ${ops.join(', ')}`)
             .join(' · ');
           const layers =
             (table.sourceRefs ?? []).length > 1
@@ -1543,6 +1565,12 @@ function panelBrowserImpl(data) {
       );
       const controls = allControls.filter((item) => item.evidence === 'rendered-and-source');
       const unmatched = allControls.length - controls.length;
+      const unmatchedNote = (count) => {
+        if (!count) return '';
+        return count > 1
+          ? `${count} more controls on this page match no source`
+          : '1 more control on this page matches no source';
+      };
       groups.push(
         rgroup(
           'runtime-rendered',
@@ -1560,9 +1588,7 @@ function panelBrowserImpl(data) {
             }),
           {
             collapsed: controls.length > 25,
-            note: unmatched
-              ? `${unmatched} more control${unmatched > 1 ? 's' : ''} on this page match${unmatched > 1 ? '' : 'es'} no source`
-              : '',
+            note: unmatchedNote(unmatched),
           },
         ),
       );
@@ -1795,7 +1821,8 @@ function panelBrowserImpl(data) {
           (item) => {
             const owner = item.owner ? ` · ${esc(ownerName(item.owner))}` : '';
             const kindName = (kindLabel(USAGE_KIND[item.kind] ?? item.kind) ?? [])[1] ?? '';
-            return `<div class="row wrapt">${ico('unresolved', 'warn')}<div class="main"><div class="name"><span>${hl(item.expression ?? item.name ?? kindName ?? 'Dependency')}</span>${kindName ? `<span class="what">${esc(kindName)}</span>` : ''}</div><div class="sub">${hl(item.reason ?? item.message ?? '')}${owner}</div></div></div>`;
+            const kindTag = kindName ? '<span class="what">' + esc(kindName) + '</span>' : '';
+            return `<div class="row wrapt">${ico('unresolved', 'warn')}<div class="main"><div class="name"><span>${hl(item.expression ?? item.name ?? kindName ?? 'Dependency')}</span>${kindTag}</div><div class="sub">${hl(item.reason ?? item.message ?? '')}${owner}</div></div></div>`;
           },
           { collapsed: unresolved.length > 20 },
         ),
@@ -1964,10 +1991,15 @@ function panelBrowserImpl(data) {
         // The persona this browser is signed in as is marked, and signing in as it again is not offered.
         const current = Boolean(session?.signedIn && p.contactId && p.contactId === session.contactId);
         const signedIn = current ? '<span class="c ok">signed in</span>' : '';
-        const useButton = current
-          ? `<button class="ib" data-act="${use[0]}" data-contact="${esc(p.contactId)}" data-key="${esc(entry.key)}" title="This browser is signed in as ${esc(name)}" aria-label="${esc(`Signed in as ${name}`)}" disabled>${icon('signin')}</button>`
-          : `<button class="ib" data-act="${use[0]}" data-contact="${esc(p.contactId)}" data-key="${esc(entry.key)}" title="${esc(`${use[1]}: ${use[2]}`)}" aria-label="${esc(use[1])}">${icon('signin')}</button>`;
-        return `<div class="row wrapt" data-panel-persona-row="${esc(entry.key)}"${current ? ' aria-current="true"' : ''}><div class="main"><div class="name"><span>${esc(name)}</span>${contact}${p.default ? '<span class="c muted" title="The Mirage default persona">default</span>' : ''}${signedIn}</div>${description}<div class="sub">${esc(facts)}</div></div><div class="acts"><button class="ib${pinned ? ' on' : ''}" data-act="pinpersona" data-key="${esc(entry.key)}" aria-pressed="${pinned}" title="${pinned ? `Remove ${esc(name)} from favorites` : `Add ${esc(name)} to favorites: favorites stay on top in this browser`}">${icon(pinned ? 'starred' : 'star')}</button>${useButton}</div></div>`;
+        const [useTitle, useLabel] = current
+          ? ['This browser is signed in as ' + name, 'Signed in as ' + name]
+          : [use[1] + ': ' + use[2], use[1]];
+        const useButton = `<button class="ib" data-act="${use[0]}" data-contact="${esc(p.contactId)}" data-key="${esc(entry.key)}" title="${esc(useTitle)}" aria-label="${esc(useLabel)}"${current ? ' disabled' : ''}>${icon('signin')}</button>`;
+        const favoriteTitle = pinned
+          ? 'Remove ' + name + ' from favorites'
+          : 'Add ' + name + ' to favorites: favorites stay on top in this browser';
+        const defaultChip = p.default ? '<span class="c muted" title="The Mirage default persona">default</span>' : '';
+        return `<div class="row wrapt" data-panel-persona-row="${esc(entry.key)}"${current ? ' aria-current="true"' : ''}><div class="main"><div class="name"><span>${esc(name)}</span>${contact}${defaultChip}${signedIn}</div>${description}<div class="sub">${esc(facts)}</div></div><div class="acts"><button class="ib${pinned ? ' on' : ''}" data-act="pinpersona" data-key="${esc(entry.key)}" aria-pressed="${pinned}" title="${esc(favoriteTitle)}">${icon(pinned ? 'starred' : 'star')}</button>${useButton}</div></div>`;
       };
       // A group header as on every tab. Unless a search or filter narrows the list, a group starts folded when it has no
       // row on this page, or (on an unpaged list) more than 25 rows.
@@ -2002,17 +2034,23 @@ function panelBrowserImpl(data) {
         ),
         { id: '__other', label: 'Other contacts' },
       ];
+      // The entries of one group and subgroup not listed above, and those of them on this page.
+      const sectionEntries = (groupId, subId) => {
+        const all = [],
+          shown = [];
+        for (const entry of matching) {
+          if ((entry.group || '__other') !== groupId || (entry.persona.subgroup || '') !== subId || listed.has(entry))
+            continue;
+          all.push(entry);
+          if (pageRows.has(entry)) shown.push(entry);
+        }
+        return { all, shown };
+      };
       // One header per group and subgroup ("Group / Subgroup"): a single level, like every other list in the panel.
       const groupHtml = (group) =>
         [{ id: '', label: '' }, ...(group.subgroups ?? [])]
           .map((sub) => {
-            const all = matching.filter(
-              (entry) =>
-                (entry.group || '__other') === group.id &&
-                (entry.persona.subgroup || '') === sub.id &&
-                !listed.has(entry),
-            );
-            const shown = all.filter((entry) => pageRows.has(entry));
+            const { all, shown } = sectionEntries(group.id, sub.id);
             const more =
               paged && shown.length < all.length
                 ? `<button class="morebtn" data-act="persona-group" data-group="${esc(group.id)}">Show only the ${all.length} ${esc(group.label)}</button>`
@@ -2027,9 +2065,14 @@ function panelBrowserImpl(data) {
           })
           .join('');
       const range = `${matching.length ? offset + 1 : 0}–${Math.min(offset + 50, matching.length)} of ${matching.length} personas`;
-      const paging = paged
-        ? `<div class="tw">${offset ? '<button class="btn sec" data-act="persona-page" data-direction="-1">Previous</button>' : ''}${offset + 50 < matching.length ? '<button class="btn sec" data-act="persona-page" data-direction="1">Show more</button>' : ''}</div>`
+      const previous = offset
+        ? '<button class="btn sec" data-act="persona-page" data-direction="-1">Previous</button>'
         : '';
+      const following =
+        offset + 50 < matching.length
+          ? '<button class="btn sec" data-act="persona-page" data-direction="1">Show more</button>'
+          : '';
+      const paging = paged ? `<div class="tw">${previous}${following}</div>` : '';
       // The count is announced always and shown only when the list is paged.
       return `<p class="${paged ? 'dim' : 'sr'}" role="status" data-panel-persona-count>${range}</p>${shortcuts}${groups.map(groupHtml).join('')}${matching.length ? '' : '<p class="dim">No personas match. Clear a filter or use fewer terms.</p>'}${paging}`;
     };
@@ -2092,7 +2135,8 @@ function panelBrowserImpl(data) {
         const anyOn = Boolean(query.any?.includes(name));
         const any = `<button class="f${anyOn ? ' on' : ''}" data-act="persona-any" data-facet="${name}" aria-pressed="${anyOn}" title="Only personas with any ${label.toLowerCase()}">any</button>`;
         const hidden = options.length - shown.length;
-        return `<div class="pp-facet" role="group" aria-label="${label}"><span class="lbl2">${label}</span><div class="pp-chips">${any}${shown.map((item) => chip(name, item)).join('')}${hidden ? `<span class="lbl2">+${hidden}: search finds them</span>` : ''}</div></div>`;
+        const more = hidden ? '<span class="lbl2">+' + hidden + ': search finds them</span>' : '';
+        return `<div class="pp-facet" role="group" aria-label="${label}"><span class="lbl2">${label}</span><div class="pp-chips">${any}${shown.map((item) => chip(name, item)).join('')}${more}</div></div>`;
       };
       const facetArea = open
         ? `<div class="pp-facets" data-panel-persona-facets>${facets
@@ -2138,6 +2182,18 @@ function panelBrowserImpl(data) {
         }
     };
 
+    /** How the portal signs in through an identity provider: its name, type, callback and local port. */
+    const providerSignIn = (provider, idp) => {
+      const type = provider.type ? ' (' + provider.type + ')' : '';
+      const port = idp.port ? ' · local identity provider on port ' + idp.port : '';
+      return `Signs in through ${provider.caption ?? provider.name ?? provider.id}${type} · callback ${provider.callbackPath ?? 'not reported'}${port}`;
+    };
+    /** How the portal signs in without one: the local page, and why ("; external sign-in is off (...)."). */
+    const localSignIn = (reason) => {
+      if (!reason) return 'Signs in on the local sign-in page.';
+      const sentence = reason.charAt(0).toLowerCase() + withoutFullStop(reason.slice(1)) + '.';
+      return `Signs in on the local sign-in page; ${sentence}`;
+    };
     /* NOSONAR: single-pass routine, splitting it would change shared state */ const tweaksHtml = () => {
       const runtime = S.d.mirage;
       if (S.d.mirageMode && !runtime) return loadingState('Connecting to Mirage…', '');
@@ -2177,9 +2233,7 @@ function panelBrowserImpl(data) {
         // the local persona sign-in page when the site has no external provider.
         const idp = session.identityProvider;
         const provider = idp?.available ? idp.provider : null;
-        const via = provider
-          ? `Signs in through ${provider.caption ?? provider.name ?? provider.id}${provider.type ? ` (${provider.type})` : ''} · callback ${provider.callbackPath ?? 'not reported'}${idp.port ? ` · local identity provider on port ${idp.port}` : ''}`
-          : `Signs in on the local sign-in page${idp?.reason ? `; ${idp.reason.charAt(0).toLowerCase()}${idp.reason.slice(1).replace(/[.\s]*$/, '.')}` : '.'}`;
+        const via = provider ? providerSignIn(provider, idp) : localSignIn(idp?.reason);
         const who = session.signedIn
           ? `Signed in as <b>${esc(session.name ?? session.contactId)}</b>`
           : '<b>Not signed in</b>';
@@ -2191,7 +2245,8 @@ function panelBrowserImpl(data) {
           ? `<button class="btn sec" data-act="signout" title="Sign out through the portal's own sign-out; other browsers keep their sessions">Sign out</button>`
           : '';
         const account = session.accountId ? ` · account ${session.accountId}` : '';
-        out += `<div class="card"><div class="path">Browser session</div><div class="tw who" data-idp="${provider ? 'external' : 'local'}" title="${esc(via + account)}"><span class="grow">${who} · ${esc((session.roles ?? []).join(', ') || 'no web roles')}${override}</span>${signout}</div>${session.error ? `<div class="dim">${esc(session.error)}</div>` : ''}${t.personas.length ? personaPickerHtml() : noPersonas}</div>`;
+        const sessionError = session.error ? '<div class="dim">' + esc(session.error) + '</div>' : '';
+        out += `<div class="card"><div class="path">Browser session</div><div class="tw who" data-idp="${provider ? 'external' : 'local'}" title="${esc(via + account)}"><span class="grow">${who} · ${esc((session.roles ?? []).join(', ') || 'no web roles')}${override}</span>${signout}</div>${sessionError}${t.personas.length ? personaPickerHtml() : noPersonas}</div>`;
       } else {
         // No sign-in sessions: the runtime persona serves every request without one.
         const current = t.identity?.contactId
@@ -2252,6 +2307,32 @@ function panelBrowserImpl(data) {
       address: ['link', 'Page address'],
       table: ['table', 'Table records'],
     };
+    const mirageRow = (name, { kind, sub = '', path = '', what = '', chips = '', hash, act, title, acts = '' }) => {
+      const subLine = path
+        ? `<div class="sub path"><bdi>${esc(path)}</bdi></div>`
+        : sub && `<div class="sub">${esc(sub)}</div>`;
+      const whatTag = what ? '<span class="what">' + esc(what) + '</span>' : '';
+      const body = `<div class="name"><span>${esc(name)}</span>${whatTag}${chips}</div>${subLine}`;
+      const target = hash === undefined ? `data-act="${act}"` : `data-act="sim" data-hash="${esc(hash)}"`;
+      const main =
+        act || hash !== undefined
+          ? `<button class="main" ${target} title="${esc(title)}">${body}</button>`
+          : `<div class="main">${body}</div>`;
+      // Every row here opens a Mirage admin page: the Mirage icon, as in the header and on Tweaks.
+      const open =
+        act || hash !== undefined ? `<button class="ib" ${target} title="${esc(title)}">${icon('sim')}</button>` : '';
+      return `<div class="row wrapt">${icoIcon(...(MIRAGE_ICON[kind] ?? ['sim', 'Mirage']))}${main}<div class="acts">${acts}${open}</div></div>`;
+    };
+    // Loopback confinement of local pages (an opt-in Content-Security-Policy) and its exceptions; null when unknown.
+    const contentPolicyText = (s) => {
+      if (typeof s.confinePortalPages !== 'boolean') return null;
+      if (!s.confinePortalPages) return 'Not confined: pages carry only the headers their site settings define';
+      const plural = s.externalFrameOrigins === 1 ? '' : 's';
+      const frames = s.externalFrameOrigins
+        ? `${s.externalFrameOrigins} online embed origin${plural} allowed`
+        : 'no online embedded content';
+      return `Confined to loopback · external assets ${s.externalAssets ? 'allowed' : 'blocked'} · ${frames}`;
+    };
     const mirageHtml = () => {
       const runtime = S.d.mirage;
       if (!runtime) return loadingState('Connecting to Mirage…', '');
@@ -2270,80 +2351,57 @@ function panelBrowserImpl(data) {
         ...t?.status,
         ...Object.fromEntries(Object.entries(runtime.status ?? {}).filter(([, value]) => value != null)),
       };
-      const row = (name, { kind, sub = '', path = '', what = '', chips = '', hash, act, title, acts = '' }) => {
-        const subLine = path
-          ? `<div class="sub path"><bdi>${esc(path)}</bdi></div>`
-          : sub && `<div class="sub">${esc(sub)}</div>`;
-        const body = `<div class="name"><span>${esc(name)}</span>${what ? `<span class="what">${esc(what)}</span>` : ''}${chips}</div>${subLine}`;
-        const target = hash === undefined ? `data-act="${act}"` : `data-act="sim" data-hash="${esc(hash)}"`;
-        const main =
-          act || hash !== undefined
-            ? `<button class="main" ${target} title="${esc(title)}">${body}</button>`
-            : `<div class="main">${body}</div>`;
-        // Every row here opens a Mirage admin page: the Mirage icon, as in the header and on Tweaks.
-        const open =
-          act || hash !== undefined ? `<button class="ib" ${target} title="${esc(title)}">${icon('sim')}</button>` : '';
-        return `<div class="row wrapt">${icoIcon(...(MIRAGE_ICON[kind] ?? ['sim', 'Mirage']))}${main}<div class="acts">${acts}${open}</div></div>`;
-      };
       const diagnostics = Number(s.diagnostics?.total ?? s.diagnostics ?? 0);
-      const reload = `${s.reloading ? '<span class="c warn">reloading sources</span>' : ''}${s.pendingReload ? `<span class="c warn">${pendingReloadText(s)}</span>` : ''}`;
-      let policy = null;
-      if (typeof s.confinePortalPages === 'boolean') {
-        // Loopback confinement of local pages (an opt-in Content-Security-Policy) and its exceptions.
-        const plural = s.externalFrameOrigins === 1 ? '' : 's';
-        const frames = s.externalFrameOrigins
-          ? `${s.externalFrameOrigins} online embed origin${plural} allowed`
-          : 'no online embedded content';
-        policy = s.confinePortalPages
-          ? `Confined to loopback · external assets ${s.externalAssets ? 'allowed' : 'blocked'} · ${frames}`
-          : 'Not confined: pages carry only the headers their site settings define';
-      }
+      const reload =
+        (s.reloading ? '<span class="c warn">reloading sources</span>' : '') +
+        (s.pendingReload ? '<span class="c warn">' + pendingReloadText(s) + '</span>' : '');
+      const policy = contentPolicyText(s);
       const id = pageRecordId();
       const rows = [
-        row(s.site ?? S.d.site, {
+        mirageRow(s.site ?? S.d.site, {
           kind: 'runtime',
           what: s.format ?? 'portal source',
           sub: s.revision == null ? '' : `revision ${s.revision}`,
           chips: reload,
         }),
-        row('Diagnostics', {
+        mirageRow('Diagnostics', {
           kind: 'diagnostics',
           chips: `<span class="c ${diagnostics ? 'warn' : 'muted'}">${diagnostics}</span>`,
           hash: 'activity?tab=findings',
           title: 'Open the findings of this runtime in Mirage admin',
         }),
-        row('Requests for this page', {
+        mirageRow('Requests for this page', {
           kind: 'requests',
           sub: location.pathname,
           hash: `audit?path=${encodeURIComponent(location.pathname)}`,
           title: 'Open the requests this page made in Mirage admin',
         }),
         policy &&
-          `<div data-policy="${s.confinePortalPages ? 'confined' : 'open'}">${row('Content policy', {
+          `<div data-policy="${s.confinePortalPages ? 'confined' : 'open'}">${mirageRow('Content policy', {
             kind: 'policy',
             sub: policy,
             hash: 'connection',
             title: 'Change the content policy of local pages in Mirage admin',
           })}</div>`,
-        row('Personas & permissions', {
+        mirageRow('Personas & permissions', {
           kind: 'identity',
           hash: 'access',
           title: 'Edit personas, web roles and table permissions in Mirage admin',
         }),
-        row('Settings & snippets', {
+        mirageRow('Settings & snippets', {
           kind: 'setting',
           hash: 'portal',
           title: 'Edit site settings and content snippets in Mirage admin',
         }),
-        row('Administration', { kind: 'administration', act: 'admin', title: 'Open Mirage admin' }),
-        row('Local URL', {
+        mirageRow('Administration', { kind: 'administration', act: 'admin', title: 'Open Mirage admin' }),
+        mirageRow('Local URL', {
           kind: 'address',
           path: location.href,
           acts: `<button class="ib" data-act="copypage" title="Copy the local address of this page">${icon('copy')}</button>`,
         }),
       ];
       const records = (t?.tables ?? []).map((table) =>
-        row(table, {
+        mirageRow(table, {
           kind: 'table',
           sub: id ? 'at this page’s record' : '',
           hash: recordsHash(table),
@@ -2475,9 +2533,10 @@ function panelBrowserImpl(data) {
         </div>`;
       });
       // The count says something only when the search narrows the list or the list is cut.
+      const cut = found.length > 150 ? '<span class="lbl2">first 150 shown</span>' : '';
       const head =
-        found.length < S.catalog.length || found.length > 150
-          ? `<div class="filters"><span class="lbl2">Matches</span><span class="n dimn">${found.length}</span>${found.length > 150 ? '<span class="lbl2">first 150 shown</span>' : ''}</div>`
+        found.length < S.catalog.length || cut
+          ? `<div class="filters"><span class="lbl2">Matches</span><span class="n dimn">${found.length}</span>${cut}</div>`
           : '';
       return (
         head +
@@ -2528,6 +2587,12 @@ function panelBrowserImpl(data) {
      * row must not replace the element under the pointer (the browser would drop its tooltip and :hover) or the
      * focused one. A form control whose markup changed is replaced, so it shows the drawn state, as before.
      */
+    /** Gives `a` the attributes of `b`, touching only those that differ. */
+    const morphAttributes = (a, b) => {
+      // getAttributeNames is a copy: removing while iterating it skips nothing.
+      for (const name of a.getAttributeNames()) if (!b.hasAttribute(name)) a.removeAttribute(name);
+      for (const { name, value } of b.attributes) if (a.getAttribute(name) !== value) a.setAttribute(name, value);
+    };
     const morph = (from, to) => {
       const next = [...to.childNodes];
       next.forEach((b, i) => {
@@ -2538,8 +2603,7 @@ function panelBrowserImpl(data) {
         else if (a.nodeType !== 1 || a.nodeName !== b.nodeName || /^(?:INPUT|TEXTAREA|SELECT)$/.test(a.nodeName))
           a.replaceWith(b);
         else {
-          for (const { name } of [...a.attributes]) if (!b.hasAttribute(name)) a.removeAttribute(name);
-          for (const { name, value } of b.attributes) if (a.getAttribute(name) !== value) a.setAttribute(name, value);
+          morphAttributes(a, b);
           morph(a, b);
         }
       });
@@ -2571,6 +2635,20 @@ function panelBrowserImpl(data) {
         (replacement ?? el.tabs.querySelector('[aria-selected=true]'))?.focus({ preventScroll: true });
       }
       return true;
+    };
+    // Refresh, select an element, and expand or collapse every group: icon buttons with their action as name.
+    const inspectToolButtons = () => {
+      const pickTitle = S.pickingElement
+        ? 'Stop selecting (Esc)'
+        : 'Select an element on the page to see its form, column or template and its source file';
+      const pick = `<button class="ib${S.pickingElement ? ' on' : ''}" data-act="inspect-pick" aria-pressed="${S.pickingElement}" aria-label="Select an element" title="${pickTitle}">${icon('locate')}</button>`;
+      const [foldValue, foldLabel, foldTitle, foldIcon] = S.inspectAnyClosed
+        ? ['open', 'Expand all', 'Expand all groups', 'expand']
+        : ['closed', 'Collapse all', 'Collapse all groups', 'collapse'];
+      const fold = S.inspectGroups
+        ? `<button class="ib" data-act="inspect-fold" data-v="${foldValue}" aria-label="${foldLabel}" title="${foldTitle}">${icon(foldIcon)}</button>`
+        : '';
+      return `<button class="ib" data-act="inspect-refresh" aria-label="Refresh inspection" title="Refresh inspection: re-read your local sources and what the page shows now">${icon('reload')}</button>${pick}${fold}`;
     };
     /* NOSONAR: single-pass routine, splitting it would change shared state */ const render = () => {
       if (lifetime.signal.aborted) return;
@@ -2852,7 +2930,7 @@ function panelBrowserImpl(data) {
         toolButtons = `<button class="ib" data-act="clear" data-v="activity" title="Clear the list"${d.activity.length ? '' : ' disabled'}>${icon('clear')}</button>`;
       else if (ui.tab === 'runtime' && S.inspect?.report && !S.diff)
         // Inspect's commands are icon buttons beside its filter; the fold button follows the groups below.
-        toolButtons = `<button class="ib" data-act="inspect-refresh" aria-label="Refresh inspection" title="Refresh inspection: re-read your local sources and what the page shows now">${icon('reload')}</button><button class="ib${S.pickingElement ? ' on' : ''}" data-act="inspect-pick" aria-pressed="${S.pickingElement}" aria-label="Select an element" title="${S.pickingElement ? 'Stop selecting (Esc)' : 'Select an element on the page to see its form, column or template and its source file'}">${icon('locate')}</button>${S.inspectGroups ? `<button class="ib" data-act="inspect-fold" data-v="${S.inspectAnyClosed ? 'open' : 'closed'}" aria-label="${S.inspectAnyClosed ? 'Expand all' : 'Collapse all'}" title="${S.inspectAnyClosed ? 'Expand all groups' : 'Collapse all groups'}">${icon(S.inspectAnyClosed ? 'expand' : 'collapse')}</button>` : ''}`;
+        toolButtons = inspectToolButtons();
       set('toolbtns', el.toolbtns, toolButtons);
       set('subtools', el.subtools, S.diff ? '' : S.subtools);
       const top = el.body.scrollTop;

@@ -379,6 +379,7 @@ export function modelDrivenActionsUi(data) {
         );
     results.append(list);
   }
+  const OUTCOMES = { ok: '', cancelled: 'Cancelled.', unsupported: 'Not available here.' };
   function receive(id, value) {
     const request = requests.get(id);
     if (disposed || !request || location.origin !== current.origin) return;
@@ -388,14 +389,8 @@ export function modelDrivenActionsUi(data) {
       identity = { active: Boolean(value.identity.active), label: value.identity.label ?? selectedUser?.label };
       renderIdentity();
     }
-    // A successful undo closes the result it reversed and turns Reset back into Run; its message stays as the status.
     if (request.undo && value?.status === 'ok') {
-      applied.delete(request.undo);
-      renderResult(null);
-      status.textContent = value.message ? String(value.message) : 'Undone.';
-      rerender();
-      // Reset is Run again, in the same place.
-      if (request.view === 'Actions') focusRun(request.undo);
+      finishUndo(request, value);
       return;
     }
     if (value?.status === 'ok' && !request.undo && current.actions?.find((item) => item.id === request.actionId)?.undo)
@@ -404,12 +399,18 @@ export function modelDrivenActionsUi(data) {
     renderResult(shown.title === request.label ? { ...shown, title: undefined } : shown);
     lastResultRequest = id;
     // A completed run shows only its result; a status line names the other outcomes.
-    if (value?.status === 'ok') status.textContent = '';
-    else if (value?.status === 'cancelled') status.textContent = 'Cancelled.';
-    else if (value?.status === 'unsupported') status.textContent = 'Not available here.';
-    else status.textContent = 'Failed.';
+    status.textContent = Object.hasOwn(OUTCOMES, value?.status ?? '') ? OUTCOMES[value.status] : 'Failed.';
     rerender();
     showResult();
+  }
+  // A successful undo closes the result it reversed and turns Reset back into Run; its message stays as the status.
+  function finishUndo(request, value) {
+    applied.delete(request.undo);
+    renderResult(null);
+    status.textContent = value.message ? String(value.message) : 'Undone.';
+    rerender();
+    // Reset is Run again, in the same place.
+    if (request.view === 'Actions') focusRun(request.undo);
   }
   // Redraws the view and keeps the focus, with its selection, in the field the user was typing in.
   function rerender() {
@@ -654,7 +655,13 @@ export function modelDrivenActionsUi(data) {
         main.title = open ? 'Hide the inputs of this action' : 'Show the inputs of this action';
         main.addEventListener('click', () => select(action, !open), { signal });
       }
-      // Run turns into Reset while the page change it made is in place, and back after Reset.
+      const acts = make('div', null, 'acts');
+      acts.append(runButton(action, support, inputs, open), ...rowToggles(action));
+      row.append(main, acts);
+      return row;
+    }
+    // Run turns into Reset while the page change it made is in place, and back after Reset.
+    function runButton(action, support, inputs, open) {
       const reversal = inEffect(action) ? reversalOf(action) : undefined,
         verb = reversal ? 'Reset' : 'Run',
         run = button(
@@ -684,6 +691,10 @@ export function modelDrivenActionsUi(data) {
       run.setAttribute('aria-label', `${verb} ${action.label}`);
       if (reversal) run.title = reversal.title;
       else run.title = inputs && !open ? 'Show the inputs, then Run' : action.description;
+      return run;
+    }
+    // The row's favorite star and hide eye.
+    function rowToggles(action) {
       const starred = favorites.has(action.label),
         favorite = iconButton(
           starred ? 'starred' : 'star',
@@ -710,10 +721,7 @@ export function modelDrivenActionsUi(data) {
           },
         );
       hide.dataset.key = `${action.id}:hide`;
-      const acts = make('div', null, 'acts');
-      acts.append(run, favorite, hide);
-      row.append(main, acts);
-      return row;
+      return [favorite, hide];
     }
     // A group the user folded stays folded while this panel lives. A group a search or the selected
     // action holds open is not the user's choice, so that opening is not remembered.
@@ -728,14 +736,8 @@ export function modelDrivenActionsUi(data) {
         { signal },
       );
     };
-    function draw() {
-      // The row control that had the focus is redrawn; the focus moves to its new copy (the same action's toggle,
-      // Run, star or eye), else to the search box when the row left the list.
-      const focused = root.activeElement,
-        focusKey = focused && list.contains(focused) ? focused.dataset.key : undefined;
-      list.replaceChildren();
-      const listed = (current.actions ?? []).filter((action) => !undoOnly.has(action.id)),
-        hiddenCount = listed.filter((action) => hidden.has(action.label)).length;
+    // The filter chips: the pressed one, and Hidden with its count (shown only while something is hidden).
+    function drawFilters(hiddenCount) {
       // With nothing hidden any more, the Hidden filter has nothing to list: the list shows All again.
       if (actionFilter === 'hidden' && !hiddenCount) actionFilter = 'all';
       for (const control of filters) {
@@ -747,69 +749,82 @@ export function modelDrivenActionsUi(data) {
           control.hidden = !hiddenCount && actionFilter !== 'hidden';
         }
       }
+    }
+    function inFilter(action) {
+      if (actionFilter === 'hidden') return hidden.has(action.label);
+      if (hidden.has(action.label)) return false;
+      if (actionFilter === 'favorites') return favorites.has(action.label);
+      if (actionFilter === 'recent') return recent.includes(action.label);
+      return true;
+    }
+    // A group's rows under a summary with the kit chevron, its name and its count pill.
+    function groupHeading(label, count) {
+      const summary = make('summary', null, 'gh');
+      summary.innerHTML = icon('right');
+      summary.append(make('span', label), make('span', String(count), 'n dimn'));
+      return summary;
+    }
+    function appendRows(section, actions, rows) {
+      for (const action of actions) {
+        const row = actionRow(action);
+        rows.set(action.id, row);
+        section.append(row);
+      }
+    }
+    // Each group folds like the groups of Inspect.
+    function groupSection(group, usable, term, rows) {
+      const members = usable.filter((entry) => entry.group === group),
+        section = make('details', null, 'actions-group');
+      const forced = Boolean(term) || members.some((action) => action.id === selectedAction);
+      section.open = !foldedGroups.has(group) || forced;
+      groupOpen(section, group, forced);
+      section.append(groupHeading(group, members.length));
+      appendRows(section, members, rows);
+      return section;
+    }
+    function unavailableSection(unusable, term, rows) {
+      const section = make('details', null, 'actions-group actions-unavailable');
+      const forced = Boolean(term) || unusable.some((action) => action.id === selectedAction);
+      section.open = unavailableOpen || forced;
+      section.addEventListener(
+        'toggle',
+        () => {
+          if (forced && section.open) return;
+          unavailableOpen = section.open;
+        },
+        { signal },
+      );
+      section.append(groupHeading('Not available here', unusable.length));
+      if (unusable.some((action) => availability(action).needsRecord))
+        section.append(
+          make('p', 'Open a record of this table (or any table) to use the form actions.', 'actions-muted'),
+        );
+      appendRows(section, unusable, rows);
+      return section;
+    }
+    function draw() {
+      // The row control that had the focus is redrawn; the focus moves to its new copy (the same action's toggle,
+      // Run, star or eye), else to the search box when the row left the list.
+      const focused = root.activeElement,
+        focusKey = focused && list.contains(focused) ? focused.dataset.key : undefined;
+      list.replaceChildren();
+      const listed = (current.actions ?? []).filter((action) => !undoOnly.has(action.id)),
+        hiddenCount = listed.filter((action) => hidden.has(action.label)).length;
+      drawFilters(hiddenCount);
       const term = search.value.toLocaleLowerCase(),
         entries = listed.filter(
           (action) =>
             `${action.label} ${action.description} ${action.group}`.toLocaleLowerCase().includes(term) &&
-            (actionFilter === 'hidden'
-              ? hidden.has(action.label)
-              : !hidden.has(action.label) &&
-                (actionFilter === 'all' ||
-                  (actionFilter === 'favorites' && favorites.has(action.label)) ||
-                  (actionFilter === 'recent' && recent.includes(action.label)))),
+            inFilter(action),
         );
       // Groups show only what the current page supports, using the same requirement checks the action runner applies;
       // the rest stays reachable, with each reason, in one collapsed group at the end.
       const usable = entries.filter((action) => availability(action).available),
         unusable = entries.filter((action) => !availability(action).available);
       const rows = new Map();
-      // Each group folds like the groups of Inspect: a summary with the kit chevron, its name and its count.
-      for (const group of new Set(usable.map((action) => action.group))) {
-        const section = make('details', null, 'actions-group'),
-          heading = make('summary', null, 'gh');
-        heading.innerHTML = icon('right');
-        heading.append(
-          make('span', group),
-          make('span', String(usable.filter((entry) => entry.group === group).length), 'n dimn'),
-        );
-        const forced = Boolean(term) || usable.some((a) => a.group === group && a.id === selectedAction);
-        section.open = !foldedGroups.has(group) || forced;
-        groupOpen(section, group, forced);
-        section.append(heading);
-        for (const action of usable.filter((entry) => entry.group === group)) {
-          const row = actionRow(action);
-          rows.set(action.id, row);
-          section.append(row);
-        }
-        list.append(section);
-      }
-      if (unusable.length) {
-        const section = make('details', null, 'actions-group actions-unavailable'),
-          summary = make('summary', null, 'gh');
-        summary.innerHTML = icon('right');
-        summary.append(make('span', 'Not available here'), make('span', String(unusable.length), 'n dimn'));
-        const forced = Boolean(term) || unusable.some((action) => action.id === selectedAction);
-        section.open = unavailableOpen || forced;
-        section.addEventListener(
-          'toggle',
-          () => {
-            if (forced && section.open) return;
-            unavailableOpen = section.open;
-          },
-          { signal },
-        );
-        section.append(summary);
-        if (unusable.some((action) => availability(action).needsRecord))
-          section.append(
-            make('p', 'Open a record of this table (or any table) to use the form actions.', 'actions-muted'),
-          );
-        for (const action of unusable) {
-          const row = actionRow(action);
-          rows.set(action.id, row);
-          section.append(row);
-        }
-        list.append(section);
-      }
+      for (const group of new Set(usable.map((action) => action.group)))
+        list.append(groupSection(group, usable, term, rows));
+      if (unusable.length) list.append(unavailableSection(unusable, term, rows));
       if (!entries.length) list.append(make('p', 'No matching actions.', 'actions-muted'));
       const action = current.actions?.find((entry) => entry.id === selectedAction);
       if (action && rows.has(action.id)) showDetail(action, rows.get(action.id));

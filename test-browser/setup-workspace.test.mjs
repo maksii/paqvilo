@@ -822,7 +822,8 @@ test('Lense dev exposes a setup panel link on a loopback fixture and closes its 
   await page.waitForURL(simulator.url + '/');
   await page.locator('#paqvilo-panel').waitFor({ state: 'attached' });
   await page.keyboard.press('Alt+Shift+P');
-  const link = page.locator('#paqvilo-panel a[title="Project setup"]');
+  // An icon link: its accessible name says what it is; its tooltip says more.
+  const link = page.locator('#paqvilo-panel a[aria-label="Project setup"]');
   await link.waitFor();
   assert.equal(await link.locator('svg').count(), 1);
   assert.equal(await link.innerText(), '');

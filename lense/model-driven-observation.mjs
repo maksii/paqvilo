@@ -533,6 +533,25 @@ export function modelDrivenObservationRuntime() {
     result.context = context;
     return result;
   };
+  // A file a local render names, with the state of the same file in the current source index.
+  const renderedRef = (ref, refs, validated) => {
+    const next = refs.find((item) => item.id === ref.id);
+    let currentState = 'pending';
+    if (ref.currentState === 'unavailable' || next?.currentState === 'unavailable') currentState = 'unavailable';
+    else if (validated && next) currentState = 'available';
+    return {
+      ...ref,
+      currentState,
+      ...(next ? { currentContentRevision: next.currentContentRevision ?? next.contentRevision } : {}),
+    };
+  };
+  // A file of the current source index, available once the selection it serves has been validated.
+  const indexedRef = (ref, validated) => {
+    let currentState = 'pending';
+    if (ref.currentState === 'unavailable') currentState = 'unavailable';
+    else if (validated) currentState = 'available';
+    return { ...ref, currentState };
+  };
   const enrich = (packet, current) => {
     const refs = current.sourceRefs ?? [];
     const validated =
@@ -541,35 +560,15 @@ export function modelDrivenObservationRuntime() {
       ['documentId', 'frameId', 'uiEpoch', 'sourceRevision'].every(
         (key) => current.validatedScope[key] === packet.scope?.[key],
       );
-    const rendered =
-      packet.mode === 'local'
-        ? packet.sourceRefs.map((ref) => {
-            const next = refs.find((item) => item.id === ref.id);
-            return {
-              ...ref,
-              currentState: (() => {
-                if (ref.currentState === 'unavailable' || next?.currentState === 'unavailable') return 'unavailable';
-                if (validated && next) return 'available';
-                return 'pending';
-              })(),
-              ...(next ? { currentContentRevision: next.currentContentRevision ?? next.contentRevision } : {}),
-            };
-          })
-        : null;
+    const rendered = packet.mode === 'local' ? packet.sourceRefs.map((ref) => renderedRef(ref, refs, validated)) : null;
     if (rendered) packet.sourceRefs = rendered;
-    const indexed = refs.map((ref) => {
-      let currentState;
-      if (ref.currentState === 'unavailable') currentState = 'unavailable';
-      else if (validated) currentState = 'available';
-      else currentState = 'pending';
-      return { ...ref, currentState };
-    });
     for (const fact of packet.facts ?? []) {
-      const own = (list) => list.filter((ref) => ref.componentKey === fact.binding?.key);
-      // A local render names its own files when it can. A component Mirage rendered without them (its table metadata
-      // is read lazily) takes the files the current source index holds for exactly that component, never others.
-      let matches = own(rendered ?? indexed);
-      if (rendered && !matches.length) matches = own(indexed);
+      // A local render names only the files Mirage vouches it rendered from. A component it rendered without one (a
+      // row the simulation changed, or metadata it reads lazily) has no file: the imported index cannot tell the two
+      // apart, so it is never borrowed here.
+      const matches = (rendered ?? refs.map((ref) => indexedRef(ref, validated))).filter(
+        (ref) => ref.componentKey === fact.binding?.key,
+      );
       fact.sourceRefIds = matches.map((ref) => ref.id);
       packet.sourceRefs.push(...matches);
     }

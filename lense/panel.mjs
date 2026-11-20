@@ -480,48 +480,60 @@ const readableName = (value) => {
  * platforms return the command unchanged (spawn searches PATH there). PATH folders the shell would interpret are not
  * searched; they are added to `skipped` when given, so a "not found" can name them.
  */
-export function resolveEditorCommand(
-  editor,
-  { platform = process.platform, env = process.env, fs: fileSystem = fs, skipped } = {},
-) {
-  if (platform !== 'win32') return editor;
-  const safe = (value) => typeof value === 'string' && value && !/["%!\r\n&|<>^]/.test(value);
-  const regular = (file) => {
-    try {
-      return safe(file) && fileSystem.statSync(file).isFile();
-    } catch {
-      return false;
-    }
-  };
-  const value = (name) => Object.entries(env).find(([key]) => key.toLowerCase() === name.toLowerCase())?.[1];
-  const extensions = String(value('PATHEXT') || '.COM;.EXE;.BAT;.CMD')
+/** A Windows path the shell will not interpret. */
+const shellSafe = (value) => typeof value === 'string' && value && !/["%!\r\n&|<>^]/.test(value);
+/** The names Windows runs for `editor`: as given when it has a PATHEXT extension, else with each extension. */
+const pathExtNames = (editor, pathExt) => {
+  const extensions = String(pathExt || '.COM;.EXE;.BAT;.CMD')
     .split(';')
     .map((extension) => extension.trim().toLowerCase())
     .filter(Boolean);
-  const names = extensions.includes(path.extname(editor).toLowerCase())
+  return extensions.includes(path.extname(editor).toLowerCase())
     ? [editor]
     : extensions.map((extension) => editor + extension);
-  // A path is used as given, or with a PATHEXT extension as Windows runs it (C:\tools\subl runs subl.exe).
-  if (/[\\/]/.test(editor)) return [editor, ...names.filter((name) => name !== editor)].find(regular) ?? null;
-  for (const entry of String(value('PATH') ?? '').split(';')) {
+};
+/** The first PATH folder holding one of `names`; folders the shell would interpret are reported in `skipped`. */
+const findOnPath = (names, pathValue, regular, skipped) => {
+  for (const entry of String(pathValue ?? '').split(';')) {
     const dir = entry.trim().replace(/^"(.*)"$/, '$1');
-    if (!safe(dir)) {
+    if (!shellSafe(dir)) {
       if (dir) skipped?.push(dir);
       continue;
     }
     const found = names.map((name) => path.join(dir, name)).find(regular);
     if (found) return found;
   }
-  const command = editor.toLowerCase();
+  return null;
+};
+/** VS Code's CLI in its ordinary install folders, for `code` and `code-insiders`. */
+const findVsCode = (command, value, regular) => {
   if (!/^code(?:-insiders)?$/.test(command)) return null;
   const product = command === 'code-insiders' ? 'Microsoft VS Code Insiders' : 'Microsoft VS Code';
   const roots = [[value('LOCALAPPDATA'), 'Programs'], [value('ProgramFiles')], [value('ProgramFiles(x86)')]];
   for (const [root, ...parts] of roots) {
-    if (!safe(root) || !path.isAbsolute(root)) continue;
+    if (!shellSafe(root) || !path.isAbsolute(root)) continue;
     const candidate = path.join(root, ...parts, product, 'bin', command + '.cmd');
     if (regular(candidate)) return candidate;
   }
   return null;
+};
+export function resolveEditorCommand(
+  editor,
+  { platform = process.platform, env = process.env, fs: fileSystem = fs, skipped } = {},
+) {
+  if (platform !== 'win32') return editor;
+  const regular = (file) => {
+    try {
+      return shellSafe(file) && fileSystem.statSync(file).isFile();
+    } catch {
+      return false;
+    }
+  };
+  const value = (name) => Object.entries(env).find(([key]) => key.toLowerCase() === name.toLowerCase())?.[1];
+  const names = pathExtNames(editor, value('PATHEXT'));
+  // A path is used as given, or with a PATHEXT extension as Windows runs it (C:\tools\subl runs subl.exe).
+  if (/[\\/]/.test(editor)) return [editor, ...names.filter((name) => name !== editor)].find(regular) ?? null;
+  return findOnPath(names, value('PATH'), regular, skipped) ?? findVsCode(editor.toLowerCase(), value, regular);
 }
 
 /**
@@ -1382,6 +1394,14 @@ export function enablePanel(context, session, opts = {}) {
     });
     return { ok: true, navigating: true, via, returnUrl, contactId: contactId ?? null };
   };
+  /** Why a sign-in or sign-out did not take, from the session the browser has now. */
+  const unfinishedSessionFlow = (contactId, name, session) => {
+    if (!contactId) return 'Sign-out did not finish: this browser is still signed in';
+    const now = session?.signedIn
+      ? 'this browser is signed in as ' + (session.name ?? session.contactId)
+      : 'this browser is not signed in';
+    return `Sign-in as ${name} did not finish: ${now}`;
+  };
   /**
    * Follows a started sign-in or sign-out through its page loads (a provider can add some) and logs how it ended: the
    * session read on the load back at the return path, or after a few loads, says whether it took. Not a deadline:
@@ -1401,7 +1421,7 @@ export function enablePanel(context, session, opts = {}) {
     const next = () => {
       if (stopped) return;
       current = nextLoad(page);
-      current.promise.then(async () => {
+      void current.promise.then(async () => {
         if (stopped || disposed || page.isClosed()) return;
         loads++;
         let session = null;
@@ -1417,13 +1437,7 @@ export function enablePanel(context, session, opts = {}) {
           return;
         }
         if (back() || loads >= 4) {
-          log({
-            type: 'signin',
-            failed: true,
-            text: contactId
-              ? `Sign-in as ${name} did not finish: ${session?.signedIn ? `this browser is signed in as ${session.name ?? session.contactId}` : 'this browser is not signed in'}`
-              : 'Sign-out did not finish: this browser is still signed in',
-          });
+          log({ type: 'signin', failed: true, text: unfinishedSessionFlow(contactId, name, session) });
           scheduleAll();
           return;
         }

@@ -1,4 +1,4 @@
-// @test-kind contract: Paqvilo's own selection-evidence design: a locally rendered model-driven control gets its source files from the current source index by its exact component key.
+// @test-kind contract: Paqvilo's own selection-evidence design: a locally rendered model-driven control names only the source files Mirage vouches it rendered from, never one the source index merely holds for its key.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { modelDrivenObservationRuntime } from '../lense/model-driven-observation.mjs';
@@ -22,20 +22,15 @@ const current = {
   sourceRefs: [ref('budget-form', control), ref('name-form', other)],
 };
 
-test('a local render without source files takes the current index files of exactly its component', () => {
+test('a local render without source files borrows none from the source index', () => {
   const { enrich } = modelDrivenObservationRuntime();
-  const result = enrich(packet(), current);
-  assert.deepEqual(result.facts[0].sourceRefIds, ['budget-form'], 'the field gets its own file, not its neighbour');
-  assert.deepEqual(
-    result.sourceRefs.map((item) => [item.id, item.currentState]),
-    [['budget-form', 'available']],
-  );
-  // Before the provenance call validates this selection the file is pending, not available.
-  const pending = enrich(packet(), { sourceRefs: current.sourceRefs });
-  assert.deepEqual(
-    pending.sourceRefs.map((item) => [item.id, item.currentState]),
-    [['budget-form', 'pending']],
-  );
+  // Mirage names no file for a component when it cannot vouch for its origin (a row the simulation changed, or metadata
+  // read lazily). The index holds the imported file for the same key and cannot tell which: it lends nothing.
+  for (const validation of [current, { sourceRefs: current.sourceRefs }]) {
+    const result = enrich(packet(), validation);
+    assert.deepEqual(result.facts[0].sourceRefIds, []);
+    assert.deepEqual(result.sourceRefs, []);
+  }
 });
 
 test('a local render that names its files keeps them and takes nothing more from the index', () => {

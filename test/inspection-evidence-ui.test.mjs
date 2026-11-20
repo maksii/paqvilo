@@ -547,3 +547,21 @@ test('a Solution path shows an ID segment as {…}, and a component is named dis
   // Narrow rows: a row's chips wrap onto their own line and its reason line wraps, so the name keeps its width.
   assert.match(renderInspectionEvidence(null, { part: 'styles' }), /\.ie-row \.name\{flex-wrap:wrap/);
 });
+
+test('a producer code stays out of the page: a known one is worded, any other is left out', () => {
+  const input = evidence();
+  input.owner.component = { kind: 'pcf', key: 'pcf:sample', name: 'sample_control' };
+  input.owner.evidence = [{ kind: 'mirage-registry', label: 'invented-internal-code' }];
+  input.facts = [
+    {
+      status: 'exact',
+      relationship: 'mounted-form-factor',
+      label: 'pcf-form-factor-0',
+      component: { kind: 'pcf', key: 'pcf:sample', name: 'sample_control' },
+    },
+  ];
+  const html = renderInspectionEvidence(input, { openGroups: ['context'] });
+  assert.doesNotMatch(html, /pcf-form-factor|invented-internal-code/);
+  assert.match(html, /title="[^"]*Mounted for the desktop layout"/);
+  assert.match(visible(html), /Mounted/);
+});

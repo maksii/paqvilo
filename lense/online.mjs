@@ -127,11 +127,12 @@ const TEXT_EXT = /\.(?:js|mjs|css|html?|json|svg|xml|txt|map)$/i;
  * Text without its source-map comment lines (`//# sourceMappingURL=...`, `/*# sourceMappingURL=... *\/`): a server or
  * build adds them to the copy it serves, and they change nothing the page runs.
  */
+const SOURCE_MAP_LINE = /^\s*(?:\/\/|\/\*)[#@]\s*sourceMappingURL=/;
 export const withoutSourceMapComments = (text) =>
-  String(text).replace(
-    /(?:\r?\n)?[ \t]*(?:\/\/[#@][ \t]*sourceMappingURL=[^\r\n]*|\/\*[#@][ \t]*sourceMappingURL=[^*]*\*+\/)[ \t]*(?=\r?\n|$)/g,
-    '',
-  );
+  String(text)
+    .split('\n')
+    .filter((line) => !SOURCE_MAP_LINE.test(line))
+    .join('\n');
 
 function sameContent(file, local, online) {
   if (local.equals(online)) return true;

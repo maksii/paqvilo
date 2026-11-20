@@ -269,6 +269,8 @@ export function modelDrivenActionAvailability({ origin, actions = [], localSimul
     message: message + (rows.length > 200 ? ' Showing the first 200 rows.' : ''),
   });
   const result = (title, message, extra = {}) => ({ status: 'ok', title, message, ...extra });
+  // "1 label", "3 labels".
+  const amount = (n, one, many) => `${n} ${n === 1 ? one : many}`;
   const list = (collection) => {
     if (!collection) return [];
     const all = safe(() => collection.get());
@@ -594,7 +596,9 @@ export function modelDrivenActionAvailability({ origin, actions = [], localSimul
                 box.height - inset('paddingTop', 'paddingBottom', 'borderTopWidth', 'borderBottomWidth'),
               );
             // The display name without the required marker the app appends to the caption (Name*).
-            label.title = `${caption.textContent.trim().replace(/\s*\*+$/, '')} · click to copy ${name}`;
+            let shown = caption.textContent.trim();
+            while (shown.endsWith('*')) shown = shown.slice(0, -1).trimEnd();
+            label.title = `${shown} · click to copy ${name}`;
             label.style.cssText = `${look}min-width:${width}px!important;max-width:max(${width}px,24ch)!important;min-height:${height}px!important;`;
             caption.prepend(label);
           } else {
@@ -613,7 +617,7 @@ export function modelDrivenActionAvailability({ origin, actions = [], localSimul
       outcome = result(
         'Logical names',
         action.endsWith('clear-logical-names')
-          ? `Reset: ${removed} logical-name ${removed === 1 ? 'label' : 'labels'} removed.`
+          ? `Reset: ${amount(removed, 'logical-name label', 'logical-name labels')} removed.`
           : `${count} field labels show their logical names. Point at one for the display name; click it to copy the logical name.`,
       );
     } else if (action === 'form:changed-fields') {
@@ -716,7 +720,10 @@ export function modelDrivenActionAvailability({ origin, actions = [], localSimul
       const refusedText = (keys, labels) => {
         const where = ['header', 'footer'].find((region) => keys.every((key) => key.startsWith(`${region}_`)));
         const shown = labels.slice(0, 20).map(bounded).join(', ') + (labels.length > 20 ? ', and more' : '');
-        return `${keys.length}${where ? ` ${where}` : ''} ${keys.length === 1 ? 'field' : 'fields'} can't be changed here: ${shown}.`;
+        const fields = where
+          ? amount(keys.length, `${where} field`, `${where} fields`)
+          : amount(keys.length, 'field', 'fields');
+        return `${fields} can't be changed here: ${shown}.`;
       };
       const names = [...refused.keys()],
         counted = (kind, one, many, done) => {
@@ -733,7 +740,7 @@ export function modelDrivenActionAvailability({ origin, actions = [], localSimul
       outcome = result(
         'Form overrides',
         (changed
-          ? `${changed} ${changed === 1 ? 'change' : 'changes'} on this form: ${made.join(', ')}. Server permissions still apply.`
+          ? `${amount(changed, 'change', 'changes')} on this form: ${made.join(', ')}. Server permissions still apply.`
           : 'Nothing to change on this form: nothing is hidden, locked or required.') +
           (names.length ? `\n${refusedText(names, [...refused.values()])}` : ''),
       );
@@ -741,12 +748,11 @@ export function modelDrivenActionAvailability({ origin, actions = [], localSimul
       requireForm();
       const restored = state.restore();
       const n = restored.restored,
-        unavailable = restored.unavailable
-          ? ` ${restored.unavailable} ${restored.unavailable === 1 ? 'is' : 'are'} no longer on the form.`
-          : '';
+        gone = restored.unavailable === 1 ? '1 is' : `${restored.unavailable} are`,
+        unavailable = restored.unavailable ? ` ${gone} no longer on the form.` : '';
       outcome = result(
         'Form overrides restored',
-        `Reset: ${n} form ${n === 1 ? 'setting' : 'settings'} restored to ${n === 1 ? 'its' : 'their'} state before the run.${unavailable}`,
+        `Reset: ${amount(n, 'form setting', 'form settings')} restored to ${n === 1 ? 'its' : 'their'} state before the run.${unavailable}`,
       );
     } else if (action === 'form:toggle-autosave') {
       requireForm();
@@ -931,7 +937,7 @@ export function modelDrivenActionAvailability({ origin, actions = [], localSimul
       outcome = result(
         'Side pane',
         panes.length
-          ? `Reset: ${panes.length} side ${panes.length === 1 ? 'pane' : 'panes'} closed.`
+          ? `Reset: ${amount(panes.length, 'side pane', 'side panes')} closed.`
           : 'This session has no open side pane.',
       );
     } else if (action.startsWith('navigation:')) {

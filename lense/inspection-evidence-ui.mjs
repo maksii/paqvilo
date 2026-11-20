@@ -55,9 +55,11 @@ function renderInspectionEvidenceImpl(evidence, options = {}) /* NOSONAR */ {
   // One row layout for every file and component, the same as the panel's rows: name, kind and chips; detail lines;
   // the path on one line with its end visible; icon buttons on the right.
   // A file under the source folder shows its path from there, as Page files does; the tooltip keeps the full path.
-  const sourceDir = String((evidence?.version === 1 && evidence.sourceDir) || options.sourceDir || '')
-    .replaceAll('\\', '/')
-    .replace(/\/+$/, '');
+  let sourceDir = String((evidence?.version === 1 && evidence.sourceDir) || options.sourceDir || '').replaceAll(
+    '\\',
+    '/',
+  );
+  while (sourceDir.endsWith('/')) sourceDir = sourceDir.slice(0, -1);
   const shownPath = (file) => {
     const value = String(file ?? '');
     const slashed = value.replaceAll('\\', '/');
@@ -68,12 +70,31 @@ function renderInspectionEvidenceImpl(evidence, options = {}) /* NOSONAR */ {
         : value,
     );
   };
-  const rowHtml = ({ cls = '', attrs = '', name, nameTitle, what, chips = '', subs = [], path, actions = '' }) =>
-    `<div class="row ie-row${cls ? ' ' + escape(cls) : ''}"${attrs}><div class="main">${name === undefined ? '' : `<div class="name"${nameTitle ? ` title="${escape(nameTitle)}"` : ''}><span>${escape(name)}</span>${what ? `<span class="what">${escape(what)}</span>` : ''}${chips}</div>`}${path === undefined ? '' : `<div class="sub path" title="${escape(path)}"><bdi>${escape(shownPath(path))}</bdi></div>`}${subs.filter(Boolean).join('')}</div>${actions ? `<div class="acts">${actions}</div>` : ''}</div>`;
+  const titleAttr = (title) => (title ? ' title="' + escape(title) + '"' : '');
+  const nameHtml = (name, nameTitle, what, chips) => {
+    const kind = what ? '<span class="what">' + escape(what) + '</span>' : '';
+    return `<div class="name"${titleAttr(nameTitle)}><span>${escape(name)}</span>${kind}${chips}</div>`;
+  };
+  const pathHtml = (path) =>
+    `<div class="sub path" title="${escape(path)}"><bdi>${escape(shownPath(path))}</bdi></div>`;
+  const rowHtml = ({ cls = '', attrs = '', name, nameTitle, what, chips = '', subs = [], path, actions = '' }) => {
+    const rowClass = cls ? 'row ie-row ' + escape(cls) : 'row ie-row';
+    const head = name === undefined ? '' : nameHtml(name, nameTitle, what, chips);
+    const file = path === undefined ? '' : pathHtml(path);
+    const acts = actions ? '<div class="acts">' + actions + '</div>' : '';
+    return `<div class="${rowClass}"${attrs}><div class="main">${head}${file}${subs.filter(Boolean).join('')}</div>${acts}</div>`;
+  };
   const subLine = (text, title, attrs = '') =>
-    text ? `<div class="sub"${attrs}${title ? ` title="${escape(title)}"` : ''}>${escape(text)}</div>` : '';
+    text ? `<div class="sub"${attrs}${titleAttr(title)}>${escape(text)}</div>` : '';
   // Only human labels reach the page; machine codes stay in the evidence object.
-  const labelOf = (item) => (typeof item === 'string' ? item : item?.label);
+  // A producer's code (pcf-form-factor-0) is data for tools: the page shows its words, or nothing.
+  const formFactors = ['desktop', 'tablet', 'phone'];
+  const words = (label) => {
+    const code = /^pcf-form-factor-(\d|unknown)$/.exec(label ?? '');
+    if (code) return `Mounted for the ${formFactors[code[1]] ?? 'unknown'} layout`;
+    return /^[a-z\d]+(?:-[a-z\d]+)+$/.test(label ?? '') ? '' : label;
+  };
+  const labelOf = (item) => words(typeof item === 'string' ? item : item?.label);
   const labels = (items) =>
     (Array.isArray(items) ? items : [])
       .map(labelOf)
@@ -109,6 +130,7 @@ function renderInspectionEvidenceImpl(evidence, options = {}) /* NOSONAR */ {
     contains: ['Contains it', 'Contains this element'],
     'current-view': ['Shown here', 'The view shown here'],
     'declared-modal-form': ['Pop-up', 'A possible pop-up form'],
+    'mounted-form-factor': ['Mounted', 'The code component mounted on this element'],
   };
   const relation = (value) =>
     relationLabel[value] ??
@@ -138,14 +160,16 @@ function renderInspectionEvidenceImpl(evidence, options = {}) /* NOSONAR */ {
       typeof key === 'string' && key && ref.sourceRevision !== undefined && ref.contentRevision !== undefined;
     const enabled = guarded && ['exact', 'candidate'].includes(certainty);
     const openName = `Open ${name} in the editor`;
-    const title = enabled
-      ? openName + (ref.region ? ' at the matching line' : '')
-      : (closedReason[certainty] ?? 'Refresh inspection, then select the element again to open this file.');
+    const where = ref.region ? ' at the matching line' : '';
+    let title = closedReason[certainty] ?? 'Refresh inspection, then select the element again to open this file.';
+    if (enabled) title = openName + where;
     const attributes = `data-source-key="${escape(key)}" data-source-revision="${escape(ref.sourceRevision)}" data-content-revision="${escape(ref.contentRevision)}"${ref.region ? ` data-source-region="${escape(JSON.stringify(ref.region))}"` : ''}`; // NOSONAR: markup template composed inline, kept as authored
     const copyWhat = ref.path ? 'file path' : 'source reference';
     const open = `<button class="ib" ${action}="open" ${panel ? 'data-rel' : 'data-ref'}="${escape(ref.ref)}" ${attributes} data-focus-key="${focusKey}-open" aria-label="${escape(openName)}" title="${escape(title)}"${enabled ? '' : ' disabled'}>${icon('code')}</button>`;
+    const copyName = escape('Copy the ' + copyWhat + ' of ' + name);
+    const copyKind = ref.path ? 'path' : 'reference';
     const copy = ref.ref
-      ? `<button class="ib" ${action}="copy" data-copy="${escape(ref.path ?? ref.ref)}" data-copy-kind="${ref.path ? 'path' : 'reference'}" data-focus-key="${focusKey}-copy" aria-label="${escape(`Copy the ${copyWhat} of ${name}`)}" title="${escape(`Copy the ${copyWhat} of ${name}`)}">${icon('copy')}</button>`
+      ? `<button class="ib" ${action}="copy" data-copy="${escape(ref.path ?? ref.ref)}" data-copy-kind="${copyKind}" data-focus-key="${focusKey}-copy" aria-label="${copyName}" title="${copyName}">${icon('copy')}</button>`
       : '';
     return open + copy;
   };
@@ -288,10 +312,11 @@ function renderInspectionEvidenceImpl(evidence, options = {}) /* NOSONAR */ {
     });
   };
   // A disclosure with nothing in it is not rendered. Its header is the panel's group header.
-  const disclosure = (role, title, body) =>
-    body
-      ? `<details data-evidence-role="${role}" data-disclosure="evidence-${role}"${options.openGroups?.includes(role) || (!options.openGroups && role === 'enclosing') ? ' open' : ''}><summary class="gh" data-focus-key="evidence-${role}-summary">${icon('right')}<span>${title}</span></summary>${body}</details>`
-      : '';
+  const disclosure = (role, title, body) => {
+    if (!body) return '';
+    const open = options.openGroups ? options.openGroups.includes(role) : role === 'enclosing';
+    return `<details data-evidence-role="${role}" data-disclosure="evidence-${role}"${open ? ' open' : ''}><summary class="gh" data-focus-key="evidence-${role}-summary">${icon('right')}<span>${title}</span></summary>${body}</details>`;
+  };
   // Limit reasons the person can act on; every other reason is a detail of the search, not news.
   const limitHelp = {
     'node-detached-or-foreign': 'The page replaced this element. Select it again.',
@@ -320,20 +345,17 @@ function renderInspectionEvidenceImpl(evidence, options = {}) /* NOSONAR */ {
   const omittedCount = omissions.reduce((total, [, count]) => total + count, 0);
   const limitSources = (valid && Array.isArray(evidence.limits?.sources) ? evidence.limits.sources : []).slice(0, 32);
   const truncated = valid && evidence.limits?.truncated;
-  const limitsBody =
-    truncated || omissions.length || limitSources.length
-      ? (truncated ? '<div class="banner">Not all matches are shown.</div>' : '') +
-        subLine(omissions.map(([kind, count]) => count + ' ' + omissionLabel[kind][count === 1 ? 0 : 1]).join(' · ')) +
-        (limitSources.length ? '<h4 class="gh">Files skipped by the search</h4>' : '') +
-        limitSources
-          .map((item) =>
-            rowHtml({
-              name: !item.reason || item.reason === 'index-omission' ? 'Skipped file' : item.reason,
-              path: item.ref ?? '',
-            }),
-          )
-          .join('')
-      : '';
+  const omissionText = ([kind, count]) => count + ' ' + omissionLabel[kind][count === 1 ? 0 : 1];
+  const skippedRow = (item) =>
+    rowHtml({
+      name: !item.reason || item.reason === 'index-omission' ? 'Skipped file' : item.reason,
+      path: item.ref ?? '',
+    });
+  let limitsBody = '';
+  if (truncated) limitsBody += '<div class="banner">Not all matches are shown.</div>';
+  limitsBody += subLine(omissions.map(omissionText).join(' · '));
+  if (limitSources.length)
+    limitsBody += '<h4 class="gh">Files skipped by the search</h4>' + limitSources.map(skippedRow).join('');
   // The component's own exact file is shown on its row, not a second time under source files. A file in any other
   // state stays a source row, where its badge says so.
   const ownerRef =
@@ -344,6 +366,15 @@ function renderInspectionEvidenceImpl(evidence, options = {}) /* NOSONAR */ {
       : undefined;
   const shownSources = sourceRows.filter((ref) => ref !== ownerRef);
   const rows = (items, render) => (Array.isArray(items) ? items.map(render).filter(Boolean).join('') : '');
+  const sourceHeading = shownSources.length > 1 ? 'Source files' : 'Source file';
+  const sourceBody = shownSources.length
+    ? shownSources.map(sourceRow).join('')
+    : '<div class="empty">No source file found</div>';
+  const sourceSection =
+    shownSources.length || !ownerRef
+      ? `<div data-evidence-role="source"><h4 class="gh">${sourceHeading}</h4>${sourceBody}</div>`
+      : '';
+  const notShown = omittedCount ? ' <span class="n dimn" title="Not shown">' + omittedCount + '</span>' : '';
   // The X-ray card shows the component's certainty next to its name in the card header.
   if (options.part === 'badge') return owner.component ? badge(ownerStatus, 'component', labels(owner.evidence)) : '';
   // A file row a host lists itself (X-ray's markup matches and page files), in the same layout and with the same
@@ -397,11 +428,7 @@ function renderInspectionEvidenceImpl(evidence, options = {}) /* NOSONAR */ {
         }),
       ),
     )}
-    ${
-      shownSources.length || !ownerRef
-        ? `<div data-evidence-role="source"><h4 class="gh">${shownSources.length > 1 ? 'Source files' : 'Source file'}</h4>${shownSources.length ? shownSources.map(sourceRow).join('') : '<div class="empty">No source file found</div>'}</div>`
-        : ''
-    }
+    ${sourceSection}
     ${notices.map((item) => `<div class="banner">${escape(item)}</div>`).join('')}
     ${disclosure(
       'alternatives',
@@ -430,14 +457,14 @@ function renderInspectionEvidenceImpl(evidence, options = {}) /* NOSONAR */ {
         return labelOf(item) ? rowHtml({ subs: [`<div>${escape(labelOf(item))}</div>`] }) : '';
       }),
     )}
-    ${disclosure('limits', 'Search limits' + (omittedCount ? ` <span class="n dimn" title="Not shown">${omittedCount}</span>` : ''), limitsBody)}
+    ${disclosure('limits', 'Search limits' + notShown, limitsBody)}
   </section>`;
 }
 
 // The kit travels inside the renderer's own source, so a host that embeds the renderer embeds the kit with it.
-/* NOSONAR: intentional local script execution or generated handler */ export const renderInspectionEvidence =
-  new Function(
-    'evidence',
-    'options',
-    `const lenseUiKit=(${lenseUiKit.toString()}); return (${renderInspectionEvidenceImpl.toString()})(evidence, options);`,
-  );
+// Only this module's own functions are compiled; page data arrives as arguments.
+/* NOSONAR: owned source */ export const renderInspectionEvidence = new Function(
+  'evidence',
+  'options',
+  `const lenseUiKit=(${lenseUiKit.toString()}); return (${renderInspectionEvidenceImpl.toString()})(evidence, options);`,
+);

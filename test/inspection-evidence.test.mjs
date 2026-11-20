@@ -462,3 +462,24 @@ test('a Mirage registry match names Mirage, never a file it did not report', () 
     ['Identified by Mirage'],
   );
 });
+
+test('a fact about the owner in another relation keeps its producer reason as its label', () => {
+  // A mounted code component reports its form factor on its own component: that fact is not a repeat of the owner.
+  const result = resolveInspectionEvidence(
+    packet([
+      owner,
+      {
+        ...owner,
+        id: 'mounted',
+        dimension: 'context',
+        predicate: 'mounted-form-factor',
+        reason: 'pcf-form-factor-0',
+        sourceRefIds: [],
+      },
+    ]),
+  );
+  assert.deepEqual(
+    result.facts.map((fact) => [fact.relationship, fact.label]),
+    [['mounted-form-factor', 'pcf-form-factor-0']],
+  );
+});
