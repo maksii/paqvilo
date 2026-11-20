@@ -166,7 +166,10 @@ test('X-ray inspects fields and sources without activating portal controls acros
     assert.ok(r);
     return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
   };
+  // X-ray re-places its card in its next frame after a page change; until then the card covers what it covered on
+  // screen. A pick waits for that frame, so it clicks the element where it is painted, not the card left over it.
   const pick = async (selector) => {
+    await painted(page);
     const p = await point(selector);
     await page.mouse.click(p.x, p.y);
   };
@@ -230,11 +233,35 @@ test('X-ray inspects fields and sources without activating portal controls acros
     .first()
     .click();
   assert.match(await xray.locator('.element-label').textContent(), /^aside\.updates/);
+  // The sidebar moves under the card X-ray placed beside it. With no X-ray frame pending, the paint the move schedules
+  // is held until the test's own next frame request, so a click sent before that frame meets the stale card in every
+  // run instead of only when the host is slow.
+  await painted(page);
   await page.evaluate(() => {
+    const native = window.requestAnimationFrame.bind(window);
+    window.requestAnimationFrame = (paint) => {
+      window.requestAnimationFrame = (next) => {
+        window.requestAnimationFrame = native;
+        return native((time) => {
+          paint(time);
+          next(time);
+        });
+      };
+      // A request id X-ray keeps while its paint is held, so it requests no other frame meanwhile.
+      return -1;
+    };
     const node = document.querySelector('.updates');
     node.style.position = 'relative';
     document.querySelector('.columns').prepend(node);
   });
+  // The forced order holds: until X-ray paints, the moved heading's center is under its card.
+  assert.equal(
+    await page.evaluate(() => {
+      const r = document.querySelector('.updates h2').getBoundingClientRect();
+      return document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)?.id;
+    }),
+    'paqvilo-xray',
+  );
   await pick('.updates h2');
   // The header names the file that matched and the element's tag.
   await titled(page, 'Partial · h2');

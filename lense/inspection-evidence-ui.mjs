@@ -365,10 +365,16 @@ function renderInspectionEvidenceImpl(evidence, options = {}) /* NOSONAR */ {
         )
       : undefined;
   const shownSources = sourceRows.filter((ref) => ref !== ownerRef);
-  const rows = (items, render) => (Array.isArray(items) ? items.map(render).filter(Boolean).join('') : '');
+  const rows = (items, render) =>
+    Array.isArray(items)
+      ? items
+          .map((item) => render(item))
+          .filter(Boolean)
+          .join('')
+      : '';
   const sourceHeading = shownSources.length > 1 ? 'Source files' : 'Source file';
   const sourceBody = shownSources.length
-    ? shownSources.map(sourceRow).join('')
+    ? shownSources.map((item, index) => sourceRow(item, index)).join('')
     : '<div class="empty">No source file found</div>';
   const sourceSection =
     shownSources.length || !ownerRef

@@ -1245,7 +1245,7 @@ function xrayBrowserImpl(data) {
             what: kindName(item.kind),
             relation: item.selector && why ? [parentMatch ? 'Parent' : 'This element', why] : undefined,
             path: item.ref ?? item.url ?? 'Source unavailable',
-            subs: [parentMatch && why ? why.split(' on a parent element').join('') : why],
+            subs: [parentMatch && why ? why.replaceAll(' on a parent element', '') : why],
             actions: item.ref
               ? [
                   {

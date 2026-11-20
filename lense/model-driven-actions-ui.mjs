@@ -484,7 +484,8 @@ export function modelDrivenActionsUi(data) {
       (action.inputs ?? []).filter((spec) => spec.default !== undefined).map((spec) => [spec.name, spec.default]),
     );
   // undoOf: the id of the action whose page change this run reverses (its row's Reset).
-  function runAction(action, values = { ...defaults(action), ...params.get(action.id) }, undoOf) {
+  function runAction(action, given, undoOf) {
+    const values = given === undefined ? { ...defaults(action), ...params.get(action.id) } : given;
     const supported = availability(action);
     if (!supported.available || busy()) return;
     // A Reset is not a choice to list under Recent.
@@ -581,6 +582,13 @@ export function modelDrivenActionsUi(data) {
     box.innerHTML = icon('search');
     box.append(input);
     return box;
+  }
+  function inFilter(action) {
+    if (actionFilter === 'hidden') return hidden.has(action.label);
+    if (hidden.has(action.label)) return false;
+    if (actionFilter === 'favorites') return favorites.has(action.label);
+    if (actionFilter === 'recent') return recent.includes(action.label);
+    return true;
   }
   function renderActions() {
     const search = make('input');
@@ -749,13 +757,6 @@ export function modelDrivenActionsUi(data) {
           control.hidden = !hiddenCount && actionFilter !== 'hidden';
         }
       }
-    }
-    function inFilter(action) {
-      if (actionFilter === 'hidden') return hidden.has(action.label);
-      if (hidden.has(action.label)) return false;
-      if (actionFilter === 'favorites') return favorites.has(action.label);
-      if (actionFilter === 'recent') return recent.includes(action.label);
-      return true;
     }
     // A group's rows under a summary with the kit chevron, its name and its count pill.
     function groupHeading(label, count) {
