@@ -551,10 +551,12 @@ export const editorNotFound = (editor, skipped = []) => {
 /**
  * Opens `file` at a line in the editor (`code -g file:line:col` and compatible).
  * `foregroundMs`: how long an editor may keep running before it counts as opened (one that stays in the foreground
- * hands over to no running window); Infinity waits for its exit.
+ * hands over to no running window); Infinity waits for its exit. `onExit` is called once, when a started editor
+ * process has ended or failed to start, also after the answer: until then it can hold the files and folders it runs
+ * from. It is not called when nothing was started (a refused name, an editor that was not found).
  * @returns {Promise<string|null>} null when it worked, else why not
  */
-export function openInEditor(editor, file, line = 1, col = 1, { foregroundMs = 4000 } = {}) {
+export function openInEditor(editor, file, line = 1, col = 1, { foregroundMs = 4000, onExit } = {}) {
   return new Promise((resolve) => {
     const target = `${file}:${line}:${col}`;
     // the command runs through the shell on Windows (code is a .cmd there): nothing in the path
@@ -577,9 +579,13 @@ export function openInEditor(editor, file, line = 1, col = 1, { foregroundMs = 4
     // an editor that stays in the foreground (no hand-over to a running window) counts as opened
     const timer = Number.isFinite(foregroundMs) ? setTimeout(() => resolve(null), foregroundMs) : null;
     timer?.unref();
+    let ended = false;
     const done = (error) => {
       clearTimeout(timer);
       resolve(error);
+      // 'exit' may follow 'error'
+      if (!ended) onExit?.();
+      ended = true;
     };
     child.on('error', (err) => done(err.code === 'ENOENT' ? editorNotFound(editor) : err.message));
     child.on('exit', (code) => done(code ? `"${editor}" ended with code ${code}` : null));

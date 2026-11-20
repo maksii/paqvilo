@@ -811,8 +811,13 @@ describe('elastic tables over HTTP and SOAP', () => {
     const visible = async (id) =>
       (await call(webApi(`new_sensorreadings(${id})?$select=new_sensortype`), { token: admin })).status;
 
+    // A whole second a minute ahead of wall time. Earlier rows are stamped at wall time, and a row stamp is never
+    // older than one made up to 5 s ahead of it (stampMs): after a backward step of the wall clock a pinned instant at
+    // or just behind wall time is stamped at that earlier, later reading, which can lie in the next second.
+    const pinnedSecond = () => (Math.floor(Date.now() / 1000) + 60) * 1000;
+
     before(() => {
-      clockAt = Math.floor(Date.now() / 1000) * 1000;
+      clockAt = pinnedSecond();
       internalApi = internal;
     });
     after(() => {
@@ -820,7 +825,7 @@ describe('elastic tables over HTTP and SOAP', () => {
     });
 
     it('hides a row at the second its time to live runs out, and purges it into the change log', async () => {
-      clockAt = Math.floor(Date.now() / 1000) * 1000;
+      clockAt = pinnedSecond();
       const row = await create({ ttlinseconds: 60 });
       const id = idOf(row);
       assert.equal(expiresAt(row), clockAt + 60_000);
@@ -866,11 +871,17 @@ describe('elastic tables over HTTP and SOAP', () => {
       assert.equal(await visible(id), 404);
     });
 
-    it('keeps a row with no time to live indefinitely', async () => {
+    it('keeps a row with no time to live indefinitely', async (t) => {
       clockAt = Date.now();
       const row = await create({});
       clockAt += 86_400_000;
-      // Advancing the clock a day also expires the original one-hour bearer.
+      // Advancing the clock a day also expires the original one-hour bearer. The cases that run after this one get
+      // the time and the bearer of today back: the bearer of that day is not valid yet for them.
+      const bearer = admin;
+      t.after(() => {
+        clockAt = Date.now();
+        admin = bearer;
+      });
       admin = await userToken('admin@example.test');
       assert.equal(await visible(idOf(row)), 200);
       assert.equal(expiresAt(row), null);

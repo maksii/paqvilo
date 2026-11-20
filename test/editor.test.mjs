@@ -207,17 +207,22 @@ echo done > '${done}'
 `,
     { mode: 0o755 },
   );
-  const finished = new Promise((resolve) => {
-    const watcher = fs.watch(dir, () => {
-      if (!fs.existsSync(done)) return;
-      watcher.close();
-      resolve();
-    });
+  const { promise: exited, resolve: onExit } = Promise.withResolvers();
+  // openInEditor does not keep the process alive for its editor: the test does, until the editor has ended.
+  const keepAlive = setInterval(() => {}, 1000);
+  t.after(() => {
+    clearInterval(keepAlive);
+    // A run that failed before it opened the gate: the CLI ends by itself once the gate exists.
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(gate, '');
+    fs.rmSync(dir, { recursive: true, force: true });
   });
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  assert.equal(await openInEditor(editor, path.join(dir, 'invented.js'), 1, 1, { foregroundMs: 0 }), null);
+  assert.equal(await openInEditor(editor, path.join(dir, 'invented.js'), 1, 1, { foregroundMs: 0, onExit }), null);
   assert.equal(fs.existsSync(done), false, 'answered while the CLI was still running');
-  // Let the CLI end before its folder is removed.
+  // The CLI's process must have ended before its folder is removed: until then Windows refuses the removal (the
+  // file it writes last appears while the process still holds the folder).
   fs.writeFileSync(gate, '');
-  await finished;
+  await exited;
+  assert.equal(fs.existsSync(done), true, 'the CLI ran to its end after the answer');
+  fs.rmSync(dir, { recursive: true }); // one attempt: the ended CLI no longer holds its folder
 });
