@@ -258,8 +258,10 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
   return -1;
 }
 
-// onPhase(name) is told when the run enters a phase a caller can act on: 'sign-in-wait', and 'after-edits-load' once
-// every edit is applied and the run waits for the displayed document to finish loading.
+// onPhase(name) is told when the run enters a phase a caller can act on: 'sign-in-wait', 'inline-script-edits' before
+// the inline script, template and snippet edits are saved (the run waits for the promise it returns), 'edits-saved'
+// once every edit is saved, and 'after-edits-load' once every edit is applied and the run waits for the displayed
+// document to finish loading.
 /* NOSONAR */ export default async function verify(cfg, args, { source = process, onPhase = noop } = {}) {
   const log = args.json ? (...values) => console.error(...values) : (...values) => console.log(...values);
   const signInTimeout = args['sign-in-timeout'] === undefined ? 900_000 : Number(args['sign-in-timeout']);
@@ -727,6 +729,7 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
     }
     if (cssBlock)
       editSource(cssBlock, () => (workingText(cssBlock) ?? '') + `\nhtml{--paqvilo-verify-inline-css:"${token}"}\n`);
+    await scope.until(Promise.resolve(onPhase('inline-script-edits')));
     if (jsBlock)
       editSource(jsBlock, () => (workingText(jsBlock) ?? '') + `\n;window.__paqviloVerifyInlineJs="${token}";\n`);
     else if (jsEmpty) editSource(jsEmpty, () => `window.__paqviloVerifyInlineJs="${token}";\n`);
@@ -743,6 +746,7 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
       editSource(template, () => lines.join('\n'));
     }
     if (snippet) editSource(snippet, () => `${snippet.text} [${token}]`);
+    onPhase('edits-saved');
 
     const cssVar = (name) => page.evaluate((n) => getComputedStyle(document.documentElement).getPropertyValue(n), name);
     const servedBy = (url) => hits.find((h) => h.type === 'file' && urlKey(h.url) === urlKey(url));
@@ -803,9 +807,14 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
 
     if (cssBlock) {
       // looked up in the <style> text, not as a computed value: the existing CSS may not be well formed
+      // a save that reaches the watcher alone is swapped into the <style> in place; the replacement is recorded by
+      // the reload for the other edits
       const ok = await until(
-        () =>
-          page.evaluate((t) => [...document.querySelectorAll('style')].some((s) => s.textContent.includes(t)), token),
+        async () =>
+          (await page.evaluate(
+            (t) => [...document.querySelectorAll('style')].some((s) => s.textContent.includes(t)),
+            token,
+          )) && htmlHit(cssBlock.rel),
         undefined,
         interrupt.signal,
       );
@@ -816,10 +825,13 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
       );
     } else skip('page custom CSS', 'this page has no custom CSS');
 
+    // With source maps an unchanged inline script is served from the current file on disk, so the edited script can
+    // run in a reload that was planned before its source was refreshed. Wait for the recorded replacement as well.
     const inlineJs = jsBlock ?? jsEmpty;
     if (inlineJs) {
       const ok = await until(
-        () => page.evaluate((t) => globalThis.__paqviloVerifyInlineJs === t, token),
+        async () =>
+          (await page.evaluate((t) => globalThis.__paqviloVerifyInlineJs === t, token)) && htmlHit(inlineJs.rel),
         undefined,
         interrupt.signal,
       );
@@ -832,11 +844,11 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
 
     for (const form of formScripts) {
       const ok = await until(
-        () =>
-          page.evaluate(({ kind, token }) => globalThis.__paqviloVerifyFormJs?.[kind] === token, {
+        async () =>
+          (await page.evaluate(({ kind, token }) => globalThis.__paqviloVerifyFormJs?.[kind] === token, {
             kind: form.kind,
             token,
-          }),
+          })) && htmlHit(form.rel),
         undefined,
         interrupt.signal,
       );

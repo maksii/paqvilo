@@ -741,7 +741,7 @@ test('verify reads the after-edit diagnostics once the document reloaded for the
     console.log = log;
   }
   const { report } = reportFor(fx.cfg);
-  assert.deepEqual(phases, ['after-edits-load']);
+  assert.deepEqual(phases, ['inline-script-edits', 'edits-saved', 'after-edits-load']);
   assert.equal(
     fx.requests.filter((request) => request.pathname === HELD_JS_URL).length >= 2,
     true,
@@ -754,4 +754,88 @@ test('verify reads the after-edit diagnostics once the document reloaded for the
     ),
     'the error of the reloaded document is in the after-edit diagnostics',
   );
+});
+
+test('verify waits for the recorded inline replacement when the edited script already ran from disk', async (t) => {
+  // With source maps an unchanged inline script is served from the file on disk. The watcher's reload for the first
+  // edits is held until the inline script edits are saved, so it runs the edited scripts before their sources were
+  // refreshed. Every later reload is held until the run has read the page custom JS marker once, so the reload that
+  // records the replacements cannot start before that read.
+  const firstReload = Promise.withResolvers();
+  const editsSaved = Promise.withResolvers();
+  const markerRead = Promise.withResolvers();
+  let markerBeforeReplacement = null;
+  let armed = false;
+  let reloads = 0;
+  ownedFixture(t).add(async () => {
+    firstReload.resolve();
+    editsSaved.resolve();
+    markerRead.resolve();
+  });
+  const fx = await fixture(t, 'classic');
+  const launch = chromium.launchPersistentContext;
+  chromium.launchPersistentContext = async function (profileDir, options) {
+    const context = await launch.call(this, profileDir, {
+      ...options,
+      proxy: { server: fx.cfg.origin, bypass: '127.0.0.1,localhost' },
+      args: [
+        ...options.args,
+        '--disable-background-networking',
+        '--disable-component-update',
+        '--disable-sync',
+        '--disable-domain-reliability',
+        '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost',
+      ],
+    });
+    const page = context.pages()[0];
+    const goto = page.goto.bind(page);
+    const evaluate = page.evaluate.bind(page);
+    // the watcher reloads with waitUntil 'commit'; verify's own start page navigation waits for the DOM
+    page.goto = async (url, options) => {
+      if (armed && options?.waitUntil === 'commit') {
+        reloads++;
+        if (reloads === 1) {
+          firstReload.resolve();
+          await editsSaved.promise;
+        } else await markerRead.promise;
+      }
+      return goto(url, options);
+    };
+    page.evaluate = async (fn, ...rest) => {
+      const result = await evaluate(fn, ...rest);
+      if (markerBeforeReplacement === null && String(fn).includes('__paqviloVerifyInlineJs')) {
+        markerBeforeReplacement = result;
+        markerRead.resolve();
+      }
+      return result;
+    };
+    return context;
+  };
+  const log = console.log;
+  console.log = () => {};
+  try {
+    await verify(
+      fx.cfg,
+      {},
+      {
+        onPhase: (phase) => {
+          if (phase === 'edits-saved') editsSaved.resolve();
+          if (phase !== 'inline-script-edits') return undefined;
+          armed = true;
+          return firstReload.promise;
+        },
+      },
+    );
+  } finally {
+    chromium.launchPersistentContext = launch;
+    console.log = log;
+  }
+  const { report } = reportFor(fx.cfg);
+  assert.equal(markerBeforeReplacement, true, 'the edited page script ran before its replacement was recorded');
+  assert.ok(reloads >= 2, 'the inline script edits were applied by a later reload');
+  for (const prefix of ['page custom JS', 'basic-form-js', 'advanced-form-step-js', 'list-js']) {
+    const check = report.checks.find((entry) => entry.name.startsWith(prefix));
+    assert.ok(check, `missing coverage: ${prefix}`);
+    assert.deepEqual({ ok: check.ok, detail: check.detail }, { ok: true, detail: 'replaced inline block' }, prefix);
+  }
 });

@@ -122,7 +122,9 @@ function portalContext(trace, browser, at, marks) {
       navigationWaiters.push(navigation);
       return navigation.promise;
     },
-    goto: () => {
+    goto: (_url, options) => {
+      // The overlay never answers the watcher's reload of this page: the page keeps its document.
+      if (options?.waitUntil === 'commit') return Promise.resolve(null);
       trace.step('page goto');
       browser.gotos += 1;
       const response = responses.get(navigate(TARGET_URL));
@@ -176,9 +178,14 @@ function portalContext(trace, browser, at, marks) {
 }
 
 // Creates the fixture site and a state directory, both removed after the test, and the verify configuration for them.
-function createVerifyConfig(t) {
+function createVerifyConfig(t, inlineChecks = false) {
   const fixture = createFixture();
   t.after(fixture.cleanup);
+  // This page never goes through the overlay, so no inline replacement is ever recorded: without page custom CSS and
+  // JS the run skips those checks, where it would wait for the record until its deadline. A run that is interrupted
+  // in such a wait keeps them.
+  for (const kind of inlineChecks ? [] : ['custom_css.css', 'custom_javascript.js'])
+    fs.rmSync(path.join(fixture.dir, `web-pages/home/content-pages/Home.en-US.webpage.${kind}`));
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-verify-interrupt-'));
   t.after(() => fs.rmSync(stateDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }));
   return {
@@ -197,7 +204,7 @@ function createVerifyConfig(t) {
 // holds the watcher's idle wait behind the `idle` promise. `finished` resolves to the run's record, and
 // `idleRequested` resolves once the run asks the watcher to become idle, after its dev panel checks.
 function startVerify(t, { at, signal = 'SIGINT', idle = Promise.resolve() }) {
-  const cfg = createVerifyConfig(t);
+  const cfg = createVerifyConfig(t, at === 'until');
   const source = new EventEmitter();
   const trace = interruptTrace(signal, source);
   const browser = { launched: false, closed: false, gotos: 0, documents: 0, inspected: [], screenshots: [] };
