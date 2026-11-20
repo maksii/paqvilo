@@ -419,7 +419,8 @@ this session.` A trusted CLR plug-in descriptor with
   tab. A paused request whose answer the browser refuses is failed and reported instead of staying paused until
   interception stops.
 - Lense setup page: a status refresh that arrives while a button is pressed, by pointer or by a held Space, waits
-  until the press ends, so the click is not lost.
+  until the press ends, so the click is not lost. Switching to All settings or choosing another project no longer
+  discards what is ticked or typed while the page is still reading the preview status.
 - Mirage lists: a click on a column header while the list is loading sorts, and header links are disabled only for
   the load a sort click started, as on the portal. List loads and Bootstrap 5 note loads raise no jQuery global ajax
   events.

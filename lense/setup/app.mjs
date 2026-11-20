@@ -1659,7 +1659,8 @@ function setView(next) {
   if (!state || firstRender) return;
   void Promise.all([view === 'quick' && !quick ? loadQuick() : null, pollPreview(true)]).then(async () => {
     await loadRuntimeInfo();
-    whenReleased(render);
+    // A draft started in the view just shown, or a save under way, is not replaced; a save repaints with these reads.
+    whenReleased(() => !dirty && !pending && render());
   });
   render();
 }
@@ -2754,7 +2755,8 @@ function handleRunSiteChange(target) {
   void pollDashboard();
   void loadRuntimeInfo().then(() =>
     whenReleased(() => {
-      if (quickSite === target.value) renderPreservingContext();
+      // as in setView: a draft started meanwhile, or a save under way, is not replaced
+      if (quickSite === target.value && !dirty && !pending) renderPreservingContext();
     }),
   );
   return true;
