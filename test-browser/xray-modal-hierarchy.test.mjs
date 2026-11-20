@@ -174,9 +174,9 @@ test('opening, replacing and reopening an actual modal form keeps field context 
   );
   await page.evaluate(() => document.getElementById('modal-host').replaceChildren());
   await page.waitForFunction(() => document.getElementById('paqvilo-xray').__px.selection() === null);
-  await page.keyboard.down('Control');
+  await page.keyboard.press('Control');
   await page.getByRole('button', { name: 'Open editor', exact: true }).click();
-  await page.keyboard.up('Control');
+  await page.keyboard.press('Control');
   await input.waitFor();
   await select();
   // The reopened frame's evidence arrives after its document, like the first one's.
@@ -239,8 +239,8 @@ test('opening, replacing and reopening an actual modal form keeps field context 
     };
   });
   await card
-    .locator('[data-evidence-role=source]')
-    .getByRole('button', { name: 'Open source', exact: true })
+    .locator('[data-evidence-role=owner]')
+    .getByRole('button', { name: /^Open column .+ in the editor$/ })
     .first()
     .click();
   await page.waitForFunction(() =>
@@ -260,8 +260,8 @@ test('opening, replacing and reopening an actual modal form keeps field context 
   const entered = new Promise((resolve) => (openEntered = resolve));
   t.after(() => releaseOpen());
   await card
-    .locator('[data-evidence-role=source]')
-    .getByRole('button', { name: 'Open source', exact: true })
+    .locator('[data-evidence-role=owner]')
+    .getByRole('button', { name: /^Open column .+ in the editor$/ })
     .first()
     .click();
   await entered;

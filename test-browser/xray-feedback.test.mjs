@@ -436,7 +436,8 @@ test('crowded native pages keep picked native fields and unknown elements ahead 
   }
   await context.locator('summary').click();
   // A table's permission rules page inside its API context.
-  assert.match(await context.innerText(), /1 \/ 125 · 1000 entries/);
+  // A paged list says which rows it shows, as a range of the whole.
+  assert.match(await context.innerText(), /1–8 of 1000/);
   await context.locator('button[data-context="api-permissions:x_first"]', { hasText: 'Next' }).first().click();
   assert.match(await context.innerText(), /Invented rule 8\b/);
   assert.doesNotMatch(await context.innerText(), /Invented rule 0\b/);

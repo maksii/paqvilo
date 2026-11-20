@@ -63,10 +63,11 @@ reload alone does not mean an edit was applied.
 - Interactive dev leaves `alert`, `confirm`, `prompt` and before-unload dialogs to the user. Owned headless dev
   dismisses alerts, confirms and prompts and accepts before-unload so navigation completes. Each dialog's type, redacted
   message and disposition appear in Activity and agent events. Attached browsers keep control of their dialogs.
-- Target selection in the panel commits only on Go or Enter. Leaving a local runtime for a live target, or opening a
-  `caution` environment, needs an in-panel confirmation; Cancel or a failed switch restores the current target. UI state
-  is per browser profile (in memory for a CDP attachment without a known profile). Automated headless sessions start
-  collapsed.
+- The **Portal / environment** row appears only when there is another target; **Go** is enabled once a different one
+  is selected. Target selection in the panel commits only on Go or Enter. Leaving a local runtime for a live target, or
+  opening a `caution` environment, needs an in-panel confirmation; Cancel or a failed switch restores the current
+  target. UI state is per browser profile (in memory for a CDP attachment without a known profile). Automated headless
+  sessions start collapsed.
 
 ### Which browser profile
 
@@ -183,34 +184,82 @@ paths outside the export.
 
 HEAD is pinned as the baseline when a target activates, so a later commit does not erase it; an explicit `--baseline`
 ref stays explicit. The panel reports Git drift and can pin a fresh HEAD. Create the initial source commit before
-previewing literal markup; this local baseline does not identify the deployed commit. Shared sources reload the affected
-portal's tabs, page sources that page. Pausing reload preserves an unsaved form while saves accumulate.
+previewing literal markup; this local baseline does not identify the deployed commit. Without a baseline (sources
+outside Git, a repository without commits, or a `--baseline` ref that is not a commit) the panel header shows **No Git
+baseline** and **Issues** lists **Comparison unavailable** with the reason and what to change; its copy button copies
+Git's own message. Shared sources reload the affected portal's tabs, page sources that page. Pausing reload preserves
+an unsaved form while saves accumulate.
 
-Panel keys: **Alt+Shift+P** panel, **Alt+Shift+L** hide/show, **Alt+Shift+O** Online/Local, **Alt+Shift+X** X-ray.
-**Inspect** works for live and Mirage sessions; **Tweaks** changes local Mirage identity and scenarios. Targets stay
-isolated by origin, environment and source selection.
+Panel keys: **Alt+Shift+P** panel, **Alt+Shift+L** hide/show, **Alt+Shift+O** Online/Local, **Alt+Shift+X** X-ray;
+**Esc** closes a comparison, then clears the filter, then collapses the panel. When the environment is the site's own
+local Mirage (a loopback origin on the port in `sites.<id>.mirage.port`, or on Mirage's default port 8787 when the site
+sets none; `mirage dev`; or a model-driven `--local-simulation`), the panel has no **Local**/**Online** switch and
+Alt+Shift+O does nothing: Mirage already serves your local sources. Started with `--no-overrides` there, the banner's
+**Back to local** still turns the overrides on. X-ray turned on from the open panel takes its place; turning X-ray off brings the panel back on the
+same tab. **Inspect** works for live and Mirage
+sessions; **Tweaks** changes local Mirage identity and scenarios; **Mirage** (under `mirage dev`) shows the runtime,
+its diagnostics and content policy, and opens the Mirage admin pages for the current page. Targets stay isolated by origin,
+environment and source selection.
 
-In **Inspect**, **Page & templates** covers page copy, scripts, styles and template dependencies; **Forms & controls**
-joins exported forms, lists, views and fields to rendered controls; **Select an element** picks a node without
-activating it. **Tables & access** shows exported permissions, scopes, relationships and web roles; an exported grant
-does not prove the signed-in user can use it.
+The panel, X-ray and the model-driven panel follow the operating system's light or dark colour scheme, whatever the
+page's own theme.
+
+In **Tweaks**, the first line says who this browser is; its tooltip says how the portal signs in. Each persona row
+signs this browser in through the portal's own sign-in (other browsers keep their sessions); its star makes it a
+favorite, listed first under **Favorites** in this browser. The persona this browser is signed in as is marked
+**signed in**, and **Activity** logs each sign-in and sign-out when it starts and when it finished or failed. **/**
+focuses the persona search and **Esc** clears it. The filter button beside the persona search opens web role, tag,
+account and group chips, each facet with the same **any** chip (personas with any value of it); the next button opens
+the full picker in Mirage admin.
+
+In **Overrides**, **Local files: all | changed vs Git** chooses which local files override the site (the same choice as
+`dev --scope`; switching reloads the page). A row says **differs from deployed** or **same as deployed** when Lense
+compared it with the version **Online** shows (in front of a local Mirage: **differs from served version** or
+**unchanged**), and **N requests** when the page requested it more than once. A source-map comment
+(`/*# sourceMappingURL=... */`, `//# sourceMappingURL=...`) that only the served copy has is no difference, in the
+row and in the comparison (**local vs deployed**, or **local vs served**). The filters and the scope switch sit under
+the search box. While the page uses no local file they are hidden, unless **changed vs Git** is on; a filter with
+nothing to show is hidden, and without a Git baseline **Edited** and **changed vs Git** are not offered. The footer
+counts what is laid over the site, so a paused override leaves it. Every file row, on every tab, opens its file with a
+click on the row and copies its path with the copy button; a page or address row navigates with the arrow button.
+The first column names a row's kind in words (Template, Snippet, Script, Style, Table, ...), with the full name in the
+tooltip, unless the row's own name already says it. A Solution file named by an ID shows `{…}` in its place
+(`FormXml/main/{…}.xml`); the full path is its tooltip and what Copy copies.
+
+In **Inspect**, the icon buttons beside the filter refresh the inspection, select an element and expand or collapse
+every group; the section chips sit on one line under the filter. **Page & templates** covers page copy, scripts,
+styles and template dependencies; **Forms & controls** joins exported forms, lists, views and fields to rendered
+controls. Selecting an element picks a node without activating it; its details open under the section chips, headed
+by its kind and name as in X-ray, and scroll with the tab; on the other tabs they stay folded under that header. The
+locate button of a field or control finds it on the page; the Mirage button opens its record or setting in Mirage
+admin. A content snippet of markup reads as a summary (**HTML · 1 line · link**); its value is the tooltip and has
+its own copy button.
+**Tables & access** shows the table permissions, scopes, relationships and web roles of your sources, each operation
+as a word (**read**, **no create**, **update, scoped**) and each reason once; an exported grant does not prove the
+signed-in user can use it, and on a live portal Inspect says that web-role membership is not known.
+Components are named, never shown by ID; rendered controls without a source match are one count line.
 
 With only a portal export, Inspect resolves portal components, snippets, web files and access rules. Add
 `mirage.solutionRoots` or `mirage.project` to resolve Solution FormXml, views, table fields, PCF manifests/resources and
 literal dataset bindings (live Lense reads them without starting Mirage). Table rows also show exported plug-in
 registrations (message, stage, rank, filtering columns, type, assembly) and open their XML or
-[mapped C# source](../mirage/docs/dataverse-plugins.md); they do not establish which assembly is deployed. **Refresh
-inspection** rereads the sources.
+[mapped C# source](../mirage/docs/dataverse-plugins.md); they do not establish which assembly is deployed. Refreshing
+the inspection rereads the sources.
 
 ### Selection evidence
 
-The panel and X-ray show one evidence summary. **Owner** is the component established for the selected node; **Local
-source** is the admitted source reference. Each has its own state: **Exact**, **Candidate**, **Conflicting**,
-**Unavailable** or **Stale**. An exact owner can have an unavailable or stale source, and local matching never
-establishes the deployed revision. **Enclosing components** shows containment, **Context** observed facts,
-**Alternatives** other possible matches, and **Limits & freshness** incomplete searches. A declared dependency, matching
-selector or top-ranked candidate does not prove ownership; **Served**, **Execution observed** and **Mount observed** are
-separate for assets.
+The panel and X-ray show one evidence summary. **Component** is the component identified for the selected node, with
+its own file; **Source file** lists the other files that define or render it. **Contained in** lists the form, table,
+basic form and web page around it; each one with a local definition opens it in the editor or copies its path, like the
+component and source rows (a web page opens its `.webpage.yml` record). Each row has its own state: **Exact**,
+**Likely**, **Conflict**, **Not found** or **Outdated**; hover the badge to see what it means for that row. An exact
+component can have an outdated or missing source, and local matching never establishes the deployed revision.
+**Other possible matches**, **Context** and **Search limits** appear only when they have something to show. A declared
+dependency, matching selector or top-ranked match does not prove ownership; for an asset the row says what was seen on
+the page: **Loaded by this page**, **Ran on this page** or **Mounted on this page**. In the panel, each row shows the
+component's name, kind and certainty; the X-ray card names the selected component in its header (display name ·
+logical name) with its badge. The relation (for example "The view shown here") is the row's tooltip; screen readers
+announce each badge's meaning.
 
 Rules that decide attribution:
 
@@ -222,9 +271,9 @@ Rules that decide attribution:
   matches the grid) and its exported action form. Only a unique consistent join sets the form; otherwise the rendered
   table and the declared action forms on it stay candidates. An all-zero form ID never identifies a form by itself; a
   unique verified basic-form wrapper can.
-- **Script-created elements** link to local code through an observed callsite, labelled **creation**, **clone** or
-  **attachment**, only when the acknowledged response bytes and the parsed script version agree. Anonymous evaluation,
-  custom stack formatting and ambiguous versions stay unavailable.
+- **Script-created elements** link to local code through an observed callsite, labelled **Created by this script**,
+  **Copied by this script** or **Inserted by this script**, only when the acknowledged response bytes and the parsed
+  script version agree. Anonymous evaluation, custom stack formatting and ambiguous versions stay unavailable.
 - **Custom grids** declare bindings with `data-paqvilo-table="logical_table"` on the table and
   `data-paqvilo-column="logical_column"` on cells or headers; DataTables column `name` (`sName`) is read without running
   renderers. A scroll-head clone can point at its grid with `data-paqvilo-grid="original-table-id"` and
@@ -242,10 +291,11 @@ Rules that decide attribution:
   Matching uses static IDs, classes and component attributes, not positional DOM paths. Classes are weighted by rarity,
   so common framework classes stay candidates. Static Liquid matching cannot prove which branch rendered.
 
-**Open source** and **Open candidate** recheck the selected node, source identity and revisions before opening; stale,
-conflicting and unavailable actions are disabled. Saving the file while the browser check is pending makes the action
-stale: refresh inspection and select again. **Copy reference** copies the displayed reference; **Search export markup**
-and **Browse file** are suggestions, not attribution. The inspector never reads input values or page text, and
+The open button of a row (its accessible name is "Open <row> in editor") rechecks the selected node, source identity and
+revisions before opening; outdated, conflicting and missing files cannot open, and the button's tooltip says why.
+Saving the file while the browser check is pending makes the action outdated: refresh inspection and select again. The
+copy button copies the displayed reference; **Markup matches** and its **Open in editor** buttons are suggestions, not
+attribution. The inspector never reads input values or page text, and
 notifications use opaque document, frame and anchor identifiers.
 
 The picker keeps the selected node while X-ray is hidden; if the node is replaced, its frame navigates or its shadow
@@ -253,21 +303,30 @@ host disappears, the selection clears instead of moving to another element. **Cl
 
 #### X-ray
 
-Toggle **◎ Lense X-ray** from Inspect, the panel header or **Alt+Shift+X** (also from inside an accessible same-origin
+Toggle X-ray with the target button in the panel header or **Alt+Shift+X** (also from inside an accessible same-origin
 frame). Green outlines mark controls, blue form/view containers, amber source markup; colors identify layers, not
 certainty. While Inspect mode is on, keyboard and pointer activation is intercepted in the page, accessible same-origin
-frames and open shadow roots; hold **Ctrl** or switch to **Interact** to use the portal. When focus moves into a
-cross-origin or sandboxed frame, X-ray reclaims it one task later, so one keystroke can reach that frame.
+frames and open shadow roots. **Tap Ctrl** (alone) or click **Inspect** to switch to Interact and back; holding Ctrl
+no longer interacts. When focus moves into a cross-origin or sandboxed frame, X-ray reclaims it one task later, so one
+keystroke can reach that frame.
+
+A hover summary appears beside the element, left of it when there is room, else right, below or above; it hides over
+the selected element while its card is open, and wherever it would cover the card. An element with no matching
+component says so; picking it opens **Parent elements**. In a narrow window the card is 45% of the window wide, but at
+least 340 pixels, and as tall as the room beside the element allows; it scrolls inside when a section grows. Outlines
+leave the Lense pill and panel uncovered, and the legend hides while either is under it. **Details** shows the card; off
+leaves hover summaries only.
 
 The details card opens beside the picked element (right of it, else left, below or above), inside the window and
-above the legend, and follows it on scroll and resize; it covers the element only when no side has room. **⇄** or
-dragging its header keeps it where you put it until the next pick. Card controls: **↑ Parent / ↓ Child**, **[ / ]** to
-cycle overlapping elements, **Reveal**, **Details**, **Tab / Shift+Tab**, **Escape** (release, then exit). Context and
+above the legend, and follows it on scroll and resize; it covers the element only when no side has room. The **Move
+details to the other side** button or dragging its header keeps it where you put it until the next pick. Card controls:
+**Parent** and **Child** (also the Up and Down arrow keys), **[ / ]** to cycle overlapping elements, **Reveal**,
+**Details**, **Tab / Shift+Tab**; **Esc** clears the selection, then turns off X-ray. Context and
 permission lists page eight entries at a time. X-ray is removed when the session detaches.
 
 Limits: a markup source above 1,048,576 UTF-16 code units is skipped and reported; discovery and drawing stop at 800
 candidate elements and 250 background outlines; details show up to 60 source matches. Selection still inspects the
-element under the pointer. **Limits & freshness** reports omissions, and the agent API reports them in
+element under the pointer. **Search limits** reports omissions, and the agent API reports them in
 `elementSourceLimits`. Inspection reports are cached until sources change; a refresh rescans source stamps and reimports
 a changed export, so its time grows with export size.
 

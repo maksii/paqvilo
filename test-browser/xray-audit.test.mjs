@@ -612,14 +612,49 @@ test('X-ray case-by-case adversarial browser audit', { concurrency: 4 }, async (
   );
   scenario(
     'L03',
-    'Ctrl reset on blur restores inspect mode',
-    '<button id="action">Action</button>',
+    'A Ctrl tap toggles interact mode; a Ctrl combination or a held Ctrl over blur does not',
+    '<a id="action" href="/target" onclick="window.auditClicks=(window.auditClicks||0)+1;return false">Action</a>',
     async ({ page, xray }) => {
-      await page.keyboard.down('Control');
+      const mode = xray.locator('[data-action=mode]');
+      await page.keyboard.press('Control');
       assert.equal(await xray.locator('.shield').isVisible(), false);
-      await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+      // The toggle keeps its label; only its pressed state says the page is in use.
+      assert.equal(await mode.textContent(), 'Inspect');
+      assert.equal(await mode.getAttribute('aria-pressed'), 'false');
+      // Interact mode: a plain click works like on the page itself, with no modifier.
+      await page.locator('#action').click();
+      assert.equal(await page.evaluate(() => window.auditClicks), 1);
+      await page.keyboard.press('Control');
       assert.equal(await xray.locator('.shield').isVisible(), true);
+      assert.equal(await mode.getAttribute('aria-pressed'), 'true');
+      // Ctrl+C, Ctrl+click and a blur while Ctrl is down are not taps.
+      await page.keyboard.down('Control');
+      await page.keyboard.press('KeyC');
       await page.keyboard.up('Control');
+      const action = await page.locator('#action').boundingBox();
+      await page.keyboard.down('Control');
+      await page.mouse.click(action.x + 5, action.y + action.height / 2);
+      await page.keyboard.up('Control');
+      await page.keyboard.down('Control');
+      await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+      await page.keyboard.up('Control');
+      assert.equal(await xray.locator('.shield').isVisible(), true);
+      // Ctrl+wheel is browser zoom, not a tap, also in Interact mode where the page itself gets the wheel.
+      await page.keyboard.press('Control');
+      assert.equal(await mode.getAttribute('aria-pressed'), 'false');
+      await page.keyboard.down('Control');
+      await page
+        .locator('#action')
+        .evaluate((node) =>
+          node.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, ctrlKey: true, deltaY: 1 })),
+        );
+      await page.keyboard.up('Control');
+      assert.equal(await mode.getAttribute('aria-pressed'), 'false', 'Ctrl+wheel does not switch back to Inspect');
+      await page.keyboard.press('Control');
+      assert.equal(await xray.locator('.shield').isVisible(), true);
+      // In inspect mode a Ctrl+click selects; it neither activates the link nor opens it in a new tab.
+      assert.equal(await page.evaluate(() => window.auditClicks), 1);
+      assert.equal(page.context().pages().length, 1);
     },
   );
   scenario(
@@ -637,12 +672,40 @@ test('X-ray case-by-case adversarial browser audit', { concurrency: 4 }, async (
     'L05',
     'Tab stays inside inspector during inspection',
     '<input id="audit_first">',
-    async ({ page, xray }) => {
+    async ({ page, xray, pick }) => {
       for (let i = 0; i < 16; i++) await page.keyboard.press('Tab');
       assert.equal(
         await xray.evaluate((node) => node.shadowRoot.activeElement?.getRootNode() === node.shadowRoot),
         true,
       );
+      // With a card open, Tab cycles through the controls a person can see: never into a closed disclosure (its
+      // buttons keep their boxes), and after the last control it returns to the first.
+      await pick('#audit_first');
+      const focused = () =>
+        xray.evaluate((node) => {
+          const active = node.shadowRoot.activeElement;
+          return {
+            key: active?.outerHTML.slice(0, 120),
+            hidden: Boolean(active?.closest('details:not([open])') && !active.matches('details > summary')),
+          };
+        });
+      const seen = [];
+      for (let i = 0; i < 80; i++) {
+        await page.keyboard.press('Tab');
+        const current = await focused();
+        assert.equal(current.hidden, false, current.key);
+        if (seen.length && current.key === seen[0]) break;
+        seen.push(current.key);
+      }
+      assert.ok(seen.length > 3 && seen.length < 80, 'Tab came back to the first control: ' + seen.length);
+      assert.ok(
+        await xray.evaluate((node) => node.shadowRoot.querySelector('details.ancestry:not([open]) .crumb') !== null),
+        'the card has a closed disclosure with buttons in it',
+      );
+    },
+    {
+      ...base,
+      elementSources: [{ selector: '#audit_first', kind: 'template', name: 'Template A', ref: 'templates/a.html' }],
     },
   );
   scenario(
@@ -695,7 +758,10 @@ test('X-ray case-by-case adversarial browser audit', { concurrency: 4 }, async (
       );
       await pick('#source');
       await xray.locator('[data-disclosure=static-candidates] > summary').click();
-      await xray.getByRole('button', { name: 'Browse file ↗' }).click();
+      await xray
+        .locator('[data-disclosure=static-candidates]')
+        .getByRole('button', { name: /^Open .+ in the editor$/ })
+        .click();
       assert.deepEqual(await page.evaluate(() => ({ ref: window.auditOpened.ref, line: window.auditOpened.line })), {
         ref: 'templates/example.html',
         line: undefined,
@@ -786,8 +852,9 @@ test('X-ray case-by-case adversarial browser audit', { concurrency: 4 }, async (
       await field('audit_a.audit_first');
       await xray.getByText('Multistep A', { exact: true }).first().waitFor({ state: 'attached' });
       await xray.getByText('System form A', { exact: true }).first().waitFor({ state: 'attached' });
-      await xray.locator('[data-disclosure=declared-form-definitions] > summary').click();
+      // Both forms are listed under Contained in, so no separate definitions section repeats them.
       assert.match(await xray.locator('.content').innerText(), /Multistep form/);
+      assert.equal(await xray.locator('[data-disclosure=declared-form-definitions]').count(), 0);
     },
     {
       ...base,
@@ -952,7 +1019,7 @@ test('X-ray case-by-case adversarial browser audit', { concurrency: 4 }, async (
       await xray.getByRole('button', { name: 'Inspect', exact: true }).click();
       await page.locator('#action').click();
       assert.equal(await page.evaluate(() => window.auditClicks), 1);
-      await xray.getByRole('button', { name: 'Interact', exact: true }).click();
+      await xray.getByRole('button', { name: 'Inspect', pressed: false, exact: true }).click();
     },
   );
   scenario(
@@ -1009,10 +1076,7 @@ test('X-ray case-by-case adversarial browser audit', { concurrency: 4 }, async (
       await xray.locator('.page-context summary').click();
       await xray.getByText('assets/site.css', { exact: true }).first().waitFor({ state: 'attached' });
       await xray.getByText('assets/site.js', { exact: true }).first().waitFor({ state: 'attached' });
-      assert.match(
-        await xray.locator('.content').innerText(),
-        /neither execution nor selected-element ownership is implied/,
-      );
+      assert.doesNotMatch(await xray.locator('.content').innerText(), /ownership|implied|asserted|inferred/);
     },
     {
       ...base,

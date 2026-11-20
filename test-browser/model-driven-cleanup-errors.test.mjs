@@ -223,20 +223,27 @@ test('paired local-simulation panel opens on Mirage and stops without owning the
   });
   running.catch(() => {});
   const context = await browserOpened;
+  setup.owner.add(() => context.close());
   const page = context.pages()[0];
   await page.waitForSelector('#paqvilo-panel', { state: 'attached' });
+  // The collapsed pill names the site; the environment is in its tooltip.
   await page.waitForFunction(() =>
-    document.querySelector('#paqvilo-panel')?.shadowRoot?.textContent.includes('Local simulation'),
+    document
+      .querySelector('#paqvilo-panel')
+      ?.shadowRoot?.querySelector('.pill .lbl')
+      ?.getAttribute('title')
+      ?.includes('Local simulation'),
   );
   const availability = await page.evaluate(modelDrivenActionAvailability, {
     origin: runtime.url,
+    localSimulation: true,
     actions: [
       { id: 'environment', requirements: ['environment'] },
       { id: 'privileges', requirements: ['privileges'] },
     ],
   });
   assert.equal(availability[0].available, false);
-  assert.match(availability[0].reason, /local simulator has none/);
+  assert.match(availability[0].reason, /local simulation has none/);
   assert.equal(availability[1].available, false);
   assert.match(availability[1].reason, /security role privileges/);
   // Closing the dedicated browser is the user's stop; a session lifetime could instead

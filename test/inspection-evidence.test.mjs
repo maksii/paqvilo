@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own evidence policy for Lense selections (owner, source and enclosing certainty rules)
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
@@ -341,4 +342,123 @@ test('browser serialization uses the same complete policy, with no closure impor
   });
   for (const key of ['file', 'body', 'token', 'editTarget']) assert.equal(key in clean, false);
   assert.equal(resolveInspectionEvidence({ scope: null }).owner.status, 'unavailable');
+});
+
+test('an enclosing component keeps its exported definition files so it offers the same source actions', () => {
+  const view = { kind: 'view', key: 'view:a', id: 'a', name: 'Active entries', entity: 'sample_entry' };
+  const viewSource = {
+    ...source,
+    id: 'view-source',
+    key: 'view:a:definition',
+    componentKey: view.key,
+    ref: 'views/a.xml',
+  };
+  const enclosing = (proof, extra = {}) => ({
+    ...owner,
+    id: 'enclosing-' + proof,
+    dimension: 'enclosing',
+    proof,
+    predicate: 'current-view',
+    binding: view,
+    sourceRefIds: [viewSource.id],
+    ...extra,
+  });
+  const exact = resolveInspectionEvidence(packet([owner, enclosing('native-component-id')], [source, viewSource]));
+  assert.equal(exact.enclosing[0].status, 'exact');
+  assert.deepEqual(
+    exact.enclosing[0].refs.map((ref) => [ref.ref, ref.status, ref.sourceRevision, ref.contentRevision]),
+    [['views/a.xml', 'exact', scope.sourceRevision, 'content-a']],
+  );
+  assert.equal(
+    exact.source.refs.some((ref) => ref.ref === 'views/a.xml'),
+    false,
+    'containment is not the source',
+  );
+  const declared = resolveInspectionEvidence(packet([owner, enclosing('declared-include')], [source, viewSource]));
+  assert.equal(declared.enclosing[0].refs[0].status, 'candidate');
+  const changed = resolveInspectionEvidence(
+    packet([owner, enclosing('native-component-id')], [source, { ...viewSource, currentContentRevision: 'content-b' }]),
+  );
+  assert.equal(changed.enclosing[0].refs[0].status, 'stale');
+  const none = resolveInspectionEvidence(packet([owner, enclosing('native-component-id', { sourceRefIds: [] })]));
+  assert.deepEqual(none.enclosing[0].refs, []);
+  assert.equal(none.facts.length, 0, 'no filler context row');
+});
+
+test('evidence carries plain-word labels for known proofs and notices, and none for raw codes', () => {
+  const result = resolveInspectionEvidence(packet([{ ...owner, proof: 'native-field-id' }]));
+  assert.deepEqual(
+    result.owner.evidence.map((item) => item.label),
+    ['Matched by field ID on the page'],
+  );
+  assert.equal(result.source.refs[0].evidenceLabel, 'Defined in this file');
+  // A producer's own label wins; an unknown proof is never de-hyphenated into text.
+  const labelled = resolveInspectionEvidence(packet([{ ...owner, proof: 'native-dom', label: 'Matched by name' }]));
+  assert.equal(labelled.candidates[0].label, 'Matched by name');
+  const unknown = resolveInspectionEvidence(packet([{ ...owner, proof: 'invented-proof' }]));
+  assert.equal(unknown.candidates[0].label, undefined);
+  assert.equal(unknown.candidates[0].reason, 'invented-proof', 'the code stays available to tools');
+  // "No proof" notices restate the Not found badge: they keep their code but get no text.
+  const empty = resolveInspectionEvidence(packet([], []));
+  assert.deepEqual(
+    empty.unavailable.map((item) => [item.reason, item.label]),
+    [
+      ['no-current-direct-owner-proof', undefined],
+      ['no-current-editable-source-proof', undefined],
+    ],
+  );
+  assert.equal(resolveInspectionEvidence({ version: 2 }).unavailable[0].label, 'Select the element again.');
+  const conflict = resolveInspectionEvidence(
+    packet([owner, { ...owner, id: 'other', binding: { ...field, key: 'field:sample_entry:other', name: 'other' } }]),
+  );
+  assert.equal(conflict.conflicts[0].label, 'Several components match this element.');
+});
+
+test('context names each component and relation once, never the owner, and keeps the current form as context', () => {
+  // A model-driven provider reports the table and the form once per enclosing region: the same component many times.
+  const form = { kind: 'form', key: 'form:a', name: 'Entry form' };
+  const table = { kind: 'table', key: 'table:sample_entry', name: 'sample_entry' };
+  const context = (id, binding) => ({
+    ...owner,
+    id,
+    dimension: 'context',
+    predicate: 'contains',
+    binding,
+    sourceRefIds: [],
+  });
+  const result = resolveInspectionEvidence(
+    packet([
+      owner,
+      { ...owner, id: 'open-form', dimension: 'enclosing', predicate: 'contains', binding: form, sourceRefIds: [] },
+      context('table-1', table),
+      context('form-1', form),
+      context('table-2', table),
+      context('form-2', { ...form, name: 'a' }),
+      context('owner-again', field),
+      // The same form in another relation (the page's current form) is distinct context and stays.
+      { ...context('form-current', form), predicate: 'current-form' },
+    ]),
+  );
+  assert.deepEqual(
+    result.enclosing.map((row) => row.component.key),
+    ['form:a'],
+  );
+  assert.deepEqual(
+    result.facts.map((row) => [row.component.key, row.relationship]),
+    [
+      ['table:sample_entry', 'contains'],
+      ['form:a', 'contains'],
+      ['form:a', 'current-form'],
+    ],
+  );
+});
+
+test('a Mirage registry match names Mirage, never a file it did not report', () => {
+  const result = resolveInspectionEvidence(packet([{ ...owner, sourceRefIds: [] }], []));
+  assert.equal(result.owner.status, 'exact');
+  assert.equal(result.source.status, 'unavailable');
+  assert.deepEqual(
+    result.owner.evidence.map((item) => item.label),
+    ['Identified by Mirage'],
+  );
 });

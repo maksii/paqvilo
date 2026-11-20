@@ -33,5 +33,5 @@ test('native Diff reads a web resource served as text/jscript and still refuses 
   await page.goto(origin + '/main.aspx');
   const read = (path) => page.evaluate(readModelDrivenNativeSource, { origin, path, token: 'invented' });
   assert.deepEqual(await read('/WebResources/x_/legacy.js'), { ok: true, text: 'var invented = 1;', bytes: 17 });
-  assert.equal((await read('/WebResources/x_/page.js')).error, 'The native response is not a script or stylesheet.');
+  assert.equal((await read('/WebResources/x_/page.js')).error, 'The online file is not a script or stylesheet.');
 });

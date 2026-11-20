@@ -219,11 +219,8 @@ test('model-driven X-ray binds fields, PCF, handlers and ribbon provenance; boun
   await page.waitForFunction(() => document.getElementById('paqvilo-panel').__pp);
   await page.keyboard.press('Alt+Shift+P');
   await page.getByRole('tab', { name: 'Inspect', exact: true }).click();
-  await page
-    .getByText(
-      'Selected element ownership and local source identity are evaluated separately from native form context.',
-    )
-    .waitFor();
+  // The section filter is drawn only with a completed report.
+  await page.getByRole('group', { name: 'Inspection sections' }).waitFor();
   await host.getByRole('button', { name: 'Toggle Lense X-ray', exact: true }).click();
   const fieldBox = await page.locator('input[data-id]').boundingBox();
   await page.mouse.click(fieldBox.x + fieldBox.width / 2, fieldBox.y + fieldBox.height / 2);
@@ -460,11 +457,8 @@ test('model-driven X-ray reports delayed refresh, settles pending state and offe
   await page.waitForFunction(() => document.querySelector('#paqvilo-panel').__pp);
   await page.keyboard.press('Alt+Shift+P');
   await page.getByRole('tab', { name: 'Inspect', exact: true }).click();
-  await page
-    .getByText(
-      'Selected element ownership and local source identity are evaluated separately from native form context.',
-    )
-    .waitFor();
+  // The section filter is drawn only with a completed report.
+  await page.getByRole('group', { name: 'Inspection sections' }).waitFor();
   assert.equal(
     (await settled((state) => !state.pendingInspection)).pendingInspection,
     false,

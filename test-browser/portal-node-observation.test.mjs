@@ -337,3 +337,39 @@ test('typed advanced wrappers and modal form hierarchy preserve exact configurat
   assert.ok(ambiguous.availability.some((item) => item.reason === 'ambiguous-native-layout'));
   assert.equal(ambiguous.facts.length, 0);
 });
+
+test('the table of an identified basic form has one certainty for every control picked inside it', async (t) => {
+  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
+  ownedFixture(t).add(() => browser.close());
+  const page = await browser.newPage();
+  // The submit button sits in the form's outer panel; the label sits in the form view whose layout names the table.
+  const html =
+    '<div id="EntityFormControl_formc"><div id="EntityFormPanel"><div id="EntityFormControl_formc_EntityFormView">' +
+    '<span data-form-layout=\'{"Id":"formc","EntityName":"sample_entry"}\'></span>' +
+    '<label id="caption" for="title">Title</label><input id="title" name="title"></div>' +
+    '<input type="submit" id="InsertButton" value="Submit"></div></div>';
+  await page.route('http://127.0.0.1:11889/**', (route) => route.fulfill({ contentType: 'text/html', body: html }));
+  await page.goto('http://127.0.0.1:11889/');
+  const scope = { documentId: 'document-c', frameId: 'top', uiEpoch: 1, sourceRevision: 'source-c' };
+  const options = {
+    scope,
+    bindings: {
+      fields: [{ name: 'title', entity: 'sample_entry' }],
+      forms: [{ id: 'formc', kind: 'basicform', entity: 'sample_entry', name: 'Entry editor' }],
+      views: [],
+      lists: [],
+    },
+    sourceRefs: [],
+  };
+  const read = new Function(
+    'data',
+    `return (${observePortalNode.toString()})(document.querySelector(data.selector),data.options);`,
+  );
+  const table = async (selector) => {
+    const packet = await page.evaluate(read, { selector, options });
+    const result = resolveInspectionEvidence({ ...packet, mode: 'live', node: { connected: true } });
+    return result.enclosing.find((row) => row.relationship === 'defined-on')?.status;
+  };
+  assert.equal(await table('#caption'), 'exact', 'the rendered layout names the table');
+  assert.equal(await table('#InsertButton'), 'exact', 'the identified basic form fixes its table');
+});

@@ -501,9 +501,9 @@ export function installDomProvenance({ slot, secret, notifyKey, binding, release
       for (let i = 0; i < reasons.length; i++) result.limits.reasons[result.limits.reasons.length] = reasons[i]; // NOSONAR: array-like or mutated collection, index loop kept
     }
     const callsiteLabel = (relationship) => {
-      if (relationship === 'attached-by') return 'Observed script attachment callsite';
-      if (relationship === 'cloned-by') return 'Observed script clone callsite';
-      return 'Observed script creation callsite';
+      if (relationship === 'attached-by') return 'Inserted by this script';
+      if (relationship === 'cloned-by') return 'Copied by this script';
+      return 'Created by this script';
     };
     const facts = own(proof, 'facts') ?? [];
     for (let i = 0; i < facts.length; i++)

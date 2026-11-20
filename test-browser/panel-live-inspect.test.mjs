@@ -141,18 +141,31 @@ test('live Inspect works without Mirage and opens exact project Solution sources
   await scope.locator('.pill').click();
   await scope.locator('[data-act="tab"][data-v="runtime"]').click();
   await scope.locator('[data-group="runtime-forms"]').getByText('Widget form', { exact: false }).first().waitFor();
-  assert.equal(await scope.getByText('Live portal · local source inspection').count(), 1);
-  assert.equal(await scope.getByText('Live access', { exact: true }).count(), 1);
+  // A live page has no runtime card of its own (the header names site and environment) and no Mirage status.
+  assert.equal(await scope.getByText('Local Mirage', { exact: false }).count(), 0);
+  // Inspect's commands are icon buttons beside its filter; X-ray is the header's.
+  assert.equal(await scope.locator('.tools [data-act="inspect-refresh"]').count(), 1);
+  assert.equal(await scope.locator('.body [data-act="xray"]').count(), 0);
+  for (const title of await scope
+    .locator('.toolbtns button, .inspect-nav button')
+    .evaluateAll((nodes) => nodes.map((node) => node.title)))
+    assert.ok(title.length > 10, title);
+  // Expanding or collapsing the groups is one toggle whose tooltip names the action it takes now.
+  const fold = scope.locator('[data-act="inspect-fold"]');
+  assert.equal(await fold.count(), 1);
+  const foldLabel = await fold.getAttribute('title');
+  await fold.click();
+  assert.notEqual(await fold.getAttribute('title'), foldLabel, 'the toggle names the other action after use');
+  await fold.click();
+  assert.equal(await fold.getAttribute('title'), foldLabel);
+  assert.equal(await scope.getByText('Live access', { exact: true }).count(), 0);
   assert.equal(await scope.locator('[data-act="tab"][data-v="tweaks"]').count(), 0);
   assert.equal(await scope.locator('[data-group="runtime-permissions"]').getByText('Readers view widgets').count(), 1);
   assert.equal(
     await scope.locator('[data-group="runtime-permissions"]').getByText('Editors update widgets').count(),
     1,
   );
-  await scope
-    .locator('[data-group="runtime-api"]')
-    .getByText('table fx_widget · observed request; IDs and query values excluded')
-    .waitFor();
+  await scope.locator('[data-group="runtime-api"]').getByText('table fx_widget · requested by this page').waitFor();
   await scope.locator('[data-group="runtime-native"]').getByText('Child records', { exact: true }).waitFor();
   await scope.locator('[data-group="runtime-forms"]').getByText('Read child', { exact: true }).waitFor();
   await scope.locator('[data-group="runtime-pcf"]').getByText('fx_Example.Editor', { exact: true }).waitFor();
@@ -207,9 +220,10 @@ test('live Inspect works without Mirage and opens exact project Solution sources
   await scope.locator('[data-act="inspect-pick"]').click();
   const fieldBox = await page.locator('#fx_title').boundingBox();
   await page.mouse.click(fieldBox.x + 10, fieldBox.y + 10);
+  // The evidence names the column as X-ray does: display name, then logical name.
   await scope
-    .locator('[data-selected-identity] [data-evidence-role="owner"] strong')
-    .getByText('fx_title', { exact: true })
+    .locator('[data-selected-identity] [data-evidence-role="owner"] .name')
+    .getByText('Title · fx_title', { exact: true })
     .waitFor();
   const selected = await page.evaluate(() => document.getElementById('paqvilo-xray').__px.selectionState());
   assert.equal(selected.identity.evidence.owner.status, 'exact');

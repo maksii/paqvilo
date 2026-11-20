@@ -150,14 +150,16 @@ test('Actions groups, reasons, label-only favorites, inert results, responsive l
   const { page, update, errors } = await fixture(t);
   await page.getByRole('tab', { name: 'Actions', exact: true }).click();
   await page.getByRole('button', { name: 'Favorite Read values', exact: true }).click();
-  await page.getByText('Not available here (1)', { exact: true }).click();
-  await page.getByRole('button', { name: /^Open table/ }).click();
-  assert.equal(await page.getByRole('button', { name: 'Run action', exact: true }).isDisabled(), true);
+  // The count is the kit's count pill, not a number in parentheses.
+  assert.equal(await page.locator('.actions-unavailable > summary .n').textContent(), '1');
+  await page.locator('.actions-unavailable > summary').click();
+  assert.equal(await page.getByRole('button', { name: 'Run Open table', exact: true }).isDisabled(), true);
   assert.equal(await page.getByText('Native navigation is unavailable.', { exact: true }).last().isVisible(), true);
-  await page.getByRole('button', { name: /^Open by ID/ }).click();
+  // Run on a row that needs inputs first shows them under the row; Run then submits them.
+  await page.getByRole('button', { name: 'Run Open by ID', exact: true }).click();
   await page.getByRole('textbox', { name: 'Table logical name', exact: true }).fill('x_item');
   await page.getByRole('textbox', { name: 'Record ID', exact: true }).fill('invalid-guid');
-  await page.getByRole('button', { name: 'Run action', exact: true }).click();
+  await page.getByRole('button', { name: 'Run Open by ID', exact: true }).click();
   assert.equal(await page.evaluate(() => window.uiRequests.length), 0, 'invalid IDs never leave the browser form');
   await page.getByRole('textbox', { name: 'Record ID', exact: true }).fill('{aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa}');
   assert.equal(
@@ -165,15 +167,14 @@ test('Actions groups, reasons, label-only favorites, inert results, responsive l
     true,
   );
   await page.getByRole('textbox', { name: 'Table logical name', exact: true }).fill('x item');
-  await page.getByRole('button', { name: 'Run action', exact: true }).click();
+  await page.getByRole('button', { name: 'Run Open by ID', exact: true }).click();
   assert.equal(
     await page.evaluate(() => window.uiRequests.length),
     0,
     'invalid table names never leave the browser form',
   );
   await page.getByRole('searchbox', { name: 'Find actions', exact: true }).fill('Read values');
-  await page.getByRole('button', { name: /^Read values/ }).click();
-  await page.getByRole('button', { name: 'Run action', exact: true }).click();
+  await page.getByRole('button', { name: 'Run Read values', exact: true }).click();
   await page.getByRole('cell', { name: 'PRIVATE_NATIVE_VALUE', exact: true }).waitFor();
   assert.equal(await page.locator('.actions-result img').count(), 0);
   await page.getByRole('searchbox', { name: 'Filter results', exact: true }).fill('PRIVATE');
@@ -199,7 +200,7 @@ test('Actions groups, reasons, label-only favorites, inert results, responsive l
       reason: 'invalid-input',
     });
   });
-  await page.getByRole('button', { name: 'Run action', exact: true }).click();
+  await page.getByRole('button', { name: 'Run Read values', exact: true }).click();
   await page.getByText('Check the action inputs and try again.', { exact: true }).waitFor();
   await page.evaluate(() => {
     window.__paqviloModelAction = async (request) => {
@@ -207,7 +208,7 @@ test('Actions groups, reasons, label-only favorites, inert results, responsive l
       return { accepted: true, requestId: request.requestId };
     };
   });
-  await page.getByRole('button', { name: 'Run action', exact: true }).click();
+  await page.getByRole('button', { name: 'Run Read values', exact: true }).click();
   await page.getByRole('button', { name: 'Stop waiting', exact: true }).click();
   await page.evaluate(() =>
     document.getElementById('paqvilo-panel').__paqModelActions.receive(window.stalledRequest.requestId, {
@@ -217,7 +218,7 @@ test('Actions groups, reasons, label-only favorites, inert results, responsive l
     }),
   );
   assert.equal(await page.getByText('LATE_PRIVATE_RESULT', { exact: true }).count(), 0);
-  assert.equal(await page.getByRole('button', { name: 'Run action', exact: true }).isEnabled(), true);
+  assert.equal(await page.getByRole('button', { name: 'Run Read values', exact: true }).isEnabled(), true);
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(
     await page.locator('.actions-panel').evaluate((node) => {
@@ -227,9 +228,16 @@ test('Actions groups, reasons, label-only favorites, inert results, responsive l
     true,
   );
   await capture(page, 'actions-mobile');
+  // Esc folds the open action, then closes the panel; it never moves to another tab.
+  await page.getByRole('button', { name: 'Run Read values', exact: true }).focus();
   await page.keyboard.press('Escape');
-  assert.equal(await page.getByRole('dialog', { name: 'Model-driven actions', exact: true }).isVisible(), false);
-  await page.getByRole('tab', { name: 'Actions', exact: true }).click();
+  assert.equal(await page.locator('.actions-inline').count(), 0);
+  assert.equal(await page.getByRole('tab', { name: 'Actions', exact: true }).getAttribute('aria-selected'), 'true');
+  await page.keyboard.press('Escape');
+  assert.equal(await page.locator('.panel[role=dialog]').isVisible(), false, 'the second Esc closes the panel');
+  await page.keyboard.press('Alt+Shift+P');
+  await page.locator('.panel[role=dialog]').waitFor();
+  assert.equal(await page.getByRole('tab', { name: 'Actions', exact: true }).getAttribute('aria-selected'), 'true');
   await page.locator('#paqvilo-panel [data-act=xray]').click();
   assert.equal(await page.getByRole('dialog', { name: 'Model-driven actions', exact: true }).isVisible(), false);
   assert.equal(await page.evaluate(() => document.getElementById('paqvilo-xray').__px.enabled), true);
@@ -253,30 +261,31 @@ test('the full action registry keeps keyboard focus through tool tabs, execution
     await page.locator('#paqvilo-panel').evaluate((node) => node.shadowRoot.activeElement?.textContent),
     'Identity',
   );
-  await page.locator('.actions-tabs').getByRole('button', { name: 'Actions', exact: true }).click();
+  await page.locator('.actions-tabs').getByRole('button', { name: 'Built-in', exact: true }).click();
   await page.getByRole('searchbox', { name: 'Find actions', exact: true }).fill('Record ID');
-  await page.locator('.actions-item>button:first-child').filter({ hasText: 'Record ID' }).focus();
+  await page.getByRole('button', { name: 'Run Record ID', exact: true }).focus();
   await page.keyboard.press('Enter');
-  await page.getByRole('button', { name: 'Run action', exact: true }).focus();
-  await page.keyboard.press('Enter');
-  await page.getByRole('heading', { name: 'Invented result', exact: true }).waitFor();
-  assert.equal(await page.locator('#paqvilo-panel').evaluate((node) => node.shadowRoot.activeElement?.tagName), 'H3');
-  await page.keyboard.press('Escape');
+  await page.getByRole('cell', { name: 'PRIVATE_NATIVE_VALUE', exact: true }).waitFor();
   assert.equal(
-    await page
-      .locator('#paqvilo-panel')
-      .evaluate((node) => node.shadowRoot.activeElement?.getAttribute('aria-controls')),
-    'paqvilo-tab-content',
+    await page.locator('#paqvilo-panel').evaluate((node) => node.shadowRoot.activeElement?.getAttribute('aria-label')),
+    'Action results',
   );
+  // Esc folds the result and returns the focus to the action's Run; the Actions tab stays open.
+  await page.keyboard.press('Escape');
+  assert.equal(await page.locator('.actions-inline').count(), 0);
+  assert.equal(
+    await page.locator('#paqvilo-panel').evaluate((node) => node.shadowRoot.activeElement?.getAttribute('aria-label')),
+    'Run Record ID',
+  );
+  assert.equal(await page.getByRole('tab', { name: 'Actions', exact: true }).getAttribute('aria-selected'), 'true');
   assert.deepEqual(errors, []);
 });
 
 test('late native operation errors replace only the current completed result and never resurrect cleared or older results', async (t) => {
   const { page, errors } = await fixture(t);
   await page.getByRole('tab', { name: 'Actions', exact: true }).click();
-  await page.getByRole('button', { name: /^Read values/ }).click();
-  await page.getByRole('button', { name: 'Run action', exact: true }).click();
-  await page.getByRole('heading', { name: 'Invented result', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Run Read values', exact: true }).click();
+  await page.getByRole('cell', { name: 'PRIVATE_NATIVE_VALUE', exact: true }).waitFor();
   await page.evaluate(() => {
     window.firstResultId = window.uiRequests.at(-1).requestId;
     document.getElementById('paqvilo-panel').__paqModelActions.followup(window.firstResultId, {
@@ -286,15 +295,15 @@ test('late native operation errors replace only the current completed result and
     });
   });
   await page.getByText('The requested native form failed.', { exact: true }).waitFor();
-  await page.getByRole('button', { name: 'Run action', exact: true }).click();
-  await page.getByRole('heading', { name: 'Invented result', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Run Read values', exact: true }).click();
+  await page.getByRole('cell', { name: 'PRIVATE_NATIVE_VALUE', exact: true }).waitFor();
   await page.evaluate(() =>
     document
       .getElementById('paqvilo-panel')
       .__paqModelActions.followup(window.firstResultId, { status: 'error', message: 'OLD_RESULT_MUST_NOT_REPLACE' }),
   );
   assert.equal(await page.getByText('OLD_RESULT_MUST_NOT_REPLACE', { exact: true }).count(), 0);
-  await page.getByRole('button', { name: 'Dismiss result', exact: true }).click();
+  await page.getByRole('button', { name: 'Close result', exact: true }).click();
   await page.evaluate(() =>
     document.getElementById('paqvilo-panel').__paqModelActions.followup(window.uiRequests.at(-1).requestId, {
       status: 'error',
@@ -310,7 +319,7 @@ test('Identity requires explicit selection and Start, keeps visible Stop when cl
   await page.getByRole('tab', { name: 'Actions', exact: true }).click();
   await page.getByRole('button', { name: 'Identity', exact: true }).click();
   await page.getByRole('textbox', { name: 'Directory search', exact: true }).fill('Invented');
-  await page.getByRole('button', { name: 'Run action', exact: true }).click();
+  await page.getByRole('button', { name: 'Run Find directory users', exact: true }).click();
   await page.getByRole('button', { name: 'Invented user', exact: true }).click();
   assert.equal(await page.evaluate(() => window.uiRequests.some((request) => 'objectId' in request)), false);
   await page.evaluate(modelDrivenActionsUi, {
@@ -426,16 +435,23 @@ test('Custom commands retain drafts and caret, import without execution, run asy
   assert.deepEqual(errors, []);
 });
 
-test('a selected action opens under its row, its result offers the paired reversal and Dismiss, and unavailable actions stay collapsed', async (t) => {
+test('Run sits on the action row, turns into Reset while its page change is in place, and the result stays under the row', async (t) => {
   const { page, update, errors } = await fixture(t);
   const actions = [
     ...update.actions,
-    { id: 'form:show-logical-names', label: 'Logical names', group: 'Inspect', description: 'Show names.', inputs: [] },
+    {
+      id: 'form:show-logical-names',
+      label: 'Logical names',
+      group: 'Inspect',
+      description: 'Show names.',
+      inputs: [],
+      undo: { id: 'form:clear-logical-names' },
+    },
     {
       id: 'form:clear-logical-names',
       label: 'Clear logical names',
       group: 'Inspect',
-      description: 'Remove.',
+      description: 'Remove labels added by this session.',
       inputs: [],
     },
     { id: 'form:record-id', label: 'Record ID', group: 'Inspect', description: 'Saved record GUID.', inputs: [] },
@@ -451,45 +467,200 @@ test('a selected action opens under its row, its result offers the paired revers
   });
   await page.getByRole('tab', { name: 'Actions', exact: true }).click();
   // Unavailable actions are gathered in one collapsed group instead of mixing with what works on this page.
-  assert.equal(await page.getByText('Not available here (2)', { exact: true }).isVisible(), true);
-  assert.equal(await page.getByRole('button', { name: /^Record ID/ }).isVisible(), false);
-  await page.getByRole('button', { name: /^Logical names/ }).click();
-  const placement = await page.locator('#paqvilo-panel').evaluate((host) => {
-    const root = host.shadowRoot,
-      row = [...root.querySelectorAll('.actions-item')].find((node) => node.textContent.startsWith('Logical names')),
-      run = [...root.querySelectorAll('button')].find((node) => node.textContent === 'Run action');
+  assert.equal(await page.locator('.actions-unavailable > summary').isVisible(), true);
+  assert.equal(await page.locator('.actions-unavailable > summary .n').textContent(), '2');
+  assert.equal(await page.getByRole('button', { name: 'Run Record ID', exact: true }).isVisible(), false);
+  // The undo of Logical names is its row's Reset, not a row of its own.
+  assert.equal(await page.getByText('Clear logical names', { exact: true }).count(), 0);
+  // The row is the panel's row: name and description in .main, Run and the icon buttons in .acts, on one line.
+  const row = await page.locator('#paqvilo-panel').evaluate((host) => {
+    const item = [...host.shadowRoot.querySelectorAll('.actions-item')].find((node) =>
+      node.textContent.startsWith('Logical names'),
+    );
+    const top = (selector) => Math.round(item.querySelector(selector).getBoundingClientRect().top);
     return {
-      adjacent: row.nextElementSibling?.contains(run) === true,
-      gap: run.getBoundingClientRect().top - row.getBoundingClientRect().bottom,
+      classes: [...item.classList].includes('row'),
+      main: item.querySelector('.main .name').textContent + ' | ' + item.querySelector('.main .sub').textContent,
+      acts: [...item.querySelectorAll('.acts > button')].map(
+        (node) => `${node.className}:${node.getAttribute('aria-label')}`,
+      ),
+      oneLine: Math.abs(top('.acts') - top('.main')) < 12,
     };
   });
-  assert.equal(placement.adjacent, true, 'the action form follows the clicked row');
-  assert.ok(placement.gap >= 0 && placement.gap < 120, `Run action sits under the clicked row (gap ${placement.gap})`);
-  await page.getByRole('button', { name: 'Run action', exact: true }).click();
-  await page.getByRole('heading', { name: 'Invented result', exact: true }).waitFor();
+  assert.deepEqual(row, {
+    classes: true,
+    main: 'Logical names | Show names.',
+    acts: ['btn sec actions-run:Run Logical names', 'ib:Favorite Logical names', 'ib:Hide Logical names'],
+    oneLine: true,
+  });
+  await page.getByRole('button', { name: 'Run Logical names', exact: true }).click();
+  await page.getByRole('cell', { name: 'PRIVATE_NATIVE_VALUE', exact: true }).waitFor();
   assert.equal(
-    await page.locator('.actions-item + .actions-inline .actions-result h3').textContent(),
-    'Invented result',
-    'the result appears with the action that produced it',
+    await page
+      .locator('.actions-item + .actions-inline .actions-result')
+      .getByRole('cell', { name: 'PRIVATE_NATIVE_VALUE', exact: true })
+      .count(),
+    1,
+    'the result appears under the action that produced it',
   );
-  await page.locator('.actions-result').getByRole('button', { name: 'Clear logical names', exact: true }).click();
+  // No second name, description, result heading, card background or bare "Completed." line.
+  assert.equal(await page.locator('.actions-inline h3').count(), 0);
+  assert.equal(await page.getByText('Show names.', { exact: true }).count(), 1);
+  assert.equal(await page.locator('.actions-status').textContent(), '');
+  assert.equal(await page.locator('.actions-panel h2').count(), 0, 'the Actions tab names the view');
+  assert.equal(
+    await page.locator('.actions-inline').evaluate((node) => getComputedStyle(node).backgroundColor),
+    'rgba(0, 0, 0, 0)',
+  );
+  const reset = page.getByRole('button', { name: 'Reset Logical names', exact: true });
+  assert.equal(await reset.getAttribute('title'), 'Remove labels added by this session.');
+  await reset.click();
   await page.waitForFunction(() => window.uiRequests.at(-1)?.action === 'form:clear-logical-names');
-  await page.getByRole('heading', { name: 'Invented result', exact: true }).waitFor();
-  await page.getByRole('button', { name: 'Dismiss result', exact: true }).click();
+  await page.locator('.actions-status').getByText('Undone.', { exact: true }).waitFor();
+  assert.equal(await page.locator('.actions-result').isVisible(), false, 'a successful Reset closes the result');
+  assert.equal(
+    await page.locator('#paqvilo-panel').evaluate((host) => host.shadowRoot.activeElement?.getAttribute('aria-label')),
+    'Run Logical names',
+    'Reset turns back into Run, which keeps the focus',
+  );
+  assert.deepEqual(
+    await page.evaluate(() => JSON.parse(localStorage.getItem('paqvilo.modelActions.labels.v1')).recent),
+    ['Logical names'],
+    'a Reset is not a Recent choice',
+  );
+  // A result without a page change offers Close, which only hides it, and Run stays Run.
+  await page.getByRole('button', { name: 'Run Read values', exact: true }).click();
+  await page.getByRole('cell', { name: 'PRIVATE_NATIVE_VALUE', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Close result', exact: true }).click();
   assert.equal(await page.locator('.actions-result').isVisible(), false);
   assert.equal(await page.locator('.actions-status').textContent(), '');
-  await page.getByText('Not available here (2)', { exact: true }).click();
-  await page.getByRole('button', { name: /^Record ID/ }).click();
-  assert.equal(await page.getByRole('button', { name: 'Run action', exact: true }).isDisabled(), true);
+  assert.equal(await page.getByRole('button', { name: 'Run Read values', exact: true }).count(), 1);
+  await page.locator('.actions-unavailable > summary').click();
+  assert.equal(await page.getByRole('button', { name: 'Run Record ID', exact: true }).isDisabled(), true);
+  assert.deepEqual(errors, []);
+});
+
+test('Reset follows the page changes the runner reports, also ones made before the panel was drawn', async (t) => {
+  const { page, update, errors } = await fixture(t);
+  const actions = MODEL_DRIVEN_ACTIONS.filter((action) =>
+    ['form:show-logical-names', 'form:clear-logical-names'].includes(action.id),
+  );
+  // The runner's session state, as a run left it: labels still on the form.
+  await page.evaluate(() => {
+    const host = document.getElementById('paqvilo-panel');
+    host.__paqModelActionState = {
+      token: 'invented-token',
+      labels: ['label'],
+      active: () => ({ 'form:show-logical-names': host.__paqModelActionState.labels.length > 0 }),
+    };
+  });
+  await page.evaluate(modelDrivenActionsUi, {
+    ...update,
+    actions,
+    availability: actions.map((action) => ({ id: action.id, available: true })),
+  });
+  await page.getByRole('tab', { name: 'Actions', exact: true }).click();
+  // Clearing the labels empties the runner's list, as the runner does.
+  await page.evaluate(() => {
+    const run = window.__paqviloModelAction;
+    window.__paqviloModelAction = (request) => {
+      if (request.action === 'form:clear-logical-names')
+        document.getElementById('paqvilo-panel').__paqModelActionState.labels = [];
+      return run(request);
+    };
+  });
+  await page.getByRole('button', { name: 'Reset Logical names', exact: true }).click();
+  await page.waitForFunction(() => window.uiRequests.at(-1)?.action === 'form:clear-logical-names');
+  await page.getByRole('button', { name: 'Run Logical names', exact: true }).waitFor();
+  assert.deepEqual(errors, []);
+});
+
+test('the autosave guard runs with the guard on and resets with it off, without asking for the switch', async (t) => {
+  const { page, update, errors } = await fixture(t);
+  const guard = MODEL_DRIVEN_ACTIONS.find((action) => action.id === 'form:toggle-autosave');
+  const actions = [...update.actions, guard];
+  await page.evaluate(modelDrivenActionsUi, {
+    ...update,
+    actions,
+    availability: actions.map((action) => ({ id: action.id, available: action.id !== 'open' })),
+  });
+  await page.getByRole('tab', { name: 'Actions', exact: true }).click();
+  await page.getByRole('button', { name: 'Run Autosave guard', exact: true }).click();
+  await page.getByRole('cell', { name: 'PRIVATE_NATIVE_VALUE', exact: true }).waitFor();
+  assert.deepEqual((await page.evaluate(() => window.uiRequests.at(-1))).params, { enabled: true });
+  assert.equal(await page.getByRole('checkbox').count(), 0, 'Run and Reset are the switch');
+  const reset = page.getByRole('button', { name: 'Reset Autosave guard', exact: true });
+  assert.equal(await reset.getAttribute('title'), 'Remove autosave guard');
+  await reset.click();
+  await page.locator('.actions-status').getByText('Undone.', { exact: true }).waitFor();
+  const undo = await page.evaluate(() => window.uiRequests.at(-1));
+  assert.equal(undo.action, 'form:toggle-autosave');
+  assert.deepEqual(undo.params, { enabled: false });
+  assert.equal(await page.locator('.actions-result').isVisible(), false);
+  await page.getByRole('button', { name: 'Run Autosave guard', exact: true }).waitFor();
+  assert.deepEqual(errors, []);
+});
+
+test('the side pane resets through its declared undo, which is not listed on its own', async (t) => {
+  const { page, update, errors } = await fixture(t);
+  const actions = [
+    ...update.actions,
+    ...MODEL_DRIVEN_ACTIONS.filter((action) =>
+      ['navigation:pin-to-side-panel', 'navigation:close-side-panes'].includes(action.id),
+    ),
+  ];
+  await page.evaluate(modelDrivenActionsUi, {
+    ...update,
+    actions,
+    availability: actions.map((action) => ({ id: action.id, available: action.id !== 'open' })),
+  });
+  await page.getByRole('tab', { name: 'Actions', exact: true }).click();
+  assert.equal(await page.getByText('Close pinned side panes', { exact: true }).count(), 0);
+  await page.getByRole('button', { name: 'Run Pin to side pane', exact: true }).click();
+  await page.getByRole('cell', { name: 'PRIVATE_NATIVE_VALUE', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Reset Pin to side pane', exact: true }).click();
+  await page.locator('.actions-status').getByText('Undone.', { exact: true }).waitFor();
+  assert.equal((await page.evaluate(() => window.uiRequests.at(-1))).action, 'navigation:close-side-panes');
+  assert.equal(await page.locator('.actions-result').isVisible(), false);
+  assert.deepEqual(errors, []);
+});
+
+test('hidden actions leave the list and come back from the Hidden filter, remembered like favorites', async (t) => {
+  const { page, update, errors } = await fixture(t);
+  await page.getByRole('tab', { name: 'Actions', exact: true }).click();
+  assert.equal(await page.locator('[data-filter=hidden]').isVisible(), false, 'no Hidden filter while none is hidden');
+  const hide = page.getByRole('button', { name: 'Hide Read values', exact: true });
+  assert.equal(await hide.getAttribute('title'), 'Hide this action from the list');
+  await hide.click();
+  assert.equal(await page.getByRole('button', { name: 'Run Read values', exact: true }).count(), 0);
+  assert.deepEqual(
+    await page.evaluate(() => JSON.parse(localStorage.getItem('paqvilo.modelActions.labels.v1')).hidden),
+    ['Read values'],
+  );
+  // A redrawn panel keeps the choice.
+  await page.evaluate(() => document.getElementById('paqvilo-panel').__paqModelActions.dispose());
+  await page.evaluate(modelDrivenActionsUi, update);
+  await page.getByRole('tab', { name: 'Actions', exact: true }).click();
+  assert.equal(await page.getByRole('button', { name: 'Run Read values', exact: true }).count(), 0);
+  await page.getByRole('button', { name: 'Hidden 1', exact: true }).click();
+  assert.equal(await page.getByRole('button', { name: 'Run Read values', exact: true }).count(), 1);
+  await page.getByRole('button', { name: 'Show Read values', exact: true }).click();
+  // With nothing hidden any more the list is All again, and the focus stays on the action's eye button.
+  assert.equal(await page.locator('[data-filter=all]').getAttribute('aria-pressed'), 'true');
+  assert.equal(await page.locator('[data-filter=hidden]').isVisible(), false);
+  assert.equal(await page.getByRole('button', { name: 'Run Read values', exact: true }).count(), 1);
+  assert.equal(
+    await page.locator('#paqvilo-panel').evaluate((host) => host.shadowRoot.activeElement?.getAttribute('aria-label')),
+    'Hide Read values',
+  );
   assert.deepEqual(errors, []);
 });
 
 test('a result stays in the view that ran it and does not follow to Identity or Custom', async (t) => {
   const { page, errors } = await fixture(t);
   await page.getByRole('tab', { name: 'Actions', exact: true }).click();
-  await page.getByRole('button', { name: /^Read values/ }).click();
-  await page.getByRole('button', { name: 'Run action', exact: true }).click();
-  await page.getByRole('heading', { name: 'Invented result', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Run Read values', exact: true }).click();
+  await page.getByRole('cell', { name: 'PRIVATE_NATIVE_VALUE', exact: true }).waitFor();
   const views = page.locator('#paqvilo-panel').getByRole('button', { name: 'Custom', exact: true });
   await views.click();
   assert.equal(
@@ -498,8 +669,340 @@ test('a result stays in the view that ran it and does not follow to Identity or 
     'the Custom view does not show the Actions result',
   );
   assert.equal(await page.locator('.actions-status').isVisible(), false);
-  await page.locator('#paqvilo-panel').getByRole('button', { name: 'Actions', exact: true }).last().click();
-  await page.getByRole('button', { name: /^Read values/ }).click();
-  assert.equal(await page.getByRole('heading', { name: 'Invented result', exact: true }).isVisible(), true);
+  await page.locator('.actions-tabs').getByRole('button', { name: 'Built-in', exact: true }).click();
+  assert.equal(await page.getByRole('cell', { name: 'PRIVATE_NATIVE_VALUE', exact: true }).isVisible(), true);
+  assert.deepEqual(errors, []);
+});
+
+test('a result scrolls fully into view in the panel and leaves the focus in a field the user is typing in', async (t) => {
+  const { page, update, errors } = await fixture(t);
+  await page.setViewportSize({ width: 1440, height: 600 });
+  const ids = new Set(update.actions.map((action) => action.id)),
+    actions = [...update.actions, ...MODEL_DRIVEN_ACTIONS.filter((action) => !ids.has(action.id))];
+  await page.evaluate(modelDrivenActionsUi, {
+    ...update,
+    actions,
+    availability: actions.map((action) => ({ id: action.id, available: true })),
+  });
+  // Results arrive when the test hands them over, as a slow app answers.
+  await page.evaluate(() => {
+    window.held = [];
+    window.__paqviloModelAction = async (request) => {
+      window.held.push(request);
+      return { accepted: true, requestId: request.requestId };
+    };
+  });
+  const answer = (index, result) =>
+    page.evaluate(
+      ([index, result]) =>
+        document
+          .getElementById('paqvilo-panel')
+          .__paqModelActions.receive(window.held[index].requestId, { status: 'ok', ...result }),
+      [index, result],
+    );
+  await page.getByRole('tab', { name: 'Actions', exact: true }).click();
+  // The last action of the list: its result opens at the bottom of the panel, and its result is taller than the panel.
+  await page.getByRole('button', { name: 'Run Reset diagnostics', exact: true }).click();
+  await page.waitForFunction(() => window.held.length === 1);
+  await answer(0, {
+    title: 'Invented result',
+    message: Array.from({ length: 60 }, (_, index) => `Invented line ${index + 1}`).join('\n'),
+  });
+  await page.locator('.actions-result p').filter({ hasText: 'Invented line 60' }).waitFor();
+  const placement = await page.evaluate(() => {
+    const results = document.getElementById('paqvilo-panel').shadowRoot.querySelector('.actions-result');
+    let box = results.parentElement;
+    while (box && !(box.scrollHeight > box.clientHeight && /auto|scroll/.test(getComputedStyle(box).overflowY)))
+      box = box.parentElement;
+    const outer = box.getBoundingClientRect(),
+      own = results.getBoundingClientRect();
+    return {
+      // The result starts at the top of the scrolled panel, so its message reads from the start.
+      top: Math.abs(own.top - outer.top) < 1,
+      focus: results.getRootNode().activeElement?.tagName,
+      page: scrollY,
+    };
+  });
+  assert.deepEqual(placement, { top: true, focus: 'SECTION', page: 0 }, 'the result shows from its start, focused');
+  // A result that arrives while the user types in the search keeps the focus and the caret in the search.
+  await page.getByRole('button', { name: 'Close result', exact: true }).click();
+  await page.getByRole('button', { name: 'Run Reset diagnostics', exact: true }).click();
+  await page.waitForFunction(() => window.held.length === 2);
+  const search = page.getByRole('searchbox', { name: 'Find actions', exact: true });
+  await search.click();
+  await page.keyboard.type('Rese');
+  await answer(1, { title: 'Late result', message: 'Done.' });
+  await page.locator('.actions-result').getByText('Done.', { exact: true }).waitFor();
+  await page.keyboard.type('t');
+  assert.equal(await search.inputValue(), 'Reset');
+  assert.equal(
+    await page.locator('#paqvilo-panel').evaluate((node) => node.shadowRoot.activeElement?.getAttribute('aria-label')),
+    'Find actions',
+  );
+  assert.deepEqual(errors, []);
+});
+
+const active = (page) =>
+  page.locator('#paqvilo-panel').evaluate((host) => {
+    const node = host.shadowRoot.activeElement;
+    return node ? node.getAttribute('aria-label') || node.textContent : null;
+  });
+
+// @test-kind contract: Paqvilo's own Actions panel design: redraws keep the focus, Close folds the card and Esc still reaches the panel.
+test('opening inputs, starring and closing a result keep the focus in the panel, and Esc still folds the card', async (t) => {
+  const { page, errors } = await fixture(t);
+  await page.getByRole('tab', { name: 'Actions', exact: true }).click();
+  // The row toggle opens the inputs and keeps the focus on the redrawn toggle, so Esc reaches the panel.
+  const toggle = page.locator('.actions-select[data-action=open-id]');
+  await toggle.click();
+  assert.equal(await toggle.getAttribute('aria-expanded'), 'true');
+  assert.equal(await toggle.evaluate((node) => node.getRootNode().activeElement === node), true);
+  await page.keyboard.press('Escape');
+  assert.equal(await page.locator('.actions-inline').count(), 0);
+  assert.equal(await active(page), 'Run Open by ID');
+  // Starring redraws the list; the focus stays on the star.
+  await page.getByRole('button', { name: 'Favorite Read values', exact: true }).click();
+  assert.equal(await active(page), 'Favorite Read values');
+  // Close is the kit icon button; it removes the result, folds the card (no empty card stays) and focuses Run.
+  await page.getByRole('button', { name: 'Run Read values', exact: true }).click();
+  await page.getByRole('cell', { name: 'PRIVATE_NATIVE_VALUE', exact: true }).waitFor();
+  const close = page.getByRole('button', { name: 'Close result', exact: true });
+  assert.equal(await close.getAttribute('class'), 'ib');
+  assert.equal(await close.textContent(), '', 'an icon, no text');
+  await close.click();
+  assert.equal(await page.locator('.actions-inline').count(), 0, 'no empty card remains');
+  assert.equal(await active(page), 'Run Read values');
+  assert.deepEqual(errors, []);
+});
+
+// @test-kind contract: Paqvilo's own Actions panel design: the page-change notice appears only when something was cleared.
+test('a page change says that results and inputs were cleared only when there were some', async (t) => {
+  const { page, errors } = await fixture(t);
+  await page.getByRole('tab', { name: 'Actions', exact: true }).click();
+  const changed = () =>
+    page.evaluate(() => document.getElementById('paqvilo-panel').__paqModelActions.contextChanged());
+  const notice = 'The page changed, so results and action inputs were cleared.';
+  // The first app context of the page clears nothing, and often arrives while the user is in the panel: an open card
+  // without typed inputs stays open with the focus on its toggle.
+  const toggle = page.locator('.actions-select[data-action=open-id]');
+  await toggle.click();
+  await changed();
+  assert.equal(await page.locator('.actions-status').textContent(), '');
+  assert.equal(await page.locator('.actions-inline').count(), 1, 'the open card stays');
+  assert.equal(await toggle.evaluate((node) => node.getRootNode().activeElement === node), true);
+  await page.getByRole('textbox', { name: 'Table logical name', exact: true }).fill('x_item');
+  await changed();
+  assert.equal(await page.getByText(notice, { exact: true }).count(), 1, 'typed inputs were cleared');
+  assert.equal(await page.locator('.actions-inline').count(), 0, 'the card of the old page is closed');
+  assert.equal(await active(page), 'Find actions', 'the focus stays in the panel');
+  await page.getByRole('button', { name: 'Run Read values', exact: true }).click();
+  await page.getByRole('cell', { name: 'PRIVATE_NATIVE_VALUE', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Close result', exact: true }).click();
+  await changed();
+  assert.equal(await page.locator('.actions-status').textContent(), '', 'a closed result is nothing to clear');
+  await page.getByRole('button', { name: 'Run Read values', exact: true }).click();
+  await page.getByRole('cell', { name: 'PRIVATE_NATIVE_VALUE', exact: true }).waitFor();
+  await changed();
+  assert.equal(await page.getByRole('cell', { name: 'PRIVATE_NATIVE_VALUE', exact: true }).count(), 0);
+  assert.equal(await page.getByText(notice, { exact: true }).count(), 1, 'a shown result was cleared');
+  assert.deepEqual(errors, []);
+});
+
+// @test-kind contract: Paqvilo's own Actions panel design: the kit's controls (segmented view switch, filled and outlined buttons, folding group headers), no glyph icons, a confirmed Delete.
+test('views switch with the segmented control, groups fold, commands are kit buttons and Delete asks once in place', async (t) => {
+  const { page, errors } = await fixture(t);
+  await page.getByRole('tab', { name: 'Actions', exact: true }).click();
+  const classes = (locator) => locator.evaluateAll((nodes) => nodes.map((node) => node.className));
+  assert.equal(await page.locator('.actions-tabs').getAttribute('class'), 'seg actions-tabs');
+  assert.deepEqual(await classes(page.locator('.actions-tabs > button')), ['on', '', '']);
+  assert.deepEqual(await classes(page.locator('.actions-toolbar > button:not([hidden])')), ['f on', 'f', 'f']);
+  // No unicode glyph stands in for an icon.
+  assert.equal(
+    await page.locator('.actions-panel .ib').evaluateAll((nodes) => nodes.every((node) => node.querySelector('svg'))),
+    true,
+  );
+  // A group header folds its group, like the groups of Inspect, and stays folded across a redraw.
+  const group = page.locator('details.actions-group', { has: page.locator('summary.gh', { hasText: /^Open/ }) });
+  assert.equal(await group.getAttribute('open'), '');
+  await group.locator('summary.gh').click();
+  assert.equal(await group.getAttribute('open'), null);
+  assert.equal(await page.getByRole('button', { name: 'Run Open by ID', exact: true }).isVisible(), false);
+  await page.getByRole('button', { name: 'Favorite Read values', exact: true }).click();
+  assert.equal(await group.getAttribute('open'), null, 'a redraw keeps the group folded');
+  // A search holds every group open; that is not the user unfolding it, so clearing the search folds it again.
+  await group.evaluate((node) => {
+    const root = node.getRootNode();
+    root.__toggles = 0;
+    root.addEventListener('toggle', () => root.__toggles++, { capture: true });
+  });
+  const find = page.getByPlaceholder('Find actions');
+  await find.fill('e');
+  assert.equal(await group.getAttribute('open'), '');
+  // The open state's toggle event is queued; wait until it has run, as the user's next keystroke would.
+  await group.evaluate((node) => {
+    const root = node.getRootNode();
+    return root.__toggles > 0 || new Promise((resolve) => root.addEventListener('toggle', resolve, { once: true }));
+  });
+  await find.fill('');
+  assert.equal(await group.getAttribute('open'), null, 'a search does not forget that the user folded the group');
+  // Identity: its Run names the action and is the view's main (filled) button.
+  await page.locator('.actions-tabs').getByRole('button', { name: 'Identity', exact: true }).click();
+  assert.equal(
+    await page.getByRole('button', { name: 'Run Find directory users', exact: true }).getAttribute('class'),
+    'btn',
+  );
+  // Custom: "New command" in the chooser is the only way to start a new command.
+  await page.locator('.actions-tabs').getByRole('button', { name: 'Custom', exact: true }).click();
+  assert.equal(await page.getByRole('button', { name: 'New', exact: true }).count(), 0);
+  assert.equal(await page.getByRole('button', { name: 'Run command', exact: true }).getAttribute('class'), 'btn');
+  assert.equal(await page.getByRole('button', { name: 'Save command', exact: true }).getAttribute('class'), 'btn sec');
+  await page.getByRole('textbox', { name: 'Command label', exact: true }).fill('Invented command');
+  await page.getByRole('textbox', { name: 'Command JavaScript', exact: true }).fill('return 1;');
+  await page.getByRole('button', { name: 'Save command', exact: true }).click();
+  const stored = () =>
+    page.evaluate(() => JSON.parse(localStorage.getItem('paqvilo.modelActions.commands.v1')).commands.length);
+  assert.equal(await stored(), 1);
+  // The first click only asks; moving on keeps the command.
+  await page.getByRole('button', { name: 'Delete command', exact: true }).click();
+  assert.equal(await stored(), 1);
+  await page.getByRole('button', { name: 'Confirm delete', exact: true }).waitFor();
+  await page.keyboard.press('Tab');
+  await page.getByRole('button', { name: 'Delete command', exact: true }).waitFor();
+  assert.equal(await stored(), 1);
+  await page.getByRole('button', { name: 'Delete command', exact: true }).click();
+  await page.getByRole('button', { name: 'Confirm delete', exact: true }).click();
+  assert.equal(await stored(), 0);
+  await page.getByText('Invented command deleted.', { exact: true }).waitFor();
+  assert.equal(
+    await page.getByRole('combobox', { name: 'Saved custom commands', exact: true }).inputValue(),
+    '',
+    'the chooser is back on New command',
+  );
+  assert.deepEqual(errors, []);
+});
+
+// @test-kind contract: Paqvilo's own Actions result design: compact first line, an empty table is only its message, empty saved values fold behind Show empty.
+test('a result starts with its message and close icon, an empty table is only its message, and empty values fold away', async (t) => {
+  const { page, errors } = await fixture(t);
+  await page.evaluate(() => {
+    window.nextResult = { status: 'ok', columns: ['Column', 'Label', 'Value'], rows: [], message: 'No choices.' };
+    window.__paqviloModelAction = async (request) => {
+      queueMicrotask(() =>
+        document.getElementById('paqvilo-panel').__paqModelActions.receive(request.requestId, window.nextResult),
+      );
+      return { accepted: true, requestId: request.requestId };
+    };
+  });
+  await page.getByRole('tab', { name: 'Actions', exact: true }).click();
+  await page.getByRole('button', { name: 'Run Read values', exact: true }).click();
+  const result = page.locator('.actions-result');
+  await result.getByText('No choices.', { exact: true }).waitFor();
+  // One first line: the message and the close icon side by side, with no extra indent under the row.
+  const line = await result.evaluate((node) => {
+    const message = node.querySelector('.actions-head > p').getBoundingClientRect(),
+      close = node.querySelector('.actions-head > .ib').getBoundingClientRect();
+    return {
+      sameLine: close.top < message.bottom && message.top < close.bottom,
+      indent: getComputedStyle(node.closest('.actions-inline')).paddingLeft,
+      lines: [...node.children].map((child) => child.className || child.tagName).join(),
+    };
+  });
+  assert.deepEqual(line, { sameLine: true, indent: '8px', lines: 'actions-head' }, 'the result is one line');
+  assert.equal(await result.locator('table').count(), 0);
+  assert.equal(await page.getByRole('searchbox', { name: 'Filter results', exact: true }).count(), 0);
+  assert.equal(await page.getByRole('button', { name: 'Copy result', exact: true }).count(), 0);
+  // Saved record fields: rows without a value wait behind Show empty; names break after underscores.
+  await page.getByRole('button', { name: 'Close result', exact: true }).click();
+  await page.evaluate(() => {
+    window.nextResult = {
+      status: 'ok',
+      hideEmpty: true,
+      columns: ['Column', 'Saved value', 'Formatted value'],
+      rows: [
+        ['_createdby_value', '[NULL]', ''],
+        ['x_name', 'Invented name', ''],
+      ],
+      message: 'Values saved on the server.',
+    };
+  });
+  await page.getByRole('button', { name: 'Run Read values', exact: true }).click();
+  await result.getByRole('cell', { name: 'x_name', exact: true }).waitFor();
+  const visibleRows = () => result.locator('tbody tr:not([hidden])').count();
+  assert.equal(await visibleRows(), 1);
+  const show = page.getByRole('button', { name: 'Show empty 1', exact: true });
+  assert.equal(await show.getAttribute('aria-pressed'), 'false');
+  await show.click();
+  assert.equal(await visibleRows(), 2);
+  assert.equal(await result.locator('tbody tr').first().locator('td').first().locator('wbr').count(), 2);
+  assert.equal(
+    await result.locator('tbody tr').first().locator('td').first().textContent(),
+    '_createdby_value',
+    'the break points add no text',
+  );
+  assert.deepEqual(errors, []);
+});
+
+// @test-kind contract: Paqvilo's own Custom view design: kit inputs and one row of commands with Run first.
+test('the Custom view keeps its commands on one row with Run first, and its inputs use the kit style', async (t) => {
+  const { page, errors } = await fixture(t);
+  await page.setViewportSize({ width: 500, height: 800 });
+  await page.getByRole('tab', { name: 'Actions', exact: true }).click();
+  await page.locator('.actions-tabs').getByRole('button', { name: 'Custom', exact: true }).click();
+  const buttons = await page
+    .locator('form .actions-buttons > button')
+    .evaluateAll((nodes) =>
+      nodes.map((node) => [
+        node.textContent,
+        node.getAttribute('aria-label'),
+        Math.round(node.getBoundingClientRect().top),
+      ]),
+    );
+  assert.deepEqual(
+    buttons.map(([text, name]) => [text, name]),
+    [
+      ['Run', 'Run command'],
+      ['Save', 'Save command'],
+      ['Delete', 'Delete command'],
+      ['Import', 'Import JSON'],
+      ['Export', 'Export JSON'],
+    ],
+  );
+  assert.equal(new Set(buttons.map(([, , top]) => top)).size, 1, 'one row');
+  // The label box and the chooser share the kit's border and radius.
+  const look = (role, name) =>
+    page.getByRole(role, { name, exact: true }).evaluate((node) => {
+      const style = getComputedStyle(node);
+      return [style.borderTopColor, style.borderRadius];
+    });
+  assert.deepEqual(await look('textbox', 'Command label'), await look('combobox', 'Saved custom commands'));
+  assert.deepEqual(errors, []);
+});
+
+// @test-kind contract: Paqvilo's own Actions result design: a table result without a message puts the close icon in its filter row.
+test('a table result without a message has no line holding only the close icon', async (t) => {
+  const { page, errors } = await fixture(t);
+  await page.evaluate(() => {
+    window.__paqviloModelAction = async (request) => {
+      queueMicrotask(() =>
+        document.getElementById('paqvilo-panel').__paqModelActions.receive(request.requestId, {
+          status: 'ok',
+          columns: ['Property', 'Value'],
+          rows: [['Client URL', location.origin]],
+          message: '',
+        }),
+      );
+      return { accepted: true, requestId: request.requestId };
+    };
+  });
+  await page.getByRole('tab', { name: 'Actions', exact: true }).click();
+  await page.getByRole('button', { name: 'Run Read values', exact: true }).click();
+  await page.getByRole('cell', { name: 'Client URL', exact: true }).waitFor();
+  assert.equal(await page.locator('.actions-result .actions-head').count(), 0);
+  assert.equal(
+    await page.locator('.actions-result-tools').getByRole('button', { name: 'Close result', exact: true }).count(),
+    1,
+  );
+  await page.getByRole('button', { name: 'Close result', exact: true }).click();
+  assert.equal(await page.locator('.actions-inline').count(), 0);
   assert.deepEqual(errors, []);
 });

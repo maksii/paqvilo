@@ -164,7 +164,7 @@ test('nested, dynamic and navigated frames keep their own form context; cross-or
   selected = await pick(page, page.locator('#cross'));
   assert.equal(selected.element.tag, 'iframe');
   assert.equal(selected.identity.forms.length, 0);
-  assert.match(await page.locator('#paqvilo-xray .content').innerText(), /cross-origin and sandbox restrictions/);
+  assert.match(await page.locator('#paqvilo-xray .content').innerText(), /open the frame in its own tab/);
   const popupPromise = page.waitForEvent('popup');
   await page.locator('#paqvilo-xray').getByRole('button', { name: 'Open frame in new tab' }).click();
   const popup = await popupPromise;
@@ -209,9 +209,9 @@ test('inactive framework templates never acquire Close, Next or shared notificat
     assert.notEqual(selected.identity.evidence.source.status, 'exact');
     assert.deepEqual(selected.identity.sources, []);
     const text = await page.locator('#paqvilo-xray .content').innerText();
-    assert.match(text, /Local source/);
-    assert.match(text, /Candidate|Unavailable/);
-    assert.doesNotMatch(text, /OwnerExact/);
+    assert.match(text, /Source file/);
+    assert.match(text, /Likely|Not found/);
+    assert.doesNotMatch(text, /^Component/m, 'no component row without an identified component');
   }
 });
 
@@ -326,7 +326,8 @@ test('frame highlights follow existing and newly started Web Animations and rest
 
 test('source-card refresh restores a nonzero existing content scroll position', async (t) => {
   const { page, data, report } = await fixture(t);
-  const elementSources = Array.from({ length: 16 }, (_, index) => ({
+  // Enough rows to overflow the card, so its content has a scroll position to keep.
+  const elementSources = Array.from({ length: 30 }, (_, index) => ({
     selector: '#title',
     matchKind: 'id',
     kind: 'template',
@@ -340,7 +341,7 @@ test('source-card refresh restores a nonzero existing content scroll position', 
     { data, report, elementSources },
   );
   await pick(page, page.frameLocator('#first').locator('#title'));
-  assert.equal(await page.locator('#paqvilo-xray [data-evidence-source]').count(), 16);
+  assert.equal(await page.locator('#paqvilo-xray [data-evidence-source]').count(), 30);
   assert.equal(await page.locator('#paqvilo-xray [data-source-status="candidate"]').count(), 1);
   const scroll = await page.locator('#paqvilo-xray .card .content').evaluate((node) => {
     node.scrollTop = 120;
@@ -416,7 +417,7 @@ test('selected frame assets resolve relative URLs against the embedded document 
   const selected = await pick(page, page.frameLocator('#first').locator('#frame-image'));
   assert.equal(selected.element.tag, 'img');
   const text = await page.locator('#paqvilo-xray .content').innerText();
-  assert.match(text, /Local source|Context/);
+  assert.match(text, /Source file|Context/);
   assert.match(text, /Embedded image/);
   assert.doesNotMatch(text, /Unrelated host image/);
   const evidence = await page.evaluate(inspectRenderedPage);
@@ -579,13 +580,12 @@ test('frames added to a pre-existing shadow root of a large page stay guarded af
     },
     { data, report },
   );
-  // The first geometry scan replaces the legend's initial limits hint.
-  await page.waitForFunction(
-    () =>
-      !document
-        .getElementById('paqvilo-xray')
-        .shadowRoot.querySelector('.legend .hint')
-        .textContent.includes('background limits'),
+  // The first geometry scan writes the legend's hint, which starts empty.
+  await page.waitForFunction(() =>
+    document
+      .getElementById('paqvilo-xray')
+      .shadowRoot.querySelector('.legend .hint')
+      .textContent.includes('click to select'),
   );
   // Suspend geometry callbacks: guarding a loaded frame must not depend on a
   // later scan noticing its replacement Document (load is not shadow-composed).

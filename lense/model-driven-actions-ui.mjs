@@ -1,81 +1,83 @@
 // Browser-only developer tools. Results and transient inputs never enter inspector snapshots.
+// The Actions tab of the shared Lense panel: its rows, chips, icon buttons, buttons and view switch are the kit's (.row,
+// .main, .acts, .ib, .f, .btn, .btn.sec, .seg, .gh); this sheet adds only layout the kit has no rule for (inline
+// cards, results, the identity bar).
 export function modelDrivenActionsUi(data) {
-  const host = document.getElementById('paqvilo-panel') ?? document.getElementById('paqvilo-model-inspector');
+  const host = document.getElementById('paqvilo-panel');
   if (location.origin !== data.origin || !host?.shadowRoot || host.__paqModelInspector?.token !== data.token) return;
   if (host.__paqModelActions?.token === data.token) {
     host.__paqModelActions.update(data);
     return;
   }
   host.__paqModelActions?.dispose();
-  const canonical = host.id === 'paqvilo-panel';
   const root = host.shadowRoot,
     lifetime = new AbortController(),
     signal = lifetime.signal;
   const sheet = new CSSStyleSheet();
   sheet.replaceSync(`
-    .actions-panel{position:fixed;left:12px;bottom:68px;width:650px;max-width:calc(100vw - 24px);max-height:calc(100dvh - 92px);overflow:auto;padding:14px;pointer-events:auto;background:white;border:1px solid #c8c8c8;border-radius:6px;box-shadow:0 4px 18px #0003}
-    .actions-panel[hidden],[data-actions-hidden]{display:none!important}.actions-bar-identity{position:fixed;left:12px;bottom:64px;max-width:calc(100vw - 24px);padding:8px;background:#fff4ce;color:#6b4d00;border-radius:4px;pointer-events:auto;display:flex;align-items:center;gap:8px}.actions-bar-identity[hidden]{display:none}.actions-head,.actions-toolbar,.actions-item,.actions-buttons{display:flex;align-items:center;gap:8px}.actions-head h2{font-size:16px;margin:0;flex:1}.actions-tabs{display:flex;gap:6px;margin:12px 0}.actions-tabs button[aria-pressed=true]{background:#deecf9;border-color:#0078d4}.actions-panel input,.actions-panel textarea,.actions-panel select{font:inherit;color:inherit;box-sizing:border-box;padding:7px;border:1px solid #a19f9d;border-radius:3px;min-width:0}.actions-search{width:100%}.actions-toolbar{margin:8px 0}.actions-toolbar label{display:flex;gap:5px;align-items:center}.actions-list{border-block:1px solid #eee;margin:10px 0}.actions-inline{margin:0 0 8px}.actions-unavailable>summary{cursor:pointer;padding:7px 0;font-size:13px;font-weight:600}.actions-group>h3{position:sticky;top:0;background:white;margin:0;padding:7px 0;font-size:13px}.actions-item{border-top:1px solid #eee;padding:7px 0;align-items:flex-start}.actions-item>button:first-child{flex:1;text-align:left;border:0;background:transparent;padding:3px}.actions-item small{display:block;color:#616161;font-size:12px}.actions-star{flex:none;min-width:32px}.actions-detail{padding:10px;background:#f7f9fb;border-radius:4px}.actions-detail h3{margin:0 0 5px}.actions-input{display:flex;flex-direction:column;gap:4px;margin:9px 0}.actions-input:has(input[type=checkbox]){flex-direction:row;align-items:center}.actions-reason{color:#8a4d00;font-size:12px}.actions-result{margin-top:12px;padding-top:10px;border-top:1px solid #c8c8c8}.actions-result h3{margin:0;font-size:14px}.actions-result p{white-space:pre-wrap;overflow-wrap:anywhere}.actions-table-wrap{max-height:32dvh;overflow:auto}.actions-result table{border-collapse:collapse;width:100%;font-size:12px}.actions-result th,.actions-result td{border-bottom:1px solid #eee;padding:6px;text-align:left;vertical-align:top;white-space:pre-wrap;overflow-wrap:anywhere;max-width:360px}.actions-result pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:28dvh;overflow:auto;font:12px/1.5 Consolas,monospace}.actions-identity{padding:9px;background:#fff4ce;color:#6b4d00;margin-top:8px;border-radius:4px}.actions-identity button{margin-left:8px}.actions-identity:empty{display:none}.actions-users{max-height:28dvh;overflow:auto}.actions-users button{display:block;width:100%;text-align:left;margin:5px 0}.actions-code{width:100%;min-height:180px;font:12px/1.5 Consolas,monospace!important;tab-size:2;resize:vertical}.actions-panel :focus-visible{outline:2px solid #0078d4;outline-offset:2px}.actions-status{min-height:20px;color:#005a9e;font-size:12px}.actions-muted{color:#616161;font-size:12px}@media(max-width:650px){.actions-panel{left:6px;bottom:70px;max-width:calc(100vw - 12px);padding:11px}.actions-toolbar,.actions-buttons{flex-wrap:wrap}.actions-panel input:not([type=checkbox]){width:100%}}
+    .actions-search{margin-bottom:8px}.actions-group{margin-top:8px}.actions-buttons{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:6px 0}
+    .actions-tabs{margin-bottom:8px}.actions-head>.ib{margin-left:auto}
+    .actions-inline{padding:0 8px 8px;border-bottom:1px solid var(--line)}
+    .actions-input{display:flex;flex-direction:column;gap:3px;margin:6px 0;font-size:12px;color:var(--muted)}
+    .actions-detail h3{margin:0 0 4px;font-size:13px}.actions-reason{color:var(--warn);font-size:12px}.actions-muted{color:var(--muted);font-size:12px}
+    .actions-status{color:var(--link);font-size:12px}.actions-result{margin-top:6px}.actions-result:focus{outline:none}
+    .actions-result h3{margin:0;font-size:13px}.actions-head{display:flex;align-items:flex-start;gap:8px}
+    .actions-head>:first-child:not(.ib){flex:1;min-width:0}
+    .actions-result p{margin:4px 0;white-space:pre-wrap;overflow-wrap:anywhere}.actions-head>p{margin:5px 0}
+    .actions-result-tools{display:flex;align-items:center;gap:6px;margin:6px 0}.actions-result-tools>.search{margin:0}
+    .actions-table-wrap{max-height:25vh;overflow:auto}.actions-result table{border-collapse:collapse;width:100%;font-size:12px}
+    .actions-result th,.actions-result td{border-bottom:1px solid var(--line);padding:4px 6px;text-align:left;vertical-align:top;white-space:pre-wrap;overflow-wrap:break-word;max-width:360px}
+    .actions-result pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:28dvh;overflow:auto;font:12px/1.5 Consolas,monospace}
+    .actions-users{max-height:28dvh;overflow:auto}.actions-users button{display:block;width:100%;text-align:left;margin:4px 0}
+    .actions-label{width:100%;margin-bottom:6px}.actions-code{width:100%;min-height:180px;font:12px/1.5 Consolas,monospace!important;tab-size:2;resize:vertical}
+    .actions-identity{padding:8px;margin-bottom:8px;background:var(--warn-bg);border-radius:var(--radius)}.actions-identity:empty{display:none}.actions-identity button{margin-left:8px}
+    .actions-bar-identity{display:flex;align-items:center;gap:8px;margin:6px 10px;padding:8px;background:var(--warn-bg);border:1px solid var(--warn);border-radius:var(--radius)}
+    .actions-bar-identity>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.actions-bar-identity>button{flex:none}
   `);
   root.adoptedStyleSheets = [...root.adoptedStyleSheets, sheet];
-  const identitySheet = new CSSStyleSheet();
-  identitySheet.replaceSync(
-    '.actions-bar-identity>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.actions-bar-identity>button{flex:none}.ui:has(.actions-bar-identity:not([hidden]))>.panel{bottom:120px;max-height:calc(100dvh - 144px)}',
-  );
-  root.adoptedStyleSheets = [...root.adoptedStyleSheets, identitySheet];
-  let shared;
-  if (canonical) {
-    shared = new CSSStyleSheet();
-    shared.replaceSync(`
-    .actions-panel{position:static;inset:auto;width:100%;max-width:none;max-height:none;overflow:visible;padding:0;border:0;border-radius:0;box-shadow:none;background:var(--bg);color:var(--fg)}
-    .actions-group>h3{background:var(--bg)}.actions-detail{background:var(--tint)}.actions-panel .f[aria-pressed=true]{background:var(--primary);border-color:var(--primary);color:var(--on-primary)}
-    .actions-item>.actions-select{color:var(--fg)}.actions-item>.actions-select:hover{color:var(--link);background:var(--tint)}.actions-star{color:var(--fg)}
-    .actions-panel input,.actions-panel textarea,.actions-panel select{background:var(--bg);color:var(--fg);border-color:var(--input-line);border-radius:var(--radius)}.actions-panel :focus-visible{outline-color:var(--primary)}
-    .actions-item,.actions-list,.actions-result,.actions-result th,.actions-result td{border-color:var(--line)}.actions-item small,.actions-muted{color:var(--muted)}.actions-status{color:var(--link)}.actions-reason{color:var(--warn)}
-    .actions-identity,.actions-bar-identity{background:var(--warn-bg);color:var(--fg);border-radius:var(--radius)}.actions-bar-identity{position:static;inset:auto;max-width:none;margin:6px 10px;padding:8px;border:1px solid var(--warn)}
-    .actions-panel .actions-table-wrap{max-height:25vh}.actions-head h2{font-size:14px}.actions-tabs{flex-wrap:wrap}.actions-toolbar,.actions-buttons{flex-wrap:wrap}
-  `);
-    root.adoptedStyleSheets = [...root.adoptedStyleSheets, shared];
-  }
   const make = (tag, text, cls) => {
     const node = document.createElement(tag);
     if (text != null) node.textContent = text;
     if (cls) node.className = cls;
     return node;
   };
-  const button = (label, callback, cls) => {
-    const node = make('button', label, cls ?? (canonical ? 'btn' : undefined));
+  // A command: the kit's outlined secondary button; the one main action of a view passes 'btn' (filled).
+  const button = (label, callback, cls = 'btn sec') => {
+    const node = make('button', label, cls);
     node.type = 'button';
     node.addEventListener('click', callback, { signal });
     return node;
   };
-  // Shared-panel chips for toggles; filled .btn only for commands. List rows keep the panel text color.
-  const chip = canonical ? 'f' : undefined;
-  const bar = root.querySelector('.bar'),
-    launch = button('Actions', () => {
-      panel.hidden ? open() : close(true);
-    });
-  launch.setAttribute('aria-expanded', 'false');
-  launch.setAttribute('aria-controls', 'paqvilo-actions-panel');
-  if (!canonical) bar.insertBefore(launch, bar.querySelector('.bar-status'));
+  // A pressed state (filter chip or view switch button) shows as .on, as on every other tab.
+  const toggle = (label, callback, pressed, cls) => {
+    const node = button(label, callback, cls);
+    node.classList.toggle('on', pressed);
+    node.setAttribute('aria-pressed', String(pressed));
+    return node;
+  };
+  // The panel's own icons (same shape, size and colour as on every tab).
+  const icon = (name) => host.__pp?.icon?.(name) ?? '';
+  // The kit's icon button (.ib): its icon, its name for assistive technology and a tooltip that adds to it.
+  const iconButton = (name, label, title, callback) => {
+    const node = button('', callback, 'ib');
+    node.innerHTML = icon(name);
+    node.setAttribute('aria-label', label);
+    node.title = title;
+    return node;
+  };
   const panel = make('section', null, 'actions-panel');
   panel.id = 'paqvilo-actions-panel';
   panel.hidden = true;
   panel.setAttribute('role', 'dialog');
   panel.setAttribute('aria-label', 'Model-driven actions');
-  const head = make('div', null, 'actions-head');
-  head.append(
-    make('h2', 'Model-driven actions'),
-    button('×', () => close(true)),
-  );
-  head.lastChild.setAttribute('aria-label', 'Close actions');
-  if (canonical) head.lastChild.remove();
   const acting = make('div', null, 'actions-identity');
   acting.setAttribute('role', 'status');
   const actingBar = make('div', null, 'actions-bar-identity');
   actingBar.hidden = true;
   actingBar.setAttribute('role', 'status');
-  (canonical ? root.querySelector('.wrap') : root.querySelector('.ui')).prepend(actingBar);
-  const tabs = make('div', null, 'actions-tabs');
+  root.querySelector('.wrap')?.prepend(actingBar);
+  // The view switch is the kit's segmented control; the filter chips below it filter the Built-in list.
+  const tabs = make('div', null, 'seg actions-tabs');
   tabs.setAttribute('role', 'group');
   tabs.setAttribute('aria-label', 'Developer tools');
   const content = make('div'),
@@ -85,9 +87,9 @@ export function modelDrivenActionsUi(data) {
   status.setAttribute('role', 'status');
   status.setAttribute('aria-live', 'polite');
   results.hidden = true;
+  results.tabIndex = -1;
   results.setAttribute('aria-label', 'Action results');
-  panel.append(head, acting, tabs, content, status, waiting, results);
-  if (!canonical) root.querySelector('.ui').append(panel);
+  panel.append(acting, tabs, content, status, waiting, results);
   let current = data,
     view = 'Actions',
     selectedAction,
@@ -99,16 +101,14 @@ export function modelDrivenActionsUi(data) {
     actionSearch = '',
     actionFilter = 'all',
     lastResultRequest,
-    resultAction,
     // The view (Actions, Identity or Custom) whose request produced the shown status and result.
     resultView,
     unavailableOpen = false;
-  // Actions whose page changes have a session-owned reversal; the reversal is offered on the result.
-  const UNDO_ACTIONS = {
-    'form:show-logical-names': 'form:clear-logical-names',
-    'form:god-mode': 'form:restore-overrides',
-  };
+  // Built-in groups the user folded, by group name.
+  const foldedGroups = new Set();
   const requests = new Map(),
+    // Page changes this panel made and has not undone, for a session whose runner reports none.
+    applied = new Set(),
     params = new Map(),
     drafts = new Map(),
     commandKey = 'paqvilo.modelActions.commands.v1',
@@ -130,15 +130,13 @@ export function modelDrivenActionsUi(data) {
     }
   };
   const preferences = readStore(preferenceKey, {}),
-    favorites = new Set(
-      Array.isArray(preferences.favorites)
-        ? preferences.favorites.filter((value) => typeof value === 'string').slice(0, 100)
-        : [],
-    );
-  let recent = Array.isArray(preferences.recent)
-    ? preferences.recent.filter((value) => typeof value === 'string').slice(0, 12)
-    : [];
-  const persistLabels = () => writeStore(preferenceKey, { version: 1, favorites: [...favorites], recent });
+    labels = (value) => (Array.isArray(value) ? value.filter((item) => typeof item === 'string').slice(0, 100) : []),
+    favorites = new Set(labels(preferences.favorites)),
+    // Actions this person hid from the list; the Hidden filter lists them to show again.
+    hidden = new Set(labels(preferences.hidden));
+  let recent = labels(preferences.recent).slice(0, 12);
+  const persistLabels = () =>
+    writeStore(preferenceKey, { version: 1, favorites: [...favorites], hidden: [...hidden], recent });
   const validateCommands = (value) => {
     if (value?.version !== 1 || !Array.isArray(value.commands) || value.commands.length > 50)
       throw new Error('Use version 1 JSON with at most 50 commands.');
@@ -183,10 +181,6 @@ export function modelDrivenActionsUi(data) {
     acting.replaceChildren();
     actingBar.replaceChildren();
     actingBar.hidden = !identity.active;
-    if (!canonical) {
-      panel.style.bottom = identity.active ? '120px' : '';
-      panel.style.maxHeight = identity.active ? 'calc(100dvh - 144px)' : '';
-    }
     if (identity.active) {
       acting.append(
         make('span', `Acting as ${identity.label || 'the selected user'} for this tab’s Dataverse requests.`),
@@ -202,44 +196,77 @@ export function modelDrivenActionsUi(data) {
       );
     }
   }
-  function renderResult(value, actionId = resultAction) {
+  // An action that changed the page declares its undo, offered by its row's Reset; the runner reports which changes
+  // are still in place, so Reset also covers a change made before this panel was drawn.
+  function reversalOf(action) {
+    const reversal = action.undo,
+      undo = reversal && current.actions?.find((item) => item.id === reversal.id);
+    if (!undo || !availability(undo).available) return undefined;
+    return { undo, params: reversal.params ?? {}, title: undo.id === action.id ? reversal.label : undo.description };
+  }
+  const inEffect = (action) => {
+    const state = host.__paqModelActionState;
+    return state?.token === current.token && !state.retired
+      ? Boolean(state.active?.()[action.id])
+      : applied.has(action.id);
+  };
+  function renderResult(value) {
     results.replaceChildren();
     results.hidden = !value;
     if (!value) {
       lastResultRequest = undefined;
-      resultAction = undefined;
       return;
     }
-    resultAction = actionId;
+    // The first line holds the title (or, under a Built-in row that already names the action, the message) and the
+    // close icon; no line holds the close icon alone.
     const heading = make('div', null, 'actions-head'),
-      title = make('h3', value.title || 'Action result');
-    title.tabIndex = -1;
-    // Dismissing removes only this panel result; a page change it made is undone by its paired action, offered here.
-    const dismiss = button('Dismiss', () => {
-      renderResult(null);
-      status.textContent = '';
-    });
-    dismiss.setAttribute('aria-label', 'Dismiss result');
-    dismiss.title = 'Remove this result from the panel. Changes on the page stay.';
-    heading.append(title);
-    const undo = current.actions?.find((action) => action.id === UNDO_ACTIONS[actionId]);
-    if (undo && value.status === 'ok' && availability(undo).available)
-      heading.append(button(undo.label, () => void runAction(undo)));
-    heading.append(dismiss);
-    results.append(heading);
-    if (value.message) results.append(make('p', String(value.message)));
-    if (Array.isArray(value.columns) && Array.isArray(value.rows)) appendResultTable(value);
+      close = iconButton(
+        'close',
+        'Close result',
+        'Remove this result from the panel. Changes on the page stay.',
+        closeResult,
+      );
+    const titled = value.title && resultView !== 'Actions',
+      // A table without rows is only its message: no filter, no empty table, nothing to copy.
+      table = Array.isArray(value.columns) && Array.isArray(value.rows) && value.rows.length > 0;
+    if (titled) heading.append(make('h3', value.title));
+    else if (value.message) heading.append(make('p', String(value.message)));
+    // With no text for the first line, a table's filter row takes the close icon.
+    if (heading.childElementCount || !table) {
+      heading.append(close);
+      results.append(heading);
+    }
+    if (titled && value.message) results.append(make('p', String(value.message)));
+    if (table) appendResultTable(value, heading.isConnected ? null : close);
     if (value.text != null) results.append(make('pre', String(value.text)));
     appendResultCopy(value);
     appendResultLinks(value);
     appendResultUsers(value);
   }
-  function appendResultTable(value) {
+  // Close removes the result; a Built-in result also folds its action's card, so no empty card stays, and the focus
+  // goes back to that action's Run, or in another view to its first control.
+  function closeResult() {
+    renderResult(null);
+    status.textContent = '';
+    if (view === 'Actions' && selectedAction) collapseAction();
+    else content.querySelector('button,input,select,textarea')?.focus();
+  }
+  // Cell text that breaks after underscores (logical names) rather than in the middle of a word.
+  const cell = (tag, text) => {
+    const node = make(tag);
+    const parts = text.split(/(?<=_)/);
+    parts.forEach((part, index) => {
+      node.append(part);
+      if (index < parts.length - 1) node.append(make('wbr'));
+    });
+    return node;
+  };
+  function appendResultTable(value, close) {
     const wrap = make('div', null, 'actions-table-wrap'),
       table = make('table'),
       header = make('tr');
     for (const label of value.columns.slice(0, 30)) {
-      const th = make('th', String(label));
+      const th = cell('th', String(label));
       th.scope = 'col';
       header.append(th);
     }
@@ -247,36 +274,63 @@ export function modelDrivenActionsUi(data) {
     thead.append(header);
     table.append(thead);
     const body = make('tbody');
+    // hideEmpty: rows whose values (every cell after the name) are empty or [NULL] fold behind Show empty.
+    const blank = (item) => item == null || item === '' || item === '[NULL]';
+    let emptyRows = 0;
     for (const row of value.rows.slice(0, 200)) {
-      const tr = make('tr');
-      for (const item of (Array.isArray(row) ? row : [row]).slice(0, 30)) tr.append(make('td', String(item ?? '')));
+      const tr = make('tr'),
+        cells = (Array.isArray(row) ? row : [row]).slice(0, 30);
+      for (const item of cells) tr.append(cell('td', String(item ?? '')));
+      if (value.hideEmpty === true && cells.length > 1 && cells.slice(1).every(blank)) {
+        tr.dataset.empty = 'true';
+        emptyRows++;
+      }
       body.append(tr);
     }
     table.append(body);
     wrap.append(table);
-    const filter = make('input', null, 'actions-search');
+    let showEmpty = false;
+    const filter = make('input');
     filter.type = 'search';
     filter.setAttribute('aria-label', 'Filter results');
     filter.placeholder = 'Filter results';
-    filter.addEventListener(
-      'input',
-      () => {
-        const term = filter.value.toLocaleLowerCase();
-        let count = 0;
-        for (const row of body.children) {
-          row.hidden = !row.textContent.toLocaleLowerCase().includes(term);
-          if (!row.hidden) count++;
-        }
-        status.textContent = `${count} result rows shown.`;
-      },
-      { signal },
-    );
-    results.append(filter, wrap);
+    const apply = (announce) => {
+      const term = filter.value.toLocaleLowerCase();
+      let count = 0;
+      for (const row of body.children) {
+        row.hidden =
+          (!showEmpty && row.dataset.empty === 'true') || !row.textContent.toLocaleLowerCase().includes(term);
+        if (!row.hidden) count++;
+      }
+      if (announce) status.textContent = `${count} result rows shown.`;
+    };
+    filter.addEventListener('input', () => apply(true), { signal });
+    const tools = make('div', null, 'actions-result-tools');
+    tools.append(searchBox(filter));
+    if (emptyRows) {
+      const empty = toggle(
+        'Show empty ',
+        () => {
+          showEmpty = !showEmpty;
+          empty.classList.toggle('on', showEmpty);
+          empty.setAttribute('aria-pressed', String(showEmpty));
+          apply(false);
+        },
+        false,
+        'f',
+      );
+      empty.append(make('span', String(emptyRows), 'n dimn'));
+      empty.title = 'Show the columns without a saved value';
+      tools.append(empty);
+    }
+    if (close) tools.append(close);
+    results.append(tools, wrap);
+    apply(false);
   }
   function appendResultCopy(value) {
     const copyText =
       value.copyText ??
-      (Array.isArray(value.columns) && Array.isArray(value.rows)
+      (Array.isArray(value.columns) && Array.isArray(value.rows) && value.rows.length
         ? [value.columns, ...value.rows].map((row) => row.map((item) => String(item ?? '')).join('\t')).join('\n')
         : undefined);
     if (copyText == null) return;
@@ -300,7 +354,7 @@ export function modelDrivenActionsUi(data) {
       const url = new URL(item.url, current.origin);
       if (url.origin !== current.origin || !['http:', 'https:'].includes(url.protocol) || url.username || url.password)
         return;
-      const link = make('a', String(item.label || 'Open native record'));
+      const link = make('a', String(item.label || 'Open record'));
       link.href = url.href;
       link.target = '_blank';
       link.rel = 'noopener noreferrer';
@@ -334,20 +388,69 @@ export function modelDrivenActionsUi(data) {
       identity = { active: Boolean(value.identity.active), label: value.identity.label ?? selectedUser?.label };
       renderIdentity();
     }
-    renderResult(
-      value ?? { title: 'Action result', message: 'The action completed without a result.' },
-      request.actionId,
-    );
+    // A successful undo closes the result it reversed and turns Reset back into Run; its message stays as the status.
+    if (request.undo && value?.status === 'ok') {
+      applied.delete(request.undo);
+      renderResult(null);
+      status.textContent = value.message ? String(value.message) : 'Undone.';
+      rerender();
+      // Reset is Run again, in the same place.
+      if (request.view === 'Actions') focusRun(request.undo);
+      return;
+    }
+    if (value?.status === 'ok' && !request.undo && current.actions?.find((item) => item.id === request.actionId)?.undo)
+      applied.add(request.actionId);
+    const shown = value ?? { message: 'The action completed without a result.' };
+    renderResult(shown.title === request.label ? { ...shown, title: undefined } : shown);
     lastResultRequest = id;
-    if (value?.status === 'ok') status.textContent = 'Completed.';
+    // A completed run shows only its result; a status line names the other outcomes.
+    if (value?.status === 'ok') status.textContent = '';
     else if (value?.status === 'cancelled') status.textContent = 'Cancelled.';
-    else status.textContent = 'Action unavailable or failed.';
-    renderView();
-    if (!panel.hidden) results.querySelector('h3')?.focus();
+    else if (value?.status === 'unsupported') status.textContent = 'Not available here.';
+    else status.textContent = 'Failed.';
+    rerender();
+    showResult();
   }
-  async function dispatch(kind, label, invoke, actionId) {
+  // Redraws the view and keeps the focus, with its selection, in the field the user was typing in.
+  function rerender() {
+    const focused = root.activeElement,
+      anchor =
+        focused && content.contains(focused)
+          ? {
+              label: focused.getAttribute('aria-label'),
+              name: focused.getAttribute('name'),
+              start: focused.selectionStart,
+              end: focused.selectionEnd,
+            }
+          : undefined;
+    renderView();
+    if (!anchor) return;
+    const replacement = [...content.querySelectorAll('input,textarea,select')].find((node) =>
+      anchor.label
+        ? node.getAttribute('aria-label') === anchor.label
+        : anchor.name && node.getAttribute('name') === anchor.name,
+    );
+    if (!replacement) return;
+    replacement.focus({ preventScroll: true });
+    if (anchor.start != null)
+      try {
+        replacement.setSelectionRange(anchor.start, anchor.end);
+      } catch {
+        /* A field type without a text selection keeps only the focus. */
+      }
+  }
+  // The result scrolls into view in the panel, message included. Its heading takes the focus unless the user is typing
+  // in a field, in the panel or on the page.
+  function showResult() {
+    if (panel.hidden || results.hidden) return;
+    results.scrollIntoView?.({ block: 'nearest' });
+    const focused = root.activeElement ?? document.activeElement;
+    if (!['INPUT', 'TEXTAREA', 'SELECT'].includes(focused?.tagName) && !focused?.isContentEditable)
+      results.focus({ preventScroll: true });
+  }
+  async function dispatch(kind, label, invoke, actionId, extra = {}) {
     const id = requestId();
-    requests.set(id, { kind, label, actionId, view });
+    requests.set(id, { kind, label, actionId, view, ...extra });
     resultView = view;
     if (kind === 'identity') identityRequest = id;
     status.textContent = `Running ${label}…`;
@@ -373,17 +476,32 @@ export function modelDrivenActionsUi(data) {
       });
     }
   }
-  function runAction(action) {
+  // A boolean input with a default (the autosave guard's) is not asked for: Run uses it and Reset is its opposite.
+  const needsInput = (action) => (action.inputs ?? []).some((spec) => spec.type !== 'boolean');
+  const defaults = (action) =>
+    Object.fromEntries(
+      (action.inputs ?? []).filter((spec) => spec.default !== undefined).map((spec) => [spec.name, spec.default]),
+    );
+  // undoOf: the id of the action whose page change this run reverses (its row's Reset).
+  function runAction(action, values = { ...defaults(action), ...params.get(action.id) }, undoOf) {
     const supported = availability(action);
     if (!supported.available || busy()) return;
-    const values = params.get(action.id) ?? {};
-    remember(action.label);
+    // A Reset is not a choice to list under Recent.
+    if (!undoOf) remember(action.label);
     return dispatch(
       'action',
       action.label,
       (id) =>
-        globalThis.__paqviloModelAction?.({ token: current.token, requestId: id, action: action.id, params: values }),
+        globalThis.__paqviloModelAction?.({
+          token: current.token,
+          requestId: id,
+          action: action.id,
+          params: values,
+          // Activity names a Reset by the row's action.
+          ...(undoOf ? { undoOf } : {}),
+        }),
       action.id,
+      { undo: undoOf },
     );
   }
   function startIdentity(objectId) {
@@ -392,19 +510,25 @@ export function modelDrivenActionsUi(data) {
       globalThis.__paqviloModelIdentity?.({ token: current.token, requestId: id, objectId }),
     );
   }
-  function actionForm(action, parent) {
+  // inline: the inputs under the action's own row, whose name, description and Run button (submitting this form)
+  // are on the row itself.
+  function actionForm(action, parent, inline = false) {
     const section = make('form', null, 'actions-detail');
-    section.append(make('h3', action.label), make('p', action.description));
+    if (inline) section.id = `paqvilo-action-form-${action.id.replace(/\W/g, '-')}`;
+    else section.append(make('h3', action.label), make('p', action.description));
     const values = params.get(action.id) ?? {};
     params.set(action.id, values);
-    for (const spec of action.inputs ?? []) section.append(makeActionInput(spec, values));
+    for (const spec of action.inputs ?? [])
+      if (!inline || spec.type !== 'boolean') section.append(makeActionInput(spec, values));
     const support = availability(action);
-    if (!support.available)
-      section.append(make('p', support.reason || 'Unavailable on the current native page.', 'actions-reason'));
-    const run = button('Run action', () => {});
-    run.type = 'submit';
-    run.disabled = !support.available || busy();
-    section.append(run);
+    if (!inline) {
+      if (!support.available)
+        section.append(make('p', support.reason || 'Not available on this page.', 'actions-reason'));
+      const run = button(`Run ${action.label}`, () => {}, 'btn');
+      run.type = 'submit';
+      run.disabled = !support.available || busy();
+      section.append(run);
+    }
     section.addEventListener(
       'submit',
       (event) => {
@@ -450,90 +574,208 @@ export function modelDrivenActionsUi(data) {
     label.append(input);
     return label;
   }
+  // The panel's search box: its icon and border around the input.
+  function searchBox(input) {
+    const box = make('label', null, 'search actions-search');
+    box.innerHTML = icon('search');
+    box.append(input);
+    return box;
+  }
   function renderActions() {
-    const search = make('input', null, 'actions-search');
+    const search = make('input');
     search.type = 'search';
     search.placeholder = 'Find actions';
     search.setAttribute('aria-label', 'Find actions');
     search.value = actionSearch;
     const list = make('div', null, 'actions-list'),
       detail = make('div', null, 'actions-inline');
-    content.append(search);
-    const controls = make('div', null, 'actions-toolbar');
-    for (const [label, value] of [
-      ['All', 'all'],
-      ['Favorites', 'favorites'],
-      ['Recent', 'recent'],
-    ]) {
-      const control = button(
-        label,
-        () => {
-          actionFilter = value;
-          for (const item of controls.children) item.setAttribute('aria-pressed', String(item === control));
-          draw();
-        },
-        chip,
-      );
-      control.setAttribute('aria-pressed', String(value === actionFilter));
-      controls.append(control);
-    }
+    content.append(searchBox(search));
+    const controls = make('div', null, 'filters actions-toolbar'),
+      filters = [
+        ['All', 'all', 'Every action except the ones you hid'],
+        ['Favorites', 'favorites', 'Actions you starred'],
+        ['Recent', 'recent', 'Actions you ran last'],
+        ['Hidden', 'hidden', 'Actions you hid; show one again with its eye button'],
+      ].map(([label, value, title]) => {
+        const control = toggle(
+          label,
+          () => {
+            actionFilter = value;
+            draw();
+          },
+          value === actionFilter,
+          'f',
+        );
+        control.title = title;
+        control.dataset.filter = value;
+        controls.append(control);
+        return control;
+      });
     content.append(controls, list);
-    // The selected action opens directly under its own row with its status and result, so what the click produced is
-    // next to what was clicked instead of after the whole list.
+    // An action that only reverses another one (Clear logical names) is that action's Reset, not a row of its own.
+    const undoOnly = new Set(
+      (current.actions ?? []).filter((action) => action.undo && action.undo.id !== action.id).map((a) => a.undo.id),
+    );
+    const formId = (action) => `paqvilo-action-form-${action.id.replace(/\W/g, '-')}`;
+    // The open action's inputs, status and result sit directly under its row.
     const showDetail = (action, row) => {
       detail.replaceChildren();
-      actionForm(action, detail);
+      if (needsInput(action)) actionForm(action, detail, true);
       detail.append(status, waiting, results);
       row.after(detail);
     };
+    const select = (action, open) => {
+      // Another action's result does not move under this row.
+      if (!busy() && selectedAction !== action.id && resultView === 'Actions') {
+        status.textContent = '';
+        renderResult(null);
+      }
+      selectedAction = open ? action.id : undefined;
+      draw();
+    };
+    // The panel's row: name and description in .main, Run (or Reset) and the icon buttons in .acts.
     function actionRow(action) {
-      const row = make('div', null, 'actions-item'),
-        select = button(
-          action.label,
+      const row = make('div', null, 'row actions-item'),
+        support = availability(action),
+        inputs = needsInput(action),
+        open = selectedAction === action.id,
+        main = make(inputs ? 'button' : 'div', null, 'main actions-select'),
+        name = make('div', null, 'name');
+      name.append(make('span', action.label));
+      main.append(
+        name,
+        make('div', support.available ? action.description : support.reason || 'Not available on this page.', 'sub'),
+      );
+      main.dataset.action = action.id;
+      main.dataset.key = `${action.id}:main`;
+      if (inputs) {
+        main.type = 'button';
+        main.setAttribute('aria-expanded', String(open));
+        main.title = open ? 'Hide the inputs of this action' : 'Show the inputs of this action';
+        main.addEventListener('click', () => select(action, !open), { signal });
+      }
+      // Run turns into Reset while the page change it made is in place, and back after Reset.
+      const reversal = inEffect(action) ? reversalOf(action) : undefined,
+        verb = reversal ? 'Reset' : 'Run',
+        run = button(
+          verb,
           () => {
-            selectedAction = action.id;
-            if (!busy()) status.textContent = '';
-            showDetail(action, row);
-            detail.scrollIntoView?.({ block: 'nearest' });
+            if (reversal) {
+              select(action, true);
+              void runAction(reversal.undo, reversal.params, action.id);
+            } else if (!inputs) {
+              select(action, true);
+              void runAction(action);
+            } else if (!open) {
+              select(action, true);
+              detail.querySelector('input')?.focus();
+            }
+            // With the inputs open, Run submits their form, which checks them first.
           },
-          'actions-select',
+          'btn sec actions-run',
         );
-      const support = availability(action);
-      select.append(
-        make('small', support.available ? action.description : support.reason || 'Unavailable on this page.'),
-      );
-      const favorite = button(
-        favorites.has(action.label) ? '★' : '☆',
-        () => {
-          favorites.has(action.label) ? favorites.delete(action.label) : favorites.add(action.label);
-          persistLabels();
-          draw();
-        },
-        'actions-star',
-      );
-      favorite.setAttribute('aria-label', `Favorite ${action.label}`);
-      favorite.setAttribute('aria-pressed', String(favorites.has(action.label)));
-      row.append(select, favorite);
+      run.dataset.action = action.id;
+      run.dataset.key = `${action.id}:run`;
+      if (inputs && open && !reversal) {
+        run.type = 'submit';
+        run.setAttribute('form', formId(action));
+      }
+      run.disabled = !support.available || busy();
+      run.setAttribute('aria-label', `${verb} ${action.label}`);
+      if (reversal) run.title = reversal.title;
+      else run.title = inputs && !open ? 'Show the inputs, then Run' : action.description;
+      const starred = favorites.has(action.label),
+        favorite = iconButton(
+          starred ? 'starred' : 'star',
+          `Favorite ${action.label}`,
+          starred ? 'Remove from Favorites' : 'Add to Favorites',
+          () => {
+            starred ? favorites.delete(action.label) : favorites.add(action.label);
+            persistLabels();
+            draw();
+          },
+        );
+      favorite.setAttribute('aria-pressed', String(starred));
+      favorite.classList.toggle('on', starred);
+      favorite.dataset.key = `${action.id}:favorite`;
+      const isHidden = hidden.has(action.label),
+        hide = iconButton(
+          isHidden ? 'show' : 'hide',
+          `${isHidden ? 'Show' : 'Hide'} ${action.label}`,
+          isHidden ? 'Show this action in the list again' : 'Hide this action from the list',
+          () => {
+            isHidden ? hidden.delete(action.label) : hidden.add(action.label);
+            persistLabels();
+            draw();
+          },
+        );
+      hide.dataset.key = `${action.id}:hide`;
+      const acts = make('div', null, 'acts');
+      acts.append(run, favorite, hide);
+      row.append(main, acts);
       return row;
     }
+    // A group the user folded stays folded while this panel lives. A group a search or the selected
+    // action holds open is not the user's choice, so that opening is not remembered.
+    const groupOpen = (section, key, forced) => {
+      section.addEventListener(
+        'toggle',
+        () => {
+          if (forced && section.open) return;
+          if (section.open) foldedGroups.delete(key);
+          else foldedGroups.add(key);
+        },
+        { signal },
+      );
+    };
     function draw() {
+      // The row control that had the focus is redrawn; the focus moves to its new copy (the same action's toggle,
+      // Run, star or eye), else to the search box when the row left the list.
+      const focused = root.activeElement,
+        focusKey = focused && list.contains(focused) ? focused.dataset.key : undefined;
       list.replaceChildren();
+      const listed = (current.actions ?? []).filter((action) => !undoOnly.has(action.id)),
+        hiddenCount = listed.filter((action) => hidden.has(action.label)).length;
+      // With nothing hidden any more, the Hidden filter has nothing to list: the list shows All again.
+      if (actionFilter === 'hidden' && !hiddenCount) actionFilter = 'all';
+      for (const control of filters) {
+        const value = control.dataset.filter;
+        control.setAttribute('aria-pressed', String(value === actionFilter));
+        control.classList.toggle('on', value === actionFilter);
+        if (value === 'hidden') {
+          control.replaceChildren('Hidden ', make('span', String(hiddenCount), 'n dimn'));
+          control.hidden = !hiddenCount && actionFilter !== 'hidden';
+        }
+      }
       const term = search.value.toLocaleLowerCase(),
-        entries = (current.actions ?? []).filter(
+        entries = listed.filter(
           (action) =>
             `${action.label} ${action.description} ${action.group}`.toLocaleLowerCase().includes(term) &&
-            (actionFilter === 'all' ||
-              (actionFilter === 'favorites' && favorites.has(action.label)) ||
-              (actionFilter === 'recent' && recent.includes(action.label))),
+            (actionFilter === 'hidden'
+              ? hidden.has(action.label)
+              : !hidden.has(action.label) &&
+                (actionFilter === 'all' ||
+                  (actionFilter === 'favorites' && favorites.has(action.label)) ||
+                  (actionFilter === 'recent' && recent.includes(action.label)))),
         );
       // Groups show only what the current page supports, using the same requirement checks the action runner applies;
       // the rest stays reachable, with each reason, in one collapsed group at the end.
       const usable = entries.filter((action) => availability(action).available),
         unusable = entries.filter((action) => !availability(action).available);
       const rows = new Map();
+      // Each group folds like the groups of Inspect: a summary with the kit chevron, its name and its count.
       for (const group of new Set(usable.map((action) => action.group))) {
-        const section = make('section', null, 'actions-group');
-        section.append(make('h3', group));
+        const section = make('details', null, 'actions-group'),
+          heading = make('summary', null, 'gh');
+        heading.innerHTML = icon('right');
+        heading.append(
+          make('span', group),
+          make('span', String(usable.filter((entry) => entry.group === group).length), 'n dimn'),
+        );
+        const forced = Boolean(term) || usable.some((a) => a.group === group && a.id === selectedAction);
+        section.open = !foldedGroups.has(group) || forced;
+        groupOpen(section, group, forced);
+        section.append(heading);
         for (const action of usable.filter((entry) => entry.group === group)) {
           const row = actionRow(action);
           rows.set(action.id, row);
@@ -543,11 +785,15 @@ export function modelDrivenActionsUi(data) {
       }
       if (unusable.length) {
         const section = make('details', null, 'actions-group actions-unavailable'),
-          summary = make('summary', `Not available here (${unusable.length})`);
-        section.open = unavailableOpen || Boolean(term) || unusable.some((action) => action.id === selectedAction);
+          summary = make('summary', null, 'gh');
+        summary.innerHTML = icon('right');
+        summary.append(make('span', 'Not available here'), make('span', String(unusable.length), 'n dimn'));
+        const forced = Boolean(term) || unusable.some((action) => action.id === selectedAction);
+        section.open = unavailableOpen || forced;
         section.addEventListener(
           'toggle',
           () => {
+            if (forced && section.open) return;
             unavailableOpen = section.open;
           },
           { signal },
@@ -568,6 +814,8 @@ export function modelDrivenActionsUi(data) {
       const action = current.actions?.find((entry) => entry.id === selectedAction);
       if (action && rows.has(action.id)) showDetail(action, rows.get(action.id));
       else detail.remove();
+      if (focusKey && !root.activeElement?.isConnected)
+        (list.querySelector(`[data-key="${CSS.escape(focusKey)}"]`) ?? search).focus({ preventScroll: true });
     }
     search.addEventListener(
       'input',
@@ -583,32 +831,35 @@ export function modelDrivenActionsUi(data) {
     content.append(
       make(
         'p',
-        'Choose a directory user, then explicitly start requests as that user. This applies to this tab’s Dataverse Web API reads and writes. Server permissions still apply; your signed-in account stays the same.',
+        'Pick a user, then Start to send this tab’s Dataverse Web API requests as that user. Server permissions still apply; you stay signed in as yourself.',
         'actions-muted',
       ),
     );
     const users = current.actions?.find((action) => action.id === 'identity:users');
     if (users) actionForm(users, content);
-    else content.append(make('p', 'Directory lookup is unavailable in this session.', 'actions-reason'));
+    else content.append(make('p', 'User search is not available in this session.', 'actions-reason'));
     if (selectedUser) {
       const check = current.actions?.find((action) => action.id === 'identity:status'),
         support = check
           ? availability(check)
-          : { available: false, reason: 'The current native page does not provide privilege-check support.' };
+          : {
+              available: false,
+              reason: 'This app does not expose the security role privileges of the signed-in user.',
+            };
       content.append(make('p', `Selected user: ${selectedUser.label}`));
-      const start = button('Start acting as selected user', () => startIdentity(selectedUser.objectId));
+      const start = button('Start acting as selected user', () => startIdentity(selectedUser.objectId), 'btn');
       start.disabled = busy() || identity.active || !support.available;
       content.append(start);
       if (!support.available)
         content.append(
           make(
             'p',
-            support.reason || 'The current native page does not provide privilege-check support.',
+            support.reason || 'This app does not expose the security role privileges of the signed-in user.',
             'actions-reason',
           ),
         );
       if (identity.active)
-        content.append(make('p', 'Stop acting as the current user before starting another identity.', 'actions-muted'));
+        content.append(make('p', 'Stop acting as the current user before you choose another.', 'actions-muted'));
     }
     if (identity.active) content.append(button('Stop acting as another user', () => startIdentity(null)));
   }
@@ -616,7 +867,7 @@ export function modelDrivenActionsUi(data) {
     content.append(
       make(
         'p',
-        'Commands are stored in this origin’s browser storage. Save or import edits them; only Run executes code in this native app. Code can use await and the current Xrm API.',
+        'Saved in this browser for this environment. Run executes the code in this app; it can use await and Xrm.',
         'actions-muted',
       ),
     );
@@ -638,7 +889,7 @@ export function modelDrivenActionsUi(data) {
       draftKey = selectedCommand ?? '_new',
       draft = drafts.get(draftKey) ?? { label: command?.label ?? '', code: command?.code ?? '' },
       form = make('form'),
-      labelInput = make('input');
+      labelInput = make('input', null, 'actions-label');
     drafts.set(draftKey, draft);
     labelInput.value = draft.label;
     labelInput.required = true;
@@ -665,15 +916,17 @@ export function modelDrivenActionsUi(data) {
       },
       { signal },
     );
-    toolbar.append(
-      chooser,
-      button('New', () => {
-        selectedCommand = undefined;
-        drafts.delete('_new');
-        renderView();
-      }),
-    );
-    const save = button('Save command', () => {});
+    // "New command" in the chooser starts a new command; no second control does the same.
+    toolbar.append(chooser);
+    // The commands share one row: Run (the view's main button) first, then compact secondary buttons whose
+    // accessible names say what they act on.
+    const compact = (label, name, title, callback, cls) => {
+      const node = button(label, callback, cls);
+      node.setAttribute('aria-label', name);
+      node.title = title;
+      return node;
+    };
+    const save = compact('Save', 'Save command', 'Save this command in this browser', () => {});
     save.type = 'submit';
     form.addEventListener(
       'submit',
@@ -700,33 +953,60 @@ export function modelDrivenActionsUi(data) {
       { signal },
     );
     const actions = make('div', null, 'actions-buttons');
-    actions.append(
-      save,
-      button('Delete command', () => {
-        if (!command) return;
-        commands = commands.filter((item) => item.id !== command.id);
-        writeStore(commandKey, { version: 1, commands });
-        selectedCommand = undefined;
-        renderView();
-      }),
-    );
-    actions.lastChild.disabled = !command;
-    const run = button('Run command', () => {
-      if (!form.reportValidity() || busy()) return;
-      remember(labelInput.value.trim());
-      void dispatch('command', labelInput.value.trim(), (id) =>
-        host.__paqModelCommands?.token === current.token
-          ? host.__paqModelCommands.run({
-              id: command?.id ?? 'unsaved',
-              code: code.value,
-              timeoutMs: 10000,
-              requestId: id,
-            })
-          : undefined,
-      );
+    // Delete asks once in place: the first click turns the button into Confirm delete, which deletes; leaving it
+    // (the focus moves on) keeps the command.
+    const remove = compact('Delete', 'Delete command', 'Delete this command from this browser', () => {
+      if (!command) return;
+      if (!remove.dataset.armed) {
+        remove.dataset.armed = 'true';
+        remove.textContent = 'Confirm delete';
+        remove.setAttribute('aria-label', 'Confirm delete');
+        status.textContent = `Select Confirm delete to remove ${command.label} from this browser.`;
+        return;
+      }
+      // Disarmed first: the redraw removes this focused button, and its blur must not clear the status below.
+      delete remove.dataset.armed;
+      commands = commands.filter((item) => item.id !== command.id);
+      writeStore(commandKey, { version: 1, commands });
+      selectedCommand = undefined;
+      status.textContent = `${command.label} deleted.`;
+      renderView();
+      content.querySelector('select')?.focus();
     });
+    remove.disabled = !command;
+    remove.addEventListener(
+      'blur',
+      () => {
+        if (!remove.dataset.armed) return;
+        delete remove.dataset.armed;
+        remove.textContent = 'Delete';
+        remove.setAttribute('aria-label', 'Delete command');
+        status.textContent = '';
+      },
+      { signal },
+    );
+    const run = compact(
+      'Run',
+      'Run command',
+      'Run this code in the app',
+      () => {
+        if (!form.reportValidity() || busy()) return;
+        remember(labelInput.value.trim());
+        void dispatch('command', labelInput.value.trim(), (id) =>
+          host.__paqModelCommands?.token === current.token
+            ? host.__paqModelCommands.run({
+                id: command?.id ?? 'unsaved',
+                code: code.value,
+                timeoutMs: 10000,
+                requestId: id,
+              })
+            : undefined,
+        );
+      },
+      'btn',
+    );
     run.disabled = busy();
-    actions.append(run);
+    actions.append(run, save, remove);
     const file = make('input');
     file.type = 'file';
     file.accept = '.json,application/json';
@@ -752,8 +1032,8 @@ export function modelDrivenActionsUi(data) {
       { signal },
     );
     actions.append(
-      button('Import JSON', () => file.click()),
-      button('Export JSON', () => {
+      compact('Import', 'Import JSON', 'Replace the saved commands with a JSON file; nothing runs', () => file.click()),
+      compact('Export', 'Export JSON', 'Download the saved commands as JSON', () => {
         const url = URL.createObjectURL(
             new Blob([JSON.stringify({ version: 1, commands }, null, 2)], { type: 'application/json' }),
           ),
@@ -782,47 +1062,45 @@ export function modelDrivenActionsUi(data) {
           host.__paqModelActionState?.cancelPending?.();
           host.__paqModelCommands?.cancelPending?.();
           renderResult(null);
-          status.textContent =
-            'Stopped waiting. Native operations or JavaScript that ignore cancellation may still be running.';
+          status.textContent = 'Stopped waiting. The action may still finish in the app.';
           renderView();
         }),
       );
     tabs.replaceChildren();
-    for (const label of ['Actions', 'Identity', 'Custom']) {
-      const tab = button(
-        label,
-        () => {
-          view = label;
-          renderView();
-          [...tabs.children].find((node) => node.textContent === label)?.focus();
-        },
-        chip,
+    for (const [id, label] of [
+      ['Actions', 'Built-in'],
+      ['Identity', 'Identity'],
+      ['Custom', 'Custom'],
+    ]) {
+      tabs.append(
+        toggle(
+          label,
+          () => {
+            view = id;
+            renderView();
+            [...tabs.children].find((node) => node.textContent === label)?.focus();
+          },
+          view === id,
+          '',
+        ),
       );
-      tab.setAttribute('aria-pressed', String(view === label));
-      tabs.append(tab);
     }
     content.replaceChildren();
     if (view === 'Actions') renderActions();
     else if (view === 'Identity') renderIdentityView();
     else renderCommands();
+    // A Built-in result shows only in the open card of its action, never loose under the list.
+    if (view === 'Actions' && !results.closest('.actions-inline')) results.hidden = true;
   }
-  function open() {
-    if (canonical) host.__pp.openTab('actions');
-    else host.__paqModelInspector?.closePanel?.();
-    panel.hidden = false;
-    launch.setAttribute('aria-expanded', 'true');
+  // Esc folds the open action card and returns the focus to its row.
+  function collapseAction() {
+    const id = selectedAction;
+    selectedAction = undefined;
     renderView();
-    content.querySelector('input,button,select')?.focus();
+    focusRun(id);
   }
-  function close(focus = false) {
-    panel.hidden = true;
-    launch.setAttribute('aria-expanded', 'false');
-    if (focus) {
-      if (canonical) {
-        host.__pp.openTab('overrides');
-        root.querySelector('[data-v=overrides]')?.focus();
-      } else launch.focus();
-    }
+  function focusRun(id) {
+    content.querySelector(`.actions-run[data-action="${CSS.escape(id)}"]`)?.focus();
   }
   const mount = () => {
     const slot = root.querySelector('[data-panel-actions-host]');
@@ -832,82 +1110,68 @@ export function modelDrivenActionsUi(data) {
       panel.hidden = false;
       if (wasHidden) renderView();
     } else panel.hidden = true;
-    if (canonical && !actingBar.isConnected) root.querySelector('.wrap')?.prepend(actingBar);
+    if (!actingBar.isConnected) root.querySelector('.wrap')?.prepend(actingBar);
   };
-  if (canonical)
-    host.addEventListener(
-      'paqvilo-panel-render',
-      (event) => {
-        if (event.detail?.token === data.token) mount();
-      },
-      { signal },
-    );
-  panel.addEventListener(
-    'keydown',
+  host.addEventListener(
+    'paqvilo-panel-render',
     (event) => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        event.stopPropagation();
-        close(true);
-      }
+      if (event.detail?.token === data.token) mount();
     },
     { signal },
   );
-  globalThis.addEventListener(
+  // Esc folds the open action; with none open it goes on to the panel, which closes. It never switches the tab.
+  panel.addEventListener(
     'keydown',
     (event) => {
-      if (event.key === 'Escape' && !panel.hidden) close(true);
+      if (event.key !== 'Escape' || view !== 'Actions' || !content.querySelector('.actions-inline')) return;
+      event.preventDefault();
+      event.stopPropagation();
+      collapseAction();
     },
     { signal },
   );
   host.__paqModelActions = {
     token: data.token,
     receive,
-    close,
     followup(id, value) {
       if (disposed || !lastResultRequest || id !== lastResultRequest || location.origin !== current.origin) return;
       renderResult(value);
-      status.textContent = value?.status === 'ok' ? 'Completed.' : 'Native operation reported an error.';
-      if (!panel.hidden) results.querySelector('h3')?.focus();
+      status.textContent = value?.status === 'ok' ? '' : 'The app reported an error.';
+      showResult();
     },
     update(next) {
-      const focused = root.activeElement,
-        anchor =
-          focused && content.contains(focused)
-            ? {
-                label: focused.getAttribute('aria-label'),
-                name: focused.getAttribute('name'),
-                start: focused.selectionStart,
-                end: focused.selectionEnd,
-              }
-            : undefined;
       current = next;
-      if (!panel.hidden) renderView();
-      if (anchor) {
-        const replacement = [...content.querySelectorAll('input,textarea,select')].find((node) =>
-          anchor.label
-            ? node.getAttribute('aria-label') === anchor.label
-            : anchor.name && node.getAttribute('name') === anchor.name,
-        );
-        if (replacement) {
-          replacement.focus({ preventScroll: true });
-          if (anchor.start != null)
-            try {
-              replacement.setSelectionRange(anchor.start, anchor.end);
-            } catch {
-              /* Optional inspection or cleanup failure must not interrupt the owning operation. */
-            }
-        }
-      }
+      if (!panel.hidden) rerender();
     },
     contextChanged() {
+      // The status says what was cleared only when there was something: a result, a pending run, typed inputs or a
+      // picked user. The first app context of a page clears nothing.
+      const pending = [...requests.values()].some((request) => request.kind !== 'identity'),
+        typed = [...params].some(([id, values]) => {
+          const specs = current.actions?.find((action) => action.id === id)?.inputs ?? [];
+          return specs.some(
+            (spec) =>
+              values[spec.name] !== undefined &&
+              values[spec.name] !== (spec.default ?? (spec.type === 'boolean' ? false : '')),
+          );
+        }),
+        cleared = pending || typed || results.childElementCount > 0 || Boolean(selectedUser);
+      host.__paqModelCommands?.cancelPending?.();
+      // Nothing to clear: the panel stays as it is, open card and focus included (the first context of a page often
+      // arrives while the user is already in the panel).
+      if (!cleared) return;
       for (const [id, request] of requests) if (request.kind !== 'identity') requests.delete(id);
       params.clear();
       selectedUser = undefined;
+      selectedAction = undefined;
       renderResult(null);
-      host.__paqModelCommands?.cancelPending?.();
-      status.textContent = 'The native page changed. Previous results and action inputs were cleared.';
-      if (!panel.hidden) renderView();
+      status.textContent = 'The page changed, so results and action inputs were cleared.';
+      if (panel.hidden) return;
+      const focused = panel.contains(root.activeElement);
+      renderView();
+      // The redraw removed the focused control; the focus stays in the panel, on the view's first control.
+      if (focused && !panel.contains(root.activeElement))
+        content.querySelector('input[type=search],button,input,select,textarea')?.focus({ preventScroll: true });
     },
     dispose() {
       if (disposed) return;
@@ -922,13 +1186,10 @@ export function modelDrivenActionsUi(data) {
       host.__paqModelCommands?.dispose?.();
       panel.remove();
       actingBar.remove();
-      launch.remove();
-      root.adoptedStyleSheets = root.adoptedStyleSheets.filter(
-        (item) => item !== sheet && item !== identitySheet && item !== shared,
-      );
+      root.adoptedStyleSheets = root.adoptedStyleSheets.filter((item) => item !== sheet);
       if (host.__paqModelActions?.token === data.token) delete host.__paqModelActions;
     },
   };
   renderView();
-  if (canonical) mount();
+  mount();
 }

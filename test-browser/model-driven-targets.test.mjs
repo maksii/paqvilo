@@ -302,6 +302,8 @@ test('actual model-driven CLI switches declared references with caution, mapping
     await selector.evaluate((node) => {
       node.add(new Option('Foreign URL', 'https://example.invalid'));
       node.value = 'https://example.invalid';
+      // A choice other than this target enables Go.
+      node.dispatchEvent(new Event('change', { bubbles: true }));
     });
     await page.locator('[data-target-go]').click();
     assert.equal(new URL(page.url()).origin, origins[0], 'unlisted option cannot supply an origin');

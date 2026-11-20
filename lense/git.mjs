@@ -324,8 +324,10 @@ export class GitBaseline {
         // Without an answer the folder may be a repository before its first commit; say so instead of the ref error.
         if (!gitAnswered(error)) this.#unavailable(error);
         // rev-parse failing with an answer is Git saying the folder is in no repository: name that, not the command.
-        else if (!inRepository)
+        else if (!inRepository) {
+          this.outsideRepository = true;
           this.error = `Cannot read baseline ${this.spec}: not a Git repository; baseline comparison skipped`;
+        }
       }
     }
   }
@@ -370,6 +372,8 @@ export class GitBaseline {
     this.commit = commit;
     this.available = true;
     this.error = null;
+    this.outsideRepository = false;
+    this.unborn = false;
     return changed;
   }
 
@@ -383,7 +387,24 @@ export class GitBaseline {
     this.tree = null;
     this.treeLoad = null;
     this.resolvedRefState = null;
-    this.error = `Cannot read baseline ${this.spec}: ${err.message.split('\n')[0]}`;
+    // A later check that Git answers the same way keeps the reason found at start (no repository, no commits yet)
+    // instead of the command line it failed with; a `.git` that appeared since makes the folder a repository again.
+    if (this.outsideRepository && (!gitAnswered(err) || gitMarkerExists(this.sourceDir))) {
+      this.outsideRepository = false;
+      // A repository created since (git init) has no commits until its first one; the probe below checks.
+      if (gitAnswered(err)) this.unborn = true;
+    }
+    // A repository that had no commits may have one now: its ref then fails for its own reason, not "no commits yet".
+    if (this.unborn && gitAnswered(err))
+      try {
+        this.unborn = !git(this.sourceDir, ['rev-list', '--all', '--max-count=1']).trim();
+      } catch {
+        this.unborn = false;
+      }
+    let reason = err.message.split('\n')[0];
+    if (this.outsideRepository) reason = 'not a Git repository; baseline comparison skipped';
+    else if (this.unborn && gitAnswered(err)) reason = 'the repository has no commits yet';
+    this.error = `Cannot read baseline ${this.spec}: ${reason}`;
     return changed;
   }
 

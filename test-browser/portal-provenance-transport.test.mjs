@@ -393,7 +393,13 @@ test('Xray consumes actual acknowledged source proof independently of ownership 
   assert.equal(identity.evidence.source.status, 'exact');
   assert.equal(identity.evidence.owner.status, 'unavailable');
   const card = fx.page.locator('#paqvilo-xray');
-  assert.equal(await card.getByRole('button', { name: 'Open source', exact: true }).isEnabled(), true);
+  assert.equal(
+    await card
+      .locator('[data-evidence-source]')
+      .getByRole('button', { name: /^Open .+ in the editor$/ })
+      .isEnabled(),
+    true,
+  );
   const source = identity.evidence.source.refs.find((ref) => ref.status === 'exact');
   assert.ok(
     source.region.start > 0 && source.region.end > source.region.start,
@@ -404,7 +410,10 @@ test('Xray consumes actual acknowledged source proof independently of ownership 
       if (event.detail.action === 'open') window.sourceOpen = event.detail;
     }),
   );
-  await card.getByRole('button', { name: 'Open source', exact: true }).click();
+  await card
+    .locator('[data-evidence-source]')
+    .getByRole('button', { name: /^Open .+ in the editor$/ })
+    .click();
   const action = await fx.page.evaluate(() => window.sourceOpen);
   assert.deepEqual(action.region, source.region);
   assert.deepEqual(action.scope, identity.evidence.scope);
@@ -423,7 +432,13 @@ test('Xray consumes actual acknowledged source proof independently of ownership 
     (await fx.page.evaluate(() => document.getElementById('paqvilo-xray').__px.selection())).evidence.source.status,
     'stale',
   );
-  assert.equal(await card.getByRole('button', { name: 'Open source', exact: true }).isDisabled(), true);
+  assert.equal(
+    await card
+      .locator('[data-evidence-source]')
+      .getByRole('button', { name: /^Open .+ in the editor$/ })
+      .isDisabled(),
+    true,
+  );
   await fx.page.locator('#original').evaluate((node) => node.replaceWith(node.cloneNode(true)));
   await fx.page.waitForFunction(() => document.getElementById('paqvilo-xray').__px.selection() === null);
   await fx.page.evaluate(() =>

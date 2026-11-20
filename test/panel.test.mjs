@@ -521,7 +521,7 @@ test('a web file is compared with what the environment serves', async () => {
   const { call } = await setup({ [`${ORIGIN}/scripts/app.js`]: { body: 'console.log("online app");\n' } });
   const diff = await call('diff', { rel: 'web-files/app.js', url: '/scripts/app.js' });
   assert.equal(diff.ok, true);
-  assert.equal(diff.against, 'dev online');
+  assert.equal(diff.against, 'deployed');
   assert.deepEqual(
     diff.lines.filter((l) => l[0] !== ' '),
     [

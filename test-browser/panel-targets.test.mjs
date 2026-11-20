@@ -141,10 +141,12 @@ test('portal selector stays inert until chosen and preserves origin-specific pan
   await page.locator('[data-target-go]').click();
   await page.route('**/__paqvilo/api/ui', (route) => route.abort());
   await page.locator('[data-target-confirm]').click();
+  // The selection is back on this target, so Go is disabled: the choice keeps the focus.
   await page.waitForFunction(() =>
-    document.getElementById('paqvilo-panel').shadowRoot.activeElement?.matches('[data-target-go]'),
+    document.getElementById('paqvilo-panel').shadowRoot.activeElement?.matches('#paqvilo-target'),
   );
   assert.equal(await selector.inputValue(), '0');
+  assert.equal(await page.locator('[data-target-go]').isDisabled(), true);
   assert.equal(page.url(), first + '/current');
   assert.match(await page.locator('#paqvilo-panel .toast').innerText(), /dev loop does not answer/);
   await page.unroute('**/__paqvilo/api/ui');

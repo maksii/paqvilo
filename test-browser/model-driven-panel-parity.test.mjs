@@ -14,11 +14,11 @@ import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 import { NATIVE_READ_GUARD_MS, startModelDrivenInspector } from '../lense/model-driven-inspector.mjs';
 import { startAgentServer } from '../lense/agent-server.mjs';
 import { EventEmitter } from 'node:events';
-import { createModelDrivenOverlay } from '../lense/model-driven.mjs';
+import { createModelDrivenOverlay, importModelDrivenProject } from '../lense/model-driven.mjs';
 import { interceptOrigin } from '../lense/intercept.mjs';
 import { readModelDrivenNativeSource } from '../lense/model-driven-native-comparison.mjs';
 import { panelUi } from '../lense/panel-ui.mjs';
-import { modelDrivenPanelData } from '../lense/model-driven-panel.mjs';
+import { modelDrivenPanelData, modelDrivenPanelInspection } from '../lense/model-driven-panel.mjs';
 import { modelDrivenInspectorUi } from '../lense/model-driven-inspector-ui.mjs';
 import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
 
@@ -95,7 +95,10 @@ function disposalGatedFrame(frame, onDisposal) {
   });
 }
 
-async function modelPanelFixture(t, { nativeBody, withGit = true, archive = false, nativeReadGuardMs } = {}) {
+async function modelPanelFixture(
+  t,
+  { nativeBody, withGit = true, archive = false, nativeReadGuardMs, localSimulation = false } = {},
+) {
   const owner = ownedFixture(t),
     f = { agentClosed: false },
     guards = guardScheduler(),
@@ -157,7 +160,8 @@ async function modelPanelFixture(t, { nativeBody, withGit = true, archive = fals
         { name: 'x_script.js', file: archive ? undefined : file, mime: 'text/javascript', data: Buffer.from(data) },
       ],
     ]),
-    resources: [{ name: 'x_script.js' }],
+    // A local simulation also serves each resource at the URL the simulated app requests.
+    resources: [{ name: 'x_script.js', ...(localSimulation ? { url: '/%7b2026%7d/webresources/x_script.js' } : {}) }],
     layers: [{ dir: root, documents: [] }],
     diagnostics: [],
   });
@@ -167,6 +171,7 @@ async function modelPanelFixture(t, { nativeBody, withGit = true, archive = fals
       imported,
       mappings: [{ path: '/%7b2026%7d/webresources/x_script.js', resource: 'x_script.js' }],
       ownsRequest: (request) => request.frame().page() === page,
+      localSimulation,
     });
   const release = await interceptOrigin(context, origin, (route) => overlay.handle(route), {
     ownsPage: (candidate) => candidate === page,
@@ -331,6 +336,25 @@ test('canonical model panel executes actual source controls, preserves Actions d
   assert.deepEqual(f.errors, []);
 });
 
+test('a local simulation refuses Online through the panel API and stays on its local sources', async (t) => {
+  const f = await modelPanelFixture(t, { localSimulation: true });
+  const answer = await f.page.evaluate(
+    (token) => window.__paqviloModelPanelApi({ token, name: 'mode', body: { online: true } }),
+    f.inspector.snapshot().token,
+  );
+  assert.deepEqual(answer, {
+    ok: false,
+    error: 'A local simulation serves your sources here: Online would show the same app.',
+  });
+  assert.equal(f.overlay.report().online, false);
+  const local = await f.page.evaluate(
+    (token) => window.__paqviloModelPanelApi({ token, name: 'mode', body: { online: false } }),
+    f.inspector.snapshot().token,
+  );
+  assert.equal(local.ok, true, 'Local stays accepted');
+  assert.deepEqual(f.errors, []);
+});
+
 test('explicit Online comparison streams decoded compressed bytes, cancels oversized sources and preserves Local overlay', async (t) => {
   const f = await modelPanelFixture(t, { nativeBody: '/*' + 'x'.repeat(3 * 1024 * 1024) + '*/' });
   const before = f.overlay.report().applied;
@@ -339,7 +363,7 @@ test('explicit Online comparison streams decoded compressed bytes, cancels overs
     f.inspector.snapshot().token,
   );
   assert.equal(result.ok, false);
-  assert.match(result.error, /decoded native source exceeds/);
+  assert.match(result.error, /larger than 3 MiB/);
   assert.equal(f.overlay.report().online, false);
   assert.equal(f.overlay.report().applied, before);
   assert.deepEqual(f.nativeHeaders, [undefined]);
@@ -606,7 +630,7 @@ test('canonical Issues shows source reasons, console warnings and request failur
     await fetch('/failed-asset.js').catch(() => {});
   });
   await host.getByRole('tab', { name: /^Issues/ }).click();
-  await host.getByText('INVENTED_MAPPING: An observed native mapping is required.', { exact: true }).waitFor();
+  await host.getByText('An observed native mapping is required.', { exact: true }).waitFor();
   await host.getByText('Invented native console warning', { exact: true }).waitFor();
   await host.getByText('net::ERR_FAILED', { exact: true }).waitFor();
   await host.getByText('Console warnings', { exact: true }).waitFor();
@@ -617,6 +641,47 @@ test('canonical Issues shows source reasons, console warnings and request failur
   const title = await host.locator('.pill .n.err').getAttribute('title');
   assert.match(title, /1 failed request/);
   assert.equal(await host.locator('.pill .n.warn').textContent(), '2', 'one source note and one console warning');
+});
+
+test('Solution inventory notes from a real import stay out of Issues, its badge and Inspect', async (t) => {
+  const f = await modelPanelFixture(t),
+    host = f.page.locator('#paqvilo-panel');
+  // An invented Solution that lists a connector: the import reports it as an inventory note, not as a problem.
+  const solution = path.join(f.root, 'solution');
+  await fs.mkdir(path.join(solution, 'Other'), { recursive: true });
+  await fs.writeFile(
+    path.join(solution, 'Other', 'Solution.xml'),
+    '<ImportExportXml><SolutionManifest><UniqueName>InventedPanel</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
+  );
+  await fs.writeFile(
+    path.join(solution, 'Other', 'Customizations.xml'),
+    '<ImportExportXml><Entities/><Connectors><Connector><name>x_inventedconnector</name></Connector></Connectors></ImportExportXml>',
+  );
+  const project = await importModelDrivenProject({ solutionRoots: [solution] }),
+    inventory = project.diagnostics.filter((item) => item.inventory);
+  assert.ok(inventory.length > 0, JSON.stringify(project.diagnostics));
+  const next = f.makeImported('window.sourceRevision="same";');
+  next.diagnostics = [
+    ...project.diagnostics,
+    { code: 'INVENTED_MAPPING', message: 'An observed native mapping is required.', source: f.file },
+  ];
+  f.overlay.replace(next);
+  f.inspector.refresh(next);
+  await host.getByRole('tab', { name: /^Issues/ }).click();
+  await host.getByText('An observed native mapping is required.', { exact: true }).waitFor();
+  const state = f.inspector.snapshot();
+  assert.ok(
+    state.diagnostics.some((item) => item.inventory && item.code === inventory[0].code),
+    'the inspector snapshot keeps the inventory mark',
+  );
+  const text = await host.evaluate((node) => node.shadowRoot.textContent);
+  for (const item of inventory) assert.ok(!text.includes(item.message), `Issues does not list: ${item.message}`);
+  assert.equal(await host.getAttribute('data-issues'), '1', 'only the actionable note counts');
+  assert.equal(await host.locator('.pill .n.warn').textContent(), '1');
+  assert.deepEqual(
+    modelDrivenPanelInspection(state).unresolved.map((item) => item.message),
+    ['An observed native mapping is required.'],
+  );
 });
 
 test('mapped runtime locations open the exact selected source at one-based line and column, while native-only URLs stay display-only', async (t) => {
@@ -642,7 +707,7 @@ test('mapped runtime locations open the exact selected source at one-based line 
   assert.equal(await row.getAttribute('data-rel'), 'x_script.js');
   assert.equal(await row.getAttribute('data-line'), '3');
   assert.equal(await row.getAttribute('data-col'), '9');
-  assert.equal(await row.locator('button.main').getAttribute('title'), 'Open in the editor at line 3');
+  assert.equal(await row.locator('button.main').getAttribute('title'), 'Open x_script.js in the editor at line 3');
   f.overlay.setOnline(true);
   await f.page.route('**/webresources/x_script.js', (route) => route.abort('failed'));
   await f.page.evaluate(() => fetch('/%7b2026%7d/webresources/x_script.js').catch(() => {}));
@@ -731,7 +796,7 @@ test('mapped thrown script errors retain exact source positions and Chromium net
   const row = exception.locator('xpath=ancestor::div[contains(@class,"row")][1]');
   assert.equal(await row.getAttribute('data-rel'), 'x_script.js');
   assert.equal(await row.getAttribute('data-line'), '3');
-  assert.equal(await row.locator('button.main').getAttribute('title'), 'Open in the editor at line 3');
+  assert.equal(await row.locator('button.main').getAttribute('title'), 'Open x_script.js in the editor at line 3');
   await f.page.route('**/failed-native.js', (route) => route.abort('failed'));
   await f.page.evaluate(() => fetch('/failed-native.js').catch(() => {}));
   await host.getByText('net::ERR_FAILED', { exact: true }).waitFor();
@@ -741,6 +806,27 @@ test('mapped thrown script errors retain exact source positions and Chromium net
     0,
     'network failures retain one failed-request entry',
   );
+});
+
+test('Activity lists each started action by its registry name, and a row Reset by the action it reverses', async (t) => {
+  const f = await modelPanelFixture(t),
+    host = f.page.locator('#paqvilo-panel');
+  const start = (input) =>
+    f.page.evaluate(
+      ([token, input]) => window.__paqviloModelAction({ token, ...input }),
+      [f.inspector.snapshot().token, input],
+    );
+  assert.equal((await start({ requestId: 'r1', action: 'admin:environment-context' })).accepted, true);
+  // undoOf names the row's action only when the registry declares this action as its undo.
+  await start({ requestId: 'r2', action: 'form:clear-logical-names', undoOf: 'form:show-logical-names' });
+  await start({ requestId: 'r3', action: 'form:clear-logical-names', undoOf: 'admin:environment-context' });
+  await host.getByRole('tab', { name: /^Activity/ }).click();
+  await host.getByText('Reset Logical names', { exact: true }).waitFor();
+  const text = await host.evaluate((node) => node.shadowRoot.textContent);
+  assert.ok(text.includes('Ran Environment and user'));
+  assert.ok(text.includes('Ran Clear logical names'), 'an undoOf that is not the declared undo is a plain run');
+  assert.equal(text.includes('Reset Environment and user'), false);
+  assert.deepEqual(f.errors, []);
 });
 
 test('a warning-only shared panel counts one issue without a JavaScript or network error', async (t) => {

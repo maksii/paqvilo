@@ -13,12 +13,13 @@ import { readModelDrivenNativeSource } from './model-driven-native-comparison.mj
 import { createOwnedPageBindings } from './owned-page-binding.mjs';
 import { panelUi } from './panel-ui.mjs';
 import { xrayUi } from './xray-ui.mjs';
-import { openInEditor } from './panel.mjs';
+import { editorOpenResult, openInEditor } from './panel.mjs';
 import {
   modelDrivenPanelData,
   modelDrivenPanelInspection,
   modelDrivenPanelUi,
   modelDrivenSourceFiles,
+  modelDrivenSourceDir,
   createModelDrivenPanelSources,
 } from './model-driven-panel.mjs';
 import { installModelDrivenCommands } from './model-driven-commands.mjs';
@@ -301,6 +302,7 @@ export async function startModelDrivenInspector({
     const availability = await page.evaluate(modelDrivenActionAvailability, {
       origin: cfg.origin,
       actions: MODEL_DRIVEN_ACTIONS,
+      localSimulation: overlay.report().localSimulation === true,
     });
     if (active())
       await page.evaluate(modelDrivenActionsUi, {
@@ -331,6 +333,8 @@ export async function startModelDrivenInspector({
         code: redactText(item.code, 100),
         message: redactText(item.message),
         source: redactText(item.source, 1000),
+        ...(item.inventory ? { inventory: true } : {}),
+        ...(item.name ? { name: redactText(item.name, 200) } : {}),
       })),
     );
     return {
@@ -345,6 +349,7 @@ export async function startModelDrivenInspector({
       diagnostics,
       problems: problems.slice(),
       catalogue,
+      sourceDir: modelDrivenSourceDir(currentImported.layers),
       sourceRevision: String(sourceRevision),
       sourceRefs: metadataDetails.sourceRefs,
       provenanceLimits: metadataDetails.limits,
@@ -370,6 +375,7 @@ export async function startModelDrivenInspector({
       live,
       online: overlay.report().online,
       git: panelSources.state.git,
+      baselineState: panelSources.state.baselineState,
       facts: panelSources.state.facts,
       scope: panelSources.state.scope,
     });
@@ -667,7 +673,7 @@ export async function startModelDrivenInspector({
               scheduleGuard,
             );
             if (result === GUARD_EXPIRED) return nativeReadTimedOut(nativeReadGuardMs);
-            if (!result) return { ok: false, error: 'The native comparison returned no result.' };
+            if (!result) return { ok: false, error: 'The comparison failed. Try again.' };
             if (!active() || revision !== overlay.report().revision || document !== documentRevision)
               return { ok: false, error: 'The page or source revision changed during comparison. Try again.' };
             if (!result.ok) return result;
@@ -675,7 +681,7 @@ export async function startModelDrivenInspector({
             if (bytes.length !== result.bytes || !panelSources.observe(allowed.name, bytes))
               return {
                 ok: false,
-                error: 'The native source encoding or size is outside the bounded comparison contract.',
+                error: 'The online file is not UTF-8 text or is too large to compare.',
               };
             refresh();
             return panelSources.diff(body.rel, panelData().env);
@@ -712,26 +718,31 @@ export async function startModelDrivenInspector({
                 reason: resolved.reason,
                 error: 'The selected source changed. Refresh and select it again.',
               };
-            const error = await openInEditor(
-              cfg.editor ?? 'code',
-              resolved.file,
-              resolved.line ?? 1,
-              resolved.column ?? 1,
-            );
-            return error ? { ok: false, error } : { ok: true, locationAvailable: resolved.locationAvailable };
+            const editor = cfg.editor ?? 'code',
+              line = resolved.line ?? 1,
+              col = resolved.column ?? 1;
+            const error = await openInEditor(editor, resolved.file, line, col);
+            return error
+              ? editorOpenResult(error, editor, resolved.file, line, col)
+              : { ok: true, locationAvailable: resolved.locationAvailable };
           }
           const file = modelDrivenSourceFiles(snapshot()).get(body.rel);
-          if (!file) return { ok: false, error: 'The source is outside the selected Solution catalogue.' };
+          if (!file) return { ok: false, error: 'This file is not part of your Solution sources.' };
           const line = Number.isSafeInteger(body.line) && body.line > 0 ? body.line : 1,
-            col = Number.isSafeInteger(body.col) && body.col > 0 ? body.col : 1;
-          const error = await openInEditor(cfg.editor ?? 'code', file, line, col);
-          return error ? { ok: false, error } : { ok: true };
+            col = Number.isSafeInteger(body.col) && body.col > 0 ? body.col : 1,
+            editor = cfg.editor ?? 'code';
+          return editorOpenResult(await openInEditor(editor, file, line, col), editor, file, line, col);
         }
         if (input.name === 'mode' && typeof body.online === 'boolean') {
+          // A local simulation has no deployed files to switch to; Online would show the same simulated app.
+          if (body.online && overlay.report().localSimulation)
+            return { ok: false, error: 'A local simulation serves your sources here: Online would show the same app.' };
           overlay.setOnline(body.online);
           activity.unshift({
             type: 'switch',
-            text: body.online ? 'Online resources enabled.' : 'Local Solution overlay enabled.',
+            text: body.online
+              ? 'Switched to Online: the app loads its deployed files.'
+              : 'Switched to Local: the app loads your local files.',
             at: Date.now(),
           });
           activity.splice(100);
@@ -798,16 +809,34 @@ export async function startModelDrivenInspector({
       } catch {
         return { ...acknowledgement(false), reason: 'invalid-input' };
       }
+      let answer;
       try {
-        return await page.evaluate(runModelDrivenAction, {
+        answer = await page.evaluate(runModelDrivenAction, {
           origin: cfg.origin,
           token,
           requestId: input.requestId,
+          localSimulation: overlay.report().localSimulation === true,
           ...validated,
         });
       } catch {
         return acknowledgement(false);
       }
+      // Activity names each started run by its registry label; a row's Reset names the action it reverses, which
+      // must be a registry action whose declared undo is this one. Page input never supplies the text.
+      if (answer?.accepted === true) {
+        const label = (id) => MODEL_DRIVEN_ACTIONS.find((action) => action.id === id)?.label,
+          reverses = MODEL_DRIVEN_ACTIONS.find(
+            (action) => action.id === input.undoOf && action.undo?.id === validated.action,
+          );
+        activity.unshift({
+          type: 'action',
+          text: reverses ? `Reset ${reverses.label}` : `Ran ${label(validated.action)}`,
+          at: Date.now(),
+        });
+        activity.splice(100);
+        refresh();
+      }
+      return answer;
     };
     bindings.__paqviloModelIdentity = async (source, input) => {
       const acknowledgement = (accepted) => ({ accepted, requestId: input?.requestId });

@@ -219,8 +219,10 @@ async function signInOnEnhanced(env) {
   await openTab('runtime');
   await panel('[data-group="runtime-chain"] .row').filter({ hasText: 'Partial' }).first().waitFor();
   await openTab('tweaks');
-  await panel('[data-act="choosepersona"][data-contact="alex"]').first().click();
-  await Promise.all([page.waitForNavigation({ waitUntil: 'load' }), panel('[data-act="signin"]').click()]);
+  await Promise.all([
+    page.waitForNavigation({ waitUntil: 'load' }),
+    panel('[data-act="signin"][data-contact="alex"]').first().click(),
+  ]);
   await page.locator('#who').getByText('Alex Local', { exact: true }).waitFor();
   assert.deepEqual(
     [await signedIn(enhancedApp), await signedIn(classicApp)],
@@ -308,7 +310,7 @@ function dropFirstStatusRead(server, gate, count = 1) {
 // Waits for the Tweaks tab to show the anonymous browser session; a miss records the tab text as a diagnostic.
 async function expectAnonymousTweaks(t, page, panel) {
   try {
-    await panel('.card').filter({ hasText: 'Browser session' }).getByText('Anonymous', { exact: true }).waitFor();
+    await panel('.card').filter({ hasText: 'Browser session' }).getByText('Not signed in', { exact: true }).waitFor();
   } catch (error) {
     const tab = await page
       .locator('#paqvilo-panel')
@@ -339,8 +341,10 @@ test('local Mirage portals and live targets share one browser: the selector swit
   await returnToClassic(env);
   await openTab('tweaks');
   await expectAnonymousTweaks(t, page, panel);
-  await panel('[data-act="choosepersona"][data-contact="alex"]').first().click();
-  await Promise.all([page.waitForNavigation({ waitUntil: 'load' }), panel('[data-act="signin"]').click()]);
+  await Promise.all([
+    page.waitForNavigation({ waitUntil: 'load' }),
+    panel('[data-act="signin"][data-contact="alex"]').first().click(),
+  ]);
   assert.deepEqual([await signedIn(classicApp), await signedIn(enhancedApp)], [true, true]);
   const names = (await context.cookies())
     .map((cookie) => cookie.name)
@@ -371,11 +375,21 @@ test('local Mirage portals and live targets share one browser: the selector swit
     0,
     'live targets cannot change Mirage personas or scenarios',
   );
-  await panel('.card').getByText('Live portal · local source inspection', { exact: true }).waitFor();
+  await panel('[data-act="inspect-refresh"]').waitFor();
+  assert.equal(
+    await panel('.card').getByText('Local Mirage', { exact: false }).count(),
+    0,
+    'a live page has no Mirage card',
+  );
   await panel('[data-group="runtime-page-sources"] .row')
     .filter({ hasText: 'Home.en-US.webpage.custom_css.css' })
     .waitFor();
-  assert.equal(await panel('.card').getByText('Live access', { exact: true }).count(), 1);
+  for (const label of ['Live access', 'Current persona', 'unknown'])
+    assert.equal(
+      await panel('.card').getByText(label, { exact: true }).count(),
+      0,
+      'a live page shows no access verdict',
+    );
   assert.equal(
     await panel('.card').getByText('allowed', { exact: true }).count(),
     0,

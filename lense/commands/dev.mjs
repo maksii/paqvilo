@@ -8,7 +8,7 @@ import { paqviloCommand } from '../command-hint.mjs';
 import { urlKey } from '../portal-model.mjs';
 import { compareWebFile } from '../online.mjs';
 import { gitDirectories } from '../git.mjs';
-import { panelVisibilityNotice } from '../panel.mjs';
+import { panelVisibilityNotice, servedByLocalMirage } from '../panel.mjs';
 import { guardShutdownSignals, shutdownSignalCounter } from '../signal-forwarding.mjs';
 import { startupProgress, startupWaitOptions, waitForStartupPage } from '../startup-progress.mjs';
 
@@ -898,9 +898,9 @@ function logDevPanel(runtime, cfg) {
   const { keys } = panel;
   const visibilityNotice = panelVisibilityNotice(panel);
   if (visibilityNotice) console.log(visibilityNotice);
-  console.log(
-    `dev panel   on the page: ${keys.panel} opens it, ${keys.hide} hides or shows it, ${keys.mode} switches local / online`,
-  );
+  // In front of a local Mirage there is no Online to switch to: the panel has no switch and the key does nothing.
+  const mode = servedByLocalMirage(cfg) ? '' : `, ${keys.mode} switches local / online`;
+  console.log(`dev panel   on the page: ${keys.panel} opens it, ${keys.hide} hides or shows it${mode}`);
 }
 
 function logDebugPort(debugPort) {

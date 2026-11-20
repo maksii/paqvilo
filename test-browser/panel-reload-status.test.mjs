@@ -20,7 +20,7 @@ const cases = [
   { status: { reloading: true, pendingReload: true }, text: ' · reloading sources · another reload queued' },
 ];
 
-test('the Mirage status card names a pending source change apart from a reload queued behind a running one', async (t) => {
+test('the Mirage tab names a pending source change apart from a reload queued behind a running one', async (t) => {
   const fx = createFixture();
   ownedFixture(t).remove(async () => fx.cleanup());
   const server = http.createServer((req, res) =>
@@ -64,16 +64,12 @@ test('the Mirage status card names a pending source change apart from a reload q
     state.mirage = { active: true, version: 1, status: {} };
     await scope.locator('.pill').click();
     await page.evaluate(panelUi, state);
-    await scope.locator('[role=tab][data-v=tweaks]').click();
-    const revision = scope
-      .locator('.card')
-      .filter({ hasText: 'Mirage status' })
-      .locator('.srcs')
-      .filter({ hasText: 'Revision' })
-      .locator('.dim')
-      .first();
-    await revision.waitFor();
-    assert.equal(await revision.innerText(), `4${text}`, JSON.stringify(status));
+    await scope.locator('[role=tab][data-v=mirage]').click();
+    // The runtime row of the Mirage tab: its revision, and a chip for a reload under way or waiting.
+    const runtime = scope.locator('.row').filter({ hasText: 'revision 4' });
+    await runtime.waitFor();
+    const chips = await runtime.locator('.c').allInnerTexts();
+    assert.equal(chips.map((chip) => ' · ' + chip).join(''), text, JSON.stringify(status));
     await panel.dispose();
     await context.close();
   }

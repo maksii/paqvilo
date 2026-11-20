@@ -254,7 +254,8 @@ trusted project code. These settings/assets stay local and never change exports 
 presentation retains the provider's separate origin and frame protection. The display button switches between a bounded
 dialog layout and a full page. Credential/MFA simulation is outside this chooser.
 
-Lense Tweaks uses the same catalogue and indexed search rules, renders 50 results at a time, retains pinned/recent
-choices per browser, and links to the full management picker. Catalogue scenario choices name the persona, start page
+Lense Tweaks uses the same catalogue and indexed search rules, renders 50 results at a time, lists pinned, recent and
+default personas once before the catalogue groups (pinned and recent choices are kept per browser), signs in from each
+persona row, and links to the full management picker. Catalogue scenario choices name the persona, start page
 and isolated-setup effect. Opening one prepares the local setup and completes the portal's own sign-in flow before the
 start page. Uncatalogued contacts retain a searchable fallback.

@@ -229,7 +229,12 @@ export async function importModelDrivenProject(project) {
     diagnostics: [
       ...scan.diagnostics,
       ...imported.diagnostics,
-      ...metadata.diagnostics.map((item) => ({ code: item.code, message: item.message, source: item.file })),
+      ...metadata.diagnostics.map((item) => ({
+        code: item.code,
+        message: item.message,
+        source: item.file,
+        ...(item.inventory ? { inventory: true, name: item.name } : {}),
+      })),
     ],
     inventory: scan.inventory ?? [],
     inventoryCounts: inventoryCounts(scan.inventory),

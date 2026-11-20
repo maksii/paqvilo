@@ -9,6 +9,7 @@ import { spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { panelUi, removePanelUi } from './panel-ui.mjs';
 import { xrayUi } from './xray-ui.mjs';
+import { DEFAULT_PORT } from './commands/mirage.mjs';
 
 import { indexPersonaCatalog, PERSONA_TRANSLITERATIONS } from '../mirage/lib/persona-search.mjs';
 import { personaStartPath } from '../mirage/lib/persona-catalog.mjs';
@@ -16,7 +17,7 @@ import { diffLines } from './line-diff.mjs';
 import { pageKey, INLINE_PREFIX } from './html-rewriter.mjs';
 import { redactText } from './agent-server.mjs';
 import { urlKey, sourceText } from './portal-model.mjs';
-import { portalResourceUrl } from './online.mjs';
+import { portalResourceUrl, withoutSourceMapComments } from './online.mjs';
 import { filesForPage } from './browser.mjs';
 import { browserProfileInfo } from './browser-profile.mjs';
 import { createApiRouteObserver, createSourceInspector, inspectRenderedPage } from './source-inspection.mjs';
@@ -40,7 +41,8 @@ function cleanUi(input) {
   const ui = {};
   if (!input || typeof input !== 'object' || Array.isArray(input)) return ui;
   for (const key of ['open', 'hidden', 'large', 'localOnly']) if (typeof input[key] === 'boolean') ui[key] = input[key];
-  if (['overrides', 'runtime', 'tweaks', 'issues', 'activity', 'explore'].includes(input.tab)) ui.tab = input.tab;
+  if (['overrides', 'runtime', 'tweaks', 'mirage', 'issues', 'activity', 'explore'].includes(input.tab))
+    ui.tab = input.tab;
   if (['all', 'edited', 'differs'].includes(input.filter)) ui.filter = input.filter;
   const pos = input.pos;
   if (
@@ -91,11 +93,11 @@ const GROUP_OF = {
 const SOURCE_LABEL = {
   'page-js': 'JavaScript',
   'page-css': 'CSS',
-  'page-copy': 'copy',
-  'page-summary': 'summary',
-  'basic-form-js': 'form JS',
-  'advanced-form-step-js': 'form step JS',
-  'list-js': 'list JS',
+  'page-copy': 'Page copy',
+  'page-summary': 'Page summary',
+  'basic-form-js': 'Form JavaScript',
+  'advanced-form-step-js': 'Form step JavaScript',
+  'list-js': 'List JavaScript',
 };
 
 function webFileGroup(url) {
@@ -250,10 +252,10 @@ function refreshedText(baselineChanged, how) {
   if (baselineChanged) return `Git baseline updated${how === 'reload' ? ', page reloaded' : ' (no reload)'}`;
   return (
     {
-      css: 'Styles swapped without a reload',
-      reload: 'Saved, page reloaded',
-      skipped: 'Saved; no open tab shows that page',
-    }[how] ?? 'Saved (no reload)'
+      css: 'Swapped without a reload',
+      reload: 'Page reloaded',
+      skipped: 'No open tab shows that page',
+    }[how] ?? 'Not reloaded'
   );
 }
 function recordPendingBeforeRefresh(page, pageHow, pageRels, pendingFor) {
@@ -345,7 +347,7 @@ function openLocalSource(body, page, fileOf, lineOf) {
   const col = Number.isInteger(body.col) && body.col > 0 ? body.col : 1;
   return { file, line, col };
 }
-function editorOpenResult(error, editor, file, line, col) {
+export function editorOpenResult(error, editor, file, line, col) {
   if (!error) return { ok: true };
   // the editor's command is not on the PATH: its link does the same from the browser
   return {
@@ -399,11 +401,13 @@ function storeMiragePageSummary(page, pathname, session, summaryResponse, answer
   });
   runtimeFilesByPage.set(page, files);
 }
+/** What the environment's copy is called: what a local Mirage serves, or what is deployed. */
+const servedWord = (cfg) => (cfg.mirage === true || servedByLocalMirage(cfg) ? 'served' : 'deployed');
 function inlineComparisonBase(page, rel, file, src, session, cfg) {
   const printed = (session.pageHits.get(page) ?? [])
     .flatMap((hit) => hit.matched ?? [])
     .find((match) => match.rel === rel && match.online != null);
-  if (printed && src?.mode === 'block') return { before: printed.online, against: `${cfg.envName} online` };
+  if (printed && src?.mode === 'block') return { before: printed.online, against: servedWord(cfg), served: true };
   const raw = session.baseline.show(file);
   let before;
   if (raw == null) before = '';
@@ -470,27 +474,46 @@ const readableName = (value) => {
 }
 
 /**
- * Keep PATH precedence, then locate the vendor CLI for ordinary Windows installs.
- * Explicit editor executable paths and other editor names remain unchanged.
+ * The full path of the editor CLI on Windows: PATH with PATHEXT, then the ordinary VS Code install folders for `code`
+ * and `code-insiders`. cmd.exe runs a quoted bare name such as "code" with the wrong batch directory (%~dp0 becomes the
+ * working directory, exit 9009), so the launcher always needs the full path. Returns null when nothing is found; other
+ * platforms return the command unchanged (spawn searches PATH there). PATH folders the shell would interpret are not
+ * searched; they are added to `skipped` when given, so a "not found" can name them.
  */
-export function resolveEditorCommand(editor, { platform = process.platform, env = process.env } = {}) {
-  if (platform !== 'win32' || !/^code(?:-insiders)?$/i.test(editor ?? '')) return editor;
+export function resolveEditorCommand(
+  editor,
+  { platform = process.platform, env = process.env, fs: fileSystem = fs, skipped } = {},
+) {
+  if (platform !== 'win32') return editor;
   const safe = (value) => typeof value === 'string' && value && !/["%!\r\n&|<>^]/.test(value);
   const regular = (file) => {
     try {
-      return safe(file) && fs.statSync(file).isFile();
+      return safe(file) && fileSystem.statSync(file).isFile();
     } catch {
       return false;
     }
   };
-  const command = editor.toLowerCase();
   const value = (name) => Object.entries(env).find(([key]) => key.toLowerCase() === name.toLowerCase())?.[1];
+  const extensions = String(value('PATHEXT') || '.COM;.EXE;.BAT;.CMD')
+    .split(';')
+    .map((extension) => extension.trim().toLowerCase())
+    .filter(Boolean);
+  const names = extensions.includes(path.extname(editor).toLowerCase())
+    ? [editor]
+    : extensions.map((extension) => editor + extension);
+  // A path is used as given, or with a PATHEXT extension as Windows runs it (C:\tools\subl runs subl.exe).
+  if (/[\\/]/.test(editor)) return [editor, ...names.filter((name) => name !== editor)].find(regular) ?? null;
   for (const entry of String(value('PATH') ?? '').split(';')) {
     const dir = entry.trim().replace(/^"(.*)"$/, '$1');
-    if (!safe(dir)) continue;
-    if (['.cmd', '.exe', '.bat', '.com'].some((extension) => regular(path.join(dir, command + extension))))
-      return editor;
+    if (!safe(dir)) {
+      if (dir) skipped?.push(dir);
+      continue;
+    }
+    const found = names.map((name) => path.join(dir, name)).find(regular);
+    if (found) return found;
   }
+  const command = editor.toLowerCase();
+  if (!/^code(?:-insiders)?$/.test(command)) return null;
   const product = command === 'code-insiders' ? 'Microsoft VS Code Insiders' : 'Microsoft VS Code';
   const roots = [[value('LOCALAPPDATA'), 'Programs'], [value('ProgramFiles')], [value('ProgramFiles(x86)')]];
   for (const [root, ...parts] of roots) {
@@ -498,14 +521,28 @@ export function resolveEditorCommand(editor, { platform = process.platform, env 
     const candidate = path.join(root, ...parts, product, 'bin', command + '.cmd');
     if (regular(candidate)) return candidate;
   }
-  return editor;
+  return null;
 }
 
 /**
+ * Why an editor could not be started, and the two places that choose it. PATH folders that were not searched are named:
+ * the editor may be in one of them.
+ */
+export const editorNotFound = (editor, skipped = []) => {
+  const where = /^code(?:-insiders)?$/i.test(editor) ? ' on PATH or in the VS Code install folders' : '';
+  if (!skipped.length)
+    return `Editor "${editor}" was not found${where}. Set PAQVILO_EDITOR or the catalogue's editor setting to the editor command or its full path.`;
+  const folders = skipped.slice(0, 3).join('; ') + (skipped.length > 3 ? ` and ${skipped.length - 3} more` : '');
+  return `Editor "${editor}" was not found${where}. PATH folders with & ^ % ! or quotes are not searched, because the Windows shell would interpret them: ${folders}. Set PAQVILO_EDITOR or the catalogue's editor setting to the editor's full path, in a folder without those characters.`;
+};
+
+/**
  * Opens `file` at a line in the editor (`code -g file:line:col` and compatible).
+ * `foregroundMs`: how long an editor may keep running before it counts as opened (one that stays in the foreground
+ * hands over to no running window); Infinity waits for its exit.
  * @returns {Promise<string|null>} null when it worked, else why not
  */
-export function openInEditor(editor, file, line = 1, col = 1) {
+export function openInEditor(editor, file, line = 1, col = 1, { foregroundMs = 4000 } = {}) {
   return new Promise((resolve) => {
     const target = `${file}:${line}:${col}`;
     // the command runs through the shell on Windows (code is a .cmd there): nothing in the path
@@ -513,24 +550,26 @@ export function openInEditor(editor, file, line = 1, col = 1) {
     if (/["%!\r\n]/.test(target)) return resolve('the file name has characters that cannot be passed to the editor');
     if (typeof editor !== 'string' || !editor.trim() || /["%!\r\n&|<>^]/.test(editor))
       return resolve('editor must be an executable name or path without shell commands');
-    editor = resolveEditorCommand(editor);
+    const skipped = [];
+    const command = resolveEditorCommand(editor, { skipped });
+    if (!command) return resolve(editorNotFound(editor, skipped));
     let child;
     try {
       child =
         process.platform === 'win32'
-          ? spawn(`"${editor}" -g "${target}"`, { shell: true, stdio: 'ignore', windowsHide: true })
-          : spawn(editor, ['-g', target], { stdio: 'ignore' });
+          ? spawn(`"${command}" -g "${target}"`, { shell: true, stdio: 'ignore', windowsHide: true })
+          : spawn(command, ['-g', target], { stdio: 'ignore' });
     } catch (err) {
-      return resolve(err.message);
+      return resolve(err.code === 'ENOENT' ? editorNotFound(editor) : err.message);
     }
     // an editor that stays in the foreground (no hand-over to a running window) counts as opened
-    const timer = setTimeout(() => resolve(null), 4000);
-    timer.unref();
+    const timer = Number.isFinite(foregroundMs) ? setTimeout(() => resolve(null), foregroundMs) : null;
+    timer?.unref();
     const done = (error) => {
       clearTimeout(timer);
       resolve(error);
     };
-    child.on('error', (err) => done(err.message));
+    child.on('error', (err) => done(err.code === 'ENOENT' ? editorNotFound(editor) : err.message));
     child.on('exit', (code) => done(code ? `"${editor}" ended with code ${code}` : null));
     child.unref();
   });
@@ -574,6 +613,42 @@ export async function runSessionFlow(flow) {
   (document.body ?? document.documentElement).append(form);
   setTimeout(() => retired() === before && HTMLFormElement.prototype.submit.call(form), 50);
   return true;
+}
+
+/**
+ * Whether the environment is this site's own local Mirage: a loopback origin on the port the catalogue gives the site's
+ * Mirage (`sites.<id>.mirage.port`), or on Mirage's default port when it gives none (as `mirage dev` then listens).
+ * That Mirage renders the same catalogue sources, so Online would show what Local shows.
+ */
+export function servedByLocalMirage(cfg) {
+  if (cfg.mirage === true) return true;
+  const port = cfg.mirageConfig?.port ?? DEFAULT_PORT;
+  if (!Number.isSafeInteger(port)) return false;
+  try {
+    const url = new URL(cfg.origin);
+    const defaultPort = url.protocol === 'https:' ? 443 : 80;
+    return (
+      ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname.toLowerCase()) &&
+      Number(url.port || defaultPort) === port
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Why the panel compares with nothing, in words the user can act on; Git's own message is kept for copying.
+ * @param {{spec?: string, error?: string|null, outsideRepository?: boolean, unborn?: boolean}} baseline
+ */
+export function baselineNote(baseline, cfg) {
+  const requested = cfg.site?.markup?.requestedBaseline ?? cfg.site?.markup?.baseline ?? baseline.spec ?? 'HEAD';
+  const off =
+    'so there is no baseline to compare with: changed templates and snippets are not applied, Edited stays empty and "changed vs Git" overrides nothing.';
+  let reason = `"${requested}" is not a commit in this repository, ${off} Start Lense with --baseline <ref>, or set markup.baseline in the catalogue, to an existing branch or commit.`;
+  if (baseline.outsideRepository)
+    reason = `Your sources are not in a Git repository, ${off} Keep the sources in a Git checkout to use them.`;
+  else if (baseline.unborn) reason = `The repository has no commits yet, ${off} Commit the sources to use them.`;
+  return { kind: 'baseline', reason, detail: baseline.error ?? null };
 }
 
 /**
@@ -821,6 +896,7 @@ export function enablePanel(context, session, opts = {}) {
         const layer = layers.size > 1 && s.kind.startsWith('page-') ? layerOf(s) : lang;
         return {
           rel: s.rel,
+          kind: s.kind,
           label: `${SOURCE_LABEL[s.kind] ?? s.kind}${layer ? ' (' + layer + ')' : ''}`,
           empty: !text?.trim(),
         };
@@ -1286,20 +1362,81 @@ export function enablePanel(context, session, opts = {}) {
     // The session and persona reads above can outlast the dev loop: a stopped loop starts no flow in the page.
     if (disposed) return { ok: false, error: 'The dev loop has stopped.' };
     let started;
+    // The flow's own loads, from before it starts: the first one back on the return path ends it.
+    const landed = watchSessionFlow(page, origin, contactId, personaName ?? contactId, returnUrl);
     try {
       started = await page.evaluate(runSessionFlow, flow);
     } catch (error) {
       started = error.message.split('\n')[0];
     }
     const failure = sessionFlowStartFailure(started);
-    if (failure) return failure;
+    if (failure) {
+      landed.cancel();
+      return failure;
+    }
     const provider = session.identityProvider?.provider;
     const via = sessionFlowMethod(contactId, flow, provider);
     log({
-      type: 'switch',
+      type: 'signin',
       text: contactId ? `Signing in as ${personaName ?? contactId} through ${via}` : 'Signing out through the portal',
     });
     return { ok: true, navigating: true, via, returnUrl, contactId: contactId ?? null };
+  };
+  /**
+   * Follows a started sign-in or sign-out through its page loads (a provider can add some) and logs how it ended: the
+   * session read on the load back at the return path, or after a few loads, says whether it took. Not a deadline:
+   * a flow that never loads again logs nothing, and dispose() drops the wait.
+   */
+  const watchSessionFlow = (page, origin, contactId, name, returnUrl) => {
+    let loads = 0,
+      current = null,
+      stopped = false;
+    const back = () => {
+      try {
+        return new URL(page.url()).pathname === new URL(returnUrl, origin).pathname;
+      } catch {
+        return false;
+      }
+    };
+    const next = () => {
+      if (stopped) return;
+      current = nextLoad(page);
+      current.promise.then(async () => {
+        if (stopped || disposed || page.isClosed()) return;
+        loads++;
+        let session = null;
+        try {
+          session = await readSession(page, origin);
+        } catch {
+          /* read again on the next load */
+        }
+        const done = contactId ? session?.signedIn && session.contactId === contactId : session && !session.signedIn;
+        if (done) {
+          log({ type: 'signin', text: contactId ? `Signed in as ${name}` : 'Signed out' });
+          scheduleAll();
+          return;
+        }
+        if (back() || loads >= 4) {
+          log({
+            type: 'signin',
+            failed: true,
+            text: contactId
+              ? `Sign-in as ${name} did not finish: ${session?.signedIn ? `this browser is signed in as ${session.name ?? session.contactId}` : 'this browser is not signed in'}`
+              : 'Sign-out did not finish: this browser is still signed in',
+          });
+          scheduleAll();
+          return;
+        }
+        next();
+      });
+    };
+    next();
+    return {
+      cancel() {
+        stopped = true;
+        current?.cancel();
+      },
+    };
   };
   /**
    * The page's next load; cancel() drops it. A Mirage write reloads every portal page through its
@@ -1379,6 +1516,8 @@ export function enablePanel(context, session, opts = {}) {
       })),
       caution: Boolean(cfg.caution),
       mirageMode: cfg.mirage === true,
+      // Lense in front of this site's own local Mirage: there is no other version for Online to show.
+      localSimulation: cfg.mirage !== true && servedByLocalMirage(cfg),
       scope: cfg.site.scope,
       sourceDir: cfg.sourceDir.replaceAll('\\', '/'),
       online: cfg.mirage ? false : session.bypass,
@@ -1394,15 +1533,7 @@ export function enablePanel(context, session, opts = {}) {
       needsDeploy: cfg.mirage || session.bypass ? [] : session.rewriter.unsupported,
       notes: [
         ...hits.flatMap((h) => h.notes ?? []),
-        ...(!cfg.mirage && session.baseline.available === false
-          ? [
-              {
-                reason:
-                  session.baseline.error ??
-                  'Git baseline unavailable; template patches and changed scope need a valid baseline',
-              },
-            ]
-          : []),
+        ...(!cfg.mirage && session.baseline.available === false ? [baselineNote(session.baseline, cfg)] : []),
       ],
       problems: problems.get(page) ?? [],
       activity,
@@ -1412,7 +1543,10 @@ export function enablePanel(context, session, opts = {}) {
       catalogVersion,
       lastChange: pageChanges.get(page) ?? lastChange,
       stats: {
-        webFiles: session.model.webFileByUrl.size,
+        // A paused web file is not laid over the site: it is not counted (blocks and patches already leave it out).
+        webFiles: [...session.model.webFileByUrl.values()].filter(
+          (webFile) => !session.disabled.has(session.rel(webFile.file)),
+        ).length,
         blocks: cfg.mirage ? 0 : session.rewriter.activeBlocks,
         patches: cfg.mirage ? 0 : session.rewriter.patches.length,
       },
@@ -1647,6 +1781,7 @@ export function enablePanel(context, session, opts = {}) {
     const { file, src, local } = localSource;
     let before;
     let against;
+    let served;
     if (!src && url) {
       const address = onlineComparisonAddress(cfg.origin, url, session.resolver, file);
       if (!address) return { ok: false, error: 'this URL does not map to the selected local source' };
@@ -1660,14 +1795,19 @@ export function enablePanel(context, session, opts = {}) {
           timeout: 60_000,
         });
         if (res.status() === 404)
-          return { ok: true, against: `${cfg.envName} (not there yet: all of it is new)`, ...comparison('', local) };
+          return {
+            ok: true,
+            against: `${servedWord(cfg)} (not there yet: all of it is new)`,
+            ...comparison('', local),
+          };
         if (res.status() !== 200)
           return { ok: false, against: cfg.envName, error: `${cfg.envName} answered HTTP ${res.status()} for ${url}` };
         const body = await res.body();
         if (body.length > MAX_DIFF_BYTES)
           return { ok: false, against: cfg.envName, error: 'the file is too large to compare here' };
         before = body.toString('utf8');
-        against = `${cfg.envName} online`;
+        against = servedWord(cfg);
+        served = true;
       } catch (err) {
         return { ok: false, against: cfg.envName, error: err.message.split('\n')[0] };
       } finally {
@@ -1676,11 +1816,18 @@ export function enablePanel(context, session, opts = {}) {
     } else {
       // an inline script or style: against the block the portal printed into this page
       // a template or snippet is rendered by the portal: the deployed text is what git has
-      ({ before, against } = inlineComparisonBase(page, rel, file, src, session, cfg));
+      ({ before, against, served = false } = inlineComparisonBase(page, rel, file, src, session, cfg));
     }
     if (Buffer.byteLength(before) > MAX_DIFF_BYTES || Buffer.byteLength(local) > MAX_DIFF_BYTES)
       return { ok: false, error: 'the file is too large to compare here' };
-    const trimmed = src?.mode === 'block' && against.endsWith('online') ? local.replace(/\r\n?/g, '\n').trim() : local;
+    const trimmed = src?.mode === 'block' && served ? local.replace(/\r\n?/g, '\n').trim() : local;
+    // A served copy may carry a source-map comment the local file has not: that is no difference.
+    if (served)
+      return {
+        ok: true,
+        against,
+        ...comparison(withoutSourceMapComments(before), withoutSourceMapComments(trimmed)),
+      };
     return { ok: true, against, ...comparison(before, trimmed) };
   };
 
@@ -1814,6 +1961,8 @@ export function enablePanel(context, session, opts = {}) {
     },
     mode: (body) => {
       if (cfg.mirage) return { ok: false, error: 'Mirage owns this local runtime mode.' };
+      if (body.online && servedByLocalMirage(cfg))
+        return { ok: false, error: 'A local Mirage serves your sources here: Online would show the same page.' };
       session.bypass = Boolean(body.online);
       log({
         type: 'switch',

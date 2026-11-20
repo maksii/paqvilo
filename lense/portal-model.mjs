@@ -1813,7 +1813,7 @@ export class PortalModel {
           changes.push({
             rel,
             reason:
-              'source is deleted or belongs to an inactive/unindexed portal record; metadata or deployment must be corrected before it can be previewed',
+              'This record is deleted, inactive or not indexed, so the page cannot show it. Fix its metadata and deploy.',
           });
       }
     }
@@ -1840,7 +1840,7 @@ export class PortalModel {
       return;
     }
     if (isEnhancedSiteMetadata(rel)) {
-      changes.push({ rel, reason: 'site or language configuration changed; these fields require deployment' });
+      changes.push({ rel, reason: 'Site or language settings changed. Deploy to see them.' });
       return;
     }
     if (this.format !== 'enhanced') {
@@ -1864,7 +1864,7 @@ export class PortalModel {
     if (!equal)
       changes.push({
         rel,
-        reason: 'portal metadata changed; URLs, permissions and server-side configuration require deployment',
+        reason: 'Metadata changed. URLs, permissions and server settings change only after you deploy.',
       });
   }
 

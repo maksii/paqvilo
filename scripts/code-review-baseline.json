@@ -325,6 +325,20 @@
       "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
     },
     {
+      "key": "runtime:exports:lense/panel.mjs:baselineNote",
+      "file": "lense/panel.mjs",
+      "type": "exports",
+      "name": "baselineNote",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
+      "key": "runtime:exports:lense/panel.mjs:editorNotFound",
+      "file": "lense/panel.mjs",
+      "type": "exports",
+      "name": "editorNotFound",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
       "key": "runtime:exports:lense/panel.mjs:resolveEditorCommand",
       "file": "lense/panel.mjs",
       "type": "exports",
@@ -3937,6 +3951,13 @@
       "key": "tests:clone:test-browser/model-driven-commands.test.mjs|test-browser/model-driven-commands.test.mjs:e3f440b1b27197c6960996de95819f16543c7ad8f8b7cf8e943b44cbf3ae6a81",
       "files": ["test-browser/model-driven-commands.test.mjs", "test-browser/model-driven-commands.test.mjs"],
       "lines": 18,
+      "type": "clone",
+      "reason": "Independent scenario assertions and invented protocol fixtures; behavior and failure evidence stay in each suite."
+    },
+    {
+      "key": "tests:clone:test-browser/xray-card-ux.test.mjs|test-browser/xray.test.mjs:c82c3f6cb98c48ded1bd1f7b821bfc2d1d01f56c3ce0bcd91f855295a53d4197",
+      "files": ["test-browser/xray-card-ux.test.mjs", "test-browser/xray.test.mjs"],
+      "lines": 21,
       "type": "clone",
       "reason": "Independent scenario assertions and invented protocol fixtures; behavior and failure evidence stay in each suite."
     }

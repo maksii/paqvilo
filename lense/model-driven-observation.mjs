@@ -557,17 +557,19 @@ export function modelDrivenObservationRuntime() {
           })
         : null;
     if (rendered) packet.sourceRefs = rendered;
+    const indexed = refs.map((ref) => {
+      let currentState;
+      if (ref.currentState === 'unavailable') currentState = 'unavailable';
+      else if (validated) currentState = 'available';
+      else currentState = 'pending';
+      return { ...ref, currentState };
+    });
     for (const fact of packet.facts ?? []) {
-      const matches = (
-        rendered ??
-        refs.map((ref) => {
-          let currentState;
-          if (ref.currentState === 'unavailable') currentState = 'unavailable';
-          else if (validated) currentState = 'available';
-          else currentState = 'pending';
-          return { ...ref, currentState };
-        })
-      ).filter((ref) => ref.componentKey === fact.binding?.key);
+      const own = (list) => list.filter((ref) => ref.componentKey === fact.binding?.key);
+      // A local render names its own files when it can. A component Mirage rendered without them (its table metadata
+      // is read lazily) takes the files the current source index holds for exactly that component, never others.
+      let matches = own(rendered ?? indexed);
+      if (rendered && !matches.length) matches = own(indexed);
       fact.sourceRefIds = matches.map((ref) => ref.id);
       packet.sourceRefs.push(...matches);
     }

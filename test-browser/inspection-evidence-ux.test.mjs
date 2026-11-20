@@ -193,7 +193,7 @@ test('summary roles persist across tabs, preserve focus and forward only guarded
             ],
           },
           enclosing: [],
-          facts: [],
+          facts: [{ label: 'The page address and the markup point to different components.', status: 'candidate' }],
           candidates: [],
           conflicts: [],
           unavailable: [],
@@ -221,11 +221,15 @@ test('summary roles persist across tabs, preserve focus and forward only guarded
   const panel = page.locator('#paqvilo-panel'),
     summary = panel.locator('[data-selected-identity]');
   await summary.waitFor();
-  assert.equal(await summary.locator('[data-evidence-role]').count(), 6);
+  // Component, source file, context and search limits; empty sections are not rendered.
+  assert.equal(await summary.locator('[data-evidence-role]').count(), 4);
   assert.equal(await summary.locator('[data-owner-status="exact"][data-source-status="candidate"]').count(), 1);
   await panel.getByRole('tab', { name: /Issues/ }).click();
   assert.equal(await summary.count(), 1);
-  await summary.getByRole('button', { name: 'Open candidate', exact: true }).click();
+  // Outside Inspect the selection is one collapsed line; opened, it has the same rows and guarded actions.
+  assert.equal(await summary.evaluate((node) => node.open), false);
+  await summary.locator(':scope > summary').click();
+  await summary.getByRole('button', { name: 'Open script in the editor', exact: true }).click();
   await page.waitForFunction(() =>
     document.getElementById('paqvilo-panel').shadowRoot.querySelector('.toast')?.textContent.includes('Opened'),
   );
@@ -241,12 +245,24 @@ test('summary roles persist across tabs, preserve focus and forward only guarded
     await page.evaluate(() => document.getElementById('paqvilo-panel').shadowRoot.activeElement?.dataset.focusKey),
     'evidence-context-summary',
   );
-  assert.equal(await summary.getByRole('button', { name: 'Open source', exact: true }).isDisabled(), true);
+  assert.equal(
+    await summary.getByRole('button', { name: 'Open script in the editor', exact: true }).isDisabled(),
+    true,
+  );
   assert.equal(await summary.locator('[data-owner-status="exact"][data-source-status="stale"]').count(), 1);
   const sourceContext = summary.locator('summary [data-evidence-source-context]');
   assert.equal(await sourceContext.textContent(), 'synthetic/form.xml');
-  await summary.locator('.selection-evidence-body').evaluate((body) => (body.scrollTop = body.scrollHeight));
-  assert.equal(await sourceContext.isVisible(), true, 'the selected file remains visible above scrolled evidence');
+  // One scroll area: the evidence scrolls with the tab content, nothing inside the panel body scrolls on its own.
+  assert.deepEqual(
+    await summary.evaluate((details) => {
+      const body = details.getRootNode().querySelector('.body');
+      const nested = [...body.querySelectorAll('*')].filter((node) =>
+        ['auto', 'scroll'].includes(getComputedStyle(node).overflowY),
+      );
+      return { inBody: body.contains(details), nested: nested.map((node) => node.className) };
+    }),
+    { inBody: true, nested: [] },
+  );
   await summary.locator(':scope > summary').click();
   assert.equal(await sourceContext.isVisible(), true, 'the selected file remains visible with details collapsed');
   await summary.locator(':scope > summary').click();
@@ -389,7 +405,10 @@ test('Tab brings overflowing source controls into view without scrolling or acti
   const xray = page.locator('#paqvilo-xray');
   await xray.locator('[data-evidence-source] [data-action=copy]').first().focus();
   const portalScroll = await page.evaluate(() => window.scrollY);
-  for (let index = 0; index < 20; index++) await page.keyboard.press('Tab');
+  // Tab to the copy button of the last of the 30 source rows, well below the card's visible area: each row is its
+  // certainty badge (reachable by keyboard for its meaning) and its copy button.
+  for (let index = 0; index < 29 * 2; index++) await page.keyboard.press('Tab');
+  assert.equal(await xray.evaluate((host) => host.shadowRoot.activeElement?.dataset.copy), 'synthetic/29.html');
   assert.ok(await xray.locator('.content').evaluate((node) => node.scrollTop > 0));
   assert.equal(await page.evaluate(() => window.scrollY), portalScroll);
   assert.equal(await page.evaluate(() => window.activations), 0);

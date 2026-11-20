@@ -1,6 +1,7 @@
 /** Explicit exact-source comparison. Only the already validated owned app tab executes this reader. */
 export async function readModelDrivenNativeSource({ origin, path, token }) {
-  if (location.origin !== origin) return { ok: false, error: 'The app changed origin.' };
+  if (location.origin !== origin)
+    return { ok: false, error: 'The app moved to another address. Try again from the app page.' };
   const controller = new AbortController(),
     limit = 3 * 1024 * 1024;
   const timer = setTimeout(() => controller.abort(), 12000);
@@ -17,11 +18,11 @@ export async function readModelDrivenNativeSource({ origin, path, token }) {
       headers: { 'x-paqvilo-native-comparison': token },
     });
     if (!response.ok || !response.body?.getReader)
-      return { ok: false, error: `Native source comparison unavailable (HTTP ${response.status}).` };
+      return { ok: false, error: `The online file could not be read (HTTP ${response.status}).` };
     const mime = response.headers.get('content-type') ?? '';
     // Dataverse answers some web resource reads as text/jscript, a legacy JavaScript type.
     if (!/(?:javascript|ecmascript|jscript|text\/css)/i.test(mime))
-      return { ok: false, error: 'The native response is not a script or stylesheet.' };
+      return { ok: false, error: 'The online file is not a script or stylesheet.' };
     reader = response.body.getReader();
     const chunks = [];
     let size = 0;
@@ -31,7 +32,7 @@ export async function readModelDrivenNativeSource({ origin, path, token }) {
       size += next.value.byteLength;
       if (size > limit) {
         await reader.cancel().catch(() => {});
-        return { ok: false, error: 'The decoded native source exceeds the 3 MiB comparison limit.' };
+        return { ok: false, error: 'The online file is larger than 3 MiB and cannot be compared here.' };
       }
       chunks.push(next.value);
     }
@@ -44,7 +45,7 @@ export async function readModelDrivenNativeSource({ origin, path, token }) {
     // Return bounded source text only; never record it in the agent or action event stream.
     return { ok: true, text: new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes), bytes: size };
   } catch {
-    return { ok: false, error: 'The native source could not be read within the bounded comparison request.' };
+    return { ok: false, error: 'The online file could not be read. Try again.' };
   } finally {
     clearTimeout(timer);
     reader?.releaseLock();

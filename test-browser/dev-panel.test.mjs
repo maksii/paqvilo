@@ -315,8 +315,8 @@ test('interactive dialogs await an answer and headless dismissals produce one pa
   assert.equal(events[0].type, 'confirm');
   assert.equal(events[0].message, 'Automated invented item?');
   assert.equal(panel.stateFor(page).activity.filter((row) => row.type === 'dialog').length, 1);
-  await showPanelTab(page, panel, 'activity', 'DIALOG');
-  assert.match(await page.locator('#paqvilo-panel .body').innerText(), /DIALOG/);
+  await showPanelTab(page, panel, 'activity', 'Dialog');
+  assert.match(await page.locator('#paqvilo-panel .body').innerText(), /Dialog/);
   assert.equal(await page.evaluate(() => prompt('Invented prompt')), null);
   await page.evaluate(() => alert('Invented alert'));
   await recorded(3);
@@ -404,8 +404,14 @@ test('collapsed pill relocates after scroll/resize and selects the least obstruc
       }
     dispatchEvent(new Event('resize'));
   });
-  // The bottom-right corner holds one control and wins over corners with two or three.
-  await page.waitForFunction(bottomRight);
+  // The pill moves to a place that no control covers.
+  await page.waitForFunction(() => {
+    const b = document.querySelector('#paqvilo-panel').shadowRoot.querySelector('.pill').getBoundingClientRect();
+    return [...document.querySelectorAll('body > button')].every((node) => {
+      const a = node.getBoundingClientRect();
+      return !(a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top);
+    });
+  });
   await page.keyboard.press('Alt+Shift+L');
   const notice = page.locator('#paqvilo-panel .float');
   assert.equal(await notice.getAttribute('role'), 'status');

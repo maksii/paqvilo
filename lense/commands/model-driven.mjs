@@ -384,12 +384,6 @@ export async function closeModelDrivenResources(steps, onError) {
   }
   progress?.phase('source discovery and Solution resources');
   let imported = await startupWait(importModelDrivenProject(project));
-  if (args['local-simulation'])
-    imported.diagnostics.push({
-      code: 'MODEL_LOCAL_SIMULATION',
-      message:
-        'Local Mirage simulation. Actions use this loopback runtime; native-only APIs remain unavailable when the runtime does not expose them.',
-    });
   progress?.phase('resource mappings');
   const mappings = await startupWait(readTargetMappings(targets, imported));
   const origin = selected.origin;
@@ -632,12 +626,6 @@ export async function closeModelDrivenResources(steps, onError) {
             reload: async () => {
               const next = await importModelDrivenProject(project),
                 maps = await readTargetMappings(targets, next);
-              if (args['local-simulation'])
-                next.diagnostics.push({
-                  code: 'MODEL_LOCAL_SIMULATION',
-                  message:
-                    'Local Mirage simulation. Actions use this loopback runtime; native-only APIs remain unavailable when the runtime does not expose them.',
-                });
               // Preserve the same importer failure admission as the one-target runner.
               publishModelDrivenReload({ replace() {} }, next, []);
               await targetSessions.replace(next, maps);

@@ -6,17 +6,17 @@ controls as Power Pages Lense, plus an **Actions** tab.
 
 ## Shared panel capabilities
 
-| Feature                      | Model-driven behaviour                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Local / Online               | Local overlays exact declared resource mappings; Online passes native requests through. Switching reloads the owned app tab with GET. Nothing is deployed.                                                                                                                                                                                                                                                                                                                                                        |
-| Live reload                  | Sources are watched while reload is paused; enabling Live reloads the owned tab on later saves. `--no-reload` starts paused: a save is read again but the tab is not reloaded, and the start-up line says so.                                                                                                                                                                                                                                                                                                     |
-| Overrides, counts and search | Applied counts belong to the current source revision; unobserved and paused resources stay distinct. Explore searches declared resources, forms and command sources.                                                                                                                                                                                                                                                                                                                                              |
-| Diff, Git baseline and scope | Edited markers and changed scope use the pinned Git HEAD of each source root; Pin HEAD updates it. Edited means what Git reports as changed (modified, added or untracked), as in portal Lense; a source Git ignores is marked **no Git baseline (ignored)**, is not counted as edited and cannot use changed scope. Diff reads only the selected native script or stylesheet (including a `text/jscript` answer) through the signed-in owned frame and compares the original local bytes, without debugger maps. |
-| Native comparison limits     | Decoded native reads stop at 3 MiB (compressed responses included) and are abandoned after 30 seconds without an answer. Comparison bytes stay in memory within a 16 MiB session budget. Non-text resources and API, authentication and shell routes are refused. Equality is unknown until observed, and a navigation or source revision invalidates an in-flight result. The line diff normalizes BOM and newlines; raw-byte differences are reported separately.                                               |
-| Inspect and X-ray            | See [selection evidence](lense.md#selection-evidence). DOM `data-id`, table-only and duplicate command matches do not establish ownership. Passive inspection does not read record IDs or field values.                                                                                                                                                                                                                                                                                                           |
-| Issues and Activity          | Owned-page errors, failed requests, source diagnostics, saves and mode switches use the shared views. Clearing a list does not repair its cause.                                                                                                                                                                                                                                                                                                                                                                  |
-| Panel controls               | Shared drag, resize, theme, collapse, search and progress controls; **Alt+Shift+L** hides, **Alt+Shift+P** opens, **Alt+Shift+O** switches source mode.                                                                                                                                                                                                                                                                                                                                                           |
-| Portal-specific content      | Liquid, portal snippets, page languages and portal personas have no model-driven equivalent. Deployment requirements stay diagnostics; Lense does not upload or publish.                                                                                                                                                                                                                                                                                                                                          |
+| Feature                      | Model-driven behaviour                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Local / Online               | Local overlays exact declared resource mappings; Online passes native requests through. Switching reloads the owned app tab with GET. Nothing is deployed.                                                                                                                                                                                                                                                                                                                                                    |
+| Live reload                  | Sources are watched while reload is paused; enabling Live reloads the owned tab on later saves. `--no-reload` starts paused: a save is read again but the tab is not reloaded, and the start-up line says so.                                                                                                                                                                                                                                                                                                 |
+| Overrides, counts and search | Applied counts belong to the current source revision; unobserved and paused resources stay distinct. Explore searches declared resources, forms and command sources.                                                                                                                                                                                                                                                                                                                                          |
+| Diff, Git baseline and scope | Edited markers and changed scope use the pinned Git HEAD of each source root; Pin HEAD updates it. Edited means what Git reports as changed (modified, added or untracked), as in portal Lense; a source Git ignores is marked **Git ignores this file**, is not counted as edited and cannot use changed scope. Diff reads only the selected native script or stylesheet (including a `text/jscript` answer) through the signed-in owned frame and compares the original local bytes, without debugger maps. |
+| Native comparison limits     | Decoded native reads stop at 3 MiB (compressed responses included) and are abandoned after 30 seconds without an answer. Comparison bytes stay in memory within a 16 MiB session budget. Non-text resources and API, authentication and shell routes are refused. Equality is unknown until observed, and a navigation or source revision invalidates an in-flight result. The line diff normalizes BOM and newlines; raw-byte differences are reported separately.                                           |
+| Inspect and X-ray            | See [selection evidence](lense.md#selection-evidence). DOM `data-id`, table-only and duplicate command matches do not establish ownership. Passive inspection does not read record IDs or field values.                                                                                                                                                                                                                                                                                                       |
+| Issues and Activity          | Owned-page errors, failed requests, source diagnostics, saves and mode switches use the shared views. Clearing a list does not repair its cause.                                                                                                                                                                                                                                                                                                                                                              |
+| Panel controls               | Shared drag, resize, collapse, search and progress controls; **Alt+Shift+L** hides, **Alt+Shift+P** opens, **Alt+Shift+O** switches source mode.                                                                                                                                                                                                                                                                                                                                                              |
+| Portal-specific content      | Liquid, portal snippets, page languages and portal personas have no model-driven equivalent. Deployment requirements stay diagnostics; Lense does not upload or publish.                                                                                                                                                                                                                                                                                                                                      |
 
 Ownership in a native app: a documented native API association with a control's outer frame can establish its owner; DOM
 `data-id` matches, navigation context and a sole exported form remain candidates and do not identify the children of
@@ -107,19 +107,31 @@ account (a login page is not application proof).
 
 The groups list only the actions the current page supports, using the same checks the action itself runs; the rest are
 collected in a collapsed **Not available here** group with the reason for each (for example record actions on a list
-page or on an unsaved form). Search opens that group; favorites and recent names narrow the list. Selecting an action
-opens its inputs, **Run action**, status and result directly under its row. **Dismiss** removes a result from the
-panel only; changes on the page stay. The results of **Logical names** and **Form overrides** also offer **Clear
-logical names** and **Restore form overrides**. A result stays in the view (Actions, Identity or Custom) that ran it.
-Clicking a logical-name label copies the name and the label shows `✓ copied` (or `copy blocked`) for a moment; with
-X-ray on, picking a label selects the field it labels.
+page or on an unsaved form). Search opens that group; favorites and recent names narrow the list. Each row has **Run**,
+a favorite star and a hide button. An action that needs inputs shows them under its row on the first **Run**, and
+**Run** then submits them; the result appears under the row, with a status line only when a run fails, is cancelled or
+is unavailable. While an action's page change is in place (**Logical names**, **Form overrides**, **Autosave guard**,
+**Pin to side pane**), its **Run** reads **Reset**, whose tooltip names what it reverts; Reset puts the page back and
+turns into Run again, and its status says what it undid (for example "Reset: 1 form setting restored to its state
+before the run."). The separate undo actions are not listed, and Reset is not added to Recent. Activity lists each
+started run ("Ran Logical names") and Reset ("Reset Form overrides"). Other results offer
+**Close**, which only hides them and folds the action back to its row. A table result without rows shows only its
+message; **Saved record fields** keeps columns without a saved value behind **Show empty**, and **Environment and
+user** leaves out values the app does not report. Actions that open a page say "Opened in a new tab."; the address is not shown. A
+result stays in the view (Built-in, Identity or Custom) that ran it. **Hide** removes an action from the list,
+remembered in this browser like favorites; **Hidden** (with its count) lists hidden actions to show again, and the list returns to
+**All** when none is hidden. A group header folds its group. Esc folds the open action; with none open, Esc closes the
+panel. **Logical names** shows each field's logical name in place of its label
+text without moving the form or covering the field's value; pointing at a name shows the display name, and clicking it
+copies the name and shows `copied` (or `copy blocked`) for a moment; with X-ray on, picking a name selects the field
+it labels.
 
 | Group     | Actions                                                                                                                                                                                                                                              |
 | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Inspect   | Logical names (clickable, removable), changed fields, choice values, record ID and URL, saved record fields, table processes (workflows, business rules, flows, actions, bound custom APIs), environment and user, identity and acting-as privilege  |
 | Open      | Record by ID, new record, table list, record Web API, form editor, security, solutions, solution history, system jobs, processes, mailboxes, app home, Advanced Find, legacy mobile client, environment administration (Power Platform admin center) |
-| Workflows | Form overrides and restore, refresh subgrids, prepare clone, discard and refresh, autosave guard, pin to the native side pane, find native users                                                                                                     |
-| Diagnose  | Forms monitor, command checker, performance center, disable form handlers, business rules or form libraries, native dark theme, reset diagnostics; each reloads; on a dirty form a browser confirm asks first                                        |
+| Workflows | Form overrides and restore, refresh subgrids, prepare clone, discard and refresh, autosave guard, pin to side pane and close it, find users                                                                                                          |
+| Diagnose  | Forms monitor, command checker, performance center, disable form handlers, business rules or form libraries, dark theme, reset diagnostics; each reloads; on a dirty form a browser confirm asks first                                               |
 | Identity  | Act as another user for this tab's Web API requests ([request identity](#request-identity))                                                                                                                                                          |
 | Custom    | Your own JavaScript commands ([custom commands](#custom-commands))                                                                                                                                                                                   |
 
@@ -130,13 +142,17 @@ cloud endpoints stay unavailable.
 ## Form workflows
 
 **Form overrides** snapshots visible, disabled and required states before changing them; Restore reverses this session's
-changes. Navigating to another record or form, or stopping Lense, removes owned labels and save handlers and restores
-owned adjustments. Server permissions still apply.
+changes. A control the app refuses to change (Mirage does not render header and footer controls) is skipped and named in
+the result by its display name, for example "3 header fields can't be changed here: Status, Budget, Remaining". An action that fails part way reverts the changes it had made. Navigating to another record or form, or
+stopping Lense, removes owned labels and save handlers and restores owned adjustments. Server permissions still apply.
 
 **Prepare clone** checks create eligibility, copies supported scalar, choice, date and single-lookup values from the
 draft (keeping zero and false, excluding primary IDs and system-managed values) and opens an unsaved native create form
 in a new window. Native main forms give no opening-success callback, so Lense reports the request and shows a late
-failure only while its result is current. The user saves through the app.
+failure only while its result is current. The user saves through the app. In a local Mirage simulation Prepare clone is
+unavailable (Mirage opens no prefilled form), and **Open by ID** and **New record** open in the same tab.
+
+**Refresh subgrids** is available only on a form with a subgrid that a script can refresh.
 
 **Discard and refresh** refreshes without Save. On a dirty draft the native app shows its own **Unsaved changes** prompt
 (Lense adds none): **Discard changes** discards the draft, **Save and continue** saves it first, and closing the prompt
@@ -148,7 +164,7 @@ mode 70 only; Save and Save & Close stay available.
 
 ## Request identity
 
-**Find native users** reads enabled Dataverse users that have a Microsoft Entra object ID, application users
+**Find users** reads enabled Dataverse users that have a Microsoft Entra object ID, application users
 included, so an existing application user with a limited security role can stand in for another person without a new
 tenant account. Starting requires that object ID, a fresh eligibility read and the signed-in user's
 `prvActOnBehalfOfAnotherUser` privilege (a role name never substitutes). While the **Acting as** banner is active, later
@@ -168,7 +184,9 @@ under the identity names the acting user in `createdby` and the signed-in user i
 ## Custom commands
 
 Commands are stored per origin in browser local storage as version 1 documents. Import validates the whole document
-before replacing the list and never runs code. **Run** passes native `Xrm` and a cooperative `signal`; a command may
+before replacing the list and never runs code. **Run**, **Save**, **Delete**, **Import** and **Export** share one row.
+**New command** in the chooser starts a new one; **Delete command**
+asks once in place (**Confirm delete**) before it removes the command. **Run** passes native `Xrm` and a cooperative `signal`; a command may
 return a value or a Promise, and results stay in the panel.
 
 Commands are trusted JavaScript in the live app and can write data. The wait limit stops Lense waiting and signals

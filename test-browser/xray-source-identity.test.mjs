@@ -77,56 +77,98 @@ test('X-ray action feedback survives source refresh and clears when selecting an
   assert.equal(observed.afterNewSelection, '', 'another selection does not inherit the editor result');
 });
 
-// @test-kind contract: an X-ray copy result belongs to the selection its button was pressed for
-test('a copy result that arrives after another element was picked does not label the new selection', async (t) => {
-  const { page } = await fixture(t, '<!doctype html><input id="first"><input id="second">');
-  const observed = await page.evaluate(async () => {
-    const host = document.getElementById('paqvilo-xray'),
-      api = host.__px,
-      card = host.shadowRoot.querySelector('.card');
-    const status = () => host.shadowRoot.querySelector('.status').textContent;
-    // The clipboard write stays pending until the test settles it, so the order of the two events is the test's.
-    let settle;
-    const writes = [];
+// A page whose first input matches one exported template by its ID: its card lists the template as a source file
+// (copied as a source reference) and as a markup match (copied as a file path), each with its rendered copy button.
+const copyPage = '<!doctype html><input id="first"><input id="second">';
+const copyReport = () => ({
+  elementSources: hints('<input id="first">', 'one', { sourceFile: 'C:/invented/one.html' }),
+});
+// The clipboard is the test's: each write stays pending until the test settles it, so the order of events is the
+// test's, and a write can be refused. The copy handler continues on the settled promise before anything the test
+// chains on it later.
+const controlClipboard = (page) =>
+  page.evaluate(() => {
+    const control = { writes: [], pending: null, fail: false };
+    window.__clipboard = control;
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
       value: {
         writeText(text) {
-          writes.push(text);
-          return new Promise((resolve) => {
-            settle = resolve;
+          control.writes.push(text);
+          control.pending = Promise.withResolvers();
+          return control.pending.promise.then(() => {
+            if (control.fail) throw new Error('denied');
           });
         },
       },
     });
-    const pressCopy = () => {
-      const button = document.createElement('button');
-      button.dataset.action = 'copy';
-      button.dataset.copy = 'invented/first.xml';
-      card.append(button);
-      button.click();
-    };
-    // The handler continues in a microtask after the write settles; a task later it has run.
-    const settled = async () => {
-      settle();
-      await new Promise((resolve) => setTimeout(resolve));
-    };
-    api.select(document.getElementById('first'));
-    pressCopy();
-    await settled();
-    const sameSelection = status();
-    api.select(document.getElementById('second'));
-    const cleared = status();
-    api.select(document.getElementById('first'));
-    pressCopy();
-    api.select(document.getElementById('second'));
-    await settled();
-    return { writes, sameSelection, cleared, afterAnotherPick: status() };
   });
-  assert.deepEqual(observed.writes, ['invented/first.xml', 'invented/first.xml']);
-  assert.equal(observed.sameSelection, 'Source path copied.');
-  assert.equal(observed.cleared, '');
-  assert.equal(observed.afterAnotherPick, '', 'the copy made for the first element does not label the second');
+const settleCopy = (page) =>
+  page.evaluate(async () => {
+    const { pending } = window.__clipboard;
+    pending.resolve();
+    await pending.promise;
+    // The handler's own reaction to the write ran first; one more turn lets its continuation write the status.
+    await Promise.resolve();
+  });
+const status = (page) =>
+  page.evaluate(() => document.getElementById('paqvilo-xray').shadowRoot.querySelector('.status').textContent);
+const selectById = (page, id) =>
+  page.evaluate((id) => document.getElementById('paqvilo-xray').__px.select(document.getElementById(id)), id);
+
+// @test-kind contract: an X-ray copy result belongs to the selection its button was pressed for
+test('a copy result that arrives after another element was picked does not label the new selection', async (t) => {
+  const { page } = await fixture(t, copyPage, copyReport());
+  const xray = page.locator('#paqvilo-xray');
+  await controlClipboard(page);
+  await selectById(page, 'first');
+  const copySource = xray.getByRole('button', { name: /^Copy the source reference of / }).first();
+  await copySource.click();
+  await settleCopy(page);
+  assert.equal(await status(page), 'Source reference copied');
+  await selectById(page, 'second');
+  assert.equal(await status(page), '');
+  await selectById(page, 'first');
+  await copySource.click();
+  await selectById(page, 'second');
+  await settleCopy(page);
+  assert.equal(await status(page), '', 'the copy made for the first element does not label the second');
+  assert.deepEqual(await page.evaluate(() => window.__clipboard.writes), ['one.html', 'one.html']);
+});
+
+// @test-kind contract: the X-ray copy result names what the button copied, a file path or a source reference
+test('copying a source reference says a reference was copied, not a path', async (t) => {
+  const { page } = await fixture(t, copyPage, copyReport());
+  const xray = page.locator('#paqvilo-xray');
+  await controlClipboard(page);
+  await selectById(page, 'first');
+  await xray.locator('[data-disclosure="static-candidates"] summary').click();
+  const press = async (button) => {
+    await page.evaluate(() => document.getElementById('paqvilo-xray').__px.status(''));
+    await button.click();
+    await settleCopy(page);
+    return status(page);
+  };
+  const reference = xray.getByRole('button', { name: /^Copy the source reference of / }).first();
+  const filePath = xray
+    .locator('[data-disclosure="static-candidates"]')
+    .getByRole('button', { name: /^Copy the file path of / });
+  const results = [await press(reference), await press(filePath)];
+  await page.evaluate(() => (window.__clipboard.fail = true));
+  results.push(await press(reference), await press(filePath));
+  // The panel's words: one message per kind of copy.
+  assert.deepEqual(results, [
+    'Source reference copied',
+    'Path copied',
+    'The browser did not allow copying',
+    'The browser did not allow copying',
+  ]);
+  assert.deepEqual(await page.evaluate(() => window.__clipboard.writes), [
+    'one.html',
+    'C:/invented/one.html',
+    'one.html',
+    'C:/invented/one.html',
+  ]);
 });
 
 const assertNoExact = (row, message) => {
@@ -278,7 +320,7 @@ test('transitive static includes keep shared selectors uncertain and weak eviden
   assert.ok(found.matches.every((item) => !item.strong));
   assert.ok(found.matches.some((item) => item.pageChain));
   await page.evaluate(() => document.getElementById('paqvilo-xray').__px.select(document.querySelector('input')));
-  assert.match(await page.locator('#paqvilo-xray .content').innerText(), /Search export markup/);
+  assert.match(await page.locator('#paqvilo-xray .content').innerText(), /Markup matches\s+\d+/);
 });
 
 test('snippet dependency chains retain exported usedBy reachability without naming a shared selector owner', async (t) => {
@@ -320,7 +362,10 @@ test('classic lists, fallback basic forms and modal iframe URLs resolve with a v
   assert.equal((await identify('#EntityFormControl p')).forms[0].id, form);
   assert.equal((await identify('#modal')).forms[0].id, form);
   await page.evaluate(() => document.getElementById('paqvilo-xray').__px.select(document.getElementById('modal')));
-  assert.match(await page.locator('#paqvilo-xray .content').innerText(), /Frame boundary/);
+  assert.match(
+    await page.locator('#paqvilo-xray .content').innerText(),
+    /Frame\. Click inside it to select its controls\./,
+  );
 });
 
 // @test-kind contract: descent remembers the selected child, native controls are picked without focus or page actions, and idle X-ray does not poll
@@ -517,9 +562,9 @@ test('a thousand indexed sources retain late snippets, expose truncation and ide
   assertSourceCandidate(await identify('#snippet-900'), 'snippet-900');
   await page.evaluate(() => document.getElementById('paqvilo-xray').__px.select(document.getElementById('asset')));
   const content = await page.locator('#paqvilo-xray .content').innerText();
-  assert.match(content, /Selected resource reference/);
+  assert.match(content, /Linked file/);
   assert.match(content, /logo.svg/);
-  assert.match(content, /Search limited/);
+  assert.match(content, /Search limits/);
   assert.doesNotMatch(content, /ignored=value/);
 });
 
@@ -595,7 +640,12 @@ test('source candidate display caps expose omitted matches instead of silently l
   ).flat();
   const { page } = await fixture(t, '<button id="same">Go</button>', { elementSources });
   await page.evaluate(() => document.getElementById('paqvilo-xray').__px.select(document.getElementById('same')));
-  assert.match(await page.locator('#paqvilo-xray .content').innerText(), /15 omitted/);
+  // The count of what is not shown is the kit's count pill.
+  assert.match(await page.locator('#paqvilo-xray .content').innerText(), /Search limits\s+15/);
+  assert.equal(
+    await page.locator('#paqvilo-xray [data-disclosure="evidence-limits"] .n').getAttribute('title'),
+    'Not shown',
+  );
 });
 
 test('X-ray details expose PCF bindings and Web API context with consistent toggles and Ctrl interaction', async (t) => {
@@ -666,16 +716,15 @@ test('X-ray details expose PCF bindings and Web API context with consistent togg
   const text = await xray.locator('.content').textContent();
   for (const expected of [
     'fx.Widget',
-    'declared-schema-name',
+    'Matched by schema name',
     'Widget.js',
     'Active items',
     '1 columns',
     '/_api/fx_items',
-    'Observed request',
-    'No request-to-element ownership is asserted',
+    'Requested by this page',
     'Column: title',
     'Dataset: view-current',
-    'Exported literal',
+    'literal',
     'SingleLine.Text',
     'required',
     'Declared action',
@@ -688,25 +737,23 @@ test('X-ray details expose PCF bindings and Web API context with consistent togg
   assert.doesNotMatch(text, /PRIVATE_PARAMETER_SENTINEL/);
   assert.notEqual(await xray.locator('[data-inspection-evidence]').getAttribute('data-owner-status'), 'exact');
   await xray.getByRole('combobox', { name: 'Highlight layer' }).selectOption('data');
-  await xray.locator('.mark[style*="#3975ad"]').first().waitFor();
+  await xray.locator('.mark[style*="--tone-component"]').first().waitFor();
   await details.click();
   assert.equal(await details.getAttribute('aria-pressed'), 'false');
   assert.equal(await xray.locator('.card').isVisible(), false);
   await details.click();
   assert.equal(await details.getAttribute('aria-pressed'), 'true');
   assert.equal(await xray.locator('.card').isVisible(), true);
-  await page.keyboard.down('Control');
-  assert.equal(await xray.getByRole('button', { name: 'Interact', exact: true }).getAttribute('aria-pressed'), 'false');
+  await page.keyboard.press('Control');
+  // One label; pressed is inspecting, released is using the page.
+  assert.equal(await xray.getByRole('button', { name: 'Inspect', exact: true }).getAttribute('aria-pressed'), 'false');
   await page.locator('#action').click();
-  await page.keyboard.up('Control');
+  await page.keyboard.press('Control');
   assert.equal(await page.evaluate(() => window.used), true);
   assert.equal(await xray.getByRole('button', { name: 'Inspect', exact: true }).getAttribute('aria-pressed'), 'true');
   await page.evaluate(() => document.getElementById('paqvilo-xray').__px.select(document.getElementById('plain')));
   assert.equal(await xray.locator('.pcf-context').count(), 1);
-  assert.match(
-    await xray.locator('.pcf-context').textContent(),
-    /no component-to-element ownership or active mount is asserted/,
-  );
+  assert.match(await xray.locator('.pcf-context').textContent(), /Page code components 1/);
 });
 
 test('native PCF selection requires a rendered host rather than a configured column alone', async (t) => {
@@ -957,7 +1004,7 @@ test('shared selectors in separate records of one enhanced source retain both un
     document.getElementById('paqvilo-xray').__px.select(document.querySelector('.shared-notice')),
   );
   const text = await page.locator('#paqvilo-xray .content').innerText();
-  assert.match(text, /Search export markup · 2 candidates/);
+  assert.match(text, /Markup matches\s+2/);
 });
 
 // @test-kind contract: framework-only evidence remains uncertain despite unique static include reachability
@@ -1094,7 +1141,7 @@ test('idless list grids retain the sole referenced list and view; shared views s
     assert.ok(row.evidence.enclosing.some((item) => item.component?.name === 'List' && item.status === 'candidate'));
   }
   await page.evaluate(() => document.getElementById('paqvilo-xray').__px.select(document.querySelector('th')));
-  assert.match(await page.locator('#paqvilo-xray .content').innerText(), /Enclosing components/);
+  assert.match(await page.locator('#paqvilo-xray .content').innerText(), /Contained in/);
   await page.locator('.entitylist').evaluate((node) => node.setAttribute('data-listid', 'L'));
   assert.ok(
     (await identify('th')).evidence.enclosing.some(
@@ -1179,14 +1226,14 @@ test('viewport candidates survive early offscreen matches and limit notes appear
   await page.waitForFunction(
     () => document.getElementById('paqvilo-xray').shadowRoot.querySelectorAll('.mark').length === 20,
   );
-  assert.match(await page.locator('#paqvilo-xray .legend').innerText(), /Candidate limit reached/);
+  assert.match(await page.locator('#paqvilo-xray .legend').innerText(), /Only the first 800 elements are outlined/);
   await page.locator('.off').evaluateAll((nodes) => nodes.forEach((node) => node.remove()));
   await page.waitForFunction(
     () =>
       !document
         .getElementById('paqvilo-xray')
         .shadowRoot.querySelector('.legend')
-        .textContent.includes('Candidate limit reached'),
+        .textContent.includes('Only the first 800 elements are outlined'),
   );
   assert.equal(await page.locator('#paqvilo-xray .mark').count(), 20);
 });
@@ -1737,4 +1784,71 @@ test('serialized selected fields follow the independently exact column when lega
     identity.selected.fields.map((field) => field.entity + '.' + field.name),
     ['item.demo_code'],
   );
+});
+
+// @test-kind contract: the hover summary and the card describe an element with only a likely file the same way
+test('an element with only a likely source file is described the same way on hover and in the card', async (t) => {
+  const { page, identify } = await fixture(
+    t,
+    '<!doctype html><header class="site-head"><a id="nav" href="#">Projects</a></header>',
+    { elementSources: hints('<header class="site-head"><a href="#">Projects</a></header>', 'shell') },
+  );
+  const row = await identify('#nav');
+  assert.equal(row.evidence.owner.status, 'unavailable');
+  assert.ok(row.evidence.source.refs.some((ref) => ref.status === 'candidate'));
+  assert.equal(row.kind, 'Likely source file');
+  const link = await page.locator('#nav').boundingBox();
+  await page.mouse.move(link.x + 5, link.y + link.height / 2, { steps: 2 });
+  const tip = page.locator('#paqvilo-xray .tip');
+  await tip.waitFor();
+  // One header format: the file that names the element, then its tag.
+  assert.match(await tip.innerText(), /^Likely source file\s+shell · a\s+shell\.html$/);
+  await page.mouse.click(link.x + 5, link.y + link.height / 2);
+  assert.equal(await page.locator('#paqvilo-xray .card .eyebrow').innerText(), 'Likely source file');
+  assert.equal(
+    await page.locator('#paqvilo-xray [data-evidence-role=source] .ie-state').first().getAttribute('data-status'),
+    'candidate',
+  );
+});
+
+// @test-kind contract: X-ray's header follows Parent and Child, the page's mode is visible, counts are pills and only templates of this page are candidates
+test('the header follows Parent and Child, Interact is visible, counts are pills and only this page’s templates are candidates', async (t) => {
+  const elementSources = [
+    // The page's own template renders the shell; another page's template merely shares its class.
+    ...hints('<section class="hero"><div class="copy"><h2>Title</h2></div></section>', 'Home template'),
+    ...hints('<section class="hero"><p>Elsewhere</p></section>', 'Other page template'),
+  ];
+  const { page, identify } = await fixture(
+    t,
+    '<!doctype html><section class="hero"><div class="copy"><h2 id="title">Title</h2></div></section>',
+    { elementSources, webTemplates: [{ name: 'Home template', ref: 'Home template.html' }] },
+  );
+  const xray = page.locator('#paqvilo-xray');
+  const names = (await identify('#title')).matches.map((item) => item.name);
+  assert.ok(names.includes('Home template'), JSON.stringify(names));
+  assert.ok(!names.includes('Other page template'), 'a template this page does not render is no candidate');
+  const title = () => xray.locator('.cardhead .title').innerText();
+  await page.evaluate(() => document.getElementById('paqvilo-xray').__px.select(document.getElementById('title')));
+  assert.equal(await title(), 'Home template · h2');
+  await xray.locator('[data-action=parent]').click();
+  assert.equal(await title(), 'Home template · div');
+  await xray.locator('[data-action=parent]').click();
+  assert.equal(await title(), 'Home template · section');
+  await xray.locator('[data-action=child]').click();
+  assert.equal(await title(), 'Home template · div');
+  // The count of a group is the kit's count pill.
+  assert.match(
+    await xray.locator('[data-disclosure="static-candidates"] > summary').innerHTML(),
+    /Markup matches <span class="n dimn">\d+<\/span>/,
+  );
+  // Tapping Ctrl hands the page back: the toolbar says so in its live status, and the outlines dim.
+  const state = xray.locator('.mode-state');
+  assert.equal(await state.getAttribute('role'), 'status');
+  assert.equal(await state.innerText(), 'Tap Ctrl to use the page');
+  await page.keyboard.press('Control');
+  assert.equal(await state.innerText(), 'Using the page · tap Ctrl to inspect');
+  assert.equal(await xray.locator('.marks').evaluate((node) => getComputedStyle(node).opacity), '0.35');
+  assert.equal(await xray.locator('[data-action=mode]').innerText(), 'Inspect');
+  await page.keyboard.press('Control');
+  assert.equal(await state.innerText(), 'Tap Ctrl to use the page');
 });

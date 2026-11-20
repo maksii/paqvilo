@@ -91,15 +91,47 @@ organization's metadata. Large datasets use far less memory.
   `mirage dev` and `model-driven dev`. `agent sessions --timeout <ms>` sets the probe budget. Source attribution finds
   grid columns, forms, quick views, modals and rich-text frames more reliably. Ctrl+C runs each command's own cleanup;
   a third interrupt exits at once (130, or 143 for SIGTERM). A failed cleanup exits 1 and names what was left running.
-  In the model-driven **Actions** panel, a selected action opens under its own row with its status and result; the
-  result card closes with **Dismiss**, and changes are undone with **Clear logical names** and **Restore form
-  overrides**; actions the current page cannot run are grouped under **Not available here** with the reason. A result
-  stays in the view that ran it. Picking a label that **Logical names** added selects its field, and copying answers on
-  the label (`<name> ✓ copied`). The X-ray details card, in portal and model-driven Lense, opens beside the picked
-  element, stays inside the window and follows the element on scroll and resize. Declared model-driven sources are
-  **Edited** when Git reports them changed; a source Git ignores shows `no Git baseline (ignored)`. The text report of
-  `model-driven inspect` is a summary (the full report with `--json`), `model-driven --help` names `dev` as the default
-  action, and with `--no-reload` the start-up line says live reload is paused.
+  In the model-driven **Actions** panel each row has **Run**, a favorite star and **Hide** (hidden actions are listed
+  under **Hidden (N)**); inputs and the result open under the row. While an action's page change is in place its
+  **Run** reads **Reset**, which puts the page back; other results offer **Close**. Actions that open a page say
+  "Opened in a new tab."; actions the current page cannot run are grouped under **Not available here** with the
+  reason. A result stays in the view (Built-in, Identity or Custom) that ran it. Picking a label that **Logical names** added selects
+  its field, and copying answers on the label (`<name> copied`). The X-ray details card, in portal and model-driven
+  Lense, opens beside the picked element, stays inside the window and follows the element on scroll and resize.
+  Declared model-driven sources are **Edited** when Git reports them changed; a source Git ignores shows
+  **Git ignores this file**. The text report of `model-driven inspect` is a summary (the full report with `--json`),
+  `model-driven --help` names `dev` as the default action, and with `--no-reload` the start-up line says live reload is
+  paused.
+- **Lense panel.** The header shows paqvilo on its first line and the site and environment on the second; it has no
+  Reload button (F5 reloads). **Local** and **Online** each say what they show and that all tabs of the site switch.
+  The panel keeps its own look whatever the page's CSS, rows do not move when hovered, and a tooltip stays open while
+  the panel updates. Tab and pill counts appear only when there is something to count. Error messages wrap, stay long
+  enough to read and are announced to screen readers at once. Inspect uses plain words ("your sources", "on this
+  page", "not found") and no longer lists what Lense cannot observe. Opening a file finds `code` on PATH or in the VS
+  Code install folders; when the editor is not found, the message names the setting to change and any PATH folder it
+  could not search. The pill shows **LOCAL** or **ONLINE** and the site (the environment is in its tooltip); the header
+  has a gear for project setup and a target button for X-ray. Row actions are always visible, the same on every tab,
+  and the confirmation after opening a file uses the row's name. Overrides says **differs from deployed**, **same as
+  deployed** and **N requests**, and its switch reads **Local files: all | changed vs Git**; with no local file on the
+  page, it shows only the empty state. Inspect starts with its tools (one **Expand all**/**Collapse all** button, a
+  tooltip on each control), lists page facts as "Template: … · Parent: … · Published", and a model-driven page names
+  its table, app and form instead of their IDs. The selected element's details scroll with the panel's content
+  instead of in a box of their own. Without a Git baseline the header shows **No Git baseline** and Issues explains
+  why under **Comparison unavailable** (Git's message is behind the copy button). In front of the site's own local
+  Mirage (and in a model-driven local simulation) there is no Local/Online switch, since both would show the same
+  sources. The Portal / environment row appears only when there is another target, and Go only for a different one.
+  Turning X-ray off brings back the panel it replaced, on the same tab. In X-ray, **tap Ctrl** (alone) or click
+  **Inspect** to switch to Interact and back; holding Ctrl no longer interacts. The panel, X-ray and the selection
+  details share one set of icons, buttons, chips, selects and rows; X-ray's **Parent** and **Child** use the panel's
+  arrows. Under `mirage dev` a **Mirage** tab lists the runtime (site, revision, source, reload state), its
+  diagnostics, content policy, records and the `_sim` pages for this page as rows; Inspect starts with the inspection
+  and Tweaks no longer repeats them. Tweaks says who this browser is on one line (**Not signed in · Anonymous Users**,
+  or **Signed in as … · roles** with **Sign out**; how the portal signs in is its tooltip). Each persona row signs in
+  with its own button and pins with a star; the search has a filter button that opens web role, tag, account and group
+  chips, and a button for the full picker in `_sim`. Pinned, Recent and Default personas are listed once, before the
+  catalogue groups, which use the panel's group headers. Overrides lists the page's files as rows under **Page files**.
+  Explore shows its count only when a search narrows or cuts the list. The model-driven **Actions** tab uses the
+  panel's search box and group headers, and the selection details clear with the same close button as X-ray.
 - **CLI.** Arguments are validated before any file, browser or PAC work; JSON errors go to stdout, readable errors to
   stderr; report paths cannot overwrite inputs or credentials. Each `mirage` action accepts only the options its
   `--help` lists. An unknown command or subcommand is one line naming it and the valid choices (exit 1; with `--json`,

@@ -718,7 +718,7 @@ test('unquoted literal PCF IDs open declared manifest/resources, while dynamic c
   assert.equal(report.codeComponents[1].dynamic, true);
   assert.equal(report.codeComponents[1].sourceFile, undefined);
   assert.equal(
-    report.unresolved.some((row) => row.kind === 'code-component' && /dynamic/.test(row.reason)),
+    report.unresolved.some((row) => row.kind === 'code-component' && /set at run time/.test(row.reason)),
     true,
   );
 });

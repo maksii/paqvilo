@@ -202,7 +202,7 @@ test('enhanced site and language saves report deployment requirements and refres
   assert.equal(session.model.languageCodes.has('en-us'), false);
   const changes = session.model.deploymentChanges(baseline, baseline.changedFiles());
   assert.deepEqual(changes.map((change) => change.rel).sort(), [siteRel, languageRel].sort());
-  assert.ok(changes.every((change) => /require deployment/.test(change.reason)));
+  assert.ok(changes.every((change) => /Deploy to see them/.test(change.reason)));
   const audit = auditResources(session.model, SITE);
   for (const rel of [siteRel, languageRel])
     assert.equal(audit.resources.find((item) => item.relativePath === rel)?.status, 'deployment');

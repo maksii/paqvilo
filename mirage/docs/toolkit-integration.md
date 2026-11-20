@@ -18,8 +18,10 @@ that runs it with `--project`; the catalogue form above does not read that file.
   settings. Access rules are reported as the runtime enforces them for the selected persona, so an identity with role
   ids but no contact id is anonymous here too. Permission explanations use this browser's session. Source items open
   their portal or Solution file in the configured editor.
-- **Tweaks** signs this browser in or out, selects local enforcement, scenarios and presets, and links to `/_sim/`.
+- **Tweaks** signs this browser in or out (from a persona row), selects local enforcement, scenarios and presets.
   Identity always comes from this browser's session cookie, never from a saved global persona.
+- **Mirage** shows the runtime's revision, source, diagnostics and content policy, and opens the `/_sim/` pages for
+  the current page (its requests, records, personas and settings).
 
 Mirage watches its sources and reloads local rendering when they change. When a source is missing, a Solution cannot
 resolve a relationship, a pack does not match or a managed dependency needs enrichment, read the bootstrap and runtime

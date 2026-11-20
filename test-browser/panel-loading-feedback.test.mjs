@@ -231,7 +231,8 @@ test('X-ray immediately shows its scan, survives exit during loading, and expose
   });
   await xray.locator('.scan-state').waitFor({ state: 'hidden' });
   await xray.getByRole('button', { name: 'Turn off X-ray' }).click();
-  await scope.locator('.pill').click();
+  // X-ray took the open panel's place, so turning it off brings the panel back.
+  await scope.locator('.wrap.open').waitFor({ state: 'attached' });
   await scope.getByRole('tab', { name: 'Explore' }).click();
   await scope.getByText('Source catalogue unavailable', { exact: true }).waitFor();
   assert.equal(

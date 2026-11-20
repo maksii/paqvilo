@@ -407,8 +407,14 @@ test('Xray presents a proven implementation independently of unknown ownership a
   assert.equal(identity.evidence.source.status, 'exact');
   assert.equal(identity.evidence.owner.status, 'unavailable');
   const card = fx.page.locator('#paqvilo-xray');
-  assert.equal(await card.getByRole('button', { name: 'Open source', exact: true }).isEnabled(), true);
-  assert.match(await card.locator('.card').innerText(), /Observed script creation callsite/);
+  assert.equal(
+    await card
+      .locator('[data-evidence-source]')
+      .getByRole('button', { name: /^Open .+ in the editor$/ })
+      .isEnabled(),
+    true,
+  );
+  assert.match(await card.locator('.card').innerText(), /Created by this script/);
   const timings = await fx.page.evaluate(() => {
     const api = document.getElementById('paqvilo-xray').__px,
       node = document.getElementById('created'),
@@ -430,7 +436,13 @@ test('Xray presents a proven implementation independently of unknown ownership a
     data,
   );
   assert.equal((await selection()).evidence.source.status, 'stale');
-  assert.equal(await card.getByRole('button', { name: 'Open source', exact: true }).isDisabled(), true);
+  assert.equal(
+    await card
+      .locator('[data-evidence-source]')
+      .getByRole('button', { name: /^Open .+ in the editor$/ })
+      .isDisabled(),
+    true,
+  );
 });
 
 test('actual frame and popup script callsites remain document-local and detach removes future instrumentation', async (t) => {

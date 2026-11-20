@@ -154,6 +154,37 @@ export function inspectionEvidenceRuntime() {
     'lense-applied-literal',
   ]);
   const sourceProofs = new Set(['render-literal', 'render-platform', 'lense-applied-literal', 'observed-dom-callsite']);
+  // How a proof or reason established a match, in the words of the page. A code without a label shows nothing.
+  const proofLabels = {
+    'render-literal': 'Rendered from this file',
+    // Mirage names the component it rendered, not a file: a known file is a source row of its own.
+    'mirage-registry': 'Identified by Mirage',
+    'mirage-owner': 'Rendered from this file',
+    'lense-applied-literal': 'Rendered from your local file',
+    'render-platform': 'Rendered by the portal for this component',
+    'render-derived': 'Generated from this file',
+    'render-invocation': 'Included by this template',
+    'export-definition': 'Defined in this file',
+    'native-dom': 'Matched by field name on the page',
+    'declared-include': 'Referenced by this page',
+    'native-api': 'Reported by the app',
+    'native-api-owner': 'Reported by the app',
+    'native-component-id': 'Matched by component ID on the page',
+    'native-field-id': 'Matched by field ID on the page',
+    'model-driven-binding': 'Bound on the open form',
+    'requested-input': 'From the page address',
+    'observed-dom-callsite': 'Created by this script',
+    'column-definition-unavailable': 'Column not found in your sources',
+    'opening-input-is-not-current-identity': 'From the page address, not from the open form',
+    'no-current-exported-command-identifier-match': 'No command in your sources matches',
+  };
+  // Notices the person can act on. "No proof" notices repeat what the Not found badge already says.
+  const noticeLabels = {
+    'contradictory-current-owner-evidence': 'Several components match this element.',
+    'contradictory-current-source-evidence': 'Several source files match this element.',
+    'unsupported-evidence-version': 'Select the element again.',
+    'invalid-selection-scope': 'Select the element again.',
+  };
 
   function buildInspectionRefIndex(refs) {
     const byId = new Map(),
@@ -256,6 +287,7 @@ export function inspectionEvidenceRuntime() {
           status: fact.freshness.owner === 'stale' ? 'stale' : 'candidate',
           component: fact.binding,
           reason: fact.reason ?? fact.proof,
+          label: fact.label ?? proofLabels[fact.reason] ?? proofLabels[fact.proof],
         });
   }
 
@@ -311,7 +343,7 @@ export function inspectionEvidenceRuntime() {
       fact,
       ref: {
         ...ref,
-        evidenceLabel: ref.evidenceLabel ?? fact.label ?? fact.reason ?? fact.proof.replaceAll('-', ' '),
+        evidenceLabel: ref.evidenceLabel ?? fact.label ?? proofLabels[fact.proof],
         ...(fact.region ? { region: fact.region } : {}),
       },
       status: inspectionSourceStatus(ref, id, ambiguousRefs, versionConflict, stale, exactProof, verified),
@@ -387,7 +419,22 @@ export function inspectionEvidenceRuntime() {
     );
   }
 
-  function appendRelatedInspectionFacts(facts, result, evidenceOf) {
+  // The definition files of an enclosing component, so it offers the same open/copy actions as a source row.
+  // A verified definition of an exactly identified component is exact; every other state is kept as resolved.
+  function componentSourceRefs(fact, status, lookup) {
+    const refs = fact.sourceRefIds.flatMap((id) => {
+      const row = resolveInspectionSourceRow(fact, id, ...lookup, { status: 'unavailable' });
+      if (!row.ref) return [];
+      const verified = Boolean(
+        row.ref.ref && (row.ref.sourceKey ?? row.ref.key) && row.ref.sourceRevision && row.ref.contentRevision,
+      );
+      const { evidenceLabel: _label, ...ref } = row.ref;
+      return [{ ...ref, status: row.status === 'candidate' && status === 'exact' && verified ? 'exact' : row.status }];
+    });
+    return unique(refs, refKey);
+  }
+
+  function appendRelatedInspectionFacts(facts, result, evidenceOf, lookup) {
     for (const fact of facts.filter((row) => ['enclosing', 'context'].includes(row.dimension))) {
       let status;
       if (fact.freshness.owner === 'stale') status = 'stale';
@@ -399,6 +446,7 @@ export function inspectionEvidenceRuntime() {
           component: fact.binding,
           relationship: fact.predicate,
           evidence: [evidenceOf(fact)],
+          refs: componentSourceRefs(fact, status, lookup),
         });
       else result.facts.push({ ...evidenceOf(fact), status, relationship: fact.predicate, component: fact.binding });
     }
@@ -453,17 +501,11 @@ export function inspectionEvidenceRuntime() {
     if (result.limits.truncated && !result.limits.reasons.length) result.limits.reasons.push('bounded-evidence-search');
   }
 
-  /* NOSONAR */ function appendInspectionUnavailable(input, result, notice) {
+  /* NOSONAR */ function appendInspectionUnavailable(result, notice) {
     if (result.owner.status === 'unavailable')
       result.unavailable.push(notice('owner', 'no-current-direct-owner-proof'));
     if (result.source.status === 'unavailable')
       result.unavailable.push(notice('source', 'no-current-editable-source-proof'));
-    if (input.mode === 'live')
-      result.facts.push({
-        kind: 'deployed-revision',
-        label: 'Local definition; deployed revision unverified',
-        observed: false,
-      });
   }
 
   function classifyInspectionFacts(facts) {
@@ -496,7 +538,11 @@ export function inspectionEvidenceRuntime() {
       unavailable: [],
       limits: { truncated: false, reasons: [] },
     };
-    const notice = (dimension, reason) => ({ dimension, reason, label: reason.replaceAll('-', ' ') });
+    const notice = (dimension, reason) => ({
+      dimension,
+      reason,
+      ...(noticeLabels[reason] ? { label: noticeLabels[reason] } : {}),
+    });
     if (input.version !== 1) {
       result.unavailable.push(notice('all', 'unsupported-evidence-version'));
       return result;
@@ -524,7 +570,7 @@ export function inspectionEvidenceRuntime() {
     const evidenceOf = (fact) => ({
       id: fact.id,
       kind: fact.proof,
-      label: fact.label ?? fact.reason ?? fact.proof.replaceAll('-', ' '),
+      label: fact.label ?? proofLabels[fact.proof],
     });
     const { ownerRows, exactOwners, ownerConflicts, sourceFacts } = classifyInspectionFacts(facts);
     const ownerConflict = ownerEvidenceConflicts(exactOwners, ownerConflicts);
@@ -538,12 +584,19 @@ export function inspectionEvidenceRuntime() {
     const sourceConflict = inspectionSourceConflict(sourceRows, exactSources, facts, refKey);
     applyInspectionSourceStatus(sourceRows, exactSources, sourceConflict, result, notice);
     result.source.refs = inspectionSourceRefs(sourceRows, sourceConflict, refKey, unique);
-    appendRelatedInspectionFacts(facts, result, evidenceOf);
+    appendRelatedInspectionFacts(facts, result, evidenceOf, [byId, currentById, ambiguousRefs, scope]);
     result.candidates = unique(result.candidates, (row) => componentKey(row.component) + '\0' + row.status);
     result.enclosing = unique(result.enclosing, (row) => componentKey(row.component) + '\0' + row.relationship);
+    // Context names each component and relation once (a provider repeats them per enclosing region) and never the
+    // selected element's own component. A component Contained in also names stays: it is the page's context too.
+    const ownerKey = componentKey(result.owner.component);
+    result.facts = unique(
+      result.facts.filter((row) => !row.component || componentKey(row.component) !== ownerKey),
+      (row) => (row.component ? componentKey(row.component) + '\0' + row.relationship : '\0' + row.label),
+    );
     sortInspectionEnclosing(result);
     applyInspectionLimits(input, rawRefs, rawFacts, result);
-    appendInspectionUnavailable(input, result, notice);
+    appendInspectionUnavailable(result, notice);
     return result;
   }
   return Object.freeze({
