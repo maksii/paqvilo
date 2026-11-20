@@ -20,7 +20,7 @@
     "pcf-scripts": "1.51.1",
     "pcf-start": "1.51.1",
     "typescript": "5.9.3",
-    "typescript-eslint": "8.72.2"
+    "typescript-eslint": "8.73.0"
   },
   "overrides": {
     "minimatch": "11.0.8",
