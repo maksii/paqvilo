@@ -587,6 +587,11 @@ body[data-setup-view='all'] #content {
 .findings .row {
   font-size: 12px;
 }
+/* A finding can name a long path (macOS temporary folders are under /private/var/folders/…): let it wrap. */
+.findings .row > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .small {
   margin: 0;
   font-size: 12px;
