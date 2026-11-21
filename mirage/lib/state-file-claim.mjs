@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { unixSocketFolder } from './socket-path.mjs';
 
 /*
  * One runtime writes a state file. The writer lock beside the file is held only while a save runs, and the ownership
@@ -30,14 +31,10 @@ export async function stateFileEndpoint(stateFile, { platform = process.platform
     .slice(0, 32);
   if (platform === 'win32') return String.raw`\\.\pipe\paqvilo-state-` + key;
   const name = `paqvilo-state-${key}.sock`;
-  const socket = path.join(tmpdir, name);
-  // A socket path longer than sun_path cannot be listened on (EINVAL). macOS's per-user temporary folder already takes
-  // 100 of its 103 bytes, so a longer TMPDIR (a sandbox, a CI runner) falls back to /tmp, which every POSIX host has.
-  return Buffer.byteLength(socket) <= socketPathLimit(platform) ? socket : path.posix.join('/tmp', name);
+  // On macOS this name leaves three bytes of sun_path to spare in the per-user temporary folder; a longer one falls
+  // back to /tmp.
+  return path.join(unixSocketFolder(Buffer.byteLength(name), { platform, tmpdir }), name);
 }
-
-/** The longest Unix socket path, in bytes, before the terminating NUL of sun_path: 108 on Linux, 104 elsewhere. */
-const socketPathLimit = (platform) => (platform === 'linux' ? 107 : 103);
 
 /** " (pid N, url)" of the runtime that holds a claim, as far as it said who it is. */
 function holderText(holder) {
