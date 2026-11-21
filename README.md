@@ -57,7 +57,7 @@ npx --no-install paqvilo mirage demo
 The demo needs no Power Pages account. It copies an editable sample portal into `paqvilo-example/`, loads invented
 records and opens a development browser on a free local port: native forms and lists, a Power Pages Web API workspace,
 PCF field components, plug-in steps and a cloud flow. Edit a portal source under `paqvilo-example/` and the page
-follows. Press **Alt+Shift+P** for Inspect and persona controls; close the browser or press **Ctrl+C** to stop. The
+follows. Press **Alt+Shift+P** (**Option+Shift+P** on macOS) for Inspect and persona controls; close the browser or press **Ctrl+C** to stop. The
 [demo walkthrough](https://github.com/maksii/paqvilo/blob/main/docs/demo.md) covers what to try and the VS Code
 (`--scaffold`) workflow.
 
@@ -93,7 +93,7 @@ command for its options.
   project-owned schema and data in an environment you administer.
 
 Paqvilo supports standard and enhanced portal exports and imports `.powerpages-site` code-site exports (without SPA
-build tooling). It runs on Windows and Linux.
+build tooling). It runs on Windows, macOS and Linux.
 
 ## Documentation
 
