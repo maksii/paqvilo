@@ -49,7 +49,7 @@ const psArguments = (pid) => ['-o', 'lstart=', '-p', String(pid)];
  * time read in one locale neither parses as the C form nor equals one read in another. Every read is made in the C
  * locale.
  */
-export const psEnvironment = (env = process.env) => ({ ...env, LC_ALL: 'C' });
+const psEnvironment = (env = process.env) => ({ ...env, LC_ALL: 'C' });
 
 /** The start time a finished helper printed, or null: a helper that did not run or failed read nothing. */
 const printedIdentity = (result) => (result.status === 0 ? result.stdout.trim() || null : null);

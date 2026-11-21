@@ -5,7 +5,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { openStartChannel } from '../lense/start-channel.mjs';
-import { unixSocketFolder, unixSocketPathLimit } from '../mirage/lib/socket-path.mjs';
+import { unixSocketFolder } from '../mirage/lib/socket-path.mjs';
 
 test('the start channel forwards only allow-listed phase records and bounds what a client sends', async (t) => {
   const channel = await openStartChannel();
@@ -42,7 +42,7 @@ test(
     const channel = await openStartChannel({ tmpdir });
     t.after(() => channel.close());
     assert.match(channel.address, /^\/tmp\/paqvilo-start-[^/]+\/channel\.sock$/);
-    assert.ok(Buffer.byteLength(channel.address) <= unixSocketPathLimit());
+    assert.ok(Buffer.byteLength(channel.address) <= (process.platform === 'linux' ? 107 : 103));
     const socket = net.connect(channel.address);
     t.after(() => socket.destroy());
     socket.write(`${JSON.stringify({ type: 'runtime-startup', phase: 'ready', elapsedMs: 1 })}\n`);

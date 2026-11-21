@@ -2,7 +2,7 @@
 import os from 'node:os';
 
 /** The longest Unix socket path, in bytes, before the terminating NUL of sun_path: 108 on Linux, 104 elsewhere. */
-export const unixSocketPathLimit = (platform = process.platform) => (platform === 'linux' ? 107 : 103);
+const unixSocketPathLimit = (platform = process.platform) => (platform === 'linux' ? 107 : 103);
 
 /**
  * The folder to put a Unix socket in, `tail` bytes (its name, and any folder of its own) below it: the temporary folder
