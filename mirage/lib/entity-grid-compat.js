@@ -299,7 +299,7 @@
     error.status = xhr?.status;
     return error;
   }
-  function sendJQueryPost($, url, body, value, { json, form, jsonType, multipart }) {
+  function sendJQueryPost($, url, body, value, { json, form, jsonType, multipart, global }) {
     return new Promise((resolve, reject) => {
       if (form) body.append('__RequestVerificationToken', value);
       const headers = form ? {} : { __RequestVerificationToken: value };
@@ -318,6 +318,7 @@
         dataType: json ? 'json' : undefined,
         headers,
         cache: false,
+        global,
       })
         .done((data) => resolve(data))
         .fail((xhr, _status, thrown) => reject(errorOf(xhr, thrown)));
@@ -395,13 +396,18 @@
   });
   /** POST JSON with the native headers; json=true parses the reply. */
   // jsonType: the JSON request's content type (the Bootstrap 5 notes control posts a bare application/json).
-  function post(url, body, { json = true, form = false, jsonType = 'application/json; charset=utf-8' } = {}) {
+  // global: false raises no jQuery global ajax events (ajaxStart, ajaxComplete, ...), as the Bootstrap 5 grid load.
+  function post(
+    url,
+    body,
+    { json = true, form = false, jsonType = 'application/json; charset=utf-8', global = true } = {},
+  ) {
     // form: the body is a URLSearchParams (urlencoded) or FormData (multipart) payload.
     const multipart = form && typeof FormData !== 'undefined' && body instanceof FormData;
     return token().then((value) => {
       const $ = jq();
       // A form post carries the token as a field (the platform's ajaxSafePost form path).
-      if ($?.ajax) return sendJQueryPost($, url, body, value, { json, form, jsonType, multipart });
+      if ($?.ajax) return sendJQueryPost($, url, body, value, { json, form, jsonType, multipart, global });
       if (form) body.append('__RequestVerificationToken', value);
       return sendXhrPost(url, body, value, { json, form, jsonType });
     });
@@ -1049,7 +1055,7 @@
 
     handleSortClick(event, th, row, column, layout) {
       event.preventDefault();
-      if (this.state.loading) return;
+      // As on the platform, a click while a load is in flight still sorts: the newer request supersedes it.
       const current = String(this.state.sort ?? layout.SortExpression ?? '')
         .split(',')
         .map((part) => part.trim().split(/\s+/))
@@ -1058,13 +1064,21 @@
       this.state.sort = `${column.LogicalName} ${direction}`;
       if (!this.bs5 || this.dialog) {
         this.renderTable();
+        this.disableSortLinks();
         void this.load(1);
         return;
       }
       this.updateBs5SortHeader(th, row, direction);
+      this.disableSortLinks();
       void this.load(1).then(() => {
         for (const link of row.querySelectorAll('th a')) link.setAttribute('style', '');
       });
+    }
+
+    // Only the platform's sort click disables the header links, until the next load of the grid completes.
+    disableSortLinks() {
+      for (const link of this.element.querySelectorAll('.view-grid th a')) link.style.pointerEvents = 'none';
+      this.state.sortLinksDisabled = true;
     }
 
     updateBs5SortHeader(th, row, direction) {
@@ -1127,8 +1141,9 @@
       const body = this.requestBody(page);
       this.state.page = page;
       this.showMessage('.view-loading');
-      for (const link of this.element.querySelectorAll('.view-grid th a')) link.style.pointerEvents = 'none';
-      const request = (this.state.loading = post(this.getUrl, body));
+      // The Bootstrap 5 bundle's EntityGrid getData, shared by list, subgrid and lookup grids, posts with global: false,
+      // so it raises no jQuery global ajax events. Without a Bootstrap 3 bundle to compare, other grids keep the default.
+      const request = (this.state.loading = post(this.getUrl, body, { global: !this.bs5 }));
       return request
         .then((data) => this.handleLoadData(request, data))
         .catch((error) => this.handleLoadError(request, error))
@@ -1136,6 +1151,9 @@
     }
 
     handleLoadData(request, data) {
+      // Deliberate deviation: the platform renders whichever response arrives last, so an older answer arriving after
+      // a newer one overwrites it (a platform race). Mirage keeps the newest request's rows and ignores a superseded
+      // answer here and in handleLoadError.
       if (request !== this.state.loading) return;
       this.showMessage(null);
       if (!data || data.AccessDenied) {
@@ -1201,6 +1219,12 @@
 
     finishLoad(request) {
       if (request === this.state.loading) this.state.loading = null;
+      // As the platform's completion handler does for every request, superseded ones included: hide the loading
+      // message and re-enable the header links a sort click disabled.
+      const loading = this.child('.view-loading');
+      if (loading) loading.style.display = 'none';
+      if (!this.state.sortLinksDisabled) return;
+      this.state.sortLinksDisabled = false;
       for (const link of this.element.querySelectorAll('.view-grid th a')) {
         link.style.pointerEvents = '';
         if (!link.getAttribute('style')) link.removeAttribute('style');
@@ -2189,7 +2213,8 @@
           page,
           pageSize: Number(container.getAttribute('data-pagesize')) || 10, // NOSONAR: actual attributes exclude inherited dataset values
         },
-        bs5 ? { jsonType: 'application/json' } : {},
+        // The Bootstrap 5 bundle's notes getData posts with global: false (add, edit and delete keep jQuery's default).
+        bs5 ? { jsonType: 'application/json', global: false } : {},
       )
         .then((data) => {
           show(data.Records?.length ? null : '.notes-empty');

@@ -11,6 +11,9 @@
 //              columns is the catalog columns the statement reads, always with the id column.
 //   params     sp_executesql parameters such as { "@p1": 5 }. Visible in every batch.
 //   principal  accepted, not read here.
+//   maskedColumns  (logicalName) -> Set of catalog column names the caller reads masked (column security), or null. Such
+//              a column is never a WHERE, ON, GROUP BY, HAVING, ORDER BY, DISTINCT/set-operation or aggregate operand
+//              (COUNT excepted): the refusal is maskedOperand() (0x80041155), as on the Web API.
 //   signal     AbortSignal, checked between rows (error 3617).
 //   tupleBudget  intermediate rows one statement may build in joins (default 1,000,000); error 40000 past it.
 //   now        Date or () => Date, used by GETDATE and friends.
@@ -28,6 +31,7 @@
 // ponytail: CONTAINS is a case-insensitive substring test, with no full-text semantics.
 // ponytail: LIKE builds a RegExp per evaluation; no cache.
 
+import { maskedOperand } from './dataverse-fls.mjs';
 import { splitBatches } from './dataverse-tds-sql-lexer.mjs';
 import { equalityKey, foldText, likeTokens, likeTokensMatch } from './dataverse-values.mjs';
 import { parseBatch } from './dataverse-tds-sql-parser.mjs';
@@ -103,6 +107,7 @@ export async function executeBatch(
     collation = 'CI_AI',
     statement: around = null,
     tupleBudget = TUPLE_BUDGET,
+    maskedColumns = () => null,
   } = {},
 ) {
   const { statements } = parseBatch(sql);
@@ -118,6 +123,7 @@ export async function executeBatch(
     tuples: 0,
     tupleBudget,
     scanCache: new Map(),
+    maskedColumns,
     referenced: null,
     session: { rowCount: 0 },
     vars: null,
@@ -248,8 +254,42 @@ function envOf(templates, tuple, outer) {
   return { frames: templates.map((t, i) => ({ t, vals: tuple ? tuple[i] : null })), parent: outer };
 }
 
-function templateOf(alias, names, types) {
-  return { alias: lower(alias), names, lower: names.map(lower), types };
+// masked: per column, whether its value comes from a column the caller reads masked (see readsMasked), or null.
+function templateOf(alias, names, types, masked = null) {
+  return { alias: lower(alias), names, lower: names.map(lower), types, masked };
+}
+
+// Column security, the Web API rule (dataverse-records.mjs operandRefusalOf, api.fieldSecurity.maskedFor): whether node
+// reads a column the caller reads masked. COUNT only counts presence, so its argument does not count. projection: a
+// select-list expression, where only aggregate arguments count (the list itself shows the masked value).
+// Subqueries are checked when they run; their outer references resolve through the scope chain.
+function readsMasked(node, env, projection = false) {
+  if (!node || typeof node !== 'object') return false;
+  if (Array.isArray(node)) return node.some((item) => readsMasked(item, env, projection));
+  if (node.type === 'ColumnRef') {
+    if (projection) return false;
+    const ref = resolveColumn(env, node.parts);
+    return ref.t.masked?.[ref.i] === true;
+  }
+  let inner = projection;
+  if (node.type === 'FunctionCall' && AGGREGATES.has(node.name.toUpperCase())) {
+    if (node.name.toUpperCase() === 'COUNT' && !node.distinct) return false;
+    inner = false;
+  }
+  return Object.entries(node).some(
+    ([key, value]) => key !== 'query' && key !== 'subquery' && readsMasked(value, env, inner),
+  );
+}
+
+// The refusal for a masked operand (0x80041155), as the Web API answers it; the endpoint reports it as error 50000.
+function assertUnmasked(node, env, projection = false) {
+  if (readsMasked(node, env, projection)) throw maskedOperand();
+}
+
+// The template flags of a table's columns the caller reads masked (st.maskedColumns), or null when there are none.
+function maskedFlags(table, st) {
+  const masked = st.maskedColumns(table.logicalName);
+  return masked?.size ? table.columns.map((column) => masked.has(column.name)) : null;
 }
 
 function metaOfColumn(column) {
@@ -558,8 +598,13 @@ async function evalSetOperation(node, outer, st) {
       'All queries combined using a UNION, INTERSECT or EXCEPT operator must have an equal number of expressions in their target lists.',
     );
   }
+  // Column security: a set operation without ALL compares rows, as DISTINCT does, so no output may be masked.
+  const masked = left.masked?.map((flag, i) => flag || right.masked?.[i] === true) ?? [];
   let entries = [...left.rows, ...right.rows].map((out) => ({ out }));
-  if (!node.all) entries = dedupe(entries, (entry) => entry.out, st);
+  if (!node.all) {
+    if (masked.some(Boolean)) throw maskedOperand();
+    entries = dedupe(entries, (entry) => entry.out, st);
+  }
   const order = orderItems(node.orderBy, left.names);
   if (order.some((item) => item.expr)) {
     fail(
@@ -567,12 +612,14 @@ async function evalSetOperation(node, outer, st) {
       'ORDER BY items must appear in the select list if the statement contains a UNION, INTERSECT or EXCEPT operator.',
     );
   }
+  if (order.some((item) => masked[item.index])) throw maskedOperand();
   for (const entry of entries) entry.keys = order.map((item) => entry.out[item.index]);
   if (order.length) entries.sort((a, b) => compareEntries(a, b, order, st));
   const rows = entries.map((entry) => entry.out);
   return {
     names: left.names,
     raw: left.raw,
+    masked,
     rows,
     columns: finishColumns(left.names, left.raw, rows),
     rowCount: rows.length,
@@ -1050,6 +1097,7 @@ async function groupUnits(select, rel, tuples, outer, st) {
   const plan = [];
   const names = [];
   const raw = [];
+  const masked = [];
   for (const column of select.columns) {
     if (column.kind === 'Star') {
       const qualifier = column.qualifier === null ? null : lower(column.qualifier);
@@ -1068,6 +1116,7 @@ async function groupUnits(select, rel, tuples, outer, st) {
             plan.push({ kind: 'value', ti, i });
             raw.push(t.types?.[i] ?? null);
           }
+          masked.push(t.masked?.[i] === true);
           names.push(name);
         });
       });
@@ -1076,6 +1125,7 @@ async function groupUnits(select, rel, tuples, outer, st) {
       plan.push({ kind: 'expr', expr: column.expr });
       names.push(column.alias ?? (column.expr.type === 'ColumnRef' ? column.expr.parts.at(-1) : ''));
       raw.push(typeOf(column.expr, bindEnv, st));
+      masked.push(readsMasked(column.expr, bindEnv));
     } else {
       bindColumns(column.expr, bindEnv);
       plan.push({ kind: 'assign', name: column.name, expr: column.expr });
@@ -1122,6 +1172,11 @@ async function groupUnits(select, rel, tuples, outer, st) {
     if (select.having) checkGrouped(select.having, groupExprs, 'HAVING clause', bindEnv);
     for (const item of order) if (item.expr) checkGrouped(item.expr, groupExprs, 'ORDER BY clause', bindEnv);
   }
+  // Column security: a masked column is no operand (readsMasked); the select list may show it, not aggregate it.
+  for (const item of plan) if (item.expr) assertUnmasked(item.expr, bindEnv, true);
+  for (const clause of [select.where, select.groupBy, select.having]) assertUnmasked(clause, bindEnv);
+  for (const item of order) if (item.expr ? readsMasked(item.expr, bindEnv) : masked[item.index]) throw maskedOperand();
+  if (select.distinct && masked.some(Boolean)) throw maskedOperand();
 
   const kept = [];
   for (const tuple of rel.tuples) {
@@ -1158,7 +1213,7 @@ async function groupUnits(select, rel, tuples, outer, st) {
   if (order.length) entries.sort((a, b) => compareEntries(a, b, order, st));
   if (select.top) entries = entries.slice(0, await topLimit(select.top, outer, st, entries.length));
   const rows = entries.map((entry) => entry.out);
-  return { names, raw, rows, columns: finishColumns(names, raw, rows), rowCount: rows.length };
+  return { names, raw, masked, rows, columns: finishColumns(names, raw, rows), rowCount: rows.length };
 }
 
 function valueAt(tuple, item) {
@@ -1308,7 +1363,7 @@ async function buildFrom(from, outer, st, pushdown = null) {
 async function sourceRel(source, outer, st, pushdown = null) {
   if (source.type === 'Derived') {
     const result = await evalQuery(source.query, outer, st);
-    const template = templateOf(source.alias, result.names, result.raw);
+    const template = templateOf(source.alias, result.names, result.raw, result.masked);
     return { templates: [template], tuples: result.rows.map((row) => [row]) };
   }
   const table = tableOf(source, st);
@@ -1316,6 +1371,7 @@ async function sourceRel(source, outer, st, pushdown = null) {
     source.alias ?? source.name,
     table.columns.map((c) => c.name),
     table.columns.map(metaOfColumn),
+    maskedFlags(table, st),
   );
   const rows = await scanTable(table, st, pushdown);
   return { templates: [template], tuples: rows.map((row) => [row]) };
@@ -1338,6 +1394,7 @@ async function sourceRel(source, outer, st, pushdown = null) {
     const out = [];
     for (const lt of left.tuples) {
       const result = await evalQuery(join.source.query, envOf(left.templates, lt, outer), st);
+      template.masked = result.masked;
       if (result.rows.length === 0 && join.kind === 'OUTER') out.push([...lt, null]);
       for (const row of result.rows) {
         await tick(st);
@@ -1349,7 +1406,10 @@ async function sourceRel(source, outer, st, pushdown = null) {
   }
   const right = await sourceRel(join.source, outer, st);
   const templates = [...left.templates, ...right.templates];
-  if (join.on) bindColumns(join.on, envOf(templates, null, outer));
+  if (join.on) {
+    bindColumns(join.on, envOf(templates, null, outer));
+    assertUnmasked(join.on, envOf(templates, null, outer));
+  }
   const rightHit = right.tuples.map(() => false);
   const out = [];
   for (const lt of left.tuples) {

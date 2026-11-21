@@ -1,4 +1,6 @@
-import { parseArgs } from 'node:util';
+import { parseOptions } from '../lense/cli-options.mjs';
+import fs from 'node:fs';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const string = (label, extra = {}) => ({ type: 'string', label, ...extra });
 const flag = () => ({ type: 'boolean' });
@@ -58,6 +60,7 @@ const TOOL_SCHEMAS = {
     ids: { type: 'string' },
     'deployment-profile': { type: 'string' },
     reclassify: { type: 'string' },
+    list: { type: 'boolean' },
   },
   'baseline-suite': {
     matrix: { type: 'string' },
@@ -205,7 +208,9 @@ const TOOL_SCHEMAS = {
     entity: string('LOGICAL_NAME'),
     'record-id': string('ID'),
     status: string('ok|error|denied|cancelled|running'),
-    host: string('power-pages|standalone|model-driven|canvas|code-app|dataverse-api|tds|soap|job|sim'),
+    host: string(
+      'power-pages|standalone|model-driven|canvas|code-app|dataverse-api|tds|soap|job|sim|identity-provider|sharepoint',
+    ),
     'actor-kind': string('KIND'),
     'actor-id': string('ID'),
     'session-key': string('KEY'),
@@ -240,6 +245,94 @@ const TOOL_SCHEMAS = {
   },
 };
 
+// Kept here with node:fs and node:url only: help loads this file (test/cli-help-guard.mjs) and never calls the check.
+// pathToFileURL resolves a relative path against the working directory, as path.resolve does.
+const resolvePath = (value) => fileURLToPath(pathToFileURL(value));
+const ABSOLUTE = /^(?:[a-z]:)?[\\/]/i;
+const NOUN = { file: 'file', 'file-list': 'file', dir: 'directory', module: 'module file' };
+
+/**
+ * Refuses a path option whose file or directory does not exist, in one line naming the option, the path and the
+ * problem. `kinds` maps option names to 'file', 'dir' or 'module' (a module option given as a package specifier, not
+ * a path, is left to the module loader); options without a value are skipped.
+ */
+export function assertPathOptions(values, kinds) {
+  for (const [option, kind] of Object.entries(kinds))
+    for (const value of pathValues(values[option], kind)) assertPathOption(option, kind, value);
+}
+
+// The paths an option names: a file-list option is a comma-separated list of files (parity-suite --scenarios); an
+// empty value, and a module given as a package specifier rather than a path, name none.
+function pathValues(value, kind) {
+  const given = [value].flat();
+  const list =
+    kind === 'file-list'
+      ? given.flatMap((item) =>
+          String(item ?? '')
+            .split(',')
+            .map((part) => part.trim()),
+        )
+      : given;
+  return list.filter(
+    (item) =>
+      typeof item === 'string' &&
+      item !== '' &&
+      (kind !== 'module' || /^\.{1,2}[\\/]/.test(item) || ABSOLUTE.test(item)),
+  );
+}
+
+function assertPathOption(option, kind, value) {
+  const resolved = resolvePath(value);
+  let stats;
+  try {
+    stats = fs.statSync(resolved);
+  } catch {
+    throw new Error(`--${option} ${NOUN[kind]} not found: ${resolved}. Pass an existing ${NOUN[kind]}.`);
+  }
+  if (kind === 'dir' ? !stats.isDirectory() : !stats.isFile())
+    throw new Error(
+      `--${option} must name a ${NOUN[kind]}, but ${resolved} is a ${stats.isDirectory() ? 'directory' : 'file'}.`,
+    );
+}
+
+// The input path options of each tool that must name an existing file or directory (assertPathOptions).
+const catalogueInputs = { config: 'file', repo: 'dir' };
+const TOOL_PATHS = {
+  'bootstrap-report': { ...catalogueInputs, source: 'dir', 'solution-root': 'dir', project: 'file' },
+  'parity-suite': {
+    ...catalogueInputs,
+    source: 'dir',
+    state: 'file',
+    'pack-module': 'module',
+    ids: 'file',
+    reclassify: 'file',
+    scenarios: 'file-list',
+  },
+  'baseline-suite': {
+    config: 'file',
+    matrix: 'file',
+    source: 'dir',
+    state: 'file',
+    ids: 'file',
+    allowlist: 'file',
+    'evidence-changes': 'file',
+  },
+  'liquid-conformance': { suite: 'file', rules: 'file' },
+  acceptance: { plan: 'file' },
+  'enrich-reference': { state: 'file', plan: 'file' },
+  'reference-parity': { plan: 'file' },
+  'query-inventory': { portal: 'dir' },
+  'capture-shell': { config: 'file' },
+  'liquid-inventory': { ...catalogueInputs, portal: 'dir' },
+  'webapi-inventory': { ...catalogueInputs, portal: 'dir', 'solution-root': 'dir' },
+  'render-sweep': { ...catalogueInputs, source: 'dir', 'solution-root': 'dir', project: 'file' },
+  'portal-matrix': { ...catalogueInputs, project: 'file', samples: 'dir' },
+  trace: { config: 'file', project: 'file' },
+};
+
+/** Refuses a tool's missing input file or directory in one line naming the option and the path. */
+export const assertToolPaths = (name, values) => assertPathOptions(values, TOOL_PATHS[name] ?? {});
+
 // Preserve the catalogue-tool registry: consumers iterate this subset to run catalogue reports.
 export const TOOL_OPTIONS = Object.fromEntries(
   ['liquid-inventory', 'webapi-inventory', 'render-sweep', 'portal-matrix', 'trace'].map((name) => [
@@ -248,18 +341,41 @@ export const TOOL_OPTIONS = Object.fromEntries(
   ]),
 );
 
+/**
+ * node:util parseArgs whose refusal is one line naming the option and pointing at --help, never parseArgs' own text,
+ * and which refuses a single-value option given twice (`invalid_argument`), as the Lense command line does: the one
+ * parse point of the direct Mirage commands and the public tools.
+ */
+export const parseRaw = (config) => parseOptions(config);
+
+/**
+ * The arguments with a negative number after a string option joined to it (`--rows -1` -> `--rows=-1`): parseArgs
+ * refuses such a value as ambiguous, so the option's own validation would never report it.
+ */
+export function joinNegativeValues(args, options) {
+  const joined = [];
+  for (let i = 0; i < args.length; i++) {
+    const key = args[i].startsWith('--') && !args[i].includes('=') ? args[i].slice(2) : null;
+    if (options[key]?.type === 'string' && /^-\d/.test(args[i + 1] ?? '')) joined.push(`${args[i]}=${args[++i]}`);
+    else joined.push(args[i]);
+    if (args[i] === '--') return [...joined, ...args.slice(i + 1)];
+  }
+  return joined;
+}
+
 /** The parsed { values, positionals } of a tool that takes positional arguments (allowPositionals). */
 export function parseToolCommand(name, args, { allowPositionals = false, help = false } = {}) {
   const options = Object.fromEntries(
     Object.entries(TOOL_SCHEMAS[name]).map(([key, { label, ...definition }]) => [key, definition]),
   );
   if (help) Object.assign(options, { help: { type: 'boolean', short: 'h' }, json: { type: 'boolean' } });
+  args = joinNegativeValues(args, options);
   for (let i = 0; i < args.length && args[i] !== '--'; i++) {
     const key = args[i].startsWith('--') ? args[i].slice(2) : null;
     if (options[key]?.type === 'string' && (args[i + 1] == null || args[i + 1].startsWith('--')))
       throw new Error(`--${key} requires a value`);
   }
-  const parsed = parseArgs({ args, options, tokens: true, allowPositionals });
+  const parsed = parseRaw({ args, options, tokens: true, allowPositionals });
   for (const token of parsed.tokens)
     if (
       NONEMPTY_VALUES.has(name) &&

@@ -1,13 +1,15 @@
 import { organizationRecord } from './organization-context.mjs';
 // Simulated Dataverse security model: organization, business units, roles, privileges
 // and the depth-based checks the Dataverse layer runs before it calls the store.
-import { hash } from 'node:crypto';
 import { DataError } from './data-error.mjs';
 import { countWork } from './work-counter.mjs';
 import { standardTable } from './solution-standard.mjs';
 import { relationshipsOf, standardTableDef } from './dataverse-standard.mjs';
 import { guidKey } from './dataverse-values.mjs';
 import { isDeepStrictEqual } from 'node:util';
+import { uuidV5 } from './uuid-v5.mjs';
+
+export { uuidV5 };
 
 export const ACCESS_RIGHTS = {
   Read: 1,
@@ -183,6 +185,7 @@ const TABLE_DEFS = {
       isduplicatedetectionenabled: BOOL,
       localeid: INT,
       languagecode: INT,
+      fullnameconventioncode: INT,
     },
   },
   businessunit: {
@@ -333,26 +336,6 @@ const declaredOnly = (values, mapping) =>
   mapping?.fields
     ? Object.fromEntries(Object.entries(values).filter(([name]) => Object.hasOwn(mapping.fields, name)))
     : values;
-const namespaceBytes = new Map();
-/** RFC 4122 version 5 (SHA-1, name-based) GUID, lowercase. */
-export function uuidV5(namespace, name) {
-  let prefix = namespaceBytes.get(namespace);
-  if (!prefix) {
-    const hex = String(namespace).replace(/[{}-]/g, '');
-    if (!/^[0-9a-f]{32}$/i.test(hex))
-      throw new DataError(`Invalid namespace GUID: ${namespace}`, 400, 'InvalidRequest');
-    prefix = Buffer.from(hex, 'hex');
-    // A process sees a few namespaces (its organizations and fixed ones); the bound only caps memory.
-    if (typeof namespace === 'string' && namespaceBytes.size < 256) namespaceBytes.set(namespace, prefix);
-  }
-  // One-shot SHA-1 of the namespace bytes and the UTF-8 name: the same digest without a Hash object per id.
-  const bytes = hash('sha1', Buffer.concat([prefix, Buffer.from(String(name), 'utf8')]), 'buffer').subarray(0, 16);
-  bytes[6] = (bytes[6] & 0x0f) | 0x50;
-  bytes[8] = (bytes[8] & 0x3f) | 0x80;
-  const h = bytes.toString('hex');
-  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
-}
-
 export function privilegeId(organizationId, name) {
   return uuidV5(organizationId, `privilege:${name}`);
 }
@@ -371,13 +354,18 @@ function ownershipKind(value) {
   return undefined;
 }
 
-/** 'user' | 'org'. Table object ownership, then mapping ownership, then an ownerid field marks user-owned. */
+/**
+ * 'user' | 'org'. Table object ownership, then mapping ownership, then an ownerid field marks user-owned, then the
+ * standard table reference (account, contact: UserOwned) for a standard table whose Solution export declares neither.
+ */
 export function ownershipOf(logical, table, mapping) {
   if (TABLE_DEFS[logical]) return 'org';
   return (
     ownershipKind(table?.ownership) ??
     ownershipKind(mapping?.ownership) ??
-    (Object.hasOwn(mapping?.fields ?? {}, 'ownerid') ? 'user' : 'org')
+    (Object.hasOwn(mapping?.fields ?? {}, 'ownerid') ? 'user' : undefined) ??
+    ownershipKind(standardTableDef(logical)?.ownershipType) ??
+    'org'
   );
 }
 
@@ -480,8 +468,10 @@ const INTERSECT_PARENT = {
   transformationparametermapping: 'importmap',
   msdyn_aiconfiguration: 'msdyn_aimodel',
 };
-// Timezone tables are platform reads open to every enabled user without a privilege (assumed; not documented).
-const PUBLIC_READ = new Set(['timezonedefinition', 'timezonerule', 'timezonelocalizedname']);
+// Timezone tables are platform reads open to every enabled user without a privilege (assumed; not documented). The
+// privilege catalogue declares no privileges of its own (EntityDefinitions: OwnershipType None, Privileges []) and no parent
+// gates it, so the platform has no privilege to demand for reading it; writes stay refused.
+const PUBLIC_READ = new Set(['timezonedefinition', 'timezonerule', 'timezonelocalizedname', 'privilege']);
 // Customer addresses follow their parent account or contact (objecttypecode). Without a row (create, lists) either parent's privilege passes.
 // ponytail: create (no row) checks either parent's privilege, not the body's parent; records would need to pass the body to narrow it.
 const FOLLOWS_PARENT = new Set(['activityparty', 'customeraddress']);
@@ -1062,6 +1052,8 @@ function seedSecurity(store, settings, schema) {
     isduplicatedetectionenabled: settings.duplicateDetection !== false,
     localeid: settings.localeId ?? 1033,
     languagecode: settings.localeId ?? 1033,
+    // The full name order (dataverse-person-name.mjs); the observed environment reports 1, First Name.
+    fullnameconventioncode: 1,
   });
   insertMissing(rowsOf(store, 'businessunit'), 'businessunitid', {
     businessunitid: root,
@@ -2127,6 +2119,12 @@ export function createPrincipals(store, settings = {}) {
           .filter(([name]) => callerMap.has(name))
           .map(([name, depth]) => [name, Math.min(depth, callerMap.get(name))]),
       );
+    },
+
+    /** The 403 privilege refusal for `user`, stating the user's own role and privilege counts and the table's object type code. */
+    deniedError(user, name, logical) {
+      requireSubject(user);
+      return privilegeDenied(idx(), settings, user, logical, name);
     },
 
     businessUnitChain(businessUnitId) {

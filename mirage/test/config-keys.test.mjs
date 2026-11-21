@@ -35,6 +35,7 @@ import { validateLocalOverrides } from '../lib/local-overrides.mjs';
 import { validateCatalogue } from '../../lense/config-schema.mjs';
 import { resolveMirageConfig } from '../../lense/config.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 
 const cli = fileURLToPath(new URL('../cli.mjs', import.meta.url));
 const NEW_KEYS = [
@@ -502,51 +503,56 @@ function serve(t, args, cwd) {
   });
 }
 
-test('multi-portal serve --project applies the project dataverse and platform to every portal', async (t) => {
-  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'config-keys-cli-'));
-  await fs.mkdir(path.join(root, 'portal'), { recursive: true });
-  await fs.writeFile(
-    path.join(root, 'portal', 'Home.webpage.yml'),
-    'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\n',
-  );
-  await fs.writeFile(path.join(root, 'portal', 'Home.webpage.copy.html'), '<h1>Invented home</h1>');
-  await fs.writeFile(
-    path.join(root, 'project.json'),
-    JSON.stringify({
-      version: 2,
-      portals: [
-        { id: 'first', path: './portal' },
-        { id: 'second', path: './portal' },
-      ],
-      dataverse: { enabled: true, tls: false, tds: { enabled: false } },
-      platform: PLATFORM,
-    }),
-  );
-  const starting = serve(
-    t,
-    [
-      'serve',
-      '--project',
+// Hang guard only: it drives a runtime, the CLI or child processes through this file's fixtures; on a loaded slow host that is slow, not hung.
+test(
+  'multi-portal serve --project applies the project dataverse and platform to every portal',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'config-keys-cli-'));
+    await fs.mkdir(path.join(root, 'portal'), { recursive: true });
+    await fs.writeFile(
+      path.join(root, 'portal', 'Home.webpage.yml'),
+      'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\n',
+    );
+    await fs.writeFile(path.join(root, 'portal', 'Home.webpage.copy.html'), '<h1>Invented home</h1>');
+    await fs.writeFile(
       path.join(root, 'project.json'),
-      '--port',
-      '0',
-      '--no-watch',
-      '--state-dir',
-      path.join(root, '.paqvilo'),
-    ],
-    root,
-  );
-  // After hooks run in registration order: the runtime stops before its folder is removed.
-  t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
-  const started = await starting;
-  assert.equal(started.portals.length, 2);
-  for (const portal of started.portals) {
-    const state = await (await fetch(`${portal.url}/__sim/api/state`)).json();
-    assert.equal(state.status.capabilities.dataverseApi, true, `${portal.id}: project dataverse`);
-    const limit = state.config.platformSettings.find((entry) => entry.key === 'QueryLinkEntityLimit');
-    assert.equal(limit.value, 1, `${portal.id}: project platform`);
-  }
-});
+      JSON.stringify({
+        version: 2,
+        portals: [
+          { id: 'first', path: './portal' },
+          { id: 'second', path: './portal' },
+        ],
+        dataverse: { enabled: true, tls: false, tds: { enabled: false } },
+        platform: PLATFORM,
+      }),
+    );
+    const starting = serve(
+      t,
+      [
+        'serve',
+        '--project',
+        path.join(root, 'project.json'),
+        '--port',
+        '0',
+        '--no-watch',
+        '--state-dir',
+        path.join(root, '.paqvilo'),
+      ],
+      root,
+    );
+    // After hooks run in registration order: the runtime stops before its folder is removed.
+    t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+    const started = await starting;
+    assert.equal(started.portals.length, 2);
+    for (const portal of started.portals) {
+      const state = await (await fetch(`${portal.url}/__sim/api/state`)).json();
+      assert.equal(state.status.capabilities.dataverseApi, true, `${portal.id}: project dataverse`);
+      const limit = state.config.platformSettings.find((entry) => entry.key === 'QueryLinkEntityLimit');
+      assert.equal(limit.value, 1, `${portal.id}: project platform`);
+    }
+  },
+);
 
 test('presetMode states its default in the registry as the configuration guide does', async () => {
   const guide = await fs.readFile(new URL('../../docs/configuration.md', import.meta.url), 'utf8');

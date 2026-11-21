@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 import { reportCliError } from './cli-output.mjs';
 import { parseToolArgs } from './tool-options.mjs';
+import { assertToolOptions } from './tool-registry.mjs';
 import { fileIdentity, sameFile } from '../lense/file-identity.mjs';
+import { readJsonOption } from './lib/path-options.mjs';
 /**
  * golden-liquid conformance report for the Mirage Liquid engine.
  *
@@ -9,7 +11,7 @@ import { fileIdentity, sameFile } from '../lense/file-identity.mjs';
  *        [--json | --markdown] [--out FILE] [--timeout MS]
  *
  * Runs every case of the MIT golden-liquid suite (github.com/jg-rp/golden-liquid, pinned in the
- * rules file; the suite is not vendored, see docs/liquid-conformance.md) through the Mirage
+ * rules file; the suite is not vendored, see docs/liquid-parity.md) through the Mirage
  * renderer with the case's data and partial templates. A case passes when the output equals the
  * suite's Shopify Liquid expectation (or an error is raised where the suite expects one). Every
  * other case is classified by the rules file (default lib/liquid-conformance-rules.json):
@@ -102,11 +104,25 @@ export function classify(test, rules) {
   );
 }
 
+// A named rule no difference used is stale. staleRules lists them all; passingRules and missingRules split them into
+// rules whose case now passes and rules whose case is no longer in the suite.
+function staleRuleLists(rules, used, tests) {
+  const names = new Set(tests.map((test) => test.name));
+  const staleRules = rules
+    .filter((rule) => rule.match?.name !== undefined && !used.has(rule))
+    .map((rule) => rule.match.name);
+  return {
+    staleRules,
+    passingRules: staleRules.filter((name) => names.has(name)),
+    missingRules: staleRules.filter((name) => !names.has(name)),
+  };
+}
+
 export async function conformance({ suite, rules: rulesFile = DEFAULT_RULES, timeoutMs = 5000 }) {
-  const document = JSON.parse(await fs.readFile(suite, 'utf8'));
+  const document = await readJsonOption('suite', suite);
   if (!Array.isArray(document?.tests)) throw new Error(`Suite ${suite} has no tests array`);
   const tests = document.tests;
-  const rulesDocument = JSON.parse(await fs.readFile(rulesFile, 'utf8'));
+  const rulesDocument = await readJsonOption('rules', rulesFile);
   const rules = rulesDocument.rules ?? [];
   const reasons = rulesDocument.reasons ?? {};
   const used = new Set();
@@ -131,9 +147,7 @@ export async function conformance({ suite, rules: rulesFile = DEFAULT_RULES, tim
     reference: rulesDocument.reference ?? null,
     rules: rulesFile,
     counts,
-    staleRules: rules
-      .filter((rule) => rule.match?.name !== undefined && !used.has(rule))
-      .map((rule) => rule.match.name),
+    ...staleRuleLists(rules, used, tests),
     differences,
   };
 }
@@ -194,7 +208,8 @@ function text(report) {
     `pass ${report.counts.pass}, differ ${report.counts.differ}: ` +
       CATEGORIES.map((category) => `${category} ${report.counts[category]}`).join(', '),
   ];
-  if (report.staleRules.length) lines.push(`stale rules (cases that now pass): ${report.staleRules.length}`);
+  if (report.passingRules.length) lines.push(`stale rules (cases that now pass): ${report.passingRules.length}`);
+  if (report.missingRules.length) lines.push(`stale rules (cases not in the suite): ${report.missingRules.length}`);
   for (const category of CATEGORIES) {
     const items = report.differences.filter((difference) => difference.category === category);
     if (!items.length) continue;
@@ -204,15 +219,17 @@ function text(report) {
   return lines.join('\n') + '\n';
 }
 
-/** The generated case tables of docs/liquid-conformance.md. */
+/** The generated case tables of the conformance report (docs/liquid-parity.md). */
 export function markdown(report) {
   const lines = [
     `Cases: ${report.counts.total} (${report.counts.expectError} expect an error). Pass: ${report.counts.pass}. Differ: ${report.counts.differ} (` +
       CATEGORIES.map((category) => `${category} ${report.counts[category]}`).join(', ') +
       ').',
   ];
-  if (report.staleRules.length)
-    lines.push('', `Stale rules (their cases now pass): ${report.staleRules.map(cell).join('; ')}.`);
+  if (report.passingRules.length)
+    lines.push('', `Stale rules (their cases now pass): ${report.passingRules.map(cell).join('; ')}.`);
+  if (report.missingRules.length)
+    lines.push('', `Stale rules (their cases are not in the suite): ${report.missingRules.map(cell).join('; ')}.`);
   for (const category of CATEGORIES) {
     const items = report.differences.filter((difference) => difference.category === category);
     lines.push('', `### ${category} (${items.length})`, '');
@@ -263,15 +280,19 @@ function appendDifferenceRow(lines, item) {
 
 function parseArgs(argv) {
   const values = parseToolArgs('liquid-conformance', argv);
-  if (values.json && values.markdown) throw new Error('Use either --json or --markdown');
+  // A usage error, not a run failure: it is never reported as a --json envelope (the two flags conflict).
+  if (values.json && values.markdown)
+    throw Object.assign(
+      new Error('--json and --markdown are alternatives: use one of them, or neither for the text report.'),
+      {
+        usage: true,
+      },
+    );
   const raw = values.timeout ?? '5000';
   const timeoutMs = Number(raw);
   if (!/^\d+$/.test(raw) || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2147483647)
     throw new Error('--timeout must be an integer between 1 and 2147483647 milliseconds');
-  if (!values.suite)
-    throw new Error(
-      'Usage: node mirage/liquid-conformance.mjs --suite <golden_liquid.json> [--rules FILE] [--json | --markdown] [--out FILE] [--timeout MS]',
-    );
+  assertToolOptions('liquid-conformance', values);
   let format = 'text';
   if (values.json) format = 'json';
   else if (values.markdown) format = 'markdown';
@@ -302,13 +323,16 @@ async function main(argv = process.argv.slice(2)) {
   if (options.format === 'json') body = JSON.stringify(report, null, 2) + '\n';
   else if (options.format === 'markdown') body = markdown(report);
   else body = text(report);
-  if (options.out) await fs.writeFile(options.out, body);
-  else process.stdout.write(body);
+  if (options.out) {
+    await fs.mkdir(path.dirname(path.resolve(options.out)), { recursive: true });
+    await fs.writeFile(options.out, body);
+  } else process.stdout.write(body);
   return report;
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))
   /* NOSONAR: module-level promise chain must not block evaluation */ main().catch((error) => {
-    reportCliError(error);
+    if (error.usage) console.error(error.message);
+    else reportCliError(error);
     process.exitCode = 2;
   });

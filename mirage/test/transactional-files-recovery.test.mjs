@@ -134,8 +134,8 @@ test('foreign lock tokens and legacy journals remain refused without deleting ei
   assert.equal(await fs.readFile(`${f.files[0]}.lock`, 'utf8'), original);
 });
 
-// @test-kind security: a lock without an ownership journal is never reclaimed
-test('locks with no ownership journal are never reclaimed', async (t) => {
+// @test-kind security: a lock without owner identity and without an ownership journal is never reclaimed
+test('locks without owner identity and with no ownership journal are never reclaimed', async (t) => {
   const f = await fixture(t),
     token = `2147483646:${randomUUID()}`;
   await fs.writeFile(`${f.files[0]}.lock`, token);
@@ -299,4 +299,47 @@ test('transaction publication refuses an ancestor junction or directory link ins
     { code: 'PersistenceRecoveryRequired' },
   );
   assert.deepEqual(await Promise.all(f.files.map((file) => fs.readFile(file, 'utf8'))), f.before);
+});
+
+test('publication renames through a Windows sharing hold on a replaced file and still refuses other rename failures', async (t) => {
+  const f = await fixture(t);
+  const held = new Map([
+    [f.files[0], 2],
+    [f.journalFile, 2],
+  ]);
+  const io = {
+    ...fs,
+    rename: async (from, to) => {
+      // Another process (a scanner or indexer) holds the destination open without delete sharing.
+      if (held.get(to)) {
+        held.set(to, held.get(to) - 1);
+        throw Object.assign(new Error(`EPERM: operation not permitted, rename '${from}' -> '${to}'`), {
+          code: 'EPERM',
+        });
+      }
+      return fs.rename(from, to);
+    },
+  };
+  const published = await publishTransactionalFiles({ entries: f.entries, journalFile: f.journalFile, io });
+  assert.deepEqual([...held.values()], [0, 0], 'each held destination was retried until released');
+  assert.deepEqual(
+    published.map(({ file }) => file),
+    f.files,
+  );
+  for (const [index, file] of f.files.entries())
+    assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), f.entries[index].value);
+  await assert.rejects(fs.access(f.journalFile), { code: 'ENOENT' });
+
+  const g = await fixture(t);
+  const refusing = {
+    ...fs,
+    rename: async (from, to) => {
+      if (to === g.journalFile) throw Object.assign(new Error('Invented rename refusal'), { code: 'EXDEV' });
+      return fs.rename(from, to);
+    },
+  };
+  await assert.rejects(publishTransactionalFiles({ entries: g.entries, journalFile: g.journalFile, io: refusing }), {
+    code: 'EXDEV',
+  });
+  assert.deepEqual(await Promise.all(g.files.map((file) => fs.readFile(file, 'utf8'))), g.before);
 });

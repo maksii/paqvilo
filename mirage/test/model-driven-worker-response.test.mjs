@@ -371,3 +371,40 @@ test('worker HTTP metadata evaluates field permissions in one read and releases 
   for (const table of Object.values(payload.tables)) assert.equal(table.capabilities.read, true);
   assert.equal(res.listenerCount('close'), 0);
 });
+
+// @test-kind contract: the metadata compiler thread's own module graph; every response that starts a thread pays for it
+test('a compiler thread loads neither the portal importer nor any package', async () => {
+  const entry = new URL('../lib/model-driven/metadata-worker.mjs', import.meta.url).href;
+  // A thread that records what its module graph resolves, then loads the compiler thread's entry module.
+  const probe = new Worker(
+    `import { registerHooks } from 'node:module';
+import { parentPort, workerData } from 'node:worker_threads';
+const local = new Set(), packages = new Set();
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    const resolved = nextResolve(specifier, context);
+    if (resolved.url.includes('/node_modules/')) packages.add(specifier);
+    else if (resolved.url.startsWith('file:')) local.add(resolved.url);
+    return resolved;
+  },
+});
+await import(workerData.entry);
+parentPort.postMessage({ local: [...local], packages: [...packages] });
+`,
+    { eval: true, workerData: { entry } },
+  );
+  try {
+    const [graph] = await once(probe, 'message');
+    const names = graph.local.map((url) => /\/((?:lense|mirage)\/.*)\.mjs$/.exec(url)?.[1] ?? url);
+    assert.ok(names.includes('mirage/lib/model-driven/catalogue'), 'the probe saw the compiler graph');
+    assert.deepEqual(graph.packages, []);
+    assert.deepEqual(
+      names.filter((name) =>
+        ['mirage/lib/importer', 'mirage/lib/liquid', 'mirage/lib/data', 'mirage/server'].includes(name),
+      ),
+      [],
+    );
+  } finally {
+    await probe.terminate();
+  }
+});

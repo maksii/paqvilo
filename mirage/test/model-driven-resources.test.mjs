@@ -15,6 +15,7 @@ import { importModelDrivenProject } from '../../lense/model-driven.mjs';
 import { importCodeComponents, takeAdmittedFiles } from '../lib/code-components.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { mapLimit } from '../lib/solution-cache.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 
 const descriptor = (name, file) =>
   `<WebResource><Name>${name}</Name><WebResourceType>3</WebResourceType><FileName>${file}</FileName></WebResource>`;
@@ -29,23 +30,28 @@ async function fixture(t, files) {
   return root;
 }
 
-test('unrelated form XML does not consume the executable asset entry budget', async (t) => {
-  const root = await fixture(t, {
-    'WebResources/events.js': 'window.Invented = {};',
-    'WebResources/events.js.data.xml': descriptor('x_/events.js', 'WebResources/events.js'),
-  });
-  const forms = path.join(root, 'Entities/x_wide/FormXml/main');
-  await fs.mkdir(forms, { recursive: true });
-  await mapLimit(
-    Array.from({ length: 10001 }, (_, i) => i),
-    32,
-    (i) => fs.writeFile(path.join(forms, 'form-' + i + '.xml'), '<systemform/>'),
-  );
-  const result = await importModelDrivenResources([{ type: 'directory', dir: root }]);
-  assert.equal(result.resources.length, 1);
-  assert.equal(result.resources[0].name, 'x_/events.js');
-  assert.deepEqual(result.diagnostics, []);
-});
+test(
+  'unrelated form XML does not consume the executable asset entry budget',
+  // Hang guard only: the fixture is 10,001 files written, read and removed.
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const root = await fixture(t, {
+      'WebResources/events.js': 'window.Invented = {};',
+      'WebResources/events.js.data.xml': descriptor('x_/events.js', 'WebResources/events.js'),
+    });
+    const forms = path.join(root, 'Entities/x_wide/FormXml/main');
+    await fs.mkdir(forms, { recursive: true });
+    await mapLimit(
+      Array.from({ length: 10001 }, (_, i) => i),
+      32,
+      (i) => fs.writeFile(path.join(forms, 'form-' + i + '.xml'), '<systemform/>'),
+    );
+    const result = await importModelDrivenResources([{ type: 'directory', dir: root }]);
+    assert.equal(result.resources.length, 1);
+    assert.equal(result.resources[0].name, 'x_/events.js');
+    assert.deepEqual(result.diagnostics, []);
+  },
+);
 
 test('selected unpacked and ZIP WebResources resolve declared filenames, layers and packed entity ribbons', async (t) => {
   const root = await fixture(t, {
@@ -213,6 +219,17 @@ test('explicit client sources are independent of metadata, ordered, confined and
   const absent = await importModelDrivenResources(layers, { clientSources: [override, path.join(metadata, 'absent')] });
   assert.equal(absent.assets.size, 0);
   assert.equal(absent.diagnostics[0].code, 'MODEL_CLIENT_SOURCE_INVALID');
+  // The diagnostic names the clientSources entry and its path, never a raw ENOENT.
+  assert.match(
+    absent.diagnostics[0].message,
+    /^modelDriven.clientSources entry S*absent does not exist; name an existing local directory or Solution ZIP file.$/,
+  );
+  assert.doesNotMatch(absent.diagnostics[0].message, /ENOENT/);
+  const shownAbsent = await importModelDrivenResources(layers, {
+    clientSources: [path.join(metadata, 'absent')],
+    projectRoot: metadata,
+  });
+  assert.match(shownAbsent.diagnostics[0].message, /^modelDriven.clientSources entry absent does not exist;/);
   assert.equal((await importModelDrivenResources(layers, { clientSources: [] })).resources.length, 0);
   assert.deepEqual(modelDrivenSettings({ clientSources: ['./local'] }, 'modelDriven', metadata).clientSources, [
     path.join(metadata, 'local'),
@@ -639,9 +656,13 @@ test('modelDriven.enabled false switches the model-driven surface off on both ho
     try {
       const status = await (await fetch(sim.url + '/_sim/api/status')).json();
       assert.equal(status.links.modelDriven, null);
+      // The capability summary agrees with the links on both hosts.
+      assert.equal(status.capabilities.modelDriven, false);
       // The shell and its catalogue API are not served at all (an error page would also be "not 200").
       for (const route of ['/main.aspx', '/_apps/api'])
         assert.equal((await fetch(sim.url + route, { redirect: 'manual' })).status, 404, route);
+      // Status lists no admin-adjacent model-driven route the disabled surface would answer 404 on.
+      assert.deepEqual(status.adminAdjacentRoutes, []);
     } finally {
       await sim.close();
     }

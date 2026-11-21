@@ -1,29 +1,39 @@
 #!/usr/bin/env node
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { parseOptions } from '../cli-options.mjs';
+import { parseOptions, DATAVERSE_OPTIONS, DATAVERSE_COMMAND_OPTIONS } from '../cli-options.mjs';
+import { dataverseCommandHelp } from '../cli-help.mjs';
 import fs from 'node:fs/promises';
-import { fileIdentity, sameFile } from '../file-identity.mjs';
-import {
-  loadConnection,
-  environmentOrigin,
-  publicConnection,
-  registerApplication,
-  connectExistingApplication,
-  privateJson,
-} from './connection.mjs';
-import { connectedClient } from './client.mjs';
-import { readManifest } from './manifest.mjs';
-import {
-  planManifest,
-  applyManifest,
-  publishManifest,
-  checkKeys,
-  exportSolution,
-  completeLookupAuditing,
-  scopeSolutionRoots,
-} from './provision.mjs';
-import { readCatalogue, planData, applyData, compareData, runDataQueries } from './data.mjs';
+
+// Operational modules load only once help is ruled out, so help reads no file and contacts nothing.
+let fileIdentity, sameFile, loadConnection, environmentOrigin, publicConnection, registerApplication;
+let connectExistingApplication, privateJson, existingPathError, connectedClient, readManifest, planManifest;
+let applyManifest, publishManifest, checkKeys, exportSolution, completeLookupAuditing, scopeSolutionRoots;
+let readCatalogue, planData, applyData, compareData, runDataQueries;
+async function loadOperations() {
+  ({ fileIdentity, sameFile } = await import('../file-identity.mjs'));
+  ({
+    loadConnection,
+    environmentOrigin,
+    publicConnection,
+    registerApplication,
+    connectExistingApplication,
+    privateJson,
+    existingPathError,
+  } = await import('./connection.mjs'));
+  ({ connectedClient } = await import('./client.mjs'));
+  ({ readManifest } = await import('./manifest.mjs'));
+  ({
+    planManifest,
+    applyManifest,
+    publishManifest,
+    checkKeys,
+    exportSolution,
+    completeLookupAuditing,
+    scopeSolutionRoots,
+  } = await import('./provision.mjs'));
+  ({ readCatalogue, planData, applyData, compareData, runDataQueries } = await import('./data.mjs'));
+}
 
 const HELP = `paqvilo dataverse — provision schema through Dataverse, then export it
 
@@ -40,8 +50,10 @@ const HELP = `paqvilo dataverse — provision schema through Dataverse, then exp
   verify   --connection FILE               Verify application identity and organisation.
   plan     --manifest FILE [--connection FILE] [--out FILE]
            No connection: offline payload plan. With connection: read-only reconciliation.
-  apply    --manifest FILE --connection FILE [--out JOURNAL]
+  apply    --manifest FILE --connection FILE [--out JOURNAL] [--update-labels]
            Create missing components. Refuse incompatible existing metadata; no deletes.
+           --update-labels changes only the display labels and descriptions of declared
+           tables and columns that a remote plan lists as labelsOnly.
   publish  --manifest FILE --connection FILE
            Publish only the declared tables/choices.
   keys     --manifest FILE --connection FILE
@@ -61,6 +73,8 @@ const HELP = `paqvilo dataverse — provision schema through Dataverse, then exp
   data-query   --catalogue FILE --connection FILE [--out REPORT]
                Run paged FetchXML and compare expected rows under this app identity.
 
+Run paqvilo dataverse <command> --help for what one command does, whether it changes
+the live environment, and exactly the options it accepts; any other option is refused (exit 1).
 All commands accept --json for machine-readable errors. Plans and data reports
 print the full result alongside --out when --json is set.
 Credentials use Windows DPAPI CurrentUser, or an environment-secret reference in a
@@ -82,14 +96,61 @@ async function validateFileSelections(command, values) {
     if (values[key] !== undefined && sameFile(output, await fileIdentity(values[key])))
       throw new Error(`--out must not overwrite --${key}`);
   }
+  // These commands create --out exclusively; refuse an existing file before contacting Dataverse.
+  if (output.stat && ['apply', 'scope-solutions', 'export', 'data-apply'].includes(command))
+    throw existingPathError(values.out);
+}
+
+/** Refuses every option the command's help does not list, in one line that says where the supported ones are. */
+async function refuseUnsupportedOptions(command, contract, values) {
+  const unsupported = Object.keys(values)
+    .filter((key) => key !== 'help' && !contract.allowed.includes(key))
+    .map((key) => `--${key}`);
+  if (unsupported.length)
+    throw Object.assign(
+      new Error(
+        `${unsupported.join(', ')} ${unsupported.length === 1 ? 'is' : 'are'} not valid for dataverse ${command}; ` +
+          `run ${await dataverseCommand([command, '--help'])} for its options.`,
+      ),
+      { code: 'unsupported_option' },
+    );
+}
+
+/** `paqvilo dataverse <words>` as it runs where the user is (lense/command-hint.mjs), loaded only for a message. */
+async function dataverseCommand(words) {
+  const { paqviloCommand } = await import('../command-hint.mjs');
+  return paqviloCommand(['dataverse', ...words]);
+}
+
+const FILE_PROBLEMS = {
+  ENOENT: ['does not exist', 'check the path'],
+  EACCES: ['cannot be accessed (permission denied)', 'check its permissions'],
+  EPERM: ['cannot be accessed (operation not permitted)', 'check its permissions and that no program holds it open'],
+  EISDIR: ['is a directory', 'give a file path'],
+  ENOTDIR: ['has a parent that is not a directory', 'check the path'],
+  EEXIST: ['already exists', 'choose another path or remove it'],
+};
+
+/** A file-system failure as one line naming the option whose path failed, the path and what to do. */
+function fileFailureMessage(error, values) {
+  const problem = typeof error?.path === 'string' && FILE_PROBLEMS[error.code];
+  if (!problem) return null;
+  const failed = path.resolve(error.path);
+  const option = Object.keys(DATAVERSE_OPTIONS).find((key) => {
+    if (typeof values[key] !== 'string' || !values[key]) return false;
+    const selected = path.resolve(values[key]);
+    return (
+      failed === selected ||
+      failed.startsWith(selected + '.') || // its temporary sibling
+      failed.startsWith(selected + path.sep) || // inside a selected folder
+      selected.startsWith(failed + path.sep) // a parent folder
+    );
+  });
+  const subject = option ? `--${option} ${values[option]}` : failed;
+  return `${subject} ${problem[0]}; ${problem[1]}.`;
 }
 
 /* NOSONAR */ function validateCommandValues(command, contract, values) {
-  for (const key of Object.keys(values)) {
-    if (key !== 'help' && key !== 'json' && !contract.allowed.includes(key))
-      throw new Error(`--${key} is not valid for dataverse ${command}`);
-  }
-  if (values.help) return;
   for (const key of contract.required) {
     if (!values[key]?.trim()) throw new Error(`--${key} required for dataverse ${command}`);
   }
@@ -202,7 +263,12 @@ async function executeManifestCommand(command, values, connection, client, outpu
             manifestHash: plan.manifestHash,
             environmentUrl: plan.environmentUrl,
             summary: plan.summary,
-            drift: plan.actions.filter((a) => a.status === 'drift').map((a) => a.key),
+            // Each drifted component with the declared properties that differ; values are in the saved plan.
+            drift: plan.actions
+              .filter((a) => a.status === 'drift')
+              .map((a) =>
+                a.differences?.length ? `${a.key} (${a.differences.map((d) => d.property).join(', ')})` : a.key,
+              ),
             blockedRoots: plan.membership.filter((e) => e.operation === 'blocked').map((e) => e.objectId),
             savedTo: path.resolve(values.out),
           },
@@ -216,6 +282,7 @@ async function executeManifestCommand(command, values, connection, client, outpu
       client,
       journalFile,
       expectedOrganisationId: connection.organisationId,
+      updateLabels: values['update-labels'] === true,
     });
     output({
       state: result.state,
@@ -269,61 +336,31 @@ async function executeSolutionScoping(manifest, values, client, output) {
 }
 
 const [command, ...args] = process.argv.slice(2);
+let selectedValues = {};
 async function main() {
   if (command === undefined || ['--help', '-h'].includes(command)) {
     console.log(HELP);
     return;
   }
-  const commands = {
-    register: {
-      allowed: ['connection', 'name', 'role', 'environment', 'allow-additional-application'],
-      required: ['connection', 'name'],
-    },
-    connect: {
-      allowed: ['registration', 'secret-file', 'connection', 'role', 'consume-secret-file'],
-      required: ['registration', 'secret-file', 'connection'],
-    },
-    inspect: { allowed: ['connection'], required: ['connection'] },
-    verify: { allowed: ['connection'], required: ['connection'] },
-    plan: { allowed: ['manifest', 'connection', 'out', 'json'], required: ['manifest'] },
-    apply: { allowed: ['manifest', 'connection', 'out'], required: ['manifest', 'connection'] },
-    publish: { allowed: ['manifest', 'connection'], required: ['manifest', 'connection'] },
-    keys: { allowed: ['manifest', 'connection'], required: ['manifest', 'connection'] },
-    'audit-lookups': { allowed: ['manifest', 'connection'], required: ['manifest', 'connection'] },
-    'scope-solutions': { allowed: ['manifest', 'connection', 'out'], required: ['manifest', 'connection'] },
-    export: { allowed: ['connection', 'solution', 'out', 'unpack'], required: ['connection', 'solution', 'out'] },
-    'data-plan': { allowed: ['catalogue', 'connection', 'out', 'json'], required: ['catalogue'] },
-    'data-apply': { allowed: ['catalogue', 'connection', 'out'], required: ['catalogue', 'connection'] },
-    'data-compare': { allowed: ['catalogue', 'connection', 'out', 'json'], required: ['catalogue', 'connection'] },
-    'data-query': { allowed: ['catalogue', 'connection', 'out', 'json'], required: ['catalogue', 'connection'] },
-  };
-  const contract = Object.hasOwn(commands, command) ? commands[command] : null;
-  if (!contract) throw new Error('Unknown dataverse command; run paqvilo dataverse --help.');
-  const { values } = parseOptions({
-    args,
-    options: {
-      connection: { type: 'string' },
-      manifest: { type: 'string' },
-      catalogue: { type: 'string' },
-      environment: { type: 'string' },
-      name: { type: 'string' },
-      role: { type: 'string' },
-      out: { type: 'string' },
-      solution: { type: 'string' },
-      unpack: { type: 'string' },
-      json: { type: 'boolean' },
-      registration: { type: 'string' },
-      'secret-file': { type: 'string' },
-      'consume-secret-file': { type: 'boolean' },
-      'allow-additional-application': { type: 'boolean' },
-      help: { type: 'boolean', short: 'h' },
-    },
-  });
-  validateCommandValues(command, contract, values);
+  const options = Object.hasOwn(DATAVERSE_COMMAND_OPTIONS, command) ? DATAVERSE_COMMAND_OPTIONS[command] : null;
+  if (!options)
+    throw Object.assign(
+      new Error(
+        `Unknown dataverse command ${JSON.stringify(command)}; choose ${Object.keys(DATAVERSE_COMMAND_OPTIONS).join(', ')}. ` +
+          `Run ${await dataverseCommand(['--help'])} for details.`,
+      ),
+      { code: 'unknown_command' },
+    );
+  const contract = { required: options.required, allowed: [...options.required, ...options.optional] };
+  const { values } = parseOptions({ args, options: DATAVERSE_OPTIONS });
+  await refuseUnsupportedOptions(command, contract, values);
   if (values.help) {
-    console.log(HELP);
+    console.log(dataverseCommandHelp(command));
     return;
   }
+  selectedValues = values;
+  await loadOperations();
+  validateCommandValues(command, contract, values);
   await validateFileSelections(command, values);
   const output = (value) => console.log(JSON.stringify(value, null, 2));
   const earlyCommand = executeEarlyCommand(command, values, output);
@@ -359,7 +396,10 @@ async function main() {
 }
 /* NOSONAR: module-level promise chain must not block evaluation */ main().catch((error) => {
   // JSON parser diagnostics can include credential-file contents.
-  const message = error instanceof SyntaxError ? 'Invalid JSON input.' : error.message.replace(/[\r\n]+/g, ' ');
+  const message =
+    error instanceof SyntaxError
+      ? 'Invalid JSON input.'
+      : (fileFailureMessage(error, selectedValues) ?? error.message.replace(/[\r\n]+/g, ' '));
   const terminator = args.indexOf('--');
   const json = args.slice(0, terminator < 0 ? args.length : terminator).includes('--json');
   if (json)

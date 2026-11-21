@@ -144,6 +144,15 @@ test('usersettingscollection answers GET and PATCH for the caller and feeds the 
       principal: { principalId: system, kind: 'local-admin' },
       host: '127.0.0.1',
     });
+  // The first PATCH changes only the properties it sends: the others keep the values a GET answered before it.
+  const before = JSON.parse((await call('GET', system)).body);
+  assert.equal(before.timezonecode, 92);
+  assert.equal((await call('PATCH', system, { dateformatstring: 'dd.MM.yyyy' })).status, 204);
+  const after = JSON.parse((await call('GET', system)).body);
+  assert.deepEqual(
+    [after.localeid, after.uilanguageid, after.timezonecode, after.dateformatstring],
+    [before.localeid, before.uilanguageid, before.timezonecode, 'dd.MM.yyyy'],
+  );
   assert.equal((await call('PATCH', system, { localeid: 1031, uilanguageid: 1031, timezonecode: 110 })).status, 204);
   const read = await call('GET', system);
   assert.equal(read.status, 200);

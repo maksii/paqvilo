@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 
 /** Hold a real child pipe's destruction callback after process exit. */
 export function childStdioGate(t, child) {
@@ -16,10 +17,14 @@ export function childStdioGate(t, child) {
   child.stdout.on('data', (chunk) => {
     output += chunk;
   });
-  t.after(async () => {
-    release.resolve();
-    await closed;
-  });
+  // Hang guard only: the hook waits for the child to close, which on a loaded slow host is slow, not hung.
+  t.after(
+    async () => {
+      release.resolve();
+      await closed;
+    },
+    { timeout: SCENARIO_HANG_GUARD_MS },
+  );
   return { child, closed, exited, release, destroying, output: () => output };
 }
 

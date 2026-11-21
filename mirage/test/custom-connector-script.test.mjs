@@ -103,40 +103,48 @@ const records = (scriptOperations = ['GetItem']) =>
   ]);
 const SKIP = dotnetSdk() ? false : 'dotnet is not on PATH: the script host cannot be built here';
 
-test(
-  'memory-only connector hosts use private temporary storage and reuse identical builds within their process',
-  { skip: SKIP },
-  async (t) => {
-    const options = { trusted: [{ connector: NAME, sha256: scriptHash(SCRIPT) }] };
-    const first = createScriptHost(options),
-      second = createScriptHost(options),
-      script = { text: SCRIPT };
-    const roots = [];
-    t.after(async () => {
-      for (const root of roots) await fs.rm(root, { recursive: true, force: true });
-    });
-    const prepare = async (host) => {
-      const dll = await host.prepare(script, NAME);
-      const directory = path.dirname(path.dirname(dll)),
-        root = path.dirname(directory);
-      const relative = path.relative(await fs.realpath(os.tmpdir()), await fs.realpath(root));
-      assert.match(relative, /^mirage-connector-scripts-[^/\\]+$/);
-      roots.push(root);
-      assert.equal(await host.prepare(script, NAME), dll, 'each host reuses its prepared build');
-      if (process.platform !== 'win32') {
-        assert.equal((await fs.stat(root)).mode & 0o777, 0o700);
-        for (const name of ['ConnectorScriptHost.csproj', 'GlobalUsings.cs', 'Host.cs', 'Script.cs'])
-          assert.equal((await fs.stat(path.join(directory, name))).mode & 0o777, 0o600, name);
-      }
-      return root;
-    };
-    assert.equal(
-      await prepare(first),
-      await prepare(second),
-      'identical trusted scripts share the process-private build cache',
-    );
-  },
-);
+// @test-kind contract: Mirage's memory-only connector host keeps its build in private temporary storage and builds an identical script once; the .NET build is a double
+test('memory-only connector hosts use private temporary storage and reuse identical builds within their process', async (t) => {
+  // The .NET SDK and the build are doubles: the test's subject is the storage layout, file modes and reuse.
+  let builds = 0;
+  const spawnImpl = (name, args, spawnOptions) => {
+    const child = new FakeChild();
+    child.dll = path.join(spawnOptions.cwd, 'out', 'ConnectorScriptHost.dll');
+    builds += 1;
+    setImmediate(() => void finishBuild(child));
+    return child;
+  };
+  const spawnSyncImpl = () => versionProbe('8.0.100');
+  const options = { trusted: [{ connector: NAME, sha256: scriptHash(SCRIPT) }], spawnImpl, spawnSyncImpl };
+  const first = createScriptHost(options),
+    second = createScriptHost(options),
+    script = { text: SCRIPT };
+  const roots = [];
+  t.after(async () => {
+    for (const root of roots) await fs.rm(root, { recursive: true, force: true });
+  });
+  const prepare = async (host) => {
+    const dll = await host.prepare(script, NAME);
+    const directory = path.dirname(path.dirname(dll)),
+      root = path.dirname(directory);
+    const relative = path.relative(await fs.realpath(os.tmpdir()), await fs.realpath(root));
+    assert.match(relative, /^mirage-connector-scripts-[^/\\]+$/);
+    roots.push(root);
+    assert.equal(await host.prepare(script, NAME), dll, 'each host reuses its prepared build');
+    if (process.platform !== 'win32') {
+      assert.equal((await fs.stat(root)).mode & 0o777, 0o700);
+      for (const name of ['ConnectorScriptHost.csproj', 'GlobalUsings.cs', 'Host.cs', 'Script.cs'])
+        assert.equal((await fs.stat(path.join(directory, name))).mode & 0o777, 0o600, name);
+    }
+    return root;
+  };
+  assert.equal(
+    await prepare(first),
+    await prepare(second),
+    'identical trusted scripts share the process-private build cache',
+  );
+  assert.equal(builds, 1, 'identical trusted scripts share one build');
+});
 
 // The state-backed tests share one state directory, so the script is built there once. The collision test runs first
 // (tests in a suite run in order) and builds from the matching source it leaves; the later tests reuse that build.
@@ -344,6 +352,29 @@ test('a dotnet probe that fails other than by a missing file reports that failur
       return true;
     });
   });
+});
+
+// @test-kind contract: Mirage's own .NET SDK probe names an absent command by what the search path holds, not by the host's error code for it; no native behaviour is claimed.
+test('a command the system refuses with EACCES is absent when no folder of the search path holds it, and a failure when one does', async (t) => {
+  const refused = () => ({ error: Object.assign(new Error('spawnSync x EACCES'), { code: 'EACCES' }) });
+  const folder = await fs.mkdtemp(path.join(os.tmpdir(), 'invented-dotnet-path-'));
+  t.after(() => fs.rm(folder, { recursive: true, force: true }));
+  const absent = 'x-invented-dotnet-eacces-absent',
+    present = 'x-invented-dotnet-eacces-present';
+  await fs.writeFile(path.join(folder, present), 'not runnable');
+  // The first folder cannot be searched on the host this models; neither holds the absent command.
+  const searchPath = [path.join(folder, 'unsearchable'), folder].join(path.delimiter);
+  const probes = { spawnSyncImpl: refused, searchPath };
+  assert.equal(dotnetSdk(absent, probes), null);
+  assert.equal(dotnetSdk(present, probes), null);
+  assert.match(
+    String(createScriptHost({ command: absent, ...probes }).missing()),
+    /'x-invented-dotnet-eacces-absent' is not on PATH/,
+  );
+  assert.match(
+    String(createScriptHost({ command: present, ...probes }).missing()),
+    /'x-invented-dotnet-eacces-present --version' failed: spawnSync x EACCES/,
+  );
 });
 
 test('a dotnet command that does not exist is reported as not on PATH', async () => {

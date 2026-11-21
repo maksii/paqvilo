@@ -203,7 +203,7 @@ export function auditText(value, limit = 12000) {
 }
 
 // An id filter of at least 8 hexadecimal characters (after an optional kind: prefix, as in visitor:ad87d220) also
-// matches every id it begins (DV-N4-3); an ambiguous prefix matches all of them. The trace store re-exports it.
+// matches every id it begins; an ambiguous prefix matches all of them. The trace store re-exports it.
 const ID_PREFIX = /^(?:[a-z]+:)?[0-9a-f]{8}[0-9a-f-]*$/i;
 /** True when actual equals wanted, or wanted is an id prefix (8+ hex characters) that actual begins with. */
 export const idMatches = (actual, wanted) =>
@@ -216,6 +216,10 @@ const pathOnly = (value) => {
     return '/';
   }
 };
+/** The host's monotonic clock in milliseconds: one clock for every process on the host (libuv's hrtime reads
+ * CLOCK_MONOTONIC, QueryPerformanceCounter or mach_absolute_time), so a loopback runner can compare its own reading with
+ * an audit entry's whatever the wall clock did between them. Exact to the microsecond for years of uptime. */
+export const hostMonotonicMs = () => Number(process.hrtime.bigint()) / 1e6;
 const positive = (value, fallback, max) => Math.min(max, Math.max(1, Number.parseInt(value, 10) || fallback));
 // The trace ids one traceId filter may list (a page of Activities joins its audit entries in one call).
 const MAX_TRACE_IDS = 200;
@@ -294,6 +298,7 @@ export class AuditLog {
           }
         : {}),
       startedAt: new Date().toISOString(),
+      startedHostMs: hostMonotonicMs(),
       kind: auditKind(kind),
       method: limitText(method || 'GET', 12).toUpperCase(),
       path: pathOnly(path),
@@ -303,7 +308,7 @@ export class AuditLog {
         contactId: limitText(identity?.contactId ?? identity?.id, 100) || null,
         roles: (identity?.roles ?? []).map((role) => auditText(role, 200)).slice(0, 100),
       },
-      // The browser session (D-M-2 Who): the anonymous visitor cookie id, and contact:<id> or visitor:<id> (else null).
+      // The browser session (Who): the anonymous visitor cookie id, and contact:<id> or visitor:<id> (else null).
       visitorId: visitorId ? limitText(visitorId, 100) : null,
       sessionKey: sessionKey ? limitText(sessionKey, 140) : null,
       query: auditQuery(query),
@@ -410,9 +415,10 @@ export class AuditLog {
       const value = get(key);
       if (value === undefined || value === null || value === '') return null;
       if (!/^\d+$/.test(String(value)) || !Number.isSafeInteger(Number(value)))
-        throw Object.assign(new RangeError(`${key} must be a nonnegative safe integer.`), {
+        throw Object.assign(new RangeError(`${key} must be a non-negative safe integer.`), {
           status: 400,
           code: 'InvalidAuditSequence',
+          parameter: key,
         });
       return Number(value);
     };
@@ -473,6 +479,9 @@ export class AuditLog {
   export(filters = {}) {
     return {
       generatedAt: new Date().toISOString(),
+      // Read while serving: a client that reads hostMonotonicMs before and after its request and finds this between the
+      // two shares the clock of the entries' startedHostMs (another VM, container or time namespace does not).
+      hostMs: hostMonotonicMs(),
       retained: this.entries.length,
       dropped: this.dropped,
       latestSequence: this.sequence,

@@ -5,7 +5,7 @@ import os from 'node:os';
 import { createHash } from 'node:crypto';
 import { execFile, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import ts from 'typescript';
+import { parseSync } from 'vite';
 import { readLocalFileSync } from '../lense/local-file.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -70,44 +70,80 @@ function reviewBytes(directory, file) {
   return bytes;
 }
 
-function moduleImports(tree, file) {
+// TypeScript sources parse by their own kind; every other source parses as JavaScript with JSX.
+const PARSE_LANGUAGES = [
+  [/\.d\.[cm]?ts$/, 'dts'],
+  [/\.tsx$/, 'tsx'],
+  [/\.[cm]?ts$/, 'ts'],
+];
+const NAMED_DECLARATION =
+  /^(?:(?:Function|Class)Declaration|TS(?:DeclareFunction|InterfaceDeclaration|TypeAliasDeclaration|EnumDeclaration|ModuleDeclaration|ImportEqualsDeclaration))$/;
+
+/**
+ * Top-level statements of a module. The parser recovers from errors that leave the statement list intact (a stray
+ * semicolon in a declaration file, a duplicate export); text it cannot recover (JSON, a broken statement) has none.
+ */
+function moduleStatements(file, source) {
+  const lang = PARSE_LANGUAGES.find(([pattern]) => pattern.test(file))?.[1] ?? 'jsx';
+  try {
+    return parseSync(file, source, { lang }).program.body;
+  } catch {
+    return [];
+  }
+}
+
+// An import or export name is an identifier or a string literal; a qualified namespace (`A.B`) declares its first name.
+function nameOf(node) {
+  while (node?.type === 'TSQualifiedName') node = node.left;
+  return node?.name ?? node?.value;
+}
+
+function moduleImports(statements, file) {
   const imports = new Map();
-  for (const statement of tree.statements) {
-    if (ts.isImportDeclaration(statement) && statement.moduleSpecifier.text.startsWith('.')) {
-      const target = path.resolve(path.dirname(file), statement.moduleSpecifier.text);
-      for (const specifier of statement.importClause?.namedBindings?.elements ?? [])
-        imports.set(specifier.name.text, { target, name: (specifier.propertyName ?? specifier.name).text });
-    }
+  for (const statement of statements) {
+    if (statement.type !== 'ImportDeclaration' || !statement.source.value.startsWith('.')) continue;
+    const target = path.resolve(path.dirname(file), statement.source.value);
+    for (const specifier of statement.specifiers)
+      if (specifier.type === 'ImportSpecifier')
+        imports.set(specifier.local.name, { target, name: nameOf(specifier.imported) });
   }
   return imports;
 }
 
-function directModuleExports(tree, result, own) {
-  for (const statement of tree.statements) {
-    if (!statement.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)) continue;
-    if (statement.name?.text) result.set(statement.name.text, [own(statement.name.text)]);
-    if (ts.isVariableStatement(statement))
-      for (const declaration of statement.declarationList.declarations)
-        if (ts.isIdentifier(declaration.name)) result.set(declaration.name.text, [own(declaration.name.text)]);
-  }
+// The names an exported declaration introduces: the declaration's own name, or each plainly named variable.
+function declaredNames(declaration) {
+  if (declaration?.type === 'VariableDeclaration')
+    return declaration.declarations.filter(({ id }) => id.type === 'Identifier').map(({ id }) => id.name);
+  const name = NAMED_DECLARATION.test(declaration?.type) ? nameOf(declaration.id) : undefined;
+  return name ? [name] : [];
+}
+
+function directModuleExports(statements, result, own) {
+  for (const statement of statements)
+    if (statement.type === 'ExportNamedDeclaration' || statement.type === 'ExportDefaultDeclaration')
+      for (const name of declaredNames(statement.declaration)) result.set(name, [own(name)]);
+}
+
+const relativeTarget = (statement, file) =>
+  statement.source?.value.startsWith('.') ? path.resolve(path.dirname(file), statement.source.value) : null;
+
+// Where a re-exported name comes from: the statement's source module, the module its local binding was imported
+// from, or this module's own exports.
+function specifierOrigins(original, target, imports, result, exportsOf) {
+  if (target) return exportsOf(target).get(original);
+  const imported = imports.get(original);
+  return imported ? exportsOf(imported.target).get(imported.name) : result.get(original);
 }
 
 function applyExportStatement(statement, file, imports, result, exportsOf, own) {
-  if (!ts.isExportDeclaration(statement)) return;
-  const target = statement.moduleSpecifier?.text.startsWith('.')
-    ? path.resolve(path.dirname(file), statement.moduleSpecifier.text)
-    : null;
-  if (!statement.exportClause && target) {
-    for (const [name, origins] of exportsOf(target)) result.set(name, [own(name), ...origins]);
-  } else if (statement.exportClause && ts.isNamedExports(statement.exportClause)) {
-    for (const specifier of statement.exportClause.elements) {
-      const name = specifier.name.text,
-        original = (specifier.propertyName ?? specifier.name).text;
-      const imported = imports.get(original);
-      let origins;
-      if (target) origins = exportsOf(target).get(original);
-      else if (imported) origins = exportsOf(imported.target).get(imported.name);
-      else origins = result.get(original);
+  if (statement.type === 'ExportAllDeclaration') {
+    const target = statement.exported ? null : relativeTarget(statement, file);
+    if (target) for (const [name, origins] of exportsOf(target)) result.set(name, [own(name), ...origins]);
+  } else if (statement.type === 'ExportNamedDeclaration' && !statement.declaration) {
+    const target = relativeTarget(statement, file);
+    for (const specifier of statement.specifiers) {
+      const name = nameOf(specifier.exported);
+      const origins = specifierOrigins(nameOf(specifier.local), target, imports, result, exportsOf);
       result.set(name, [own(name), ...(origins ?? [])]);
     }
   }
@@ -121,11 +157,11 @@ function exportsOf(directory, file, cache) {
   const bytes = reviewBytes(directory, file);
   if (!bytes) return result;
   const source = bytes.toString('utf8');
-  const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const statements = moduleStatements(file, source);
   const own = (name) => `${normalize(file, directory)}:${name}`;
-  const imports = moduleImports(tree, file);
-  directModuleExports(tree, result, own);
-  for (const statement of tree.statements) applyExportStatement(statement, file, imports, result, exportsOfBound, own);
+  const imports = moduleImports(statements, file);
+  directModuleExports(statements, result, own);
+  for (const statement of statements) applyExportStatement(statement, file, imports, result, exportsOfBound, own);
   return result;
 
   function exportsOfBound(target) {
@@ -479,8 +515,17 @@ function reviewedReason(item) {
 
 async function main() {
   const args = process.argv.slice(2);
-  if (args.some((arg) => !['--write-baseline', '--check'].includes(arg)))
-    throw new Error('Use --check or --write-baseline.');
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log(`Usage: node scripts/code-review.mjs [--check | --write-baseline]
+  --check            run the dead-code and clone review and fail on findings missing from
+                     scripts/code-review-baseline.json (the default)
+  --write-baseline   rewrite scripts/code-review-baseline.json from the current findings
+  --help             print this help
+Findings are written to .paqvilo/code-review/. See docs/code-review.md.`);
+    return;
+  }
+  const unknown = args.find((arg) => !['--write-baseline', '--check'].includes(arg));
+  if (unknown) throw new Error(`Unknown option ${unknown}; use --check or --write-baseline (see --help).`);
   const output = path.join(root, '.paqvilo/code-review');
   fs.mkdirSync(output, { recursive: true });
   const findings = [];

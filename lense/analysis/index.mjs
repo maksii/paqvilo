@@ -115,6 +115,8 @@ function findingLocation(source, field, offset) {
 
 /** Independent offline review; findings describe source evidence, never deployed behavior. */
 export function analyzeProject(sourceDir, { failOn = 'error', limits = ANALYSIS_LIMITS, sourceRoots } = {}) {
+  if (sourceDir === undefined && sourceRoots === undefined)
+    throw new TypeError('analyzeProject(sourceDir) requires a source directory (or options.sourceRoots).');
   validateAnalysisPolicy(failOn);
   const input = collectAnalysisInputs(sourceRoots ?? [{ path: sourceDir, id: 'source' }], limits);
   limits = input.limits;

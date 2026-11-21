@@ -132,6 +132,7 @@ function bindingOf(runtime, call, { connectionReferences, principal } = {}) {
       bound: r.bound,
       provider: r.provider,
       connectionId: r.connectionId,
+      warnings: r.warnings ?? [],
     };
   } catch (error) {
     if (!error.code) throw error;
@@ -786,6 +787,7 @@ export function inspectFlowDefinition(
         provider: binding.provider,
         bound: binding.bound,
         usedBy: [],
+        warnings: binding.warnings ?? [],
       };
     entry.usedBy.push(key);
     connections.set(id, entry);
@@ -850,7 +852,7 @@ export function inspectFlowDefinition(
       else {
         let reason = '';
         if (routed && runtime.unsupportedReason?.(call.connectorId, call.operationId))
-          reason = ': ' + runtime.unsupportedReason(call.connectorId, call.operationId);
+          reason = ': ' + runtime.unsupportedReason(call.connectorId, call.operationId).replace(/\.$/, '');
         message =
           'Unsupported action ' +
           key +
@@ -1057,12 +1059,25 @@ export function inspectFlowDefinition(
     bind(triggerCall, 'trigger:' + triggers[0][0]);
   for (const key of Object.keys(steps))
     if (!actions.some((a) => a.key === key)) errors.push('Unknown configured action ' + key);
+  const warnings = [...connections.values()].flatMap((entry) =>
+    entry.warnings.map((warning) => ({
+      code: warning.code,
+      severity: 'warning',
+      connector: entry.connectorId,
+      connectionId: entry.connectionId,
+      actions: entry.usedBy,
+      message: `Connector ${entry.connectorId} (connection ${entry.connectionId}): ${warning.message}`,
+    })),
+  );
   return {
     supported: errors.length === 0,
     ...(badRequest ? { badRequest } : {}),
     ...(parallel ? { parallel } : {}),
     actions,
-    connections: [...connections.values()],
+    connections: [...connections.values()].map(({ warnings, ...entry }) => entry),
+    // Connector warnings of the bound connections (a custom connector OAuth flow that needs a static token): the flow
+    // still runs, and a call on that connection answers 501 OperationUnsupported.
+    ...(warnings.length ? { warnings } : {}),
     errors,
     inputSchema: Object.values(definition?.triggers ?? {}).find((t) => t.type === 'Request')?.inputs?.schema ?? null,
   };
@@ -1467,7 +1482,7 @@ function evaluateSubstring(a) {
     typeof a[0] !== 'string' ||
     a.slice(1).some((value) => typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0)
   )
-    fail('substring() requires text and nonnegative safe integer indexes.', 400, 'LocalFlowExpression');
+    fail('substring() requires text and non-negative safe integer indexes.', 400, 'LocalFlowExpression');
   const length = a.length === 3 ? a[2] : a[0].length - a[1];
   if (a[1] > a[0].length || length > a[0].length - a[1])
     fail('substring() indexes exceed the string bounds.', 400, 'LocalFlowExpression');
@@ -1475,7 +1490,11 @@ function evaluateSubstring(a) {
 }
 function evaluateRangeCollection(n, a, name) {
   if ((!Array.isArray(a[0]) && !(n === 'take' && typeof a[0] === 'string')) || !Number.isSafeInteger(a[1]) || a[1] < 0)
-    fail(name + '() requires a supported collection and a nonnegative safe integer count.', 400, 'LocalFlowExpression');
+    fail(
+      name + '() requires a supported collection and a non-negative safe integer count.',
+      400,
+      'LocalFlowExpression',
+    );
   return n === 'skip' ? a[0].slice(a[1]) : a[0].slice(0, a[1]);
 }
 function evaluateFirstLast(n, a, name) {
@@ -2214,10 +2233,11 @@ export function executeFlowDefinition({
   // The FLOW_ACTION diagnostic, and a trace event on the action span (a skipped action has none: the flow-run span).
   const trace = (key, action, status, error, span = flowSpan) => {
     const flowName = () => (flowSpan?.name ? ' in ' + flowSpan.name : '');
-    const errorMessage = () => (error?.message ? ': ' + error.message : '');
+    // The sentence ends with one full stop: an error message that already ends a sentence is not given a second one.
+    const errorMessage = () => (error?.message ? ': ' + error.message.replace(/[.!?]$/, '') : '');
     diagnostic({
       code: 'FLOW_ACTION',
-      // Human facts (D-M-2 Findings): the action name, its flow and trigger table (from the flow-run span, when traced).
+      // Human facts (Findings): the action name, its flow and trigger table (from the flow-run span, when traced).
       name: key,
       flow: flowSpan?.name ?? null,
       entity: flowSpan?.entity ?? null,

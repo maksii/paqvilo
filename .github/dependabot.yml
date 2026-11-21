@@ -15,6 +15,11 @@ updates:
       - /
       - /mirage
       - /examples/company-operations
+      - /examples/project
+      - /examples/project/components/pcf-dataset-control
+      - /examples/project/components/pcf-field-control
+      - /examples/project/components/pcf-field-types
+      - /examples/project/components/pcf-web-api-control
       - /mirage/test-sdk/tds
       - /mirage/test-sdk/dynamics-web-api
       - /mirage/test-sdk/cert-auth
@@ -41,6 +46,21 @@ updates:
       - /mirage/test-sdk/cert-auth/Gate
       - /mirage/test-sdk/serviceclient/Gate
       - /mirage/test-sdk/webapi-samples/Gate
+      - /examples/project/components/DataversePlugins
+      - /examples/company-operations/plugins/PipelineTests
+      - /examples/company-operations/plugins/QueryObservation
+      - /examples/company-operations/plugins/SdkProbes
+      - /examples/company-operations/plugins/Tests
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+    groups:
+      sdk-fixtures:
+        patterns: ['*']
+        update-types: [minor, patch]
+  - package-ecosystem: pip
+    directory: /mirage/test-sdk/python-dataverse
     schedule:
       interval: weekly
     commit-message:

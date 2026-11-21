@@ -1,12 +1,17 @@
+import { requiredArgument } from '../lib/required-argument.mjs';
 // Shared sign-in helpers for tests and tools that request portal routes as a persona.
 // Portal routes take their identity from the paqvilo-mirage-auth session cookie only (anonymous
-// without it); see docs/sim-administration.md, "Sign-in, sign-out and sessions".
+// without it); see mirage/docs/sim-administration.md, "Sign-in and sessions".
 
 /**
  * Request headers for fetch() calls signed in as a contact (an active local contact),
  * or with `{ roles }` as a manual role override: `{ cookie: "paqvilo-mirage-auth=…" }`.
  */
-export function signInHeaders(simulator, contactId, options = {}) {
+export function signInHeaders(
+  simulator = requiredArgument('signInHeaders(simulator, contactId)', 'a simulator handle'),
+  contactId,
+  options = {},
+) {
   return { cookie: simulator.signIn(contactId, options).cookieHeader };
 }
 
@@ -15,7 +20,12 @@ export function signInHeaders(simulator, contactId, options = {}) {
  * client shares its cookies, so every page of the context is signed in afterwards.
  * Returns the session description (`{ signedIn, contactId, name, roles, … }`).
  */
-export async function signInContext(context, simulator, contactId, options = {}) {
+export async function signInContext(
+  context = requiredArgument('signInContext(context, simulator, contactId)', 'a Playwright browser context'),
+  simulator = requiredArgument('signInContext(context, simulator, contactId)', 'a simulator handle'),
+  contactId,
+  options = {},
+) {
   const response = await context.request.post(`${simulator.url}/_sim/api/session/sign-in`, {
     headers: { 'x-sim-csrf': simulator.state().csrf },
     data: { contactId, ...(options.roles ? { roles: options.roles } : {}) },

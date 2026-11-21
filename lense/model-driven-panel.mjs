@@ -10,14 +10,94 @@ const problemType = (type) => {
   return type;
 };
 
+/** The folder holding every selected Solution source: panel rows name their files relative to it, as portal rows do. */
+export function modelDrivenSourceDir(layers = []) {
+  const dirs = [
+    ...new Set(
+      layers
+        .filter((layer) => layer.input)
+        .map((layer) => path.resolve(layer.type === 'directory' ? layer.input : path.dirname(layer.input))),
+    ),
+  ];
+  let common = dirs[0] ?? '';
+  const holds = (dir) => {
+    const relative = path.relative(common, dir);
+    return !relative.startsWith('..') && !path.isAbsolute(relative);
+  };
+  while (common && !dirs.every(holds)) {
+    const parent = path.dirname(common);
+    common = parent === common ? '' : parent;
+  }
+  // Unrelated roots share only a drive or the filesystem root: that is no source folder, so rows keep full paths.
+  return dirs.length > 1 && path.dirname(common) === common ? '' : common;
+}
+
+// A file under the source folder by its relative path; any other value (a resource name, a file elsewhere) as it is.
+const sourceRel = (root, file) => {
+  if (!root || typeof file !== 'string' || !path.isAbsolute(file)) return file;
+  const relative = path.relative(root, file);
+  return relative && !relative.startsWith('..') && !path.isAbsolute(relative)
+    ? relative.split(path.sep).join('/')
+    : file;
+};
+
+// Issues and Inspect list what the user can act on; Solution inventory notes are not problems.
+// A failed inventory read is still an error the user has to fix.
+const actionableDiagnostics = (state) =>
+  (state.diagnostics ?? []).filter((item) => !item.inventory || item.severity === 'error');
+
+// Row and header names: the display name and kind a person knows the component by, never its GUID.
+const formLabel = (form) => `${form.name} · ${form.type ?? 'main'} form`;
+
+/** The open app's display name: the app of this page, else the only app of the Solution. */
+function modelDrivenAppName(state) {
+  const apps = state.catalogue?.apps ?? [],
+    id = String(state.context?.appId ?? '')
+      .replace(/[{}]/g, '')
+      .toLowerCase(),
+    app = (id && apps.find((item) => String(item.id).toLowerCase() === id)) || (apps.length === 1 ? apps[0] : null);
+  return app?.name || app?.uniqueName || undefined;
+}
+
+/** What this app page shows: its open form, else its table, by display name. */
+function modelDrivenPageLabel(state) {
+  const context = state.context ?? {},
+    form = (state.catalogue?.forms ?? []).find((item) => item.id === context.formId);
+  if (form) return formLabel(form);
+  const table = (state.catalogue?.tables ?? []).find((item) => item.logicalName === context.entity);
+  return table?.label || context.entity || 'Model-driven app';
+}
+
+/** Why Edited and "changed vs Git" have nothing to compare with, in words for a Solution's web resources. */
+function modelDrivenBaselineNote(baseline) {
+  const off = 'so there is no Git baseline: Edited stays empty and "changed vs Git" overrides nothing.';
+  let reason = `Git did not report a HEAD commit for your Solution sources, ${off} Lense asks again when the sources change.`;
+  if (baseline?.outsideRepository)
+    reason = `Your Solution sources are not in a Git checkout, ${off} Keep the sources in a Git checkout to use them.`;
+  else if (baseline?.unborn)
+    reason = `The Git repository of your Solution sources has no commits yet, ${off} Commit the sources to use them.`;
+  return { kind: 'baseline', reason, detail: baseline?.error ?? null };
+}
+
 /** The canonical panel's data contract. Model-driven code supplies facts, never a second shell. */
 export function modelDrivenPanelData(
   state,
-  { cfg, ui = {}, activity = [], live = true, online = false, git = null, facts = new Map(), scope = 'all' } = {},
+  {
+    cfg,
+    ui = {},
+    activity = [],
+    live = true,
+    online = false,
+    git = null,
+    baselineState = null,
+    facts = new Map(),
+    scope = 'all',
+  } = {},
 ) {
   const resources = state.resources ?? [];
   const forms = state.catalogue?.forms ?? [];
-  const sourceDir = cfg.sourceDir ?? cfg.projectRoot ?? '';
+  const sourceDir = state.sourceDir || cfg.sourceDir || cfg.projectRoot || '',
+    rel = (file) => sourceRel(state.sourceDir, file);
   const resourceGroup = (item) => {
     if (/(?:javascript|ecmascript)/i.test(item.mime ?? '')) return 'js';
     if (/text\/css/i.test(item.mime ?? '')) return 'css';
@@ -32,7 +112,10 @@ export function modelDrivenPanelData(
     path: item.source,
     url: item.paths?.[0],
     count: item.currentRevisionApplied,
-    note: item.currentRevisionApplied ? `applied on revision ${state.revision}` : 'not observed on this revision',
+    note: [
+      item.currentRevisionApplied ? 'served from your file' : 'not loaded since your last change',
+      ...(facts.get(item.name)?.noBaseline ? ['Git ignores this file'] : []),
+    ].join(' · '),
     canPause: !item.unbound,
     canDiff: !item.unbound && /(?:javascript|ecmascript|text\/css)/i.test(item.mime ?? ''),
     paused: Boolean(item.paused),
@@ -68,18 +151,21 @@ export function modelDrivenPanelData(
     };
   });
   const notes = [
-    ...(state.diagnostics ?? []).map((item) => ({
+    ...actionableDiagnostics(state).map((item) => ({
       kind: 'source',
-      reason: `${item.code}: ${item.message}`,
+      reason: item.name ? `${item.name}: ${item.message}` : item.message,
       rel: item.source ?? '',
     })),
     ...resources
       .filter((item) => item.unbound)
       .map((item) => ({
         kind: 'source',
-        reason: `${item.name}: an exact observed native resource mapping is required.`,
+        reason: `${item.name}: not loaded by the app yet. Open a page that uses it to override it.`,
         rel: item.name,
       })),
+    // The "No Git baseline" chip points to Issues for the reason, as on a portal. Without web resources nothing is
+    // compared with Git, so there is no issue to report.
+    ...(resources.length && !git?.baseline?.available ? [modelDrivenBaselineNote(baselineState)] : []),
   ];
   return {
     origin: state.origin,
@@ -88,12 +174,15 @@ export function modelDrivenPanelData(
     modelDriven: true,
     domProvenanceSlot: cfg.domProvenanceSlot,
     provenanceSlot: cfg.provenanceSlot,
-    site: cfg.siteName ?? cfg.site?.name ?? cfg.site?.id ?? 'Solution sources',
+    // The header and pill name the app by its display name, never a configuration file name.
+    site: modelDrivenAppName(state) ?? cfg.siteName ?? cfg.site?.name ?? cfg.site?.id ?? 'Solution sources',
     env: cfg.envName ?? cfg.env?.name ?? 'Model-driven',
     targets: cfg.devTargets ?? [],
     sourceDir,
     live,
     online,
+    // A loopback Mirage session has no deployed files to switch to.
+    localSimulation: state.localSimulation === true,
     caution: Boolean(cfg.caution ?? cfg.env?.caution),
     scope,
     capabilities: {
@@ -112,10 +201,10 @@ export function modelDrivenPanelData(
     sourceRevision: String(state.sourceRevision ?? state.revision),
     page: {
       path: '/main.aspx',
-      name: state.context?.entity ?? 'Model-driven app',
+      name: modelDrivenPageLabel(state),
       sources: forms
         .filter((form) => form.id === state.context?.formId)
-        .map((form) => ({ rel: form.source, label: 'FormXml' })),
+        .map((form) => ({ rel: rel(form.source), label: 'FormXml' })),
     },
     items: online ? [] : resources.filter((item) => item.currentRevisionApplied && !item.paused).map(resource),
     paused: resources.filter((item) => item.paused).map(resource),
@@ -133,7 +222,7 @@ export function modelDrivenPanelData(
       version: state.inspectionVersion,
       loading: state.pendingInspection,
       loadingId: state.inspectionVersion,
-      phase: state.inspectionError || 'Reading the current app and matching exported Solution sources.',
+      phase: state.inspectionError || 'Matching this app page to your Solution sources.',
       mode: 'model-driven',
       sourceRevision: String(state.sourceRevision ?? state.revision),
       status: { solutionCount: state.catalogue?.solutionCount ?? 0 },
@@ -150,8 +239,8 @@ export function modelDrivenPanelData(
       ...forms.map((form) => ({
         t: 'file',
         kind: 'form',
-        title: `${form.name} · ${form.type ?? 'main'} form of ${form.entity}`,
-        rel: form.source,
+        title: formLabel(form),
+        rel: rel(form.source),
         path: form.source,
       })),
       ...(state.catalogue?.tables ?? [])
@@ -159,8 +248,8 @@ export function modelDrivenPanelData(
         .map((table) => ({
           t: 'file',
           kind: 'table',
-          title: `${table.label || table.logicalName} · table ${table.logicalName}`,
-          rel: table.source,
+          title: `${table.label || table.logicalName} · table`,
+          rel: rel(table.source),
           path: table.source,
         })),
       ...(state.catalogue?.views ?? [])
@@ -168,8 +257,8 @@ export function modelDrivenPanelData(
         .map((view) => ({
           t: 'file',
           kind: 'view',
-          title: `${view.name} · ${view.type} view of ${view.entity}`,
-          rel: view.source,
+          title: `${view.name} · ${view.type} view`,
+          rel: rel(view.source),
           path: view.source,
         })),
       ...(state.catalogue?.apps ?? [])
@@ -178,15 +267,16 @@ export function modelDrivenPanelData(
           t: 'file',
           kind: 'app',
           title: `${app.name ?? app.uniqueName} · app`,
-          rel: app.source,
+          rel: rel(app.source),
           path: app.source,
         })),
       ...(state.catalogue?.commands ?? [])
         .filter((command) => command.source)
         .map((command) => ({
           t: 'file',
+          kind: 'command',
           title: command.label || command.id,
-          rel: command.source,
+          rel: rel(command.source),
           path: command.source,
         })),
     ],
@@ -218,8 +308,8 @@ export function modelDrivenPanelInspection(state) {
   else if (state.localSimulation) evidence = 'mirage-form-id';
   else evidence = 'native-form-id';
   const evidenceLabel = exact.length
-    ? 'Form ID of this page matched to the selected Solution'
-    : `Candidate: an exported form of ${context.entity ?? 'this table'}; current form identity is unavailable`;
+    ? 'Form open on this page'
+    : `Possible form of ${context.entity ?? 'this table'}: the open form could not be identified`;
   const mapped = forms.map((form) => ({
     ...form,
     kind: 'model-driven-form',
@@ -289,13 +379,12 @@ export function modelDrivenPanelInspection(state) {
       };
     });
   };
+  const rel = (file) => sourceRel(state.sourceDir, file);
   return {
-    evidence: {
-      source:
-        'Tables, forms, views and commands of the selected Solution matched to read-only native context. Native record values and effective access are not inferred.',
-    },
     modelDriven: {
       ...context,
+      // The open form by name and kind (main, quick create...), for headers that would otherwise show its GUID.
+      ...(exact[0] ? { formName: exact[0].name, formType: exact[0].type ?? 'main' } : {}),
       catalogue,
       sourceRevision: String(state.sourceRevision ?? state.revision ?? '1'),
       mode: state.localSimulation ? 'local' : 'live',
@@ -309,15 +398,24 @@ export function modelDrivenPanelInspection(state) {
       limits: state.provenanceLimits ?? catalogue.limits,
       structure: state.nativeStructure,
     },
+    // Named as Explore names them; ref is the path under the source folder, path the file to copy.
     pageSources: [
-      ...mapped.map((form) => ({ name: form.name, kind: `${form.formType ?? 'main'} form`, ref: form.ref })),
-      ...(view ? [{ name: view.name, kind: 'View', ref: view.source }] : []),
+      ...mapped.map((form) => ({
+        name: formLabel(form),
+        kind: `${form.formType ?? 'main'} form`,
+        ref: rel(form.ref),
+        path: form.ref,
+      })),
+      ...(view
+        ? [{ name: `${view.name} · ${view.type} view`, kind: 'View', ref: rel(view.source), path: view.source }]
+        : []),
       ...(tables.get(context.entity)?.source
         ? [
             {
-              name: `${tables.get(context.entity).label || context.entity} table`,
+              name: `${tables.get(context.entity).label || context.entity} · table`,
               kind: 'Table definition',
-              ref: tables.get(context.entity).source,
+              ref: rel(tables.get(context.entity).source),
+              path: tables.get(context.entity).source,
             },
           ]
         : []),
@@ -381,20 +479,26 @@ export function modelDrivenPanelInspection(state) {
         evidence: 'exported-event',
       })),
     ),
-    tables: usedTables.map((name) => {
-      const table = tables.get(name);
-      return table
-        ? {
-            logicalName: name,
-            displayName: table.label || undefined,
-            entitySet: table.entitySet,
-            fieldCount: table.fieldCount,
-            ref: table.source,
-            sourceRefs: [{ ref: table.source }],
-          }
-        : { logicalName: name, displayName: name };
-    }),
-    unresolved: state.diagnostics.map((item) => ({ name: item.code, message: item.message, ref: item.source })),
+    // Only tables your Solution defines: a platform table a subgrid shows (sharepointdocumentlocation) has no file to
+    // open and nothing to edit here; its subgrid row already names it.
+    tables: usedTables
+      .filter((name) => tables.has(name))
+      .map((name) => {
+        const table = tables.get(name);
+        return {
+          logicalName: name,
+          displayName: table.label || undefined,
+          entitySet: table.entitySet,
+          fieldCount: table.fieldCount,
+          ref: table.source,
+          sourceRefs: [{ ref: table.source }],
+        };
+      }),
+    unresolved: actionableDiagnostics(state).map((item) => ({
+      name: item.name ?? item.source ?? 'Solution sources',
+      message: item.message,
+      ref: item.source,
+    })),
   };
 }
 
@@ -443,7 +547,12 @@ export function modelDrivenSourceFiles(state) {
     ...(state.catalogue?.views ?? []),
     ...(state.catalogue?.apps ?? []),
   ])
-    if (entry.source && path.isAbsolute(entry.source)) allowed.set(entry.source, entry.source);
+    if (entry.source && path.isAbsolute(entry.source)) {
+      allowed.set(entry.source, entry.source);
+      // Rows open their file by the relative path they show; a web resource name keeps its own file.
+      const shown = sourceRel(state.sourceDir, entry.source);
+      if (!allowed.has(shown)) allowed.set(shown, entry.source);
+    }
   return allowed;
 }
 
@@ -540,8 +649,12 @@ export async function createModelDrivenPanelSources(imported) {
       for (const asset of assets) {
         const before = baseline.available ? baseline.show(asset.file) : null;
         const bytes = native.get(asset.name);
+        // Edited means what Git reports as changed (modified, added or untracked), as portal Lense marks it. A file Git
+        // ignores is absent from HEAD without being a change: it has no baseline to compare with.
+        const edited = changed.has(path.resolve(asset.file));
         state.facts.set(asset.name, {
-          edited: baseline.available ? before === null || changed.has(path.resolve(asset.file)) : undefined,
+          edited: baseline.available ? edited : undefined,
+          noBaseline: baseline.available && before === null && !edited,
           canDiff: bytes !== undefined || baseline.available,
           differs: bytes !== undefined ? !bytes.equals(asset.data) : null,
           baseline,
@@ -553,6 +666,10 @@ export async function createModelDrivenPanelSources(imported) {
     const first = [...baselines.entries()][0],
       // A HEAD read Git does not answer leaves the Git state unknown; the next update asks again.
       head = first ? await gitHead(first[0]).catch(() => null) : null;
+    // Why there is no baseline, as the first source root's Git baseline found it (no repository, no commits yet).
+    state.baselineState = first
+      ? { outsideRepository: first[1].outsideRepository, unborn: first[1].unborn, error: first[1].error }
+      : null;
     state.git = head
       ? {
           ...head,
@@ -586,6 +703,8 @@ export async function createModelDrivenPanelSources(imported) {
           [...state.facts.values()].some((fact) => fact.edited === undefined))
       )
         throw new Error('Changed scope requires a readable Git HEAD for every selected source root.');
+      if (value === 'changed' && [...state.facts.values()].some((fact) => fact.noBaseline))
+        throw new Error('Changed scope needs a Git baseline: some selected sources are ignored by Git.');
       state.scope = value;
     },
     observe(name, bytes) {
@@ -620,21 +739,21 @@ export async function createModelDrivenPanelSources(imported) {
     diff(name, environment) {
       const asset = current.assets.get(name),
         fact = state.facts.get(name);
-      if (!asset || !fact) return { ok: false, error: 'Select a declared Solution resource.' };
+      if (!asset || !fact) return { ok: false, error: 'Select a web resource from your Solution.' };
       if (!/(?:javascript|ecmascript|text\/css)/i.test(asset.mime))
         return { ok: false, error: 'Binary resources cannot be compared as text.' };
       const bytes = native.get(name),
         before = bytes?.toString('utf8') ?? fact.before;
       if (before === null || before === undefined)
         return fact.baseline?.available
-          ? { ok: true, against: 'Git HEAD (new source)', ...comparison('', asset.data.toString('utf8')) }
+          ? { ok: true, against: 'Git HEAD (new file)', ...comparison('', asset.data.toString('utf8')) }
           : {
               ok: false,
               error:
-                'No native response or Git baseline has been observed. Switch Online and visit the control, or use sources in a Git checkout.',
+                'Nothing to compare with yet. Switch to Online and open a page that loads this file, or keep the sources in a Git checkout.',
             };
       if (Buffer.byteLength(before) > 3 * 1024 * 1024 || asset.data.length > 3 * 1024 * 1024)
-        return { ok: false, error: 'The source exceeds the bounded comparison size.' };
+        return { ok: false, error: 'The file is larger than 3 MiB and cannot be compared here.' };
       return {
         ok: true,
         against: bytes ? environment : 'Git HEAD',

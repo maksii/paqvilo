@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { signedInSimulatorPage } from './shared-browser.mjs';
@@ -172,7 +173,7 @@ test('$pages forms bind to the rendered basic form: tabs, sections, values, visi
   });
   assert.equal(read.count, 1);
   assert.equal(read.sameById, 'Item');
-  assert.match(read.id, /^EntityFormControl_/);
+  assert.match(read.id, /^77777777777747778777777777777703$/);
   assert.deepEqual([read.multi, read.visible], [false, true]);
   assert.deepEqual(read.controls, [
     ['x_name', 'String'],
@@ -222,6 +223,23 @@ test('$pages forms bind to the rendered basic form: tabs, sections, values, visi
   await Promise.all([page.waitForEvent('load'), page.locator('#UpdateButton').click()]);
   const row = app.store.state.tables.x_item.find((item) => item.x_itemid === ROW);
   assert.deepEqual([row.x_name, row.x_count, row.x_kind, row.x_flag], ['Changed', 7, 2, true]);
+
+  // A record that does not exist renders the form's wrapper with its message only: the platform client API (host chunk
+  // forms.getAll over EntityFormControl_<32 hex> wrappers) still lists it, without controls.
+  await page.goto(`${app.url}/?id=77777777-7777-4777-8777-777777777799`);
+  const missing = await page.evaluate(async () => {
+    const $pages = await window.Microsoft.PowerPages.onPagesClientApiReady();
+    const forms = $pages.currentPage.forms.getAll();
+    return {
+      message: Boolean(document.querySelector('[id^="EntityFormControl_"] #MessagePanel')),
+      forms: forms.map((form) => [form.id, form.controls.length, form.tabs.length, form.name === undefined]),
+    };
+  });
+  assert.equal(missing.message, true);
+  assert.equal(missing.forms.length, 1);
+  assert.match(missing.forms[0][0], /^77777777777747778777777777777703$/);
+  assert.deepEqual(missing.forms[0].slice(1), [0, 0, true]);
+  await page.goto(`${app.url}/?id=${ROW}`);
 
   // File columns through the portal Web API.
   const file = await page.evaluate(async (id) => {
@@ -449,4 +467,72 @@ test('$pages full name, rich text and code component controls read and write the
   assert.equal(await page.evaluate(() => window.observed.at(-1)), 'After');
   assert.match(result.wrongType, /needs an object/);
   assert.deepEqual(errors, []);
+});
+
+// @test-kind observation: live portal read 2026-11-18 (single capture, signed-in Edge, read-only page evaluation of $pages.currentPage.forms on a basic form page and on the same page with an unknown record id): getAll lists the EntityFormControl_<32 hex> wrapper with id = the 32 hex digits, getFormById finds it by that id and not by the element ID, and a wrapper showing only the not-found message is listed with name undefined and no controls
+test('$pages form ids are the wrapper suffix; message-only wrappers are forms, modal wrappers are not', async (t) => {
+  const page = await browser.newPage();
+  ownedFixture(t).add(() => page.close());
+  const ID = '0123456789abcdef0123456789abcdef';
+  const STEP = 'fedcba9876543210fedcba9876543210';
+  await page.setContent(
+    `<div id="EntityFormControl_${ID}"><div id="EntityFormPanel" class="crmEntityFormView" data-form-name="Item">` +
+      `<div id="EntityFormControl_${ID}_EntityFormView"><div class="control" data-logical-name="x_name"><input id="x_name" type="text" class="text"></div></div></div></div>` +
+      '<div id="EntityFormControl_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"><div id="MessagePanel">Not found.</div></div>' +
+      '<div id="EntityFormControl"><div id="EntityFormPanel" class="crmEntityFormView" data-form-name="Modal"></div></div>' +
+      `<div id="WebFormControl_${STEP}"><div id="WebFormPanel" class="crmEntityFormView" data-form-name="Steps"></div></div>`,
+  );
+  await page.addScriptTag({ path: fileURLToPath(new URL('../lib/pages-client-api.js', import.meta.url)) });
+  const read = await page.evaluate(
+    ([id]) => {
+      const forms = globalThis.__paqviloPages.currentPage.forms;
+      return {
+        all: forms.getAll().map((form) => [form.id, form.name ?? 'undefined', form.controls.length, form.isMultiStep]),
+        byId: forms.getFormById(id)?.name,
+        byElementId: forms.getFormById(`EntityFormControl_${id}`) ?? 'undefined',
+      };
+    },
+    [ID],
+  );
+  assert.deepEqual(read.all, [
+    [ID, 'Item', 1, false],
+    ['aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'undefined', 0, false],
+    [STEP, 'Steps', 0, true],
+  ]);
+  assert.equal(read.byId, 'Item');
+  assert.equal(read.byElementId, 'undefined');
+});
+
+// @test-kind observation: saved platform host bundle content.powerapps.com/resource/powerappsportal/controls/host/296.cf0de209ae.chunk.js (paqvilo-developer replica, batch-1/building-permit/originals): hasNextStep/hasPreviousStep are the input#NextButton/#PreviousButton being present and :visible, and goToNextStep/goToPreviousStep throw "No next|previous step available in the multi-step form." otherwise
+test('$pages multistep steps follow the visible Next and Previous buttons and throw the platform error without one', async (t) => {
+  const page = await browser.newPage();
+  ownedFixture(t).add(() => page.close());
+  await page.setContent(
+    '<div id="WebFormControl_fedcba9876543210fedcba9876543210"><div id="WebFormPanel" class="crmEntityFormView" data-form-name="Steps"></div>' +
+      '<input type="button" id="NextButton" value="Submit" style="display:none" onclick="window.clicked = this.value"></div>',
+  );
+  await page.addScriptTag({ path: fileURLToPath(new URL('../lib/pages-client-api.js', import.meta.url)) });
+  const read = await page.evaluate(() => {
+    const form = globalThis.__paqviloPages.currentPage.forms.getAll()[0];
+    const attempt = (go) => {
+      try {
+        go();
+        return 'no error';
+      } catch (error) {
+        return error.message;
+      }
+    };
+    const hidden = { next: form.hasNextStep(), goNext: attempt(() => form.goToNextStep()) };
+    document.querySelector('#NextButton').style.display = '';
+    return {
+      hidden,
+      shown: { next: form.hasNextStep(), goNext: attempt(() => form.goToNextStep()), clicked: globalThis.clicked },
+      previous: { has: form.hasPreviousStep(), go: attempt(() => form.goToPreviousStep()) },
+    };
+  });
+  assert.deepEqual(read, {
+    hidden: { next: false, goNext: 'No next step available in the multi-step form.' },
+    shown: { next: true, goNext: 'no error', clicked: 'Submit' },
+    previous: { has: false, go: 'No previous step available in the multi-step form.' },
+  });
 });

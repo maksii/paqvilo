@@ -1,3 +1,5 @@
+import { requiredArgument } from './required-argument.mjs';
+import { sameSendReceipt } from './intentional-abort.mjs';
 const SCRIPT_OR_STYLE_TYPES = new Set([
   'text/javascript',
   'application/javascript',
@@ -7,7 +9,24 @@ const SCRIPT_OR_STYLE_TYPES = new Set([
   'text/css',
 ]);
 
-function replacementInRecreatedChild(cdpRecords, frameEvents, currentFrames, before, oldDocument, start) {
+// The start order of two CDP records: the browser's monotonic startedTimestamp when both carry it, so a wall clock stepped
+// back (an NTP or WSL time resync) cannot reorder them; otherwise their wallTime startedAt.
+const startOrder = (a, b) =>
+  Number.isFinite(a.startedTimestamp) && Number.isFinite(b.startedTimestamp)
+    ? a.startedTimestamp - b.startedTimestamp
+    : Date.parse(a.startedAt) - Date.parse(b.startedAt);
+// The latest started record; of equal starts the later recorded one (CDP records arrive in event order).
+const latestStarted = (rows) =>
+  rows.reduce((latest, row) => (!latest || startOrder(row, latest) >= 0 ? row : latest), undefined);
+// Milliseconds from the runner's Playwright request event to a later runner reading of `row` (its receipt of a CDP send, a
+// frame event): both on the runner's monotonic clock when both carry it, so a wall clock stepped between the two readings
+// cannot move it; otherwise their wall readings.
+const sinceRequest = (request, row, ticks, wall) =>
+  Number.isFinite(request.startedTicks) && Number.isFinite(row[ticks])
+    ? row[ticks] - request.startedTicks
+    : Date.parse(row[wall]) - Date.parse(request.startedAt);
+
+function replacementInRecreatedChild(cdpRecords, frameEvents, currentFrames, before, oldDocument, request) {
   if (!oldDocument || !currentFrames.length || currentFrames.some((row) => row.id === before.frameId)) return null;
   const frame =
     frameEvents.find(
@@ -15,18 +34,17 @@ function replacementInRecreatedChild(cdpRecords, frameEvents, currentFrames, bef
     ) ??
     frameEvents.find(
       (row) =>
-        row.event === 'frameAttached' && row.frameId === before.frameId && Date.parse(row.observedAt) <= start + 1000,
+        row.event === 'frameAttached' &&
+        row.frameId === before.frameId &&
+        sinceRequest(request, row, 'observedTicks', 'observedAt') <= 1000,
     );
   if (!frame?.parentFrameId) return null;
   const parent = currentFrames.find((row) => row.id === frame.parentFrameId);
-  const oldParent = cdpRecords
-    .filter(
-      (row) =>
-        row.type === 'Document' &&
-        row.frameId === frame.parentFrameId &&
-        Date.parse(row.startedAt) < Date.parse(oldDocument.startedAt),
-    )
-    .sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt))[0];
+  const oldParent = latestStarted(
+    cdpRecords.filter(
+      (row) => row.type === 'Document' && row.frameId === frame.parentFrameId && startOrder(row, oldDocument) < 0,
+    ),
+  );
   const newParent =
     parent &&
     cdpRecords.find(
@@ -35,7 +53,7 @@ function replacementInRecreatedChild(cdpRecords, frameEvents, currentFrames, bef
         row.frameId === parent.id &&
         row.loaderId === parent.loaderId &&
         row.loaderId !== oldParent?.loaderId &&
-        Date.parse(row.startedAt) > Date.parse(oldDocument.startedAt) &&
+        startOrder(row, oldDocument) > 0 &&
         row.status >= 200 &&
         row.status < 300 &&
         row.finishedTimestamp !== undefined &&
@@ -68,7 +86,7 @@ function recreatedChildDocuments(cdpRecords, oldDocument, before, currentFrames,
       currentFrames.some(
         (current) => current.id === row.frameId && current.parentId === parent.id && current.loaderId === row.loaderId,
       ) &&
-      Date.parse(row.startedAt) > Date.parse(newParent.startedAt) &&
+      startOrder(row, newParent) > 0 &&
       row.status >= 200 &&
       row.status < 300 &&
       row.finishedTimestamp !== undefined &&
@@ -85,10 +103,21 @@ function sameIdentity(row, expectedIdentity) {
   );
 }
 
-function auditProof(audit, before, request, parsed, pairs, start, { expectedIdentity, parentTrace }) {
+const serverStartGap = (row, request, start, sharedHostClock) =>
+  sharedHostClock && Number.isFinite(row.startedHostMs) && Number.isFinite(request.startedHostMs)
+    ? row.startedHostMs - request.startedHostMs
+    : Date.parse(row.startedAt) - start;
+
+function auditProof(audit, before, request, parsed, pairs, start, { expectedIdentity, parentTrace, sharedHostClock }) {
   return (audit?.items ?? []).filter(
     (row) =>
-      (!before.serverTraceId || row.id === before.serverTraceId) &&
+      // The audit id the browser received with the response headers names the row. Without it the server's and the runner's
+      // start readings link the two: on the host's monotonic clock (audit-log.mjs hostMonotonicMs) when the runner proved,
+      // for this export, that the server reads the same clock (sharedHostClock), so a wall clock step between them cannot
+      // move the difference; else (another VM or time namespace, older audit data) on their wall clocks.
+      (before.serverTraceId
+        ? row.id === before.serverTraceId
+        : Math.abs(serverStartGap(row, request, start, sharedHostClock)) < 1000) &&
       row.method === request.method &&
       row.path === parsed.pathname &&
       row.status >= 200 &&
@@ -102,8 +131,7 @@ function auditProof(audit, before, request, parsed, pairs, start, { expectedIden
       typeof row.query === 'object' &&
       !Array.isArray(row.query) &&
       Object.keys(row.query).length === pairs.length &&
-      pairs.every(([name, value]) => row.query[name] === value) &&
-      Math.abs(Date.parse(row.startedAt) - start) < 1000,
+      pairs.every(([name, value]) => row.query[name] === value),
   );
 }
 
@@ -126,12 +154,10 @@ function sourceReplacement(cdpRecords, before) {
   );
   const laterDocument = (row) =>
     Number.isFinite(before.startedTimestamp)
-      ? oldDocument &&
-        Date.parse(row.startedAt) > Date.parse(oldDocument.startedAt) &&
-        row.finishedTimestamp > before.startedTimestamp
-      : Date.parse(row.startedAt) > Date.parse(before.startedAt);
-  const replacement = cdpRecords
-    .filter(
+      ? oldDocument && startOrder(row, oldDocument) > 0 && row.finishedTimestamp > before.startedTimestamp
+      : startOrder(row, before) > 0;
+  const replacement = latestStarted(
+    cdpRecords.filter(
       (row) =>
         row.type === 'Document' &&
         row.frameId === before.frameId &&
@@ -141,18 +167,22 @@ function sourceReplacement(cdpRecords, before) {
         row.status < 300 &&
         row.finishedTimestamp !== undefined &&
         !row.failure,
-    )
-    .sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt))[0];
+    ),
+  );
   return { oldDocument, replacement };
 }
 
-function matchingPendingReads(cdpRecords, request, start) {
+function matchingPendingReads(cdpRecords, request) {
   return cdpRecords.filter(
     (row) =>
       row.path === request.path &&
       row.method === request.method &&
       row.finishedTimestamp === undefined &&
-      Math.abs(Date.parse(row.startedAt) - start) < 1000,
+      // Two runner receipts of one send (intentional-abort.mjs sameSendReceipt); older records: 1 s of wall time. The row
+      // may be an aborted or abandoned copy of the same read: only the receipt of this request's own send matches.
+      (Number.isFinite(request.startedTicks) && Number.isFinite(row.observedTicks)
+        ? sameSendReceipt(request.startedTicks, row.observedTicks)
+        : Math.abs(Date.parse(row.startedAt) - Date.parse(request.startedAt)) < 1000),
   );
 }
 
@@ -172,7 +202,7 @@ function staticResourceProof({ base, before, replacement, cdpRecords, origin, pa
         ['XHR', 'Fetch'].includes(row.type) &&
         row.frameId === replacement.frameId &&
         row.loaderId === replacement.loaderId &&
-        Date.parse(row.startedAt) > Date.parse(replacement.startedAt) &&
+        startOrder(row, replacement) > 0 &&
         row.status >= 200 &&
         row.status < 300 &&
         row.finishedTimestamp !== undefined &&
@@ -198,7 +228,7 @@ function staticResourceProof({ base, before, replacement, cdpRecords, origin, pa
       row.type === before.type &&
       row.frameId === replacement.frameId &&
       row.loaderId === replacement.loaderId &&
-      Date.parse(row.startedAt) > Date.parse(replacement.startedAt) &&
+      startOrder(row, replacement) > 0 &&
       row.status >= 200 &&
       row.status < 300 &&
       row.finishedTimestamp !== undefined &&
@@ -218,8 +248,16 @@ function staticResourceProof({ base, before, replacement, cdpRecords, origin, pa
 
 /** Reconcile missing browser final events without claiming response consumption. */
 export function reconcileSupersededRead(
-  request,
-  { cdpRecords, audit, origin, identity, frameEvents = [], currentFrames = [] },
+  request = requiredArgument('reconcileSupersededRead(request, options)', 'a recorded request'),
+  {
+    cdpRecords,
+    audit,
+    origin,
+    identity,
+    frameEvents = [],
+    currentFrames = [],
+    sharedHostClock = false,
+  } = requiredArgument('reconcileSupersededRead(request, options)', 'an options object with cdpRecords'),
 ) {
   if (!['GET', 'HEAD'].includes(request.method) || request.completedAt || request.failure || request.stream)
     return null;
@@ -234,7 +272,7 @@ export function reconcileSupersededRead(
   if (new Set(pairs.map(([name]) => name)).size !== pairs.length) return null;
   const start = Date.parse(request.startedAt);
   if (!Number.isFinite(start)) return null;
-  const raw = matchingPendingReads(cdpRecords, request, start);
+  const raw = matchingPendingReads(cdpRecords, request);
   if (raw.length !== 1 || raw[0].failure || raw[0].finishedTimestamp !== undefined) return null;
   const before = raw[0];
   if (!hasFrameIdentity(before)) return null;
@@ -253,7 +291,7 @@ export function reconcileSupersededRead(
       currentFrames,
       before,
       oldDocument,
-      start,
+      request,
     );
     if (childReplacement) {
       replacement = childReplacement.replacement;
@@ -276,7 +314,11 @@ export function reconcileSupersededRead(
   };
   const expectedIdentity = request.identity ?? identity;
   const parentTrace = request.parentTrace ?? before.parentTrace;
-  const completed = auditProof(audit, before, request, parsed, pairs, start, { expectedIdentity, parentTrace });
+  const completed = auditProof(audit, before, request, parsed, pairs, start, {
+    expectedIdentity,
+    parentTrace,
+    sharedHostClock,
+  });
   if (completed.length === 1) {
     const proof = completed[0];
     return {

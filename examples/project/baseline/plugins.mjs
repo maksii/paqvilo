@@ -2,7 +2,7 @@
 // Baseline plugin registration: uploads the rebuilt demo assembly (same record, so the demo's
 // eight steps keep working) and registers the BaselineRules steps on pqvd_baselineitem in the
 // PaqviloBaseline solution. Idempotent: ids derive from names; create when missing, patch when
-// different, otherwise "exists". Always rewrites plugins.json (the step inventory).
+// different, otherwise "exists". Plan and --apply rewrite plugins.json (the step inventory).
 //
 //   node examples/project/baseline/plugins.mjs --connection <private connection.json> [--apply]
 //   node examples/project/baseline/plugins.mjs --connection <private connection.json> --verify
@@ -12,7 +12,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseArgs } from 'node:util';
+import { cli, isMain, UsageError } from '../cli.mjs';
 import { loadConnection, connectedClient } from 'paqvilo/lense/dataverse/index.mjs';
 import { guid } from './generate.mjs';
 
@@ -220,14 +220,27 @@ export function baselineSteps() {
 }
 
 async function main() {
-  const { values } = parseArgs({
-    options: {
+  const { values } = cli(
+    `Usage: node examples/project/baseline/plugins.mjs --connection FILE [--apply]
+       node examples/project/baseline/plugins.mjs --connection FILE --verify
+
+Registers the BaselineRules steps in the live environment named by --connection.
+
+  plan (default)  reads components/DataversePlugins/registrations.json and its Release assembly, rewrites
+                  baseline/plugins.json and compares with the environment; writes nothing to Dataverse
+  --apply         as plan, then uploads the assembly and registers the steps (writes to Dataverse)
+  --verify        reads baseline/plugins.json and every step back from the environment into
+                  baseline/plugins-readback.json; writes nothing to Dataverse or to baseline/plugins.json
+
+  --connection FILE  private application connection; a relative path resolves from the working directory`,
+    {
       connection: { type: 'string' },
       apply: { type: 'boolean', default: false },
       verify: { type: 'boolean', default: false },
     },
-  });
-  if (!values.connection) throw new Error('--connection FILE is required.');
+  );
+  if (!values.connection) throw new UsageError('--connection FILE is required.');
+  if (values.verify && values.apply) throw new UsageError('--verify is read-only; use it without --apply.');
   if (values.verify) return verify(values.connection);
   const apply = values.apply;
   const registrations = JSON.parse(await fs.readFile(path.join(pluginRoot, 'registrations.json'), 'utf8'));
@@ -398,4 +411,4 @@ async function verify(connectionFile) {
   );
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main();
+if (isMain(import.meta)) await main();

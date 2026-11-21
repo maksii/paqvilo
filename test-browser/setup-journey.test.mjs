@@ -12,6 +12,7 @@ import { chromium } from 'playwright-core';
 import YAML from 'yaml';
 import { createSetupHandler, startSetupServer } from '../lense/setup/server.mjs';
 import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
+import { setupNotice } from './helpers/setup-notice.mjs';
 
 // These cases exercise the All settings view of /_setup/ (Quick setup is the default for a new browser).
 const allSettings = (page) =>
@@ -86,10 +87,7 @@ test('All settings saves Mirage sourceMaps at site and project scope independent
           value: true,
         },
       ]);
-      await page
-        .locator('#notice')
-        .filter({ hasText: /^Saved\./ })
-        .waitFor();
+      await setupNotice(page, /^Saved\./);
       const document = YAML.parse(await fs.readFile(file, 'utf8'));
       assert.equal(kind === 'catalogue' ? document.sites.invented.mirage.sourceMaps : document.sourceMaps, true);
       if (kind === 'catalogue') assert.equal(document.sourceMaps, true, 'the root Lense policy is unchanged');
@@ -219,10 +217,7 @@ async function saved(page, click) {
     click(),
   ]);
   assert.equal(response.ok(), true, await response.text());
-  await page
-    .locator('#notice')
-    .filter({ hasText: /^Saved\./ })
-    .waitFor();
+  await setupNotice(page, /^Saved\./);
 }
 // One owned context and page on the setup server, with every setting shown and page errors collected.
 async function openSetup(t, directory, server, viewport) {
@@ -506,7 +501,7 @@ test('setting rows show current values, references only for secrets, and Setting
   assert.equal(await page.locator('#settings-editor').inputValue(), 'code');
   const before = await fs.readFile(file, 'utf8');
   await page.locator('form[data-form=settings]').getByRole('button', { name: 'Save', exact: true }).click();
-  await page.locator('#notice').filter({ hasText: 'Nothing to save' }).waitFor();
+  await setupNotice(page, 'Nothing to save');
   assert.equal(await fs.readFile(file, 'utf8'), before, 'an unchanged Settings form writes nothing');
 
   // A mapping row shows its current value; submitting it unchanged writes nothing.
@@ -516,7 +511,7 @@ test('setting rows show current values, references only for secrets, and Setting
   // Shown as the YAML it is typed in.
   assert.equal(await defaults.locator('[name=value]').inputValue(), 'mirage:\n  simulation:\n    level: dry-run');
   await defaults.getByRole('button', { name: 'Save setting defaults' }).click();
-  await page.locator('#notice').filter({ hasText: 'Nothing to save: defaults is unchanged' }).waitFor();
+  await setupNotice(page, 'Nothing to save: defaults is unchanged');
   assert.equal(await fs.readFile(file, 'utf8'), before);
 
   // Secret references are names and kinds only; the verbatim YAML editor is the one place showing the document.

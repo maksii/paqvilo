@@ -10,7 +10,9 @@ const APP = '77777777-7777-4777-8777-777777777777';
 test('runtime profiles preserve portal defaults and validate explicit standalone choices', () => {
   assert.deepEqual(runtimeSettings(), { kind: 'power-pages' });
   assert.equal(runtimeSettings({ kind: 'model-driven', defaultApp: APP }).defaultApp, APP);
-  assert.throws(() => runtimeSettings({ kind: 'unknown' }), /kind/);
+  assert.throws(() => runtimeSettings({ kind: 'unknown' }), {
+    message: 'runtime.kind must be one of power-pages, model-driven or dataverse-api; got "unknown".',
+  });
   assert.throws(() => runtimeSettings({ kind: 'model-driven', defaultApp: 'unknown' }), /GUID/);
   assert.throws(() => runtimeSettings({ kind: 'dataverse-api', defaultApp: APP }), /model-driven/);
 });

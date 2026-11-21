@@ -1,3 +1,4 @@
+// @test-kind tooling: release stamping preserves synchronized manifest and distributable lock metadata.
 import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -76,7 +77,7 @@ function fixture(t) {
       },
     },
   };
-  documents['npm-shrinkwrap.json'] = structuredClone(documents['package-lock.json']);
+  documents['paqvilo-lock.json'] = structuredClone(documents['package-lock.json']);
   for (const [file, value] of Object.entries(documents)) fs.writeFileSync(path.join(dir, file), JSON.stringify(value));
   return { dir, documents };
 }
@@ -92,14 +93,14 @@ test('runner version stamping keeps package and both lockfiles consistent withou
   }
   assert.equal(
     fs.readFileSync(path.join(dir, 'package-lock.json'), 'utf8'),
-    fs.readFileSync(path.join(dir, 'npm-shrinkwrap.json'), 'utf8'),
+    fs.readFileSync(path.join(dir, 'paqvilo-lock.json'), 'utf8'),
   );
 });
 
 test('inconsistent lock metadata rejects stamping before any file is rewritten', (t) => {
   const { dir, documents } = fixture(t);
-  documents['npm-shrinkwrap.json'].packages[''].version = '0.8.0';
-  fs.writeFileSync(path.join(dir, 'npm-shrinkwrap.json'), JSON.stringify(documents['npm-shrinkwrap.json']));
+  documents['paqvilo-lock.json'].packages[''].version = '0.8.0';
+  fs.writeFileSync(path.join(dir, 'paqvilo-lock.json'), JSON.stringify(documents['paqvilo-lock.json']));
   const before = Object.fromEntries(
     Object.keys(documents).map((file) => [file, fs.readFileSync(path.join(dir, file), 'utf8')]),
   );
@@ -114,7 +115,7 @@ test('publish verification rejects incorrectly named archives and mismatched pac
     dist = path.join(dir, 'dist');
   fs.mkdirSync(packed);
   fs.mkdirSync(dist);
-  for (const file of ['package.json', 'npm-shrinkwrap.json'])
+  for (const file of ['package.json', 'paqvilo-lock.json'])
     fs.copyFileSync(path.join(dir, file), path.join(packed, file));
   const archive = path.join(dist, `paqvilo-${version}.tgz`);
   execFileSync('tar', ['-czf', `dist/paqvilo-${version}.tgz`, 'package'], { cwd: dir, windowsHide: true });

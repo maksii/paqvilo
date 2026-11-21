@@ -2,7 +2,7 @@
 import { reportCliError } from './cli-output.mjs';
 import { assertReportOutput } from './lib/report-output.mjs';
 import { assertProjectOutput } from './lib/project-output.mjs';
-import { parseToolArgs, toolOptionsHelp, inventoryInputs } from './tool-options.mjs';
+import { assertToolPaths, parseToolArgs, toolOptionsHelp, inventoryInputs } from './tool-options.mjs';
 /**
  * Liquid inventory for an exported Power Pages site (PAC standard YAML or enhanced data model).
  *
@@ -837,6 +837,7 @@ async function main(argv = process.argv.slice(2)) {
     return 0;
   }
   if (!(options.portal || options.config || options.site)) throw new Error(usage);
+  assertToolPaths('liquid-inventory', options);
   const inputs = await inventoryInputs(options);
   if (options.out) {
     await assertReportOutput(options.out, {

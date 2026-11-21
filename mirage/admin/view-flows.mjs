@@ -37,7 +37,7 @@ const activityLink = (run, { row = false } = {}) => {
   const ariaLabel = row ? ` aria-label="Activity of run ${e(run.id)}"` : '';
   return `<a class="ui-button ui-small" href="${e(activityHref(run))}"${ariaLabel}>Activity →</a>`;
 };
-// The Monitor vocabulary (D-M-2): a run or action result is ok, error, running or cancelled, like an activity; the
+// The Monitor vocabulary: a run or action result is ok, error, running or cancelled, like an activity; the
 // flow run status of the platform (Succeeded, TimedOut…) follows it in small text.
 const RESULTS = {
   Succeeded: 'ok',
@@ -120,7 +120,7 @@ const DRAWER = 'flows-filters';
 /** A result filter choice as the drawer and its chip name it: "ok · succeeded", "error · timed out". */
 const resultLabel = (status) => `${RESULTS[status] ?? status} · ${DETAIL[status] ?? String(status).toLowerCase()}`;
 const FILTER_LABELS = { processId: 'Process', status: 'Result' };
-/** The runs filter form, shown in the Filters drawer (D-M-7). */
+/** The runs filter form, shown in the Filters drawer. */
 function runsFilters(ctx, d) {
   const filter = d.filter ?? {};
   const statusOptions = STATUSES.map(
@@ -140,7 +140,7 @@ function chrome(ctx, d) {
   const active = Object.entries(d.filter ?? {}).filter(([, value]) => value);
   return (
     heading(ctx, {
-      // The runs table's search box sits in this toolbar row (D-M-11); Filters filter the runs on the runtime.
+      // The runs table's search box sits in this toolbar row; Filters filter the runs on the runtime.
       actions: kit.tableSearch('flow-runs', ctx.pager('flow-runs').search),
       filters: { count: active.length, drawerId: DRAWER },
       chips: {
@@ -495,7 +495,7 @@ export const view = {
       ? kit.notice(`The dashboard feed could not be read: ${failed(d.dashboard)}`, 'warn')
       : '';
     const waiting = Array.isArray(d.waits) ? d.waits.length : 0;
-    // The runs table starts right under the toolbar (D-M-7); the other parts of the page are cards below it.
+    // The runs table starts right under the toolbar; the other parts of the page are cards below it.
     return (
       chrome(ctx, d) +
       dashboardNote +

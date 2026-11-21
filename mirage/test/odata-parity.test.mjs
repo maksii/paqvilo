@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of the portal Web API (/_api) against documented Power Pages and Dataverse behaviour; no assertion here replays a recorded case
 // Local portals Web API (/_api) against the documented Power Pages and
 // Dataverse Web API behaviour.
 import test, { after, before } from 'node:test';
@@ -264,6 +265,7 @@ test('route, Prefer and annotation helpers follow the OData conventions', () => 
   assert.equal(annotationMatcher('*')('anything'), true);
 });
 
+// @test-kind contract: the module's own error envelope rules: every envelope carries a non-empty code
 test('error envelope uses the local Power Pages error-code contract and optional innererror', () => {
   const cds = webApiErrorResponse(new DataError('Too long', 400, 'StringLengthExceeded', { innerCode: '0x80044331' }), {
     innerError: true,
@@ -364,7 +366,7 @@ test('error envelope uses the local Power Pages error-code contract and optional
       'An unexpected error occurred while processing the request',
     ],
     [new DataError('x', 400, 'NoAttributesForTableCreate'), 400, '900400FF', 'No attributes for Create Table action.'],
-    [new Error('boom'), 500, '', 'An unexpected error occurred while processing the request.'],
+    [new Error('boom'), 500, '9004010A', 'An unexpected error occurred while processing the request.'],
   ];
   for (const [error, status, code, message] of cases) {
     const response = webApiErrorResponse(error);
@@ -773,6 +775,7 @@ test('observed webApiInnerError all-errors adds innererror to every error envelo
   });
 });
 
+// @test-kind contract: the module's own innererror scoping over its non-empty error codes
 test('innererror scopes: Webapi/error/innererror false wins, the default keeps it to Dataverse failures', async (t) => {
   const hidden = await start(t, {
     observed: ALL_ERRORS,
@@ -796,8 +799,12 @@ test('innererror scopes: Webapi/error/innererror false wins, the default keeps i
   const unhandled = webApiErrorResponse(new Error('boom'), { innerError: true, innerErrorScope: 'all-errors' });
   assert.deepEqual(
     unhandled.body.error.innererror,
-    { code: '', message: 'An unexpected error occurred while processing the request.', type: null },
-    'a code without a name',
+    {
+      code: '9004010A',
+      message: 'An unexpected error occurred while processing the request.',
+      type: 'UnexpectedError',
+    },
+    'an unhandled failure is the generic 9004010A',
   );
   assert.equal(webApiErrorResponse(read, { innerError: true }).body.error.innererror, undefined);
   const token = new DataError('x', 403, 'HttpAntiForgeryException');

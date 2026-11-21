@@ -1,10 +1,18 @@
 # Contributing to Paqvilo
 
-Help make the Power Pages feedback loop clearer and more reliable. Reproducible bug reports, documentation improvements and reusable platform fixes are welcome. For everyday portal development, use the [project installation guide](docs/getting-started.md); contributions use a toolkit checkout.
+Reproducible bug reports, documentation fixes and reusable platform fixes are welcome. For portal development with
+Paqvilo, use the [getting started guide](docs/getting-started.md); this guide covers work on the toolkit checkout. AI
+agents also follow [AGENTS.md](AGENTS.md).
 
-## Set up a contribution
+## Set up
 
-Install Node.js 24.22.1 LTS with npm 11.19.1, .NET SDK 10.0.114 (or a later 10.0.1xx patch), Python 3.13, Git, OpenSSL and Edge/Chrome, then clone the repository and run `npm run setup:repo`. Certificate tests also find Git for Windows' bundled OpenSSL directly; Mirage unit CI fails when Python or OpenSSL is unavailable. CI installs matching Chromium with `node node_modules/playwright-core/cli.js install --with-deps chromium` on Linux. Browser CI explicitly selects its channel through `PAQ_CI_BROWSER`; the matrix covers Linux Chromium, Windows Chromium and Windows Edge.
+| Tool          | Version                                                               | Pinned in                                                |
+| ------------- | --------------------------------------------------------------------- | -------------------------------------------------------- |
+| Node.js       | 26.13.1 (`engines`: `^26.13.1`)                                       | `.node-version`, `package.json`                          |
+| npm           | 12.2.2                                                                | `packageManager`                                         |
+| .NET SDK      | 11.0.100, or a later 11.0.1xx patch (`rollForward: latestPatch`)      | `global.json`                                            |
+| Python        | 3.15 (Mirage TLS tests and the Python SDK gate)                       | `mirage/test-sdk/python-dataverse/requirements.lock.txt` |
+| Also required | Git, OpenSSL (Git for Windows' bundled copy is found), Edge or Chrome |                                                          |
 
 ```sh
 git clone https://github.com/maksii/paqvilo.git
@@ -12,71 +20,187 @@ cd paqvilo
 npm run setup:repo
 ```
 
-Repository setup prepares the offline package-smoke cache and installs local Git hooks. If you use `npm ci --ignore-scripts` instead, also install Mirage dependencies and run `npm run cache:package` followed by `npm run hooks:install`. Hooks are tracked in `.githooks/` and configured only in this checkout. `npm run setup` retains the distribution dependency bootstrap; `setup:repo` adds contributor configuration. No consumer package-install lifecycle changes Git configuration.
+`setup:repo` installs the locked dependencies of the root, Mirage, the SDK clients and the example projects
+(`npm run ci:prepare -- --quality`), primes the offline package-smoke cache (`npm run cache:package`) and sets
+`core.hooksPath` to the tracked `.githooks/` in this checkout only (`npm run hooks:install`). `npm run setup` runs only
+the dependency bootstrap that the published package also uses. In PowerShell, call `npm.cmd` when passing script
+arguments after `--`.
 
-CI preparation may read registry metadata for the example's exact direct dependency pins: its manifest has no lockfile, and cached toolkit tarballs alone are insufficient. The example verification install and package smoke remain offline after preparation.
+Mirage unit lanes fail when Python or OpenSSL is missing. On Linux, CI installs matching Chromium with
+`node node_modules/playwright-core/cli.js install --with-deps chromium`.
 
-Use [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/), for example `fix(lense): preserve language identity` or `feat(mirage)!: change session contract`. Separate any body/footer from the subject with a blank line; explain breaking changes with `!` or a `BREAKING CHANGE:` footer. PR titles use the same convention because merges are squashed.
+## Commits and pull requests
 
-Run `npm run format` to apply Prettier and `npm run quality` to check formatting, ESLint and workflow rules. The workflow check pins actionlint 1.7.12 and ShellCheck 0.11.0 for Windows x64, Linux x64, Linux arm64, macOS x64 and macOS arm64; any other platform stops with a message naming that set. Archives come from the GitHub releases API; when `GITHUB_TOKEN` or `GH_TOKEN` is set, the download sends it to `api.github.com` only, and repeats a request the API refuses with HTTP 401 once without it, since release assets are public. `node scripts/check-workflows.mjs --provision` prepares and verifies both tools without running the checks. CI runs it as the only `run` step whose environment receives the job token (actions with a `token` input receive it through that input's default), and caches the verified archives under a key derived from their pins alone (`check-workflows.mjs --cache-key`), saved on a miss right after provisioning so a run whose checks fail still keeps them; a cached archive that fails verification is downloaded again. The fixture archives of the test lanes are cached the same way, keyed by the pins `ci.mjs fixtures` prints and saved right after preparation. A throttled download honours a `retry-after` in seconds and waits for an exhausted rate limit to reset, a 429 with neither waits one minute, and any other 403 fails at once; a wait over 60 s or a third throttled reply fails naming the host, status and rate-limit headers. Formatting uses Prettier's normal discovery, ignores and configuration, then replaces each changed file atomically while preserving its permissions. This avoids Windows truncate failures when another process has mapped a source file. Temporary files stay under ignored `.paqvilo/format/`.
+- Use [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/): `<type>[(scope)][!]: <description>`, for
+  example `fix(lense): preserve language identity` or `feat(mirage)!: change session contract`. Separate a body or
+  footer from the subject with a blank line; mark breaking changes with `!` or a `BREAKING CHANGE:` footer.
+- PRs are squash-merged with the PR title as the commit subject, so the title follows the same convention
+  (`PR_TITLE="<title>" npm run check:contribution`).
+- Never bypass hooks with `--no-verify`; a push that skipped them reaches CI unvalidated.
+- Every test you add or change declares its kind: see [test kinds](docs/test-kinds.md).
+- A runtime change needs relevant regressions and a passing `npm run validate`. Tests use invented schemas and
+  identities; browser tests use synthetic loopback fixtures, never a live portal.
+- A documentation-only change needs only the hooks below; check that linked guides and copyable commands still match the
+  CLI.
+- For a bug report, include the toolkit version, export format, command, expected behaviour and redacted diagnostics. A
+  minimal invented fixture is more useful than a private portal export. Report a vulnerability privately as
+  the [security policy](https://github.com/maksii/paqvilo/blob/main/SECURITY.md)
+  describes, not in a public issue.
 
-Before each commit, the pre-commit hook checks an isolated staged snapshot with `npm run quality`, release checks for packaged changes and site checks when relevant. Unstaged edits cannot make staged code pass. Before pushing, the pre-push hook runs `npm run ci:verify`, selecting suites with the same dependency-aware classifier as GitHub. Shared configuration, dependency, build and unknown paths select all suites; isolated Lense overlay changes select Lense. A clean source tree already verified with the same runtime and platform can reuse its exact-tree receipt. Run `npm run ci:verify -- --full` to prepare fixtures, run every unit/browser suite, audit all lockfiles, smoke-test the package and build the site. `commit-msg` enforces Conventional Commits. Required GitHub checks remain the enforcement boundary. A full run can qualify an entirely staged tree before splitting logical commits: worktree files must match the index, and no nonignored files may be untracked. The final clean HEAD tree must match that receipt before pre-push can reuse it.
+## Checks
 
-Local validation prepares once, then runs its independent steps concurrently: each suite's unit and browser lanes (each the same `ci.mjs verify --suite` process its hosted job runs), the quality checks, release checks, package smoke and site build. Every step runs to its end, so one pass reports every failure; each step writes `.paqvilo/ci/runs/<run>/logs/<step>.log`, and a failed step's log tail is printed when it ends. By default one step runs per four CPUs and per 4 GiB of memory, so a four-CPU machine keeps the serial run with streamed output. Set `git config paqvilo.ci.jobs <n>` for this checkout, or `PAQ_CI_JOBS=<n>` for one run; `1` restores serial streamed output. CodeQL uses all CPUs, so its local step runs alone before the functional pool; it cannot consume the timed CLR/browser lanes' CPU budget. All languages and every functional lane still run, including after an analysis failure. Local validation also checks test kinds against the default branch (`check-test-tags.mjs --base origin/main`), as the hosted change-scope job checks the pull request range. Hosted CI runs one lane per job and always uses one step at a time. The hook validates the checkout in place, so do not edit tracked files while a push validates: a changed tree fails the run instead of qualifying it.
+| Command                                     | Runs                                                                                                |
+| ------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `npm run format`                            | Prettier, writing each changed file atomically (temporary files under `.paqvilo/format/`)           |
+| `npm run quality`                           | `format:check`, `lint` (ESLint, no warnings), `check:workflows`, `review:code`                      |
+| `npm run check`                             | `node --check` on every first-party module, then `check:boundary` (`scripts/project-boundary.mjs`)  |
+| `npm run check:workflows`                   | actionlint 1.7.12 and ShellCheck 0.11.0 over the workflows and Git hooks                            |
+| `npm run review:code`                       | Generated watcher drift, then dead-code and duplication review ([code review](docs/code-review.md)) |
+| `npm run check:sonar-rules -- --base <rev>` | Local approximation of the SonarQube rule profile on changed files                                  |
+| `npm run check:test-tags -- <files>`        | Test-kind tags ([test kinds](docs/test-kinds.md))                                                   |
+| `npm run release:check`                     | Lockfile sync, package allowlist, documentation links and editor tasks                              |
+| `npm run audit:dependencies`                | `npm audit` of every lockfile                                                                       |
+| `npm test`, `npm run test:browser`          | Lense unit and browser suites; Mirage has its own under `mirage/`                                   |
+| `npm run ci:verify`                         | Lanes selected from the diff against `origin/main` (`--base <ref>` to change it)                    |
+| `npm run validate`                          | `ci:verify --full`: every lane, fresh                                                               |
+| `npm run check:pr -- --pr <n>`              | GitHub's effective merge state of a pushed PR                                                       |
 
-Validation and dependency preparation take an exclusive checkout lease before reading receipts or reinstalling packages. Prepared child lanes share that lease; another independent run fails before changing dependencies. If a process is forcibly stopped, its lease stays in `.paqvilo/ci/workspace.lock` until the next run finds that neither its owner nor any of its worker processes still runs; that run takes the lease over, while a run that finds a worker still running refuses, so verify that its worker processes have stopped before removing that directory by hand. CI state and writable descendants must use physical directories in their own checkout. Preparation unlinks generated top-level dependency junctions before reinstalling packages. Separate checkouts can validate independently. A validation run ends the lane process trees that an earlier run of the same checkout recorded and left running, and names each one; a lane whose root had already ended is named, but its descendants cannot be identified from the record.
+`check:workflows` downloads its pinned tools for Windows x64, Linux x64/arm64 and macOS x64/arm64 from the GitHub
+releases API (other platforms stop with a message); `node scripts/check-workflows.mjs --provision` only downloads and
+verifies them. When `GITHUB_TOKEN` or `GH_TOKEN` is set, it is sent to `api.github.com` only, and a request refused with
+401 is repeated once without it.
 
-Local validation reproduces the hosted checks that a contributor's machine would otherwise hide:
+## Git hooks
 
-- **CodeQL.** `scripts/codeql.mjs` runs the Security workflow's `security-extended` analysis for every language over the validated index, with the CodeQL bundle pinned by the workflow's `codeql-action` and downloaded once (digest-verified) into the main checkout's `.paqvilo/tools/`. Each result is compared by fingerprint with the alerts GitHub dismissed on `main` and open PRs; any other result fails, as it would fail `Security gate`. Each invocation retains its source, databases, SARIF files and report under `.paqvilo/ci/codeql-runs/<run>/`. Cold bundle installation takes a cache lease; an abandoned lease is retained for inspection, while completed tool caches stay immutable. It needs the GitHub CLI signed in. Fix a finding, or review and dismiss a false positive on GitHub, then rerun.
-- **SonarQube rules.** The SonarQube server cannot be reached from a contributor's machine, so `scripts/sonar-rules.mjs` (`npm run check:sonar-rules -- --base <rev>`) approximates its rule profile on every JavaScript source and test file that differs from the validation base, untracked files included. Each eslint-plugin-sonarjs recommended rule runs only on the files of the scope it declares in the package's generated SonarJS metadata (`Main` for sources, `Tests` for test files, as `sonar-project.properties` splits them), as the server applies it. Sources also get the eslint-plugin-unicorn rules and the typed promise and optional-chain rules that matched server findings on sources. It fails only on findings the current version adds, comparing with the base version (the renamed-from file for a rename); a moved line is not new. It is an approximation: rules that need the server's data-flow analysis stay server-only, so the hosted SonarQube gate remains authoritative. The test rule that requires an assertion in every test follows a helper only when it is a function declaration in the same file. Fix a finding, or justify a deliberate one with `// NOSONAR: <reason>` on its line, as the server honours it.
+| Hook         | Runs                                                                                                                                                                               |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pre-commit` | In a snapshot of the index: `check-test-tags --staged`, then `quality`, `release:check` and `site:build` as the staged paths require. Unstaged edits cannot make staged code pass. |
+| `commit-msg` | `scripts/conventional-commit.mjs`                                                                                                                                                  |
+| `pre-push`   | `npm run ci:verify` (`--full` on `main`). Needs a clean worktree and index, and every pushed ref must be the checked-out commit.                                                   |
+
+## Local validation
+
+`ci:verify` selects suites with the same classifier as GitHub (`.github/scripts/change-scope.mjs`): shared
+configuration, dependency, build and unknown paths select every suite; isolated Lense overlay changes select Lense.
+`--full` prepares every fixture, runs every unit and browser lane, audits all lockfiles and registry signatures,
+smoke-tests the package and builds the site. Hosted CI runs the same `ci.mjs verify --suite <suite> --unit|--browser`
+process per job; `node scripts/ci.mjs --help` lists its commands and options.
+
+**Parallelism.** Local validation prepares once, then runs its independent steps (each lane, each quality script,
+`check`, `release:check`, package smoke, site build) concurrently, each to its end, so one pass reports every failure.
+By default one step runs per four CPUs and per 4 GiB of memory. Set `git config paqvilo.ci.jobs <n>` or
+`PAQ_CI_JOBS=<n>`; `1` gives serial streamed output. Each step logs to `.paqvilo/ci/runs/<run>/logs/<step>.log`, and a
+failed step's log tail is printed. Hosted CI runs one step at a time.
+
+**Receipts.** A successful run writes a receipt for the source tree, toolchain and platform. A later scoped pre-push of
+the same clean tree reuses it after refreshing dependency audits and signatures. `--full` always runs fresh, and
+starting any validation revokes the previous receipt, so a failed rerun never leaves a qualifying pass. A `--full` run
+can qualify a fully staged tree before you split it into commits: worktree files must match the index and no non-ignored
+file may be untracked; the final clean `HEAD` tree must then match the receipt. A local pass qualifies that tree on that
+platform only; confirm hosted checks on the final pushed commit separately.
+
+**Workspace lease.** Validation and dependency preparation hold an exclusive lease (`.paqvilo/ci/workspace.lock`); a
+second independent run in the same checkout fails before changing dependencies. A lease left by a killed run is taken
+over once neither its owner nor any of its worker processes runs; while a worker still runs it is refused, so stop those
+processes before deleting the lock by hand. A new run also ends lane process trees that an earlier run of the checkout
+left running and names each one. CI state must be physical directories inside the checkout. Do not edit tracked files
+while a push validates: a changed tree fails the run.
+
+**What local validation adds to the hosted lanes:**
+
+- **CodeQL.** `scripts/codeql.mjs` runs the Security workflow's `security-extended` analysis for every language with the
+  bundle pinned by the workflow's `codeql-action`, downloaded once (digest-verified) into the main checkout's
+  `.paqvilo/tools/`. It needs the GitHub CLI signed in. Results are matched by fingerprint against alerts dismissed on
+  `main` and open PRs; any other result fails, as `Security gate` would. Runs are kept under
+  `.paqvilo/ci/codeql-runs/<run>/`. It runs alone before the other steps because it uses every CPU.
+- **SonarQube rules.** `scripts/sonar-rules.mjs` runs the eslint-plugin-sonarjs recommended rules on changed source and
+  test files (untracked included), each rule only on the scope (`Main` or `Tests`) its SonarJS metadata declares, plus
+  the unicorn and typed rules that matched server findings on sources. It fails only on findings the change adds (a
+  moved line is not new). Data-flow rules stay server-only; the hosted gate is authoritative. The rule that requires an
+  assertion in every test follows a helper only when it is a function declaration in the same file. Justify a deliberate
+  finding with `// NOSONAR: <reason>` on its line.
+- **Test kinds** against the default branch (`check-test-tags.mjs --base origin/main`).
 - **Browser channels.** On Windows every browser lane runs in Chromium and Edge, as the hosted Windows matrix does.
-- **Runner environment.** Windows lanes see `TEMP` through an 8.3 short alias whose real path differs, as hosted runners do (`C:\Users\RUNNER~1\…`); compare physical paths. The package smoke starts from an empty npm cache, so every offline install must be primed by `cache:package`. Test workspaces may not assume ignored folders such as `.paqvilo/` exist. Local unit lanes run under `NODE_V8_COVERAGE`, as the hosted SonarQube lanes do, each command writing to its own directory under `.paqvilo/ci/runs/<run>/` that is removed when the command ends. A directory that an interrupted run left, or that a process outliving its lane wrote again, is removed when the next local coverage run starts; a removal that fails is logged and never fails the lane; hosted Windows and Linux CI lanes keep the plain mode.
-- **Changed tests.** Scoped pre-push validation reruns changed Lense and Mirage test files from commits that no remote branch contains twice after their corresponding unit and Chromium browser lanes pass. It does not schedule changed example test files or Edge browser lanes. Explicit `--full` validation runs its complete lanes fresh but does not schedule these extra changed-file runs. Uncommitted or staged-only test edits are not among the unpushed committed files selected by this repeat check. Set `git config paqvilo.ci.repeat <n>` or `PAQ_CI_REPEAT=<n>` for scoped validation; `0` turns it off.
+- **Runner environment.** Windows lanes see `TEMP` through an 8.3 short alias, as hosted runners do
+  (`C:\Users\RUNNER~1\…`); compare physical paths. The package smoke starts from an empty npm cache, so every offline
+  install must be primed by `cache:package`. Tests may not assume ignored folders such as `.paqvilo/` exist. Unit lanes
+  run under `NODE_V8_COVERAGE`, as the hosted SonarQube lanes do, writing to a directory under `.paqvilo/ci/runs/<run>/`
+  that is removed when the command ends (allow about 2 GB of free disk).
+- **Changed tests.** Scoped validation reruns changed Lense and Mirage test files from unpushed commits twice more after
+  their unit and Chromium browser lanes pass (not example tests or Edge lanes, and not with `--full`). Set
+  `git config paqvilo.ci.repeat <n>` or `PAQ_CI_REPEAT=<n>`; `0` turns it off.
 
-Never bypass the hooks with `--no-verify`; a push that skipped them reaches CI unvalidated.
+**Downloaded fixtures.** `ci:prepare` for Mirage unit tests downloads public MIT-licensed ecosystem exports from GitHub
+archives at pinned commits, verifies each SHA-256 and extracts only the needed subtrees into ignored
+`.paqvilo/ci/ecosystem/`; `ci:verify` sets `PAQ_TEST_ECOSYSTEM_FIXTURES` for `mirage/test/short-key-fixtures.test.mjs`.
+A direct `npm --prefix mirage test` without it skips those checks. CI preparation may read registry metadata for the
+example project's exact dependency pins (it has no lockfile); the example install and package smoke stay offline.
+`npm run ci:sdk:prepare` prepares the SDK client fixtures and `npm run ci:sdk` runs them; the ServiceClient gate needs
+loopback port 80 free.
 
-Explicit `--full` validation always executes fresh. Starting validation revokes the previous receipt, including when an audit, preparation step or suite subsequently fails. Only a successful run restores qualifying evidence; ordinary scoped pre-push validation may reuse a matching receipt after refreshing dependency audits and signatures. A local pass qualifies that source tree and local platform; report the hosted PR checks separately and confirm they are green on the final pushed commit.
+### Dependency audit
 
-When reporting a bug, include the toolkit version, export format, command, expected behavior and relevant redacted diagnostics. A minimal invented fixture is more useful than a private portal export. For a documentation change, check that linked guides and copyable commands still match the CLI.
+`npm run audit:dependencies` runs one fresh `npm audit --json` for each of the ten projects in `auditedProjects`
+(`scripts/audit-dependencies.mjs`), one at a time; before the root audit, the generated `package-lock.json` must equal
+`paqvilo-lock.json` byte for byte. `scripts/audit-process.mjs` supervises the pinned npm over a private IPC channel:
+start-up, each synchronous metadata load, each pending I/O operation, idle gaps and exit are limited to 60 seconds each,
+and each project's audit to `(1 + A + E) × 60` seconds, where `A` is the advisory count and `E` the number of reachable
+installed dependency edges, fixed when the audit starts; npm output cannot extend a limit. A failed or stalled audit is
+terminated and fails; audits are never retried, served from a cache or fixed automatically.
 
-## Validate and keep the project boundary
+**Time-limited risk acceptance.** An advisory without an official fix can be accepted for a limited time in
+`scripts/dependency-risk-acceptance.json`. The file holds `{}` when no acceptance is in force, as now, and every finding
+then fails the audit; any other content that is not one complete entry fails the audit too. An entry names the
+advisory, the owner's approval, the expiry, the projects it covers, and pins each covered project's manifest and
+lockfiles, the affected development dependency graph and the normalized audit report (only the `fixAvailable` package
+name and version are normalized, because npm chooses them nondeterministically). While it applies, each covered project prints `<advisory>: TEMPORARY
+RISK ACCEPTANCE (not fixed)` with the approval date and expiry, and each accepted finding keeps its severity, marked
+`temporarily risk accepted (not fixed)`. A project outside the scope, any changed pin, an extra advisory or node, or a
+production dependency edge makes the acceptance not applicable, and the audit prints why and fails. At expiry (checked
+against the current clock, which cannot be overridden) the same findings fail the audit. A report with no findings from
+the unchanged pinned inputs also fails, so the entry is re-evaluated rather than left behind. Only the repository owner
+approves an acceptance; never regenerate the pins to make a changed report pass, and replace the entry with `{}` when
+an official fix is available, the advisory is withdrawn or a pinned input changes.
 
-Run the checks selected by the pre-commit hook before proposing a change. Runtime changes require `npm run validate`, which checks first-party syntax, Lense unit/browser regressions, Mirage unit/browser regressions and the release boundary. Add relevant regressions for runtime changes; browser tests use synthetic loopback fixtures, never a live portal as a prerequisite.
+## Project boundary
 
-Three ecosystem import checks in `mirage/test/short-key-fixtures.test.mjs` read public MIT-licensed Microsoft and community exports. `ci:prepare` for Mirage unit tests downloads them once from GitHub archives at pinned commits, verifies each SHA-256 and extracts only the exported subtrees into ignored `.paqvilo/ci/ecosystem/` (about 265 MB of archives, kept for later runs); `ci:verify` sets `PAQ_TEST_ECOSYSTEM_FIXTURES` and refuses to run that file without them. A direct `npm --prefix mirage test` without that variable skips the three checks; the committed synthetic fixtures always run.
+- Reusable source-overlay behaviour belongs in `lense/`; rendering, platform semantics and simulation in `mirage/`.
+  `test/` and `test-browser/` cover Lense and integration; `mirage/test/` and `mirage/test-browser/` cover Mirage.
+- Customer data, portal extracts, environment catalogues, personas, generators, acceptance runners and business evidence
+  belong in a separate project; see [project extensions](docs/project-extensions.md).
+- The release allowlist (`scripts/release-check.mjs`) and `scripts/project-boundary.mjs` protect the package and the
+  tracked tree. Add reusable tools to `package.json` and the allowlist together. Never add automatic project-pack
+  discovery or a business-name condition to core. Platform behaviour an export cannot reveal is a per-site `observed`
+  setting with evidence.
+- Do not commit personal configuration, session discovery, tokens, browser cookies or live captures.
+- Original Paqvilo code is AGPL-3.0-only; third-party assets keep their own terms and notices.
 
-Reusable source-overlay behavior belongs in `lense/`; rendering, platform semantics and simulation belong in `mirage/`. Tests under `test/` and `test-browser/` cover Lense and integration; `mirage/test/` and `mirage/test-browser/` cover Mirage. Use invented schemas and identities. Customer data, portal extracts, environment catalogues, personas, generators, acceptance runners and business evidence belong in a separate project. [Extension guidance](docs/project-extensions.md) describes the supported registration contract.
+## Continuous integration
 
-The release allowlist and `scripts/project-boundary.mjs` protect the distribution and tracked source tree. Add reusable tools to `package.json` and the allowlist together. Never add automatic project-pack discovery or a business-name condition to core. A platform behavior that an export cannot reveal must be a per-site `observed` setting with evidence.
+| Workflow                                                                                 | Runs on                                              | Required gate   |
+| ---------------------------------------------------------------------------------------- | ---------------------------------------------------- | --------------- |
+| [CI](https://github.com/maksii/paqvilo/blob/main/.github/workflows/ci.yml)               | Pushes to `main`; PRs to `main` and `0.9.8`; release | `CI gate`       |
+| [Security](https://github.com/maksii/paqvilo/blob/main/.github/workflows/security.yml)   | Same pushes and PRs; weekly                          | `Security gate` |
+| [SonarQube](https://github.com/maksii/paqvilo/blob/main/.github/workflows/sonarqube.yml) | Pushes to `main` and `0.9.8`; PRs to them            | none            |
+| [Pages](https://github.com/maksii/paqvilo/blob/main/.github/workflows/pages.yml)         | Site changes; deploys only from `main`               | none            |
+| [Release](https://github.com/maksii/paqvilo/blob/main/.github/workflows/release.yml)     | `v*` tags except previews; manual dispatch           | none            |
 
-Keep personal configuration and storage ignored. Do not commit session discovery, tokens, browser cookies or live captures. Retain upstream license notices. Contributions to original Paqvilo code use AGPL-3.0-only; third-party assets retain their original terms. The project license permits commercial distribution subject to source and notice obligations.
+- PR runs select Lense, Mirage and example suites from the complete base-to-head diff and literal import consumers.
+  Pushes to `main`, manual runs and release calls run every suite and the package smoke.
+- Lanes: Ubuntu 26.04 and Windows 2025 unit lanes, browser lanes on Linux Chromium, Windows Chromium and Windows Edge
+  (`PAQ_CI_BROWSER`), the SDK client gates on both platforms when Mirage or shared code changes, and the package smoke.
+  Long suites are split into `--shard <index>/<total>` jobs; the gate requires every shard. Mirage and example lanes
+  install the .NET SDK from `global.json`.
+- A documentation-only PR skips the runtime matrices but keeps quality and applicable release checks. Editing a PR's
+  title, base or description reruns CI; the required `CI gate` name never changes and accepts only successes or intended
+  skips. Never use CI skip tokens to bypass required gates.
+- Security runs CodeQL (`security-extended`) for `actions`, `csharp` and `javascript-typescript` on every PR, including
+  documentation-only ones, and dependency review (moderate or higher fails) when dependencies change.
+- When a SonarQube quality gate fails, the job's last step prints the failed conditions, new-code issues and hotspots.
+- Before reporting a PR green, run `npm run check:pr -- --pr <number>` with the GitHub CLI signed in. It requires the PR
+  head to equal your checked-out `HEAD`, both gates successful, no pending or failed checks, and merge state `CLEAN`;
+  `BLOCKED` or `UNKNOWN` is not ready. A matrix job cancelled by an edit right after a push counts as replaced once a
+  newer run of that workflow reports on the head.
 
-Use `npm run release:check` and `npm pack --ignore-scripts` to prepare a distribution locally. Publishing a package, pushing a repository or changing the hosting environment is a separate action.
-
-## Continuous integration and releases
-
-`npm run review:code` checks dead-code and duplication drift as part of quality validation.
-See [the review lane](docs/code-review.md) for entry maps, synthetic canaries, retained contracts
-and the manual baseline policy.
-
-[CI](https://github.com/maksii/paqvilo/blob/main/.github/workflows/ci.yml) runs on pushes to `main` and PRs to `main` and `0.9.8`. PRs select Lense, Mirage and example suites from changed paths and literal import consumers; shared browser assets and unknown/build/dependency changes expand the selection. Main pushes, manual full runs and release callers run every suite and package smoke. One pinned Node 24 runtime is used on Ubuntu 24.04 and Windows 2025; Mirage/example lanes also install the exact serviced .NET SDK from `global.json`. Applicable Mirage and shared changes run every SDK client and storage-volume assertion on both platforms, including the pinned Python client and public WebAPI sample. `npm run ci:sdk:prepare` prepares those public fixtures; `npm run ci:sdk` requires and executes them. The ServiceClient fixture requires free loopback port 80; hosted runners configure this prerequisite, and self-hosted runners must provide it. All changed-source PRs run the shared quality checks, including documentation-only PRs. The required `CI gate` keeps the same name on every run and validates both successes and intentional skips. Use `npm run ci:verify -- --base origin/main` for matching local selection or `--full` before a release.
-
-Unit lanes split the Mirage suite into `node:test` file shards with `ci:verify --shard <index>/<total>`; the shards run every file exactly once and the gate requires each of them. Local `npm run validate` and an unsharded `ci:verify` run whole suites. A self-hosted runner needs Git, Node and npm at the pinned versions, HTTPS access to the npm registry, NuGet, the .NET installer and GitHub archives, and on Linux either passwordless `sudo` or Chromium's system libraries installed beforehand (`sudo node node_modules/playwright-core/cli.js install-deps chromium`). CI turns off Git auto-maintenance in the runner account's global Git configuration. Preparation reinstalls locked dependencies and re-extracts verified fixtures on every run, so a persistent workspace needs no manual cleanup.
-
-PR selection compares the complete base-to-head diff, not just the latest commit. A documentation-only PR skips
-runtime matrices but retains quality and applicable release checks. Pushing a documentation commit onto a PR that
-also changes runtime code still selects those runtime and security lanes. A local commit starts no GitHub run.
-Editing the PR title, base or description reruns the applicable source validation; a later run must not omit or
-rename the required gate. Keep required source validation enabled.
-
-With GitHub CLI authenticated, run `npm run check:pr -- --pr <number>` before reporting the PR green. It checks the
-pushed HEAD, completed gates and GitHub's effective merge state. Successful historical job results alone are
-insufficient: `BLOCKED` or `UNKNOWN` is not a ready PR.
-
-SonarQube analyses branches and pull requests and is not a required check. When its quality gate fails, the last
-step of the job prints the failed conditions, the open issues in new code and the hotspots to review.
-
-[Security](https://github.com/maksii/paqvilo/blob/main/.github/workflows/security.yml) scans JavaScript/TypeScript, GitHub Actions and the sample C# sources with CodeQL on every PR, main push and weekly run. All three analysis configurations must match main, including documentation-only PRs; omitting an unchanged language can block merging despite successful jobs. Dependency review rejects newly introduced moderate-or-higher vulnerabilities. `Security gate` is required alongside `CI gate`. [Pages](https://github.com/maksii/paqvilo/blob/main/.github/workflows/pages.yml) builds relevant site changes on PRs and deploys only from `main`. See the [repository admin guide](docs/repository-admin.md) for settings and promotion prerequisites.
-
-[Release](https://github.com/maksii/paqvilo/blob/main/.github/workflows/release.yml) publishes normal releases only from a `v<version>` tag on main matching `package.json`, after the full CI run. Main prereleases use `next`. On-demand branch packages use immutable generated preview tags and separate `preview-<branch-token>` npm channels; see [testing branch packages](docs/branch-packages.md). Releases use the existing npm trusted publisher with provenance, configured for `maksii/paqvilo`, workflow `release.yml` and environment `npm`. A manual run takes an existing tag, runs on that tag and defaults to `npm publish --dry-run`. Preview tag pushes do not publish automatically.
+Repository settings, CodeQL triage and publishing: [repository maintenance](docs/repository-admin.md). Pre-merge
+packages: [branch packages](docs/branch-packages.md). Toolchain pins: [toolchain versions](docs/dependency-upgrades.md).

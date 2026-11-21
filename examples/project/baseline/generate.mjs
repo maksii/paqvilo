@@ -12,6 +12,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { cli, formatJson, isMain } from '../cli.mjs';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const PREFIX = 'pqvd';
@@ -430,6 +431,9 @@ export function manifest() {
         ownership: 'organization',
         notes: true,
         solution: SOLUTION,
+        // The fixture tables are solution roots with every subcomponent (root behaviour 0), so the exported solution
+        // is self-contained: their platform columns (statecode, createdon, ownerid, …) travel with them.
+        includeAllSubcomponents: true,
         primaryName: { name: `${PREFIX}_name`, label: 'Name', maxLength: 100, required: 'required' },
         columns: PARENT_COLUMNS.filter((c) => c.manifest).map(manifestColumn),
         keys: [],
@@ -444,6 +448,7 @@ export function manifest() {
         notes: true,
         activities: true,
         solution: SOLUTION,
+        includeAllSubcomponents: true,
         primaryName: { name: `${PREFIX}_name`, label: 'Name', maxLength: 100, required: 'required' },
         columns: ITEM_COLUMNS.filter((c) => c.manifest).map(manifestColumn),
         keys: [{ name: `${PREFIX}_baselineitem_code`, label: 'Baseline item code', columns: [`${PREFIX}_code`] }],
@@ -456,6 +461,7 @@ export function manifest() {
         pluralLabel: 'Baseline Children',
         ownership: 'user',
         solution: SOLUTION,
+        includeAllSubcomponents: true,
         primaryName: { name: `${PREFIX}_name`, label: 'Name', maxLength: 100, required: 'required' },
         columns: CHILD_COLUMNS.filter((c) => c.manifest).map(manifestColumn),
         keys: [],
@@ -742,7 +748,7 @@ function parentMainForm() {
     columnCell(c('code'), PARENT),
     columnCell(c('rank'), PARENT),
     columnCell(c('description'), PARENT),
-  ]; // the rollup column joins the form after the manual maker-portal step
+  ]; // the maker-portal rollup column is read from rows, not placed on a form
   const itemRelationship = `${PREFIX}_baselineparent_baselineitem`;
   const items = [
     `<cell id="${braced('cell:subgrid-items')}" showlabel="true" rowspan="8">${label('Items')}${subgridControl('subgrid_items', ITEM, itemRelationship, '{PLATFORM_VIEW:pqvd_baselineitem:2}')}</cell>`,
@@ -1347,8 +1353,6 @@ export function extras() {
       content: Buffer.from(BANNER_HTML, 'utf8').toString('base64'),
       retire: ['pqvd_baseline_icon.png', 'pqvd_baseline_icon.svg'],
     },
-    // The three fixture tables are exported with every subcomponent so the solution is self-contained.
-    includeAllSubcomponents: [PARENT, ITEM, CHILD],
     // Platform components of non-fixture tables the site renders: added to the solution as-is (AddSolutionComponent only,
     // never modified) so the export carries them. Ids are the platform's own; provision.mjs checks name and table.
     // Not here: the managed Contact main form 1fed44d1-ae68-4a41-bd2b-f13acac4acfa (adx_formname Contact). ExportSolution
@@ -1429,17 +1433,27 @@ export function extras() {
 }
 
 async function main() {
-  const out = (relative) => path.join(root, relative);
+  const { values } = cli(
+    `Usage: node examples/project/baseline/generate.mjs [--out DIR]
+
+Regenerates the baseline Dataverse manifest, forms, views and extras. Offline.
+
+  --out DIR  folder that receives dataverse/ (default: baseline/ in this project); a relative path resolves from the
+             working directory`,
+    { out: { type: 'string' } },
+  );
+  const base = values.out ? path.resolve(values.out) : root;
+  const out = (relative) => path.join(base, relative);
   await fs.mkdir(out('dataverse/formxml'), { recursive: true });
   await fs.mkdir(out('dataverse/views'), { recursive: true });
   const m = manifest();
-  await fs.writeFile(out('dataverse/manifest.json'), JSON.stringify(m, null, 2) + '\n');
+  await fs.writeFile(out('dataverse/manifest.json'), formatJson(m));
   for (const item of FORMS) await fs.writeFile(out(`dataverse/formxml/${item.file}.xml`), item.build() + '\n');
   for (const view of [...VIEWS, ...PLATFORM_VIEW_ADJUSTMENTS].filter((view) => view.queryType !== 4)) {
     await fs.writeFile(out(`dataverse/views/${view.file}.fetch.xml`), view.fetch() + '\n');
     await fs.writeFile(out(`dataverse/views/${view.file}.layout.xml`), view.layout() + '\n');
   }
-  await fs.writeFile(out('dataverse/extras.json'), JSON.stringify(extras(), null, 2) + '\n');
+  await fs.writeFile(out('dataverse/extras.json'), formatJson(extras()));
   console.log(
     JSON.stringify({
       manifest: out('dataverse/manifest.json'),
@@ -1452,8 +1466,4 @@ async function main() {
   );
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))
-  /* NOSONAR: module-level promise chain must not block evaluation */ main().catch((error) => {
-    console.error(error.message);
-    process.exitCode = 1;
-  });
+if (isMain(import.meta)) await main();

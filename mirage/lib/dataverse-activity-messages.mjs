@@ -1153,4 +1153,32 @@ function reset(api) {
   return api.store.transact(() => seedQueueMembership(api.store));
 }
 
-export const EXTENSION = { name: 'activity-messages', install, reset };
+/** Capability record for the capability registry; dataverse-extensions.mjs adds the operations install registered. */
+function describe() {
+  return {
+    name: 'activity-messages',
+    version: 1,
+    kind: 'dataverse-extension',
+    level: 'behaviour',
+    reason:
+      'Activity, email and queue messages change the rows as the platform does; no mail leaves the simulator (an outbox provider captures it).',
+    operations: [
+      {
+        name: 'SendFax',
+        level: 'contract',
+        reason: 'No fax transport: both IssueSend values record Sent.',
+      },
+      {
+        name: 'RetrieveMailboxTrackingFolders',
+        level: 'contract',
+        reason: 'The mapping shape is a guess.',
+      },
+    ],
+    requires: [],
+    principal: 'caller',
+    stateOwner: 'store',
+    lifecycle: 'per-request',
+  };
+}
+
+export const EXTENSION = { name: 'activity-messages', install, reset, describe };

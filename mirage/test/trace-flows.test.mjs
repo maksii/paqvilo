@@ -544,7 +544,7 @@ test('a portal cloud flow nests under the request span and server logic answers 
   assert.equal(current?.spanId, logic.spanId, 'a worker bridge request is answered inside the server-logic span');
 });
 
-// D-R3-4 (DV-A-12, DV-C-6): a failed run names the action that failed it; a cancelled action ends cancelled.
+// D-R3-4: a failed run names the action that failed it; a cancelled action ends cancelled.
 const failingPack = (operations) => ({ id: 'invented-failing-pack', connectors: { x_api: { operations } } });
 test('a failed run names its failing action in error.action, output.failedAction and attribute failedAction', async () => {
   const store = await new DataStore({ state: emptyState() }).init();
@@ -684,7 +684,7 @@ test('an action whose provider call the run cancellation aborted ends cancelled,
   assert.equal(traces.query({ status: 'cancelled' }).total, 1);
 });
 
-// D-R3-24 (DV-B2-12) and D-R3-6 (DV-A-16): every hosted occurrence is its own detached job root named after the flow.
+// D-R3-24 and D-R3-6: every hosted occurrence is its own detached job root named after the flow.
 async function hostedTriggers(t, { poll }) {
   const clock = fixedClock();
   const store = await new DataStore({ state: emptyState(), clock, ids: sequentialIds() }).init();
@@ -820,7 +820,7 @@ test("a pack trigger's fire() is a detached occurrence: staged by a running call
   assert.equal(traces.spans({ kind: 'flow-run', traceId: late.traceId }).items[0].parentSpanId, late.spanId);
 });
 
-// DV-C-14: a sealed run says so on its own spans, so a reader knows why their payloads are absent.
+// a sealed run says so on its own spans, so a reader knows why their payloads are absent.
 // @test-kind contract+security: a Secret parameter makes its spans secure and payload-free
 test('a run with a Secret parameter marks its flow-run, flow-action and connector spans secure and captures no payload', async () => {
   const state = emptyState();
@@ -905,7 +905,7 @@ test('a row-triggered run names its trigger table and row on its job and flow-ru
   );
 });
 
-// D-R3-30 (DV-Y8-5): each loop iteration's actions are executions of their own, as in the platform run history.
+// D-R3-30: each loop iteration's actions are executions of their own, as in the platform run history.
 test('an Apply to each runs one action span per iteration with its index; the loop span counts its iterations', async () => {
   const store = await new DataStore({ state: emptyState() }).init();
   const traces = traced(store);

@@ -185,7 +185,7 @@ test('provider dispatch passes the caller context and maps errors to documented 
     'reference',
     'status',
   ]);
-  // The human facts (D-M-2 Findings) name the operation, never a parameter value.
+  // The human facts (Findings) name the operation, never a parameter value.
   assert.equal(invokes[0].name, invokes[0].operationId);
   assert.equal(invokes[0].principalId, USER);
   assert.equal(invokes[1].error, 'ProviderFailed');
@@ -680,9 +680,12 @@ test('connection settings and connector pack exports reject credentials and malf
   };
   assert.deepEqual(connectionSettings(valid), valid);
   assert.deepEqual(connectionSettings(undefined), {});
-  assert.throws(() => connectionSettings({ c: { settings: { apiKey: 'literal' } } }), /settings\.apiKey/);
+  assert.throws(
+    () => connectionSettings({ c: { settings: { apiKey: 'literal' } } }),
+    /Unknown connections\.c\.settings key 'apiKey'/,
+  );
   assert.throws(() => connectionSettings({ c: { principal: { identity: 'owner', token: 'literal' } } }), /principal/);
-  assert.throws(() => connectionSettings({ c: { password: 'literal' } }), /not a connection setting/);
+  assert.throws(() => connectionSettings({ c: { password: 'literal' } }), /Unknown connections\.c key 'password'/);
   assert.throws(
     () =>
       connectionSettings({
@@ -726,4 +729,25 @@ test('connection settings and connector pack exports reject credentials and malf
   );
   CONNECTOR_PACK_EXPORTS.connectionPrincipals.check({ owner: profile }, 'x-pack');
   assert.throws(() => CONNECTOR_PACK_EXPORTS.connectionPrincipals.check({ owner: { userId: 'x' } }, 'x-pack'), /owner/);
+});
+
+// @test-kind contract: every connection settings message names the key path a user writes, including `settings.`
+test('connection settings messages name the full key path under settings', () => {
+  const messageOf = (value) => {
+    try {
+      connectionSettings(value);
+    } catch (error) {
+      return error.message;
+    }
+    assert.fail('expected a validation error');
+  };
+  assert.match(
+    messageOf({ c: { settings: { parameters: { apiKey: 'literal' } } } }),
+    /^connections\.c\.settings\.parameters\.apiKey must not hold a credential; use an env:NAME or variable:NAME reference$/,
+  );
+  assert.match(
+    messageOf({ c: { settings: { parameters: { nested: { token: 'literal' } } } } }),
+    /^connections\.c\.settings\.parameters must map/,
+  );
+  assert.match(messageOf({ c: { principal: { identity: 'owner', token: 'literal' } } }), /^connections\.c\.principal/);
 });

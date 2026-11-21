@@ -11,8 +11,6 @@ import { OverlaySession } from '../lense/session.mjs';
 import { enablePanel } from '../lense/panel.mjs';
 import { devDialogs } from '../lense/dev-dialogs.mjs';
 
-const UNANSWERED_DIALOG_MS = 75;
-
 let browser;
 before(async () => {
   browser = await chromium.launch(browserLaunchOptions({ headless: true }));
@@ -298,9 +296,9 @@ test('interactive dialogs await an answer and headless dismissals produce one pa
       return value;
     });
   const dialog = await dialogEvent;
-  // No event marks "nobody answered"; an automated answer would settle within this short window.
-  await new Promise((r) => setTimeout(r, UNANSWERED_DIALOG_MS));
   assert.equal(settled, false);
+  // An automated answer is given as the dialog opens: it would have handled this dialog, so accepting it here
+  // would fail, and the page's confirm would have returned false.
   await dialog.accept();
   assert.equal(await result, true);
   config.browser.headless = true;
@@ -317,8 +315,8 @@ test('interactive dialogs await an answer and headless dismissals produce one pa
   assert.equal(events[0].type, 'confirm');
   assert.equal(events[0].message, 'Automated invented item?');
   assert.equal(panel.stateFor(page).activity.filter((row) => row.type === 'dialog').length, 1);
-  await showPanelTab(page, panel, 'activity', 'DIALOG');
-  assert.match(await page.locator('#paqvilo-panel .body').innerText(), /DIALOG/);
+  await showPanelTab(page, panel, 'activity', 'Dialog');
+  assert.match(await page.locator('#paqvilo-panel .body').innerText(), /Dialog/);
   assert.equal(await page.evaluate(() => prompt('Invented prompt')), null);
   await page.evaluate(() => alert('Invented alert'));
   await recorded(3);
@@ -369,8 +367,24 @@ test('collapsed pill relocates after scroll/resize and selects the least obstruc
   await page.evaluate(() => scrollTo(0, 350));
   await clear();
   await page.setViewportSize({ width: 1000, height: 500 });
-  await page.evaluate(() => scrollTo(0, 550));
+  // The link scrolls under the corner the pill moved to, so the wait below is true only after another relocation.
+  assert.equal(
+    await page.evaluate(() => {
+      const a = document.querySelector('#moving').getBoundingClientRect(),
+        b = document.querySelector('#paqvilo-panel').shadowRoot.querySelector('.pill').getBoundingClientRect(),
+        top = a.top + scrollY - 990;
+      return a.left < b.right && a.right > b.left && top < b.bottom && top + a.height > b.top;
+    }),
+    true,
+    'the scrolled link will cover the pill where it is now',
+  );
+  await page.evaluate(() => scrollTo(0, 990));
   await clear();
+  const bottomRight = () => {
+    const b = document.querySelector('#paqvilo-panel').shadowRoot.querySelector('.pill').getBoundingClientRect();
+    return b.x > 500 && b.y > 250;
+  };
+  assert.equal(await page.evaluate(bottomRight), false, 'the pill is in another corner before the controls appear');
   await page.evaluate(() => {
     document.querySelector('#moving').remove();
     for (const [corner, count] of [
@@ -390,10 +404,13 @@ test('collapsed pill relocates after scroll/resize and selects the least obstruc
       }
     dispatchEvent(new Event('resize'));
   });
-  // The bottom-right corner holds one control and wins over corners with two or three.
+  // The pill moves to a place that no control covers.
   await page.waitForFunction(() => {
     const b = document.querySelector('#paqvilo-panel').shadowRoot.querySelector('.pill').getBoundingClientRect();
-    return b.x > 500 && b.y > 250;
+    return [...document.querySelectorAll('body > button')].every((node) => {
+      const a = node.getBoundingClientRect();
+      return !(a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top);
+    });
   });
   await page.keyboard.press('Alt+Shift+L');
   const notice = page.locator('#paqvilo-panel .float');

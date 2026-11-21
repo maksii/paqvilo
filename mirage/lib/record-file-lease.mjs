@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID, randomBytes, createHash } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 
 const hashOf = (identity) =>
   createHash('sha256')
@@ -274,6 +275,18 @@ function renameThroughSharingHolds(io, from, to, beforeRetry = () => true, attem
       if (!sharingErrors.has(error?.code) || attempt === attempts - 1) throw error;
       // Cap exponential backoff at 100 ms: total requested waiting stays below ten seconds.
       Atomics.wait(wait, 0, 0, Math.min(2 ** Math.min(attempt + 1, 7), 100));
+    }
+  }
+}
+/** renameThroughSharingHolds for fs/promises-shaped io: the same codes, ceiling and backoff, without blocking
+ * the event loop. A replaced file closed a moment ago can still be open in a scanner or indexer. */
+export async function renameThroughSharingHoldsAsync(io, from, to, attempts = SHARING_RETRY_ATTEMPTS) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await io.rename(from, to);
+    } catch (error) {
+      if (!sharingErrors.has(error?.code) || attempt === attempts - 1) throw error;
+      await delay(Math.min(2 ** Math.min(attempt + 1, 7), 100));
     }
   }
 }

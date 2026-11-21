@@ -108,7 +108,7 @@ export function platformChangeDiagnostics({
       code: 'LIST_ODATA_FEED_REMOVED',
       count: feeds.length,
       items: listed(feeds.map((list) => `${list.name} (/_odata/${field(list.metadata, 'odata_entitysetname', '')})`)),
-      message: `${feeds.length} list(s) enable an OData feed. Power Pages removed list OData feeds by June 2026 (Learn, important changes and deprecations); migrate their callers to the Web API.`,
+      message: `${feeds.length} list(s) enable an OData feed. List OData feeds are deprecated, with their removal documented for June 2026 (Learn, important changes and deprecations), and the local runtime answers /_odata with the Page Not Found page unless observed.listODataFeeds is "served": migrate their callers to the Web API.`,
     });
   const unsecured = [
     ...lists.filter((list) => off(field(list.metadata, 'entitypermissionsenabled'))).map((list) => `list ${list.name}`),
@@ -124,7 +124,7 @@ export function platformChangeDiagnostics({
       code: 'TABLE_PERMISSIONS_ALWAYS_ENFORCED',
       count: unsecured.length,
       items: listed(unsecured),
-      message: `${unsecured.length} list(s) and form(s) turn Enable Table Permissions off. Since June 2026 Power Pages enforces table permissions on every form and list regardless of that setting (Learn, important changes and deprecations), and so does the local runtime: these components need table permissions for their users.`,
+      message: `${unsecured.length} list(s) and form(s) turn Enable Table Permissions off. Power Pages enforces table permissions on every form and list regardless of that setting from June 2026 (Learn, important changes and deprecations), and so does the local runtime: these components need table permissions for their users.`,
     });
   const found = new Set(),
     classic = new Set(),

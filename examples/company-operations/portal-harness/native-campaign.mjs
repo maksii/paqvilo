@@ -13,6 +13,7 @@ import { savePrivateJson } from './private-journal.mjs';
 import { captureNativeSnapshot, snapshotHash } from './native-capture.mjs';
 import { captureNativeRegistry } from './native-registry.mjs';
 import { nativeRegistrationFingerprint, recordedPluginPayloads } from '../plugins/mirage-runtime.mjs';
+import { cli } from '../cli.mjs';
 
 const load = async (file) => JSON.parse(await readFile(file, 'utf8'));
 const digest = (value) => createHash('sha256').update(stable(value)).digest('hex');
@@ -410,6 +411,15 @@ async function defaultChild(file) {
   });
 }
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
-  if (!process.argv[2]) throw new Error('Private native campaign configuration path required.');
-  console.log(JSON.stringify(await runNativeCampaign(await load(process.argv[2]))));
+  const {
+    positionals: [file],
+  } = cli(
+    `Usage: node portal-harness/native-campaign.mjs <private-campaign.json>
+
+Run from examples/company-operations. Changes the live Contact's web roles while it collects a resumable role
+campaign; authorized environments only. A relative path resolves from the working directory.`,
+    {},
+    { positionals: 1 },
+  );
+  console.log(JSON.stringify(await runNativeCampaign(await load(file))));
 }

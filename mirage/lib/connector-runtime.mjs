@@ -13,6 +13,7 @@
 // values, URLs, headers or bodies.
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import http from 'node:http';
+import { keepIdleConnections } from './idle-connections.mjs';
 import { DataError } from './data-error.mjs';
 import { compileDefinition, markConnectorDataverseSpan, validateDefinition } from './connector-definition.mjs';
 import { isLoopbackUrl, loopbackFetch } from './dataverse-webhooks.mjs';
@@ -20,8 +21,9 @@ import { DEAD_LETTER_SUFFIX } from './message-bus.mjs';
 import { localOrganizationService, validateServiceProfile } from './local-organization-service.mjs';
 import { parseExpand, parseSelect } from './odata-query.mjs';
 import { registerSettingParser } from './config-keys.mjs';
+import { CONNECTION_REFERENCE, connectionsSettingParser } from './connection-settings.mjs';
 import { registerPackExport } from './pack-exports.mjs';
-import { createScheduler, MAX_TIMER_DELAY, storeScheduler } from './runtime-clock.mjs';
+import { createScheduler, MAX_TIMER_DELAY, stampMs, storeScheduler } from './runtime-clock.mjs';
 import {
   applyResponsePolicies,
   assertContinuationOrigin,
@@ -686,6 +688,27 @@ function armDeadline(fire, budget) {
   return () => clearTimeout(timer);
 }
 
+// The answer of a data pack's connector operation or http fixture. It is project code the call would otherwise wait on
+// without end: one that has not settled within the call's budget fails the call with ProviderTimeout, and the call stops
+// waiting for it. What it throws is passed on.
+async function packAnswer(call, context, what) {
+  let disarm;
+  const expired = new Promise((_resolve, reject) => {
+    disarm = armDeadline(
+      () => reject(connectorError('ProviderTimeout', what + ' did not answer within the action time limit.')),
+      timeBudgetMs(context?.timeoutMs),
+    );
+  });
+  const pending = Promise.resolve().then(call);
+  // It may still reject after its call stopped waiting: that rejection has no call left to report it.
+  pending.catch(() => {});
+  try {
+    return await Promise.race([pending, expired]);
+  } finally {
+    disarm();
+  }
+}
+
 // The rejection loopbackFetch gives for a redirect answer (dataverse-webhooks.mjs), on the error or on its cause.
 const isRedirectRefusal = (error) => error?.code === 'LoopbackRedirect' || error?.cause?.code === 'LoopbackRedirect';
 
@@ -773,14 +796,14 @@ function fixtureProvider(fixtures) {
     capability: capability('fixture', { operations: ['Http'], requires: ['pack:httpFixtures'] }),
     async invoke(request, context) {
       return (
-        (await fixtureAnswer(fixtures, httpRequest(request, context.settings))) ??
+        (await fixtureAnswer(fixtures, httpRequest(request, context.settings), context)) ??
         fail('ConnectorNotConfigured', 'No pack http fixture matches this request.')
       );
     },
     async poll(location, request, context) {
       const statusUrl = statusUrlOf(location, request);
       return {
-        ...((await fixtureAnswer(fixtures, pollRequest(statusUrl, context.settings))) ??
+        ...((await fixtureAnswer(fixtures, pollRequest(statusUrl, context.settings), context)) ??
           fail('ConnectorNotConfigured', 'No pack http fixture matches the status request.')),
         statusUrl,
       };
@@ -788,10 +811,14 @@ function fixtureProvider(fixtures) {
   };
 }
 // The pack httpFixtures answer of a built request, or null when no fixture matches.
-async function fixtureAnswer(fixtures, req) {
+async function fixtureAnswer(fixtures, req, context) {
   const fixture = fixtures.find((f) => (f.method === '*' || same(f.method, req.method)) && f.url.test(req.url));
   if (!fixture) return null;
-  const answer = await fixture.respond(structuredClone(req));
+  const answer = await packAnswer(
+    () => fixture.respond(structuredClone(req)),
+    context,
+    'The pack http fixture ' + fixture.id,
+  );
   if (!isMap(answer)) fail('ProviderFailed', 'The http fixture returned no response object.');
   const nextLink = nextLinkOf(answer.body);
   return {
@@ -825,7 +852,7 @@ const SCRIPT_RESTORE =
 ) {
   const cached = new Map();
   const send = (req, context) =>
-    Promise.resolve(fixtureAnswer(fixtures, req)).then((answer) => answer ?? sendLoopback(req, context));
+    Promise.resolve(fixtureAnswer(fixtures, req, context)).then((answer) => answer ?? sendLoopback(req, context));
   const form = (grant, credentials, extra) =>
     new URLSearchParams({
       grant_type: grant,
@@ -887,7 +914,7 @@ const SCRIPT_RESTORE =
   }
   const variables = () => (store?.state ? effectiveEnvironmentVariables(store.state) : {});
   const reference = (value) => {
-    if (typeof value !== 'string' || !REFERENCE.test(value)) return value;
+    if (typeof value !== 'string' || !CONNECTION_REFERENCE.test(value)) return value;
     const [kind, name] = [value.slice(0, value.indexOf(':')), value.slice(value.indexOf(':') + 1)];
     if (kind === 'env') return process.env[name] ?? null;
     const entry = variables()[name.toLowerCase()];
@@ -956,6 +983,8 @@ const SCRIPT_RESTORE =
     connectors: connector.connectorIds,
     operations,
     blocked: connector.blocked,
+    // Compile warnings that apply to a connection without a static token (an OAuth flow that is not run locally).
+    tokenWarnings: (connector.diagnostics ?? []).filter((entry) => entry.severity === 'warning' && entry.tokenOnly),
     oauth:
       connector.auth.type === 'oauth'
         ? {
@@ -1057,7 +1086,7 @@ async function beginAuthorization(
   const verifier = encode(randomBytes(32)),
     challenge = encode(createHash('sha256').update(verifier).digest()),
     state = encode(randomBytes(16));
-  const server = http.createServer();
+  const server = keepIdleConnections(http.createServer());
   // A forgotten sign-in never keeps the process alive; the host's close() cancels it through pendingSignIns.
   server.unref();
   await new Promise((resolve, reject) => {
@@ -1203,14 +1232,19 @@ function packProvider(pack) {
     supportsOperation: (connectorId, operationId) =>
       Object.hasOwn(pack.connectors[connectorId]?.operations ?? {}, operationId),
     async invoke(request, context) {
-      const answer = await pack.connectors[request.connectorId].operations[request.operationId](
-        structuredClone({
-          connectorId: request.connectorId,
-          operationId: request.operationId,
-          parameters: request.parameters ?? {},
-          ...(request.nextLink ? { nextLink: request.nextLink } : {}),
-        }),
+      const answer = await packAnswer(
+        () =>
+          pack.connectors[request.connectorId].operations[request.operationId](
+            structuredClone({
+              connectorId: request.connectorId,
+              operationId: request.operationId,
+              parameters: request.parameters ?? {},
+              ...(request.nextLink ? { nextLink: request.nextLink } : {}),
+            }),
+            context,
+          ),
         context,
+        'The pack connector operation ' + request.connectorId + '.' + request.operationId,
       );
       if (!isMap(answer) || !Number.isInteger(answer.statusCode))
         fail('ProviderFailed', 'The pack connector returned no { statusCode, body } result.');
@@ -1348,6 +1382,8 @@ function approvalsProvider(store, { now, uuid }) {
   const requireStore = () =>
     store?.transact ? store : fail('ProviderUnavailable', 'The approvals provider needs the organization store.');
   const write = (fn) => requireStore().transact(() => fn(approvalsOf(store)), { nested: true });
+  // A stored date, held across a small backward step of the wall clock (runtime-clock.mjs stampMs).
+  const stamp = () => new Date(stampMs(store, now)).toISOString();
   const canWait = (context) => context.canSuspend || fail501();
   const fail501 = () => {
     throw new DataError(
@@ -1385,7 +1421,7 @@ function approvalsProvider(store, { now, uuid }) {
       itemLinkDescription: param(p, 'itemLinkDescription', wrapper) ?? null,
       status: 'Pending',
       responses: [],
-      requestDate: new Date(at).toISOString(),
+      requestDate: stamp(),
       timeoutAt: new Date(at + Math.max(1, context.waitTimeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS)).toISOString(),
       runId: context.runId ?? null,
       actionPath: context.actionPath ?? null,
@@ -1441,7 +1477,7 @@ function approvalsProvider(store, { now, uuid }) {
         const accepted = acceptedOutcomesOf(approval);
         if (!accepted.includes(outcome))
           throw new DataError(`The approval outcome must be one of: ${accepted.join(', ')}.`, 400, 'InvalidRequest');
-        const at = new Date(now()).toISOString();
+        const at = stamp();
         approval.answeredBy = [...answeredBy(approval), assignee];
         approval.responses.push({
           responder: responderOf(hasIdentity(responder) ? responder : assignee),
@@ -1462,7 +1498,7 @@ function approvalsProvider(store, { now, uuid }) {
         const approval = approvalNamed(all, id);
         if (approval?.status !== 'Pending') return false;
         approval.status = status;
-        approval.completionDate = new Date(now()).toISOString();
+        approval.completionDate = stamp();
         return true;
       });
     },
@@ -1987,7 +2023,10 @@ export function createConnectorRuntime({
       if (!registry.has(provider))
         fail('ConnectorNotConfigured', 'The connection names a provider that is not registered.');
       const resolvedPrincipal = principal ?? principalOf(connection?.principal);
+      // A token-only connector warning applies while the connection declares no static token reference.
+      const warnings = connection?.settings?.auth?.token ? [] : (registry.get(provider).tokenWarnings ?? []);
       return {
+        ...(warnings.length ? { warnings } : {}),
         connectorId,
         referenceLogicalName,
         connectionId: id ?? null,
@@ -2109,7 +2148,7 @@ export function createConnectorRuntime({
     const note = (status, error) =>
       diagnostic({
         code: 'CONNECTOR_INVOKE',
-        // Human facts (D-M-2 Findings): the operation, the Dataverse table it names (entityName), a sentence.
+        // Human facts (Findings): the operation, the Dataverse table it names (entityName), a sentence.
         name: operationId ?? connectorId,
         entity: typeof parameters?.entityName === 'string' ? parameters.entityName : null,
         message: `${operationId ?? 'An operation'} of ${connectorId} answered ${status}${errorDetail(error)}.`,
@@ -2331,122 +2370,8 @@ export function createConnectorRuntime({
 
 // ---- validators the project config and pack-export registries call
 
-const CREDENTIAL = /secret|password|key|token/i;
-const REFERENCE = /^(?:env|variable):[A-Za-z_][\w.-]*$/;
-function credentialFree(value, label, depth = 0) {
-  if (depth > 16) throw new Error(`${label} nests too deeply`);
-  if (Array.isArray(value)) return value.forEach((item, i) => credentialFree(item, `${label}[${i}]`, depth + 1));
-  if (!isMap(value)) return;
-  for (const [key, item] of Object.entries(value)) {
-    if (CREDENTIAL.test(key) && typeof item === 'string' && !REFERENCE.test(item))
-      throw new Error(`${label}.${key} must not hold a credential; use an env:NAME or variable: reference`);
-    credentialFree(item, `${label}.${key}`, depth + 1);
-  }
-}
-const PROVIDER = /^(?:dataverse|http|fixture|memory-queue|approvals|pack:[\w.-]+|custom-connector:[\w.-]+)$/;
-const AUTH_KEYS = ['apiKey', 'username', 'password', 'token', 'clientId', 'clientSecret'];
-function validateConnectionPrincipalAndEvidence(entry, at) {
-  const principal = entry.principal;
-  if (
-    principal !== undefined &&
-    !(typeof principal === 'string' && principal.trim()) &&
-    !(
-      isMap(principal) &&
-      Object.keys(principal).every((key) => ['pack', 'identity'].includes(key)) &&
-      typeof principal.identity === 'string' &&
-      principal.identity.trim() &&
-      (principal.pack === undefined || typeof principal.pack === 'string')
-    )
-  )
-    throw new Error(`${at}.principal must name a pack connection principal ({ pack, identity } or a name)`);
-  if (entry.evidence !== undefined && typeof entry.evidence !== 'string')
-    throw new Error(`${at}.evidence must be text`);
-}
-
-function validateConnectionAuth(at, auth) {
-  if (
-    auth !== undefined &&
-    (!isMap(auth) ||
-      Object.entries(auth).some(
-        ([key, value]) => !AUTH_KEYS.includes(key) || typeof value !== 'string' || !REFERENCE.test(value),
-      ))
-  )
-    throw new Error(`${at}.settings.auth takes ${AUTH_KEYS.join(', ')} as env:NAME or variable:NAME references only`);
-}
-
-function validateConnectionParameters(at, parameters) {
-  if (
-    parameters !== undefined &&
-    (!isMap(parameters) ||
-      Object.values(parameters).some((value) => !['string', 'number', 'boolean'].includes(typeof value)))
-  )
-    throw new Error(`${at}.settings.parameters must map connection parameter names to text, numbers or booleans`);
-}
-
-function validateConnectionRewrites(at, rewrites) {
-  if (!isMap(rewrites)) throw new Error(`${at}.settings.rewrites must map URL prefixes to local URL prefixes`);
-  for (const [from, to] of Object.entries(rewrites))
-    for (const url of [from, to]) {
-      let parsed;
-      try {
-        parsed = new URL(url);
-      } catch {
-        throw new Error(`${at}.settings.rewrites needs absolute http(s) URL prefixes`);
-      }
-      if (
-        !['http:', 'https:'].includes(parsed.protocol) ||
-        parsed.username ||
-        parsed.password ||
-        parsed.search ||
-        parsed.hash
-      )
-        throw new Error(
-          `${at}.settings.rewrites prefixes must be plain http(s) URLs without credentials, query or fragment`,
-        );
-    }
-}
-
-function validateConnectionSettings(entry, at) {
-  const settings = entry.settings ?? {};
-  if (!isMap(settings)) throw new Error(`${at}.settings must be an object`);
-  for (const key of Object.keys(settings))
-    if (!['rewrites', 'auth', 'parameters'].includes(key))
-      throw new Error(`${at}.settings.${key} is not a connection setting`);
-  validateConnectionAuth(at, settings.auth);
-  validateConnectionParameters(at, settings.parameters);
-  validateConnectionRewrites(at, settings.rewrites ?? {});
-  return settings;
-}
-
-/** Validates the project `connections` map; returns a plain copy. Credentials are never accepted as literals. */
-/* NOSONAR */ export function connectionSettings(value, label = 'connections') {
-  if (value === undefined) return {};
-  if (!isMap(value)) throw new Error(`${label} must map connection ids to local connections`);
-  const result = {};
-  for (const [id, entry] of Object.entries(value)) {
-    const at = `${label}.${id}`;
-    if (!id.trim() || id.length > 250 || ['__proto__', 'constructor', 'prototype'].includes(id))
-      throw new Error(`${label} has an invalid connection id`);
-    if (!isMap(entry)) throw new Error(`${at} must be an object`);
-    for (const key of Object.keys(entry))
-      if (!['connector', 'provider', 'principal', 'evidence', 'settings'].includes(key))
-        throw new Error(`${at}.${key} is not a connection setting`);
-    if (
-      entry.connector !== undefined &&
-      (typeof entry.connector !== 'string' || !/^[\w.-]{1,250}$/.test(entry.connector))
-    )
-      throw new Error(`${at}.connector must be a connector id`);
-    if (entry.provider !== undefined && (typeof entry.provider !== 'string' || !PROVIDER.test(entry.provider)))
-      throw new Error(
-        `${at}.provider must be dataverse, http, fixture, memory-queue, approvals, pack:<id> or custom-connector:<name>`,
-      );
-    validateConnectionPrincipalAndEvidence(entry, at);
-    const settings = validateConnectionSettings(entry, at);
-    credentialFree({ principal: entry.principal, evidence: entry.evidence, parameters: settings.parameters }, at);
-    result[id] = structuredClone(entry);
-  }
-  return result;
-}
+// The `connections` contract lives in connection-settings.mjs, so the config-load path validates it without this module.
+export { connectionSettings } from './connection-settings.mjs';
 
 const packFail = (packId, message) => {
   throw new Error(`Data pack ${packId}: ${message}`);
@@ -2512,5 +2437,5 @@ export const CONNECTOR_PACK_EXPORTS = {
   },
 };
 
-registerSettingParser('connections', (value, label) => (value == null ? value : connectionSettings(value, label)));
+registerSettingParser('connections', connectionsSettingParser);
 for (const [name, spec] of Object.entries(CONNECTOR_PACK_EXPORTS)) registerPackExport(name, spec);

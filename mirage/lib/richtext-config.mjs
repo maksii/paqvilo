@@ -4,6 +4,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { portalField } from './importer.mjs';
 import { validateLivePath } from './live.mjs';
+import { requiredArgument } from './required-argument.mjs';
 
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const diagnostic = (code, message) => ({ code, message });
@@ -21,7 +22,9 @@ const topKeys = new Set([
 ]);
 
 /** This accepts inert configuration JSON, never executable web-resource scripts. */
-export function validateRichTextConfiguration(bytes) {
+export function validateRichTextConfiguration(
+  bytes = requiredArgument('validateRichTextConfiguration(bytes)', 'the configuration bytes or text'),
+) {
   if (!Buffer.isBuffer(bytes)) bytes = Buffer.from(bytes);
   if (!bytes.length || bytes.length > 256 * 1024)
     throw failure('RICHTEXT_CONFIG_INVALID', 'Rich text JSON must be nonempty and bounded to 256 KiB.');

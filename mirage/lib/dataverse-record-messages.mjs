@@ -458,4 +458,25 @@ export function install(api) {
   register('FormatAddress', 'function', formatAddress, CSDL.FormatAddress);
 }
 
-export const EXTENSION = { name: 'record-messages', install };
+/** Capability record for the capability registry; dataverse-extensions.mjs adds the operations install registered. */
+function describe() {
+  return {
+    name: 'record-messages',
+    version: 1,
+    kind: 'dataverse-extension',
+    level: 'behaviour',
+    operations: [
+      {
+        name: 'FormatAddress',
+        level: 'contract',
+        reason: 'US layout only; the line layout is a guess.',
+      },
+    ],
+    requires: [],
+    principal: 'caller',
+    stateOwner: 'store',
+    lifecycle: 'per-request',
+  };
+}
+
+export const EXTENSION = { name: 'record-messages', install, describe };

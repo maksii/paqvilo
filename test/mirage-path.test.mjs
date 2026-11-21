@@ -1,9 +1,11 @@
+// @test-kind contract: catalogue Mirage settings and printed hints follow the lifecycle command's documented resolution
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { samePath, catalogueArgs } from '../lense/commands/mirage.mjs';
 import { toolkitCommandHint } from './toolkit-cli.mjs';
+import { paqviloPrefix } from '../lense/command-hint.mjs';
 import { tempDirSync } from './fixture.mjs';
 
 test('Mirage session paths compare by filesystem identity and the platform path case rules', (t) => {
@@ -55,7 +57,13 @@ test('catalogue Mirage settings fill only the options the command line leaves op
   );
   assert.deepEqual(catalogueArgs(cfg({ project }), { project: 'explicit.yml' }), { project: 'explicit.yml' });
   const missing = path.join(dir, 'missing.project.yml');
-  assert.throws(() => catalogueArgs(cfg({ project: missing }), {}), /does not exist.*paqvilo mirage init --site site/);
+  // The hint starts the way paqvilo runs here (lense/command-hint.mjs).
+  assert.throws(
+    () => catalogueArgs(cfg({ project: missing }), {}),
+    (error) =>
+      /does not exist/.test(error.message) &&
+      error.message.includes(`Create it with: ${paqviloPrefix().join(' ')} mirage init --site site`),
+  );
   const config = path.join(dir, 'external config.yml');
   const repo = path.join(dir, 'alternate checkout');
   const expectScopedRecommendation = (configuration, options = {}) =>

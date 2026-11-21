@@ -1,7 +1,12 @@
 /** Early owned-browser instrumentation. Arguments/text/values never enter evidence. */
 // NOSONAR: window preserves the browser WindowProxy boundary when page code reassigns globalThis.
-export function installDomProvenance({ slot, secret, binding, limit = 10000 } = {}) {
-  if (!slot || !secret || !binding || Object.hasOwn(window, slot)) return; // NOSONAR: preserve the page window receiver and binding
+// `secret` only unlocks the writer and never leaves this closure. Notifications carry `notifyKey`, which admits a
+// notification and nothing else, and every value page code could observe is built from own properties of
+// null-prototype objects, primitives and captured natives, so page accessors and `toJSON` hooks never see either key.
+export function installDomProvenance({ slot, secret, notifyKey, binding, releaseKey, limit = 10000 } = {}) {
+  // A slot that already exists belongs to the page (it cannot be replaced): the registry is refused for this document.
+  // The transport finds no function of this bootstrap there, so it claims nothing and reports the document.
+  if (!slot || !secret || !notifyKey || secret === notifyKey || !binding || Object.hasOwn(window, slot)) return; // NOSONAR: preserve the page window receiver and binding
   // Serialized into the page with this function, so it must stay nested here.
   /* NOSONAR */ function stackFrameOf(raw, match, methods, NativeEncoder) {
     const { apply, stringSlice, digest, subtle, encode } = methods;
@@ -12,14 +17,15 @@ export function installDomProvenance({ slot, secret, binding, limit = 10000 } = 
         break;
       }
     const url = apply(stringSlice, raw, [0, pathEnd]);
-    if (url.length > 4096) return { barrier: true };
+    if (url.length > 4096) return { __proto__: null, barrier: true };
     const key = digest ? apply(digest, subtle, ['SHA-256', apply(encode, new NativeEncoder(), [raw])]) : null;
-    return { url, key, line: +match[2], column: +match[3] };
+    return { __proto__: null, barrier: false, url, key, line: +match[2], column: +match[3] };
   }
   const apply = Reflect.apply,
     describe = Object.getOwnPropertyDescriptor,
     define = Object.defineProperty,
-    freeze = Object.freeze;
+    freeze = Object.freeze,
+    hasOwn = Object.hasOwn;
   const NativeError = Error,
     NativeMap = Map,
     NativeWeakMap = WeakMap,
@@ -30,7 +36,18 @@ export function installDomProvenance({ slot, secret, binding, limit = 10000 } = 
     NativeEvent = CustomEvent;
   const clone = structuredClone,
     stringify = JSON.stringify,
-    array = Array.isArray;
+    array = Array.isArray,
+    isSafeInteger = Number.isSafeInteger;
+  // A string primitive: JSON.stringify looks up `toJSON` only on objects.
+  const quote = (value) => apply(stringify, JSON, [typeof value === 'string' ? value : '']);
+  // One serialized callsite frame; a frame without integer coordinates is a barrier.
+  const frameText = (frame, urlKey) => {
+    if (!isSafeInteger(frame.line) || !isSafeInteger(frame.column)) return '{"barrier":true}';
+    const key = urlKey === null ? 'null' : quote(urlKey);
+    return (
+      '{"url":' + quote(frame.url) + ',"urlKey":' + key + ',"line":' + frame.line + ',"column":' + frame.column + '}'
+    );
+  };
   const stringSlice = String.prototype.slice,
     stringIndex = String.prototype.indexOf,
     stringIncludes = String.prototype.includes,
@@ -44,7 +61,8 @@ export function installDomProvenance({ slot, secret, binding, limit = 10000 } = 
     mapSet = Map.prototype.set,
     mapHas = Map.prototype.has,
     mapDelete = Map.prototype.delete,
-    mapClear = Map.prototype.clear;
+    mapClear = Map.prototype.clear,
+    mapForEach = Map.prototype.forEach;
   const mapSize = describe(Map.prototype, 'size').get;
   const weakGet = WeakMap.prototype.get,
     weakSet = WeakMap.prototype.set,
@@ -68,6 +86,7 @@ export function installDomProvenance({ slot, secret, binding, limit = 10000 } = 
     for (let i = 0; i < names.length; i++) if (a?.[names[i]] !== b?.[names[i]]) return false; // NOSONAR: array-like or mutated collection, index loop kept
     return true;
   };
+  const own = (object, key) => (object && typeof object === 'object' && hasOwn(object, key) ? object[key] : undefined);
   const get = (map, key) => apply(mapGet, map, [key]),
     has = (map, key) => apply(mapHas, map, [key]);
   const stored = (node) => apply(weakGet, records, [node]);
@@ -105,7 +124,6 @@ export function installDomProvenance({ slot, secret, binding, limit = 10000 } = 
   const maximum = Number.isSafeInteger(limit) && limit >= 0 ? Math.min(limit, 10000) : 10000;
   let closed = false,
     transportLimit = null,
-    claimed = false,
     truncated = false;
   /* NOSONAR: single-pass routine, splitting it would change shared state */ const stackFrames = () => {
     if (
@@ -113,11 +131,17 @@ export function installDomProvenance({ slot, secret, binding, limit = 10000 } = 
       !sameDescriptor(stackLimit, describe(NativeError, 'stackTraceLimit')) ||
       !sameDescriptor(errorString, describe(NativeError.prototype, 'toString'))
     )
-      return { frames: [], reason: 'custom-stack-format' };
+      return { __proto__: null, frames: { __proto__: null, length: 0 }, reason: 'custom-stack-format' };
     const stack = new NativeError().stack;
-    if (typeof stack !== 'string' || stack.length > 32768) return { frames: [], reason: 'stack-unavailable' };
-    const frameMethods = { apply, stringSlice, digest, subtle, encode };
-    const frames = [];
+    if (typeof stack !== 'string' || stack.length > 32768)
+      return { __proto__: null, frames: { __proto__: null, length: 0 }, reason: 'stack-unavailable' };
+    const frameMethods = { __proto__: null, apply, stringSlice, digest, subtle, encode };
+    // A null-prototype list: an index or `length` accessor on Array.prototype cannot observe or replace a frame.
+    const frames = { __proto__: null, length: 0 };
+    const push = (frame) => {
+      frames[frames.length] = frame;
+      frames.length++;
+    };
     let offset = apply(stringIndex, stack, ['\n']) + 1;
     for (let i = 1; offset > 0 && offset < stack.length && i < 25; i++) {
       const end = apply(stringIndex, stack, ['\n', offset]);
@@ -126,19 +150,19 @@ export function installDomProvenance({ slot, secret, binding, limit = 10000 } = 
       if (apply(stringIncludes, line, ['paqvilo-tool://'])) continue;
       const match = apply(regexExec, /((?:https?:\/\/|file:\/\/\/)[^\s]*):(\d+):(\d+)\)?$/, [line]);
       if (!match) {
-        frames[frames.length] = { barrier: true };
+        push({ __proto__: null, barrier: true });
         break;
       }
       const raw = match[1];
       const frame = stackFrameOf(raw, match, frameMethods, NativeEncoder);
       if (frame.barrier) {
-        frames[frames.length] = { barrier: true };
+        push(frame);
         break;
       }
-      frames[frames.length] = frame;
+      push(frame);
       if (frames.length >= 12) break;
     }
-    return { frames, reason: !frames.length || frames[0].barrier ? 'callsite-unavailable' : null };
+    return { __proto__: null, frames, reason: !frames.length || frames[0].barrier ? 'callsite-unavailable' : null };
   };
   const lazyStack = () => {
     let capture;
@@ -146,7 +170,7 @@ export function installDomProvenance({ slot, secret, binding, limit = 10000 } = 
   };
   const remember = (node, relationship, capture) => {
     if (closed || nodeType(node) !== 1 || apply(weakHas, records, [node])) return;
-    const record = { id: randomId(), relationship, reason: null, proof: null };
+    const record = { __proto__: null, id: randomId(), relationship, reason: null, proof: null, payload: null };
     apply(weakSet, records, [node, record]);
     if (apply(mapSize, pending, []) >= maximum) {
       truncated = true;
@@ -157,25 +181,41 @@ export function installDomProvenance({ slot, secret, binding, limit = 10000 } = 
     record.reason = observation.reason;
     if (observation.reason || typeof emit !== 'function') return;
     apply(mapSet, pending, [record.id, record]);
-    const frames = [];
-    let remaining = observation.frames.length;
+    // Serialized frames by index; the notification text is concatenated from JSON-quoted primitives only.
+    const frames = { __proto__: null };
+    const count = observation.frames.length;
+    let remaining = count;
     const finish = (index, frame) => {
       frames[index] = frame;
       if (--remaining || closed || !has(pending, record.id)) return;
+      let list = '';
+      for (let i = 0; i < count; i++) list += (i ? ',' : '') + frames[i];
       try {
-        apply(emit, window, [apply(stringify, JSON, [{ version: 1, secret, id: record.id, relationship, frames }])]); // NOSONAR: preserve the page window receiver and binding
+        // Kept for `pendingCallsites`: Chromium drops a notification sent while it re-attaches the DevTools session.
+        record.payload =
+          '{"version":1,"key":' +
+          quote(notifyKey) +
+          ',"id":' +
+          quote(record.id) +
+          ',"relationship":' +
+          quote(relationship) +
+          ',"frames":[' +
+          list +
+          ']}';
+        apply(emit, window, [record.payload]); // NOSONAR: preserve the page window receiver and binding
       } catch {
         record.reason = 'callsite-unavailable';
+        record.payload = null;
         apply(mapDelete, pending, [record.id]);
       }
     };
     for (let i = 0; i < observation.frames.length; i++) {
       const frame = observation.frames[i];
       if (frame.barrier) {
-        finish(i, { barrier: true });
+        finish(i, '{"barrier":true}');
         continue;
       }
-      const complete = (urlKey) => finish(i, { url: frame.url, urlKey, line: frame.line, column: frame.column });
+      const complete = (urlKey) => finish(i, frameText(frame, urlKey));
       if (!frame.key) {
         complete(null);
         continue;
@@ -193,6 +233,7 @@ export function installDomProvenance({ slot, secret, binding, limit = 10000 } = 
         ]);
       } catch {
         record.reason = 'callsite-unavailable';
+        record.payload = null;
         apply(mapDelete, pending, [record.id]);
       }
     }
@@ -448,20 +489,23 @@ export function installDomProvenance({ slot, secret, binding, limit = 10000 } = 
       return result;
     }
     const proof = apply(clone, window, [record.proof]); // NOSONAR: preserve the page window receiver and binding
-    if (typeof proof.reason === 'string' && apply(regexExec, /^[a-z][a-z0-9-]{0,127}$/, [proof.reason]))
-      result.availability[0] = { reason: proof.reason };
-    result.sourceRefs = proof.sourceRefs ?? [];
-    if (proof.limits) {
-      result.limits.truncated = result.limits.truncated || Boolean(proof.limits.truncated);
-      const reasons = proof.limits.reasons ?? [];
+    // Only own fields of the transport's proof: an Object.prototype accessor cannot add a reason, a limit or facts.
+    const reason = own(proof, 'reason'),
+      limits = own(proof, 'limits');
+    if (typeof reason === 'string' && apply(regexExec, /^[a-z][a-z0-9-]{0,127}$/, [reason]))
+      result.availability[0] = { reason };
+    result.sourceRefs = own(proof, 'sourceRefs') ?? [];
+    if (limits) {
+      result.limits.truncated = result.limits.truncated || Boolean(own(limits, 'truncated'));
+      const reasons = own(limits, 'reasons') ?? [];
       for (let i = 0; i < reasons.length; i++) result.limits.reasons[result.limits.reasons.length] = reasons[i]; // NOSONAR: array-like or mutated collection, index loop kept
     }
     const callsiteLabel = (relationship) => {
-      if (relationship === 'attached-by') return 'Observed script attachment callsite';
-      if (relationship === 'cloned-by') return 'Observed script clone callsite';
-      return 'Observed script creation callsite';
+      if (relationship === 'attached-by') return 'Inserted by this script';
+      if (relationship === 'cloned-by') return 'Copied by this script';
+      return 'Created by this script';
     };
-    const facts = proof.facts ?? [];
+    const facts = own(proof, 'facts') ?? [];
     for (let i = 0; i < facts.length; i++)
       result.facts[i] = {
         ...facts[i],
@@ -480,6 +524,7 @@ export function installDomProvenance({ slot, secret, binding, limit = 10000 } = 
     } catch {
       return false;
     }
+    record.payload = null;
     apply(mapDelete, pending, [id]);
     return true;
   };
@@ -495,6 +540,27 @@ export function installDomProvenance({ slot, secret, binding, limit = 10000 } = 
       if (!resolveRecord(id, proof)) return false;
       ready();
       return true;
+    },
+    // The notifications of the records still waiting for a proof, oldest first, for a transport that claims this
+    // document again after a DevTools re-attach. Only the claimed writer exposes them.
+    // One string primitive, newline-separated (a notification has no raw newline): the newest 2048 notifications
+    // within 8 MiB, oldest first, since the ones dropped during a re-attach are the newest.
+    pendingCallsites() {
+      if (closed) return '';
+      const payloads = { __proto__: null };
+      let total = 0;
+      apply(mapForEach, pending, [
+        (record) => {
+          if (typeof record.payload === 'string') payloads[total++] = record.payload;
+        },
+      ]);
+      let first = total,
+        size = 0;
+      while (first > 0 && total - first < 2048 && size + payloads[first - 1].length < 8 * 1024 * 1024)
+        size += payloads[--first].length + 1;
+      let text = '';
+      for (let i = first; i < total; i++) text += (i > first ? '\n' : '') + payloads[i];
+      return text;
     },
     resolveMany(entries) {
       if (!array(entries) || entries.length > 128 || closed) return 0;
@@ -526,10 +592,17 @@ export function installDomProvenance({ slot, secret, binding, limit = 10000 } = 
       const record = stored(node);
       return record?.relationship === 'created-by' || record?.relationship === 'cloned-by';
     },
+    // Every claim with the secret returns the same writer: a DevTools session that Chromium re-attaches to this
+    // unchanged document loses its earlier object handles and must claim the writer again.
     claim(value) {
-      if (claimed || value !== secret || closed) return null;
-      claimed = true;
-      return writer;
+      return value === secret && !closed ? writer : null;
+    },
+    // The backend retires a registry by its context when the writer never reached it: a claim still in flight, a claim
+    // that was never admitted, a context beyond its record limit. The key only closes this registry; it admits nothing.
+    release(value) {
+      if (!releaseKey || value !== releaseKey) return false;
+      writer.dispose();
+      return true;
     },
   });
   define(window, slot, { value: reader, configurable: false, writable: false }); // NOSONAR: preserve the page window receiver and binding

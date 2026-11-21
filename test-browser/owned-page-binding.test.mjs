@@ -156,14 +156,16 @@ test('owned binding rejects child contexts, foreign origins, oversized calls and
   assert.equal(await f.page.evaluate(() => window.inventedEcho('valid')), 'valid');
   assert.equal(await rejectionOf(f.page, 'x'.repeat(300)), 'The owned page request is too large.');
   assert.equal(await rejectionOf(f.page, 'large-result'), 'The owned page request failed.');
+  // Registered before the frame is added, so its navigation cannot be missed.
+  const childNavigated = f.page.waitForEvent('framenavigated', {
+    predicate: (frame) => frame !== f.page.mainFrame() && frame.url() === f.origin + '/child',
+  });
   await f.page.evaluate(() => {
     const frame = document.createElement('iframe');
     frame.src = '/child';
     document.body.append(frame);
   });
-  const child = await f.page.waitForEvent('framenavigated', {
-    predicate: (frame) => frame !== f.page.mainFrame(),
-  });
+  const child = await childNavigated;
   assert.equal(await child.evaluate(() => typeof inventedEcho), 'undefined');
   await child.evaluate(() => {
     const raw = Object.getOwnPropertyNames(window).find((name) => name.startsWith('__paqviloOwned_'));

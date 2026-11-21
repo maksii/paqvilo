@@ -3,6 +3,7 @@
 import { tableFields } from './solution-schema.mjs';
 import { guidKey } from './dataverse-values.mjs';
 import { inspectionBudget, chargeSchemaMetadata } from './inspection-budget.mjs';
+import { requiredArgument } from './required-argument.mjs';
 
 const own = (value, key) => Object.hasOwn(value, key);
 const plain = (value) => value && [Object.prototype, null].includes(Object.getPrototypeOf(value));
@@ -194,7 +195,12 @@ function summarizeTable(name, schema, tables, indexes, charge, counters) {
 }
 
 /** Inspect selected local tables against an imported schema, without changing data or inferring business policies. */
-export function summarizeDataset({ schema, tables = {}, existing = {} } = {}) {
+export function summarizeDataset(
+  { schema, tables = {}, existing = {} } = requiredArgument(
+    'summarizeDataset({ schema, tables })',
+    'an options object with schema and tables',
+  ),
+) {
   if (!plain(schema?.tables) || !plain(tables) || !plain(existing))
     invalid('schema.tables, tables and existing must be objects');
   const charge = inspectionBudget(2000000, 'Dataset coverage');

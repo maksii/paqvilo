@@ -348,6 +348,8 @@ describe('data scaffold CLI portal resolution', { concurrency: true }, () => {
     const source = await writePortal(path.join(dir, catalogue.sites[site].source));
     const solution = await writeSolution(path.join(dir, 'solution'));
     const result = await scaffoldCli([
+      '--config',
+      fileURLToPath(new URL('../../paqvilo.config.yml', import.meta.url)),
       '--site',
       site,
       '--env',

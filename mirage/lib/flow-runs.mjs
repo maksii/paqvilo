@@ -23,7 +23,7 @@
 // ponytail: in-memory wait timers re-armed by rearm(); move them to a due-time job row when committedJobs gains one.
 // The flowrun status text values and the Approvals timeout outputs are guesses of the native ones.
 import { DataError } from './data-error.mjs';
-import { storeScheduler, systemClock, systemIds } from './runtime-clock.mjs';
+import { stampMs, storeScheduler, systemClock, systemIds } from './runtime-clock.mjs';
 import { runTrackedFlow, triggerPrincipal } from './flow-runtime.mjs';
 import { runOwned } from './dataverse-transaction-context.mjs';
 import { flowVault } from './flow-vault.mjs';
@@ -96,6 +96,9 @@ export function createFlowRunStore({
   };
   const table = () => (store.state.tables.flowrun ??= []);
   const indexOf = (id) => table().findIndex((row) => same(row.flowrunid, id));
+  // start() appends each run, so table order is start order: newest first is that order reversed. starttime is for display
+  // only, so a wall clock stepped back (an NTP or WSL time resync) cannot reorder runs or make pruning drop the newest one.
+  const newestFirst = (rows) => rows.toReversed();
   // Joins the caller's transaction (a flow run inside a committed write) or runs its own.
   const write = (fn) => store.transact(fn, { nested: true });
   const notFound = () => new DataError('The flow run does not exist.', 404, 'FlowRunNotFound');
@@ -182,9 +185,7 @@ export function createFlowRunStore({
   function pruneIn() {
     const all = runs(),
       rows = table();
-    const tracked = rows
-      .filter((row) => all[row.flowrunid])
-      .sort((a, b) => String(b.starttime).localeCompare(String(a.starttime)));
+    const tracked = newestFirst(rows.filter((row) => all[row.flowrunid]));
     const remove = new Set(
       tracked
         .slice(keepRuns)
@@ -213,8 +214,10 @@ export function createFlowRunStore({
     let approvalsPruned = 0;
     const approvalMap = store.state.simulator?.approvals;
     if (approvalMap) {
+      // Newest completionDate first; equal dates (a stamp held across a small clock step) list the later created first.
       const finished = Object.entries(approvalMap)
         .filter(([, approval]) => approval?.status !== 'Pending')
+        .reverse()
         .sort(([, a], [, b]) => String(b?.completionDate ?? '').localeCompare(String(a?.completionDate ?? '')));
       for (const [id] of finished.slice(keepRuns)) {
         delete approvalMap[id];
@@ -259,7 +262,7 @@ export function createFlowRunStore({
       if (typeof processId !== 'string' || !processId)
         throw new DataError('A flow run needs its workflow id.', 400, 'InvalidRequest');
       const id = ids.uuid(),
-        at = iso(now());
+        at = iso(stampMs(store, clock));
       await write(() => {
         store.insertRow('flowrun', table(), {
           flowrunid: id,
@@ -427,7 +430,7 @@ export function createFlowRunStore({
       await write(() => {
         const { index, row, entry } = entryOf(runId);
         if (TERMINAL.has(row.status)) return; // a run cancelled meanwhile keeps its status
-        const at = now();
+        const at = stampMs(store, clock);
         setRow(index, {
           status,
           endtime: iso(at),
@@ -471,15 +474,14 @@ export function createFlowRunStore({
 
     get: (runId) => view(runId),
     list({ processId, status } = {}) {
-      return table()
-        .filter(
+      return newestFirst(
+        table().filter(
           (row) =>
             runs()[row.flowrunid] &&
             (!processId || same(row.workflowid, processId)) &&
             (!status || row.status === status),
-        )
-        .sort((a, b) => String(b.starttime).localeCompare(String(a.starttime)))
-        .map((row) => view(row.flowrunid, { journal: false }));
+        ),
+      ).map((row) => view(row.flowrunid, { journal: false }));
     },
     /** Waiting runs and their waits; state 'overdue' or 'pending' filters by timeoutAt against the clock. */
     waits({ state } = {}) {

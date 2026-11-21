@@ -1,16 +1,16 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { ownedFixture, removeFixtureDirectory } from '../../testing/owned-fixture.mjs';
 
 export async function profileFixture(t) {
   // Persistence refuses declared files below a symbolic link (lib/transactional-files.mjs), and a runner's temporary
   // directory may be one (a symlinked TMPDIR, macOS /var): start from its real path.
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-profile-')));
-  const cleanups = [];
-  t.after(async () => {
-    for (const cleanup of cleanups.reverse()) await cleanup();
-    await fs.rm(root, { recursive: true, force: true, maxRetries: 5 });
-  });
+  // Closers run in registration order, then the directory is removed; a closer registered after the test was
+  // stopped is still run (see ownedFixture).
+  const owner = ownedFixture(t);
+  owner.remove(() => removeFixtureDirectory(root));
   const sourceDir = path.join(root, 'portal'), solution = path.join(root, 'solution');
   const files = {
     'portal/website.yml': 'adx_websiteid: site\nadx_name: Profile fixture',
@@ -39,5 +39,5 @@ export async function profileFixture(t) {
     dev: { pages: 'profiles/dev.yml', environmentVariables: 'profiles/dev-settings.json', connectionReferences: 'profiles/dev-settings.json' },
     test: { pages: 'profiles/test.json', environmentVariables: 'profiles/test-settings.json', connectionReferences: 'profiles/test-settings.json' },
   } };
-  return { root, sourceDir, solutionRoots: [solution], projectRoot: root, deploymentProfiles, files, stateFile: path.join(root, '.paqvilo', 'state.json'), onCleanup: cleanup => cleanups.push(cleanup) };
+  return { root, sourceDir, solutionRoots: [solution], projectRoot: root, deploymentProfiles, files, stateFile: path.join(root, '.paqvilo', 'state.json'), onCleanup: (cleanup) => owner.add(cleanup) };
 }

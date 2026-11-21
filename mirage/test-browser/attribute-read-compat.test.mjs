@@ -40,7 +40,7 @@ test('Pages client API picklist updates dispatch change on the chosen radio', as
   ownedFixture(t).add(() => browser.close());
   const page = await browser.newPage();
   await page.setContent(
-    '<div class="crmEntityFormView" data-form-name="Example"><div class="control" data-logical-name="x_choice"><span id="x_choice" class="picklist"><input id="first" type="radio" name="choice" value="1" checked><input id="second" type="radio" name="choice" value="2"></span></div></div>',
+    '<div id="EntityFormControl_example"><div class="crmEntityFormView" data-form-name="Example"><div class="control" data-logical-name="x_choice"><span id="x_choice" class="picklist"><input id="first" type="radio" name="choice" value="1" checked><input id="second" type="radio" name="choice" value="2"></span></div></div></div>',
   );
   await page.addScriptTag({ path: fileURLToPath(new URL('../lib/pages-client-api.js', import.meta.url)) });
   const result = await page.evaluate(() => {
@@ -65,12 +65,12 @@ test('address composite editability ignores inherited dataset values and preserv
   ownedFixture(t).add(() => browser.close());
   const page = await browser.newPage();
   await page.setContent(
-    '<div class="crmEntityFormView" data-form-name="Example">' +
+    '<div id="EntityFormControl_example"><div class="crmEntityFormView" data-form-name="Example">' +
       '<div class="control" data-logical-name="missing"><textarea id="missing" class="addressCompositeControl" readonly></textarea></div>' +
       '<div class="control" data-logical-name="empty"><textarea id="empty" class="addressCompositeControl" readonly data-editable=""></textarea></div>' +
       '<div class="control" data-logical-name="disabled"><textarea id="disabled" class="addressCompositeControl" data-editable="False"></textarea></div>' +
       '<div class="control" data-logical-name="inherited"><textarea id="inherited" class="addressCompositeControl"></textarea></div>' +
-      '</div>',
+      '</div></div>',
   );
   await page.addScriptTag({ path: fileURLToPath(new URL('../lib/pages-client-api.js', import.meta.url)) });
   const result = await page.evaluate(() => {

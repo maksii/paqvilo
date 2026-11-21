@@ -1059,3 +1059,45 @@ test('a user-configured mapping publishes a lookup alias only when Solution meta
   const seededFields = webApiPolicy(portal, probeStore({ dataverseOnly: true }), 'x_probeentry').fields;
   assert.equal(seededFields.includes('_x_parentid_value'), true);
 });
+
+// @test-kind contract: observed.fetchLinkBudgetError selects the link-budget error text for every portal Web API FetchXML
+// budget overflow, including an authored query whose own joins exceed the budget (mirage/docs/dataverse-parity.md)
+test('observed fetchLinkBudgetError governs an authored FetchXML query that exceeds the link budget on its own', async (t) => {
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-link-budget-'));
+  ownedFixture(t).remove(async () => {
+    const resolved = await assertTemporaryDirectory(dir);
+    await fs.rm(resolved, { recursive: true, force: true });
+  });
+  await fs.writeFile(path.join(dir, 'website.yml'), 'adx_name: Link budget\nadx_websiteid: site');
+  await fs.writeFile(
+    path.join(dir, 'settings.sitesetting.yml'),
+    '- adx_name: Webapi/contact/enabled\n  adx_value: true\n- adx_name: Webapi/contact/fields\n  adx_value: fullname,companyid\n- adx_name: Webapi/account/enabled\n  adx_value: true\n- adx_name: Webapi/account/fields\n  adx_value: name\n- adx_name: Webapi/error/innererror\n  adx_value: true',
+  );
+  const links = Array.from(
+    { length: 16 },
+    (_, i) =>
+      `<link-entity name="account" from="accountid" to="companyid" alias="a${i}"><attribute name="name"/></link-entity>`,
+  ).join('');
+  const xml = `<fetch><entity name="contact"><attribute name="fullname"/>${links}</entity></fetch>`;
+  const messageWith = async (observed) => {
+    const app = await createSimulator({
+      sourceDir: dir,
+      stateFile: path.join(dir, `state-${observed ? 'counts' : 'default'}.json`),
+      initial: fixture(),
+      watch: false,
+      ...(observed ? { observed } : {}),
+    });
+    try {
+      const response = await fetch(app.url + '/_api/contacts?fetchXml=' + encodeURIComponent(xml));
+      assert.equal(response.status, 400);
+      return JSON.stringify(await response.json());
+    } finally {
+      await app.close();
+    }
+  };
+  assert.match(await messageWith(null), /Number of link entities in query exceeded maximum limit\./);
+  assert.match(
+    await messageWith({ fetchLinkBudgetError: 'reported-counts', evidence: 'invented site observation' }),
+    /Number of link entity: 16 exceed limit 15\. isReport=False\./,
+  );
+});

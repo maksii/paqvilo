@@ -4,8 +4,17 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { readManifest, validateCatalogue } from 'paqvilo/dataverse';
-import { parseArgs } from 'node:util';
-const { values: args } = parseArgs({ options: { schema: { type: 'string' }, out: { type: 'string' } } });
+import { cli } from './cli.mjs';
+const { values: args } = cli(
+  `Usage: node prepare-data.mjs [--schema FILE] [--out FILE]   (npm run data:prepare)
+
+Regenerates the fixture catalogue from the manifest. Offline.
+
+  --schema FILE  manifest to read (default: dataverse/manifest.json in this example)
+  --out FILE     output file (default: data/catalogue.json in this example)
+Relative paths given as arguments resolve from the working directory.`,
+  { schema: { type: 'string' }, out: { type: 'string' } },
+);
 
 const project = path.dirname(fileURLToPath(import.meta.url)),
   schema = await readManifest(args.schema ? path.resolve(args.schema) : path.join(project, 'dataverse/manifest.json'));

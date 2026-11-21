@@ -1,7 +1,8 @@
 // @test-kind contract: Paqvilo's own simulator administration, CLI, configuration and runtime behaviour
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AuditLog, auditQuery, auditText } from '../lib/audit-log.mjs';
+import { AuditLog, auditQuery, auditText, hostMonotonicMs } from '../lib/audit-log.mjs';
+import { execFileSync } from 'node:child_process';
 import { redactSecrets } from '../lib/sim-messaging-routes.mjs';
 import { workerAnswer } from './support/worker-answer.mjs';
 
@@ -539,4 +540,28 @@ test('auditText redacts a secret attribute value that has no closing quote and a
     ],
   ];
   for (const [input, expected] of cases) assert.equal(auditText(input), expected, input);
+});
+
+test("an audit entry records its start on the host's monotonic clock, which another process on the host reads too", () => {
+  const audit = new AuditLog();
+  const before = hostMonotonicMs();
+  audit.begin({ kind: 'api', path: '/_api/x_items' }).finish({ status: 200 });
+  const after = hostMonotonicMs();
+  const [entry] = audit.export().items;
+  assert.ok(entry.startedHostMs >= before && entry.startedHostMs <= after, JSON.stringify({ before, entry, after }));
+  assert.equal(typeof JSON.parse(JSON.stringify(entry)).startedHostMs, 'number', 'the export stays JSON');
+  // The export's own reading, taken while serving, lets a client prove it reads the same clock.
+  const bracket = hostMonotonicMs();
+  const { hostMs } = audit.export();
+  assert.ok(hostMs >= bracket && hostMs <= hostMonotonicMs(), JSON.stringify({ bracket, hostMs }));
+  // A loopback runner is another process: its reading falls between two of this process's readings.
+  const child = Number(
+    execFileSync(process.execPath, [
+      '--input-type=module',
+      '-e',
+      `import { hostMonotonicMs } from ${JSON.stringify(new URL('../lib/audit-log.mjs', import.meta.url).href)};` +
+        'process.stdout.write(String(hostMonotonicMs()));',
+    ]),
+  );
+  assert.ok(child >= after && child <= hostMonotonicMs(), JSON.stringify({ after, child }));
 });

@@ -63,7 +63,9 @@ async function failingStartup(t, options) {
 
 test('a startup that fails after host composition closes the composed providers and owned resources', async (t) => {
   const calls = [];
-  await assert.rejects(failingStartup(t, { packs: [storagePack(calls)] }), { message: 'Preset not found.' });
+  await assert.rejects(failingStartup(t, { packs: [storagePack(calls)] }), {
+    message: `Preset 'no-such-preset' not found; GET /_sim/api/presets lists this runtime's presets and paqvilo mirage --help the registry presets.`,
+  });
   assert.deepEqual(
     calls.toSorted((a, b) => a.localeCompare(b)),
     ['owned resource closed', 'provider closed'],
@@ -73,7 +75,10 @@ test('a startup that fails after host composition closes the composed providers 
 test('a failure while closing after a failed startup keeps the startup error and lists the close failure', async (t) => {
   const calls = [];
   const failure = await failingStartup(t, { packs: [storagePack(calls, { failClose: true })] }).catch((error) => error);
-  assert.equal(failure.message, 'Preset not found.');
+  assert.equal(
+    failure.message,
+    `Preset 'no-such-preset' not found; GET /_sim/api/presets lists this runtime's presets and paqvilo mirage --help the registry presets.`,
+  );
   // The host reports its failed close steps as an aggregate; the provider's own message is in it.
   assert.ok(failure.cleanupErrors.length > 0);
   assert.ok(failure.cleanupErrors.flatMap(messagesOf).includes('Invented provider close failed.'));

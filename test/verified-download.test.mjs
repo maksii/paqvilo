@@ -731,3 +731,52 @@ test('a tampered cache and a tampered download fail and leave no archive behind'
   });
   assert.deepEqual(await fs.readdir(directory), []);
 });
+
+// @test-kind tooling: zip extraction gives the same result whatever module path and PATH the caller's shell left behind
+test(
+  'zip extraction ignores an inherited PowerShell module path and a PATH without archive tools',
+  { skip: process.platform !== 'win32' },
+  async (t) => {
+    const { extractZipOnWindows } = await import('../scripts/verified-download.mjs');
+    const { spawnSync } = await import('node:child_process');
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-zip-extraction-'));
+    ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
+    const source = path.join(root, 'source', 'reference', 'lib');
+    await fs.mkdir(source, { recursive: true });
+    await fs.writeFile(path.join(source, 'Invented.dll'), 'Invented archive member');
+    const archive = path.join(root, 'sdk.zip');
+    const packed = spawnSync(
+      path.join(process.env.SystemRoot, 'System32', 'tar.exe'),
+      ['-a', '-cf', archive, '-C', path.join(root, 'source'), 'reference'],
+      { encoding: 'utf8', windowsHide: true },
+    );
+    assert.equal(packed.status, 0, packed.stderr);
+    const destination = path.join(root, 'unpacked');
+    const empty = path.join(root, 'empty');
+    await fs.mkdir(destination);
+    await fs.mkdir(empty);
+    // What a Windows PowerShell child inherits from PowerShell 7: that version's modules first, whose Archive module
+    // Windows PowerShell cannot run. PATH names no tool at all.
+    const hostile = {
+      SystemRoot: process.env.SystemRoot,
+      PSModulePath: [
+        path.join(process.env.ProgramFiles ?? 'C:/Program Files', 'PowerShell', '7', 'Modules'),
+        empty,
+      ].join(';'),
+      PATH: empty,
+    };
+    extractZipOnWindows(archive, destination, { env: hostile, stdio: 'pipe' });
+    assert.equal(
+      await fs.readFile(path.join(destination, 'reference', 'lib', 'Invented.dll'), 'utf8'),
+      'Invented archive member',
+    );
+    assert.throws(
+      () => extractZipOnWindows(archive, destination, { env: { PATH: empty }, stdio: 'pipe' }),
+      /SystemRoot/,
+    );
+    assert.throws(
+      () => extractZipOnWindows(path.join(root, 'absent.zip'), destination, { env: hostile, stdio: 'pipe' }),
+      /could not extract absent\.zip/,
+    );
+  },
+);

@@ -91,8 +91,17 @@ export function resolveDeploymentProfiles(
   return result;
 }
 
-/** A null pin follows config defaults; {profile:null} explicitly selects no profile. */
-export function profileSelection(config, pin = null) {
+function unconfiguredProfileMessage(config, profile, pinStateFile) {
+  if (!pinStateFile) return 'Select a configured deployment profile.';
+  const configured = Object.keys(config.profiles).join(', ') || 'none';
+  return `Select a configured deployment profile: the locally pinned profile ${JSON.stringify(String(profile))} is not configured (configured: ${configured}). Remove simulator.deploymentProfilePin from ${pinStateFile}, or restore the profile.`;
+}
+
+/**
+ * A null pin follows config defaults; {profile:null} explicitly selects no profile. `pinStateFile` names the state file
+ * a restored pin came from, so a pin that no longer matches the configuration names its remedy.
+ */
+export function profileSelection(config, pin = null, { pinStateFile = null } = {}) {
   if (pin !== null) {
     keys(pin, ['profile', 'enabled'], 'Deployment profile pin');
     if (!Object.hasOwn(pin, 'profile')) fail('Deployment profile pin requires profile (an ID or null).');
@@ -100,7 +109,7 @@ export function profileSelection(config, pin = null) {
   }
   const profile = pin === null ? config.default : pin.profile;
   if (profile !== null && (typeof profile !== 'string' || !Object.hasOwn(config.profiles, profile)))
-    fail('Select a configured deployment profile.');
+    fail(unconfiguredProfileMessage(config, profile, pin !== null && pinStateFile));
   const sources = profile === null ? {} : config.profiles[profile];
   const enabled = Object.fromEntries(
     PROFILE_SECTIONS.map((section) => [
@@ -229,8 +238,8 @@ function profileDiagnostics(unset) {
   ];
 }
 
-export async function loadDeploymentProfiles(config, pin = null) {
-  const selection = profileSelection(config, pin);
+export async function loadDeploymentProfiles(config, pin = null, options = {}) {
+  const selection = profileSelection(config, pin, options);
   const loaded = new Map(),
     environmentVariables = {},
     connectionReferences = [];
@@ -275,6 +284,37 @@ export async function loadDeploymentProfiles(config, pin = null) {
     fingerprint: createHash('sha256')
       .update(JSON.stringify({ profile: selection.profile, enabled: selection.enabled, contents }))
       .digest('hex'),
+  };
+}
+
+/**
+ * The active profile with its EnvironmentVariables limited to the Solution's definitions (`{ schemaName }` rows):
+ * types and definitions are never invented, so an entry without a definition changes nothing, is not counted, and is
+ * a DEPLOYMENT_PROFILE_VARIABLE_UNDEFINED warning naming the profile and the schema name. Repeatable as the
+ * definitions change: it always starts from the entries the profile files loaded.
+ */
+export function withDefinedVariables(active, definitions = []) {
+  const loaded = active.loadedEnvironmentVariables ?? active.environmentVariables ?? {};
+  const defined = new Set(definitions.map((definition) => String(definition.schemaName).toLowerCase()));
+  const environmentVariables = {},
+    undefinedNames = [];
+  for (const [name, value] of Object.entries(loaded))
+    if (defined.has(name.toLowerCase())) environmentVariables[name] = value;
+    else undefinedNames.push(name);
+  return {
+    ...active,
+    loadedEnvironmentVariables: loaded,
+    environmentVariables,
+    diagnostics: [
+      ...(active.diagnostics ?? []).filter((entry) => entry.code !== 'DEPLOYMENT_PROFILE_VARIABLE_UNDEFINED'),
+      ...undefinedNames.map((schemaName) => ({
+        code: 'DEPLOYMENT_PROFILE_VARIABLE_UNDEFINED',
+        severity: 'warning',
+        profile: active.profile ?? null,
+        schemaName,
+        message: `Deployment profile ${active.profile} sets environment variable ${schemaName}, which no Solution defines; it changes nothing. Export its definition with the Solution or remove the entry.`,
+      })),
+    ],
   };
 }
 

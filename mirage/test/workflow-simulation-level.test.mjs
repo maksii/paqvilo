@@ -1,3 +1,4 @@
+// @test-kind contract: simulation levels and runtime-owned run history are Paqvilo's design; no native capture is cited
 // A classic background workflow at simulation level: its run history (workflowlog, as asyncoperation) is runtime-owned, so a
 // project DATA file that owns only the business table does not fail the run with SimulationDataTargetRequired.
 import test from 'node:test';
@@ -14,6 +15,7 @@ import { createScheduler, fixedClock } from '../lib/runtime-clock.mjs';
 import { loadPack } from '../lib/preset-registry.mjs';
 import { createSimulationPersistence } from '../lib/simulation-persistence.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 
 const WORKFLOW = '77777777-7777-4777-8777-0000000000b1';
 const FACT = {
@@ -31,56 +33,61 @@ const FACT = {
   xaml: '<Activity />',
 };
 
-test('a classic workflow on Create completes its job at simulation level with a DATA file owning only the business table', async (t) => {
-  const directory = await makeTemporaryDirectory(path.join(tmpdir(), 'paqvilo-wf-sim-'));
-  ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
-  await fs.writeFile(path.join(directory, 'records.json'), JSON.stringify({ tables: { x_widget: [] } }));
-  await fs.writeFile(
-    path.join(directory, 'pack.mjs'),
-    `export default {id:'invented',name:'Invented',description:'Invented fixture',matches:()=>true,presets:()=>({}),
+// Hang guard only: it drives a runtime, the CLI or child processes through this file's fixtures; on a loaded slow host that is slow, not hung.
+test(
+  'a classic workflow on Create completes its job at simulation level with a DATA file owning only the business table',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const directory = await makeTemporaryDirectory(path.join(tmpdir(), 'paqvilo-wf-sim-'));
+    ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
+    await fs.writeFile(path.join(directory, 'records.json'), JSON.stringify({ tables: { x_widget: [] } }));
+    await fs.writeFile(
+      path.join(directory, 'pack.mjs'),
+      `export default {id:'invented',name:'Invented',description:'Invented fixture',matches:()=>true,presets:()=>({}),
     dataFiles:[{file:'records.json',tables:{x_widget:{path:['tables','x_widget'],idColumn:'x_widgetid'}}}]};`,
-  );
-  const pack = await loadPack(path.join(directory, 'pack.mjs'));
-  const storageAdapter = await createSimulationPersistence({
-    settings: { level: 'simulation' },
-    packs: [pack],
-    stateFile: path.join(directory, '.runtime', 'state.json'),
-  });
-  const state = emptyState();
-  state.mappings.x_widget = {
-    logicalName: 'x_widget',
-    entitySet: 'x_widgets',
-    idColumn: 'x_widgetid',
-    nameColumn: 'x_name',
-    fields: { x_name: { type: 'string' } },
-  };
-  state.tables.x_widget = [];
-  const store = await new DataStore({
-    file: path.join(directory, '.runtime', 'state.json'),
-    state,
-    storageAdapter,
-  }).init();
-  const scheduler = createScheduler({ clock: fixedClock(), manual: true });
-  const handlers = workflowHandlers([
-    { id: 'invented', workflows: { InventedTriage: async () => ({ message: 'triaged' }) } },
-  ]);
-  const core = await createOrganizationRuntime({
-    store,
-    scheduler,
-    settings: dataverseSettings({ enabled: false }),
-    extensions: [...EXTENSIONS, workflowExtension({ facts: [FACT], handlers, diagnostic: () => {} })],
-  });
-  ownedFixture(t).add(() => core.close());
-  storageAdapter.activate(store.state);
+    );
+    const pack = await loadPack(path.join(directory, 'pack.mjs'));
+    const storageAdapter = await createSimulationPersistence({
+      settings: { level: 'simulation' },
+      packs: [pack],
+      stateFile: path.join(directory, '.runtime', 'state.json'),
+    });
+    const state = emptyState();
+    state.mappings.x_widget = {
+      logicalName: 'x_widget',
+      entitySet: 'x_widgets',
+      idColumn: 'x_widgetid',
+      nameColumn: 'x_name',
+      fields: { x_name: { type: 'string' } },
+    };
+    state.tables.x_widget = [];
+    const store = await new DataStore({
+      file: path.join(directory, '.runtime', 'state.json'),
+      state,
+      storageAdapter,
+    }).init();
+    const scheduler = createScheduler({ clock: fixedClock(), manual: true });
+    const handlers = workflowHandlers([
+      { id: 'invented', workflows: { InventedTriage: async () => ({ message: 'triaged' }) } },
+    ]);
+    const core = await createOrganizationRuntime({
+      store,
+      scheduler,
+      settings: dataverseSettings({ enabled: false }),
+      extensions: [...EXTENSIONS, workflowExtension({ facts: [FACT], handlers, diagnostic: () => {} })],
+    });
+    ownedFixture(t).add(() => core.close());
+    storageAdapter.activate(store.state);
 
-  await store.create('x_widget', { x_name: 'kept' }, { admin: true });
-  const job = () => store.tableRows('asyncoperation').find((row) => row.name === 'Invented triage');
-  for (let round = 0; round < 10 && job()?.statecode !== 3; round += 1) await scheduler.runDue();
-  assert.deepEqual([job().statecode, job().statuscode, job().message], [3, 30, 'triaged']);
-  assert.equal(store.tableRows('workflowlog').length, 1, 'the run logged its workflowlog row');
-  assert.equal(
-    JSON.parse(await fs.readFile(path.join(directory, 'records.json'), 'utf8')).tables.x_widget.length,
-    1,
-    'the business row went to DATA',
-  );
-});
+    await store.create('x_widget', { x_name: 'kept' }, { admin: true });
+    const job = () => store.tableRows('asyncoperation').find((row) => row.name === 'Invented triage');
+    for (let round = 0; round < 10 && job()?.statecode !== 3; round += 1) await scheduler.runDue();
+    assert.deepEqual([job().statecode, job().statuscode, job().message], [3, 30, 'triaged']);
+    assert.equal(store.tableRows('workflowlog').length, 1, 'the run logged its workflowlog row');
+    assert.equal(
+      JSON.parse(await fs.readFile(path.join(directory, 'records.json'), 'utf8')).tables.x_widget.length,
+      1,
+      'the business row went to DATA',
+    );
+  },
+);

@@ -4,7 +4,7 @@ import { idOf, argsOf, rowOf } from './dataverse-message-context.mjs';
 // DownloadReportDefinition returns the stored definition text, and nothing runs a report.
 import { DataError } from './data-error.mjs';
 import { componentsOf } from './dataverse-solution-messages.mjs';
-import { privilegeDeniedError, privilegeName, uuidV5 } from './dataverse-security.mjs';
+import { privilegeName, uuidV5 } from './dataverse-security.mjs';
 import { contextUrl } from './dataverse-odata.mjs';
 
 const ZERO_GUID = '00000000-0000-0000-0000-000000000000';
@@ -29,7 +29,9 @@ function operations(api) {
   const write = (fn) => api.change(() => store.transact(fn, { isolated: true }));
   const need = (c, logical, right) => {
     const privilege = privilegeName(right, api.principals.privilegeNoun(logical));
-    if (!(api.principals.privileges(c.user).get(privilege) > 0)) throw privilegeDeniedError(c.user, privilege, logical); // NOSONAR: operand can be NaN or undefined, the negated test differs
+    // A missing privilege reads undefined: only a positive depth grants it.
+    const granted = api.principals.privileges(c.user).get(privilege) > 0;
+    if (!granted) throw api.principals.deniedError(c.user, privilege, logical);
   };
   const respond = (c, name, payload) => ({
     status: 200,
@@ -279,4 +281,31 @@ export function install(api) {
   for (const op of operations(api)) api.registry.register(op);
 }
 
-export const EXTENSION = { name: 'dataverse-app-messages', install };
+/** Capability record for the capability registry; dataverse-extensions.mjs adds the operations install registered. */
+function describe() {
+  return {
+    name: 'dataverse-app-messages',
+    version: 1,
+    kind: 'dataverse-extension',
+    level: 'behaviour',
+    reason: 'App components and report rows; report rendering is not simulated.',
+    operations: [
+      {
+        name: 'ValidateApp',
+        level: 'contract',
+        reason: 'No component checks: every app validates clean.',
+      },
+      {
+        name: 'GetReportHistoryLimit',
+        level: 'contract',
+        reason: 'A fixed stand-in of 0: no snapshot history is kept.',
+      },
+    ],
+    requires: [],
+    principal: 'caller',
+    stateOwner: 'store',
+    lifecycle: 'per-request',
+  };
+}
+
+export const EXTENSION = { name: 'dataverse-app-messages', install, describe };

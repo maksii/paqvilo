@@ -1,3 +1,4 @@
+// @test-kind contract: Mirage's own source-map and original-byte debugging settings and budgets
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
@@ -8,6 +9,7 @@ import { parseSetting, runtimeOptions, runtimeIdentity } from '../lib/config-key
 import { runWithSourceDebugging, debugScript } from '../lib/source-debug.mjs';
 import { createModelDrivenHandler } from '../lib/model-driven/http.mjs';
 import { fileSourceMapEstimate } from '../../lense/source-map.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 
 test('debug metadata policy stays isolated across concurrent runtime requests', async () => {
   const original = 'window.invented = true;';
@@ -31,55 +33,69 @@ test('sourceMaps validates settings, propagates all scopes and invalidates runti
   assert.notDeepEqual(runtimeIdentity({ sourceMaps: true }), runtimeIdentity({ sourceMaps: false }));
 });
 
-test('portal and model-driven assets expose file-backed maps or original bytes when explicitly disabled', async (t) => {
-  for (const sourceMaps of [true, false]) {
-    await t.test(String(sourceMaps), async (t) => {
-      const { root, runtime, script, style, resources } = await sourceDebugFixture(t, { sourceMaps });
-      const html = await fetch(runtime.url).then((response) => response.text());
-      assert.equal(html.includes('sourceURL='), sourceMaps, 'inline template debugger trailers follow the same policy');
-      assert.equal(html.includes('sourceMappingURL='), sourceMaps);
-      for (const [route, source, original] of [
-        ['/debug.js', 'portal/web-files/debug.js', script],
-        ['/debug.css', 'portal/web-files/debug.css', style],
-        [resources.find((item) => item.name === 'x_/debug.js').url, 'solution/WebResources/debug.js', script],
-        [resources.find((item) => item.name === 'x_/debug.css').url, 'solution/WebResources/debug.css', style],
-      ]) {
-        const response = await fetch(runtime.url + route);
-        assert.equal(response.status, 200, route);
-        const body = await response.text();
-        if (!sourceMaps) assert.equal(body, original, route);
-        else {
-          const encoded = /sourceMappingURL=data:application\/json;charset=utf-8;base64,([A-Za-z0-9+/=]+)/.exec(
-            body,
-          )?.[1];
-          assert.ok(encoded, route);
-          const map = JSON.parse(Buffer.from(encoded, 'base64').toString());
-          assert.deepEqual(map.sources, [pathToFileURL(await fs.realpath(path.join(root, source))).href]);
-          assert.deepEqual(map.sourcesContent, [original]);
+// Hang guard only: it drives a runtime, the CLI or child processes through this file's fixtures; on a loaded slow host that is slow, not hung.
+test(
+  'portal and model-driven assets expose file-backed maps or original bytes when explicitly disabled',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    for (const sourceMaps of [true, false]) {
+      await t.test(String(sourceMaps), { timeout: SCENARIO_HANG_GUARD_MS }, async (t) => {
+        const { root, runtime, script, style, resources } = await sourceDebugFixture(t, { sourceMaps });
+        const html = await fetch(runtime.url).then((response) => response.text());
+        assert.equal(
+          html.includes('sourceURL='),
+          sourceMaps,
+          'inline template debugger trailers follow the same policy',
+        );
+        assert.equal(html.includes('sourceMappingURL='), sourceMaps);
+        for (const [route, source, original] of [
+          ['/debug.js', 'portal/web-files/debug.js', script],
+          ['/debug.css', 'portal/web-files/debug.css', style],
+          [resources.find((item) => item.name === 'x_/debug.js').url, 'solution/WebResources/debug.js', script],
+          [resources.find((item) => item.name === 'x_/debug.css').url, 'solution/WebResources/debug.css', style],
+        ]) {
+          const response = await fetch(runtime.url + route);
+          assert.equal(response.status, 200, route);
+          const body = await response.text();
+          if (!sourceMaps) assert.equal(body, original, route);
+          else {
+            const encoded = /sourceMappingURL=data:application\/json;charset=utf-8;base64,([A-Za-z0-9+/=]+)/.exec(
+              body,
+            )?.[1];
+            assert.ok(encoded, route);
+            const map = JSON.parse(Buffer.from(encoded, 'base64').toString());
+            assert.deepEqual(map.sources, [pathToFileURL(await fs.realpath(path.join(root, source))).href]);
+            assert.deepEqual(map.sourcesContent, [original]);
+          }
+          assert.equal((await fetch(runtime.url + route, { method: 'HEAD' })).status, 200);
         }
-        assert.equal((await fetch(runtime.url + route, { method: 'HEAD' })).status, 200);
-      }
-    });
-  }
-});
+      });
+    }
+  },
+);
 
-test('oversized generated model-driven maps are omitted before allocation and source reload restores debugging', async (t) => {
-  const { root, runtime, resources, script } = await sourceDebugFixture(t);
-  const file = path.join(root, 'solution/WebResources/debug.js');
-  const route = runtime.url + resources.find((item) => item.name === 'x_/debug.js').url;
-  const original = '\n'.repeat(2 * 1024 * 1024);
-  await fs.writeFile(file, original);
-  await runtime.reload();
-  assert.equal(await fetch(route).then((response) => response.text()), original);
-  assert.ok(runtime.state().diagnostics.some((item) => item.code === 'MODEL_SOURCE_MAP_LIMIT'));
-  const mapped = script + '\n//# sourceMappingURL=data:application/json;base64,e30=\n';
-  await fs.writeFile(file, mapped);
-  await runtime.reload();
-  assert.equal(await fetch(route).then((response) => response.text()), mapped, 'authored maps remain authoritative');
-  await fs.writeFile(file, script);
-  await runtime.reload();
-  assert.match(await fetch(route).then((response) => response.text()), /sourceMappingURL=/);
-});
+// Hang guard only: it drives a runtime, the CLI or child processes through this file's fixtures; on a loaded slow host that is slow, not hung.
+test(
+  'oversized generated model-driven maps are omitted before allocation and source reload restores debugging',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const { root, runtime, resources, script } = await sourceDebugFixture(t);
+    const file = path.join(root, 'solution/WebResources/debug.js');
+    const route = runtime.url + resources.find((item) => item.name === 'x_/debug.js').url;
+    const original = '\n'.repeat(2 * 1024 * 1024);
+    await fs.writeFile(file, original);
+    await runtime.reload();
+    assert.equal(await fetch(route).then((response) => response.text()), original);
+    assert.ok(runtime.state().diagnostics.some((item) => item.code === 'MODEL_SOURCE_MAP_LIMIT'));
+    const mapped = script + '\n//# sourceMappingURL=data:application/json;base64,e30=\n';
+    await fs.writeFile(file, mapped);
+    await runtime.reload();
+    assert.equal(await fetch(route).then((response) => response.text()), mapped, 'authored maps remain authoritative');
+    await fs.writeFile(file, script);
+    await runtime.reload();
+    assert.match(await fetch(route).then((response) => response.text()), /sourceMappingURL=/);
+  },
+);
 
 test('standalone model-driven resources also honor original-byte mode', async (t) => {
   const { runtime, resources, script } = await sourceDebugFixture(t, {

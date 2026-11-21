@@ -18,11 +18,15 @@ export async function listenOwnedServer(t, server) {
  * reach only that origin. The browser closes with the test before the server does, and both are owned by the test.
  */
 export async function listenLoopbackContext(t, server) {
-  let browser;
-  ownedFixture(t).add(() => browser?.close());
+  let browser,
+    closing = false;
+  ownedFixture(t).add(() => {
+    closing = true;
+    return browser?.close();
+  });
   const origin = await listenOwnedServer(t, server);
   const channel = browserChannel();
-  browser = await chromium.launch({
+  const launched = await chromium.launch({
     channel: channel === 'chromium' ? undefined : channel,
     headless: true,
     proxy: { server: origin, bypass: '127.0.0.1,localhost' },
@@ -33,6 +37,11 @@ export async function listenLoopbackContext(t, server) {
       '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost',
     ],
   });
+  if (closing || t.signal?.aborted) {
+    await launched.close();
+    throw new Error('Loopback browser fixture ended during launch; its late browser was closed.');
+  }
+  browser = launched;
   const context = await browser.newContext({ serviceWorkers: 'block' });
   await context.route('**/*', (route) =>
     new URL(route.request().url()).origin === origin ? route.continue() : route.abort(),

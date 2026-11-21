@@ -7,7 +7,7 @@ import { createRequire } from 'node:module';
 import { createSimulator } from '../server.mjs';
 import { signInContext } from '../testing/session.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
-import { sharedBrowser } from './shared-browser.mjs';
+import { openPortalPage, sharedBrowser } from './shared-browser.mjs';
 
 const chrome = sharedBrowser({ headless: true });
 
@@ -116,7 +116,7 @@ async function launch(
     (request) => request.url().includes('/_services/entity-grid-data.json/') && gridBodies.push(request.postDataJSON()),
   );
   await page.route('**/*', (route) => (route.request().url().startsWith(app.url) ? route.continue() : route.abort()));
-  await page.goto(`${app.url}/`);
+  await openPortalPage(page, `${app.url}/`);
   const grid = page.locator('.entity-grid');
   return { page, grid, errors, gridBodies };
 }

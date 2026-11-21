@@ -1,4 +1,4 @@
-// @test-kind tooling: test-only Chromium backport bootstrap keeps browser defaults and real loopback HTTP
+// @test-kind tooling: upstream Chromium defaults and the timeout bootstrap keeps browser defaults and real loopback HTTP
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -12,7 +12,7 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 import { browserWorkspace } from '../test/browser-workspace.mjs';
 import { ANY_DEBUG_PORT_ARGS, devToolsPort } from './helpers/debug-port.mjs';
-import { DEFAULT_DISABLED_FEATURES, BACKPORTED_DISABLED_FEATURES } from '../test/browser-backport.mjs';
+import { DEFAULT_DISABLED_FEATURES } from '../test/browser-backport.mjs';
 
 const execute = promisify(execFile);
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -86,36 +86,34 @@ async function probeFixture(t) {
   return { run, copies };
 }
 
-async function assertBackportedMode(t, mode) {
+async function assertUpstreamMode(t, mode) {
   const { run, copies } = await probeFixture(t);
   const before = await run(mode, root, false);
   assert.equal(before.hits, 0, 'argument-only reference must not use the unmitigated application HTTP path');
   assert.equal(before.args.includes(DEFAULT_DISABLED_FEATURES), true);
+  assert.ok(DEFAULT_DISABLED_FEATURES.split(',').includes('TcpPortRandomizationWin'));
+  assert.equal(before.args.filter((arg) => arg.startsWith('--disable-features=')).length, 1);
   assert.equal(before.args.includes('--mute-audio'), false);
   for (const copy of copies) {
     const after = await run(mode, copy, true);
     assert.ok(after.hits >= 1);
     assert.equal(after.args.filter((arg) => arg.startsWith('--disable-features=')).length, 1);
-    assert.equal(
-      after.args.includes(process.platform === 'win32' ? BACKPORTED_DISABLED_FEATURES : DEFAULT_DISABLED_FEATURES),
-      true,
-    );
-    const normalize = (args) =>
-      args.filter((arg) => !arg.startsWith('--user-data-dir=') && !arg.startsWith('--disable-features='));
+    assert.equal(after.args.includes(DEFAULT_DISABLED_FEATURES), true);
+    const normalize = (args) => args.filter((arg) => !arg.startsWith('--user-data-dir='));
     assert.deepEqual(normalize(after.args), normalize(before.args));
   }
 }
 
 test('launch keeps browser defaults and real HTTP across package copies', async (t) => {
-  await assertBackportedMode(t, 'launch');
+  await assertUpstreamMode(t, 'launch');
 });
 
 test('persistent launch keeps browser defaults and real HTTP across package copies', async (t) => {
-  await assertBackportedMode(t, 'persistent');
+  await assertUpstreamMode(t, 'persistent');
 });
 
 test('server connection keeps browser defaults and real HTTP across package copies', async (t) => {
-  await assertBackportedMode(t, 'server');
+  await assertUpstreamMode(t, 'server');
 });
 
 test('sanitized CLI fixture keeps loopback proxy arguments and real HTTP', async (t) => {
@@ -126,10 +124,7 @@ test('sanitized CLI fixture keeps loopback proxy arguments and real HTTP', async
     new URL('./helpers/browser-loopback-preload.mjs', import.meta.url).href,
   );
   assert.ok(sanitized.hits >= 1, 'sanitized CLI fixture retains real loopback HTTP');
-  assert.equal(
-    sanitized.args.includes(process.platform === 'win32' ? BACKPORTED_DISABLED_FEATURES : DEFAULT_DISABLED_FEATURES),
-    true,
-  );
+  assert.equal(sanitized.args.includes(DEFAULT_DISABLED_FEATURES), true);
   assert.equal(sanitized.args.includes('--proxy-server=http://127.0.0.1:1'), true);
   assert.equal(sanitized.args.includes('--proxy-bypass-list=127.0.0.1;localhost'), true);
   assert.equal(sanitized.args.includes('--paqvilo-invented-retained'), true);

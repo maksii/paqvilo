@@ -370,7 +370,7 @@ function exportIndex(portal, metadata, indexStore = null) {
     entity: list.entityName,
     sourceFile: list.metadata?._file,
     pageReferenced: false,
-    evidenceLabel: 'Exported list; not referenced by this page’s sources',
+    evidenceLabel: 'List in your sources; not used by this page',
     ...listInspectionBindings(list),
   }));
   index = {
@@ -536,7 +536,7 @@ export async function inspectionSources(cfg) {
     } catch {
       diagnostics.push({
         code: 'INSPECT_SOLUTION_UNAVAILABLE',
-        reason: `Configured Solution source is unavailable: ${root}`,
+        reason: `Solution source folder not found: ${root}`,
       });
     }
   }
@@ -972,7 +972,7 @@ function processSubgridRecord(record, cell, component, owner, addForm, report) {
       kind: 'subgrid-settings',
       expression: cell.id,
       owner,
-      reason: 'Exported subgrid settings JSON is malformed.',
+      reason: 'The subgrid settings JSON is invalid.',
     });
     return;
   }
@@ -996,8 +996,7 @@ function processSubgridActions(current, cell, component, owner, context) {
       kind: 'subgrid-settings',
       expression: cell.id,
       owner,
-      reason:
-        'Multiple exported metadata records configure this subgrid; action visibility and precedence are unknown.',
+      reason: 'Several settings records configure this subgrid; which actions show is unclear.',
     });
   for (const record of records) processSubgridRecord(record, cell, component, owner, addForm, report);
 }
@@ -1051,7 +1050,7 @@ function processNativeFormCell(current, cell, depth, context) {
         kind: 'quick-form',
         expression: cell.id,
         owner,
-        reason: 'The quick view form is absent from selected Solution sources.',
+        reason: 'Quick view form not found in your Solution sources.',
       });
   }
   if (cell.type === 'subgrid') processSubgridActions(current, cell, component, owner, context);
@@ -1112,7 +1111,7 @@ function addInspectionView(context, reference, entity, owner, evidence) {
       kind: 'view',
       expression: reference,
       owner,
-      reason: 'The form references a view absent from selected Solution sources.',
+      reason: 'The form uses a view that is not in your Solution sources.',
     });
     return null;
   }
@@ -1143,7 +1142,7 @@ function addInspectionForm(context, reference, owner, evidence) {
       kind: 'modal-form',
       expression: reference,
       owner,
-      reason: 'The action references a basic form absent from the portal export.',
+      reason: 'The action opens a basic form that is not in your portal sources.',
     });
     return null;
   }
@@ -1255,7 +1254,7 @@ function inspectMarkupDataset(match, dataset, schemaName, row, report, metadata)
       kind: 'code-component-dataset',
       expression: binding.name || dataset.name,
       owner: schemaName,
-      reason: 'Dataset binding is missing or dynamic; no exported table or view is inferred.',
+      reason: 'The dataset has no fixed table or view.',
     });
     return item;
   }
@@ -1273,7 +1272,7 @@ function inspectMarkupDataset(match, dataset, schemaName, row, report, metadata)
       reason:
         views.length > 1
           ? 'Multiple exported views match this name; use the exact view ID.'
-          : 'The dataset table or view is absent from selected Solution sources.',
+          : 'Dataset table or view not found in your Solution sources.',
     });
     return item;
   }
@@ -1310,9 +1309,9 @@ function inspectMarkupCodeReference(match, context) {
   };
   const control = catalogue?.controls.get(schemaName);
   if (!control) {
-    let reason = 'No exact Solution schema name or observed component mapping resolves this reference.';
-    if (dynamic) reason = 'Code component name is dynamic and cannot be resolved from a static export.';
-    else if (schemaName) reason = 'The code component manifest is absent from selected Solution sources.';
+    let reason = 'No code component in your Solution sources matches this name.';
+    if (dynamic) reason = 'The code component name is set at run time, so it cannot be matched to a file.';
+    else if (schemaName) reason = 'Code component manifest not found in your Solution sources.';
     report.unresolved.push({ kind: 'code-component', expression: row.expression, reason });
     return row;
   }
@@ -1341,8 +1340,7 @@ function appendNativeDatasetBinding(name, parameter, binding, row, report, metad
       kind: 'native-code-component-dataset',
       expression: parameter.viewId ?? name,
       owner: binding.owner,
-      reason:
-        'The exported native dataset view is absent or its table binding does not match selected Solution sources.',
+      reason: 'The dataset view is missing or bound to another table in your Solution sources.',
     });
     return;
   }
@@ -1398,7 +1396,7 @@ function inspectNativeBindingParameter(name, parameter, binding, row, report, me
       kind: 'native-code-component-property',
       expression: name,
       owner: binding.owner,
-      reason: parameter.reason ?? 'The exported native property binding cannot be resolved.',
+      reason: parameter.reason ?? 'This property binding could not be matched to a column.',
     });
   if (parameter.kind === 'binding') {
     const table = metadata.entities?.[binding.entity],
@@ -1445,14 +1443,14 @@ function inspectNativeCodeBinding(binding, context) {
       kind: 'native-code-component',
       expression: binding.name,
       owner: binding.owner,
-      reason: 'The FormXml custom control manifest is absent from selected Solution sources.',
+      reason: 'Custom control manifest not found in your Solution sources.',
     });
   if (binding.enablement === 'ambiguous')
     report.unresolved.push({
       kind: 'native-code-component-settings',
       expression: binding.field,
       owner: binding.owner,
-      reason: 'Multiple attribute metadata records configure this control; portal enablement is ambiguous.',
+      reason: 'Several column settings configure this control; it is unclear whether the portal enables it.',
     });
   for (const [name, parameter] of Object.entries(binding.parameters ?? []))
     inspectNativeBindingParameter(name, parameter, binding, row, report, metadata);
@@ -1477,7 +1475,6 @@ function inspectCodeComponents(report, body, metadata, observed, catalogue) {
     throw new TypeError('Source inspection requires a page report object.');
   report.evidence = {
     mode: live ? 'live-sources' : 'local-runtime',
-    source: 'Static references from the selected local export. Conditional branches may not be rendered.',
     rendered: 'Observed controls and same-origin asset paths. Field values and request query values are excluded.',
     identity: live
       ? 'Live web-role membership and effective record access are not available from the export.'

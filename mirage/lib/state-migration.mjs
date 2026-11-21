@@ -1,3 +1,4 @@
+import { requiredArgument } from './required-argument.mjs';
 import { cloneStateData } from './state-clone.mjs';
 import { isDeepStrictEqual } from 'node:util';
 import { createHash } from 'node:crypto';
@@ -228,7 +229,7 @@ export function markStagedUpgrades(state) {
 
 /** Three-way fixture refresh: authored local edits/deletions win over generated defaults. */
 export function migrateScenarioState(
-  current,
+  current = requiredArgument('migrateScenarioState(current, options)', 'the current scenario state'),
   {
     latest,
     // The stored copy of the preset being refreshed (latest.id) unless supplied.

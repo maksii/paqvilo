@@ -83,6 +83,17 @@ export function inspectProjectBoundary(directory = root) {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const [arg] = process.argv.slice(2);
+  if (arg === '--help' || arg === '-h') {
+    console.log(`Usage: node scripts/project-boundary.mjs
+Checks that reusable source imports no project packs, examples or files outside the checkout, and that project packs
+stay external. Takes no options; --help prints this help. See docs/project-extensions.md.`);
+    process.exit(0);
+  }
+  if (arg) {
+    console.error(`project-boundary: unknown option ${arg}; it takes no options (see --help).`);
+    process.exit(1);
+  }
   const findings = inspectProjectBoundary();
   if (findings.length) {
     console.error(findings.join('\n'));

@@ -250,7 +250,9 @@ export const COMPONENT_BY_TYPE = Object.freeze({
   371: 'connector',
   380: 'environmentvariable',
 });
-const WEBRESOURCE_INVENTORY_TYPES = new Set([1, 4, 9, 10, 12]); // HTML, XML, XSL, ICO, RESX
+// XML, XSL, ICO, RESX: the model-driven host serves none of them. HTML (1), like script, style and image web resources,
+// is a client resource the host imports and serves (model-driven-resources.mjs), so it is not inventory.
+const WEBRESOURCE_INVENTORY_TYPES = new Set([4, 9, 10, 12]);
 
 const guid = (value) => (value == null || value === '' ? null : String(value).replace(/[{}]/g, '').toLowerCase());
 const stem = (file) =>
@@ -946,8 +948,12 @@ function upgradeConnectorRecord(record) {
             'The connector runs C# custom code (script.csx); install the .NET SDK (dotnet on PATH) to run it locally.',
         }
       : null;
-  if (!diagnostics.length && !sdk) Object.assign(record, { level: 'contract', reason: 'CONNECTOR_COMPILED_CONTRACT' });
-  else if (blocked ?? sdk)
+  // A warning (an OAuth flow that needs a static token) does not keep a compiled connector at inventory level.
+  const warnings = diagnostics.filter((entry) => entry.severity === 'warning');
+  if (warnings.length === diagnostics.length && !sdk) {
+    Object.assign(record, { level: 'contract', reason: 'CONNECTOR_COMPILED_CONTRACT' });
+    if (warnings.length) record.diagnostics = [...(record.diagnostics ?? []), ...warnings];
+  } else if (blocked ?? sdk)
     record.diagnostics = [...(record.diagnostics ?? []), { ...(blocked ?? sdk), severity: 'error' }];
 }
 

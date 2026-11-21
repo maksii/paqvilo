@@ -1082,6 +1082,34 @@ test("change tracking answers only organization-level readers, and a limited rea
   );
 });
 
+// @test-kind contract: Paqvilo the change-tracking refusal states the caller's own role and privilege counts, as every other privilege refusal does
+test("the change-tracking refusal counts the limited reader's roles and privileges", async () => {
+  const t = await setup();
+  const roleCount = t.principals.roles(t.basic).length;
+  const privilegeCount = t.principals.privileges(t.basic).size;
+  assert.ok(roleCount > 0, 'the limited reader holds a role');
+  const denied = await failure(
+    t.send('GET', `/api/data/${VERSION}/widgets?$select=name`, {
+      user: t.basic,
+      headers: { prefer: 'odata.track-changes' },
+    }),
+  );
+  assert.equal(denied.status, 403);
+  assert.match(denied.message, new RegExp(`roleCount=${roleCount}, privilegeCount=${privilegeCount},`));
+});
+
+// @test-kind contract: the shared refusal the message modules throw states the caller's own counts, not zero
+test('principals.deniedError, the refusal every message module throws, counts the caller roles and privileges', async () => {
+  const t = await setup();
+  const roleCount = t.principals.roles(t.basic).length;
+  const privilegeCount = t.principals.privileges(t.basic).size;
+  assert.ok(roleCount > 0, 'the limited reader holds a role');
+  const denied = t.principals.deniedError(t.basic, 'prvBulkDelete', 'asyncoperation');
+  assert.equal(denied.status, 403);
+  assert.match(denied.message, new RegExp(`roleCount=${roleCount}, privilegeCount=${privilegeCount},`));
+  assert.match(denied.message, /is missing prvBulkDelete privilege/);
+});
+
 test('a paged tracked read keeps changes made between its pages', async () => {
   const t = await setup();
   for (let i = 0; i < 3; i += 1) await create(t, 'widgets', { name: `Q${i}` });

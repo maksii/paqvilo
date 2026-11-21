@@ -373,7 +373,7 @@ details.field-hints > p {
   color: var(--ui-muted);
   font-weight: 400;
 }
-/* Key/value facts of a panel (D-M-6): label column, value column; a row's action sits after its value. */
+/* Key/value facts of a panel: label column, value column; a row's action sits after its value. */
 .ui-facts .ui-kv-action {
   margin-left: 8px;
 }
@@ -396,7 +396,7 @@ details.field-hints > p {
 .data-line .data-label {
   font-weight: 600;
 }
-/* DV-N4b-1: an (i) stays on the line of what it explains: a heading or legend followed by its (i), a label by its
+/* an (i) stays on the line of what it explains: a heading or legend followed by its (i), a label by its
    field's (i). */
 :is(h2, h3, legend):has(+ :is(.ui-help-inline, .ui-note)) {
   display: inline-block;
@@ -427,7 +427,7 @@ label + .ui-field-info {
 .action-row > :first-child {
   min-width: 190px;
 }
-/* DV-N4b-8: one key/value style — a two-column definition grid (muted label, value), for `facts()` (`dl.ui-kv`) and the
+/* one key/value style — a two-column definition grid (muted label, value), for `facts()` (`dl.ui-kv`) and the
    older `.detail-list` rows alike. */
 #content :is(.ui-kv, .detail-list) {
   display: grid;

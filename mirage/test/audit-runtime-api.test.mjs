@@ -8,6 +8,7 @@ import http from 'node:http';
 import { createSimulator } from '../api.mjs';
 import { readStateFile } from '../lib/state-storage.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 
 async function fixture(t, options = {}) {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-audit-runtime-api-'));
@@ -179,18 +180,23 @@ test('diagnostics endpoint includes import diagnostics counted by status and exp
   assert.ok(app.state().diagnostics.some((item) => item.code === diagnostic.code));
 });
 
-test('reset reuses project confinement defaults while returning runtime changes to their seed', async (t) => {
-  const { app, call } = await fixture(t, { contentPolicyDefaults: { confinePortalPages: true } });
-  assert.match((await fetch(app.url)).headers.get('content-security-policy'), /connect-src 'self'/);
-  const changed = await call('/__sim/api/config', 'PATCH', { confinePortalPages: false });
-  assert.equal(changed.status, 200, await changed.text());
-  assert.equal((await fetch(app.url)).headers.get('content-security-policy'), null);
-  const reset = await call('/__sim/api/reset', 'POST', {});
-  assert.equal(reset.status, 200, await reset.text());
-  assert.equal(app.state().config.confinePortalPages, true);
-  assert.equal(app.state().config.contentPolicySource, 'project defaults');
-  assert.match((await fetch(app.url)).headers.get('content-security-policy'), /connect-src 'self'/);
-});
+// Hang guard only: it drives a runtime, the CLI or child processes through this file's fixtures; on a loaded slow host that is slow, not hung.
+test(
+  'reset reuses project confinement defaults while returning runtime changes to their seed',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const { app, call } = await fixture(t, { contentPolicyDefaults: { confinePortalPages: true } });
+    assert.match((await fetch(app.url)).headers.get('content-security-policy'), /connect-src 'self'/);
+    const changed = await call('/__sim/api/config', 'PATCH', { confinePortalPages: false });
+    assert.equal(changed.status, 200, await changed.text());
+    assert.equal((await fetch(app.url)).headers.get('content-security-policy'), null);
+    const reset = await call('/__sim/api/reset', 'POST', {});
+    assert.equal(reset.status, 200, await reset.text());
+    assert.equal(app.state().config.confinePortalPages, true);
+    assert.equal(app.state().config.contentPolicySource, 'project defaults');
+    assert.match((await fetch(app.url)).headers.get('content-security-policy'), /connect-src 'self'/);
+  },
+);
 
 test('both administration aliases use the JSON error contract when the origin is rejected', async (t) => {
   const { app } = await fixture(t);
@@ -228,7 +234,7 @@ test('failed source reload keeps the applied runtime and a later valid reload re
     file = path.join(root, 'Home.webpage.yml'),
     source = await fs.readFile(file, 'utf8');
   await fs.rm(file);
-  await assert.rejects(app.reload(), { code: 'PORTAL_SOURCE_EMPTY', message: /^No portal pages were recognised in / });
+  await assert.rejects(app.reload(), { code: 'PORTAL_SOURCE_EMPTY', message: /^No portal pages were recognized in / });
   assert.equal(app.state().status.sourceFingerprint, before.status.sourceFingerprint);
   assert.equal(app.state().status.revision, before.status.revision);
   assert.match(await (await fetch(app.url)).text(), /Invented runtime audit/);
@@ -294,4 +300,29 @@ test('portal sessions remain isolated between concurrent runtimes and expire aft
   const restarted = await createSimulator({ sourceDir: first.root, stateFile: first.stateFile, watch: false, port });
   ownedFixture(t).add(() => restarted.close());
   assert.equal((await read(restarted)).signedIn, false);
+});
+
+test('a state file that cannot be parsed refuses the start, naming the file and what to do, and is left as it is', async (t) => {
+  const { app, root, stateFile } = await fixture(t);
+  await app.store.compact();
+  await app.close();
+  const saved = await fs.readFile(stateFile);
+  for (const damaged of [saved.subarray(0, Math.floor(saved.length / 2)), Buffer.alloc(0)]) {
+    await fs.writeFile(stateFile, damaged);
+    await assert.rejects(createSimulator({ sourceDir: root, stateFile, watch: false }), (error) => {
+      assert.ok(error.message.includes(`The local state file ${stateFile} cannot be read: `), error.message);
+      assert.match(
+        error.message,
+        /Move it aside to start from the sources and the preset, or pass --state <other file>/,
+      );
+      assert.ok(error.cause instanceof SyntaxError);
+      return true;
+    });
+    assert.deepEqual(await fs.readFile(stateFile), damaged, 'the refused start did not touch the file');
+  }
+  // What the message names: with the file moved aside the runtime starts from its sources.
+  await fs.rename(stateFile, `${stateFile}.aside`);
+  const restarted = await createSimulator({ sourceDir: root, stateFile, watch: false });
+  ownedFixture(t).add(() => restarted.close());
+  assert.equal((await fetch(restarted.url)).status, 200);
 });

@@ -47,6 +47,28 @@ const PAGE = `<!doctype html><html lang="en"><head><title>Grids</title><link rel
 <script src="/grid.js"></script>
 </body></html>`;
 
+/** Answers `value` as JSON. */
+const sendJson = (res, value) => {
+  res.setHeader('content-type', 'application/json');
+  return res.end(JSON.stringify(value));
+};
+// One page of notes with a single note.
+const NOTE_PAGE = {
+  Records: [{ Id: 'note-1', UnformattedText: 'A note', CreatedOnDisplay: '2026-01-01T00:00:00Z' }],
+  PageCount: 1,
+};
+/** Opens the server's /page in a browser the test owns, collecting page errors. */
+async function openPage(t, server) {
+  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
+  ownedFixture(t).add(() => browser.close());
+  const page = await browser.newPage();
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page.goto(`http://127.0.0.1:${server.address().port}/page`);
+  return { page, errors };
+}
+
+// @test-kind unproven: the comments cite live requests and DOM, but no capture is linked to these assertions
 test('Bootstrap 5 grids share one record-count announcer per id and post a null natural-language filter', async (t) => {
   const script = await fs.readFile(new URL('../lib/entity-grid-compat.js', import.meta.url));
   const posts = eventLog(t, { message: 'The grid did not post' });
@@ -67,13 +89,7 @@ test('Bootstrap 5 grids share one record-count announcer per id and post a null 
     if (req.url === '/notes-data' && req.method === 'POST') {
       order.push('notes');
       notesType = req.headers['content-type'];
-      res.setHeader('content-type', 'application/json');
-      return res.end(
-        JSON.stringify({
-          Records: [{ Id: 'note-1', UnformattedText: 'A note', CreatedOnDisplay: '2026-01-01T00:00:00Z' }],
-          PageCount: 1,
-        }),
-      );
+      return sendJson(res, NOTE_PAGE);
     }
     if (req.url === '/grid-data' && req.method === 'POST') {
       order.push('grid');
@@ -98,12 +114,7 @@ test('Bootstrap 5 grids share one record-count announcer per id and post a null 
     res.statusCode = 404;
     res.end();
   });
-  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  ownedFixture(t).add(() => browser.close());
-  const page = await browser.newPage();
-  const errors = [];
-  page.on('pageerror', (error) => errors.push(error.message));
-  await page.goto(`http://127.0.0.1:${server.address().port}/page`);
+  const { page, errors } = await openPage(t, server);
 
   const announcers = () =>
     page.evaluate(() =>
@@ -199,4 +210,43 @@ test('Bootstrap 5 grids share one record-count announcer per id and post a null 
   await posts.until(() => posts.length > before);
   assert.equal(posts.at(-1).metaFilter, '0=&1=1');
   assert.deepEqual(errors, []);
+});
+
+// Loads one notes control with jQuery on the page and returns how many jQuery global ajax events (ajaxStart,
+// ajaxSend, ajaxComplete) fired once the note rendered. bs5: a Bootstrap 5 page and control (data-bs-target);
+// otherwise a Bootstrap 3 control (data-target). The note is rendered by the load's done handler, which runs after
+// jQuery has raised ajaxComplete.
+async function notesLoadAjaxEvents(t, bs5) {
+  const script = await fs.readFile(new URL('../lib/entity-grid-compat.js', import.meta.url));
+  const jquery = await fs.readFile(new URL('../node_modules/jquery/dist/jquery.min.js', import.meta.url));
+  const notes = `<!doctype html><html lang="en"><head><title>Notes</title>${bs5 ? '<script src="/app.BootstrapV5.bundle.js"></script>' : ''}</head><body>
+<div id="antiforgerytoken"><input type="hidden" name="__RequestVerificationToken" value="token"></div>
+<div class="entity-notes" data-url-get="/notes-data" ${bs5 ? 'data-bs-target' : 'data-target'}='{"Id":"n1","LogicalName":"sample"}'><div class="notes"></div><div class="notes-empty"></div><div class="notes-loading"></div><div class="notes-pagination" data-pages="1"></div></div>
+<script src="/jquery.js"></script><script>window.ajaxEvents = 0; jQuery(document).on('ajaxStart ajaxSend ajaxComplete', function () { window.ajaxEvents++; });</script><script src="/grid.js"></script>
+</body></html>`;
+  const { server } = await loopbackServer(t, (req, res) => {
+    const scripts = { '/grid.js': script, '/jquery.js': jquery, '/app.BootstrapV5.bundle.js': '' };
+    if (req.url === '/page') return res.end(notes);
+    if (scripts[req.url] !== undefined) {
+      res.setHeader('content-type', 'text/javascript');
+      return res.end(scripts[req.url]);
+    }
+    if (req.url === '/notes-data' && req.method === 'POST') return sendJson(res, NOTE_PAGE);
+    res.statusCode = 404;
+    res.end();
+  });
+  const { page, errors } = await openPage(t, server);
+  await page.locator('.entity-notes .note').waitFor();
+  assert.deepEqual(errors, []);
+  return page.evaluate(() => window.ajaxEvents);
+}
+
+// @test-kind observation: platform bundle replica batch-1 faq powerappsportal/dist/app.BootstrapV5.bundle-6959e669d6.js: EntityNotes getData posts with shell.ajaxSafePost({type:"POST",dataType:"json",contentType:"application/json",url:e,data:c,global:false}), so loading notes raises no jQuery global ajax event
+test('Bootstrap 5: a notes load raises no jQuery global ajax event', async (t) => {
+  assert.equal(await notesLoadAjaxEvents(t, true), 0, 'the notes load posts with global: false');
+});
+
+// @test-kind unproven: no Bootstrap 3 platform bundle is in the evidence, so a Bootstrap 3 notes load keeps jQuery's default and raises the global ajax events
+test('Bootstrap 3: a notes load raises the jQuery global ajax events', async (t) => {
+  assert.equal(await notesLoadAjaxEvents(t, false), 3);
 });

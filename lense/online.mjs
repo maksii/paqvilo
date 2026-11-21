@@ -123,15 +123,28 @@ async function fetchWithRequest(request, url, { timeout, readBody }) {
 
 const TEXT_EXT = /\.(?:js|mjs|css|html?|json|svg|xml|txt|map)$/i;
 
+/**
+ * Text without its source-map comment lines (`//# sourceMappingURL=...`, `/*# sourceMappingURL=... *\/`): a server or
+ * build adds them to the copy it serves, and they change nothing the page runs.
+ */
+const SOURCE_MAP_LINE = /^\s*(?:\/\/|\/\*)[#@]\s*sourceMappingURL=/;
+export const withoutSourceMapComments = (text) =>
+  String(text)
+    .split('\n')
+    .filter((line) => !SOURCE_MAP_LINE.test(line))
+    .join('\n');
+
 function sameContent(file, local, online) {
   if (local.equals(online)) return true;
   if (!TEXT_EXT.test(file)) return false;
-  // line endings change on checkout (core.autocrlf), that is not a real difference
+  // line endings change on checkout (core.autocrlf), and a served source-map comment is no real difference
   const norm = (b) =>
-    b
-      .toString('utf8')
-      .replace(/^\uFEFF/, '')
-      .replace(/\r\n?/g, '\n');
+    withoutSourceMapComments(
+      b
+        .toString('utf8')
+        .replace(/^\uFEFF/, '')
+        .replace(/\r\n?/g, '\n'),
+    );
   return norm(local) === norm(online);
 }
 

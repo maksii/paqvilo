@@ -1,5 +1,5 @@
 // Dataverse value semantics shared by the FetchXML and OData evaluators.
-// Evidence for each rule is recorded in docs/dataverse-parity.md.
+// Evidence for each rule is recorded in mirage/docs/dataverse-parity.md.
 import { DataError } from './data-error.mjs';
 import { isDateOnlyFormat } from './date-only-format.mjs';
 import {

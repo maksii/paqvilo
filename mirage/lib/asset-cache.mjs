@@ -1,3 +1,4 @@
+import { requiredArgument } from './required-argument.mjs';
 import fs from 'node:fs/promises';
 import { constants } from 'node:fs';
 import path from 'node:path';
@@ -494,7 +495,12 @@ function manifestEntry(item) {
 
 /** Cache same-origin static bytes only; authentication stays in the browser. */
 export class AssetCache {
-  constructor({ directory, origin = null, fetchImpl = globalThis.fetch } = {}) {
+  constructor(
+    { directory, origin = null, fetchImpl = globalThis.fetch } = requiredArgument(
+      'AssetCache(options)',
+      'an options object with a local directory',
+    ),
+  ) {
     if (!directory) throw fail('Asset cache requires a local directory.');
     this.directory = path.resolve(directory);
     this.origin = origin ? safeOrigin(origin) : null;

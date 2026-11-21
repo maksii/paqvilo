@@ -1,6 +1,6 @@
 // Platform adapter: documented Power Pages management tables, never site-specific data.
 // https://learn.microsoft.com/power-pages/admin/enhanced-data-model
-import { portalField } from '../importer.mjs';
+import { portalField } from '../portal-field.mjs';
 import { isDeepStrictEqual } from 'node:util';
 
 const managementGroups = [

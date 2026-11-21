@@ -15,6 +15,7 @@ import { createSetupHandler, startSetupServer } from '../lense/setup/server.mjs'
 import { createSimulator } from '../mirage/server.mjs';
 import { createFixture } from './fixture.mjs';
 import { prepareProject } from '../lense/project-scaffold.mjs';
+import { paqviloPrefix } from '../lense/command-hint.mjs';
 
 // `paqvilo mirage dev|start` exports MIRAGE_SETUP_RUNTIME to its child; inherited here it would rename restart commands.
 delete process.env.MIRAGE_SETUP_RUNTIME;
@@ -29,6 +30,9 @@ const minimal = {
   defaultSite: 'portal',
   sites: { portal: { source: '.', environments: { dev: 'http://127.0.0.1:8787' }, mirage: { port: 0 } } },
 };
+// The command prefix the setup server derives for the folder it serves (lense/command-hint.mjs).
+const prefixOf = (directory) => paqviloPrefix(directory).join(' ');
+const prefixPattern = (directory) => RegExp.escape(prefixOf(directory));
 const set = (path, value) => ({ op: 'set', path, value });
 async function edit(store, layer, operations) {
   const { revision } = await store.snapshot();
@@ -606,7 +610,7 @@ test('restart drift follows the runtime identity and names the restart command',
   const base = new URL(server.url).origin;
   let status = await fetch(base + '/_setup/api/status').then((response) => response.json());
   assert.equal(status.runtime.restartRequired, false);
-  assert.equal(status.runtime.restartCommand, `npx paqvilo lense dev --config "${filename}" --site portal`);
+  assert.equal(status.runtime.restartCommand, `${prefixOf(directory)} lense dev --config "${filename}" --site portal`);
   await fs.appendFile(path.join(directory, '.gitignore'), '/invented-output/\n');
   await fs.appendFile(filename, '# comment only\n');
   status = await fetch(base + '/_setup/api/status').then((response) => response.json());
@@ -635,9 +639,36 @@ test('restart drift follows the runtime identity and names the restart command',
   });
   ownedFixture(t).add(() => project.close());
   const projectStatus = await fetch(new URL('api/status', project.url)).then((response) => response.json());
-  assert.match(projectStatus.runtime.restartCommand, /^npx paqvilo mirage serve --project .*mirage\.project\.yml"?$/);
+  assert.match(
+    projectStatus.runtime.restartCommand,
+    new RegExp(String.raw`^${prefixPattern(directory)} mirage serve --project .*mirage\.project\.yml"?$`),
+  );
   assert.equal(projectStatus.ready, true);
   assert.equal(projectStatus.stages.find((item) => item.id === 10).status, 'done');
+});
+
+test('setup commands start the way paqvilo runs in the served folder and name only npm scripts the project defines', async (t) => {
+  const directory = await work(t),
+    filename = path.join(directory, 'paqvilo.config.yml');
+  await fs.writeFile(filename, YAML.stringify(minimal));
+  const manifest = { name: 'invented-site', private: true, devDependencies: { paqvilo: '*' } };
+  await fs.writeFile(path.join(directory, 'package.json'), JSON.stringify(manifest));
+  const status = async () => {
+    const server = await startSetupServer({ directory, processEnv: {}, runtime: { product: 'Lense', site: 'portal' } });
+    ownedFixture(t).add(() => server.close());
+    return fetch(new URL('api/status', server.url)).then((response) => response.json());
+  };
+  let value = await status();
+  assert.deepEqual(value.commands, {
+    prefix: 'npx --no-install paqvilo',
+    setup: 'npx --no-install paqvilo doctor --setup',
+  });
+  assert.equal(value.runtime.restartCommand, `npx --no-install paqvilo lense dev --config ${filename} --site portal`);
+  // The scaffold's check:setup script stands for the setup check once the project defines it as that command.
+  manifest.scripts = { 'check:setup': 'paqvilo doctor --setup --config ./paqvilo.config.yml' };
+  await fs.writeFile(path.join(directory, 'package.json'), JSON.stringify(manifest));
+  value = await status();
+  assert.equal(value.commands.setup, 'npm run check:setup');
 });
 
 test('linked project files outside the catalogue folder, under .paqvilo/ or not project documents are refused without text or save target', async (t) => {
@@ -887,7 +918,7 @@ test('restart drift names the running site and command, is unknown when the iden
   ownedFixture(t).add(() => first.server.close());
   const status = await fetch(first.base + '/_setup/api/status').then((response) => response.json());
   assert.equal(status.runtime.site, 'beta');
-  assert.equal(status.runtime.restartCommand, `npx paqvilo mirage serve --config "${filename}" --site beta`);
+  assert.equal(status.runtime.restartCommand, `${prefixOf(directory)} mirage serve --config "${filename}" --site beta`);
   assert.equal(status.commandArgs.site, '--site beta');
   assert.match(status.runtime.restartScope, /Mirage runtime/);
   const previous = process.env.MIRAGE_SETUP_RUNTIME;
@@ -897,13 +928,19 @@ test('restart drift names the running site and command, is unknown when the iden
     const { server, base } = await serve(t, launched);
     ownedFixture(t).add(() => server.close());
     const value = await fetch(base + '/_setup/api/status').then((response) => response.json());
-    assert.match(value.runtime.restartCommand, /^npx paqvilo mirage dev --config .* --site beta$/);
+    assert.match(
+      value.runtime.restartCommand,
+      new RegExp(String.raw`^${prefixPattern(directory)} mirage dev --config .* --site beta$`),
+    );
     // The variable describes the Mirage child it was set for; an inheriting Lense keeps its own command.
     const inheriting = await createSetupHandler({ store, runtime: { product: 'Lense', site: 'portal' } });
     const lenseHost = await serve(t, inheriting);
     ownedFixture(t).add(() => lenseHost.server.close());
     const lenseValue = await fetch(lenseHost.base + '/_setup/api/status').then((response) => response.json());
-    assert.match(lenseValue.runtime.restartCommand, /^npx paqvilo lense dev --config .* --site portal$/);
+    assert.match(
+      lenseValue.runtime.restartCommand,
+      new RegExp(String.raw`^${prefixPattern(directory)} lense dev --config .* --site portal$`),
+    );
   } finally {
     if (previous === undefined) delete process.env.MIRAGE_SETUP_RUNTIME;
     else process.env.MIRAGE_SETUP_RUNTIME = previous;
@@ -935,7 +972,7 @@ test('restart drift names the running site and command, is unknown when the iden
   ownedFixture(t).add(() => lenseServer.server.close());
   value = await fetch(lenseServer.base + '/_setup/api/status').then((response) => response.json());
   assert.equal(value.runtime.restartRequired, false);
-  assert.match(value.runtime.restartCommand, /^npx paqvilo lense dev /);
+  assert.ok(value.runtime.restartCommand.startsWith(`${prefixOf(directory)} lense dev `));
   assert.match(value.runtime.restartScope, /environments/);
   await fs.writeFile(
     filename,

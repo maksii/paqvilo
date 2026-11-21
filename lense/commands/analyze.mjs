@@ -4,6 +4,7 @@ import { analysisLabelPath, analysisLabelRoots } from '../analysis/inventory.mjs
 import { configuredAnalysisRoots } from '../analysis/project.mjs';
 import { standaloneCatalogueConfiguration } from '../standalone-mirage.mjs';
 import path from 'node:path';
+import { paqviloCommand } from '../command-hint.mjs';
 
 const displayPath = (value) =>
   JSON.stringify(value)
@@ -166,7 +167,7 @@ function checkEnvironmentOption(catalogue, args) {
   if (!site || mirageOnlySite(site) || Object.hasOwn(site.environments, args.env)) return;
   throw Object.assign(
     new Error(
-      `Unknown environment "${args.env}" for site "${name}". Known: ${Object.keys(site.environments).join(', ') || '(none)'}. Run "npm run list" to see them.`,
+      `Unknown environment "${args.env}" for site "${name}". Known: ${Object.keys(site.environments).join(', ') || '(none)'}. Run "${paqviloCommand(['lense', 'list'], { script: 'list', config: catalogue.configFile })}" to see them.`,
     ),
     { code: 'invalid_argument' },
   );

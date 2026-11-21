@@ -1,14 +1,23 @@
 #!/usr/bin/env node
 import { parseArgs } from 'node:util';
-import path from 'node:path';
-import { loadConfig, loadCatalogue } from './config.mjs';
 import { startupProgress } from './startup-progress.mjs';
-import { commandExitCode, parseOptions } from './cli-options.mjs';
+import {
+  commandExitCode,
+  parseOptions,
+  LENSE_OPTIONS as options,
+  LENSE_COMMAND_OPTIONS as allowed,
+} from './cli-options.mjs';
+import { lenseCommandHelp } from './cli-help.mjs';
+import { failureDocument, jsonEnvelope } from './cli-envelope.mjs';
+
+// Loaded by the commands that read the catalogue: its settings contracts load the Mirage library, which help, a
+// refused command line and the commands that need no catalogue must not wait for.
+const configuration = () => import('./config.mjs');
 
 const HELP = `paqvilo lense - work on Power Pages portal sources locally, laid over an online environment
 
 Usage: paqvilo lense <command> [options]
-       npm run lense -- <command> [options]
+       (in a project: npx --no-install paqvilo lense <command> [options])
 
 Commands
   dev      open a browser on the environment with local sources laid over it; reloads on save
@@ -31,6 +40,7 @@ Commands
            local Mirage runtime: init writes a project file from the catalogue site; dev opens
            the runtime with the paqvilo panel and stops it again when the browser closes; with
            portals=all, one Mirage per catalogue site, switched in the panel with live targets
+  setup    alias of paqvilo setup: the local configuration workspace at /_setup/
 
 Which site and environment (default: .env, then paqvilo.config.yml)
   --site <name>     site from paqvilo.config.yml
@@ -125,95 +135,6 @@ Agent session access
   --strict          verify: fail on new diagnostics; audit: fail on blocked or unmapped resources
 `;
 
-const MIRAGE_INIT_HELP = `paqvilo mirage init — write the Mirage project file for a catalogue site
-
-Usage: paqvilo mirage init --config FILE --site SITE [--env ENV] [--url URL] [--source DIR] [--repo DIR]
-                           [--portals selected|all] [--out FILE] [--force] [--json]
-
-  --config FILE     another catalogue file
-  --site <name>     site from paqvilo.config.yml
-  --env <name>      catalogue environment, or declared model-driven reference ID
-  --url <url>       use this site URL instead of a configured environment
-  --source <dir>    use this extract folder instead of the configured one
-  --repo <dir>      portal checkout/worktree root for all shared relative site sources
-  --portals <selected|all>  mirage init: one Mirage or one per catalogue site (default from config)
-  --out <file>      project file to write (default: the site's catalogued
-                    mirage.project, else .paqvilo/mirage/<site>.project.yml)
-  --force           replace an existing project file
-  --json            machine readable output
-`;
-
-const options = {
-  site: { type: 'string' },
-  env: { type: 'string' },
-  pick: { type: 'boolean' },
-  url: { type: 'string' },
-  source: { type: 'string' },
-  repo: { type: 'string' },
-  config: { type: 'string' },
-  portals: { type: 'string' },
-  browser: { type: 'string' },
-  profile: { type: 'string' },
-  'user-data-dir': { type: 'string' },
-  'profile-directory': { type: 'string' },
-  'cdp-url': { type: 'string' },
-  scope: { type: 'string' },
-  baseline: { type: 'string' },
-  path: { type: 'string' },
-  headless: { type: 'boolean' },
-  headed: { type: 'boolean' },
-  'signed-in': { type: 'boolean' },
-  'no-reload': { type: 'boolean' },
-  'no-write': { type: 'boolean' },
-  'no-overrides': { type: 'boolean' },
-  'debug-port': { type: 'string' },
-  check: { type: 'boolean' },
-  settings: { type: 'boolean' },
-  all: { type: 'boolean' },
-  page: { type: 'string' },
-  kind: { type: 'string', multiple: true },
-  search: { type: 'string' },
-  changed: { type: 'boolean' },
-  limit: { type: 'string' },
-  offset: { type: 'string' },
-  session: { type: 'string' },
-  'page-id': { type: 'string' },
-  selector: { type: 'string' },
-  after: { type: 'string' },
-  output: { type: 'string' },
-  timeout: { type: 'string' },
-  'full-page': { type: 'boolean' },
-  'include-panel': { type: 'boolean' },
-  width: { type: 'string' },
-  height: { type: 'string' },
-  styles: { type: 'string' },
-  'sign-in-timeout': { type: 'string' },
-  project: { type: 'string' },
-  'resource-map': { type: 'string' },
-  'event-cursor': { type: 'string' },
-  'include-event-parameters': { type: 'boolean' },
-  runtime: { type: 'string' },
-  simulation: { type: 'string' },
-  portal: { type: 'string' },
-  port: { type: 'string' },
-  state: { type: 'string' },
-  preset: { type: 'string' },
-  'preset-mode': { type: 'string' },
-  'apply-configuration': { type: 'boolean' },
-  'solution-root': { type: 'string', multiple: true },
-  'startup-timeout': { type: 'string' },
-  'local-simulation': { type: 'boolean' },
-  'allow-live-writes': { type: 'boolean' },
-  out: { type: 'string' },
-  force: { type: 'boolean' },
-  strict: { type: 'boolean' },
-  mirage: { type: 'boolean' },
-  'lint-profiles': { type: 'boolean' },
-  'fail-on': { type: 'string' },
-  json: { type: 'boolean' },
-  help: { type: 'boolean', short: 'h' },
-};
-
 let values, positionals;
 try {
   ({ values, positionals } = parseOptions({
@@ -221,7 +142,7 @@ try {
     options,
   }));
 } catch (err) {
-  const code = err.code === 'ERR_PARSE_ARGS_UNKNOWN_OPTION' ? 'unsupported_option' : 'invalid_argument';
+  const code = err.code === 'unsupported_option' ? 'unsupported_option' : 'invalid_argument';
   const parseArguments = process.argv.slice(2);
   const separator = parseArguments.indexOf('--');
   const jsonRequested = (separator < 0 ? parseArguments : parseArguments.slice(0, separator)).includes('--json');
@@ -245,67 +166,14 @@ try {
         error: { code, message: err.message },
       }),
     );
-  else console.error(`paqvilo: ${err.message}\nRun with --help to see supported options.`);
+  else console.error(`paqvilo: ${err.message}`);
   process.exit(1);
 }
 
 const command = positionals[0];
 if (values.json || command === 'agent') {
   const print = console.log.bind(console);
-  console.log = (value) => {
-    let result;
-    try {
-      result = JSON.parse(value);
-    } catch {
-      return print(value);
-    }
-    const normalizeError = (error) =>
-      typeof error === 'string'
-        ? { code: command === 'doctor' ? 'check_failed' : 'command_failed', message: error }
-        : {
-            ...error,
-            code: error?.code ?? 'check_failed',
-            message: error?.message ?? error?.reason ?? 'Command failed',
-          };
-    if (Array.isArray(result)) result = { results: result };
-    if (Array.isArray(result.reports))
-      result.reports = result.reports.map((report) => ({
-        ...report,
-        errors: (report.errors ?? []).map(normalizeError),
-        ...(report.mirage
-          ? { mirage: { ...report.mirage, errors: (report.mirage.errors ?? []).map(normalizeError) } }
-          : {}),
-      }));
-    const errors = (
-      result.errors ??
-      (result.error
-        ? [result.error]
-        : (result.reports ?? []).flatMap((report) => [
-            ...(report.errors ?? []),
-            ...(result.checks?.includes('mirage') && report.mirage?.ready === false ? report.mirage.errors : []),
-          ]))
-    ).map(normalizeError);
-    print(
-      JSON.stringify(
-        {
-          schemaVersion: 1,
-          command,
-          offline:
-            result.command === 'help' ||
-            (command === 'mirage'
-              ? ['init', 'inspect'].includes(positionals[1])
-              : !['agent', 'dev', 'verify', 'status'].includes(command)),
-          ...result,
-          ...(command === 'agent' ? { action: positionals[1] ?? 'sessions' } : {}),
-          ok: result.ok ?? result.ready ?? result.passed ?? errors.length === 0,
-          writesFiles: Array.isArray(result.writesFiles) ? result.writesFiles : [],
-          errors,
-        },
-        null,
-        2,
-      ),
-    );
-  };
+  console.log = (value) => print(jsonEnvelope(value, { command, positionals }));
 }
 if (command === undefined) {
   const suppliedOptions = Object.keys(values).filter((option) => !['json', 'help'].includes(option));
@@ -339,21 +207,17 @@ const commands = {
 };
 
 if (!Object.hasOwn(commands, command)) {
+  // One line naming the command and the valid ones; full help only for --help.
+  const { paqviloCommand } = await import('./command-hint.mjs');
+  const message = `Unknown command "${command}". Choose ${Object.keys(commands).join(', ')}. Run ${paqviloCommand(['lense', '--help'])} for options.`;
   if (values.json)
-    console.log(
-      JSON.stringify({
-        schemaVersion: 1,
-        command,
-        ok: false,
-        error: { code: 'unknown_command', message: `Unknown command "${command}"` },
-      }),
-    );
-  else console.error(`Unknown command "${command}".\n\n${HELP}`);
+    console.log(JSON.stringify({ schemaVersion: 1, command, ok: false, error: { code: 'unknown_command', message } }));
+  else console.error(`paqvilo: ${message}`);
   process.exit(1);
 }
 
 if (values.help) {
-  const usage = command === 'mirage' && positionals[1] === 'init' ? MIRAGE_INIT_HELP : HELP;
+  const usage = lenseCommandHelp(command, positionals[1], HELP);
   if (values.json || command === 'agent')
     console.log(JSON.stringify({ schemaVersion: 1, command: 'help', ok: true, usage }));
   else console.log(usage);
@@ -371,107 +235,6 @@ try {
   if (command === 'agent' && positionals.length > 2) throw new Error('agent accepts only one action');
   if (command === 'mirage' && positionals.length > 2)
     throw new Error('mirage accepts one action: init, start, dev, status, inspect or stop');
-  const selection = ['site', 'env', 'url', 'source', 'repo', 'config', 'scope', 'baseline'];
-  const browserSelection = ['browser', 'profile', 'user-data-dir', 'profile-directory'];
-  const allowed = {
-    dev: [
-      ...selection,
-      ...browserSelection,
-      'cdp-url',
-      'portals',
-      'pick',
-      'path',
-      'headless',
-      'headed',
-      'no-reload',
-      'no-overrides',
-      'debug-port',
-    ],
-    map: [...selection, 'pick', 'check', 'no-write', 'json'],
-    status: [...selection, 'pick', 'json'],
-    verify: [
-      ...selection,
-      ...browserSelection,
-      'pick',
-      'path',
-      'headless',
-      'headed',
-      'signed-in',
-      'json',
-      'strict',
-      'sign-in-timeout',
-    ],
-    doctor: [...selection, ...browserSelection, 'cdp-url', 'all', 'mirage', 'lint-profiles', 'fail-on', 'json'],
-    analyze: ['site', 'env', 'source', 'repo', 'config', 'project', 'all', 'fail-on', 'json'],
-    list: [...selection, ...browserSelection, 'cdp-url', 'portals', 'settings', 'json'],
-    audit: [...selection, 'all', 'strict', 'json'],
-    use: ['config', 'repo', 'site', 'env'],
-    resources: [...selection, 'json', 'page', 'kind', 'search', 'changed', 'limit', 'offset'],
-    agent: [
-      'config',
-      'session',
-      'page-id',
-      'selector',
-      'limit',
-      'after',
-      'output',
-      'timeout',
-      'full-page',
-      'include-panel',
-      'width',
-      'height',
-      'styles',
-      'path',
-      'json',
-    ],
-    'model-driven': [
-      'config',
-      ...browserSelection,
-      'cdp-url',
-      'project',
-      'env',
-      'url',
-      'path',
-      'resource-map',
-      'event-cursor',
-      'include-event-parameters',
-      'local-simulation',
-      'startup-timeout',
-      'headless',
-      'headed',
-      'no-reload',
-      'debug-port',
-      'timeout',
-      'output',
-      'json',
-    ],
-    mirage: [
-      ...selection,
-      ...browserSelection,
-      'cdp-url',
-      'portals',
-      'project',
-      'portal',
-      'path',
-      'port',
-      'state',
-      'preset',
-      'preset-mode',
-      'apply-configuration',
-      'solution-root',
-      'startup-timeout',
-      'allow-live-writes',
-      'headless',
-      'headed',
-      'no-reload',
-      'debug-port',
-      'out',
-      'force',
-      'json',
-      'runtime',
-      'simulation',
-    ],
-  };
   for (const option of Object.keys(values))
     if (!allowed[command].includes(option))
       throw Object.assign(new Error(`--${option} is not supported by ${command}`), { code: 'unsupported_option' });
@@ -532,56 +295,33 @@ try {
     values.startup = startup;
   }
   phase = 'configuration';
+  // An explicit catalogue must exist, whether or not the command reads it; only mirage status and stop still select the
+  // runtimes recorded for a removed catalogue (commands/mirage.mjs).
+  const removedCatalogueSelects = command === 'mirage' && ['status', 'stop'].includes(positionals[1] ?? 'status');
+  if (values.config !== undefined && !removedCatalogueSelects) {
+    const { existsSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+    if (!existsSync(values.config))
+      throw (await configuration()).catalogueNotFound(resolve(values.config), { explicit: true });
+  }
   let cfg = null;
-  let standaloneProject = null;
-  if (
-    command === 'mirage' &&
-    (positionals[1] ?? 'status') !== 'status' &&
-    values.project &&
-    !values.config &&
-    !values.site
-  ) {
-    const { loadProjectConfig } = await import('../mirage/lib/project-config.mjs');
-    const candidate = await loadProjectConfig(values.project);
-    if (candidate.runtime?.kind !== 'power-pages') standaloneProject = candidate;
-  }
-  const standalone =
-    command === 'mirage' && (standaloneProject || (values.runtime && values.runtime !== 'power-pages'));
-  let standaloneCatalogue;
-  if (
-    command === 'mirage' &&
-    (positionals[1] ?? 'status') !== 'status' &&
-    !values.project &&
-    (values.config || values.site)
-  ) {
-    const catalogue = loadCatalogue(values),
-      name = values.site ?? catalogue.root.defaultSite;
-    if (catalogue.sites[name]?.mirage?.runtime?.kind && catalogue.sites[name].mirage.runtime.kind !== 'power-pages')
-      standaloneCatalogue = (await import('./standalone-mirage.mjs')).standaloneCatalogueConfiguration(
-        catalogue,
-        name,
-        values,
-      );
-  }
-  if (standaloneCatalogue) cfg = standaloneCatalogue;
-  else if (standalone)
-    cfg = (await import('./standalone-mirage.mjs')).standaloneMirageConfiguration(standaloneProject, values);
-  else if (needsSite && !(command === 'mirage' && (positionals[1] ?? 'status') === 'status')) {
-    if (values.pick) {
-      const { pickSiteAndEnv } = await import('./prompt.mjs');
-      const catalogue = loadCatalogue(values);
-      const current = {
-        site: catalogue.settings.values.PAQVILO_SITE ?? catalogue.root.defaultSite,
-        env: catalogue.settings.values.PAQVILO_ENV,
-      };
-      Object.assign(values, await pickSiteAndEnv(catalogue, { site: values.site, env: values.env }, current));
-    }
-    cfg = await loadConfig(values, process.env, { checkSource: !(command === 'mirage' && values.project) });
-    if (command === 'mirage' && values.project && !values.config) {
-      cfg.configDir = path.dirname(path.resolve(values.project));
-      cfg.stateDir = path.join(cfg.configDir, '.paqvilo');
-      cfg.portals = 'selected';
-    }
+  const pick = async (selection) => {
+    const { pickSiteAndEnv } = await import('./prompt.mjs');
+    const catalogue = (await configuration()).loadCatalogue(selection);
+    const current = {
+      site: catalogue.settings.values.PAQVILO_SITE ?? catalogue.root.defaultSite,
+      env: catalogue.settings.values.PAQVILO_ENV,
+    };
+    Object.assign(selection, await pickSiteAndEnv(catalogue, { site: selection.site, env: selection.env }, current));
+  };
+  // A Mirage command resolves a standalone runtime's configuration or the catalogue site's (commands/mirage.mjs).
+  if (command === 'mirage')
+    cfg = await (
+      await import('./commands/mirage.mjs')
+    ).mirageCommandConfiguration(values, positionals[1] ?? 'status', { pick });
+  else if (needsSite) {
+    if (values.pick) await pick(values);
+    cfg = await (await configuration()).loadConfig(values, process.env, { checkSource: true });
   }
   const { default: run } = await load();
   phase = 'execution';
@@ -590,27 +330,8 @@ try {
   if (typeof code === 'number') process.exitCode = commandExitCode(code, process.exitCode);
 } catch (err) {
   startup?.fail(err.message);
-  if (values.json || command === 'agent') {
-    let errorCode = err.code;
-    if (errorCode == null) {
-      if (phase === 'arguments') errorCode = 'invalid_argument';
-      else if (phase === 'configuration') errorCode = 'configuration_error';
-      else errorCode = 'command_failed';
-    }
-    console.log(
-      JSON.stringify({
-        schemaVersion: 1,
-        command,
-        ok: false,
-        writesFiles: err.writesFiles ?? [],
-        error: {
-          code: errorCode,
-          message: err.message,
-          ...(err.status ? { status: err.status } : {}),
-        },
-      }),
-    );
-  } else console.error(`paqvilo: ${err.message}`);
+  if (values.json || command === 'agent') console.log(JSON.stringify(failureDocument(err, { command, phase })));
+  else console.error(`paqvilo: ${err.message}`);
   const starting = command === 'dev' || (command === 'mirage' && ['dev', 'start'].includes(positionals[1]));
   // Starting a project that has no configuration yet opens setup in the browser, when a person runs it in a terminal.
   if (
@@ -630,11 +351,13 @@ try {
       await import('./commands/setup.mjs')
     ).runSetup(['--config', values.config ?? './paqvilo.config.yml', '--open']);
   } else {
-    if (!values.json && starting) {
-      let setupOptions = '';
-      if (values.config) setupOptions = ' --config ' + JSON.stringify(values.config);
-      else if (values.project) setupOptions = ' --project ' + JSON.stringify(values.project);
-      console.error(`Configure this project with: paqvilo setup${setupOptions}`);
+    // Only a configuration problem is answered by setup; a refused argument is not.
+    if (!values.json && starting && phase === 'configuration') {
+      const { paqviloCommand } = await import('./command-hint.mjs');
+      const setup = values.config
+        ? paqviloCommand(['setup'], { config: values.config })
+        : paqviloCommand(['setup'], { extra: values.project ? ['--project', values.project] : [] });
+      console.error(`Configure this project with: ${setup}`);
     }
     if (process.env.PAQVILO_DEBUG) console.error(err.stack);
     process.exitCode = 1;

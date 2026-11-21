@@ -93,8 +93,10 @@ function takeClaim(claim) {
         fs.renameSync(staged, claim);
         return true;
       } catch (error) {
-        if (!['EEXIST', 'ENOTEMPTY', 'EPERM', 'EACCES'].includes(error.code) || !fs.existsSync(claim)) throw error;
-        if (!removeEndedClaim(claim)) return false;
+        // The holder may have released the claim between the refused move and this look: then move again, once.
+        const released = !fs.existsSync(claim);
+        if (!['EEXIST', 'ENOTEMPTY', 'EPERM', 'EACCES'].includes(error.code) || (released && attempt)) throw error;
+        if (!released && !removeEndedClaim(claim)) return false;
       }
     }
     return false;
@@ -175,23 +177,40 @@ export async function acquireCiWorkspaceLease(checkout, environment = process.en
     );
   };
   const membership = async (operation) => {
-    const guard = path.join(directory, 'membership'),
-      deadline = Date.now() + 3000;
+    const guard = path.join(directory, 'membership');
+    // The guard is a claim: written aside with its holder record and moved into place, so a guard never exists without
+    // its holder. A guard whose holder has ended or whose PID now names another process is removed (removeEndedClaim);
+    // a live holder, or a record that cannot be read, is waited for. The runner's hang guard bounds a test's wait.
     for (;;) {
       try {
-        fs.mkdirSync(guard);
-        break;
+        if (takeClaim(guard)) break;
       } catch (error) {
-        if (error.code !== 'EEXIST' || Date.now() >= deadline) throw busy();
-        await setTimeout(10);
+        if (error.code === 'ENOENT') throw busy(); // the owner released and moved the lease meanwhile
+        throw error;
       }
+      await setTimeout(10);
     }
     const generation = read(ownerFile)?.token;
     try {
       return operation();
     } finally {
-      // The owner may have moved its entire directory during a successful release.
-      if (read(ownerFile)?.token === generation && fs.existsSync(guard)) fs.rmdirSync(guard);
+      const holder = read(path.join(guard, 'owner.json'));
+      // The owner may have moved its entire directory during a successful release; a guard of another holder stays.
+      if (
+        read(ownerFile)?.token === generation &&
+        holder?.pid === process.pid &&
+        holder.identity === processIdentity(process.pid)
+      ) {
+        // Moved aside first: the guard path is free at once and a guard never exists without its holder record, whatever
+        // happens to the removal. An aside left behind holds nothing.
+        const released = `${guard}.released-${randomUUID()}`;
+        fs.renameSync(guard, released);
+        try {
+          fs.rmSync(released, { recursive: true, force: true });
+        } catch {
+          /* removed with the lease folder */
+        }
+      }
     }
   };
   if (

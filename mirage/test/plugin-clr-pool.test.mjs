@@ -32,9 +32,8 @@ const user = '10000000-0000-0000-0000-000000000001',
 // hang guard only: a blocked synchronous child cannot be ended by the test runner
 const CLI_HANG_GUARD_MS = 170_000;
 // A killed host exits at once, and an orphan host exits when its input closes (plugin-clr-host.cs).
-// Windows gives no exit handle for a process another one started, so absence is polled; the limit bounds only a failing
-// run, as a passing run stops polling when the host is gone.
-const HOST_EXIT_LIMIT_MS = 30_000;
+// Windows gives no exit handle for a process another one started, so absence is polled until it is seen: a host that
+// never exits is ended by the runner's --test-timeout, not by a deadline of this test.
 // The start time (UTC ticks) of process `pid`, read by a CLR host executable's --process-start mode; null when it
 // cannot be read (no such process, or no access).
 function processStart(executable, pid) {
@@ -47,8 +46,8 @@ function processStart(executable, pid) {
 }
 // Whether the process with this id and start time is gone: its id names no process, or names a process started at
 // another time (the id was reused). A start time that cannot be read decides nothing; polling goes on.
-async function incarnationAbsent(executable, pid, start, limitMs) {
-  for (const deadline = Date.now() + limitMs; Date.now() < deadline; await delay(20)) {
+async function incarnationAbsent(executable, pid, start) {
+  for (; ; await delay(20)) {
     try {
       process.kill(pid, 0);
     } catch (cause) {
@@ -58,7 +57,6 @@ async function incarnationAbsent(executable, pid, start, limitMs) {
     const now = processStart(executable, pid);
     if (now !== null && now !== start) return true;
   }
-  return false;
 }
 // The process ids that own a listening TCP socket on a loopback port, read from the system's own table (netstat), so no
 // connection is made and another process that takes the freed port is told apart by its id. A listening row has the
@@ -472,7 +470,7 @@ test(
           const exited = new Promise((resolve) => child.once('exit', (code, signal) => resolve(signal)));
           child.kill('SIGKILL');
           assert.equal(await exited, 'SIGKILL', 'the parent, and the server it listened with, ended by the kill');
-          hostAbsent = await incarnationAbsent(runtime.executable, hostPid, hostStart, HOST_EXIT_LIMIT_MS);
+          hostAbsent = await incarnationAbsent(runtime.executable, hostPid, hostStart);
           assert.equal(
             hostAbsent,
             true,

@@ -5,6 +5,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { generateKeyPairSync } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { compileCached, compileCacheKey, compilerIdentity, fileDigest } from '../../lib/compile-cache.mjs';
 
 export const CLR_SKIP = process.platform !== 'win32' && 'CLR plugin hosts need the Windows .NET Framework compiler';
 
@@ -26,22 +27,48 @@ const CSC = path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framewo
 // hang guard only: a blocked synchronous child cannot be ended by the test runner
 const CLI_HANG_GUARD_MS = 170_000;
 
-/** Compiles invented C# with the .NET Framework compiler; `references` are DLL paths or framework DLL names, `keyFile` an
- * optional strong-name key (strongNameKey). */
-export function compileClr(source, out, { target = 'library', references = [], keyFile } = {}) {
-  const build = spawnSync(
-    CSC,
-    [
-      '/nologo',
-      '/target:' + target,
-      '/out:' + out,
-      ...(keyFile ? ['/keyfile:' + keyFile] : []),
-      ...references.map((name) => '/reference:' + name),
-      source,
-    ],
-    { shell: false, windowsHide: true, encoding: 'utf8', timeout: CLI_HANG_GUARD_MS },
-  );
-  if (build.status !== 0) throw new Error('C# fixture build failed: ' + (build.error?.message ?? build.stdout + build.stderr));
+/** Compiles invented C# with the .NET Framework compiler; `references` are DLL paths or framework DLL names and `keyFile` an
+ * optional strong-name key (strongNameKey). The output is taken from the toolkit's compile cache when the same source,
+ * references, options and compiler built it before (lib/compile-cache.mjs); `run` and `cache` replace the compiler
+ * start and the cache folder. */
+export function compileClr(source, out, { target = 'library', references = [], keyFile, run = spawnSync, cache } = {}) {
+  const name = path.basename(out);
+  // A reference is a file (keyed by its bytes) or the name of a framework assembly the compiler resolves itself.
+  const referenceKey = (reference) =>
+    fs.existsSync(reference) ? path.basename(reference) + '=' + fileDigest(reference) : reference;
+  // A generated strong-name key is new per run, so its output is never asked for again: such a build skips the cache.
+  const cacheRoot = keyFile ? false : cache;
+  compileCached({
+    ...(cacheRoot === undefined ? {} : { root: cacheRoot }),
+    key: compileCacheKey([
+      'clr-fixture/1',
+      compilerIdentity(CSC),
+      target,
+      // The assembly's identity is its output file name.
+      name,
+      fs.readFileSync(source),
+      keyFile ? fs.readFileSync(keyFile) : '',
+      ...references.map(referenceKey),
+    ]),
+    files: [name],
+    into: path.dirname(out),
+    build(folder) {
+      const build = run(
+        CSC,
+        [
+          '/nologo',
+          '/target:' + target,
+          '/out:' + path.join(folder, name),
+          ...(keyFile ? ['/keyfile:' + keyFile] : []),
+          ...references.map((reference) => '/reference:' + reference),
+          source,
+        ],
+        { shell: false, windowsHide: true, encoding: 'utf8', timeout: CLI_HANG_GUARD_MS },
+      );
+      if (build.status !== 0)
+        throw new Error('C# fixture build failed: ' + (build.error?.message ?? build.stdout + build.stderr));
+    },
+  });
   return out;
 }
 

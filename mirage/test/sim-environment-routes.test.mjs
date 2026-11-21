@@ -95,4 +95,5 @@ test('standalone environment routes edit local overrides and report deployment p
     501,
   );
   assert.equal(profiles.supported, false);
+  assert.equal(profiles.reason, 'No deploymentProfiles are configured for this runtime.');
 });

@@ -201,7 +201,7 @@ export function leadHelp({ id, label = 'this section', text, steps = [], example
 
 /** Visible field help; give the control `aria-describedby="<id>-help"`. */
 /**
- * Field help (D-M-6): an (i) next to the control; its popover keeps the id `<id>-help`, so the control's
+ * Field help: an (i) next to the control; its popover keeps the id `<id>-help`, so the control's
  * `aria-describedby="<id>-help"` still reads the text. No visible line under the control.
  */
 export const fieldHelp = (id, text) =>
@@ -338,7 +338,7 @@ export const time = (value) => {
 /** The one line that names the zone of every time on a page. */
 export const timeZoneNote = () => `Times are local (${utcOffset()}); hover a time for its date and UTC.`;
 
-// ---- Page chrome (D-M-7; contract in monitor-review/N2b-chrome.md)
+// ---- Page chrome
 /** Active filter chips: `{ items: [{ label, attrs }], clear }` (remove buttons and Clear all), or trusted markup. */
 export function chips(value) {
   if (typeof value === 'string') return value;
@@ -393,7 +393,7 @@ export function filterDrawer({ id, title = 'Filters', body = '', footer = '' }) 
   );
 }
 
-// ---- dataTable (D-M-8; contract in monitor-review/N2b-chrome.md): one table look and behaviour everywhere.
+// ---- dataTable: one table look and behaviour everywhere.
 /** The bottom controls of a table: footer actions, the count, rows per page and Previous/Next. */
 export function tableFoot(key, result, { actions = '', sizes = PAGE_SIZES } = {}) {
   const k = e(key),
@@ -477,7 +477,7 @@ export function dataTable({
           afterRow,
         });
   const total = result?.total ?? rows.length;
-  // The bottom controls bar is on every table, also with one page or no row (D-M-11).
+  // The bottom controls bar is on every table, also with one page or no row.
   const foot = tableFoot(id, result ?? { total, pages: 1, page: 1 }, { actions: footActions });
   return `<div class="ui-data-table" data-data-table="${k}">${bar}${body}${foot}${filter?.drawer ?? ''}</div>`;
 }
@@ -492,7 +492,7 @@ export const filtersToggle = (id, count = 0) => {
   return `<button type="button" class="ui-button ui-small ui-table-filters" data-filter-toggle="${e(filtersId(id))}" aria-expanded="false" aria-controls="${e(filtersId(id))}">Filters${badge}</button>`;
 };
 /**
- * Column filters of a table with more than one sortable data column (D-M-11): "Filters · n" in the bar, one text box
+ * Column filters of a table with more than one sortable data column: "Filters · n" in the bar, one text box
  * per column in a drawer (the shell moves it beside the page and applies the form), chips for the active ones.
  * `filters`: { <sortKey>: text } in force.
  */

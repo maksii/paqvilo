@@ -27,7 +27,7 @@ import {
   LIVE_INTERVAL_MS,
 } from '../admin/view-activity.mjs';
 import { PRODUCT_OF } from '../admin/dashboard-map.mjs';
-import { createTraceStore, SPAN_KINDS, SPAN_STATUSES } from '../lib/trace-store.mjs';
+import { createTraceStore, SPAN_KINDS, SPAN_STATUSES, TRACE_HOSTS } from '../lib/trace-store.mjs';
 import { bar, tabs } from '../admin/ui-kit.mjs';
 import fs from 'node:fs/promises';
 
@@ -288,7 +288,7 @@ test('services view loads its routes and renders every panel collapsed except st
   assert.match(html, /fx_ApiSecret/);
   assert.doesNotMatch(html, /fx_Plain/);
   assert.match(html, /PCF controls \(Solution inventory\)<\/dt><dd>2/);
-  // D-M-7: no title block. The visually hidden H1 is the sidebar label and takes focus on landing; the view's
+  // no title block. The visually hidden H1 is the sidebar label and takes focus on landing; the view's
   // "How this works" is one (i) that the shell moves next to the breadcrumb.
   assert.match(html, /<h1 id="view-title" class="ui-sr-only" tabindex="-1">Providers &amp; services<\/h1>/);
   assert.match(
@@ -313,7 +313,7 @@ test('services view states honest empty and unconfigured states', async () => {
   safeMarkup(html);
   assert.equal(openCount(html), 1);
   assert.match(html, /No message bus is configured\. Declare one under providers\.messaging in \/_setup\/\./);
-  // Panel help (D-M-6): no visible sentence; the whole text and the doc link sit behind one (i) named after the panel.
+  // Panel help: no visible sentence; the whole text and the doc link sit behind one (i) named after the panel.
   assert.match(
     html,
     /<p class="ui-section-help"><span class="ui-info"><button type="button" class="ui-info-button" aria-label="About Messaging" aria-describedby="help-services-messaging">i<\/button><span class="ui-info-pop" role="tooltip" id="help-services-messaging"><span class="ui-info-text">The local message bus: [^<]*Service endpoints[^<]*<\/span><span class="ui-info-docs"><a class="ui-doc" href="https:\/\/git\.example\.test\/invented\/paqvilo\/blob\/v0\.9\.4\/mirage\/docs\/messaging-and-outbox\.md#local-message-bus"/,
@@ -361,11 +361,11 @@ test('flows view renders runs, waits, background work and webhooks; the run deep
   assert.ok(ctx.requested.includes('/flow-runs/run-2'));
   const html = flows.render(ctx);
   safeMarkup(html);
-  // D-M-7: the runs table is the page (no section around it); its filters are a drawer opened from the toolbar.
+  // the runs table is the page (no section around it); its filters are a drawer opened from the toolbar.
   assert.equal(openCount(html), 0);
   assertTables(html, ['flow-runs', 'flow-waits', 'flow-job-errors', 'flow-async', 'flow-webhooks']);
   for (const id of ['waits', 'background', 'webhooks']) assert.match(html, new RegExp(`id="help-flows-${id}"`));
-  // D-M-8: the count is in the bottom controls bar, not at the top left.
+  // the count is in the bottom controls bar, not at the top left.
   assert.match(html, /<span class="ui-table-count">2 results<\/span>/);
   assert.doesNotMatch(html, /<span class="ui-page-summary">2 runs/);
   assert.match(
@@ -493,7 +493,7 @@ test('capabilities view renders report, missing, unsupported, inventory and scen
   // Columns whose values are jargon explain them behind an (i) in the header; Source inventory has its own help.
   assert.match(
     html,
-    // Every data column sorts (DV-N4c-1): the label is the sort button.
+    // Every data column sorts: the label is the sort button.
     /<th scope="col" aria-sort="none"><button type="button" class="ui-sort" data-table-sort="cap-modules" data-sort-key="col-2">Level<span class="ui-sort-mark" aria-hidden="true">↕<\/span><\/button><span class="ui-info"><button type="button" class="ui-info-button" aria-label="About Level">i<\/button><span class="ui-info-pop" role="tooltip"><span class="ui-info-text">inventory: listed from source only\./,
   );
   assert.match(
@@ -893,13 +893,13 @@ test('kit bar and tabs carry geometry and state as attributes only', () => {
   assert.match(tabbed, /role="tabpanel" id="fx-panel" aria-labelledby="fx-tab-b"><p>B<\/p>/);
 });
 
-test('an empty runtime shows the guided empty state; a host without activity says so (D-M-3)', async () => {
+test('an empty runtime shows the guided empty state; a host without activity says so', async () => {
   const empty = { items: [], total: 0, page: 1, pageSize: 10, pageCount: 1, retained: 0, dropped: 0 };
   const ctx = activityContext({ responses: activityResponses({ '/trace': empty }) });
   await activity.load(ctx);
   let html = activity.render(ctx);
   safeMarkup(html);
-  // The page chrome (D-M-7): the H1 stays for focus but is visually hidden; filters open in the drawer.
+  // The page chrome: the H1 stays for focus but is visually hidden; filters open in the drawer.
   assert.match(html, /<h1 id="view-title" class="ui-sr-only" tabindex="-1">Activity<\/h1>/);
   assert.match(html, /data-filter-toggle="activity-filter-drawer"/);
   assert.match(html, /<aside class="ui-filter-drawer" id="activity-filter-drawer"[^>]*hidden>/);
@@ -919,7 +919,7 @@ test('an empty runtime shows the guided empty state; a host without activity say
   activity.route(ctx, new URLSearchParams({ result: 'denied' }));
   await activity.load(ctx);
   assert.match(activity.render(ctx), /No activity matches these filters\. Clear a filter, or widen the time range\./);
-  // An id filter says how ids match (DV-N4-3).
+  // An id filter says how ids match.
   activity.route(ctx, new URLSearchParams({ who: 'visitor:accb980f' }));
   await activity.load(ctx);
   assert.match(
@@ -939,7 +939,7 @@ test('an empty runtime shows the guided empty state; a host without activity say
   assert.match(html, /Tracing settings could not be read: Not found \(HTTP 404\)/);
 });
 
-test('Activities rows merge the audit facts, and a 500 row shows its error code (D-M-3, M2 §7 defect 7)', async () => {
+test('Activities rows merge the audit facts, and a 500 row shows its error code (M2 §7 defect 7)', async () => {
   const ctx = activityContext();
   await activity.load(ctx);
   // One audit read for the whole page, by the listed trace ids.
@@ -965,7 +965,7 @@ test('Activities rows merge the audit facts, and a 500 row shows its error code 
   // The create: provider, rows and its one read; the denied read: the portal error code.
   assert.match(list, /<td class="ui-trace-extra">local · 1 row · 1 read<\/td>/);
   assert.match(list, /<td class="ui-trace-extra">local · portal 90040120<\/td>/);
-  // Who (D-M-2): name and contact, a visitor by its id.
+  // Who: name and contact, a visitor by its id.
   // Who is a link that filters by exactly that caller (the full id is in its address and title).
   assert.match(
     list,
@@ -990,7 +990,7 @@ test('Activities rows merge the audit facts, and a 500 row shows its error code 
   assert.equal(whoText(null, null), '—');
 });
 
-test('a Who chip names the caller a link named; the log type is a drawer filter (DV-N4b-6, DV-N4b-10)', async () => {
+test('a Who chip names the caller a link named; the log type is a drawer filter', async () => {
   const ctx = activityContext();
   // Backend operations links a plug-in step by its actor and names it: the chip shows the name, the address keeps both.
   activity.route(
@@ -1034,14 +1034,14 @@ test('a Who chip names the caller a link named; the log type is a drawer filter 
     );
     assert.equal(hashes.at(-1), '#activity?tab=log&type=request');
   });
-  // The lines come first; the counts, pager and help sit under them (D-M-7).
+  // The lines come first; the counts, pager and help sit under them.
   html = activity.render(ctx);
   const panel = html.slice(html.indexOf('id="activity-tabs-panel"'));
   assert.ok(panel.indexOf('data-table="activity-log"') < panel.indexOf('class="ui-table-foot"'));
   assert.match(panel, /^[^>]*><div class="ui-data-table" data-data-table="activity-log">/);
 });
 
-test('with tracing off, Live follows the request audit through the log channel, or says it needs tracing (DV-N4b-4)', async () => {
+test('with tracing off, Live follows the request audit through the log channel, or says it needs tracing', async () => {
   const off = { ...sample.settings, settings: { ...sample.settings.settings, level: 'off' } };
   mock.timers.enable({ apis: ['setTimeout'] });
   try {
@@ -1085,7 +1085,7 @@ test('with tracing off, Live follows the request audit through the log channel, 
   }
 });
 
-test('filters round-trip through the address; #activity alone is unfiltered (D-M-3, M2 §7 defect 3)', async () => {
+test('filters round-trip through the address; #activity alone is unfiltered (M2 §7 defect 3)', async () => {
   const ctx = activityContext();
   const link = new URLSearchParams({
     range: '15m',
@@ -1197,7 +1197,7 @@ test('filters round-trip through the address; #activity alone is unfiltered (D-M
   });
 });
 
-test('the Why line names the first failed or denied step, before anything else (D-M-3)', async () => {
+test('the Why line names the first failed or denied step, before anything else', async () => {
   // The store's firstError wins; else the deepest failed step; else how it ended.
   assert.deepEqual(
     whyOf({
@@ -1272,7 +1272,7 @@ test('the Why line names the first failed or denied step, before anything else (
   );
 });
 
-test('tabs follow what the host serves; the standalone host has no Log stream and says so (D-M-1, D-M-3)', async () => {
+test('tabs follow what the host serves; the standalone host has no Log stream and says so', async () => {
   const ctx = activityContext();
   assert.deepEqual(
     tabsFor(ctx).map(([id]) => id),
@@ -1325,7 +1325,7 @@ test('tabs follow what the host serves; the standalone host has no Log stream an
   });
 });
 
-test('tracing off: Activities lists the request audit with a banner; audit-only filters read the audit too (D-M-3)', async () => {
+test('tracing off: Activities lists the request audit with a banner; audit-only filters read the audit too', async () => {
   const off = { ...sample.settings, settings: { ...sample.settings.settings, level: 'off' } };
   const ctx = activityContext({ responses: activityResponses({ '/trace/settings': off }) });
   await activity.load(ctx);
@@ -1369,7 +1369,7 @@ test('tracing off: Activities lists the request audit with a banner; audit-only 
   );
 });
 
-test('one time format: local HH:MM:SS.mmm, the date and UTC on hover, the zone named once (D-M-2)', async () => {
+test('one time format: local HH:MM:SS.mmm, the date and UTC on hover, the zone named once', async () => {
   await inZone('Etc/GMT-2', async () => {
     const ctx = activityContext();
     activity.route(ctx, new URLSearchParams({ tab: 'stats' }));
@@ -1562,14 +1562,14 @@ test('Log stream: server history and Live lines merge by sequence; findings fold
   });
 });
 
-test('Findings group by code; each links to its activity or says it was startup (D-M-3, D-M-4)', async () => {
+test('Findings group by code; each links to its activity or says it was startup (D-M-4)', async () => {
   const ctx = activityContext();
   activity.route(ctx, new URLSearchParams({ tab: 'findings' }));
   await activity.load(ctx);
   const html = activity.render(ctx);
   safeMarkup(html);
   assert.match(html, /3 findings in 2 codes · 2 during an activity/);
-  // A group whose occurrences differ shows its first message and how many others it holds (DV-N4b-7).
+  // A group whose occurrences differ shows its first message and how many others it holds.
   assert.match(
     html,
     /<code>TABLE_PERMISSION_DENIED<\/code><\/td><td><span[^>]*>2<\/span><\/td><td><details class="ui-finding-group"[^>]*><summary><span class="ui-finding-first">No table permission grants read on x_secret\. · \/_api\/x_secrets · \+1 other message<\/span>/,
@@ -1597,7 +1597,7 @@ test('Findings group by code; each links to its activity or says it was startup 
   assert.match(activity.render(ctx), /2 findings in 2 codes · 1 during an activity/);
 });
 
-test('every Activity table sorts from its headers: log, findings, pages and the Stats breakdown (DV-N4c-1)', async () => {
+test('every Activity table sorts from its headers: log, findings, pages and the Stats breakdown', async () => {
   const ctx = activityContext();
   const rendered = async (tab) => {
     activity.route(ctx, new URLSearchParams({ tab }));
@@ -1651,7 +1651,7 @@ test('every Activity table sorts from its headers: log, findings, pages and the 
   assert.ok(byPage.indexOf('<code>/order/</code>') < byPage.indexOf('<code>/</code>'));
 });
 
-test('a finding without a message says its human name first, its ids only when it names nothing (DV-N4c-6, DV-N4d-2)', async () => {
+test('a finding without a message says its human name first, its ids only when it names nothing', async () => {
   const step = '1a2b3c4d-0000-4000-8000-000000000001';
   const diagnostics = {
     diagnostics: [
@@ -1708,7 +1708,7 @@ test('a finding without a message says its human name first, its ids only when i
   assert.doesNotMatch(html, /<span class="ui-finding-first">[^<]*(?:Workflows|SdkMessageProcessingSteps)/);
 });
 
-test('the detail tabs carry their (i) on the tab strip row, not on a line of its own (DV-N4c-3)', async () => {
+test('the detail tabs carry their (i) on the tab strip row, not on a line of its own', async () => {
   const ctx = activityContext();
   activity.route(ctx, new URLSearchParams({ detail: 'request' }), [traceId]);
   await activity.load(ctx);
@@ -1816,7 +1816,7 @@ test('the Activities count says how many retained activities a filter or time ra
   assert.match(activity.render(ctx), /<span class="ui-table-count">3 results of 3 retained<\/span>/);
 });
 
-test('the Log stream has a one-click Startup filter in place of Errors & denied; the breakdown has a bottom bar (T7, DV-N4d-3)', async () => {
+test('the Log stream has a one-click Startup filter in place of Errors & denied; the breakdown has a bottom bar (T7)', async () => {
   const ctx = activityContext();
   activity.route(ctx, new URLSearchParams({ tab: 'log' }));
   await activity.load(ctx);
@@ -1857,7 +1857,7 @@ test('the Log stream has a one-click Startup filter in place of Errors & denied;
   );
 });
 
-test('every Activity table has its search in its toolbar row with Filters, and the bottom bar (D-M-11 item 4)', async () => {
+test('every Activity table has its search in its toolbar row with Filters, and the bottom bar', async () => {
   const ctx = activityContext();
   const labels = { activities: 'activities', log: 'log lines', findings: 'findings', pages: 'pages', stats: 'steps' };
   const tables = {
@@ -1930,7 +1930,7 @@ test('every Activity table has its search in its toolbar row with Filters, and t
   });
 });
 
-test('the Rendered tab and Pages & render resolve template sources to path:line (D-M-3, M2 §7 defect 6)', async () => {
+test('the Rendered tab and Pages & render resolve template sources to path:line (M2 §7 defect 6)', async () => {
   const ctx = activityContext();
   activity.route(ctx, new URLSearchParams({ detail: 'rendered' }), ['fx-page']);
   await activity.load(ctx);
@@ -1996,7 +1996,7 @@ test('a hostile finding is shown escaped; stale evidence says so in Pages & rend
   await activity.load(ctx);
   html = activity.render(ctx);
   assert.match(html, /<span class="ui-badge ui-tone-warn">stale evidence<\/span>/);
-  // Page, Last activity (both sortable) and the actions; on a phone activity.css stacks each row (DV-N4c-1).
+  // Page, Last activity (both sortable) and the actions; on a phone activity.css stacks each row.
   const list = html.slice(html.indexOf('data-table="activity-pages"'));
   assert.equal(count(list.slice(0, list.indexOf('</thead>')), /<th /g), 3);
   assert.match(list, /<td class="ui-actions"><a class="ui-button ui-small" href="\/order\/" target="_blank"/);
@@ -2278,7 +2278,7 @@ test('a row of an activity whose step failed reads error with its root’s own o
   );
 });
 
-test('Export bundle follows the filters; the activity files remain as other formats (D-M-3)', async () => {
+test('Export bundle follows the filters; the activity files remain as other formats', async () => {
   const ctx = activityContext();
   activity.route(ctx, new URLSearchParams({ result: 'error', table: 'x_item' }));
   await activity.load(ctx);
@@ -3178,7 +3178,7 @@ test('flow run details link to their activity', async () => {
   assert.match(flows.render(ctx), /<a class="ui-button ui-small" href="#activity\/fx-trace\/fx-span">Activity →<\/a>/);
 });
 
-test('the /_sim/ admin follows the system dark theme through tokens only; the light theme is unchanged (DV-C-18)', async () => {
+test('the /_sim/ admin follows the system dark theme through tokens only; the light theme is unchanged', async () => {
   const read = (name) => fs.readFile(new URL(`../admin/${name}`, import.meta.url), 'utf8');
   const kitCss = await read('ui-kit.css');
   const dark = kitCss.slice(kitCss.indexOf('@media (prefers-color-scheme: dark)'));
@@ -3235,7 +3235,7 @@ test('the /_sim/ admin follows the system dark theme through tokens only; the li
   assert.match(html, /<meta name="color-scheme" content="light dark" \/>/);
 });
 
-test('the trace store sits in the Monitor group of the system map (DV-C-19)', () => {
+test('the trace store sits in the Monitor group of the system map', () => {
   const product = PRODUCT_OF('org:trace', 'org', 'Tracing');
   assert.deepEqual([product.band, product.group, product.name], ['organization', 'monitor', 'Activity']);
 });
@@ -3464,4 +3464,27 @@ test('an audit of three pages is read in full without the incomplete notice (R11
   await activity.load(ctx);
   assert.ok(ctx.requested.includes(`${AUDIT_PATH}&page=3`), ctx.requested.join('\n'));
   assert.doesNotMatch(activity.render(ctx), /Some audit facts are missing/);
+});
+
+test('the Activity host filter lists the runtime trace hosts, and a stale host link shows every host', async () => {
+  const state = { ...activitySample.state, status: { ...activitySample.state.status, traceHosts: [...TRACE_HOSTS] } };
+  const ctx = activityContext({ state });
+  activity.route(ctx, new URLSearchParams({ host: 'sharepoint' }));
+  await activity.load(ctx);
+  const html = activity.render(ctx);
+  for (const host of TRACE_HOSTS) assert.match(html, new RegExp(`<option value="${host}"`), host);
+  assert.equal(ctx.data.activity.filters.host, 'sharepoint');
+  // The API accepts a host in any case, so a link spelled differently selects that host instead of being cleared.
+  activity.route(ctx, new URLSearchParams({ host: ' SharePoint ' }));
+  assert.equal(ctx.data.activity.filters.host, 'sharepoint');
+  // A host the runtime does not trace (an older link) is cleared instead of answered with the runtime's 400.
+  ctx.requested.length = 0;
+  activity.route(ctx, new URLSearchParams({ host: 'retired-host', result: 'error' }));
+  await activity.load(ctx);
+  assert.equal(ctx.data.activity.filters.host, '');
+  assert.equal(hashOf(ctx.data.activity), 'activity?result=error');
+  assert.ok(
+    ctx.requested.some((path) => path.startsWith('/trace?') && !path.includes('host=')),
+    ctx.requested.join('\n'),
+  );
 });

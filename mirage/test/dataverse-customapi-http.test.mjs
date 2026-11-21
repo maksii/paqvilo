@@ -7,6 +7,7 @@ import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { createOrganizationRuntime } from '../lib/dataverse-organization.mjs';
 import { sourceOrganizationExtensions } from '../lib/source-organization-extensions.mjs';
 import { startDataverseApi } from '../lib/dataverse-api.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 
 // Starts a Web API with one invented registry client and answers the store, the transport and the token response.
 async function registryHarness(t, { variable, app, displayName, customApis }) {
@@ -66,7 +67,13 @@ function bearerCalls(transport, token) {
   return { call, json };
 }
 
-test('custom API rows immediately update canonical HTTP routing, CSDL, parameter validation and deletion', async (t) => {
+test(
+  'custom API rows immediately update canonical HTTP routing, CSDL, parameter validation and deletion',
+  // Hang guard only: one scenario of row writes on one Web API, each followed by a regenerated $metadata document.
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  customApiRowLifecycle,
+);
+async function customApiRowLifecycle(t) {
   const variable = 'PAQVILO_CUSTOM_API_HTTP_TEST_SECRET',
     app = '55555555-5555-4555-8555-555555555555';
   const handler = async (context) => ({
@@ -201,7 +208,7 @@ test('custom API rows immediately update canonical HTTP routing, CSDL, parameter
   await json(await call('DELETE', `customapis(${api.customapiid})`), 204);
   assert.equal(action((await schema()).xml, 'new_Renamed'), undefined);
   await json(await call('POST', 'new_Renamed', {}), 404);
-});
+}
 
 // A started Web API with a custom API client, for the name and step tests: the calls, the store and the $batch route.
 async function namesHarness(t) {

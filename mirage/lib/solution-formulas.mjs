@@ -1,6 +1,23 @@
 import YAML from 'yaml';
 
+// A rollup column's exported definition (<table>-<column>.xaml) is one XAML document. The platform serves it as the
+// FormulaDefinition with an XML declaration and without the whitespace between elements that the export adds.
+const XML_DECLARATION = '<?xml version="1.0" encoding="utf-16"?>';
+const storedXaml = (text) => {
+  const compact = String(text)
+    .replace(/^\u{FEFF}/u, '')
+    .trim()
+    .replace(/>\s+</g, '><');
+  return compact.startsWith('<?xml') ? compact : XML_DECLARATION + compact;
+};
+
 export function parseSolutionFormulaDocument(text, info) {
+  if (/\.xaml$/i.test(info.formulaFile))
+    return {
+      entityDir: info.entityDir?.toLowerCase() ?? null,
+      file: info.formulaFile.toLowerCase(),
+      xaml: storedXaml(text),
+    };
   let document;
   try {
     document = YAML.parse(text, { maxAliasCount: 100 });
@@ -42,12 +59,13 @@ export function solutionFormulaResolver(documents, diagnostics) {
     const match =
       // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
       typeof reference === 'string' && !/[\x00-\x1f\x7f]/.test(reference)
-        ? /^\/?Formulas\/([^/\\:]+\.ya?ml)$/i.exec(reference)
+        ? /^\/?Formulas\/([^/\\:]+\.(?:ya?ml|xaml))$/i.exec(reference)
         : null;
     const scopedKey = match ? `${entityDir.toLowerCase()}/${match[1].toLowerCase()}` : null;
     let definition = null;
     if (match) definition = files.has(scopedKey) ? files.get(scopedKey) : files.get(`*/${match[1].toLowerCase()}`);
-    const expression = definition?.columns[attribute.name.toLowerCase()];
+    // A reference is matched against the scanned documents of the solution root only: no path is ever read from it.
+    const expression = definition?.xaml ?? definition?.columns[attribute.name.toLowerCase()];
     if (expression) return { ...attribute, formulaDefinition: expression, formulaDefinitionSource: definition.source };
     diagnostics.push({
       code: !match ? 'SOLUTION_FORMULA_REFERENCE_INVALID' : 'SOLUTION_FORMULA_DEFINITION_MISSING',
@@ -56,7 +74,7 @@ export function solutionFormulaResolver(documents, diagnostics) {
       attribute: attribute.name,
       source,
       message: !match
-        ? 'Formula definition references must name a YAML file directly under the table Formulas directory.'
+        ? 'Formula definition references must name a YAML or XAML file directly under the table Formulas directory.'
         : 'The referenced formula file does not provide this column expression.',
     });
     return attribute;

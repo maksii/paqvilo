@@ -1,3 +1,4 @@
+// @test-kind contract: the Inspect and X-ray report Lense builds from invented Solution metadata is Paqvilo's own report shape.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createModelDrivenMetadataIndex } from '../lense/model-driven-metadata.mjs';
@@ -184,7 +185,7 @@ test('Inspect and X-ray read a record form by its ID and a list page by its view
   });
   assert.equal(record.forms[0].kind, 'model-driven-form');
   assert.equal(record.forms[0].formType, 'main');
-  assert.match(record.forms[0].evidenceLabel, /Form ID of this page matched/);
+  assert.match(record.forms[0].evidenceLabel, /^Form open on this page$/);
   assert.deepEqual(
     record.columns.map((column) => [column.name, column.type, column.required, column.ref]),
     [['inv_name', 'nvarchar', true, '/invented/Entities/inv_item/Entity.xml']],
@@ -204,13 +205,24 @@ test('Inspect and X-ray read a record form by its ID and a list page by its view
     record.views.map((view) => view.name),
     ['Parts of an item'],
   );
+  // A subgrid of a table your Solution does not define (a platform table) lists no table row: it has no file to open.
+  const platform = modelDrivenPanelInspection({
+    ...base,
+    catalogue: { ...catalogue, tables: catalogue.tables.filter((table) => table.logicalName !== 'inv_part') },
+    context: record.modelDriven,
+  });
+  assert.deepEqual(
+    platform.tables.map((table) => table.logicalName),
+    ['inv_item'],
+  );
+  assert.deepEqual(
+    platform.nativeComponents.map((item) => item.entity),
+    ['inv_part'],
+  );
   assert.doesNotMatch(JSON.stringify(record), /basic form/i);
   // Without the native form ID the table's main form is a candidate, named as one.
   const candidate = modelDrivenPanelInspection({ ...base, context: { pageType: 'entityrecord', entity: 'inv_item' } });
-  assert.match(
-    candidate.forms[0].evidenceLabel,
-    /Candidate: an exported form of inv_item; current form identity is unavailable/,
-  );
+  assert.match(candidate.forms[0].evidenceLabel, /Possible form of inv_item: the open form could not be identified/);
   // A list page has no form: its views come first, the one in the address first, and its columns are the view's.
   const list = modelDrivenPanelInspection({
     ...base,

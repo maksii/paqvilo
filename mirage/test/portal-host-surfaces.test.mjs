@@ -263,27 +263,32 @@ test('serverLogicTimeoutMs raises the local server-logic limit up to ServerLogic
 
 // @test-kind contract: the applied server-logic limit is the option capped at ServerLogic/TimeoutInSeconds
 test('a serverLogicTimeoutMs above ServerLogic/TimeoutInSeconds runs exported code under the site limit', async (t) => {
-  // Either limit may end the run: the worker's script limit (501), or the host's limit (504) when the worker thread is
-  // descheduled past its own. Both name the bound they applied, so the cap is read from the answer, not from a clock.
+  // Either limit may end the run: the worker's script limit, or the host's limit when the worker thread is descheduled
+  // past its own. Both answer the same timeout naming the bound they applied, so the cap is read from the answer.
   const { status, body } = await serverLogicHost(t, {
     settings: [['ServerLogic/TimeoutInSeconds', '1']],
     logic: 'function get(){ for(;;){} }',
     options: { serverLogicTimeoutMs: 10_000 },
     expectedStatus: null,
   });
-  const capped = {
-    501: 'Script execution timed out after 1000ms',
-    504: 'Server-logic execution exceeded its local time limit of 1000 ms.',
-  };
-  assert.ok(Object.hasOwn(capped, status), `unexpected status ${status}: ${JSON.stringify(body)}`);
-  assert.equal(body.error.message, capped[status]);
+  assert.equal(status, 500, JSON.stringify(body));
+  assert.deepEqual(body.error, {
+    code: 'ServerLogicTimeout',
+    message:
+      'Server logic exceeded its time limit of 1000 ms (serverLogicTimeoutMs, at most ServerLogic/TimeoutInSeconds).',
+  });
 });
 
 // @test-kind contract: createSimulator refuses a serverLogicTimeoutMs that is not a finite number greater than 0
 test('createSimulator refuses a serverLogicTimeoutMs that is not a finite number greater than 0', async () => {
   for (const serverLogicTimeoutMs of [0, -1, Number.NaN, Infinity, '5000', null])
     await assert.rejects(
-      createSimulator({ serverLogicTimeoutMs, watch: false }),
+      // The option is checked before the sources are read, so the source directory need not exist.
+      createSimulator({
+        sourceDir: path.join(os.tmpdir(), 'paqvilo-invented-portal'),
+        serverLogicTimeoutMs,
+        watch: false,
+      }),
       { name: 'TypeError', message: /^serverLogicTimeoutMs must be a finite number/ },
       String(serverLogicTimeoutMs),
     );

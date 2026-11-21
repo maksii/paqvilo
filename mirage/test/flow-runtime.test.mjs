@@ -2,7 +2,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore } from '../lib/data.mjs';
-import { createConnectorRuntime } from '../lib/connector-runtime.mjs';
+import { createConnectorRuntime, connectionSettings } from '../lib/connector-runtime.mjs';
+import { customConnectorsOf } from '../lib/custom-connector.mjs';
+import { inventoryEntry, mergeInventory } from '../lib/solution-inventory.mjs';
 import {
   executeFlowDefinition,
   inspectFlowDefinition,
@@ -702,4 +704,82 @@ test('replace() substitutes its text literally, and an empty search text needs n
   assert.equal(value("replace('a-b','-','$&$&')"), 'a$&$&b');
   assert.equal(value("replace('a-b','-','$$')"), 'a$$b');
   assert.throws(() => value("replace('a-b','','x')"), { status: 501, code: 'LocalFlowUnsupported' });
+});
+
+test('a FLOW_ACTION message ends with one full stop when the action error is already a sentence', async () => {
+  const notes = [];
+  await executeFlowDefinition({
+    definition: {
+      triggers: { manual: { type: 'Request', kind: 'Button', inputs: { schema: {} } } },
+      actions: {
+        Call: { type: 'Http', runAfter: {}, inputs: { method: 'GET', uri: 'https://remote.example.test/x' } },
+        Reply: { type: 'Response', runAfter: { Call: ['Failed'] }, inputs: { statusCode: 200, body: 'handled' } },
+      },
+    },
+    input: {},
+    connectors: createConnectorRuntime({}),
+    diagnostic: (note) => note.code === 'FLOW_ACTION' && note.action === 'Call' && notes.push(note.message),
+  });
+  assert.equal(notes.length, 1);
+  assert.match(notes[0], /^Call \(Http\) Failed: .*local service\.$/);
+  assert.doesNotMatch(notes[0], /\.\.$/);
+});
+
+test('a flow contract names the implicit-OAuth custom connector warning of a connection without a static token', () => {
+  const name = 'x_5fwarnapi';
+  const document = {
+    swagger: '2.0',
+    info: { title: 'Invented warning API' },
+    host: 'api.example.test',
+    basePath: '/v1',
+    schemes: ['https'],
+    securityDefinitions: {
+      o: { type: 'oauth2', flow: 'implicit', authorizationUrl: 'https://login.example.test/authorize', scopes: {} },
+    },
+    paths: { '/items': { get: { operationId: 'ListItems', responses: { 200: { description: 'ok' } } } } },
+  };
+  const compiled = customConnectorsOf(
+    mergeInventory(
+      inventoryEntry(`Connectors/${name}_openapidefinition.json`, {
+        size: 100,
+        text: JSON.stringify(document),
+        component: 'connector',
+        componentName: name,
+      }),
+    ),
+  );
+  const contractFor = (auth) =>
+    inspectFlowDefinition(
+      {
+        triggers: { manual: { type: 'Request', kind: 'Button', inputs: { schema: {} } } },
+        actions: {
+          Call: {
+            type: 'OpenApiConnection',
+            inputs: { host: { apiId: `/providers/Microsoft.PowerApps/apis/${name}`, operationId: 'ListItems' } },
+          },
+        },
+      },
+      {},
+      {
+        connectors: createConnectorRuntime({
+          customConnectors: () => compiled,
+          connections: connectionSettings({
+            [name]: { connector: name, provider: `custom-connector:${name}`, settings: { auth } },
+          }),
+        }),
+      },
+    );
+  const warned = contractFor({});
+  assert.equal(warned.supported, true, JSON.stringify(warned.errors));
+  assert.deepEqual(warned.warnings, [
+    {
+      code: 'CONNECTOR_AUTH_UNSUPPORTED',
+      severity: 'warning',
+      connector: name,
+      connectionId: name,
+      actions: ['Call'],
+      message: `Connector ${name} (connection ${name}): The OAuth implicit flow is not run locally; its connections need a static token reference (auth.token).`,
+    },
+  ]);
+  assert.equal(contractFor({ token: 'env:X_WARN_TOKEN' }).warnings, undefined);
 });

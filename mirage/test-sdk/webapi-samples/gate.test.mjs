@@ -1,3 +1,4 @@
+// @test-kind compatibility: Microsoft Dataverse SDK wire contracts (https://learn.microsoft.com/power-apps/developer/data-platform/webapi/overview) and OAuth client assertions (RFC 7523).
 // SDK verification gate: Microsoft's PowerApps-Samples WebAPIService library (pinned in PINNED_COMMIT.txt,
 // cloned outside the repo under .paqvilo/sdk-gates/) replaying its request shapes against the simulated Dataverse API.
 // Full verification requires this prepared client; direct optional runs report unavailable tooling explicitly.
@@ -12,7 +13,7 @@ import { requireSdkSample } from '../../../scripts/sdk-preparation.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const project = path.join(here, 'Gate', 'Gate.csproj');
-const exe = path.join(here, 'Gate', 'bin', 'Release', 'net10.0', process.platform === 'win32' ? 'Gate.exe' : 'Gate');
+const exe = path.join(here, 'Gate', 'bin', 'Release', 'net11.0', process.platform === 'win32' ? 'Gate.exe' : 'Gate');
 const REQUIRED = ['construct', 'whoami', 'create', 'retrieve', 'update', 'retrieveMultiple', 'delete', 'batch'];
 
 const dotnet = spawnSync('dotnet', ['--version'], { encoding: 'utf8' });

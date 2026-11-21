@@ -157,8 +157,9 @@ const routes = {
 
 test('admin service views peek and purge, answer approvals, run preflight and expand pack details', async (t) => {
   const calls = [];
-  // A notification can precede the asynchronous reload. Hold that reload so the check
-  // exercises the pending UI state rather than depending on a fast loopback response.
+  // The purge is announced once the view shows it. The reload that follows the purge is held, so the check
+  // observes the pending state and the order instead of depending on a fast loopback response.
+  const purgeRefreshReached = Promise.withResolvers();
   let releasePurgeRefresh;
   const purgeRefresh = new Promise((resolve) => {
     releasePurgeRefresh = resolve;
@@ -212,7 +213,10 @@ test('admin service views peek and purge, answer approvals, run preflight and ex
           res.statusCode = 404;
           return res.end(JSON.stringify({ error: { message: 'Not found' } }));
         }
-        if (route === '/messages' && calls.some((call) => call.method === 'DELETE')) await purgeRefresh;
+        if (route === '/messages' && calls.some((call) => call.method === 'DELETE')) {
+          purgeRefreshReached.resolve();
+          await purgeRefresh;
+        }
         return res.end(JSON.stringify(routes[route]));
       }
       if (url.pathname === '/') {
@@ -261,7 +265,7 @@ test('admin service views peek and purge, answer approvals, run preflight and ex
   await page.getByRole('button', { name: 'Purge fx-orders' }).click();
   await page.getByRole('dialog').getByRole('heading', { name: 'Purge fx-orders?' }).waitFor();
   await page.getByRole('dialog').getByRole('button', { name: 'Purge' }).click();
-  await page.locator('#notification').getByText('Purged 2 messages from fx-orders.').waitFor();
+  await purgeRefreshReached.promise;
   const purge = calls.find((call) => call.method === 'DELETE');
   assert.deepEqual([purge.path, purge.csrf], ['/messages/fx-orders', 'fixture-csrf']);
   assert.equal(
@@ -269,8 +273,10 @@ test('admin service views peek and purge, answer approvals, run preflight and ex
     1,
     'the pending refresh retains its old view',
   );
+  assert.equal(await page.locator('#notification').textContent(), '', 'the purge is not announced over the old view');
   releasePurgeRefresh();
-  await page.locator('table[data-table="svc-peek"]').waitFor({ state: 'detached' });
+  await page.locator('#notification').getByText('Purged 2 messages from fx-orders.').waitFor();
+  assert.equal(await page.locator('table[data-table="svc-peek"]').count(), 0);
   await page.locator('[data-ui-section="services:local-services"] > summary').click();
   await page.getByRole('button', { name: 'Probe fx-functions now' }).click();
   await page.locator('table[data-table="svc-local-services"]').getByText('satisfied').waitFor();

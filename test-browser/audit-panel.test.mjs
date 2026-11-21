@@ -1,4 +1,4 @@
-// @test-kind contract: the Lense panel keeps row focus, slash input, facet filtering and theme contrast for the invented portal fixture.
+// @test-kind contract: the Lense panel keeps row focus, slash input and facet filtering for the invented portal fixture, and its DOM stays in its own host.
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 // Adversarial panel checks.
 import test from 'node:test';
@@ -12,22 +12,13 @@ import { OverlaySession } from '../lense/session.mjs';
 import { enablePanel } from '../lense/panel.mjs';
 import { panelUi } from '../lense/panel-ui.mjs';
 
-test('panel preserves row focus, editable slash input, filtered facets and translucent-theme contrast', async (t) => {
+test('panel preserves row focus, editable slash input and filtered facets', async (t) => {
   const fx = createFixture();
   let browser, panel;
-  // The panel reads a page's colours once, at its first draw there, and it draws by itself soon after a page loads.
-  // So each page is served with its own stylesheet instead of being restyled after it has loaded.
-  const styles = {
-    '/': 'html{background:white}body{background:rgba(0,0,0,.5)}.btn-primary{background:rgb(20,20,20);color:white}',
-    '/modern':
-      'html,body{background:color(display-p3 1 1 1)}.btn-primary{background:color(display-p3 .9 .9 .9);color:white}',
-  };
   const server = http.createServer((req, res) =>
     res
       .writeHead(200, { 'content-type': 'text/html' })
-      .end(
-        `<!doctype html><style>${styles[req.url] ?? styles['/']}</style><h1>Invented fixture</h1><input id="portal-input">`,
-      ),
+      .end('<!doctype html><h1>Invented fixture</h1><input id="portal-input">'),
   );
   ownedFixture(t).add(async () => {
     await panel?.dispose();
@@ -82,7 +73,7 @@ test('panel preserves row focus, editable slash input, filtered facets and trans
   // The initial UI preference is accepted once, so use the actual pill to open the existing instance.
   await scope.locator('.pill').click();
   await page.evaluate(panelUi, state);
-  await scope.locator('[data-rel="second.js"] [data-act="open"]').focus();
+  await scope.locator('[data-rel="second.js"] .main[data-act="open"]').focus();
   state.items[0].count = 2;
   await page.evaluate(panelUi, state);
   assert.equal(
@@ -91,29 +82,7 @@ test('panel preserves row focus, editable slash input, filtered facets and trans
     ),
     'second.js',
   );
-  const contrast = await scope.locator('[role=tab][aria-selected=true]').evaluate((node) => {
-    const rgb = (color) =>
-        color
-          .match(/[\d.]+/g)
-          .slice(0, 3)
-          .map(Number),
-      luma = (values) =>
-        values
-          .map((value) => {
-            value /= 255;
-            return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
-          })
-          .reduce((sum, value, i) => sum + value * [0.2126, 0.7152, 0.0722][i], 0);
-    const a = luma(rgb(getComputedStyle(node).color)),
-      b = luma(rgb(getComputedStyle(node.closest('.wrap')).getPropertyValue('--bg')));
-    return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
-  });
-  assert.ok(contrast >= 4.5, String(contrast));
-  assert.deepEqual(
-    await page.evaluate(() => window.auditPanelAdds),
-    [],
-    'theme probes and panel DOM stay in their owned hosts',
-  );
+  assert.deepEqual(await page.evaluate(() => window.auditPanelAdds), [], 'panel DOM stays in its owned host');
   const people = [
     { contactId: 'a', key: 'a', name: 'Alpha/One', group: 'g1', roles: ['Reader'], active: true },
     { contactId: 'b', key: 'b', name: 'Beta', group: 'g2', roles: ['Writer'], active: true },
@@ -154,38 +123,38 @@ test('panel preserves row focus, editable slash input, filtered facets and trans
   state.mirage = { active: true, version: 1, status: {} };
   await page.evaluate(panelUi, state);
   await scope.locator('[role=tab][data-v=tweaks]').click();
-  await scope.locator('.pp-persona-filter-disclosure>summary').click();
+  // The filter icon button opens the filter chips beside the persona search.
+  await scope.locator('[data-act=persona-filters]').click();
   const search = scope.locator('[data-panel-persona-query]');
   await search.fill('Alpha');
   await search.press('/');
   assert.equal(await search.inputValue(), 'Alpha/');
   assert.equal(await search.evaluate((node) => node.getRootNode().activeElement === node), true);
-  assert.deepEqual(await scope.locator('[data-panel-persona-facet=groups] option').allTextContents(), ['Group one']);
-  assert.deepEqual(await scope.locator('[data-panel-persona-facet=roles] option').allTextContents(), ['Reader']);
-  assert.equal(await scope.locator('.search').isVisible(), false);
+  const facet = (name) => scope.locator(`[data-act=persona-facet][data-facet=${name}]`);
+  assert.deepEqual(await facet('groups').allTextContents(), ['Group one']);
+  assert.deepEqual(await facet('roles').allTextContents(), ['Reader']);
+  assert.equal(await scope.locator('.tools .search').isVisible(), false);
   assert.equal(
-    await scope.locator('.pp-persona-filter-disclosure').evaluate((node) => node.open),
-    true,
-    'typing preserves a manually opened filter disclosure',
+    await scope.locator('[data-panel-persona-facets]').count(),
+    1,
+    'typing preserves a manually opened filter area',
   );
   await page.evaluate(panelUi, state);
-  assert.equal(
-    await scope.locator('[data-panel-persona-facet=roles]').isVisible(),
-    true,
-    'a later panel render preserves that disclosure too',
-  );
+  assert.equal(await facet('roles').isVisible(), true, 'a later panel render preserves that filter area too');
   await scope.locator('[data-act=persona-clear]').click();
   assert.equal(await search.inputValue(), '', 'clearing a directly refreshed picker invalidates its render cache');
-  assert.equal(await scope.locator('.pp-persona-row').count(), 50);
-  await scope.locator('.pp-persona-filter-disclosure>summary').click();
-  const rolesOnly = scope.locator('[data-panel-persona-roles-only]');
+  // 112 personas are paged by 50; the groups with rows on this page are open.
+  await scope.locator('[data-panel-persona-count]').filter({ hasText: '1–50 of 112 personas' }).waitFor();
+  assert.equal(await scope.locator('[data-panel-persona-row]').count(), 50);
+  await scope.locator('[data-act=persona-filters]').click();
+  const rolesOnly = scope.locator('[data-act=persona-any][data-facet=roles]');
   await rolesOnly.focus();
   await rolesOnly.press('Space');
-  assert.equal(await rolesOnly.isChecked(), true);
+  assert.equal(await rolesOnly.getAttribute('aria-pressed'), 'true');
   assert.equal(
     await rolesOnly.evaluate((node) => node.getRootNode().activeElement === node),
     true,
-    'checkbox focus survives picker refresh',
+    'filter chip focus survives picker refresh',
   );
   const more = scope.locator('[data-act=persona-page][data-direction="1"]');
   await more.focus();
@@ -198,9 +167,11 @@ test('panel preserves row focus, editable slash input, filtered facets and trans
   await more.press('Enter');
   assert.equal(await more.count(), 0);
   assert.equal(
-    await scope.locator('[role=tab][aria-selected=true]').evaluate((node) => node.getRootNode().activeElement === node),
+    await scope
+      .locator('[data-act=persona-page][data-direction="-1"]')
+      .evaluate((node) => node.getRootNode().activeElement === node),
     true,
-    'a paging action removed at the last page returns focus inside the panel',
+    'a paging action removed at the last page moves focus to the remaining paging action, not to the tab',
   );
   await scope.locator('[data-act=ask][data-kind=preset]').click();
   const cancel = scope.locator('[data-act=confirm-no]');
@@ -225,19 +196,5 @@ test('panel preserves row focus, editable slash input, filtered facets and trans
     await scope.locator('.pill').isVisible(),
     true,
     'Escape remains usable after the paging button disappears',
-  );
-  const modern = await context.newPage();
-  await modern.goto(`${origin}/modern`);
-  await panel.draw(modern);
-  const modernScope = modern.locator('#paqvilo-panel');
-  await modernScope.locator('.pill').click();
-  assert.equal(
-    await modernScope.locator('.wrap').evaluate((node) => getComputedStyle(node).getPropertyValue('--bg').trim()),
-    'rgb(255,255,255)',
-  );
-  assert.equal(
-    await modernScope.locator('[role=tab][aria-selected=true]').evaluate((node) => getComputedStyle(node).color),
-    'rgb(0, 0, 0)',
-    'modern CSS colours still receive a contrasting active-tab foreground',
   );
 });

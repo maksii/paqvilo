@@ -1,8 +1,9 @@
 // Read-only verification of GitHub's effective PR state, not historical job success.
 import { spawnSync } from 'node:child_process';
-import { parseArgs } from 'node:util';
+import { parseOptions } from '../lense/cli-options.mjs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { answerHelp } from './script-help.mjs';
 
 function checkKey(check) {
   return check.__typename === 'StatusContext'
@@ -101,8 +102,18 @@ function command(program, args) {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  answerHelp(process.argv.slice(2), {
+    name: 'pr-readiness',
+    options: ['--pr', '--repo'],
+    usage: `Usage: npm run check:pr -- [--pr <number>] [--repo <owner/name>]
+Checks that a pull request is ready to merge: its head matches the local HEAD, the required gates passed, no check is
+pending and GitHub's merge state is CLEAN. Reads git and the PR through gh (contacts GitHub); writes nothing.
+  --pr <number>         the pull request (default: the PR of the current branch)
+  --repo <owner/name>   the repository (default: gh's repository)
+Prints a JSON report; exits 1 when the PR is not ready.`,
+  });
   try {
-    const { values } = parseArgs({ options: { pr: { type: 'string' }, repo: { type: 'string' } }, strict: true });
+    const { values } = parseOptions({ options: { pr: { type: 'string' }, repo: { type: 'string' } }, strict: true });
     const head = command('git', ['--no-optional-locks', 'rev-parse', 'HEAD']);
     const pr = JSON.parse(
       command('gh', [

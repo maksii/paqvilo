@@ -64,7 +64,10 @@ test('a failed connection to the local runtime keeps its own error as the cause,
   ownedFixture(t).add(() => new Promise((resolve) => dropping.close(resolve)));
   const localUrl = `http://127.0.0.1:${dropping.address().port}`;
   await assert.rejects(compareReferenceContracts(options(localUrl)), (error) => {
-    assert.equal(error.message, `Local runtime state request to ${localUrl} failed.`);
+    assert.equal(
+      error.message,
+      `Nothing answers at the --local origin ${localUrl}; start Mirage there or pass the origin it prints.`,
+    );
     assert.ok(error.cause, 'the fetch failure is kept as the cause');
     return true;
   });

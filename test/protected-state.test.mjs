@@ -11,6 +11,7 @@ import { PassThrough, Writable } from 'node:stream';
 import { syncBuiltinESMExports } from 'node:module';
 import { saveProtectedState, loadProtectedState } from '../lense/dataverse/index.mjs';
 import { protectSecret } from '../lense/dataverse/connection.mjs';
+import { SCENARIO_HANG_GUARD_MS } from './helpers/bounded-command.mjs';
 test('protected JSON validates private location, bounded purpose and JSON without revealing values', async (t) => {
   // A private directory: a regressed validation would otherwise write into the shared temporary folder.
   const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'protected-json-invalid-'));
@@ -26,53 +27,58 @@ test('protected JSON validates private location, bounded purpose and JSON withou
   await assert.rejects(saveProtectedState(file, { value: 'x'.repeat(300000) }, { purpose: 'fixture' }), /size bound/);
   await assert.rejects(fs.access(path.dirname(file)), { code: 'ENOENT' });
 });
-test('protected state has encrypted durable roundtrip, purpose binding and exclusive writes or explicit platform refusal', async (t) => {
-  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'protected-json-'));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
-  const file = path.join(dir, '.paqvilo', 'identity.json'),
-    value = {
-      contacts: [
-        {
-          id: 'fixture',
-          password: 'InventedCredentialMustNotAppearInFile',
-          unicode: 'Україна 漢字 🔐',
-          multiline: 'line one\nline two',
-        },
-      ],
-    },
-    purpose = 'native-test-identity';
-  if (process.platform !== 'win32') {
-    await assert.rejects(saveProtectedState(file, value, { purpose }), /Windows DPAPI/);
-    await assert.rejects(fs.access(file), { code: 'ENOENT' });
-    return;
-  }
-  const metadata = await saveProtectedState(file, value, { purpose });
-  assert.equal(metadata.protection, 'Windows DPAPI CurrentUser');
-  assert.equal(Object.hasOwn(metadata, 'protectedValue'), false);
-  const bytes = await fs.readFile(file, 'utf8');
-  assert.doesNotMatch(bytes, /InventedCredential|contacts|password/);
-  assert.deepEqual(await loadProtectedState(file, { purpose }), value);
-  await assert.rejects(saveProtectedState(file, { replacement: true }, { purpose }), { code: 'EEXIST' });
-  assert.equal(await fs.readFile(file, 'utf8'), bytes);
-  await assert.rejects(loadProtectedState(file, { purpose: 'wrong-purpose' }), /purpose/);
-  const envelope = JSON.parse(bytes);
-  envelope.purpose = 'wrong-purpose';
-  await fs.writeFile(file, JSON.stringify(envelope));
-  await assert.rejects(loadProtectedState(file, { purpose: 'wrong-purpose' }), /inner purpose/);
-  await saveProtectedState(file, { replacement: true }, { purpose, exclusive: false });
-  assert.deepEqual(await loadProtectedState(file, { purpose }), { replacement: true });
-  const encrypted = await protectSecret('Invented malformed ciphertext fixture');
-  const damaged = Buffer.from(encrypted, 'base64');
-  damaged[damaged.length - 1] ^= 1;
-  for (const ciphertext of [
-    'not-base64',
-    Buffer.from('not a DPAPI envelope').toString('base64'),
-    damaged.toString('base64'),
-  ])
-    await assert.rejects(protectSecret(ciphertext, true), {
-      message: 'Windows credential encryption/decryption failed; no plaintext fallback.',
-    });
-});
+// Hang guard only: it drives a runtime, the CLI or child processes through this file's fixtures; on a loaded slow host that is slow, not hung.
+test(
+  'protected state has encrypted durable roundtrip, purpose binding and exclusive writes or explicit platform refusal',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'protected-json-'));
+    t.after(() => fs.rm(dir, { recursive: true, force: true }));
+    const file = path.join(dir, '.paqvilo', 'identity.json'),
+      value = {
+        contacts: [
+          {
+            id: 'fixture',
+            password: 'InventedCredentialMustNotAppearInFile',
+            unicode: 'Україна 漢字 🔐',
+            multiline: 'line one\nline two',
+          },
+        ],
+      },
+      purpose = 'native-test-identity';
+    if (process.platform !== 'win32') {
+      await assert.rejects(saveProtectedState(file, value, { purpose }), /Windows DPAPI/);
+      await assert.rejects(fs.access(file), { code: 'ENOENT' });
+      return;
+    }
+    const metadata = await saveProtectedState(file, value, { purpose });
+    assert.equal(metadata.protection, 'Windows DPAPI CurrentUser');
+    assert.equal(Object.hasOwn(metadata, 'protectedValue'), false);
+    const bytes = await fs.readFile(file, 'utf8');
+    assert.doesNotMatch(bytes, /InventedCredential|contacts|password/);
+    assert.deepEqual(await loadProtectedState(file, { purpose }), value);
+    await assert.rejects(saveProtectedState(file, { replacement: true }, { purpose }), { code: 'EEXIST' });
+    assert.equal(await fs.readFile(file, 'utf8'), bytes);
+    await assert.rejects(loadProtectedState(file, { purpose: 'wrong-purpose' }), /purpose/);
+    const envelope = JSON.parse(bytes);
+    envelope.purpose = 'wrong-purpose';
+    await fs.writeFile(file, JSON.stringify(envelope));
+    await assert.rejects(loadProtectedState(file, { purpose: 'wrong-purpose' }), /inner purpose/);
+    await saveProtectedState(file, { replacement: true }, { purpose, exclusive: false });
+    assert.deepEqual(await loadProtectedState(file, { purpose }), { replacement: true });
+    const encrypted = await protectSecret('Invented malformed ciphertext fixture');
+    const damaged = Buffer.from(encrypted, 'base64');
+    damaged[damaged.length - 1] ^= 1;
+    for (const ciphertext of [
+      'not-base64',
+      Buffer.from('not a DPAPI envelope').toString('base64'),
+      damaged.toString('base64'),
+    ])
+      await assert.rejects(protectSecret(ciphertext, true), {
+        message: 'Windows credential encryption/decryption failed; no plaintext fallback.',
+      });
+  },
+);
 
 // @test-kind security: A failed replacement must retain the original encrypted state and remove its temporary file.
 test('protected state retains ciphertext when Windows refuses replacement of a read-only destination', async (t) => {

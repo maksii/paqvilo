@@ -52,6 +52,14 @@ function settleWithTest(t, pending) {
 }
 async function fixture(t) {
   const root = await tempDir('paq-startup-cancel-');
+  // A start runs in this process: from an empty folder of the test, never the checkout, where a start notes its record
+  // folder and every status and stop of another test process run there would read it. Restored by a closer, so a
+  // failing removal cannot leave the working directory changed.
+  const cwd = path.join(root, 'empty');
+  await fs.mkdir(cwd);
+  const previous = process.cwd();
+  process.chdir(cwd);
+  ownedFixture(t).add(() => process.chdir(previous));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const paths = miragePaths({ stateDir: root });
   await fs.mkdir(paths.discoveryRoot, { recursive: true });
@@ -302,14 +310,18 @@ function deferred() {
   return { promise, resolve };
 }
 
-// The start-up poll loop calls `sleep` once per finished poll. Each call hands the test a handle, and the poll resumes
-// only when the test resolves it, so the test decides when the next poll begins.
+// A start that waits calls `sleep` with the time left of its silence bound (a launch waits for an announcement of its
+// runtime, an owned runtime for its next status question). Each call hands the test a handle: the test learns that the
+// start waits, and the wait ends as elapsed time only when the test resolves it.
 function pollGate() {
   const parked = [];
   let waiting = null;
-  return {
-    sleep() {
-      const poll = deferred();
+  const gate = {
+    /** How many waits the start has begun. */
+    waits: 0,
+    sleep(bound) {
+      gate.waits++;
+      const poll = Object.assign(deferred(), { bound });
       if (waiting) waiting.resolve(poll);
       else parked.push(poll);
       waiting = null;
@@ -321,6 +333,7 @@ function pollGate() {
       return waiting.promise;
     },
   };
+  return gate;
 }
 
 // Resolves when the start reports the named phase. The listener is attached before the poll that could report it resumes.
@@ -335,6 +348,31 @@ function phaseSeen(phases, name) {
   });
 }
 
+// The start channel of a launch, with the runtime's side in the test's hands: `announce` is what a runtime sends.
+function announcements() {
+  const queue = [];
+  let pending = null,
+    wake = null;
+  return {
+    address: 'the-test-holds-the-channel',
+    announce(event) {
+      if (!wake) return void queue.push(event);
+      const resolve = wake;
+      wake = null;
+      pending = null;
+      resolve(event);
+    },
+    next() {
+      if (queue.length) return Promise.resolve(queue.shift());
+      pending ??= new Promise((resolve) => {
+        wake = resolve;
+      });
+      return pending;
+    },
+    async close() {},
+  };
+}
+
 // A stand-in runtime child: the start reads its pid and identity; it counts as alive until the start kills it.
 const STARTUP_PID = 4242;
 function fakeStartup(paths) {
@@ -342,10 +380,12 @@ function fakeStartup(paths) {
     clock: { now: 1_000_000 },
     kills: [],
     gate: pollGate(),
+    channel: announcements(),
     phases: new EventEmitter(),
     logPath: null,
   };
   const child = Object.assign(new EventEmitter(), { pid: STARTUP_PID, exitCode: null, unref() {}, kill() {} });
+  double.child = child;
   double.startup = { phase: (name) => double.phases.emit('phase', name) };
   double.options = {
     paths,
@@ -354,6 +394,7 @@ function fakeStartup(paths) {
     now: () => double.clock.now,
     alive: () => double.kills.length === 0,
     kill: (pid, signal) => double.kills.push([pid, signal]),
+    openChannel: async () => double.channel,
     spawnRuntime() {
       // The start creates its own log before spawning, and the log root holds no other file in this fixture.
       const names = readdirSync(paths.logRoot);
@@ -365,8 +406,6 @@ function fakeStartup(paths) {
   return double;
 }
 
-const progressLine = (round) =>
-  `${JSON.stringify({ type: 'runtime-startup', phase: 'configuration', elapsedMs: round * 200 })}\n`;
 const modelDrivenConfig = (root) => ({ stateDir: root, runtime: { kind: 'model-driven' }, siteName: 'invented' });
 
 // @test-kind contract: start-up is bounded by silence, so a runtime that keeps reporting progress is not abandoned
@@ -379,26 +418,123 @@ test('start-up stays alive while the runtime keeps reporting progress within the
     { port: '0', 'startup-timeout': '1000', startup: fake.startup },
     fake.options,
   );
-  // Each round: the runtime reports one progress line, the start consumes it, and 600 ms of controlled time pass.
+  // Each round: the start waits, 600 ms of controlled time pass, the runtime announces a phase and the start shows it.
+  // Twelve rounds are 7200 ms against a bound of 1000 ms.
   for (let round = 1; round <= 12; round++) {
-    const poll = await fake.gate.nextPoll();
-    await fs.appendFile(fake.logPath, progressLine(round));
-    const consumed = phaseSeen(fake.phases, 'configuration');
-    poll.resolve();
-    await consumed;
+    await fake.gate.nextPoll();
     fake.clock.now += 600;
+    const consumed = phaseSeen(fake.phases, 'configuration');
+    fake.channel.announce({ phase: 'configuration', elapsedMs: round * 200 });
+    await consumed;
   }
-  // The runtime then publishes its discovery record, which the next poll reads.
+  // The runtime then publishes its discovery record and announces that it is ready.
+  await fake.gate.nextPoll();
   await fs.writeFile(
     path.join(paths.discoveryRoot, `session-${STARTUP_PID}.json`),
     JSON.stringify({ pid: STARTUP_PID, url }),
   );
-  const poll = await fake.gate.nextPoll();
-  poll.resolve();
+  fake.channel.announce({ phase: 'ready', elapsedMs: 2600 });
   const session = await started;
   assert.equal(session.started, true);
   assert.equal(session.url, url);
   assert.deepEqual(fake.kills, []);
+});
+
+// @test-kind contract: a runtime whose start takes long but whose event loop turns is not abandoned as silent
+test('start-up stays alive while a slow runtime only reports that it is alive, and shows no phase for it', async (t) => {
+  const { root, paths } = await fixture(t);
+  const url = await readyRuntime(t, () => {});
+  const fake = fakeStartup(paths);
+  const shown = [];
+  fake.phases.on('phase', (name) => shown.push(name));
+  const started = start(
+    modelDrivenConfig(root),
+    { port: '0', 'startup-timeout': '1000', startup: fake.startup },
+    fake.options,
+  );
+  // Each round the start has consumed the previous report and waits: 600 ms of controlled time pass and one liveness
+  // report arrives. No phase is reported for twelve rounds, 7200 ms against a bound of 1000 ms.
+  for (let round = 1; round <= 12; round++) {
+    await fake.gate.nextPoll();
+    fake.clock.now += 600;
+    fake.channel.announce({ phase: 'alive', elapsedMs: round * 600 });
+  }
+  await fake.gate.nextPoll();
+  await fs.writeFile(
+    path.join(paths.discoveryRoot, `session-${STARTUP_PID}.json`),
+    JSON.stringify({ pid: STARTUP_PID, url }),
+  );
+  fake.channel.announce({ phase: 'ready', elapsedMs: 7300 });
+  const session = await started;
+  assert.equal(session.started, true);
+  assert.deepEqual(fake.kills, []);
+  assert.equal(shown.includes('alive'), false, 'liveness is not a start-up phase');
+  assert.equal(shown.includes('ready'), false, 'readiness is not a start-up phase');
+});
+
+// @test-kind contract: a start waits for its runtime's announcements and never looks for the discovery record at intervals
+test('a published discovery record is read when the runtime announces it, with no wait in between', async (t) => {
+  const { root, paths } = await fixture(t);
+  const url = await readyRuntime(t, () => {});
+  const fake = fakeStartup(paths);
+  const started = start(
+    modelDrivenConfig(root),
+    { port: '0', 'startup-timeout': '600000', startup: fake.startup },
+    fake.options,
+  );
+  settleWithTest(t, started);
+  // The start waits once, for the whole silence bound: there is nothing it would look at before then.
+  const first = await fake.gate.nextPoll();
+  assert.deepEqual(first.bound, 600_000);
+  // The record alone does not end the wait; the announcement does, at once.
+  await fs.writeFile(
+    path.join(paths.discoveryRoot, `session-${STARTUP_PID}.json`),
+    JSON.stringify({ pid: STARTUP_PID, url }),
+  );
+  fake.channel.announce({ phase: 'ready', elapsedMs: 1 });
+  const session = await started;
+  assert.equal(session.url, url);
+  assert.equal(fake.gate.waits, 1, 'the start waited exactly once');
+});
+
+// @test-kind contract: a runtime whose announcement was lost is found by its record when the silence bound ends
+test('a runtime that published its record without an announcement is accepted when the silence bound ends', async (t) => {
+  const { root, paths } = await fixture(t);
+  const url = await readyRuntime(t, () => {});
+  const fake = fakeStartup(paths);
+  const started = start(
+    modelDrivenConfig(root),
+    { port: '0', 'startup-timeout': '1000', startup: fake.startup },
+    fake.options,
+  );
+  settleWithTest(t, started);
+  const wait = await fake.gate.nextPoll();
+  await fs.writeFile(
+    path.join(paths.discoveryRoot, `session-${STARTUP_PID}.json`),
+    JSON.stringify({ pid: STARTUP_PID, url }),
+  );
+  fake.clock.now += 1001;
+  wait.resolve();
+  const session = await started;
+  assert.equal(session.started, true);
+  assert.deepEqual(fake.kills, []);
+});
+
+// @test-kind contract: the exit of the runtime's process ends the start at once, as an event of that process
+test('a runtime whose process exits before it is ready ends the start with its log, without waiting for the bound', async (t) => {
+  const { root, paths } = await fixture(t);
+  const fake = fakeStartup(paths);
+  const started = start(
+    modelDrivenConfig(root),
+    { port: '0', 'startup-timeout': '600000', startup: fake.startup },
+    fake.options,
+  );
+  settleWithTest(t, started);
+  await fake.gate.nextPoll();
+  await fs.appendFile(fake.logPath, 'The invented runtime could not start.\n');
+  fake.child.emit('exit', 1, null);
+  await assert.rejects(started, /Mirage exited before it became ready[\s\S]*The invented runtime could not start/);
+  assert.equal(fake.gate.waits, 1);
 });
 
 // @test-kind contract: start-up fails once the runtime is silent for the bound, and the failure names the silence and the log
@@ -421,6 +557,44 @@ test('start-up fails after the silence bound and names the silence and the start
     return true;
   });
   assert.deepEqual(fake.kills, [[STARTUP_PID, 'SIGTERM']]);
+});
+
+// @test-kind security: an abandoned start ends its runtime through the child handle it holds, never through a PID
+test('a start that gives up signals its own child handle and no process ID', async (t) => {
+  const { root, paths } = await fixture(t);
+  const fake = fakeStartup(paths);
+  const handleSignals = [];
+  // As a child process handle does, it remembers that it was signalled.
+  fake.child.kill = (signal) => {
+    handleSignals.push(signal);
+    fake.child.killed = true;
+    return true;
+  };
+  // The system's kill is in place, observed: the start must not hand it the runtime's PID, which another program
+  // could hold by now while a start token's pipe still exists.
+  const { kill: ignoredKill, ...options } = fake.options;
+  const pidSignals = [];
+  const systemKill = t.mock.method(process, 'kill', (pid, signal) => {
+    pidSignals.push([pid, signal]);
+    return true;
+  });
+  const started = start(
+    modelDrivenConfig(root),
+    { port: '0', 'startup-timeout': '1000', startup: fake.startup },
+    { ...options, alive: () => true },
+  );
+  settleWithTest(t, started);
+  const wait = await fake.gate.nextPoll();
+  fake.clock.now += 1001;
+  wait.resolve();
+  await assert.rejects(started, /no start-up progress/);
+  systemKill.mock.restore();
+  assert.deepEqual(handleSignals, ['SIGTERM']);
+  assert.deepEqual(
+    pidSignals.filter(([pid]) => pid === STARTUP_PID),
+    [],
+    'the PID of the runtime was never signalled',
+  );
 });
 
 // A loopback runtime whose every status request is handed to `respond`, so the test decides when and how it answers.

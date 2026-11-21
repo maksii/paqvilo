@@ -2,6 +2,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadConnection, connectedClient, exportSolution } from '../../../lense/dataverse/index.mjs';
+import { cli, isMain, UsageError } from '../cli.mjs';
+import { connectionHelp, defaultConnection } from '../paths.mjs';
 
 const project = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'),
   solutionName = 'PaqviloCompanyOperationsPortal';
@@ -147,15 +149,28 @@ async function exportPortalArchive(client, journal, evidenceDirectory, stamp, ap
     unpackFolder: path.join(evidenceDirectory, 'unpacked-' + stamp),
   });
 }
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const args = process.argv.slice(2),
-    arg = (name) => {
-      const i = args.indexOf(name);
-      return i < 0 ? undefined : args[i + 1];
+if (isMain(import.meta)) {
+  const { values } = cli(
+    `Usage: node examples/company-operations/portal-security/package.mjs --site GUID [--connection FILE] [--apply [--export]]
+
+Run from the toolkit checkout. Plans the PaqviloCompanyOperationsPortal solution against the live environment;
+--apply writes to it.
+
+  --site GUID        website whose components the solution contains
+${connectionHelp('  --connection FILE  ')}
+  --apply            create and reconcile the solution and its membership
+  --export           with --apply: export and unpack into the example's ignored .paqvilo/portal-security`,
+    {
+      site: { type: 'string' },
+      connection: { type: 'string' },
+      apply: { type: 'boolean' },
+      export: { type: 'boolean' },
     },
-    siteId = arg('--site');
-  if (!/^[a-f0-9-]{36}$/i.test(siteId ?? '')) throw new Error('--site GUID required.');
-  const connection = await loadConnection(arg('--connection') ?? '.paqvilo/dataverse/provisioning.connection.json'),
+  );
+  const siteId = values.site;
+  if (!/^[a-f0-9-]{36}$/i.test(siteId ?? '')) throw new UsageError('--site GUID required.');
+  if (values.export && !values.apply) throw new UsageError('--export requires --apply.');
+  const connection = await loadConnection(values.connection ?? defaultConnection),
     client = connectedClient(connection);
   await client.verify(connection.organisationId);
   let count = 0;
@@ -164,8 +179,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       await packagePortal({
         client,
         siteId,
-        apply: args.includes('--apply'),
-        exportArchive: args.includes('--export'),
+        apply: values.apply === true,
+        exportArchive: values.export === true,
         evidenceDirectory: path.join(project, '.paqvilo/portal-security/portal-solution'),
         onProgress: (e) => {
           count++;

@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of virtual tables with external pack providers (writes, reads, refusals); no native capture replayed
 // Virtual tables with external providers (lib/dataverse-virtual-providers.mjs): writes reach the provider and mirror its rows,
 // a failing or incomplete provider refuses the write, a table without a provider answers 501 unless it declares the local
 // fallback, reads query the provider, the validator and describe.
@@ -180,6 +181,16 @@ test('validateVirtualTableProviders accepts functions only and rejects unknown o
   );
   assert.throws(() => validateVirtualTableProviders({ x_provider: () => [] }), /object of provider operations/);
   assert.throws(() => validateVirtualTableProviders([]), /must map/);
+});
+
+// @test-kind contract: the pack export contract names a synchronous operation, so an async function is refused when declared
+test('validateVirtualTableProviders refuses an async function as a synchronous operation', () => {
+  for (const operation of ['retrieveSync', 'retrieveMultipleSync', 'createSync', 'updateSync', 'deleteSync'])
+    assert.throws(
+      () => validateVirtualTableProviders({ x_provider: { [operation]: async () => null } }),
+      new RegExp(`\\.${operation} must be a synchronous function that returns its answer, not an async function`),
+    );
+  assert.doesNotThrow(() => validateVirtualTableProviders({ x_provider: { retrieveSync: () => null } }));
 });
 
 test('describe(api): operations the registered provider implements are behaviour, the rest and external events contract', async (t) => {

@@ -146,8 +146,8 @@ export default [
   {
     files: ['bin/**/*.mjs', 'scripts/**/*.mjs', '.github/scripts/**/*.mjs'],
     rules: {
-      'n/no-unsupported-features/node-builtins': ['error', { version: '^24.22.1' }],
-      'n/no-unsupported-features/es-syntax': ['error', { version: '^24.22.1' }],
+      'n/no-unsupported-features/node-builtins': ['error', { version: '^26.13.1' }],
+      'n/no-unsupported-features/es-syntax': ['error', { version: '^26.13.1' }],
     },
   },
   ...tseslint.configs.recommended.map((configuration) => ({

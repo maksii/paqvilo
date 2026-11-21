@@ -136,6 +136,30 @@ test('Dataverse unknown commands and a terminated --help preserve CLI contracts 
   await pacNotInvoked();
 });
 
+// @test-kind contract: an unknown command or option is one line naming it, with a stable JSON code and exit 1
+test('Dataverse unknown commands and options are named in one line with stable JSON codes', () => {
+  for (const extra of [[], ['--help']]) {
+    const human = run('bogus', ...extra);
+    assert.equal(human.status, 1);
+    assert.equal(human.stdout, '');
+    assert.match(
+      human.stderr,
+      /^paqvilo dataverse: Unknown dataverse command "bogus"; choose register, .*data-query\. Run .* dataverse --help for details\.\n$/,
+    );
+  }
+  const machine = run('bogus', '--json');
+  assert.equal(machine.status, 1);
+  assert.equal(JSON.parse(machine.stdout).error.code, 'unknown_command');
+  for (const args of [
+    ['plan', '--bogus', '--json'],
+    ['plan', '--manifest', 'x.json', '--role', 'y', '--json'],
+  ]) {
+    const result = run(...args);
+    assert.equal(result.status, 1, args.join(' '));
+    assert.equal(JSON.parse(result.stdout).error.code, 'unsupported_option', args.join(' '));
+  }
+});
+
 // @test-kind contract: Dataverse diagnostics use the requested stream and retain the JSON error payload
 test('Dataverse diagnostics use the requested stream and retain the JSON error payload', () => {
   const human = run('verify');

@@ -1,12 +1,13 @@
 import { inspectionEvidenceRuntime, resolveInspectionEvidence } from './inspection-evidence.mjs';
 import { renderInspectionEvidence } from './inspection-evidence-ui.mjs';
+import { lenseUiKit } from './ui-kit.mjs';
 import { observePortalNode } from './portal-node-observation.mjs';
 import { definitionQuery } from './definition-query.mjs';
 
 // All embedded source is owned code; page data is passed as a separate argument.
 /* NOSONAR: intentional local script execution or generated handler */ export const xrayUi = new Function(
   'data',
-  `const {resolveInspectionEvidence}=(${inspectionEvidenceRuntime.toString()})(); const renderInspectionEvidence=(${renderInspectionEvidence.toString()}); const observePortalNode=(${observePortalNode.toString()}); const definitionQuery=(${definitionQuery.toString()}); return (${xrayBrowserImpl.toString()})(data);`,
+  `const {resolveInspectionEvidence}=(${inspectionEvidenceRuntime.toString()})(); const renderInspectionEvidence=(${renderInspectionEvidence.toString()}); const lenseUiKit=(${lenseUiKit.toString()}); const observePortalNode=(${observePortalNode.toString()}); const definitionQuery=(${definitionQuery.toString()}); return (${xrayBrowserImpl.toString()})(data);`,
 );
 
 // Self-contained browser function, like panelUi. Never reads page text or input values.
@@ -19,28 +20,40 @@ function xrayBrowserImpl(data) {
     host.__px.update({ ...data, ui: undefined });
     return;
   }
+  // An X-ray whose host the page removed or replaced while inspection was off is not reachable through the document.
+  // Dispose it before another one is created, so its attachShadow hook is restored first and never ends up under this one's.
+  globalThis.__paqviloXrayUi?.dispose?.();
   host = document.createElement('div');
   host.id = 'paqvilo-xray';
   host.setAttribute('popover', 'manual');
   host.style.cssText =
-    'all:initial!important;position:fixed!important;inset:0!important;width:100%!important;height:100%!important;margin:0!important;padding:0!important;border:0!important;background:transparent!important;pointer-events:none!important;overflow:visible!important;z-index:2147483647!important;';
+    'all:initial!important;direction:ltr!important;unicode-bidi:isolate!important;position:fixed!important;inset:0!important;width:100%!important;height:100%!important;margin:0!important;padding:0!important;border:0!important;background:transparent!important;pointer-events:none!important;overflow:visible!important;z-index:2147483647!important;';
   document.body.append(host);
   const owningBody = document.body;
+  // The panel's look: its tokens, icons and controls (lense/ui-kit.mjs).
+  const kit = lenseUiKit();
   const root = host.attachShadow({ mode: 'open' }),
     sheet = new CSSStyleSheet();
   sheet.replaceSync(`
-    :host{color-scheme:normal}*{box-sizing:border-box}.ui{--bg:#fff;--fg:#212529;--muted:#6c757d;--primary:#0d6efd;--link:#0d6efd;--on-primary:#fff;--radius:4px;--line:#d8dfe7;--head-bg:#f3f6fa;--panel-line:rgba(0,0,0,.15);--shadow:0 6px 12px rgba(0,0,0,.18);--font:"Segoe UI",system-ui,sans-serif;font:13px/1.45 var(--font);color:var(--fg);text-align:left;letter-spacing:0}
-    button,select{font:inherit;color:inherit}button{cursor:pointer;background:none;border:0;border-radius:var(--radius);padding:4px 7px;text-align:left}button:hover{background:color-mix(in srgb,var(--primary) 8%,var(--bg));color:var(--link)}button:focus-visible,select:focus-visible{outline:2px solid var(--primary);outline-offset:2px}button[aria-pressed=true]{color:var(--primary);background:color-mix(in srgb,var(--primary) 10%,var(--bg))}button:disabled{opacity:.4;cursor:default}
-    .ui:focus{outline:none}.shield{position:fixed;inset:0;pointer-events:auto;cursor:crosshair}.ui.interact .shield{display:none}.bar,.card,.tip,.legend{background:var(--bg);border:1px solid var(--panel-line);border-radius:var(--radius);box-shadow:var(--shadow)}.bar,.card{pointer-events:auto}.bar{position:fixed;top:12px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:6px;padding:6px 8px;max-width:calc(100vw - 16px);white-space:nowrap}.brand{display:flex;align-items:center;gap:8px;padding-right:7px}.brand strong{color:var(--link);font-size:14px}.brand span{color:var(--muted)}.hint,.muted{color:var(--muted)}.hint{font-size:11px}.bar select{background:var(--bg);border:1px solid var(--line);border-radius:var(--radius);padding:4px;max-width:142px}.exit{font-size:18px;line-height:1}
-    .card{position:fixed;right:12px;top:64px;width:410px;max-width:calc(100vw - 16px);max-height:calc(100dvh - 80px);display:flex;flex-direction:column;overflow:hidden}.card[hidden],.tip[hidden]{display:none}.cardhead{display:flex;gap:6px;align-items:center;padding:9px 10px 9px 12px;border-bottom:1px solid var(--line);background:var(--head-bg);cursor:move;touch-action:none}.grow{flex:1;min-width:0}.eyebrow{font-size:11px;color:var(--muted)}.title{font-size:14px;font-weight:600;overflow-wrap:anywhere}.cardhead button{padding:3px 7px}.content{overflow:auto;overscroll-behavior:contain;min-height:0;padding:0 12px 12px;scrollbar-width:thin}.section{margin-top:12px}.section h3{font-size:12px;font-weight:600;margin:0 0 6px}.section h3 small{font-size:11px;font-weight:400;color:var(--muted)}.binding{padding:7px 9px;background:color-mix(in srgb,var(--primary) 6%,var(--bg));border-left:3px solid var(--primary)}.binding strong{font-weight:600;display:block;overflow-wrap:anywhere}.binding .muted{font-size:11.5px;margin-top:3px}.details{display:grid;grid-template-columns:66px 1fr;gap:4px 8px;margin:7px 0;font-size:12px}.details dt{color:var(--muted)}.details dd{margin:0;overflow-wrap:anywhere}.source{padding:7px 0;border-bottom:1px solid var(--line)}.source:last-child{border-bottom:0}.source .name{display:flex;align-items:center;gap:7px}.source .name b{font-weight:500;flex:1;overflow-wrap:anywhere}.badge{font-size:10px;color:var(--muted);border:1px solid var(--line);border-radius:3px;padding:0 4px;flex:none}.mono{font:11.5px/1.5 Consolas,monospace;overflow-wrap:anywhere;color:var(--muted)}.source .mono{margin-top:3px}.source .actions{display:flex;gap:5px;margin-top:4px}.source button{padding:2px 5px;color:var(--link);font-size:11.5px}.note{font-size:11.5px;color:var(--muted);margin:4px 0 0;line-height:1.5}.foot{display:flex;align-items:center;gap:4px;padding:5px 8px;border-top:1px solid var(--line);background:var(--head-bg)}.foot button{font-size:11.5px}.foot .hint{margin-left:auto}.status{padding:0 12px 7px;font-size:11.5px;color:var(--muted)}.status:empty{display:none}
-    details{margin-top:12px}summary{cursor:pointer;color:var(--muted);font-size:12px;padding:4px 0}.crumb[data-depth='1']{padding-left:15px}.crumb[data-depth='2']{padding-left:23px}.crumb[data-depth='3']{padding-left:31px}.crumb[data-depth='4']{padding-left:39px}.crumb[data-depth='5']{padding-left:47px}.crumb[data-depth='6']{padding-left:55px}.crumb{display:block;width:100%;text-align:left;font:11px Consolas,monospace;margin-top:3px;overflow-wrap:anywhere}.welcome{padding:12px}.welcome .hero{font-size:14px;font-weight:600;margin:0 0 6px}.welcome p{margin:5px 0}.welcome .counts{padding-top:8px;border-top:1px solid var(--line);margin-top:10px}.empty{padding:12px 0}.empty b{display:block}.marks{position:fixed;inset:0;pointer-events:none}.mark{position:fixed;border:1px solid var(--tone,var(--primary));background:transparent;pointer-events:none}.selected{border:2px solid var(--primary);background:color-mix(in srgb,var(--primary) 6%,transparent)}.hover{border:2px dashed var(--primary);background:color-mix(in srgb,var(--primary) 3%,transparent)}.tip{position:fixed;pointer-events:none;max-width:370px;padding:5px 8px;font-size:12px;overflow-wrap:anywhere}.tip b{display:block;font-weight:600}.tip .mono{font-size:11px}.legend{position:fixed;bottom:12px;left:50%;transform:translateX(-50%);pointer-events:none;font-size:11px;color:var(--muted);padding:5px 9px;max-width:calc(100vw - 16px)}.legend i{display:inline-block;width:7px;height:7px;margin:0 4px 0 10px}.legend i:first-child{margin-left:0}.legend .tone-field{background:#29805b}.legend .tone-component{background:#3975ad}.legend .tone-content{background:#947330}kbd{font:10px Consolas,monospace;border:1px solid var(--line);padding:0 3px;border-radius:2px}
-    .scan-wash{position:fixed;inset:0;pointer-events:none;background:linear-gradient(180deg,transparent,color-mix(in srgb,var(--primary) 7%,transparent),transparent);height:45vh;bottom:auto;animation:xray-scan 2.8s ease-in-out infinite}.scan-state{position:fixed;left:50%;bottom:55px;transform:translateX(-50%);width:max-content;max-width:calc(100vw - 24px);padding:14px 18px;display:flex;align-items:center;gap:12px;background:var(--bg);border:1px solid var(--line);border-radius:8px;box-shadow:var(--shadow);pointer-events:auto}.scan-state strong{display:block;font-weight:600}.scan-state p{margin:2px 0 0;color:var(--muted);font-size:12px}.scan-state button{margin-left:8px;color:var(--link);border:1px solid var(--line)}.scan-orbit{display:inline-block;width:24px;height:24px;flex:none;border:2px solid var(--line);border-top-color:var(--primary);border-radius:50%;animation:xray-orbit .9s linear infinite}.scan-state.error .scan-orbit{animation:none;border-color:var(--muted);border-radius:4px}.scan-state[hidden],.scan-wash[hidden]{display:none}.ui.loading .tip{display:none}.ui.loading .legend{opacity:.7}@keyframes xray-scan{from{transform:translateY(-100%)}to{transform:translateY(100vh)}}@keyframes xray-orbit{to{transform:rotate(360deg)}}
-    @media(max-width:850px){.bar{top:8px;gap:3px;padding:5px}.bar .hint,.brand span{display:none}.brand{padding-right:3px}.bar button{font-size:11.5px;padding:4px}.bar select{max-width:118px;font-size:11px}.card{top:auto;bottom:44px;max-height:46dvh;width:380px;right:8px}.scan-state{bottom:55px}.ui:has(.card:not([hidden])) .scan-state{bottom:auto;top:55px}.legend{bottom:8px;font-size:10px}.legend .hint{display:none}}@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;animation:none!important}.scan-wash{transform:translateY(25vh)}}
+    :host{color-scheme:normal}*{box-sizing:border-box}.ui{${kit.tokens}--tone-field:#29805b;--tone-component:#3975ad;--tone-content:#947330;font:13px/1.45 var(--font);color:var(--fg);text-align:left;letter-spacing:0}
+    .ui:focus{outline:none}.shield{position:fixed;inset:0;pointer-events:auto;cursor:crosshair}.ui.interact .shield{display:none}.ui.interact .marks{opacity:.35}.ui.passthrough .shield{pointer-events:none}.bar,.card,.tip,.legend{background:var(--bg);border:1px solid var(--panel-line);border-radius:var(--radius);box-shadow:var(--shadow)}.bar,.card{pointer-events:auto}.bar{position:fixed;top:12px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:6px;padding:6px 8px;max-width:calc(100vw - 16px);white-space:nowrap}.brand{display:flex;align-items:center;gap:8px;padding-right:7px}.brand strong{color:var(--link);font-size:14px}.brand span{color:var(--muted)}.hint,.muted{color:var(--muted)}.hint{font-size:11px}.bar select{max-width:142px}
+    .card{position:fixed;right:12px;top:64px;width:410px;max-width:calc(100vw - 16px);max-height:calc(100dvh - 80px);display:flex;flex-direction:column;overflow:hidden}.card[hidden],.tip[hidden]{display:none}.cardhead{display:flex;gap:6px;align-items:center;padding:9px 10px 9px 12px;border-bottom:1px solid var(--line);background:var(--head-bg);cursor:move;touch-action:none}.grow{flex:1;min-width:0}.eyebrow{font-size:11px;color:var(--muted)}.title{font-size:14px;font-weight:600;overflow-wrap:anywhere}.content{overflow:auto;overscroll-behavior:contain;min-height:0;padding:0 12px 12px;scrollbar-width:thin}.section{margin-top:12px}.section h3{font-size:12px;font-weight:600;margin:0 0 6px}.section h3 small{font-size:11px;font-weight:400;color:var(--muted)}.binding{padding:7px 9px;background:color-mix(in srgb,var(--primary) 6%,var(--bg));border-left:3px solid var(--primary)}.binding strong{font-weight:600;display:block;overflow-wrap:anywhere}.binding .muted{font-size:11.5px;margin-top:3px}.details{display:grid;grid-template-columns:66px 1fr;gap:4px 8px;margin:7px 0;font-size:12px}.details dt{color:var(--muted)}.details dd{margin:0;overflow-wrap:anywhere}.mono{font:11.5px/1.5 Consolas,monospace;overflow-wrap:anywhere;color:var(--muted)}.titlerow{display:flex;align-items:center;gap:6px;min-width:0}.note{font-size:11.5px;color:var(--muted);margin:4px 0 0;line-height:1.5}.foot{display:flex;align-items:center;gap:4px;padding:5px 8px;border-top:1px solid var(--line);background:var(--head-bg)}.foot .hint{margin-left:auto}.status{padding:0 12px 7px;font-size:11.5px;color:var(--muted)}.status:empty{display:none}.actions{display:flex;align-items:center;gap:6px;margin-top:6px}
+    details{margin-top:8px}summary{cursor:pointer}.crumb[data-depth='1']{padding-left:15px}.crumb[data-depth='2']{padding-left:23px}.crumb[data-depth='3']{padding-left:31px}.crumb[data-depth='4']{padding-left:39px}.crumb[data-depth='5']{padding-left:47px}.crumb[data-depth='6']{padding-left:55px}.crumb{display:block;width:100%;font:11px Consolas,monospace;margin-top:3px;padding:2px 4px;border-radius:var(--radius);overflow-wrap:anywhere}.crumb:hover{background:var(--tint);color:var(--link)}.welcome{padding:12px}.welcome .hero{font-size:14px;font-weight:600;margin:0 0 6px}.welcome p{margin:5px 0}.welcome .counts{padding-top:8px;border-top:1px solid var(--line);margin-top:10px}.marks{position:fixed;inset:0;pointer-events:none}.mark{position:fixed;border:1px solid var(--tone,var(--primary));background:transparent;pointer-events:none}.selected{border:2px solid var(--primary);background:color-mix(in srgb,var(--primary) 6%,transparent)}.hover{border:2px dashed var(--primary);background:color-mix(in srgb,var(--primary) 3%,transparent)}.tip{position:fixed;pointer-events:none;max-width:370px;padding:5px 8px;font-size:12px;overflow-wrap:anywhere}.tip b{display:block;font-weight:600}.tip .mono{font-size:11px}.legend.covered{visibility:hidden}.legend{position:fixed;bottom:12px;left:50%;transform:translateX(-50%);pointer-events:none;font-size:11px;color:var(--muted);padding:5px 9px;max-width:calc(100vw - 16px)}.legend i{display:inline-block;width:7px;height:7px;margin:0 4px 0 10px}.legend i:first-child{margin-left:0}.legend .tone-field{background:var(--tone-field)}.legend .tone-component{background:var(--tone-component)}.legend .tone-content{background:var(--tone-content)}
+    .scan-wash{position:fixed;inset:0;pointer-events:none;background:linear-gradient(180deg,transparent,color-mix(in srgb,var(--primary) 7%,transparent),transparent);height:45vh;bottom:auto;animation:xray-scan 2.8s ease-in-out infinite}.scan-state{position:fixed;left:50%;bottom:55px;transform:translateX(-50%);width:max-content;max-width:calc(100vw - 24px);padding:14px 18px;display:flex;align-items:center;gap:12px;background:var(--bg);border:1px solid var(--line);border-radius:8px;box-shadow:var(--shadow);pointer-events:auto}.scan-state strong{display:block;font-weight:600}.scan-state p{margin:2px 0 0;color:var(--muted);font-size:12px}.scan-state .btn{margin-left:8px}.scan-orbit{display:inline-block;width:24px;height:24px;flex:none;border:2px solid var(--line);border-top-color:var(--primary);border-radius:50%;animation:xray-orbit .9s linear infinite}.scan-state.error .scan-orbit{animation:none;border-color:var(--muted);border-radius:4px}.scan-state[hidden],.scan-wash[hidden]{display:none}.ui.loading .tip{display:none}.ui.loading .legend{opacity:.7}@keyframes xray-scan{from{transform:translateY(-100%)}to{transform:translateY(100vh)}}@keyframes xray-orbit{to{transform:rotate(360deg)}}
+    @media(max-width:850px){.bar{top:8px;gap:3px;padding:5px}.bar .hint:not([data-using=true]),.brand span{display:none}.brand{padding-right:3px}.bar select{max-width:118px}.card{top:auto;bottom:44px;max-height:46dvh;width:380px;right:8px}.scan-state{bottom:55px}.ui:has(.card:not([hidden])) .scan-state{bottom:auto;top:55px}.legend{bottom:8px;font-size:10px}.legend .hint{display:none}}@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;animation:none!important}.scan-wash{transform:translateY(25vh)}}
   `);
   const evidenceSheet = new CSSStyleSheet();
   evidenceSheet.replaceSync(renderInspectionEvidence(null, { part: 'styles' }));
   root.adoptedStyleSheets = [sheet, evidenceSheet];
-  root.innerHTML = `<div class="ui" hidden><div class="shield"></div><div class="marks"></div><div class="bar" role="toolbar" aria-label="Lense X-ray"><div class="brand"><strong>paqvilo</strong><span>X-ray</span></div><button data-action="mode" aria-pressed="true">Inspect</button><select aria-label="Highlight layer"><option value="all">All sources</option><option value="data">Forms & data</option><option value="content">Templates & content</option><option value="none">Selection only</option></select><button data-action="details" aria-pressed="true" title="Show or hide source details">Details</button><button data-action="refresh" aria-label="Refresh source inspection" title="Refresh sources and component bindings">↻</button><span class="hint"><kbd>Ctrl</kbd> interact</span><button class="exit" data-action="exit" aria-label="Turn off X-ray">×</button></div><aside class="card" aria-label="Lense source details"></aside><div class="tip" hidden></div><div class="legend"><i class="tone-field"></i>Fields<i class="tone-component"></i>Forms & views<i class="tone-content"></i>Source markup <span class="hint"> · click to select · <kbd>Esc</kbd> back · background limits: 800 candidates / 250 outlines</span></div></div>`;
+  // What Esc does, said the same way in the welcome, the legend and the card.
+  const escText = 'Esc clears the selection, then turns off X-ray',
+    escHint = '<kbd>Esc</kbd>' + escText.slice(3);
+  // A model-driven app has no templates: its other outlined content is the page's own.
+  const contentLayer = data.modelDriven ? 'Page content' : 'Templates & content';
+  // What the page does now, in the toolbar: inspecting, or used normally until Ctrl is tapped again.
+  const modeText = (using) =>
+    using ? 'Using the page · tap <kbd>Ctrl</kbd> to inspect' : 'Tap <kbd>Ctrl</kbd> to use the page';
+  root.innerHTML = `<div class="ui" hidden><div class="shield"></div><div class="marks"></div><div class="bar" role="toolbar" aria-label="Lense X-ray"><div class="brand"><strong>paqvilo</strong><span>X-ray</span></div><button class="f on" data-action="mode" aria-pressed="true">Inspect</button><select aria-label="Highlight layer" title="Which matched elements get an outline"><option value="all">All sources</option><option value="data">Fields, forms & views</option><option value="content">${contentLayer}</option><option value="none">Selection only</option></select><button class="f on" data-action="details" aria-pressed="true" title="Show the details card of the selected element. Off: hover summaries only.">Details</button><button class="ib" data-action="refresh" aria-label="Refresh source inspection" title="Re-read your local sources and match this page again">${kit.icon('reload')}</button><span class="hint mode-state" role="status">${modeText(false)}</span><button class="ib" data-action="exit" aria-label="Turn off X-ray" title="Turn off X-ray">${kit.icon('close')}</button></div><aside class="card" aria-label="Lense source details"></aside><div class="tip" hidden></div><div class="legend"><i class="tone-field"></i>Fields<i class="tone-component"></i>Forms & views<i class="tone-content"></i>${contentLayer} <span class="hint"></span></div></div>`;
 
   const ui = root.querySelector('.ui'),
     marks = root.querySelector('.marks'),
@@ -196,11 +209,11 @@ function xrayBrowserImpl(data) {
   // The move runs as a microtask: it completes before any later input task, and a refocus inside the blur dispatch itself does not stick.
   const containFocus = () =>
     queueMicrotask(() => {
-      if (!enabled || disposed || interacting || ctrl || !document.hasFocus() || own(document.activeElement)) return;
+      if (!enabled || disposed || interacting || !document.hasFocus() || own(document.activeElement)) return;
       ui.focus({ preventScroll: true });
       // ponytail: a cross-origin (out-of-process) frame keeps browser focus past the microtask; reclaim it one task later. Input in that task is a platform boundary.
       setTimeout(() => {
-        if (enabled && !disposed && !interacting && !ctrl && root.activeElement === ui) {
+        if (enabled && !disposed && !interacting && root.activeElement === ui) {
           ui.blur();
           ui.focus({ preventScroll: true });
         }
@@ -236,9 +249,10 @@ function xrayBrowserImpl(data) {
     report = null,
     enabled = false,
     interacting = false,
-    ctrl = false,
+    ctrlTap = false,
     selected = null,
     hover = null,
+    overUi = false,
     layer = 'all',
     details = true,
     frame = 0,
@@ -248,6 +262,9 @@ function xrayBrowserImpl(data) {
     pointer = { x: 0, y: 0 },
     drag = null,
     disposed = false;
+  // cardMoved: the person dragged or docked the card, so it stays where they put it until the next pick.
+  let cardMoved = false,
+    cardPlacement = '';
   let oneShot = false,
     candidateLimit = false,
     pickGesture = false,
@@ -279,7 +296,8 @@ function xrayBrowserImpl(data) {
   const inspectionError = () => {
     const inspection = d.inspection ?? d.mirage;
     return (
-      d.inspectionError || (inspection?.active === false ? inspection.error || 'Source inspection is unavailable.' : '')
+      d.inspectionError ||
+      (inspection?.active === false ? inspection.error || 'Your local sources could not be read.' : '')
     );
   };
   const renderProgress = () => {
@@ -296,13 +314,10 @@ function xrayBrowserImpl(data) {
       return 'Preparing X-ray';
     };
     const progressPhase = () =>
-      (d.inspection ?? d.mirage)?.phase ??
-      (report
-        ? 'Previous details remain visible while sources update.'
-        : 'Matching rendered elements to their origins.');
+      (d.inspection ?? d.mirage)?.phase ?? (report ? '' : 'Matching page elements to your source files.');
     const html = error
-      ? `<span class="scan-orbit" aria-hidden="true"></span><div><strong>Source inspection unavailable</strong><p>Details: ${esc(error)}</p></div><button data-action="refresh">Retry</button>`
-      : `<span class="scan-orbit" aria-hidden="true"></span><div><strong>${progressTitle()}</strong><p>${esc(progressPhase())} You can exit at any time.</p></div>`;
+      ? `<span class="scan-orbit" aria-hidden="true"></span><div><strong>Source inspection unavailable</strong><p>Details: ${esc(error)}</p></div><button class="btn sec" data-action="refresh">Retry</button>`
+      : `<span class="scan-orbit" aria-hidden="true"></span><div><strong>${progressTitle()}</strong><p>${esc(progressPhase())}</p></div>`;
     if (scanState.innerHTML !== html) scanState.innerHTML = html;
     scanState.classList.toggle('error', Boolean(error));
     const refresh = root.querySelector('.bar [data-action="refresh"]');
@@ -313,6 +328,14 @@ function xrayBrowserImpl(data) {
     node === host ||
     node?.closest?.('#paqvilo-panel,#paqvilo-handle,#paqvilo-xray') ||
     ['paqvilo-panel', 'paqvilo-handle', 'paqvilo-xray'].includes(node?.getRootNode?.()?.host?.id);
+  // The shield covers the page, and with it Lense UI outside X-ray (the dev panel's pill, its handle). The topmost
+  // element under the shield decides: when it is Lense UI, the pointer is over Lense, not over the page.
+  const lenseUiAt = (x, y) => {
+    const below = document.elementsFromPoint(x, y).find((item) => item !== host);
+    return below && own(below) ? below : null;
+  };
+  // While the pointer is over that UI the shield lets it through, so the pill stays hoverable and clickable.
+  const passThrough = (on) => ui.classList.toggle('passthrough', on);
   const label = (node) =>
     `${node.localName}${node.id ? '#' + node.id.slice(0, 160) : ''}${!node.id && node.classList?.length ? '.' + [...node.classList].slice(0, 2).join('.') : ''}`;
   const descent = new WeakMap();
@@ -325,10 +348,22 @@ function xrayBrowserImpl(data) {
   };
   const parameterDescription = (parameter) => {
     if (parameter.kind === 'binding') return 'Column: ' + parameter.column;
-    if (parameter.kind === 'dataset') return 'Dataset: ' + (parameter.viewId ?? parameter.entity ?? 'unresolved');
-    if (parameter.kind === 'unresolved') return parameter.reason ?? 'Unresolved binding';
-    return 'Exported ' + parameter.kind;
+    if (parameter.kind === 'dataset') return 'Dataset: ' + (parameter.viewId ?? parameter.entity ?? 'not found');
+    if (parameter.kind === 'unresolved') return parameter.reason ?? 'Not resolved';
+    // Parameter values stay out of the card; the kind says how the property gets its value.
+    if (parameter.kind === 'static') return 'Fixed value';
+    return parameter.kind;
   };
+  // How a code component is bound to its control, in the panel's words; X-ray's own bindings are already words.
+  const bindingLabel = (binding) =>
+    ({
+      'native-formxml': 'Bound on the form',
+      'declared-schema-name': 'Matched by schema name',
+      'observed-component-mapping': 'Matched by component setting',
+      unknown: 'Not resolved',
+    })[binding] ??
+    binding ??
+    'Not resolved';
   const frameOf = (doc) => {
     try {
       return doc?.defaultView?.frameElement ?? null;
@@ -481,9 +516,7 @@ function xrayBrowserImpl(data) {
                 schemaName: control.pcf.name,
                 field: field.name,
                 entity: field.entity,
-                binding: exact.length
-                  ? 'native-form-id + control identifier'
-                  : 'candidate-table-form + control identifier',
+                binding: exact.length ? 'Control on the open form' : 'Control on a possible form of this table',
                 formSource: { name: form.name, ref: form.ref },
                 resources: (report.assets ?? []).filter((asset) => asset.name.startsWith(control.pcf.name + '/')),
               },
@@ -886,15 +919,15 @@ function xrayBrowserImpl(data) {
   };
   const framework =
     /^(?:alert(?:-.+)?|message|form-control|btn(?:-.+)?|close|title|row|container(?:-fluid)?|col-(?:xs|sm|md|lg|xl|xxl)-\d+|modal(?:-.+)?|control-label|input-group(?:-.+)?|clearfix|pull-(?:left|right)|text-(?:left|right|center|muted)|hidden|show|active)$/; // NOSONAR: regex kept: a rewrite would change matches or captures
-  let rankingReport, frequencies, pageOwners;
+  let rankingReport, frequencies, pageOwners, pageTemplates;
   const sourceEvidenceLabel = (item, strong, depth) => {
     let prefix;
-    if (item.kind === 'script') prefix = 'Script reference';
-    else if (strong) prefix = 'Markup match';
-    else prefix = 'Possible match';
-    const enclosing = depth ? ' on an enclosing element' : '';
-    const occurrences = item.occurrences > 1 ? ' · ' + item.occurrences + ' locations in this source' : '';
-    return `${prefix}: ${item.selector}${enclosing}${occurrences}`;
+    if (item.kind === 'script') prefix = 'Script uses';
+    else if (strong) prefix = 'Markup matches';
+    else prefix = 'Markup may match';
+    const enclosing = depth ? ' on a parent element' : '';
+    const occurrences = item.occurrences > 1 ? ' · ' + item.occurrences + ' places in this file' : '';
+    return `${prefix} ${item.selector}${enclosing}${occurrences}`;
   };
   /* NOSONAR: single-pass routine, splitting it would change shared state */ const sourceMatches = (node) => {
     const ancestors = lineage(node).filter((item) => item.ownerDocument === node.ownerDocument),
@@ -903,6 +936,10 @@ function xrayBrowserImpl(data) {
       rankingReport = report;
       frequencies = new Map();
       pageOwners = new Set(['page']);
+      // The templates this page renders (its template and what it includes), when the report names them.
+      pageTemplates = (report?.webTemplates ?? []).some((item) => item.name || item.ref)
+        ? new Set(report.webTemplates.flatMap((item) => [item.name, item.ref, item.id].filter(Boolean)))
+        : null;
       for (const item of report?.elementSources ?? [])
         if (item.matchKind === 'class') {
           let files = frequencies.get(item.selector);
@@ -996,6 +1033,16 @@ function xrayBrowserImpl(data) {
           (item.includedBy ?? item.usedBy)?.some(
             (owner) => owner.startsWith('page-template:') || pageOwners.has(owner),
           ) ?? false;
+        // A template this page neither renders nor includes is a candidate only for the element's own ID or attribute:
+        // a class it shares, or a match on a parent element, says nothing about this page.
+        if (
+          pageTemplates &&
+          item.kind === 'template' &&
+          !pageChain &&
+          ![item.name, item.ref, item.id].some((key) => key && pageTemplates.has(key)) &&
+          (depth > 0 || !['id', 'attribute'].includes(item.matchKind))
+        )
+          continue;
         const missing = declaredClasses.length - classes.length,
           targetClasses = [...target.classList].filter((name) => !framework.test(name)),
           coverage = targetClasses.length ? meaningful.length / targetClasses.length : 1;
@@ -1077,7 +1124,7 @@ function xrayBrowserImpl(data) {
     for (const row of rows)
       if (row.ambiguous) {
         row.strong = false;
-        row.evidenceLabel = row.evidenceLabel.replace('Markup match:', 'Possible match:');
+        row.evidenceLabel = row.evidenceLabel.replace('Markup matches ', 'Markup may match ');
       }
     const ranked = /* NOSONAR */ rows.sort(
       // NOSONAR: retain in-place receiver mutation and ordering
@@ -1158,6 +1205,7 @@ function xrayBrowserImpl(data) {
       script: 'Script',
       field: 'Column',
       column: 'Dataverse column',
+      control: 'Form field',
       view: 'View',
       table: 'Table',
       image: 'Image',
@@ -1166,24 +1214,60 @@ function xrayBrowserImpl(data) {
     })[kind] ??
     kind ??
     'Source';
-  const sourceNote = (item, evidence) => {
-    if (!(item.evidenceLabel || evidence)) return '';
-    return `<div class="note">${esc(item.evidenceLabel ?? evidence)}</div>`;
-  };
-  const sourceActions = (item) => {
-    if (!item.ref) return '';
-    let region = '';
-    if (item.depth)
-      region = `<button data-action="source-region" data-selector="${esc(item.selector)}">Select matching ancestor</button>`;
-    return `<div class="actions"><button data-action="open" data-ref="${esc(item.ref)}">Browse file ↗</button><button data-action="copy" data-copy="${esc(item.path ?? item.sourceFile ?? item.ref)}">Copy path</button>${region}</div>`;
-  };
+  // The display name of a field or column component (its logical name is the component's name).
+  const columnLabel = (component) =>
+    ['control', 'field', 'column'].includes(component?.kind)
+      ? (report?.columns ?? []).find(
+          (column) =>
+            column.label &&
+            norm(column.name) === norm(component.field ?? component.name) &&
+            (!component.formId || !column.formId || norm(column.formId) === norm(component.formId)) &&
+            (!component.entity || !column.entity || norm(column.entity) === norm(component.entity)),
+        )?.label
+      : undefined;
+  // Files X-ray lists itself use the shared row: name and kind, the path on one line, icon buttons.
   const sourceRows = (rows, evidence) =>
     rows
-      .map(
-        (item) =>
-          `<div class="source"><div class="name"><b>${esc(item.name ?? item.label ?? 'Source')}</b><span class="badge">${esc(kindName(item.kind))}</span></div><div class="mono">${esc(item.ref ?? item.url ?? 'Source unavailable')}</div>${sourceNote(item, evidence)}${sourceActions(item)}</div>`,
-      )
+      .map((item) => {
+        // The accessible names carry the row (and its selector, when one file matches more than once).
+        const name = item.name ?? item.label ?? 'Source',
+          row = (item.name ?? item.label ?? item.ref) + (item.selector ? ' ' + item.selector : ''),
+          copy = item.path ?? item.sourceFile ?? item.ref;
+        // A markup match says where it matched with the relation badge the evidence rows use; its line keeps the rest.
+        const parentMatch = item.selector && item.depth > 0;
+        const why = item.evidenceLabel ?? evidence;
+        return renderInspectionEvidence(null, {
+          part: 'row',
+          context: 'xray',
+          row: {
+            cls: 'source',
+            name,
+            what: kindName(item.kind),
+            relation: item.selector && why ? [parentMatch ? 'Parent' : 'This element', why] : undefined,
+            path: item.ref ?? item.url ?? 'Source unavailable',
+            subs: [parentMatch && why ? why.replaceAll(' on a parent element', '') : why],
+            actions: item.ref
+              ? [
+                  {
+                    act: 'open',
+                    icon: 'code',
+                    title: 'Open ' + row + ' in the editor',
+                    data: { ref: item.ref },
+                  },
+                  { act: 'copy', icon: 'copy', title: 'Copy the file path of ' + row, data: { copy } },
+                  item.depth && {
+                    act: 'source-region',
+                    icon: 'up',
+                    title: 'Select the parent element matching ' + item.selector,
+                    data: { selector: item.selector },
+                  },
+                ]
+              : [],
+          },
+        });
+      })
       .join('');
+  const countPill = (count) => `<span class="n dimn">${count}</span>`;
   const disclosureState = new Map(),
     contextPages = new Map();
   const pageRows = (key, rows, render) => {
@@ -1192,7 +1276,7 @@ function xrayBrowserImpl(data) {
     const page = Math.min(contextPages.get(key) ?? 0, pages - 1);
     const pageControls = () => {
       if (pages <= 1) return '';
-      return `<div class="actions"><button data-action="context-page" data-context="${esc(key)}" data-page="${page - 1}" ${page ? '' : 'disabled'}>Previous</button><span class="note">${page + 1} / ${pages} · ${rows.length} entries</span><button data-action="context-page" data-context="${esc(key)}" data-page="${page + 1}" ${page < pages - 1 ? '' : 'disabled'}>Next</button></div>`;
+      return `<div class="actions"><button class="btn sec" data-action="context-page" data-context="${esc(key)}" data-page="${page - 1}" ${page ? '' : 'disabled'}>Previous</button><span class="note">${page * size + 1}–${Math.min(rows.length, (page + 1) * size)} of ${rows.length}</span><button class="btn sec" data-action="context-page" data-context="${esc(key)}" data-page="${page + 1}" ${page < pages - 1 ? '' : 'disabled'}>Next</button></div>`;
     };
     return render(rows.slice(page * size, (page + 1) * size)) + pageControls();
   };
@@ -1209,18 +1293,21 @@ function xrayBrowserImpl(data) {
     let rows;
     if (Array.isArray(report?.portalSources)) rows = report.portalSources;
     else if (Array.isArray(report?.sourceRefs)) rows = report.sourceRefs;
+    // A model-driven report carries its Solution files with the app context.
+    else if (Array.isArray(report?.modelDriven?.sourceRefs)) rows = report.modelDriven.sourceRefs;
     else rows = emptyEvidenceRefs;
     if (rows !== indexedEvidenceRows) {
       indexedEvidenceRows = rows;
-      evidenceIndex = { rows, byId: new Map(), byRef: new Map(), byComponent: new Map() };
+      evidenceIndex = { rows, byId: new Map(), byRef: new Map(), byComponent: new Map(), byRecord: new Map() };
+      const addTo = (map, key, ref) => {
+        if (!map.has(key)) map.set(key, []);
+        map.get(key).push(ref);
+      };
       for (const ref of rows) {
         evidenceIndex.byId.set(ref.id, ref);
-        if (!evidenceIndex.byRef.has(ref.ref)) evidenceIndex.byRef.set(ref.ref, []);
-        evidenceIndex.byRef.get(ref.ref).push(ref);
-        if (ref.componentKey) {
-          if (!evidenceIndex.byComponent.has(ref.componentKey)) evidenceIndex.byComponent.set(ref.componentKey, []);
-          evidenceIndex.byComponent.get(ref.componentKey).push(ref);
-        }
+        addTo(evidenceIndex.byRef, ref.ref, ref);
+        if (ref.componentKey) addTo(evidenceIndex.byComponent, ref.componentKey, ref);
+        else if (ref.kind && ref.recordId) addTo(evidenceIndex.byRecord, ref.kind + ':' + norm(ref.recordId), ref);
       }
     }
     return evidenceIndex;
@@ -1414,24 +1501,53 @@ function xrayBrowserImpl(data) {
         }),
       ),
     );
+    // Enclosing components named by the report carry their exported definition files like observed ones do.
+    const linkedRefs = [];
+    // The row opens its first file, so the record's definition leads: its definition ref, else the file that holds
+    // its name (a web page's .webpage.yml). Content files such as the page copy are listed under Page files.
+    const definitionFirst = (ref) => {
+      if (ref.relationship === 'definition') return 0;
+      return ref.fieldPath?.[0] === 'name' ? 1 : 2;
+    };
+    const linked = (fact) => {
+      const key = fact.binding.kind + ':' + norm(fact.binding.id);
+      // One file once: a record's name and copy fields live in the same file, and the row opens its first one.
+      const files = new Set();
+      const refs = [
+        ...(index.byComponent.get(fact.binding.key) ?? index.byComponent.get(key) ?? index.byRecord.get(key) ?? []),
+      ]
+        .sort((a, b) => definitionFirst(a) - definitionFirst(b))
+        .filter((ref) => !files.has(ref.ref) && files.add(ref.ref));
+      linkedRefs.push(...refs);
+      return {
+        ...fact,
+        sourceRefIds: refs.map((ref) => ref.id),
+        sourceRefBindings: refs.map((ref) => ({
+          id: ref.id,
+          sourceRevision: ref.sourceRevision,
+          contentRevision: ref.contentRevision,
+        })),
+      };
+    };
     const hostPage = report?.page;
     if (!d.modelDriven && (hostPage?.id ?? hostPage?.recordId) && liveNode(node))
-      facts.push({
-        id: 'selected-export-host-page',
-        scope,
-        dimension: 'enclosing',
-        proof: 'export-definition',
-        subject: 'selection',
-        predicate: node.ownerDocument === document ? 'configured-webpage' : 'webpage-hosting-selected-frame',
-        binding: {
-          kind: 'webpage',
-          key: 'webpage:' + (hostPage.id ?? hostPage.recordId),
-          id: hostPage.id ?? hostPage.recordId,
-          name: hostPage.name ?? 'Host webpage',
-        },
-        label:
-          node.ownerDocument === document ? 'Selected export webpage' : 'Selected export webpage hosting this frame',
-      });
+      facts.push(
+        linked({
+          id: 'selected-export-host-page',
+          scope,
+          dimension: 'enclosing',
+          proof: 'export-definition',
+          subject: 'selection',
+          predicate: node.ownerDocument === document ? 'configured-webpage' : 'webpage-hosting-selected-frame',
+          binding: {
+            kind: 'webpage',
+            key: 'webpage:' + (hostPage.id ?? hostPage.recordId),
+            id: hostPage.id ?? hostPage.recordId,
+            name: hostPage.name ?? 'Web page',
+          },
+          label: node.ownerDocument === document ? 'Web page of this address' : 'Web page that hosts this frame',
+        }),
+      );
     const hydratedCurrentSourceRefs = hydrateModelSelection(node, scope, anchorGeneration, packets);
     const sourceRefs = packets.flatMap((packet) => packet.sourceRefs ?? []);
     const mode = packets.some((packet) => packet.mode === 'local') || d.mirageMode ? 'local' : 'live';
@@ -1520,7 +1636,7 @@ function xrayBrowserImpl(data) {
         dimension: 'context',
         kind: 'api-page-context',
         reason: 'legacy-context-disagreement',
-        label: 'Navigation/export hints disagree; direct current bindings are evaluated separately',
+        label: 'The page address and the markup point to different components.',
       });
     for (const item of [...(b.forms ?? []), ...(b.views ?? []), ...(b.lists ?? [])]) {
       if (
@@ -1532,20 +1648,28 @@ function xrayBrowserImpl(data) {
         )
       )
         continue;
-      facts.push({
-        id: 'enclosing-candidate:' + (item.id ?? item.recordId),
-        scope,
-        dimension: 'enclosing',
-        proof: 'declared-include',
-        predicate: 'declares',
-        binding: {
-          kind: item.kind ?? 'form',
-          key: (item.kind ?? 'form') + ':' + (item.id ?? item.recordId),
-          id: item.id ?? item.recordId,
-          name: item.name,
-          entity: item.entity,
-        },
-      });
+      // The open model-driven form is identified by the app (or Mirage) by its form ID: it is the form of this page,
+      // not one the configuration merely declares. Its kind and key are the Solution's, so its files and the provider's
+      // context name the same component.
+      const kind = item.kind === 'model-driven-form' ? 'form' : (item.kind ?? 'form');
+      const identified = { 'mirage-form-id': 'mirage-registry', 'native-form-id': 'native-api' }[item.evidence];
+      facts.push(
+        linked({
+          id: 'enclosing-candidate:' + (item.id ?? item.recordId),
+          scope,
+          dimension: 'enclosing',
+          proof: identified ?? 'declared-include',
+          predicate: identified ? 'contains' : 'declares',
+          ...(identified ? { label: item.evidenceLabel ?? 'Form open on this page' } : {}),
+          binding: {
+            kind,
+            key: kind + ':' + (item.id ?? item.recordId),
+            id: item.id ?? item.recordId,
+            name: item.name,
+            entity: item.entity,
+          },
+        }),
+      );
     }
     for (const [position, item] of matches.entries()) {
       const field =
@@ -1586,7 +1710,7 @@ function xrayBrowserImpl(data) {
           sourceRevision: ref.sourceRevision,
           contentRevision: ref.contentRevision,
         })),
-        label: item.evidenceLabel ?? 'Static export match; rendered ownership unverified',
+        label: item.evidenceLabel ?? 'Markup match',
       });
     }
     for (const packet of packets) {
@@ -1594,6 +1718,7 @@ function xrayBrowserImpl(data) {
         if (typeof availability.reason === 'string') reasons.push(availability.reason);
       for (const reason of packet.limits?.reasons ?? []) if (typeof reason === 'string') reasons.push(reason);
     }
+    sourceRefs.push(...linkedRefs);
     const currentSourceRefs = [
       ...sourceRefs.map((ref) => index.byId.get(ref.id)).filter(Boolean),
       ...hydratedCurrentSourceRefs,
@@ -1606,11 +1731,11 @@ function xrayBrowserImpl(data) {
     const sourceLimits = report?.elementSourceLimits ?? {};
     const omittedSources = (sourceLimits.markupOmittedSources ?? []).map((ref) => ({
       ref,
-      reason: 'Oversized source omitted; not attributed',
+      reason: 'Skipped: file too large to search',
     }));
     const truncatedScripts = (sourceLimits.scriptTruncatedSources ?? []).map((ref) => ({
       ref,
-      reason: 'Script index truncated; not attributed',
+      reason: 'Skipped: too many scripts to search',
     }));
     if (sourceLimits.truncated) reasons.push('export-source-hint-index-truncated');
     if (matches.omitted) reasons.push('additional-source-candidates-omitted');
@@ -1640,31 +1765,63 @@ function xrayBrowserImpl(data) {
     const matches = matched.map((item) => ({
       ...item,
       strong: false,
-      evidenceLabel: (item.evidenceLabel ?? 'Static export candidate').replace('Markup match:', 'Static candidate:'),
+      evidenceLabel: item.evidenceLabel ?? 'Markup match',
     }));
     matches.omitted = matched.omitted;
     const evidence = queryElementEvidence(node, b, matches, scope);
+    // Rows show a file by its path in the source folder, as Page files does (the panel renders this evidence too).
+    if (typeof d.sourceDir === 'string' && d.sourceDir) evidence.sourceDir = d.sourceDir;
+    // The field's display name travels with its component, so the panel names it as the card does.
+    if (evidence.owner.component && !evidence.owner.component.label) {
+      const display = columnLabel(evidence.owner.component);
+      if (display) evidence.owner.component.label = display;
+    }
     const owner = evidence.owner.component;
     const exact = evidence.source.refs.find((ref) => ref.status === 'exact');
     const candidate = evidence.candidates.find((item) => item.status === 'candidate')?.component;
+    // A likely file with no component: the hover tip and the card say the same, as the card's source row does.
+    const likelyRef = owner || exact ? null : evidence.source.refs.find((ref) => ref.status === 'candidate');
+    const likely = Boolean(likelyRef);
+    // One header format in the hover summary, the card and the panel: "display name · logical name" for a component,
+    // "file · tag" for an element only a file names (so Parent and Child change it), else the tag alone. Only the tag:
+    // element IDs and classes can carry record data, and the title travels with selection events.
+    const ownerNames = owner ? [...new Set([owner.label ?? columnLabel(owner), owner.name].filter(Boolean))] : [];
+    // A component with one name (a web template the render identified) adds the tag, as a file match does: the title
+    // stays the same when the render's own proof arrives after the file match, and Parent and Child change it.
+    const ownerName = ownerNames.length === 1 ? ownerNames[0] + ' · ' + node.localName : ownerNames.join(' · ');
+    const fileName = (exact ?? likelyRef)?.name;
+    let title;
+    if (ownerName || owner?.id) title = ownerName || owner.id;
+    else if (fileName) title = fileName + ' · ' + node.localName;
+    else if (candidate)
+      title =
+        'Possible ' +
+        (candidate.label ?? candidate.name ?? kindName(candidate.kind).toLowerCase()) +
+        ' · ' +
+        node.localName;
+    else title = node.localName + ' element';
     return {
-      title:
-        owner?.label ??
-        owner?.name ??
-        owner?.id ??
-        exact?.name ??
-        (candidate
-          ? 'Possible ' + (candidate.label ?? candidate.name ?? candidate.kind)
-          : 'Selected ' + node.localName),
+      title,
+      // The one place the card states the selection's certainty; the rows below carry their own.
       kind: (() => {
         if (owner) return kindName(owner.kind);
-        if (evidence.source.status === 'exact') return 'Rendered source';
-        if (evidence.owner.status === 'conflicting') return 'Conflicting owner evidence';
-        return 'Owner ' + evidence.owner.status;
+        if (evidence.source.status === 'exact') return 'Source file';
+        if (likely && evidence.owner.status === 'unavailable') return 'Likely source file';
+        return (
+          {
+            conflicting: 'Several matches',
+            candidate: 'Likely match',
+            stale: 'Outdated: select again',
+          }[evidence.owner.status] ??
+          (evidence.source.refs.length ? 'No matching component' : 'Not matched to any source')
+        );
       })(),
+      // The file the person most likely wants next, when no component names the element: its name only, the card
+      // shows the path.
       sub: owner
         ? [owner.entity, owner.field ?? owner.controlName].filter(Boolean).join('.')
-        : (exact?.ref ?? 'Select a source below or inspect the evidence.'),
+        : kit.displayPath(((exact ?? evidence.source.refs[0])?.ref ?? '').split(/[\\/]/).pop()),
+      matched: Boolean(owner || exact || candidate || likely),
       b,
       matches,
       evidence,
@@ -1703,7 +1860,7 @@ function xrayBrowserImpl(data) {
       sources: found.evidence.source.refs.filter((ref) => ref.status === 'exact'),
     };
   };
-  /* NOSONAR */ const declaredContextHtml = (node, b) => {
+  /* NOSONAR */ const declaredContextHtml = (node, b, evidence) => {
     let out = '';
     if (node.matches('img[src],img[srcset],link[href],script[src]')) {
       let pathname;
@@ -1720,8 +1877,8 @@ function xrayBrowserImpl(data) {
       const assets = (report?.assets ?? []).filter((item) => item.url === pathname);
       if (assets.length)
         out +=
-          '<details open data-disclosure="selected-resource"><summary>Selected resource reference</summary>' +
-          sourceRows(assets, 'Rendered resource URL; markup ownership and loaded bytes are separate evidence') +
+          '<details open data-disclosure="selected-resource"><summary>Linked file</summary>' +
+          sourceRows(assets) +
           '</details>';
     }
     const events = (b.forms ?? []).flatMap((form) => (form.events ?? []).map((event) => ({ ...event, form })));
@@ -1732,45 +1889,56 @@ function xrayBrowserImpl(data) {
       ...(b.views ?? []),
       ...(b.lists ?? []),
     ];
+    // Forms and views the details above already list (with open and copy) are not repeated here.
+    const listed = new Set(
+      [evidence?.owner?.component, ...(evidence?.enclosing ?? []).map((row) => row.component)]
+        .map((component) => norm(component?.id ?? component?.recordId ?? ''))
+        .filter(Boolean),
+    );
     const definitions = [
       ...new Map(
-        definitionRows.map((item) => [
-          JSON.stringify([item.ref ?? null, item.id ?? item.recordId ?? item.name, item.kind ?? null]),
-          item,
-        ]),
+        definitionRows
+          .filter((item) => !listed.has(norm(item.id ?? item.recordId ?? '')))
+          .map((item) => [
+            JSON.stringify([item.ref ?? null, item.id ?? item.recordId ?? item.name, item.kind ?? null]),
+            item,
+          ]),
       ).values(),
     ];
     if (definitions.length)
       out +=
-        '<details data-disclosure="declared-form-definitions"><summary>Exported form / view definitions</summary><p class="note">Configuration relationships and local definitions; selected owner certainty is shown above.</p>' +
-        sourceRows(definitions, 'Exported component definition/context') +
+        '<details data-disclosure="declared-form-definitions"><summary>Forms and views on this page</summary>' +
+        sourceRows(definitions) +
         '</details>';
     const commands = b.commands ?? [];
     if (events.length || commands.length)
       out +=
-        '<details data-disclosure="declared-handlers"><summary>Declared handlers</summary><p class="note">Exported event and command definitions; execution and selected-element ownership are not inferred.</p>' +
+        '<details data-disclosure="declared-handlers"><summary>Event handlers and commands</summary>' +
         events
-          .map(
-            (event) =>
-              '<div class="source"><b>' +
-              esc(event.form.name) +
-              ' · ' +
-              esc(event.name) +
-              (event.attribute ? ' · ' + esc(event.attribute) : '') +
-              (event.active === false ? ' (disabled)' : '') +
-              '</b><p class="mono">' +
-              (event.handlers ?? [])
-                .map((handler) =>
-                  esc((handler.enabled === false ? '[disabled] ' : '') + handler.library + ': ' + handler.functionName),
-                )
-                .join('<br>') +
-              '</p></div>',
+          .map((event) =>
+            renderInspectionEvidence(null, {
+              part: 'row',
+              context: 'xray',
+              row: {
+                cls: 'source',
+                name:
+                  event.form.name +
+                  ' · ' +
+                  event.name +
+                  (event.attribute ? ' · ' + event.attribute : '') +
+                  (event.active === false ? ' (disabled)' : ''),
+                subs: (event.handlers ?? []).map(
+                  (handler) =>
+                    (handler.enabled === false ? '[disabled] ' : '') + handler.library + ': ' + handler.functionName,
+                ),
+              },
+            }),
           )
           .join('') +
         commands
           .map(
             (command) =>
-              sourceRows([{ ...command, name: command.label ?? command.id, ref: command.source }], 'Declared command') +
+              sourceRows([{ ...command, name: command.label ?? command.id, ref: command.source }], 'Command') +
               '<p class="mono">' +
               (command.actions ?? []).map((action) => esc(action.library + ': ' + action.functionName)).join('<br>') +
               '</p>',
@@ -1779,21 +1947,18 @@ function xrayBrowserImpl(data) {
         '</details>';
     if (b.native?.length)
       out +=
-        '<details data-disclosure="declared-native"><summary>Exported native controls</summary><p class="note">Exported control and containing form relationships; selected ownership and active mounting require independent evidence.</p>' +
+        '<details data-disclosure="declared-native"><summary>Subgrids and quick views</summary>' +
         b.native
           .map(
             (item) =>
               '<dl class="details"><dt>Control</dt><dd>' +
               esc(item.name ?? item.id) +
               '</dd><dt>Form</dt><dd>' +
-              esc(item.owner ?? item.formName ?? item.formId ?? 'Unresolved') +
+              esc(item.owner ?? item.formName ?? item.formId ?? 'Not found') +
               '</dd>' +
               (item.relationship ? '<dt>Relation</dt><dd>' + esc(item.relationship) + '</dd>' : '') +
               '</dl>' +
-              sourceRows(
-                [{ ...item, name: kindName(item.kind) + ' definition' }, ...(item.metadataSources ?? [])],
-                'Exported native control configuration',
-              ),
+              sourceRows([{ ...item, name: kindName(item.kind) + ' definition' }, ...(item.metadataSources ?? [])]),
           )
           .join('') +
         '</details>';
@@ -1806,7 +1971,7 @@ function xrayBrowserImpl(data) {
             '<dl class="details"><dt>Schema</dt><dd>' +
             esc(item.schemaName ?? item.name) +
             '</dd><dt>Binding</dt><dd>' +
-            esc(item.binding ?? 'Unresolved') +
+            esc(bindingLabel(item.binding)) +
             '</dd>' +
             (item.entity ? '<dt>Table</dt><dd>' + esc(item.entity) + '</dd>' : '') +
             (item.field ? '<dt>Column</dt><dd>' + esc(item.field) + '</dd>' : '') +
@@ -1818,19 +1983,18 @@ function xrayBrowserImpl(data) {
                 item.formSource,
                 ...(item.metadataSources ?? []),
               ].filter(Boolean),
-              'Exported component binding',
             ) +
             (properties.length
-              ? '<details><summary>Manifest properties (' +
-                properties.length +
-                ')</summary>' +
+              ? '<details><summary>Manifest properties ' +
+                countPill(properties.length) +
+                '</summary>' +
                 properties
                   .map(
                     (property) =>
                       '<div class="note"><b>' +
                       esc(property.name) +
                       '</b> · ' +
-                      esc(property['of-type'] ?? property['of-type-group'] ?? 'type unresolved') +
+                      esc(property['of-type'] ?? property['of-type-group'] ?? 'type not set') +
                       ' · ' +
                       esc(property.usage ?? 'input') +
                       (property.required === 'true' || property.required === true ? ' · required' : '') +
@@ -1849,7 +2013,7 @@ function xrayBrowserImpl(data) {
                   .join('') +
                 '</dl>'
               : '') +
-            sourceRows(item.resources ?? [], 'Declared component resource; serving and execution are not inferred') +
+            sourceRows(item.resources ?? [], 'Component file') +
             (item.datasets ?? [])
               .map(
                 (dataset) =>
@@ -1861,10 +2025,10 @@ function xrayBrowserImpl(data) {
                       ? [dataset.entity, dataset.viewName, `${dataset.fields?.length ?? 0} columns`]
                           .filter(Boolean)
                           .join(' · ')
-                      : 'Table/view binding unresolved',
+                      : 'Table or view not found',
                   ) +
                   '</p></div>' +
-                  sourceRows([dataset], 'Exported dataset definition'),
+                  sourceRows([dataset]),
               )
               .join('')
           );
@@ -1872,22 +2036,22 @@ function xrayBrowserImpl(data) {
         .join('');
     if (b.code?.length)
       out +=
-        '<details data-disclosure="declared-pcf"><summary>Exported code component bindings</summary><p class="note">Configured properties, parameters, datasets and resources; an active mount requires separate runtime evidence.</p>' +
+        '<details data-disclosure="declared-pcf"><summary>Code component settings</summary>' +
         codeHtml(b.code) +
         '</details>';
     else if (report?.codeComponents?.length)
       out +=
-        '<details class="pcf-context" data-disclosure="pcf-context"><summary>Page code components (' +
-        report.codeComponents.length +
-        ')</summary><p class="note">Exported page references; no component-to-element ownership or active mount is asserted.</p>' +
+        '<details class="pcf-context" data-disclosure="pcf-context"><summary>Page code components ' +
+        countPill(report.codeComponents.length) +
+        '</summary>' +
         pageRows('pcf', report.codeComponents, codeHtml) +
         '</details>';
     const api = (report?.apiReferences ?? []).filter((item) => !b.entity || norm(item.entity) === norm(b.entity));
     if (api.length)
       out +=
-        '<details class="api-context" data-disclosure="api-context"><summary>Web API context · ' +
-        api.length +
-        '</summary><p class="note">Source references and observed requests are context. No request-to-element ownership is asserted.</p>' +
+        '<details class="api-context" data-disclosure="api-context"><summary>Web API calls ' +
+        countPill(api.length) +
+        '</summary>' +
         pageRows('api', api, (items) =>
           items
             .map(
@@ -1895,11 +2059,11 @@ function xrayBrowserImpl(data) {
                 '<div class="binding"><strong>/_api/' +
                 esc(item.name) +
                 '</strong><p class="note">' +
-                esc(item.entity ?? 'Table unresolved') +
+                esc(item.entity ?? 'Table not found') +
                 ' · ' +
-                (item.evidence === 'observed-api-request' ? 'Observed request' : 'Literal source reference') +
+                (item.evidence === 'observed-api-request' ? 'Requested by this page' : 'Referenced in source code') +
                 '</p></div>' +
-                sourceRows([item, ...(item.sources ?? [])], 'Web API reference') +
+                sourceRows([item, ...(item.sources ?? [])]) +
                 // A table's permission rules page like other context, once per table.
                 pageRows(
                   'api-permissions:' + norm(item.entity),
@@ -1911,7 +2075,7 @@ function xrayBrowserImpl(data) {
                       /* NOSONAR: callbacks capture request-scoped state */ rules.map((rule) => ({
                         ...rule,
                         kind: 'permission',
-                        evidenceLabel: rule.scope + ' · effective access ' + (rule.effective ?? 'unknown'),
+                        evidenceLabel: rule.scope + (rule.effective ? ' · ' + rule.effective : ''),
                       })),
                     ),
                 ),
@@ -1922,21 +2086,21 @@ function xrayBrowserImpl(data) {
     const page = report?.page;
     if (report)
       out +=
-        '<details class="page-context" data-disclosure="page-context"><summary>Page dependencies' +
+        '<details class="page-context" data-disclosure="page-context"><summary>Page files' +
         (page ? ' · ' + esc(page.pageName ?? page.name ?? '') : '') +
-        '</summary><p class="note">Expected export composition and declared dependencies; neither execution nor selected-element ownership is implied.</p>' +
-        '<dl class="details"><dt>Page</dt><dd>' +
-        esc(page?.pageName ?? page?.name ?? 'Not in selected export') +
-        '</dd><dt>Template</dt><dd>' +
-        esc(page?.pageTemplateName ?? report.pageTemplate?.name ?? 'Unresolved') +
-        '</dd></dl>' +
-        pageRows('page-sources', report.pageSources ?? [], (rows) => sourceRows(rows, 'Page source context')) +
-        pageRows('page-assets', report.assets ?? [], (rows) => sourceRows(rows, 'Declared page resource')) +
+        '</summary>' +
+        // A model-driven page has no web page or page template: its files are the form, view and table.
+        (report.modelDriven
+          ? ''
+          : '<dl class="details"><dt>Page</dt><dd>' +
+            esc(page?.pageName ?? page?.name ?? 'Not in your sources') +
+            '</dd><dt>Template</dt><dd>' +
+            esc(page?.pageTemplateName ?? report.pageTemplate?.name ?? 'None found') +
+            '</dd></dl>') +
+        pageRows('page-sources', report.pageSources ?? [], (rows) => sourceRows(rows)) +
+        pageRows('page-assets', report.assets ?? [], (rows) => sourceRows(rows)) +
         pageRows('page-templates', report.webTemplates ?? [], (rows) =>
-          sourceRows(
-            rows.map((item) => ({ ...item, kind: 'template' })),
-            'Declared template dependency',
-          ),
+          sourceRows(rows.map((item) => ({ ...item, kind: 'template' }))),
         ) +
         '</details>';
     return out;
@@ -1947,24 +2111,22 @@ function xrayBrowserImpl(data) {
     const markup = matches.filter((item) => item.kind !== 'script');
     const scripts = matches.filter((item) => item.kind === 'script');
     return (
-      renderInspectionEvidence(found.evidence, { context: 'xray', selectedLabel: 'Selected ' + node.localName }) +
+      renderInspectionEvidence(found.evidence, { context: 'xray' }) +
       (markup.length
-        ? '<details data-disclosure="static-candidates"><summary>Search export markup · ' +
-          markup.length +
-          ' candidates</summary><p class="note">Static selectors are search suggestions. They do not prove which source rendered this node.</p>' +
-          pageRows('markup-candidates', markup, (rows) =>
-            sourceRows(rows, 'Static candidate; rendered ownership unverified'),
-          ) +
+        ? '<details data-disclosure="static-candidates"><summary>Markup matches ' +
+          countPill(markup.length) +
+          '</summary><p class="note">Files whose markup matches this element\'s ID or classes. Check before you edit.</p>' +
+          pageRows('markup-candidates', markup, (rows) => sourceRows(rows)) +
           '</details>'
         : '') +
       (scripts.length
-        ? '<details data-disclosure="declared-scripts"><summary>Script references · ' +
-          scripts.length +
-          '</summary><p class="note">A selector reference or served script does not establish execution or ownership of this element.</p>' +
-          pageRows('script-candidates', scripts, (rows) => sourceRows(rows, 'Declared script reference')) +
+        ? '<details data-disclosure="declared-scripts"><summary>Script references ' +
+          countPill(scripts.length) +
+          '</summary>' +
+          pageRows('script-candidates', scripts, (rows) => sourceRows(rows)) +
           '</details>'
         : '') +
-      declaredContextHtml(node, found.b)
+      declaredContextHtml(node, found.b, found.evidence)
     );
   };
   /* NOSONAR */ const renderCard = (preserve = false, measuredRect) => {
@@ -1992,39 +2154,50 @@ function xrayBrowserImpl(data) {
         : [];
     card.hidden = !details || !selected;
     if (!selected) {
+      // A model-driven app has forms, views and columns; a portal also has templates.
+      const app = Boolean(d.modelDriven || report?.modelDriven);
       const welcomeCounts = () => {
         if (report)
-          return `${(report.webTemplates ?? []).length} templates · ${(report.forms ?? []).length} forms · ${(report.views ?? []).length} views · ${(report.columns ?? []).length} columns`;
+          return [
+            app ? '' : `${(report.webTemplates ?? []).length} templates`,
+            `${(report.forms ?? []).length} forms`,
+            `${(report.views ?? []).length} views`,
+            `${(report.columns ?? []).length} columns`,
+          ]
+            .filter(Boolean)
+            .join(' · ');
         return esc(
           d.inspectionError ||
             (d.inspection?.active === false ? d.inspection.error : '') ||
             'Loading source inspection…',
         );
       };
-      card.innerHTML = `<div class="welcome"><div class="hero">Select a portal element</div><p class="note">Hover or click to identify its template, page source, form, view or Dataverse column.</p><p class="note">Hold <kbd>Ctrl</kbd> to interact with the portal. <kbd>Esc</kbd> clears selection, then exits.</p><p class="note counts">${welcomeCounts()}</p></div>`;
+      card.innerHTML = `<div class="welcome"><div class="hero">${app ? 'Select an element of the app' : 'Select a portal element'}</div><p class="note">${app ? 'Hover or click to identify its form, field, view, table or code component.' : 'Hover or click to identify its template, page source, form, view or Dataverse column.'}</p><p class="note">Tap <kbd>Ctrl</kbd> or click <b>Inspect</b> to use the ${app ? 'app' : 'portal'} normally, and again to inspect. ${escHint}.</p><p class="note counts">${welcomeCounts()}</p></div>`;
       return;
     }
     const identity = identify(selected, getSelectionScope(selected));
-    if (selectedRect.left + selectedRect.width > innerWidth - 434 && selectedRect.left < innerWidth - 12) {
-      card.style.left = '12px';
-      card.style.right = 'auto';
-    } else {
-      card.style.left = 'auto';
-      card.style.right = '12px';
-    }
-    card.innerHTML = `<div class="cardhead"><div class="grow"><div class="eyebrow">${esc(identity.kind)}</div><div class="title">${esc(identity.title)}</div>${renderInspectionEvidence(identity.evidence, { part: 'headline' })}</div><button data-action="dock" title="Move details to the other side" aria-label="Move details">⇄</button><button data-action="clear" aria-label="Clear selection">×</button></div><div class="content">${selected.localName === 'iframe' ? '<p class=note>Frame boundary · accessible same-origin controls can be selected directly; cross-origin and sandbox restrictions remain in force. Open an inaccessible inner document in its own tab for control details.</p><button data-action="frame-open">Open frame in new tab</button>' : ''}${sourcesHtml(selected)}<details class="ancestry"><summary>Element & ancestry</summary><div class="mono element-label">${esc(label(selected))}</div><p class="note">Select an enclosing element to inspect its source. [ and ] cycle overlapping elements.</p>${lineage(
+    // A new pick places the card next to it again, also after the person moved the card for an earlier one.
+    if (!preserve) cardMoved = false;
+    // The header names the component once (display name and logical name) with its certainty badge.
+    const heading = identity.title;
+    card.innerHTML = `<div class="cardhead"><div class="grow"><div class="eyebrow">${esc(identity.kind)}</div><div class="titlerow"><div class="title">${esc(heading)}</div>${renderInspectionEvidence(identity.evidence, { part: 'badge' })}</div></div><button class="ib" data-action="dock" title="Move details to the other side" aria-label="Move details">${kit.icon('swap')}</button><button class="ib" data-action="clear" aria-label="Clear selection" title="Clear selection">${kit.icon('close')}</button></div><div class="content">${selected.localName === 'iframe' ? '<p class=note>Frame. Click inside it to select its controls. If that does not work, open the frame in its own tab.</p><button class="btn sec" data-action="frame-open">Open frame in new tab</button>' : ''}${sourcesHtml(selected)}<details class="ancestry"${identity.matched ? '' : ' open'}><summary>Parent elements</summary><div class="mono element-label">${esc(label(selected))}</div><p class="note">Select an enclosing element to inspect its source. [ and ] cycle overlapping elements.</p>${lineage(
       selected,
     )
       .map(
         (node, index) =>
-          `<button class="crumb" data-action="ancestor" data-index="${index}" data-depth="${Math.min(index, 6)}">${index ? '↳ ' : ''}${esc(label(node))}</button>`,
+          `<button class="crumb" data-action="ancestor" data-index="${index}" data-depth="${Math.min(index, 6)}">${esc(label(node))}</button>`,
       )
       .join(
         '',
-      )}${selected.localName === 'iframe' ? '<p class="note">Frame boundary: inner inspection requires an accessible same-origin document; cross-origin and sandbox restrictions are preserved.</p>' : ''}</details></div><div class="status" role="status">${esc(feedback)}</div><div class="foot"><button data-action="parent" ${!parent(selected) || own(parent(selected)) ? 'disabled' : ''}>↑ Parent</button><button data-action="child" ${!child(selected) ? 'disabled' : ''}>↓ Child</button><button data-action="reveal">Reveal</button><span class="hint">Esc to release</span></div>`;
+      )}</details></div><div class="status" role="status">${esc(feedback)}</div><div class="foot"><button class="btn sec" data-action="parent" title="Select the enclosing element (Up arrow)" ${!parent(selected) || own(parent(selected)) ? 'disabled' : ''}>${kit.icon('up')}Parent</button><button class="btn sec" data-action="child" title="Select a child element: the one you came from, else the first (Down arrow)" ${!child(selected) ? 'disabled' : ''}>${kit.icon('down')}Child</button><button class="btn sec" data-action="reveal" title="Scroll the page to the selected element">${kit.icon('locate')}Reveal</button></div>`;
     // New content already starts at zero. Writing scrollTop=0 would force its first
     // layout during selection even though there is no scroll position to restore.
     card.querySelector('.status').textContent = statusMessage;
+    // Every disclosure gets the panel's group header.
+    for (const summary of card.querySelectorAll('summary:not(.gh)')) {
+      summary.classList.add('gh');
+      summary.insertAdjacentHTML('afterbegin', kit.icon('right'));
+    }
     for (const item of card.querySelectorAll('details'))
       if (disclosureState.has(item.dataset.disclosure)) item.open = disclosureState.get(item.dataset.disclosure);
       else if (open.includes(item.dataset.disclosure ?? item.querySelector('summary')?.textContent)) item.open = true;
@@ -2034,6 +2207,54 @@ function xrayBrowserImpl(data) {
       [...card.querySelectorAll('button,summary,select,input,a[href]')]
         .find((item) => Object.entries(focused).every(([key, value]) => item.dataset[key] === value))
         ?.focus({ preventScroll: true });
+    placeCard(selectedRect, !preserve);
+  };
+  // The details card opens beside the selected element: right of it, else left, else below, else above, inside the
+  // viewport and under the toolbar, so it never covers the element when any side has room. It follows the element on
+  // scroll and resize; an element larger than every free side gets the card on the side with the most room.
+  const placeCard = (rect, force = false) => {
+    if (!rect || card.hidden || cardMoved || drag) return;
+    // A clipped visible rectangle carries only its origin and size.
+    const right = rect.left + rect.width,
+      below = rect.top + rect.height;
+    const key = `${rect.left},${rect.top},${rect.width},${rect.height},${innerWidth},${innerHeight}`;
+    if (!force && key === cardPlacement) return;
+    cardPlacement = key;
+    const gap = 8,
+      top = Math.min(64, Math.max(gap, innerHeight / 4)),
+      // The legend sits along the bottom edge; the card stays above it.
+      bottom = innerHeight - 44,
+      // Under half of a narrow window, so the page stays readable beside it.
+      width = Math.min(410, Math.max(340, innerWidth * 0.45), innerWidth - 2 * gap);
+    card.style.width = width + 'px';
+    card.style.right = 'auto';
+    card.style.bottom = 'auto';
+    card.style.maxHeight = '';
+    const height = Math.min(card.scrollHeight || card.offsetHeight, bottom - top);
+    const clamp = (value, low, high) => Math.max(low, Math.min(value, Math.max(low, high)));
+    const sides = [
+      { room: innerWidth - gap - right - gap, need: width, x: right + gap, y: null },
+      { room: rect.left - gap - gap, need: width, x: rect.left - gap - width, y: null },
+      { room: bottom - below - gap, need: Math.min(height, 160), x: null, y: below + gap },
+      { room: rect.top - gap - top, need: Math.min(height, 160), x: null, y: null },
+    ];
+    const side = sides.find((item) => item.room >= item.need) ?? [...sides].sort((a, b) => b.room - a.room)[0];
+    if (side.x === null) {
+      card.style.left = clamp(rect.left, gap, innerWidth - gap - width) + 'px';
+      card.style.maxHeight = Math.max(160, side.room) + 'px';
+      // Above the element the card hangs from its bottom edge, so a card shorter than the room stays next to it.
+      if (side === sides[2]) card.style.top = clamp(side.y, top, bottom - 160) + 'px';
+      else {
+        card.style.top = 'auto';
+        card.style.bottom = innerHeight - Math.max(top + 160, rect.top - gap) + 'px';
+      }
+    } else {
+      card.style.left = clamp(side.x, gap, innerWidth - gap - width) + 'px';
+      const y = clamp(rect.top, top, bottom - height);
+      card.style.top = y + 'px';
+      // A disclosure opened later grows the card down to the legend, not past the window.
+      card.style.maxHeight = bottom - y + 'px';
+    }
   };
   // Rectangles live outside portal layout. Clip to each scroll container without changing its CSS.
   /* NOSONAR: single-pass routine, splitting it would change shared state */ function visibleRect(node) {
@@ -2150,17 +2371,17 @@ function xrayBrowserImpl(data) {
     return 'content';
   };
   const markColor = (type) => {
-    if (type === 'field') return '#29805b';
-    if (type === 'component') return '#3975ad';
-    return '#947330';
+    if (type === 'field') return 'var(--tone-field)';
+    if (type === 'component') return 'var(--tone-component)';
+    return 'var(--tone-content)';
   };
   const tooltipFormDetails = (binding) => {
     if (binding.fields.length !== 1 || !binding.forms.length) return '';
     let label = 'Form';
-    if (!binding.formCertain) label = 'Form candidate' + (binding.forms.length > 1 ? 's' : '');
+    if (!binding.formCertain) label = 'Possible form' + (binding.forms.length > 1 ? 's' : '');
     let count;
     if (binding.forms.length === 1) count = binding.forms[0].name;
-    else count = binding.forms.length + ' configurations';
+    else count = binding.forms.length + ' forms';
     return `<div class="note">${label}: ${esc(count)}</div>`;
   };
   const isOccluded = (node, r) => {
@@ -2315,7 +2536,7 @@ function xrayBrowserImpl(data) {
     candidates = [...visible, ...fallback].slice(0, 800);
     candidateLimit = observed > 800;
     root.querySelector('.legend .hint').textContent =
-      ' · click to select · Esc back' + (candidateLimit ? ' · Candidate limit reached (800)' : '');
+      ' · click to select · ' + escText + (candidateLimit ? ' · Only the first 800 elements are outlined' : '');
     needsScan = false;
     // Frame animations may already be running when their documents are discovered.
     animate();
@@ -2336,7 +2557,7 @@ function xrayBrowserImpl(data) {
       const welcome = card.querySelector('.hero');
       if (welcome) welcome.textContent = 'Element removed';
       const note = card.querySelector('.note');
-      if (note) note.textContent = 'The selected element was replaced or removed. Select a rendered element again.';
+      if (note) note.textContent = 'The page replaced this element. Select it again.';
     }
     if (hover && !liveNode(hover)) hover = null;
     if (detailsDirty && selected) {
@@ -2357,7 +2578,20 @@ function xrayBrowserImpl(data) {
         if (++count >= 250) break;
       }
     backgroundMarks.replaceChildren(background);
-    updateMark(selectedMark, selected, '#76f1df');
+    // X-ray paints in the top layer, above the Lense pill and panel: outlines leave their boxes free.
+    const lenseBoxes = [
+      document.getElementById('paqvilo-panel'),
+      document.getElementById('paqvilo-panel')?.shadowRoot?.querySelector('.panel'),
+      document.getElementById('paqvilo-handle'),
+    ]
+      .map((item) => item?.getBoundingClientRect())
+      .filter((box) => box?.width && box.height);
+    const holes = lenseBoxes
+      .map((box) => 'M' + box.left + ' ' + box.top + 'h' + box.width + 'v' + box.height + 'h' + -box.width + 'Z')
+      .join('');
+    marks.style.clipPath = holes ? `path(evenodd, "M0 0H${innerWidth}V${innerHeight}H0Z${holes}")` : '';
+    updateMark(selectedMark, selected, 'var(--primary)');
+    if (selected) placeCard(visibleRect(selected));
     let formContext = null;
     for (const anchor of selectionAnchors.get(selected) ?? []) {
       if (
@@ -2378,19 +2612,56 @@ function xrayBrowserImpl(data) {
         break;
       }
     }
-    updateMark(selectedFormMark, formContext, '#3975ad');
-    updateMark(hoverMark, hover !== selected && !interacting && !ctrl ? hover : null, '#c0b0ff');
+    updateMark(selectedFormMark, formContext, 'var(--tone-component)');
+    updateMark(hoverMark, hover !== selected && !interacting ? hover : null, 'var(--primary)');
     const target = hover ?? selected,
       r = target && visibleRect(target);
-    tip.hidden = !report || !r || interacting || ctrl;
+    // The open card already describes the selected element.
+    tip.hidden = !report || !r || interacting || overUi || (target === selected && !card.hidden);
     if (!tip.hidden) {
       const identity = identify(target),
         b = identity.b;
-      tip.innerHTML = `<span class="note">${esc(identity.kind)}</span><b>${esc(identity.title)}</b><div class="mono">${esc(identity.sub)}</div>${tooltipFormDetails(b)}`;
-      const tr = tip.getBoundingClientRect();
-      tip.style.left = Math.max(8, Math.min(innerWidth - tr.width - 8, r.left)) + 'px';
-      tip.style.top = Math.max(58, Math.min(innerHeight - tr.height - 8, r.top - tr.height - 8)) + 'px';
+      // Measured at the left edge: a fixed box near the right edge would shrink and wrap.
+      tip.style.left = '0px';
+      const tipSub = identity.sub ? '<div class="mono">' + esc(identity.sub) + '</div>' : '';
+      tip.innerHTML = identity.matched
+        ? `<span class="note">${esc(identity.kind)}</span><b>${esc(identity.title)}</b>${tipSub}${tooltipFormDetails(b)}`
+        : `<b>${esc(identity.kind)}</b><span class="note">Click to see parent elements.</span>`;
+      // Beside the element, left of it first: left-aligned text leaves the end of whatever precedes it empty, while
+      // the next cell or value starts right after it. Below or above only when neither side has room.
+      const tr = tip.getBoundingClientRect(),
+        gap = 8,
+        top = 58,
+        right = r.left + r.width,
+        bottom = r.top + r.height;
+      const clampY = (y) => Math.max(top, Math.min(innerHeight - tr.height - gap, y));
+      const clampX = (x) => Math.max(gap, Math.min(innerWidth - tr.width - gap, x));
+      // The tip never covers the open details card: a narrow window leaves it no side, and then it stays hidden.
+      const cr = card.hidden ? null : card.getBoundingClientRect();
+      const clear = ([x, y]) =>
+        !cr || x >= cr.right || x + tr.width <= cr.left || y >= cr.bottom || y + tr.height <= cr.top;
+      const place = [
+        r.left - 2 * gap >= tr.width && [r.left - gap - tr.width, clampY(r.top)],
+        innerWidth - right - 2 * gap >= tr.width && [right + gap, clampY(r.top)],
+        innerHeight - bottom - 2 * gap >= tr.height && [clampX(r.left), bottom + gap],
+        [clampX(r.left), clampY(r.top - tr.height - gap)],
+      ]
+        .filter(Boolean)
+        .find(clear);
+      tip.hidden = !place;
+      if (place) {
+        tip.style.left = place[0] + 'px';
+        tip.style.top = place[1] + 'px';
+      }
     }
+    // The legend steps aside for the Lense pill or panel under it (a narrow window puts both at the bottom).
+    const legend = root.querySelector('.legend'),
+      lr = legend.getBoundingClientRect(),
+      ly = lr.top + lr.height / 2;
+    legend.classList.toggle(
+      'covered',
+      [lr.left + 2, lr.left + lr.width / 2, lr.right - 2].some((x) => lenseUiAt(x, ly)),
+    );
 
     geometryCache = null;
     styleCache = null;
@@ -2469,10 +2740,19 @@ function xrayBrowserImpl(data) {
   };
   const mode = () => {
     containFocus();
-    ui.classList.toggle('interact', interacting || ctrl);
+    ui.classList.toggle('interact', interacting);
     const button = root.querySelector('[data-action=mode]');
-    button.setAttribute('aria-pressed', String(!interacting && !ctrl));
-    button.textContent = interacting || ctrl ? 'Interact' : 'Inspect';
+    button.setAttribute('aria-pressed', String(!interacting));
+    button.classList.toggle('on', !interacting);
+    const state = root.querySelector('.mode-state');
+    if (state.dataset.using !== String(interacting)) {
+      state.dataset.using = String(interacting);
+      state.innerHTML = modeText(interacting);
+    }
+    // One label: pressed is inspecting, released is using the page. A label that flips as well would contradict it.
+    button.title = interacting
+      ? 'Interact mode: the page works normally. Click or tap Ctrl to inspect again.'
+      : 'Inspect mode: hover for a summary, click to select. Click or tap Ctrl to use the page normally.';
   };
   let identifierReport,
     knownIdentifiers = new Set(),
@@ -2573,7 +2853,11 @@ function xrayBrowserImpl(data) {
           attributeFilter: identityAttributes,
         });
   };
-  const select = (node) => {
+  // A logical-name label that Lense added to a model-driven field stands for that field: picking or hovering it
+  // inspects the field it was added to, not the label itself.
+  const annotated = (node) => node?.closest?.('[data-paq-model-logical-name]')?.parentElement ?? node;
+  const select = (picked) => {
+    const node = annotated(picked);
     if (!node || own(node)) return;
     const rect = visibleRect(node),
       cardRect = rect ?? node.getBoundingClientRect();
@@ -2588,7 +2872,7 @@ function xrayBrowserImpl(data) {
     hover = node;
     renderCard(false, cardRect);
     if (enabled) {
-      updateMark(selectedMark, selected, '#76f1df', rect);
+      updateMark(selectedMark, selected, 'var(--primary)', rect);
       hoverMark.remove();
     }
     schedule();
@@ -2634,7 +2918,9 @@ function xrayBrowserImpl(data) {
       // off. Every activation guard checks enabled; dispose owns teardown.
       if (!retainedOneShot) clearSelection('xray-disabled');
       hover = null;
-      ctrl = false;
+      overUi = false;
+      passThrough(false);
+      ctrlTap = false;
       interacting = false;
       backgroundMarks.replaceChildren();
       selectedMark.remove();
@@ -2743,11 +3029,22 @@ function xrayBrowserImpl(data) {
         card.style.top = Math.max(74, Math.min(innerHeight - card.offsetHeight - 8, event.clientY - drag.y)) + 'px';
         card.style.right = 'auto';
         card.style.bottom = 'auto';
+        cardMoved = true;
         return;
       }
       const node = event.composedPath().find((item) => item?.nodeType === 1);
-      if (own(node) && !node?.classList?.contains('shield')) return;
-      hover = node?.classList?.contains('shield') ? underPointer(event.clientX, event.clientY) : node;
+      const lenseUi = node?.classList?.contains('shield') ? lenseUiAt(event.clientX, event.clientY) : own(node) && node;
+      // Over Lense's own UI (card, bar, dev panel) the page is not hovered: no outline, no tooltip.
+      overUi = Boolean(lenseUi);
+      passThrough(overUi && lenseUi.getRootNode?.()?.host !== host && lenseUi !== host);
+      if (overUi) {
+        if (hover) {
+          hover = null;
+          schedule();
+        } else if (!tip.hidden) schedule();
+        return;
+      }
+      hover = annotated(node?.classList?.contains('shield') ? underPointer(event.clientX, event.clientY) : node);
       if (own(hover)) hover = null;
       schedule();
     },
@@ -2774,13 +3071,20 @@ function xrayBrowserImpl(data) {
     listenViews(
       type,
       (event) => /* NOSONAR: single-pass routine, splitting it would change shared state */ {
-        if (!pickGesture && (!enabled || interacting || ctrl || event.ctrlKey)) return;
+        if (event.ctrlKey) ctrlTap = false;
+        if (!pickGesture && (!enabled || interacting)) return;
         const node = event.composedPath().find((item) => item?.nodeType === 1);
         if (!pickGesture && (!node || (own(node) && !node.classList?.contains('shield')))) return;
         event.preventDefault();
         event.stopImmediatePropagation();
         if (type === 'pointerdown' || type === 'touchstart') {
           const point = event.changedTouches?.[0] ?? event;
+          // A press that reached the shield over the dev panel is not a pick of the page under it; the next press
+          // reaches the panel.
+          if (!pickGesture && node.classList?.contains('shield') && lenseUiAt(point.clientX, point.clientY)) {
+            passThrough(true);
+            return;
+          }
           const picked = node.classList?.contains('shield') ? underPointer(point.clientX, point.clientY) : node;
           if (oneShot) {
             pickGesture = true;
@@ -2820,10 +3124,8 @@ function xrayBrowserImpl(data) {
   listenViews(
     'resize',
     () => {
-      card.style.left = '';
-      card.style.top = '';
-      card.style.right = '';
-      card.style.bottom = '';
+      cardMoved = false;
+      cardPlacement = '';
       needsScan = true;
       schedule();
     },
@@ -2841,20 +3143,20 @@ function xrayBrowserImpl(data) {
       }
       if (!enabled) return;
       if (event.key === 'Control') {
-        ctrl = true;
-        mode();
-        schedule();
+        ctrlTap = !event.repeat && !event.shiftKey && !event.altKey && !event.metaKey;
         return;
       }
+      ctrlTap = false;
       const node = event.composedPath().find((item) => item?.nodeType === 1);
-      if (event.key === 'Tab' && !interacting && !ctrl) {
+      if (event.key === 'Tab' && !interacting) {
         event.preventDefault();
         event.stopImmediatePropagation();
+        // A control inside a closed disclosure keeps its boxes; only checkVisibility knows it is not rendered.
         const controls = [
           ...root.querySelectorAll(
             'button:not(:disabled),select:not(:disabled),input:not(:disabled),textarea:not(:disabled),summary,a[href],[tabindex]:not([tabindex="-1"])',
           ),
-        ].filter((item) => item.getClientRects().length && getComputedStyle(item).visibility !== 'hidden');
+        ].filter((item) => item.checkVisibility({ visibilityProperty: true }));
         const index = controls.indexOf(root.activeElement),
           direction = event.shiftKey ? -1 : 1;
         let focusIndex;
@@ -2866,7 +3168,7 @@ function xrayBrowserImpl(data) {
         return;
       }
       if (own(node) && node?.matches('input,select,textarea')) return;
-      if ((interacting || ctrl) && !own(node)) return;
+      if (interacting && !own(node)) return;
       if (event.key === 'Escape') {
         event.preventDefault();
         event.stopImmediatePropagation();
@@ -2875,7 +3177,7 @@ function xrayBrowserImpl(data) {
         } else toggle(false);
         return;
       }
-      if (interacting || ctrl) return;
+      if (interacting) return;
       // Do not let keyboard activation submit a focused portal form while inspecting.
       if (
         ['ArrowUp', 'ArrowDown', '[', ']'].includes(event.key) ||
@@ -2907,11 +3209,12 @@ function xrayBrowserImpl(data) {
   listenViews(
     'keyup',
     (event) => {
-      if (event.key === 'Control') {
-        ctrl = false;
+      if (event.key === 'Control' && ctrlTap && enabled) {
+        interacting = !interacting;
         mode();
         schedule();
       }
+      ctrlTap = false;
       if (
         enabled &&
         !interacting &&
@@ -2925,15 +3228,26 @@ function xrayBrowserImpl(data) {
     { capture: true },
   );
   listen(document, 'visibilitychange', () => {
-    ctrl = false;
+    ctrlTap = false;
     mode();
     schedule();
   });
+  // Ctrl+wheel is browser zoom, not a tap; in Interact the page, not the shield, gets the wheel. Not passive: a
+  // passive wheel listener on the window lets Chromium scroll before dispatch, so the shield's own scroll (and its
+  // preventDefault) would come on top of the browser's and the page would move twice.
+  listenViews(
+    'wheel',
+    (event) => {
+      if (event.ctrlKey) ctrlTap = false;
+    },
+    { capture: true, passive: false },
+  );
   listen(
     root,
     'wheel',
     (event) => /* NOSONAR: single-pass routine, splitting it would change shared state */ {
-      if (!event.target.classList?.contains('shield') || interacting || ctrl || event.ctrlKey) return;
+      if (event.ctrlKey) ctrlTap = false;
+      if (!event.target.classList?.contains('shield') || interacting || event.ctrlKey) return;
       event.preventDefault();
       const node = underPointer(event.clientX, event.clientY);
       if (!node) return;
@@ -2983,7 +3297,7 @@ function xrayBrowserImpl(data) {
     { passive: false },
   );
   listenViews('blur', () => {
-    ctrl = false;
+    ctrlTap = false;
     drag = null;
     mode();
     schedule();
@@ -3027,7 +3341,7 @@ function xrayBrowserImpl(data) {
       renderCard(true);
     }
     if (action === 'refresh' && !button.disabled) {
-      setStatus('Refreshing local source inspection…');
+      setStatus('Refreshing…');
       dispatch('refresh');
     }
     if (action === 'exit') toggle(false);
@@ -3039,6 +3353,7 @@ function xrayBrowserImpl(data) {
     if (action === 'details') {
       details = !details;
       button.setAttribute('aria-pressed', String(details));
+      button.classList.toggle('on', details);
       renderCard();
     }
     if (action === 'source-region') {
@@ -3049,7 +3364,7 @@ function xrayBrowserImpl(data) {
         /* Optional inspection or cleanup failure must not interrupt the owning operation. */
       }
       if (region) select(region);
-      else setStatus('This source region is no longer present. Select a rendered element again.');
+      else setStatus('This part of the page is gone. Select the element again.');
     }
     if (action === 'clear') {
       clearSelection('user-clear');
@@ -3067,7 +3382,7 @@ function xrayBrowserImpl(data) {
         if (!selected.getAttribute('src') || !['http:', 'https:'].includes(url.protocol)) throw new Error(); // NOSONAR: error is detected by type, message is not used
         window.open(url.href, '_blank', 'noopener');
       } catch {
-        setStatus('This embedded document has no standalone HTTP address.');
+        setStatus('This frame has no address of its own, so it cannot open in a new tab.');
       }
     }
     if (action === 'reveal') {
@@ -3076,15 +3391,20 @@ function xrayBrowserImpl(data) {
     }
     if (action === 'dock') {
       const r = card.getBoundingClientRect();
-      card.style.left = r.left > innerWidth / 2 ? '20px' : 'auto';
-      card.style.right = r.left > innerWidth / 2 ? 'auto' : '20px';
+      card.style.left = r.left > innerWidth / 2 ? '20px' : innerWidth - 20 - r.width + 'px';
+      cardMoved = true;
     }
     if (action === 'copy') {
+      // The message belongs to the selection the button was pressed for: another element can be picked while the
+      // clipboard write is pending.
+      const pressedFor = host.__px.feedbackState();
+      const reference = button.dataset.copyKind === 'reference';
       try {
         await navigator.clipboard.writeText(button.dataset.copy);
-        setStatus('Source path copied.');
+        // The panel's words: one message per kind of copy wherever Lense copies.
+        setStatus(reference ? 'Source reference copied' : 'Path copied', pressedFor);
       } catch {
-        setStatus('The browser could not copy the source path.');
+        setStatus('The browser did not allow copying', pressedFor);
       }
     }
     if (action === 'open')
@@ -3147,7 +3467,7 @@ function xrayBrowserImpl(data) {
   });
   watchShadowRoots();
   watchFrames();
-  host.__px = {
+  host.__px = globalThis.__paqviloXrayUi = {
     toggle,
     select,
     identify,
@@ -3214,27 +3534,6 @@ function xrayBrowserImpl(data) {
         lifecycle('stale', 'source-revision-changed', identity);
         renderCard(true);
       }
-      const theme = document.getElementById('paqvilo-panel')?.shadowRoot?.querySelector('.wrap');
-      if (theme) {
-        const style = getComputedStyle(theme);
-        for (const key of [
-          '--bg',
-          '--fg',
-          '--muted',
-          '--primary',
-          '--link',
-          '--on-primary',
-          '--radius',
-          '--line',
-          '--head-bg',
-          '--panel-line',
-          '--shadow',
-          '--font',
-        ]) {
-          const value = style.getPropertyValue(key);
-          if (value) ui.style.setProperty(key, value);
-        }
-      }
       const mismatchedRevision =
         nextReport?.sourceRevision !== undefined &&
         String(nextReport.sourceRevision) !== getSelectionScope(selected).sourceRevision;
@@ -3268,6 +3567,7 @@ function xrayBrowserImpl(data) {
       releaseFrames();
       lifetime.abort();
       host.remove();
+      if (globalThis.__paqviloXrayUi === host.__px) globalThis.__paqviloXrayUi = null;
     },
   };
 }

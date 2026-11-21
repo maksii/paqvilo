@@ -179,7 +179,7 @@ test('a provider answer maps to the span status like a thrown error: 401/403 den
   );
 });
 
-// D-R3-4 (DV-A-11, DV-B1-6, DV-C-1, DV-B2-13): the span error is the provider's own, whether it threw or answered.
+// D-R3-4: the span error is the provider's own, whether it threw or answered.
 test("a provider's own exception and error answer are the connector span's error, with the exception's cause", async () => {
   const { traces, connectors } = await traced('full', [
     invented({

@@ -203,7 +203,11 @@ test('runtime client signs in configured persona, carries CSRF and resolves cata
       process.platform === 'win32' ? 'junction' : 'dir',
     );
     await fs.writeFile(path.join(root, 'paqvilo.config.local.yml'), 'sites:\n  invented:\n    source: alias\n');
-    const client = await connectRuntime({ config: path.join(root, 'paqvilo.config.yml'), site: 'invented' });
+    const client = await connectRuntime({
+      config: path.join(root, 'paqvilo.config.yml'),
+      site: 'invented',
+      timeoutMs: 0,
+    });
     assert.equal(client.origin, simulator.url);
     const headers = await client.signIn(null, { configuredPersona: true });
     const session = await (await fetch(simulator.url + '/_sim/api/session', { headers })).json();

@@ -7,6 +7,7 @@ import { createModelDrivenOverlay } from '../lense/model-driven.mjs';
 import {
   createModelDrivenPanelSources,
   modelDrivenPanelData,
+  modelDrivenPanelInspection,
   modelDrivenPanelUi,
 } from '../lense/model-driven-panel.mjs';
 import {
@@ -189,20 +190,38 @@ test('diagnostics and native warning/request failure types satisfy the shared Is
     revision: 1,
     inspectionVersion: 1,
     resources: [{ name: 'x_pcf/bundle.js', unbound: true }],
-    diagnostics: [{ code: 'INVENTED', message: 'Requires an observed mapping.' }],
+    diagnostics: [
+      { code: 'INVENTED', message: 'Requires an observed mapping.' },
+      { code: 'SOLUTION_BPF_INVENTORY', inventory: true, message: 'Listed as inventory.' },
+      {
+        code: 'SOLUTION_INVENTORY_READ_FAILED',
+        inventory: true,
+        severity: 'error',
+        message: 'Could not read x.msapp.',
+      },
+    ],
     problems: [
       { type: 'warning', text: 'Native console warning' },
       { type: 'requestfailed', text: 'net::ERR_FAILED' },
       { type: 'pageerror', text: 'Native exception' },
     ],
   };
-  const data = modelDrivenPanelData(state, { cfg: {} });
+  const data = modelDrivenPanelData(state, { cfg: {}, baselineState: { outsideRepository: true } });
   assert.deepEqual(
     data.notes.map((note) => note.reason),
     [
-      'INVENTED: Requires an observed mapping.',
-      'x_pcf/bundle.js: an exact observed native resource mapping is required.',
+      'Requires an observed mapping.',
+      'Could not read x.msapp.',
+      'x_pcf/bundle.js: not loaded by the app yet. Open a page that uses it to override it.',
+      'Your Solution sources are not in a Git checkout, so there is no Git baseline: Edited stays empty and "changed vs Git" overrides nothing. Keep the sources in a Git checkout to use them.',
     ],
+    'Solution inventory notes are not issues, a failed inventory read is; codes stay out of the text',
+  );
+  assert.deepEqual(
+    modelDrivenPanelInspection({ ...state, catalogue: { forms: [], commands: [] }, context: {} }).unresolved.map(
+      (item) => item.message,
+    ),
+    ['Requires an observed mapping.', 'Could not read x.msapp.'],
   );
   assert.deepEqual(
     data.problems.map((problem) => problem.type),
@@ -361,4 +380,45 @@ test('bound text MIME enables native Diff before Git or native bytes exist, incl
   const lease = overlay.nativeRead('x_script');
   assert.equal(lease.path, '/WebResources/x_script');
   lease.release();
+});
+
+test('a source Git ignores is neither edited nor counted as a change: it has no Git baseline', async (t) => {
+  const fixture = createFixture();
+  ownedFixture(t).remove(() => fixture.cleanup());
+  fixture.write('.gitignore', 'ignored/\n');
+  fixture.commit();
+  fixture.write('ignored/x_ignored.js', 'window.ignored = 1;');
+  fixture.write('fresh/x_untracked.js', 'window.untracked = 1;');
+  const asset = (name, file) => [
+    name,
+    { name, file: fixture.file(file), mime: 'text/javascript', data: Buffer.from('window.x = 1;') },
+  ];
+  const sources = await createModelDrivenPanelSources({
+    assets: new Map([asset('x_ignored.js', 'ignored/x_ignored.js'), asset('x_untracked.js', 'fresh/x_untracked.js')]),
+    layers: [{ dir: fixture.dir, documents: [] }],
+  });
+  const ignored = sources.state.facts.get('x_ignored.js'),
+    untracked = sources.state.facts.get('x_untracked.js');
+  assert.equal(ignored.edited, false, 'an ignored file is not a change');
+  assert.equal(ignored.noBaseline, true);
+  assert.equal(untracked.edited, true, 'an untracked file is a change, as portal Lense marks it');
+  assert.equal(untracked.noBaseline, false);
+  assert.deepEqual([...sources.changed()], ['x_untracked.js']);
+  assert.throws(() => sources.setScope('changed'), /ignored by Git/);
+  const data = modelDrivenPanelData(
+    {
+      origin,
+      revision: 1,
+      resources: [
+        { name: 'x_ignored.js', mime: 'text/javascript', currentRevisionApplied: 0, paths: ['/x_ignored.js'] },
+        { name: 'x_untracked.js', mime: 'text/javascript', currentRevisionApplied: 1, paths: ['/x_untracked.js'] },
+      ],
+      diagnostics: [],
+    },
+    { cfg: {}, facts: sources.state.facts },
+  );
+  assert.equal(data.unobserved[0].edited, false);
+  assert.equal(data.unobserved[0].note, 'not loaded since your last change · Git ignores this file');
+  assert.equal(data.items[0].edited, true);
+  assert.equal(data.items[0].note, 'served from your file');
 });

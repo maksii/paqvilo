@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { clip, issueLine, MAX_LINE, oneLine, readApi } from './verify-sonar-branch.mjs';
+import { answerHelp } from './script-help.mjs';
 
 function unexpectedShape() {
   return new Error('Sonar API returned an unexpected shape.');
@@ -113,6 +114,13 @@ async function main() {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  answerHelp(process.argv.slice(2), {
+    name: 'sonar-gate-report',
+    usage: `Usage: node scripts/sonar-gate-report.mjs
+Prints the Sonar quality gate, issues and hotspots of the project in sonar-project.properties for SONAR_BRANCH or
+SONAR_PULL_REQUEST. Reads SONAR_HOST_URL and SONAR_TOKEN and contacts the Sonar server (skipped without them); writes
+nothing and never fails the run. Takes no options; --help prints this help.`,
+  });
   try {
     await main();
   } catch (error) {

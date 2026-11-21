@@ -7,10 +7,18 @@ import { coverageLedger } from './parity.mjs';
 import { stable } from './core.mjs';
 import { componentId, roleNames } from '../portal-security/blueprint.mjs';
 import { deepVariantKeys } from '../portal-security/deep-variant.mjs';
+import { cli } from '../cli.mjs';
 
-const jobFile = process.argv[2];
-if (!jobFile || process.argv.length !== 3)
-  throw new Error('Usage: node portal-harness/replay-parity.mjs <private-job.json>');
+const {
+  positionals: [jobFile],
+} = cli(
+  `Usage: node portal-harness/replay-parity.mjs <private-job.json>
+
+Run from examples/company-operations. Replays saved authored pages through Mirage offline; relative paths resolve from
+the working directory.`,
+  {},
+  { positionals: 1 },
+);
 const job = JSON.parse(await readFile(jobFile, 'utf8'));
 const load = async (file) => JSON.parse(await readFile(file, 'utf8'));
 const [schema, catalogue, manifest, components, baselineOverlay, stressOverlay] = await Promise.all([

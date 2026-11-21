@@ -2,7 +2,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import os from 'node:os';
-import { parseArgs } from 'node:util';
+import { parseOptions } from '../lense/cli-options.mjs';
+import { joinNegativeValues } from '../mirage/tool-options.mjs';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { createSimulator } from '../mirage/server.mjs';
 import { performanceFixture } from '../mirage/test/runtime-performance-fixture.mjs';
@@ -19,25 +20,46 @@ export const LARGE_PERFORMANCE_OPTIONS = Object.freeze({
   strictBudgets: false,
 });
 
+export const PERFORMANCE_USAGE = `Usage: node scripts/runtime-performance.mjs [--quick | --large] [--standalone]
+  [--tables N[,N...]] [--forms-per-table N] [--records N]
+  [--startup-budget MS] [--restart-budget MS] [--journal-budget MS] [--catalogue-budget MS] [--heartbeat-budget MS]
+  [--data-budget MS]
+
+Measures Mirage startup, restart and read latency against a generated synthetic source (mirage/docs/runtime-performance.md).
+--quick runs one 16-table, 1,000-record case; --large runs 256 tables x 40 forms with 20,000 records and reports every
+missed budget; --standalone measures the runtime without a portal. Exits 1 when a budget is missed, 2 for an invalid
+invocation.`;
+
+const DEFAULT_SCALES = [16, 32, 64];
+const DEFAULT_RECORDS = 10000;
+
 /** Budgets belong to the selected synthetic workload and machine, not every exported organization. */
 export function performanceOptionsFromArgs(args) {
-  const { values } = parseArgs({
-    args,
-    options: {
-      quick: { type: 'boolean' },
-      large: { type: 'boolean' },
-      standalone: { type: 'boolean' },
-      tables: { type: 'string' },
-      records: { type: 'string' },
-      'forms-per-table': { type: 'string' },
-      'startup-budget': { type: 'string' },
-      'restart-budget': { type: 'string' },
-      'journal-budget': { type: 'string' },
-      'catalogue-budget': { type: 'string' },
-      'heartbeat-budget': { type: 'string' },
-      'data-budget': { type: 'string' },
-    },
+  const { values } = parseOptions({
+    args: joinNegativeValues(args, PERFORMANCE_OPTION_TABLE),
+    options: PERFORMANCE_OPTION_TABLE,
   });
+  if (values.help) return { help: true };
+  return optionsFromValues(values);
+}
+
+const PERFORMANCE_OPTION_TABLE = {
+  quick: { type: 'boolean' },
+  large: { type: 'boolean' },
+  standalone: { type: 'boolean' },
+  tables: { type: 'string' },
+  records: { type: 'string' },
+  'forms-per-table': { type: 'string' },
+  'startup-budget': { type: 'string' },
+  'restart-budget': { type: 'string' },
+  'journal-budget': { type: 'string' },
+  'catalogue-budget': { type: 'string' },
+  'heartbeat-budget': { type: 'string' },
+  'data-budget': { type: 'string' },
+  help: { type: 'boolean', short: 'h' },
+};
+
+function optionsFromValues(values) {
   if (values.quick && values.large) throw new Error('Choose --quick or --large, not both.');
   const positive = (value, name) => {
     if (!/^[1-9]\d*$/.test(value) || !Number.isSafeInteger(Number(value)))
@@ -65,13 +87,66 @@ export function performanceOptionsFromArgs(args) {
     'journal-budget': 'journal-grown',
   }))
     if (values[flag] !== undefined) options.startupBudgets[phase] = positive(values[flag], flag);
+  // The fixture needs one record per table; the fallbacks are runtimePerformance's defaults.
+  const largest = Math.max(...(options.scales ?? DEFAULT_SCALES));
+  if ((options.records ?? DEFAULT_RECORDS) < largest)
+    throw new Error(`--records must be at least ${largest}, the largest --tables value: one record per table.`);
   return options;
+}
+
+// Pause before status heartbeat `index` of a request, at least `budgetMs / 10` once the pause has grown that far.
+// ponytail: a block shorter than the current pause can fall between two heartbeats; a block longer than a tenth of the
+// budget is always seen.
+export const heartbeatPause = (index, budgetMs) => Math.min(5 * 2 ** index, Math.max(5, Math.floor(budgetMs / 10)));
+
+/**
+ * Runs `probe()` (a heartbeat, resolving to its duration in ms) while the request it watches is incomplete. Each pause
+ * is at least as long as the probe that preceded it, so probes take at most half of the server's time whatever its speed.
+ * A pause ends early when `completed` resolves, so the caller's measured duration does not include the rest of the pause.
+ */
+export async function heartbeatsWhile(
+  isComplete,
+  probe,
+  { pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), completed = null } = {},
+) {
+  let duration;
+  do {
+    duration = await probe();
+    if (!isComplete()) {
+      const wait = pause(Math.max(5, duration));
+      await (completed ? Promise.race([Promise.resolve(wait), Promise.resolve(completed)]) : wait);
+    }
+  } while (!isComplete());
+}
+
+/** A strict-mode budget miss: code BUDGET_EXCEEDED, the stage and its budget in the message. */
+const budgetExceeded = (stage, limitMs, cause) =>
+  Object.assign(new Error(`${stage} exceeded declared ${limitMs} ms budget`, cause ? { cause } : undefined), {
+    code: 'BUDGET_EXCEEDED',
+  });
+
+// A request aborted at its budget is that stage's budget miss; any other error passes through unchanged.
+const budgetMiss = (error, stage, limitMs) =>
+  error?.name === 'TimeoutError' ? budgetExceeded(stage, limitMs, error) : error;
+
+/**
+ * The body of a successful GET. With `strict`, the request is aborted at `limitMs` and the abort is that stage's
+ * BUDGET_EXCEEDED miss; a non-2xx answer names the stage and status.
+ */
+export async function budgetedText(url, limitMs, stage, { strict = true } = {}) {
+  try {
+    const response = await fetch(url, { signal: strict ? AbortSignal.timeout(limitMs) : undefined });
+    if (!response.ok) throw new Error(`${stage} response ${response.status}`);
+    return await response.text();
+  } catch (error) {
+    throw budgetMiss(error, stage, limitMs);
+  }
 }
 
 /** Sequential loopback probe: never consumes an external portal or business data. */
 /* NOSONAR: single-pass routine, splitting it would change shared state */ export async function runtimePerformance({
-  scales = [16, 32, 64],
-  records = 10000,
+  scales = DEFAULT_SCALES,
+  records = DEFAULT_RECORDS,
   formsPerTable = 1,
   columns = 24,
   portal = true,
@@ -89,11 +164,12 @@ export function performanceOptionsFromArgs(args) {
   const checkBudget = (durationMs, limitMs, finding) => {
     if (durationMs <= limitMs) return;
     findings.push({ ...finding, durationMs: Math.round(durationMs), budgetMs: limitMs });
-    if (strictBudgets) throw new Error(`${finding.stage} exceeded declared ${limitMs} ms budget`);
+    if (strictBudgets) throw budgetExceeded(finding.stage, limitMs);
   };
   // Strict mode enforces the budgets: a request is aborted at its budget. Recording mode measures every request to its
   // end and reports a budget miss as a finding.
   const budgetSignal = (limitMs) => (strictBudgets ? AbortSignal.timeout(limitMs) : undefined);
+  const budgetedRead = (url, limitMs, stage) => budgetedText(url, limitMs, stage, { strict: strictBudgets });
   for (const tables of scales) {
     const fixtureStarted = performance.now();
     const fixture = await performanceFixture({ tables, records, formsPerTable, columns });
@@ -137,7 +213,7 @@ export function performanceOptionsFromArgs(args) {
           if (!firstStatus.ok) throw new Error(`Status ${firstStatus.status}`);
           await firstStatus.arrayBuffer();
         } catch (error) {
-          if (strictBudgets) throw error;
+          if (strictBudgets) throw budgetMiss(error, 'first status request', catalogueBudgetMs);
           firstStatusError = { name: error.name, message: error.message };
           findings.push({
             tables,
@@ -165,31 +241,45 @@ export function performanceOptionsFromArgs(args) {
           pending.catch(() => {});
           const heartbeat = [],
             heartbeatErrors = [];
-          do {
-            const at = performance.now();
-            try {
-              const response = await fetch(sim.url + '/_sim/api/status', {
-                signal: budgetSignal(heartbeatBudgetMs),
-              });
-              if (!response.ok) throw new Error(`Status ${response.status}`);
-              await response.arrayBuffer();
-            } catch (error) {
-              if (strictBudgets) throw error;
-              heartbeatErrors.push({ name: error.name, message: error.message });
-              findings.push({
-                tables,
-                phase,
-                warmth,
-                stage: 'status request',
-                error: error.name,
-                budgetMs: heartbeatBudgetMs,
-              });
-            }
-            const durationMs = performance.now() - at;
-            heartbeat.push(durationMs);
-            checkBudget(durationMs, heartbeatBudgetMs, { tables, phase, warmth, stage: 'status heartbeat' });
-            if (!complete) await new Promise((resolve) => setTimeout(resolve, 5));
-          } while (!complete);
+          await heartbeatsWhile(
+            () => complete,
+            async () => {
+              const at = performance.now();
+              try {
+                const response = await fetch(sim.url + '/_sim/api/status', {
+                  signal: budgetSignal(heartbeatBudgetMs),
+                });
+                if (!response.ok) throw new Error(`Status ${response.status}`);
+                await response.arrayBuffer();
+              } catch (error) {
+                if (strictBudgets) throw budgetMiss(error, 'status request', heartbeatBudgetMs);
+                heartbeatErrors.push({ name: error.name, message: error.message });
+                findings.push({
+                  tables,
+                  phase,
+                  warmth,
+                  stage: 'status request',
+                  error: error.name,
+                  budgetMs: heartbeatBudgetMs,
+                });
+              }
+              const durationMs = performance.now() - at;
+              heartbeat.push(durationMs);
+              checkBudget(durationMs, heartbeatBudgetMs, { tables, phase, warmth, stage: 'status heartbeat' });
+              return durationMs;
+            },
+            {
+              // The pause never shrinks below the count-bounded heartbeatPause, so the number of probes stays bounded too.
+              pause: (ms) =>
+                new Promise((resolve) =>
+                  setTimeout(resolve, Math.max(ms, heartbeatPause(heartbeat.length - 1, heartbeatBudgetMs))),
+                ),
+              completed: pending.then(
+                () => {},
+                () => {},
+              ),
+            },
+          );
           let value, catalogueParseMs;
           try {
             // Finish server heartbeats before parsing the response in this same
@@ -200,7 +290,7 @@ export function performanceOptionsFromArgs(args) {
             value = JSON.parse(text);
             catalogueParseMs = performance.now() - parseAt;
           } catch (error) {
-            if (strictBudgets) throw error;
+            if (strictBudgets) throw budgetMiss(error, 'catalogue request', catalogueBudgetMs);
             findings.push({
               tables,
               phase,
@@ -239,11 +329,7 @@ export function performanceOptionsFromArgs(args) {
         for (const attempt of ['first', 'repeat'])
           for (const route of ['index', 'metadata/x_scale0']) {
             const at = performance.now();
-            const response = await fetch(sim.url + '/_apps/api/' + route, {
-              signal: budgetSignal(catalogueBudgetMs),
-            });
-            if (!response.ok) throw new Error(`Metadata ${route}: ${response.status}`);
-            const text = await response.text(),
+            const text = await budgetedRead(sim.url + '/_apps/api/' + route, catalogueBudgetMs, `metadata ${route}`),
               transferredMs = performance.now() - at,
               parseAt = performance.now();
             const value = JSON.parse(text),
@@ -271,9 +357,7 @@ export function performanceOptionsFromArgs(args) {
           ['first-record', '/_apps/api/tables/x_scale0/' + recordId],
         ]) {
           const at = performance.now();
-          const response = await fetch(sim.url + route, { signal: budgetSignal(catalogueBudgetMs) });
-          if (!response.ok) throw new Error(`${kind} response ${response.status}`);
-          const value = await response.json();
+          const value = JSON.parse(await budgetedRead(sim.url + route, catalogueBudgetMs, kind));
           if (kind === 'first-grid' && (!value.rows.length || value.rows.length > 50))
             throw new Error('First grid did not return its populated bounded page');
           if (kind === 'first-record' && value.row.x_scale0id !== recordId)
@@ -373,11 +457,40 @@ export function performanceOptionsFromArgs(args) {
     results,
   };
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const report = await runtimePerformance({
-    ...performanceOptionsFromArgs(process.argv.slice(2)),
-    onProgress: (entry) => console.error(JSON.stringify({ type: 'performance-progress', ...entry })),
-  });
-  console.log(JSON.stringify(report, null, 2));
-  if (report.findings.length) process.exitCode = 1;
+/**
+ * The command: parses `args`, runs `run` (runtimePerformance) and writes the report to `out`, progress and messages to
+ * `err`. Resolves to the exit code: 0, 1 for a missed budget, 2 for an invalid invocation.
+ */
+export async function runPerformanceCli(
+  args,
+  { run = runtimePerformance, out = console.log, err = console.error } = {},
+) {
+  let options;
+  try {
+    options = performanceOptionsFromArgs(args);
+  } catch (error) {
+    // An invalid invocation is one line naming the problem, never a stack trace.
+    err(error.message);
+    return 2;
+  }
+  if (options.help) {
+    out(PERFORMANCE_USAGE);
+    return 0;
+  }
+  try {
+    const report = await run({
+      ...options,
+      onProgress: (entry) => err(JSON.stringify({ type: 'performance-progress', ...entry })),
+    });
+    out(JSON.stringify(report, null, 2));
+    return report.findings.length ? 1 : 0;
+  } catch (error) {
+    // The default matrix stops at its first missed budget: one line naming the stage and budget, never a stack trace.
+    if (error?.code !== 'BUDGET_EXCEEDED') throw error;
+    err(`Stopped: ${error.message}.`);
+    return 1;
+  }
 }
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href)
+  process.exitCode = await runPerformanceCli(process.argv.slice(2));

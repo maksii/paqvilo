@@ -280,27 +280,50 @@ export async function freePort(preferred = 8787) {
 }
 
 const samePath = (a, b) => Boolean(a && b) && path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
+// What each live preview process answered when it was last seen ready: by state folder, then by process and address.
+// A status read asks every live preview whether it answers, within a short limit. "Starting" is the phase before the
+// first answer: a process that has answered and is still alive is running, also while one later read gets no answer
+// in time (a busy computer, a long request); an answer that is not a status (refused) ends it. Each read keeps the
+// entries of the processes it found alive, no others.
+const seenReady = new Map();
+
 /** Running local previews of this configuration, each matched to its site by source folder, else by state folder name. */
 export async function previewSessions({ kind, file, sites = [] }) {
   const { mirageStatus, miragePaths } = await import('../commands/mirage.mjs');
-  const sessions = await mirageStatus(miragePaths(null, kind === 'project' ? { project: file } : { config: file }));
-  return sessions
-    .filter((session) => session.processAlive && session.url)
-    .map((session) => {
-      const site =
-        sites.find((item) => samePath(item.sourceDir, session.sourceDir)) ??
-        sites.find((item) => session.stateFile && path.basename(path.dirname(session.stateFile)) === item.id);
-      return {
-        site: site?.id ?? null,
-        url: session.url,
-        adminUrl: session.adminUrl ?? null,
-        ready: session.ready === true,
-        owned: session.owned === true,
-        pid: session.pid,
-        links: session.runtime?.links ?? null,
-        kind: session.runtime?.runtime?.kind ?? session.runtime?.kind ?? null,
+  const paths = miragePaths(null, kind === 'project' ? { project: file } : { config: file });
+  const sessions = (await mirageStatus(paths)).filter((session) => session.processAlive && session.url);
+  const before = seenReady.get(paths.discoveryRoot) ?? new Map();
+  const now = new Map();
+  seenReady.set(paths.discoveryRoot, now);
+  return sessions.map((session) => {
+    const site =
+      sites.find((item) => samePath(item.sourceDir, session.sourceDir)) ??
+      sites.find((item) => session.stateFile && path.basename(path.dirname(session.stateFile)) === item.id);
+    const key = `${session.pid} ${session.url}`;
+    let answered;
+    // An owned preview recorded as ready stays ready on a read that got no answer; that read carries no links, so
+    // the ones it reported before are kept.
+    if (session.ready === true && session.runtime)
+      answered = {
+        links: session.runtime.links ?? null,
+        kind: session.runtime.runtime?.kind ?? session.runtime.kind ?? null,
       };
-    });
+    else if (session.probe === 'no-answer')
+      answered = before.get(key) ?? (session.ready === true ? { links: null, kind: null } : undefined);
+    if (answered) now.set(key, answered);
+    return {
+      site: site?.id ?? null,
+      url: session.url,
+      adminUrl: session.adminUrl ?? null,
+      ready: Boolean(answered),
+      // 'no-answer': the status question got no answer in time, which says nothing about the preview's state.
+      probe: session.probe ?? null,
+      owned: session.owned === true,
+      pid: session.pid,
+      links: answered?.links ?? null,
+      kind: answered?.kind ?? null,
+    };
+  });
 }
 
 const ACTIONS = new Set(['start', 'stop', 'restart']);

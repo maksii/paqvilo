@@ -281,8 +281,20 @@ async function sonarRuleFindings({ cwd, base = 'origin/main' }) {
 }
 
 async function main(args) {
-  if (args.length && (args.length !== 2 || args[0] !== '--base')) {
-    console.error('Use: node scripts/sonar-rules.mjs [--base <rev>]');
+  if (args[0] === '--help' || args[0] === '-h') {
+    console.log(`Usage: node scripts/sonar-rules.mjs [--base <rev>]
+  --base <rev>   lint the JavaScript files that differ between the merge base with <rev> and the working tree
+                 (untracked files included) of the working directory's repository; default origin/main
+  --help         print this help
+Reports new findings of the local SonarQube rule approximation; exits 1 when there are any.`);
+    return 0;
+  }
+  if (args.length && args[0] !== '--base') {
+    console.error(`sonar-rules: unknown option ${args[0]} (see --help).`);
+    return 2;
+  }
+  if (args.length && args.length !== 2) {
+    console.error('Use: node scripts/sonar-rules.mjs [--base <rev>] (see --help)');
     return 2;
   }
   const report = await sonarRuleFindings({ cwd: process.cwd(), base: args[1] });

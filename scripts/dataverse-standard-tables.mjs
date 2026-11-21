@@ -763,17 +763,37 @@ export async function loadPages(commit, { cacheRoot = CACHE_ROOT, fetchFn = fetc
   return pages;
 }
 
+export const USAGE = `Usage: node scripts/dataverse-standard-tables.mjs [--check] [--commit SHA] [--out FILE] [--allow TABLE,...]
+Builds mirage/lib/dataverse-standard-tables.json from the Microsoft Learn table reference at a pinned commit.
+  --check   compare --out with the regenerated file; exit 1 when it differs, write nothing
+  --commit  full commit SHA of MicrosoftDocs/powerapps-docs to read (default ${DEFAULT_COMMIT})
+  --out     file to write (default mirage/lib/dataverse-standard-tables.json)
+  --allow   tables whose parser problems do not block the file
+  --help    show this help`;
+
+// Options that take a value, and how each stores it.
+const VALUE_OPTIONS = {
+  '--commit': (options, value) => (options.commit = value),
+  '--out': (options, value) => (options.out = path.resolve(value)),
+  '--allow': (options, value) => {
+    for (const name of value.split(',')) if (name.trim()) options.allow.add(name.trim());
+  },
+};
+
 function parseArgs(argv) {
   const options = { commit: DEFAULT_COMMIT, out: DEFAULT_OUT, check: false, allow: new Set() };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
-    if (arg === '--check') options.check = true;
-    else if (arg === '--commit') options.commit = argv[++i];
-    else if (arg === '--out') options.out = path.resolve(argv[++i] ?? '');
-    else if (arg === '--allow')
-      for (const name of String(argv[++i] ?? '').split(','))
-        if (name.trim()) options.allow.add(name.trim());
-        else throw new Error(`Unknown argument ${arg}`);
+    if (arg === '--help' || arg === '-h') return { help: true };
+    if (arg === '--check') {
+      options.check = true;
+      continue;
+    }
+    const store = Object.hasOwn(VALUE_OPTIONS, arg) ? VALUE_OPTIONS[arg] : null;
+    if (!store) throw new Error(`Unknown argument ${arg}. Run with --help to see supported options.`);
+    const value = argv[++i];
+    if (value === undefined || value.startsWith('--')) throw new Error(`${arg} requires a value.`);
+    store(options, value);
   }
   if (!/^[0-9a-f]{40}$/.test(options.commit)) throw new Error('--commit must be a full commit SHA.');
   return options;
@@ -781,6 +801,10 @@ function parseArgs(argv) {
 
 export async function main(argv = process.argv.slice(2)) {
   const options = parseArgs(argv);
+  if (options.help) {
+    console.log(USAGE);
+    return 0;
+  }
   const pages = await loadPages(options.commit, { tables: [...TABLES, ...PREFIXED_TABLES] });
   const { file, problems, stats } = buildStandardFile(pages, {
     commit: options.commit,

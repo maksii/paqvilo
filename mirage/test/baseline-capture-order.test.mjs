@@ -95,3 +95,22 @@ test('unknown --only ids are refused by capture and compare and keep the previou
   assert.match(compare.stderr, /Unknown scenario ids: typo/);
   assert.equal(await fs.readFile(path.join(out, 'report.json'), 'utf8'), 'previous');
 });
+
+test('--only @FILE naming a missing list file is refused in one line naming the option and path', async (t) => {
+  const directory = await fixtureDirectory(t);
+  const marker = path.join(directory, 'bridge-started.txt');
+  const matrix = path.join(directory, 'matrix.json');
+  await fs.writeFile(matrix, JSON.stringify(liveMatrix(marker)));
+  const missing = path.join(directory, 'missing.txt');
+  const out = path.join(directory, 'out');
+  for (const args of [
+    ['capture', '--matrix', matrix, '--out', out, '--side', 'live', '--only', `@${missing}`],
+    ['compare', '--matrix', matrix, '--out', out, '--only', `@${missing}`],
+  ]) {
+    const result = runSuite(args);
+    assert.equal(result.status, 1, result.stderr);
+    assert.equal(result.stderr.trim(), `--only @${missing}: no scenario list file at ${missing}.`);
+  }
+  assert.equal(await exists(marker), false);
+  assert.equal(await exists(out), false);
+});

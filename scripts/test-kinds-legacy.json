@@ -358,7 +358,6 @@
   "mirage/test/navigation-evidence.test.mjs",
   "mirage/test/navigation-objects.test.mjs",
   "mirage/test/navigation-observations.test.mjs",
-  "mirage/test/navigation-settle.test.mjs",
   "mirage/test/observed-pagecopy-layout.test.mjs",
   "mirage/test/observed-snippet-composition.test.mjs",
   "mirage/test/observed-stylesheets.test.mjs",

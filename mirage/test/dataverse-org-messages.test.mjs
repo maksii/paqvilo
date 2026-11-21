@@ -682,6 +682,42 @@ test('RetrievePersonalWall returns followed and own posts newest first, paged, w
   await assert.rejects(record({ Entity: { '@odata.id': `systemusers(${UNKNOWN})` } }), notFound);
 });
 
+// A wall clock stepped back between two writes (lab night medium-20261119 saw ~1 s steps on WSL) never stamps the later
+// post or comment older, and equal whole-second createdon lists the later inserted one first.
+test('a wall clock stepped back between two posts or comments keeps the later one first on the wall', async () => {
+  const t = await setup();
+  const me = t.admin.systemuserid;
+  let now = CLOCK;
+  t.store.clock = { now: () => now };
+  const post = (text) =>
+    t.store.create(
+      'post',
+      { regardingobjectid: { id: me, logical_name: 'systemuser' }, text, source: 2 },
+      { admin: true },
+    );
+  const comment = (postid, text) =>
+    t.store.create('postcomment', { postid: { id: postid, logical_name: 'post' }, text }, { admin: true });
+  const earlier = await post('earlier');
+  await comment(earlier.postid, 'first');
+  now -= 1000;
+  await post('later');
+  await comment(earlier.postid, 'second');
+  const wall = await invoke(t.api, 'RetrievePersonalWall', {
+    binding: 'collection',
+    entity: 'post',
+    user: t.admin,
+    params: { PageNumber: 1, PageSize: 10, CommentsPerPost: 5 },
+  });
+  assert.deepEqual(
+    wall.body.value.map((p) => p.text),
+    ['later', 'earlier'],
+  );
+  assert.deepEqual(
+    wall.body.value[1].Post_Comments.map((c) => c.text),
+    ['second', 'first'],
+  );
+});
+
 test('GenerateSocialProfile returns the matching profile or creates one; ExecuteFxExpression answers 501 without an evaluator and delegates to api.fxEvaluator', async () => {
   const t = await setup();
   const profiles = () => t.store.state.tables.socialprofile ?? [];

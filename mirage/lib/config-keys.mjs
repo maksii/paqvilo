@@ -39,7 +39,7 @@ const LOG_RETAIN_MAX = 50_000;
 export function logSettings(value, label = 'logs') {
   if (value == null) return { retain: LOG_RETAIN_DEFAULT };
   if (!isPlainObject(value)) throw new Error(`${label} must be an object`);
-  for (const key of Object.keys(value)) if (key !== 'retain') throw new Error(`${label}.${key} is not a setting`);
+  for (const key of Object.keys(value)) if (key !== 'retain') throw new Error(`Unknown ${label} key '${key}'`);
   const retain = value.retain ?? LOG_RETAIN_DEFAULT;
   if (!Number.isInteger(retain) || retain < 0 || retain > LOG_RETAIN_MAX)
     throw new Error(`${label}.retain must be an integer from 0 to ${LOG_RETAIN_MAX}`);
@@ -303,7 +303,18 @@ export const MIRAGE_SETTINGS = Object.freeze({
                   pluginSources: Object.fromEntries(
                     Object.entries(value.pluginSources).map(([name, source]) => [
                       name,
-                      isPlainObject(source) ? { ...structuredClone(source), root: source.root ?? sourceRoot } : source,
+                      isPlainObject(source)
+                        ? {
+                            ...structuredClone(source),
+                            // In catalogue settings a relative root resolves against the catalogue's sourceRoot (the
+                            // portal checkout root, like `source`), not the catalogue folder; an absent root is
+                            // sourceRoot. A project file resolves a relative root against its own folder instead.
+                            root:
+                              typeof source.root === 'string' && source.root.trim()
+                                ? path.resolve(sourceRoot, source.root)
+                                : (source.root ?? sourceRoot),
+                          }
+                        : source,
                     ]),
                   ),
                 }

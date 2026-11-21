@@ -1,66 +1,87 @@
-# PCF code components
+# PCF code components on Power Pages
 
-Mirage loads declared code, styles and strings from exported Solution control manifests. Inspect connects component references to their manifests, resources, native FormXml bindings and literal dataset sources.
+Mirage hosts standard PCF code components on local Power Pages pages and native forms. It loads the code, styles and
+strings declared in exported Solution control manifests. The Lense panel's **Inspect** view
+([Lense](../../docs/lense.md)) connects each component reference on the page to its manifest, resources, native FormXml
+binding and literal dataset sources; `paqvilo mirage inspect` does not list components. Model-driven hosting is
+described in [PCF inputs and limits](model-driven-customizations.md#pcf-inputs-and-limits); both hosts use the same
+admission rule (`pcfAdmission` in `mirage/lib/model-driven/pcf-runtime.mjs`).
 
 ## Page components
 
-Use the exported schema name in a `codecomponent` tag. A GUID reference requires an explicit `observed.codeComponents` mapping to that schema name. Component names and dataset bindings chosen dynamically remain unresolved in static Inspect until evidence identifies them.
+Use the exported schema name in a `codecomponent` Liquid tag. A GUID reference needs an explicit
+`observed.codeComponents` entry mapping it to the schema name. Component names and dataset bindings chosen at run time
+stay unresolved in static inspection.
 
-Dataset hosting uses an explicit Liquid tag binding. For a standard dataset control, bind the manifest's exact dataset argument to an exported view ID/name or table logical name:
+For a standard dataset control, bind the manifest's exact dataset argument to an exported view ID or name, or a table
+logical name. Prefer a view ID when names are ambiguous:
 
 ```liquid
 {% codecomponent name:'vendor.Controls.RecordGrid', Records:'exported-view-id' %}
 ```
 
-Replace the component, `Records` argument and view ID with values from your exports. Use a view ID when names are ambiguous. This is Mirage's explicit local dataset binding contract; the corresponding native Liquid dataset configuration must be observed separately. The manifest alone does not identify the portal table or view.
-
-Dataset adapters expose exported columns and local Web API records, paging, supported sorting/filtering, selection and refresh. Reads and Web API CRUD retain local identity, field restrictions and table permissions. `paging.reset()` returns to page 1 and reloads the records through the dataset load (it returns the load promise; `hasPreviousPage` is false afterwards), as `refresh()` does.
+This binding is Mirage's local contract: the manifest alone does not identify the portal table or view, and the native
+Liquid dataset configuration must be observed separately. Dataset adapters expose the exported columns and local Web
+API records, paging, supported sorting and filtering, selection and refresh, under the visitor's identity, field
+restrictions and table permissions. `paging.reset()` returns to page 1 and reloads through the dataset load (it returns
+the load promise; `hasPreviousPage` is then false), as `refresh()` does.
 
 ## Native form fields
 
-Native PCF hosting requires portal attribute metadata with code-component style `756150001`, an exported desktop FormXml custom-control binding, and the corresponding manifest/resources. A model-driven form default alone does not enable a portal component.
+A native form field hosts a component only with all of: portal attribute metadata with code-component style
+`756150001`, an exported desktop FormXml custom-control binding, and the manifest and resources. A model-driven form
+default alone does not enable it.
 
-The native bridge accepts supported single-field bindings, keeps the original form input and validators, and synchronizes component output with native save and script updates. Inspect shows FormXml, the bound column, attribute metadata, selected form factor and enablement evidence. Validate your component's output type and save result in your project scenario.
-
-Native type groups use the exported FormXml parameter type when available. An unresolved group containing incompatible types produces a diagnostic instead of choosing the first declaration. Bound parameter attributes carry available source column names, labels, required level, length, numeric bounds, precision and its source, format, date behavior, targets, options and defaults. Unavailable metadata is omitted. Date outputs preserve the native form's seven fractional digits and its date/time behavior. These source-backed attributes do not by themselves establish identical native Power Pages context values or formatting.
-
-## Model-driven dataset sizing
-
-A trusted dataset component on a model-driven subgrid can call
-`context.mode.trackContainerResize(true)` in `init`. The first context reports
-`allocatedWidth` and `allocatedHeight` as `-1`. During `updateView`, tracking
-provides the container width in pixels; height remains unconstrained (`-1`),
-following the [model-driven sizing contract](https://learn.microsoft.com/en-us/power-apps/developer/component-framework/reference/mode/trackcontainerresize).
-Width changes trigger `updateView` with `layout` in `updatedProperties`.
-Pending dataset updates retain their change markers when coalesced with layout.
-Disabling tracking restores width to `-1` and disconnects the resize observer;
-component destruction and initialization/render failures also disconnect it.
-Repeating the current tracking setting does not schedule another update or replace
-the observer, including when called during `updateView`.
-A retained context cannot restart observation after destruction or failure.
+The bridge supports single-field bindings, keeps the original form input and validators, and syncs component output
+with native save and script updates. Inspect shows the FormXml, bound column, attribute metadata, form factor and
+enablement evidence. Type groups use the exported FormXml parameter type; an unresolved group of incompatible types is
+a diagnostic, not the first declaration. Bound parameters carry the available column name, label, required level,
+length, numeric bounds and precision, format, date behaviour, targets, options and defaults; missing metadata is
+omitted. Date outputs keep the native form's seven fractional digits and date/time behaviour.
 
 ## Manifest feature declarations
 
-Import retains each `uses-feature` declaration's attributes and source order. The [Power Pages component contract](https://learn.microsoft.com/en-us/power-pages/configure/component-framework#unsupported-code-components-in-power-pages) excludes required feature declarations. Mirage reports `PCF_HOST_UNSUPPORTED` with reason `PCF_FEATURE_DECLARATIONS_UNSUPPORTED` and the individual declarations before emitting a mount or loading their bundles. XML Boolean values `true` and `1` are required; `false` and `0` are optional. Missing names or missing/invalid Boolean attributes receive `PCF_FEATURE_DECLARATION_INVALID`, a local diagnostic for malformed declarations.
+Import keeps each `uses-feature` declaration's attributes and order. Power Pages
+[excludes required feature declarations](https://learn.microsoft.com/en-us/power-pages/configure/component-framework#unsupported-code-components-in-power-pages):
+such a component reports `PCF_HOST_UNSUPPORTED` with reason `PCF_FEATURE_DECLARATIONS_UNSUPPORTED` and the
+declarations, before any mount or bundle load. `required` is `true`/`1` or `false`/`0`; a missing name or invalid
+Boolean gives `PCF_FEATURE_DECLARATION_INVALID`.
 
-Declaration eligibility is separate from local API availability. An optional `WebAPI` declaration retains the local Web API facade. Optional Device or Utility declarations can mount, with those unsupported APIs absent; undeclared controls retain existing host behavior. Diagnostics identify known facade availability and leave unknown features unqualified. A required `WebAPI` declaration is still ineligible under the documented portal contract. These checks do not claim that local diagnostic HTML, status or wording matches an observed native error. Source-qualified native captures remain necessary for that comparison.
-
-## Runtime debugging
-
-In the browser console, `__paqviloPcf.openDebugger()` opens a dialog for selecting an instance, viewing parameters, outputs and lifecycle calls, and applying JSON parameter values. The dialog appears only when explicitly opened. Parameter edits call the component's real `updateView` and synchronize bound native inputs. Dates accept ISO strings. Output-only properties and datasets are not editable parameter fields.
-
-The same operations are available through `__paqviloPcf.inspect(instanceId)` and `__paqviloPcf.updateParameters(instanceId, values)`. Snapshots are bounded, omit functions and avoid invoking nested accessors. Typed validation finishes before applying values; a later component or native-input failure can occur after values were applied, and `lastParameterUpdate` records that phase. Failure and removal records retain the original error and actual teardown calls.
+Eligibility is separate from API availability: an optional `WebAPI` declaration keeps the local Web API facade;
+optional Device or Utility declarations mount without those APIs; undeclared controls keep the default host. A
+required `WebAPI` declaration is still ineligible. Local diagnostic HTML and wording are not claimed to match native
+errors.
 
 ## Localized resources
 
-Import keeps each declared RESX resource, its manifest attributes, declaration order and data nodes separately. The documented `filename.LCID.resx` suffix identifies its language; `version`, `order` and any additional attributes are retained without treating a newer version or a culture attribute as a language-selection override. String values retain their whitespace and empty values. Resources without a usable LCID suffix and ambiguous language variants receive diagnostics.
+Import keeps each declared RESX resource, its attributes, order and data nodes. The documented `filename.LCID.resx`
+suffix gives its language; `version`, `order` and other attributes never override language selection. Values keep
+whitespace and empty strings. Resources without a usable LCID suffix, ambiguous language variants and duplicate keys
+get diagnostics and stay unresolved instead of overwriting values.
 
-The local host selects a resource for the page's LCID, resolving a known language code when necessary. If that language has no resource, it can use the exported website default language and records `PCF_RESOURCE_LANGUAGE_FALLBACK` with `nativeQualified: false`. This is a local source policy: it does not establish the native portal's organization-base-language fallback. Without a matching language or an exported default, the host leaves strings unresolved rather than choosing the first file or English implicitly. An existing selected-language resource is not merged with another language for missing keys.
+The host picks the resource for the page's LCID. If that language has none, it may use the exported website default
+language and records `PCF_RESOURCE_LANGUAGE_FALLBACK` with `nativeQualified: false`: a local policy, not the native
+organization-base-language fallback. Otherwise strings stay unresolved; the host never picks the first file or English
+implicitly and never merges languages. `resources.getString` returns the key when no string matches, as
+[documented](https://learn.microsoft.com/en-us/power-apps/developer/component-framework/reference/resources/getstring).
 
-The [portal-supported `resources.getString` contract](https://learn.microsoft.com/en-us/power-apps/developer/component-framework/reference/resources/getstring) returns the key when no matching string exists. Empty translations remain empty, including property display labels. Duplicate keys or language variants remain unresolved with diagnostics instead of silently overwriting values. Actual native locale selection and fallback still require source-qualified portal observations; the [localization sample](https://learn.microsoft.com/en-us/power-apps/developer/component-framework/sample-controls/localization-api-control) establishes the LCID filename convention but lists model-driven and canvas availability.
+## Runtime debugging
+
+In the browser console, `__paqviloPcf.openDebugger()` opens a dialog to pick an instance, view parameters, outputs and
+lifecycle calls, and apply JSON parameter values (dates as ISO strings). Edits call the component's real `updateView`
+and sync bound native inputs; output-only properties and datasets are not editable. The same operations are
+`__paqviloPcf.inspect(instanceId)` and `__paqviloPcf.updateParameters(instanceId, values)`. Snapshots are bounded and
+omit functions. Validation finishes before values apply; a later component or input failure is recorded in
+`lastParameterUpdate`, and failure and removal records keep the original error and teardown calls.
 
 ## Limits
 
-The host supports standard controls. Native list/subgrid PCF hosting is not implemented; diagnostics retain the native grid fallback. React/virtual controls and declared platform libraries are refused with `PCF_VIRTUAL_UNSUPPORTED`: the Power Pages host supplies no platform libraries. The same admission rule (`pcfAdmission`) decides model-driven hosting, where project-supplied library files can host virtual controls. Dataset aliases, aggregates, advanced operators and navigation without an exported portal binding remain limited or unsupported. SDK file/image APIs and writable EntityRecord APIs are not supplied by this host.
-
-Diagnostics identify missing manifests, resources, mappings and unsupported property bindings. Use an explicit project extension where needed, then compare important behavior with your authorized live portal. See [platform resources](platform-resources.md), [forms and lists](forms-lists-parity.md) and [coverage](../../docs/coverage.md).
+- Native list and subgrid PCF hosting is not implemented: a list or subgrid configured with a dataset code component
+  renders the native grid and reports `PCF_NATIVE_DATASET_UNSUPPORTED`.
+- Virtual (React) controls and declared platform libraries are refused with `PCF_VIRTUAL_UNSUPPORTED`: the Power Pages
+  host supplies no platform libraries.
+- Dataset aliases, aggregates, advanced operators and navigation without an exported portal binding are limited or
+  unsupported. SDK file and image APIs and writable `EntityRecord` APIs are not supplied.
+- Diagnostics name missing manifests, resources, mappings and unsupported property bindings. Compare important
+  behaviour with an authorized live portal; see [platform resources](platform-resources.md) and
+  [coverage](../../docs/coverage.md).

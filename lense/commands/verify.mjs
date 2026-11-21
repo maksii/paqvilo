@@ -6,6 +6,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { paqviloCommand } from '../command-hint.mjs';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { OverlaySession } from '../session.mjs';
@@ -257,7 +258,10 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
   return -1;
 }
 
-// onPhase(name) is told when the run enters a phase a caller can act on: 'sign-in-wait'.
+// onPhase(name) is told when the run enters a phase a caller can act on: 'sign-in-wait', 'inline-script-edits' before
+// the inline script, template and snippet edits are saved (the run waits for the promise it returns), 'edits-saved'
+// once every edit is saved, and 'after-edits-load' once every edit is applied and the run waits for the displayed
+// document to finish loading.
 /* NOSONAR */ export default async function verify(cfg, args, { source = process, onPhase = noop } = {}) {
   const log = args.json ? (...values) => console.error(...values) : (...values) => console.log(...values);
   const signInTimeout = args['sign-in-timeout'] === undefined ? 900_000 : Number(args['sign-in-timeout']);
@@ -402,9 +406,29 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
     // The main-frame navigation request of the document on display. A document the page replaces (a reload, a
     // client-side redirect) starts a new one, and the overlay routes it through this process before it can commit.
     let displayed = null;
+    const documents = new WeakMap();
     page.on('request', (r) => {
       try {
-        if (r.isNavigationRequest() && r.frame() === page.mainFrame()) displayed = r;
+        if (!r.isNavigationRequest() || r.frame() !== page.mainFrame()) return;
+        displayed = r;
+        // Observe this navigation before its paused document can commit. A response's bytes may no longer be
+        // readable after the page replaces it, so cache them as soon as they arrive, independently of DOM readiness.
+        const loaded = page.waitForNavigation({
+          waitUntil: 'domcontentloaded',
+          timeout: START_PAGE_NAVIGATION_GUARD_MS,
+        });
+        const content = r.response().then(async (response) => ({
+          request: r,
+          response,
+          html: response ? await response.text().catch(() => null) : null,
+        }));
+        documents.set(
+          r,
+          Promise.all([loaded, content]).then(
+            ([, document]) => document,
+            (error) => ({ request: r, response: null, html: null, error }),
+          ),
+        );
       } catch {
         /* a service worker request has no frame */
       }
@@ -419,22 +443,37 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
     };
     // 'load' can take very long on data-heavy pages; the document itself is what matters here.
     // The body is read at once: a response cannot be read after the page has navigated away from it.
-    const open = async () => {
-      const res = await scope.until(
-        page.goto(cfg.origin + startPath, { waitUntil: 'domcontentloaded', timeout: START_PAGE_NAVIGATION_GUARD_MS }),
-      );
-      const html = res ? await res.text().catch(() => null) : null;
+    const waitForDocumentLoad = async () => {
       // a load timeout is tolerated; an interrupt is not
       await scope
         .until(page.waitForLoadState('load', { timeout: 30_000 }))
         .catch(() => interrupt.signal.throwIfAborted());
-      return { response: res, html };
+    };
+    const open = async () => {
+      const res = await scope.until(
+        page.goto(cfg.origin + startPath, { waitUntil: 'domcontentloaded', timeout: START_PAGE_NAVIGATION_GUARD_MS }),
+      );
+      const request = res?.request?.() ?? null;
+      const observed = request && documents.get(request);
+      const document = observed
+        ? await scope.until(observed)
+        : { request, response: res, html: res ? await res.text().catch(() => null) : null };
+      await waitForDocumentLoad();
+      return document;
+    };
+    const readDisplayedDocument = async () => {
+      const observed = displayed && documents.get(displayed);
+      if (!observed) throw new Error(`${startPath} has no observed document navigation to read`);
+      onPhase('start-page-document-wait');
+      const document = await scope.until(observed);
+      await waitForDocumentLoad();
+      return document;
     };
     let started = await open();
     if (!onTarget()) {
       if (!args.headed) {
         throw new Error(
-          `${startPath} needs a sign-in (ended on ${redactedPageUrl(page.url())}). Run: npm run verify -- --headed --signed-in --path ${startPath}  and sign in in the window that opens`,
+          `${startPath} needs a sign-in (ended on ${redactedPageUrl(page.url())}). Run: ${paqviloCommand(['lense', 'verify'], { script: 'verify', config: cfg.configFile, extra: ['--headed', '--signed-in', '--path', startPath] })}  and sign in in the window that opens`,
         );
       }
       log(
@@ -629,11 +668,17 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
       return { cssFile, jsFile, imgFile, formScripts, template, snippet };
     };
     // The edits are chosen from the HTML of the document on display and from that document in the page. Choices
-    // made from a document the page has replaced are thrown away and the start page is read again; three reads at most.
+    // made from a document the page has replaced are thrown away and its observed replacement is read; three reads
+    // at most. Never force a new goto over a page-initiated navigation that already owns the displayed document.
     const replacedBy = [];
     let choice = null;
     for (let read = 1; ; read++) {
-      if (!started.response) throw new Error(`${startPath} answered no document response`);
+      if (started.request === displayed) {
+        if (started.error)
+          throw new Error(`${startPath} displayed document navigation failed`, { cause: started.error });
+        if (!started.response) throw new Error(`${startPath} answered no document response`);
+        if (started.html === null) throw new Error(`${startPath} displayed document response body could not be read`);
+      } else if (!started.response && !displayed) throw new Error(`${startPath} answered no document response`);
       if (started.html !== null && isDisplayed(started.response)) {
         if (started.response.status() !== 200)
           throw new Error(`${startPath} answered HTTP ${started.response.status()}`);
@@ -650,7 +695,7 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
         throw new Error(
           `${startPath} kept navigating while it loaded (${replacedBy.join(', ')}); its document could not be read`,
         );
-      started = await open();
+      started = await readDisplayedDocument();
     }
     const { cssFile, jsFile, imgFile, formScripts, template, snippet } = choice;
     if (process.env.PAQVILO_DEBUG) fs.writeFileSync(path.join(work, 'last-page.html'), started.html);
@@ -684,6 +729,7 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
     }
     if (cssBlock)
       editSource(cssBlock, () => (workingText(cssBlock) ?? '') + `\nhtml{--paqvilo-verify-inline-css:"${token}"}\n`);
+    await scope.until(Promise.resolve(onPhase('inline-script-edits')));
     if (jsBlock)
       editSource(jsBlock, () => (workingText(jsBlock) ?? '') + `\n;window.__paqviloVerifyInlineJs="${token}";\n`);
     else if (jsEmpty) editSource(jsEmpty, () => `window.__paqviloVerifyInlineJs="${token}";\n`);
@@ -700,6 +746,7 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
       editSource(template, () => lines.join('\n'));
     }
     if (snippet) editSource(snippet, () => `${snippet.text} [${token}]`);
+    onPhase('edits-saved');
 
     const cssVar = (name) => page.evaluate((n) => getComputedStyle(document.documentElement).getPropertyValue(n), name);
     const servedBy = (url) => hits.find((h) => h.type === 'file' && urlKey(h.url) === urlKey(url));
@@ -760,9 +807,14 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
 
     if (cssBlock) {
       // looked up in the <style> text, not as a computed value: the existing CSS may not be well formed
+      // a save that reaches the watcher alone is swapped into the <style> in place; the replacement is recorded by
+      // the reload for the other edits
       const ok = await until(
-        () =>
-          page.evaluate((t) => [...document.querySelectorAll('style')].some((s) => s.textContent.includes(t)), token),
+        async () =>
+          (await page.evaluate(
+            (t) => [...document.querySelectorAll('style')].some((s) => s.textContent.includes(t)),
+            token,
+          )) && htmlHit(cssBlock.rel),
         undefined,
         interrupt.signal,
       );
@@ -773,10 +825,13 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
       );
     } else skip('page custom CSS', 'this page has no custom CSS');
 
+    // With source maps an unchanged inline script is served from the current file on disk, so the edited script can
+    // run in a reload that was planned before its source was refreshed. Wait for the recorded replacement as well.
     const inlineJs = jsBlock ?? jsEmpty;
     if (inlineJs) {
       const ok = await until(
-        () => page.evaluate((t) => globalThis.__paqviloVerifyInlineJs === t, token),
+        async () =>
+          (await page.evaluate((t) => globalThis.__paqviloVerifyInlineJs === t, token)) && htmlHit(inlineJs.rel),
         undefined,
         interrupt.signal,
       );
@@ -789,11 +844,11 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
 
     for (const form of formScripts) {
       const ok = await until(
-        () =>
-          page.evaluate(({ kind, token }) => globalThis.__paqviloVerifyFormJs?.[kind] === token, {
+        async () =>
+          (await page.evaluate(({ kind, token }) => globalThis.__paqviloVerifyFormJs?.[kind] === token, {
             kind: form.kind,
             token,
-          }),
+          })) && htmlHit(form.rel),
         undefined,
         interrupt.signal,
       );
@@ -833,6 +888,9 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
     } else skip('content snippet', 'no unique plain-text snippet in visible markup text could be picked safely');
 
     // everything else must still be the real site
+    // A refresh that reloads the model reads every saved source from disk, so the checks above can pass on its
+    // document while later saves still wait in the watcher. Their reload would replace the page under this request.
+    await scope.until(watcher.whenIdle());
     const stillOnline = await scope.until(
       page.evaluate(async () => {
         const r = await fetch(location.href, { cache: 'no-store' });
@@ -889,6 +947,13 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
     // The diagnostics describe the page only after the watcher has applied the edits: whenIdle resolves once no
     // refresh is in flight, and a refresh applies the saved changes to the open pages before it finishes.
     await scope.until(watcher.whenIdle());
+    // A refresh returns when the reloaded document arrives, not when it has loaded. The baseline is read after the
+    // load event, so the same point is awaited here: a script error of the reloaded document is reported before its
+    // load event, and one read earlier would be missing from the comparison. A load timeout is tolerated as in open().
+    onPhase('after-edits-load');
+    await scope
+      .until(page.waitForLoadState('load', { timeout: 30_000 }))
+      .catch(() => interrupt.signal.throwIfAborted());
     captureDiagnostics('afterEdits');
     await scope.until(
       page.screenshot({ path: path.join(outDir, `${stamp}.png`), timeout: EVIDENCE_SCREENSHOT_GUARD_MS }),

@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's structural form fallback in lib/platform-chrome.css keeps readonly forms readable and responsive
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -91,7 +92,8 @@ test('readonly values and labels remain readable without editable borders or sel
   );
   assert.equal(facts.appearance, 'none');
   assert.equal(facts.resize, 'none');
-  await assert.rejects(() => page.locator('#name').fill('Changed', { timeout: 200 }), /not editable/);
+  // The editable state is read directly: a timed fill reports its own deadline, not the field, on a busy host.
+  assert.equal(await page.locator('#name').isEditable(), false);
   assert.equal(await page.locator('#name').inputValue(), 'First');
   assert.equal(await page.locator('#choice').isDisabled(), true);
 });

@@ -8,9 +8,9 @@
   },
   "dependencies": {
     "dynamics-web-api": "2.5.1",
-    "@azure/msal-node": "7.1.1"
+    "@azure/msal-node": "7.2.2"
   },
   "overrides": {
-    "@tootallnate/once": "2.0.1"
+    "@tootallnate/once": "3.0.1"
   }
 }

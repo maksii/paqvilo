@@ -1,6 +1,7 @@
 // @test-kind compatibility: Microsoft Learn (Dataverse Liquid tags, entityform and webform) states that only a single entityform or webform tag renders per page; the simulator's postback and action handling for that form is its own contract.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { openPortalPage } from './shared-browser.mjs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -85,7 +86,7 @@ test('exported native state-action buttons send configured actions without submi
   const page = await context.newPage(),
     errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
-  await page.goto(`${app.url}/?row=${id}`);
+  await openPortalPage(page, `${app.url}/?row=${id}`);
   const first = page.locator('#EntityFormControl_entryform'),
     second = page.locator('#EntityFormControl_secondform');
   assert.equal(await second.count(), 0, 'only the first form tag of a page renders');
@@ -121,7 +122,8 @@ test('exported native state-action buttons send configured actions without submi
   let record = await app.store.get('sample', id, { roles: ['Editor'] });
   assert.deepEqual([record.title, record.statecode, record.statuscode], ['Original', 1, 300]);
   assert.equal(await first.locator('#DeactivateButton').count(), 0);
-  assert.equal(await first.locator('button.deactivate-link.hidden').count(), 1);
+  // The action bar hides the inapplicable action in a pass of its own: the hidden state is awaited, not sampled.
+  await first.locator('button.deactivate-link.hidden').waitFor({ state: 'attached' });
   const reopenResponse = action('activate');
   const reopenReload = page.waitForEvent('load');
   await first.locator('button.activate-link').click();

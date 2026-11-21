@@ -1,8 +1,8 @@
 # wet-boew bilingual fixture
 
 A subset of the GCWeb Power Pages template by Alfred Ofosu, used unmodified as a real
-bilingual (English/French) portal export for the selected-language tests in
-`test/liquid-portal-parity.test.mjs`.
+bilingual (English/French) portal export by `mirage/test/liquid-portal-parity.test.mjs` (selected-language tests)
+and `mirage/test/cli-contract.test.mjs`.
 
 - Source: https://github.com/alfredofosu/wet-boew-power-pages-template
 - Commit: `b568a615fa2c77a0f976170e41f3fc05f3ff551e` (2025-09-01)

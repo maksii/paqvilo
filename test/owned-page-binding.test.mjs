@@ -267,3 +267,98 @@ test('close gives up on a reply after one call timeout when the page has closed'
   await closing;
   assert.equal(events.includes('detach'), false, 'a closed page is not detached');
 });
+
+class SilentCleanupSession extends FakeCdpSession {
+  constructor(events) {
+    super(events);
+    this.cleanupSent = deferred();
+  }
+
+  send(method, params) {
+    if (method !== 'Runtime.evaluate' || !params?.expression?.includes('?.dispose()'))
+      return super.send(method, params);
+    this.events.push(method);
+    this.cleanupSent.resolve();
+    return new Promise(() => {});
+  }
+}
+
+test('close gives up on a cleanup command that a live renderer never answers, reports it and still detaches', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const events = [];
+  const session = new SilentCleanupSession(events);
+  const owned = await createOwnedPageBindings(fakePage(session), {
+    origin: ORIGIN,
+    bindings: {
+      inspect: () => 'reply',
+    },
+  });
+  let outcome = null;
+  const closing = owned.close().then(
+    () => {
+      outcome = 'closed';
+    },
+    (error) => {
+      outcome = error;
+    },
+  );
+  await session.cleanupSent.promise;
+  const beforeGuard = events.length;
+  // under mocked timers nothing can advance on its own: one turn lets a close that does not wait run past its wait
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(outcome, null, 'close waits for the answer of its cleanup command');
+  t.mock.timers.tick(30_000);
+  for (let i = 0; i < 20 && outcome === null; i++) await new Promise((resolve) => setImmediate(resolve));
+  assert.notEqual(outcome, null, 'the hang guard ends the wait');
+  await closing;
+  assert.match(outcome.message, /Runtime\.evaluate did not answer within 30000 ms/);
+  assert.deepEqual(
+    events.slice(beforeGuard),
+    ['detach'],
+    'no further command is sent to the silent renderer, and the session is detached',
+  );
+});
+
+class SilentDetachSession extends FakeCdpSession {
+  detach() {
+    this.events.push('detach');
+    this.detached.resolve();
+    return new Promise(() => {});
+  }
+}
+
+test('close gives up on a detach that the browser never answers and reports it', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const events = [];
+  const session = new SilentDetachSession(events);
+  const owned = await createOwnedPageBindings(fakePage(session), {
+    origin: ORIGIN,
+    bindings: {
+      inspect: () => 'reply',
+    },
+  });
+  let outcome = null;
+  const beforeClose = events.length;
+  const closing = owned.close().then(
+    () => {
+      outcome = 'closed';
+    },
+    (error) => {
+      outcome = error;
+    },
+  );
+  await session.detached.promise;
+  // under mocked timers nothing can advance on its own: one turn lets a close that does not wait run past its wait
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(outcome, null, 'close waits for the answer of the detach');
+  t.mock.timers.tick(30_000);
+  for (let i = 0; i < 20 && outcome === null; i++) await new Promise((resolve) => setImmediate(resolve));
+  assert.notEqual(outcome, null, 'the hang guard ends the wait for the detach');
+  await closing;
+  assert.match(outcome.message, /detach did not answer within 30000 ms/);
+  assert.deepEqual(
+    events.slice(beforeClose),
+    ['Page.removeScriptToEvaluateOnNewDocument', 'Runtime.evaluate', 'Runtime.removeBinding', 'detach'],
+    'the cleanup commands were answered before the detach',
+  );
+});

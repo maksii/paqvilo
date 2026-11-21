@@ -4,8 +4,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
-import ts from 'typescript';
-import { windowsLaunchOptions, BACKPORTED_DISABLED_FEATURES } from '../mirage/lib/browser-launch.mjs';
+import { syntaxNodes } from './estree.mjs';
+import { tsc } from './tsc.mjs';
+import { windowsLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 import { observedConfig } from '../mirage/lib/project-config.mjs';
 import { staffFormatting } from '../mirage/lib/model-driven/pcf-runtime.mjs';
 import { createOfflineSessions } from '../mirage/lib/model-driven/offline.mjs';
@@ -17,29 +18,23 @@ import { stringifyExactJson } from '../mirage/lib/exact-numeric.mjs';
 // introducing production exports or asserting an implementation's source text.
 async function sourceNode(file, predicate) {
   const text = await fs.readFile(new URL(`../${file}`, import.meta.url), 'utf8');
-  const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
-  let found;
-  const visit = (node) => {
-    if (!found && predicate(node)) found = node;
-    if (!found) ts.forEachChild(node, visit);
-  };
-  visit(source);
+  const found = syntaxNodes(text).find(predicate);
   assert.ok(found, `handler exists in ${file}`);
-  return found.getText(source);
+  return text.slice(found.start, found.end);
 }
 async function privateFunction(file, name, bindings) {
-  const text = await sourceNode(file, (node) => ts.isFunctionDeclaration(node) && node.name?.text === name);
+  const text = await sourceNode(file, (node) => node.type === 'FunctionDeclaration' && node.id?.name === name);
   // hang guard only: the evaluated handler is expected to return at once; this bound only stops a runaway evaluation.
   return vm.runInNewContext(`(${text})`, bindings, { timeout: 120_000 });
 }
 
-test('Windows launch forwarding retains invalid caller input and the default backport', () => {
+test('Windows launch forwarding retains invalid caller input and upstream defaults', () => {
   for (const invalid of [null, false, 3, 'invalid', [], { args: null }, { ignoreDefaultArgs: null }])
     assert.strictEqual(windowsLaunchOptions(invalid, 'win32'), invalid);
   const explicit = { args: ['--caller'], ignoreDefaultArgs: true };
   assert.strictEqual(windowsLaunchOptions(explicit, 'win32'), explicit);
   assert.strictEqual(windowsLaunchOptions(explicit, 'linux'), explicit);
-  assert.equal(windowsLaunchOptions(undefined, 'win32').args[0], BACKPORTED_DISABLED_FEATURES);
+  assert.deepEqual(windowsLaunchOptions(undefined, 'win32'), {});
 });
 
 test('observed configuration rejects an accessor without invoking it', () => {
@@ -102,7 +97,7 @@ test('Dataverse options distinguish explicit true, object overrides and disabled
 test('a closed or superseded panel diff cannot be overwritten by its late response', async () => {
   const clause = await sourceNode(
     'lense/panel-ui.mjs',
-    (node) => ts.isCaseClause(node) && node.expression.text === 'diff',
+    (node) => node.type === 'SwitchCase' && node.test?.type === 'Literal' && node.test.value === 'diff',
   );
   const coercible = {
     [Symbol.toPrimitive]() {
@@ -144,7 +139,7 @@ test('a closed or superseded panel diff cannot be overwritten by its late respon
 test('panel diff ownership accepts only the current request, including requests for the same path', async () => {
   const clause = await sourceNode(
     'lense/panel-ui.mjs',
-    (node) => ts.isCaseClause(node) && node.expression.text === 'diff',
+    (node) => node.type === 'SwitchCase' && node.test?.type === 'Literal' && node.test.value === 'diff',
   );
   const firstResponse = Promise.withResolvers();
   const secondResponse = Promise.withResolvers();
@@ -176,46 +171,53 @@ test('panel diff ownership accepts only the current request, including requests 
   assert.equal(draws, 4);
 });
 
-test('the declared panel diff state accepts pending requests and the closed null state', () => {
+test('the declared panel diff state accepts pending requests and the closed null state', async () => {
   const file = fileURLToPath(new URL('../lense/panel-ui.mjs', import.meta.url));
-  const program = ts.createProgram([file], {
-    allowJs: true,
-    noEmit: true,
-    strictNullChecks: true,
-    target: ts.ScriptTarget.ESNext,
-    module: ts.ModuleKind.NodeNext,
-    moduleResolution: ts.ModuleResolutionKind.NodeNext,
-    types: [],
-  });
-  const source = program.getSourceFile(file);
-  const checker = program.getTypeChecker();
-  let comparison;
+  const text = await fs.readFile(file, 'utf8');
+  const stateDiff = (node) =>
+    node.type === 'MemberExpression' && node.object.name === 'S' && !node.computed && node.property.name === 'diff';
   let state;
-  const visit = (node) => {
-    if (ts.isVariableDeclaration(node) && node.name.getText(source) === 'S') state = node;
-    if (
-      ts.isBinaryExpression(node) &&
-      ts.isPropertyAccessExpression(node.left) &&
-      node.left.expression.getText(source) === 'S' &&
-      node.left.name.text === 'diff' &&
-      ts.isIdentifier(node.right) &&
-      node.right.text === 'pending'
-    )
-      comparison = node;
-    ts.forEachChild(node, visit);
-  };
-  visit(source);
+  let assignment;
+  let comparison;
+  for (const node of syntaxNodes(text)) {
+    if (node.type === 'VariableDeclarator' && node.id.name === 'S') state = node;
+    if (node.type === 'AssignmentExpression' && stateDiff(node.left) && node.right.name === 'pending')
+      assignment = node;
+    if (node.type === 'BinaryExpression' && stateDiff(node.left) && node.right.name === 'pending') comparison = node;
+  }
   assert.ok(comparison);
+  assert.ok(assignment);
   assert.ok(state);
-  assert.equal(
-    checker.isTypeAssignableTo(checker.getTypeAtLocation(comparison.right), checker.getTypeAtLocation(comparison.left)),
-    true,
+  const declared = state.init.properties.find((property) => property.key?.name === 'diff');
+  assert.ok(declared);
+  // The compiler reports, at the line of each expression, a declared type that rejects its initializer or the pending
+  // request assigned before the await, and an ownership comparison between types that cannot overlap.
+  const lines = new Set([declared, assignment, comparison].map((node) => text.slice(0, node.start).split('\n').length));
+  const checked = tsc([
+    '--allowJs',
+    '--checkJs',
+    '--noEmit',
+    '--strictNullChecks',
+    '--target',
+    'esnext',
+    '--module',
+    'nodenext',
+    '--moduleResolution',
+    'nodenext',
+    file,
+  ]);
+  // A line starting with "error TS" is a compiler option or input failure, not a finding in a source file.
+  assert.doesNotMatch(checked.output, /^error TS/m, checked.output);
+  // The compiler either accepted the file or reported positioned findings; anything else means it never checked it.
+  assert.ok(checked.status === 0 || /\(\d+,\d+\): error TS\d+: /.test(checked.output), checked.output);
+  const rejected = checked.output.split(/\r?\n/).filter((line) => {
+    const position = /panel-ui\.mjs\((\d+),\d+\): error TS\d+/.exec(line);
+    return position && lines.has(Number(position[1]));
+  });
+  assert.deepEqual(
+    rejected,
+    [],
     'the ownership comparison must be possible for the pending request assigned before await',
-  );
-  const diff = state.initializer.properties.find((property) => property.name?.getText(source) === 'diff');
-  assert.equal(
-    checker.isTypeAssignableTo(checker.getTypeAtLocation(diff.initializer), checker.getTypeAtLocation(diff)),
-    true,
   );
 });
 
@@ -243,6 +245,8 @@ test('folder response becomes the picker data and website selection retains its 
     request: async () => data,
     kindText: () => 'Website export',
     esc: String,
+    // No control is pressed: the list is written at once.
+    released: async () => {},
   });
   await open('');
   assert.strictEqual(picker.data, data);

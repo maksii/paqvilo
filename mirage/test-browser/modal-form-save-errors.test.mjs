@@ -51,6 +51,15 @@ test('real frame load follows queued ready handlers, tolerates exceptions and do
   );
   await page.goto(`http://127.0.0.1:${server.address().port}/?none`);
   for (const query of ['', '?throw', '?none']) {
+    // The frame reports its ordering with a request of its own. The frame loads when the server receives it, before
+    // the frame has the answer, so the next frame replaces this one only once that request has finished. The page
+    // around the frames reports its own ordering the same way: that request is not the frame's.
+    const reported = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'POST' &&
+        response.frame() !== page.mainFrame() &&
+        new URL(response.url()).pathname.startsWith('/__sim/frame-ready/'),
+    );
     await page.evaluate((query) => {
       window.loaded = null;
       const frame = document.createElement('iframe');
@@ -67,6 +76,7 @@ test('real frame load follows queued ready handlers, tolerates exceptions and do
       document.body.replaceChildren(frame);
     }, query);
     await page.waitForFunction(() => window.loaded);
+    await (await reported).finished();
     const value = await page.evaluate(() => window.loaded);
     if (query !== '?none') {
       // Recorded at the frame's load: a number means the ready handler had already run (no timer-resolution tie).

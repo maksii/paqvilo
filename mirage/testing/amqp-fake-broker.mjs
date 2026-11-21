@@ -267,7 +267,7 @@ function unlockExpiredMessages(address, items, at, unlock) {
 /**
  * Starts the broker on 127.0.0.1 (ephemeral port). Options: keyName, key, queues (names), topics ({ topic: [subscriptions] }),
  * maxDeliveryCount, lockMs, maxFrameSize (its frames; small values exercise multi-frame transfers), idleTimeoutMs (announced
- * in open). Returns { port, count(entity), frames, payloads, stats, dropConnections(), close() }; frames lists every
+ * in open). Returns { port, count(entity), frames, payloads, stats, clockTrace, dropConnections(), close() }; frames lists every
  * performative the client sent as { code, fields } decoded by this broker's own codec; payloads retains completed
  * transfer bytes for independent wire assertions.
  */
@@ -293,7 +293,15 @@ export async function startFakeBroker({
   const receivers = new Set(),
     sockets = new Set(),
     frames = [],
-    payloads = [];
+    payloads = [],
+    clockTrace = [];
+  // Bounded, credential-free timing evidence distinguishes a wall-clock correction from a credit/drain failure.
+  const observedTime = (phase) => {
+    const now = Date.now();
+    if (clockTrace.length === 32) clockTrace.shift();
+    clockTrace.push({ phase, now });
+    return now;
+  };
   const stats = { connections: 0, heartbeats: 0, saslFailures: 0, protocolErrors: 0 };
   let sequence = 0;
 
@@ -336,10 +344,10 @@ export async function startFakeBroker({
 
   function deliver(link) {
     const items = entities.get(link.address),
-      at = Date.now();
+      at = observedTime('deliver');
     unlockExpiredMessages(link.address, items, at, unlock);
     while (link.credit > 0) {
-      const message = items.find((item) => !item.lock && item.visibleAt <= at);
+      const message = items.find((item) => !item.lock && (item.visibleAt === null || item.visibleAt <= at));
       if (!message) break;
       link.credit -= 1;
       link.deliveryCount += 1;
@@ -588,14 +596,15 @@ export async function startFakeBroker({
       const completePayload = Buffer.concat(chunks);
       payloads.push(Buffer.from(completePayload));
       const message = sectionsOf(completePayload),
-        now = Date.now();
+        now = observedTime('enqueue');
       const scheduled = message.annotations['x-opt-scheduled-enqueue-time'];
       if (scheduled instanceof Date && scheduled.getTime() > now) pumpWhenDue(scheduled.getTime());
       for (const target of targetsOf(link.address)) {
         entities.get(target).push({
           sequence: ++sequence,
           enqueuedTime: new Date(now),
-          visibleAt: scheduled instanceof Date ? scheduled.getTime() : now,
+          // An ordinary message is already available; only an explicit schedule depends on wall-clock time.
+          visibleAt: scheduled instanceof Date ? scheduled.getTime() : null,
           failures: 0,
           lock: null,
           lockedUntil: 0,
@@ -694,6 +703,7 @@ export async function startFakeBroker({
     port: server.address().port,
     stats,
     frames,
+    clockTrace,
     // Completed client transfers, including their actual encoded message bytes.
     payloads,
     /** Messages an entity holds (available, scheduled and locked). */

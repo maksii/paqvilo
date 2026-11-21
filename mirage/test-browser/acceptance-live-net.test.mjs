@@ -12,7 +12,7 @@ import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSelfSignedCertificate } from '../lib/dataverse-tls.mjs';
 import { ownedFixture, makeTemporaryDirectory, removeFixtureDirectory } from '../testing/owned-fixture.mjs';
 import { runAcceptance } from '../acceptance.mjs';
-import { closeServer, devToolsActivePort, openResumingClient } from './shared-browser.mjs';
+import { ACCEPTANCE_HANG_GUARD_MS, closeServer, devToolsActivePort, openResumingClient } from './shared-browser.mjs';
 
 const POPUP_WRITES = ['/form-save', '/popup-save'];
 const AFTER_WRITE = '/after-save';
@@ -169,7 +169,7 @@ test('a live acceptance flow stops the writes of popups another debugging client
     liveOrigin: liveOrigin + '/',
     cdpUrl: endpoint.url,
     outputDir: path.join(directory, 'evidence'),
-    timeout: 120_000,
+    timeout: ACCEPTANCE_HANG_GUARD_MS,
     flows: [{ name: 'Live popups', mode: 'live', steps: [{ action: 'navigate', path: '/' }] }],
   });
 

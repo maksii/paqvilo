@@ -221,7 +221,11 @@ export function convertSdkQuery(store, message, parameters) {
     return { FetchXml: queryExpressionToFetch(parameters.Query, store) };
   }
   const fetch = parseXmlDocument(parameters.FetchXml);
-  planFetch(fetch, { profile: 'sdk', limits: store.querySettings().fetchLimits });
+  planFetch(fetch, {
+    profile: 'sdk',
+    limits: store.querySettings().fetchLimits,
+    linkBudgetError: store.observed?.fetchLinkBudgetError,
+  });
   if (boolean(fetch.attrs.aggregate)) fail('Aggregate FetchXML conversion requires aggregate QueryExpression support.');
   validateFetchNode(fetch);
   const aliases = new Map();

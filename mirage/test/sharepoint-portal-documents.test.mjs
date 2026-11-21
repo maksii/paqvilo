@@ -120,6 +120,27 @@ test('read-only permissions list documents but refuse an upload with 403', async
   assert.equal((await call('POST', '?newFolder=Contracts')).status, 403);
 });
 
+// @test-kind security: a traversal in ?folder= is refused with 400 on every method and named as an invalid folder path
+test('a ?folder= path traversal is refused and named as an invalid folder path', async (t) => {
+  const all = [parent(['read', 'appendTo', 'update']), child(['read', 'create', 'update', 'append', 'delete'])];
+  const { call } = await documents(t, { permissions: all });
+  assert.equal((await call('POST', '?newFolder=Contracts')).status, 201);
+  for (const [method, traversal] of [
+    ['GET', '?folder=..'],
+    ['GET', '?folder=Contracts/..'],
+    ['GET', '/signed.txt?folder=..'],
+    ['POST', '?folder=..&name=x.txt'],
+    ['POST', '?folder=..&newFolder=x'],
+    ['DELETE', '?folder=Contracts/..'],
+  ]) {
+    const refused = await call(method, traversal, method === 'POST' ? 'x' : undefined);
+    assert.equal(refused.status, 400, `${method} ${traversal}`);
+    const body = await refused.json();
+    assert.equal(body.error.code, 'SharePointInvalidName');
+    assert.match(body.error.message, /^The folder path is not valid: .*path traversal is refused/, traversal);
+  }
+});
+
 test('New folder, navigation, upload, download and delete inside subfolders (Learn: users can create subfolders)', async (t) => {
   const all = [parent(['read', 'appendTo', 'update']), child(['read', 'create', 'update', 'append', 'delete'])];
   const { call, store } = await documents(t, { permissions: all });

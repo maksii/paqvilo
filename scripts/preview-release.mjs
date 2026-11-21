@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'yaml';
 import { branchToken, previewRelease } from './release-version.mjs';
+import { answerHelp } from './script-help.mjs';
 
 const gh = (args) =>
   execFileSync('gh', args, { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }); // NOSONAR: fixed tool name resolved through PATH by developer tooling
@@ -61,26 +62,27 @@ export function requestPreview({ repo, branch, publish = false, timestamp, runGh
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const args = process.argv.slice(2);
+  answerHelp(args, {
+    name: 'preview-release',
+    options: ['--branch', '--repo', '--publish'],
+    usage: `Usage: node scripts/preview-release.mjs --branch <branch> [--repo <owner/name>] [--publish]
+Creates an immutable preview tag and runs the full Release gates. Defaults to npm publish --dry-run.
+Contacts GitHub through gh (creates the tag and dispatches the Release workflow); writes no local files.`,
+  });
   try {
-    const args = process.argv.slice(2);
-    if (args.includes('--help')) {
-      console.log(
-        'Usage: node scripts/preview-release.mjs --branch <branch> [--repo <owner/name>] [--publish]\nCreates an immutable preview tag and runs the full Release gates. Defaults to npm publish --dry-run.',
-      );
-    } else {
-      let branch,
-        repo,
-        publish = false;
-      for (let index = 0; index < args.length; index++) {
-        if (args[index] === '--publish') publish = true;
-        else if (args[index] === '--branch' && args[index + 1]) branch = args[++index];
-        else if (args[index] === '--repo' && args[index + 1]) repo = args[++index];
-        else throw new Error(`Unknown or incomplete option: ${args[index]}`);
-      }
-      branchToken(branch);
-      repo ??= gh(['repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner']).trim();
-      console.log(JSON.stringify(requestPreview({ repo, branch, publish }), null, 2));
+    let branch,
+      repo,
+      publish = false;
+    for (let index = 0; index < args.length; index++) {
+      if (args[index] === '--publish') publish = true;
+      else if (args[index] === '--branch' && args[index + 1]) branch = args[++index];
+      else if (args[index] === '--repo' && args[index + 1]) repo = args[++index];
+      else throw new Error(`Unknown or incomplete option: ${args[index]}`);
     }
+    branchToken(branch);
+    repo ??= gh(['repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner']).trim();
+    console.log(JSON.stringify(requestPreview({ repo, branch, publish }), null, 2));
   } catch (error) {
     console.error(error.message);
     process.exitCode = 1;

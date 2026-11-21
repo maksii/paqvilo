@@ -1,6 +1,6 @@
 import { organizationRecord } from './organization-context.mjs';
 import { currentRequest } from './request-context.mjs';
-import { systemClock, systemIds } from './runtime-clock.mjs';
+import { stampMs, systemClock, systemIds } from './runtime-clock.mjs';
 
 const MESSAGE_BLOCK_LIMIT = 10240;
 // The platform frames a fault row's exceptiondetails end with (native traceFaults: identical in every fault row of both captures).
@@ -83,6 +83,6 @@ export function recordPluginTrace(
     requestid: requestId ?? null,
     configuration: configuration ?? null,
     secureconfiguration: secureConfiguration ?? null,
-    createdon: new Date((store.clock ?? systemClock).now()).toISOString(),
+    createdon: new Date(stampMs(store, store.clock ?? systemClock)).toISOString(),
   });
 }

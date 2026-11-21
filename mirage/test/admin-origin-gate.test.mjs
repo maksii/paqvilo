@@ -184,7 +184,7 @@ test('a rendered page releases its frame-ordering blocker with a page-shaped POS
     headers: navigation,
   });
   assert.equal(rendered.status, 200);
-  const route = /src="(\/__sim\/frame-ready\/[^"]+)"/.exec(rendered.text)?.[1];
+  const route = /'(\/__sim\/frame-ready\/[\da-f-]+)'/.exec(rendered.text)?.[1];
   assert.ok(route, 'the rendered page carries a frame-ready blocker');
   const release = await send(app.url, {
     method: 'POST',

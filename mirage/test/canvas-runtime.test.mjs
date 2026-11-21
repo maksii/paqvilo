@@ -8,7 +8,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { stringify } from 'yaml';
 import { createPowerFxEvaluator } from '../lib/canvas-power-fx.mjs';
-import { createCanvasApp, createCanvasRuntime, describeCanvasRuntime, splitTop } from '../lib/canvas-runtime.mjs';
+import {
+  CANVAS_ACTIONS,
+  createCanvasApp,
+  createCanvasRuntime,
+  describeCanvasRuntime,
+  splitTop,
+} from '../lib/canvas-runtime.mjs';
 import { createCanvasHandler } from '../lib/canvas-http.mjs';
 import { buildSourceGraph, canvasRequirementRows } from '../lib/source-graph.mjs';
 import { CANVAS_APP_FILES, fixtureApp, organization, serveCanvas } from './canvas-runtime-fixture.mjs';
@@ -310,6 +316,58 @@ test('the driver API needs loopback, a principal and the CSRF token; JSON answer
   // One instance per principal: the Basic User's app is still on HomeScreen.
   caller = org.basic;
   assert.equal((await (await fetch(`${base}/_apps/api/canvas/fx_inventedcanvas`)).json()).currentScreen, 'HomeScreen');
+});
+
+test('the driver API refusal of an unknown action lists exactly the actions it dispatches, start and reset included', async (t) => {
+  const org = await organization(t);
+  const app = await fixtureApp();
+  const runtime = createCanvasRuntime({
+    apps: () => [app],
+    evaluator: createPowerFxEvaluator(),
+    api: org.api,
+    caller: org.caller,
+  });
+  const handler = createCanvasHandler({
+    apps: () => [app],
+    runtime,
+    principal: async () => org.admin,
+    csrf: () => 'fx-token',
+  });
+  const base = await serveCanvas(t, handler);
+  const post = async (body) => {
+    const response = await fetch(`${base}/_apps/api/canvas/fx_inventedcanvas`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-sim-csrf': 'fx-token' },
+      body: JSON.stringify(body),
+    });
+    return { status: response.status, body: await response.json() };
+  };
+  const unknown = await post({ action: 'fly' });
+  assert.equal(unknown.status, 400);
+  assert.equal(unknown.body.error.code, 'CanvasActionInvalid');
+  const listed = /^Unknown canvas action fly; use (.+) or ([\w-]+)\.$/.exec(unknown.body.error.message);
+  assert.ok(listed, unknown.body.error.message);
+  const actions = [...listed[1].split(', '), listed[2]];
+  assert.deepEqual(actions, ['start', 'reset', ...CANVAS_ACTIONS]);
+  // A body without an action names the missing field instead of an "undefined" action.
+  const missing = await post({ control: 'x' });
+  assert.equal(missing.status, 400);
+  assert.equal(missing.body.error.code, 'CanvasActionInvalid');
+  assert.equal(
+    missing.body.error.message,
+    `A canvas action is required; use ${actions.join(', ').replace(/, (?=[\w-]+$)/, ' or ')}.`,
+  );
+  // Every listed action reaches its handler (it may still refuse its own missing arguments, never as unknown).
+  for (const action of actions) {
+    const answer = await post({ action });
+    assert.doesNotMatch(answer.body.error?.message ?? '', /Unknown canvas action|has no handler/, action);
+  }
+  // act() accepts only its table, so an action outside it cannot be accepted without being listed.
+  const instance = await runtime.session('fx_inventedcanvas', org.admin);
+  await assert.rejects(instance.act({ action: 'start' }), {
+    code: 'CanvasActionInvalid',
+    message: `Unknown canvas action start; use ${CANVAS_ACTIONS.slice(0, -1).join(', ')} or ${CANVAS_ACTIONS.at(-1)}.`,
+  });
 });
 
 test('a host without the runtime answers 501 CanvasRuntimeUnavailable on the driver API', async (t) => {

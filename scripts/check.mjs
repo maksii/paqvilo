@@ -4,6 +4,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 import { execFile } from 'node:child_process';
+import { answerHelp } from './script-help.mjs';
+
+answerHelp(process.argv.slice(2), {
+  name: 'check',
+  usage: `Usage: node scripts/check.mjs   (npm run check also runs check:boundary)
+Syntax-checks every first-party JavaScript module with node --check, without executing it. Offline; writes nothing.
+Takes no options; --help prints this help.`,
+});
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const files = [];

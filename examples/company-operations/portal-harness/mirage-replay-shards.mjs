@@ -281,9 +281,17 @@ export async function runMirageReplayShards(job, { workers = 10, runWorker = spa
   }
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const args = process.argv.slice(2);
-  if (args.length !== 4 || args[0] !== '--job' || args[2] !== '--workers')
-    throw new Error('Usage: node mirage-replay-shards.mjs --job <private job.json> --workers <1..10>');
+  // Loaded only when run as a command: the replay runtime's own imports stay the fingerprinted set.
+  const { cli, UsageError } = await import('../cli.mjs');
+  const { values } = cli(
+    `Usage: node portal-harness/mirage-replay-shards.mjs --job <private-job.json> --workers <1..10>
+
+Run from examples/company-operations. Runs the campaign replay across up to ten Node processes offline; a relative
+job path resolves from the working directory.`,
+    { job: { type: 'string' }, workers: { type: 'string' } },
+  );
+  if (!values.job || !/^(?:[1-9]|10)$/.test(values.workers ?? ''))
+    throw new UsageError('--job <private-job.json> and --workers 1..10 are required.');
   const controller = new AbortController(),
     abort = () => controller.abort();
   process.once('SIGINT', abort);
@@ -291,8 +299,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   try {
     console.log(
       JSON.stringify(
-        await runMirageReplayShards(JSON.parse(await boundedReplayBytes(path.resolve(args[1]), 65536)), {
-          workers: Number(args[3]),
+        await runMirageReplayShards(JSON.parse(await boundedReplayBytes(path.resolve(values.job), 65536)), {
+          workers: Number(values.workers),
           signal: controller.signal,
         }),
       ),

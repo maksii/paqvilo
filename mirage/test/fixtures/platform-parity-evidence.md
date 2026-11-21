@@ -31,4 +31,4 @@ does not by itself prove local replay or final-tree validation; those receipts r
 separate. Unsupported host seams and unrecorded assertions keep their own test kinds.
 
 Use [test kinds](../../../docs/test-kinds.md) for evidence and change rules and
-[recording frontend contracts](../../docs/frontend-contract-recording.md) for reusable probes.
+[recording frontend contracts](../../docs/parity-evidence.md#record-frontend-contracts) for reusable probes.

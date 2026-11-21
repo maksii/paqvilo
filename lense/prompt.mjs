@@ -5,14 +5,15 @@ import readline from 'node:readline/promises';
  * @param {string} title
  * @param {Array<{value: string, hint?: string}>} items
  * @param {string} [current] value preselected by pressing Enter
+ * @param {string} option the command-line option that names the value instead, e.g. --site
  * @returns {Promise<string>} the chosen value
  */
-export async function choose(title, items, current) {
+export async function choose(title, items, current, option) {
   if (!items.length) throw new Error(`${title}: nothing to choose from`);
   if (items.length === 1) return items[0].value;
   if (!process.stdin.isTTY) {
     throw new Error(
-      `${title}: cannot ask here (no interactive terminal). Name it instead, e.g. --site ${items[0].value}`,
+      `${title}: cannot ask here (no interactive terminal). Name it instead, e.g. ${option} ${items[0].value}`,
     );
   }
   const width = Math.max(...items.map((i) => i.value.length));
@@ -47,6 +48,7 @@ export async function pickSiteAndEnv(catalogue, given = {}, current = {}) {
       'Which site?',
       sites.map(([name, s]) => ({ value: name, hint: s.source ?? '' })),
       current.site,
+      '--site',
     ));
   const chosen = catalogue.sites[site];
   if (!chosen) throw new Error(`Unknown site "${site}". Known sites: ${sites.map(([n]) => n).join(', ')}`);
@@ -59,6 +61,7 @@ export async function pickSiteAndEnv(catalogue, given = {}, current = {}) {
         hint: e.url + (e.caution ? '   CAUTION: real data' : ''),
       })),
       current.site === site ? current.env : chosen.defaultEnv,
+      '--env',
     ));
   if (!chosen.environments[env])
     throw new Error(

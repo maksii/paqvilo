@@ -214,6 +214,25 @@ const notice = (text, error = false) => {
   element.hidden = !text;
   element.classList.toggle('error', error);
 };
+// A script's change to a tab, section or label is drawn with the next frame. Until that render is on screen the
+// document says so (data-mirage-layout="pending"): the form a reader sees is not yet the one the script asked for.
+let layoutRenders = 0;
+function scheduleLayoutRender() {
+  const runtime = clientRuntime;
+  layoutRenders += 1;
+  document.documentElement.dataset.mirageLayout = 'pending';
+  requestAnimationFrame(async () => {
+    try {
+      if (runtime === clientRuntime && record) {
+        captureDraft();
+        await renderRecord();
+      }
+    } finally {
+      layoutRenders -= 1;
+      if (!layoutRenders) delete document.documentElement.dataset.mirageLayout;
+    }
+  });
+}
 function contentLoading(text) {
   document.documentElement.dataset.mirageAppState = 'loading';
   notice('');
@@ -3479,23 +3498,11 @@ function createShellClient(selectedForm) {
     layoutLabel,
     setLayoutLabel: (item, label, tab) => {
       layoutLabels.set(layoutKey(item, tab), label);
-      const runtime = clientRuntime;
-      requestAnimationFrame(() => {
-        if (runtime === clientRuntime && record) {
-          captureDraft();
-          void renderRecord();
-        }
-      });
+      scheduleLayoutRender();
     },
     setLayoutVisible: (item, visible, tab) => {
       layoutState.set(layoutKey(item, tab), visible);
-      const runtime = clientRuntime;
-      requestAnimationFrame(() => {
-        if (runtime === clientRuntime && record) {
-          captureDraft();
-          void renderRecord();
-        }
-      });
+      scheduleLayoutRender();
     },
     read: (name) => {
       const entry = controls.find((entry) => entry.name === name);

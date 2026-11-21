@@ -183,10 +183,10 @@ test('docLink resolves against the docs map and falls back to a path-only link',
       label: 'Data Packs',
     },
   };
-  assert.deepEqual(docLink('mirage/docs/data-packs.md#recognised-exports', docs), {
-    href: 'https://example.test/blob/v1.2.3/mirage/docs/data-packs.md#recognised-exports',
+  assert.deepEqual(docLink('mirage/docs/data-packs.md#recognized-exports', docs), {
+    href: 'https://example.test/blob/v1.2.3/mirage/docs/data-packs.md#recognized-exports',
     label: 'Data Packs',
-    path: 'mirage/docs/data-packs.md#recognised-exports',
+    path: 'mirage/docs/data-packs.md#recognized-exports',
   });
   assert.deepEqual(docLink('mirage/docs/service-fixtures.md', docs), {
     href: null,
@@ -235,7 +235,7 @@ test('leadHelp keeps the first sentence visible and the rest, steps and doc behi
   );
 });
 
-// DV-N4c-1: every data column of a client-side table sorts by the text it shows; row actions never sort.
+// every data column of a client-side table sorts by the text it shows; row actions never sort.
 test('sortable gives each data column a sort key by its shown text, numbers in numeric order', () => {
   const columns = sortable([
     { label: 'Name', render: (item) => `<code>${escapeHtml(item.name)}</code>` },
@@ -263,7 +263,7 @@ test('sortable gives each data column a sort key by its shown text, numbers in n
   );
 });
 
-// D-M-11: every shared table has the bottom bar (count, rows per page, Previous/Next) and, with more than one sortable
+// every shared table has the bottom bar (count, rows per page, Previous/Next) and, with more than one sortable
 // column, Filters with a drawer of column filters; filterItems keeps the rows whose column holds the text.
 test('dataTable: the bottom bar on one page, Filters for column filters, filterItems by column', async () => {
   const kit = await import('../admin/ui-kit.mjs');

@@ -1,8 +1,9 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadConnection, connectedClient } from 'paqvilo/dataverse';
 import { buildBlueprint, validateBlueprint, assertNoActiveOrphans } from './blueprint.mjs';
+import { cli, isMain, UsageError } from '../cli.mjs';
+import { connectionHelp, defaultConnection } from '../paths.mjs';
 
 const project = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const scopeValues = {
@@ -296,32 +297,46 @@ async function verifySecurityDeployment(client, siteId, blueprint, evidenceDirec
     throw new Error('Security verification has unresolved changes.');
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const args = process.argv.slice(2),
-    arg = (name) => {
-      const i = args.indexOf(name);
-      return i < 0 ? undefined : args[i + 1];
-    };
-  const siteId = arg('--site');
-  if (!/^[0-9a-f-]{36}$/i.test(siteId ?? '')) throw new Error('--site GUID is required.');
+const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const HELP = `Usage: node examples/company-operations/portal-security/deploy.mjs --site GUID --catalogue FILE [--connection FILE] [--apply]
+
+Run from the toolkit checkout. Reads the live environment; --apply writes to it.
+
+  --site GUID        explicit isolated website target
+  --catalogue FILE   explicit fixture catalogue used to build the deployment in memory
+${connectionHelp('  --connection FILE  ')}
+  --apply            reconcile native components; otherwise save a read-only plan
+  --help, -h         show help without reading local inputs or connecting
+
+Plans and before/after snapshots stay under the example's ignored .paqvilo/portal-security.
+This command never rewrites the committed portal-security/blueprint.json.`;
+
+function deploymentArguments(values) {
+  if (!GUID.test(values.site ?? '')) throw new UsageError('--site requires a canonical GUID.');
+  if (!values.catalogue?.trim())
+    throw new UsageError('--catalogue FILE is required; choose the fixture catalogue explicitly.');
+  if (values.connection !== undefined && !values.connection.trim())
+    throw new UsageError('--connection must not be empty.');
+  return values;
+}
+
+async function runDeployment(values) {
+  const siteId = values.site;
   const schema = JSON.parse(await fs.readFile(path.join(project, 'dataverse/manifest.json'))),
-    catalogue = JSON.parse(await fs.readFile(arg('--catalogue') ?? path.join(project, 'data/catalogue.json'))),
+    catalogue = JSON.parse(await fs.readFile(values.catalogue)),
     b = buildBlueprint(schema, catalogue);
   validateBlueprint(b, schema);
-  await fs.writeFile(path.join(project, 'portal-security/blueprint.json'), JSON.stringify(b, null, 2) + '\n');
-  const variant = arg('--variant');
-  if (variant)
-    throw new Error(
-      'Parent-only permission variants are blocked after observed broad visibility leakage. Use the bounded complete-subtree deep variant; recorded orphan faults are negative security evidence.',
-    );
-  const connection = await loadConnection(arg('--connection') ?? '.paqvilo/dataverse/provisioning.connection.json'),
-    client = connectedClient(connection);
+  const { loadConnection, connectedClient } = await import('paqvilo/dataverse');
+  const connection = await loadConnection(values.connection ?? defaultConnection);
+  if (!GUID.test(connection.organisationId ?? ''))
+    throw new Error('Connection organisationId GUID is required to verify the deployment target.');
+  const client = connectedClient(connection);
   await client.verify(connection.organisationId);
   let count = 0;
   console.log(
     JSON.stringify(
       await deploySecurity(client, siteId, b, {
-        apply: args.includes('--apply'),
+        apply: values.apply === true,
         evidenceDirectory: path.join(project, '.paqvilo/portal-security'),
         onProgress: (e) => {
           count++;
@@ -331,4 +346,14 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       }),
     ),
   );
+}
+
+if (isMain(import.meta)) {
+  const { values } = cli(HELP, {
+    site: { type: 'string' },
+    catalogue: { type: 'string' },
+    connection: { type: 'string' },
+    apply: { type: 'boolean' },
+  });
+  await runDeployment(deploymentArguments(values));
 }

@@ -1,6 +1,7 @@
 // @test-kind contract+security: invented loopback Solution form workflow and page access controls.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { openPortalPage, readyHandlersRan } from './shared-browser.mjs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -134,7 +135,7 @@ test('solution form layout creates typed data, saved view filters rows, and sour
       writes.push(r.postDataJSON().values);
   });
   page.on('pageerror', (e) => errors.push(e.message));
-  await page.goto(app.url);
+  await openPortalPage(page, app.url);
   const summary = page.locator('#EntityFormPanel .validation-summary');
   assert.equal(await summary.count(), 1);
   assert.equal(await summary.isVisible(), false);
@@ -240,6 +241,7 @@ test('solution form layout creates typed data, saved view filters rows, and sour
   await page.waitForFunction(
     () => document.querySelector('#EntityFormPanel #EntityFormControl_contactedit_EntityFormView_EntityID')?.value,
   );
+  await readyHandlersRan(page);
   assert.equal(await page.locator('#parentcustomerid_name').inputValue(), 'Local Organisation');
   await page.getByRole('button', { name: 'Organisation Clear lookup field' }).click();
   assert.equal(await page.locator('#parentcustomerid_name').inputValue(), '');

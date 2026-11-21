@@ -3,6 +3,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { __testing } from '../baseline-suite.mjs';
 import { fakeTransport } from './support/fake-cdp-transport.mjs';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const { liveSide, openCaptureWriteNet } = __testing;
 const origin = 'https://portal.invalid';
@@ -165,4 +169,26 @@ test('without live.cdpUrl the net is never opened and the diagnostics name the p
   assert.deepEqual(events, ['bridge-call']);
   assert.equal(side.diagnostics().filter((line) => line === NO_CDP_LINE).length, 1);
   await side.close();
+});
+
+// @test-kind contract: meta.json names the side (live|mirage); a capture label such as --label m2 is stored apart from it
+test('a labelled live capture keeps side live in meta.json and records the label separately', async (t) => {
+  const outDir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-baseline-label-'));
+  t.after(() => fs.rm(outDir, { recursive: true, force: true }));
+  const events = [];
+  const side = await liveSideWith({
+    events,
+    received: Promise.resolve(evidenceFor()),
+    net: newNet(events),
+    callTool: () => 'posted',
+  });
+  const folder = path.join(outDir, 'sign-in', 'm2');
+  await side.capture(
+    { id: 'sign-in', steps: [{ goto: '/' }] },
+    { outDir: folder, outputRoot: outDir, ids: {}, meta: { label: 'm2' } },
+  );
+  await side.close();
+  const meta = JSON.parse(await fs.readFile(path.join(folder, 'meta.json'), 'utf8'));
+  assert.equal(meta.side, 'live');
+  assert.equal(meta.label, 'm2');
 });

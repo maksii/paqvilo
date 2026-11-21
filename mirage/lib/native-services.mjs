@@ -49,7 +49,7 @@ import { decimalCell, xlsxWorkbook } from './xlsx-writer.mjs';
 /*
  * Local equivalents of the native Power Pages grid, lookup, subgrid, notes and
  * annotation services. Local contracts are documented in
- * docs/forms-lists-parity.md: POST bodies use camelCase, responses PascalCase,
+ * mirage/docs/forms-lists-parity.md: POST bodies use camelCase, responses PascalCase,
  * the anti-forgery header is __RequestVerificationToken and the opaque
  * Base64SecureConfiguration is issued by the server and verified here.
  */

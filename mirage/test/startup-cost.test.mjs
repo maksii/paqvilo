@@ -345,13 +345,10 @@ test('recursive source watching uses bounded Windows handles, observes atomic sa
   ownedFixture(t).add(() => watcher.close());
   await once(watcher, 'ready');
   if (process.platform === 'win32') assert.equal(watcher.nativeWatchCount(), root.split(path.sep).length);
-  const observed = new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(Error('Source save was not observed')), 60_000);
+  // No deadline of its own: a save that is never observed is ended by the runner's --test-timeout.
+  const observed = new Promise((resolve) => {
     watcher.on('all', (_event, changed) => {
-      if (path.resolve(changed) === file) {
-        clearTimeout(timer);
-        resolve();
-      }
+      if (path.resolve(changed) === file) resolve();
     });
   });
   const temp = file + '.tmp';
@@ -375,19 +372,15 @@ test(
     const watcher = watchSources([root], { ignoreInitial: true, awaitWriteFinish: { stabilityThreshold: 20 } });
     ownedFixture(t).add(() => watcher.close());
     await once(watcher, 'ready');
+    // No deadline of its own: a replacement that is never observed is ended by the runner's --test-timeout.
     const waitFor = (wanted) =>
-      new Promise((resolve, reject) => {
+      new Promise((resolve) => {
         const changed = (_event, changedFile) => {
           if (path.resolve(changedFile) === wanted) {
-            clearTimeout(timer);
             watcher.off('all', changed);
             resolve();
           }
         };
-        const timer = setTimeout(() => {
-          watcher.off('all', changed);
-          reject(Error('Replaced source was not observed: ' + wanted));
-        }, 60_000);
         watcher.on('all', changed);
       });
     for (const [index, replaced] of [root, container].entries()) {

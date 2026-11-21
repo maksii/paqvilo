@@ -14,6 +14,7 @@
 // A receiver that runs on Mirage's own main thread cannot answer while the main thread waits: such a call ends at its
 // deadline. HTTP-driven writes therefore await I/O on the asynchronous pipeline instead (data.mjs createRecordAsync).
 import { MessageChannel, SHARE_ENV, Worker, receiveMessageOnPort } from 'node:worker_threads';
+import { designedWait } from './project-code-watch.mjs';
 import { DataError } from './data-error.mjs';
 
 let bridge = null;
@@ -74,7 +75,7 @@ export function syncIo(operation, payload, { timeoutMs = 10_000 } = {}) {
       void closeSyncIoBridge();
       throw expired(current, operation, timeoutMs);
     }
-    Atomics.wait(current.flags, 0, 0, left);
+    designedWait(() => Atomics.wait(current.flags, 0, 0, left));
     Atomics.store(current.flags, 0, 0);
   }
 }

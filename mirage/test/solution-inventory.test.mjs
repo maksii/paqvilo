@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own Solution inventory classification, diagnostics and capability levels over invented exports
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -145,7 +146,8 @@ const CUSTOMIZATIONS = `<ImportExportXml><Entities/>
 <Dashboards><Dashboard><FormId>{77777777-7777-4777-8777-77777777777a}</FormId><LocalizedNames><LocalizedName description="Invented dashboard" languagecode="1033"/></LocalizedNames>
 <FormXml><forms><systemform><form><tabs><tab><columns><column><sections><section><rows><row><cell><control><parameters><ViewId>{${VIEW_ID}}</ViewId><VisualizationId>{${CHART_ID}}</VisualizationId></parameters></control></cell></row></rows></section></sections></column></columns></tab></tabs></form></systemform></forms></FormXml></Dashboard></Dashboards>
 <WebResources><WebResource><WebResourceId>{77777777-7777-4777-8777-77777777777b}</WebResourceId><Name>x_/page.html</Name><WebResourceType>1</WebResourceType></WebResource>
-<WebResource><WebResourceId>{77777777-7777-4777-8777-77777777777c}</WebResourceId><Name>x_/script.js</Name><WebResourceType>3</WebResourceType></WebResource></WebResources>
+<WebResource><WebResourceId>{77777777-7777-4777-8777-77777777777c}</WebResourceId><Name>x_/script.js</Name><WebResourceType>3</WebResourceType></WebResource>
+<WebResource><WebResourceId>{77777777-7777-4777-8777-77777777777d}</WebResourceId><Name>x_/data.xml</Name><WebResourceType>4</WebResourceType></WebResource></WebResources>
 <CanvasApps><CanvasApp><Name>x_inventedapp_1a2b3</Name><AppVersion>2026-01-01T00:00:00Z</AppVersion><DisplayName>Invented app</DisplayName>
 <ConnectionReferences>${CANVAS_REFERENCES}</ConnectionReferences><DatabaseReferences>${DATABASE_REFERENCES}</DatabaseReferences></CanvasApp></CanvasApps>
 <Connectors><Connector><connectorid>{${CONNECTOR_ID}}</connectorid><name>x_InventedConnector</name><displayname>Invented connector</displayname></Connector></Connectors>
@@ -288,7 +290,10 @@ test('an unpacked classic Solution lists every inventory component with dependen
     { component: 'chart', name: CHART_ID },
   ]);
   assert.equal(records['chart:Invented chart'].id, CHART_ID);
-  assert.equal(records['webresource:x_/page.html'].webResourceType, 1);
+  // The model-driven host serves HTML, script, style and image web resources, so only the types it
+  // does not serve (XML, XSL, ICO, RESX) are inventory.
+  assert.equal(records['webresource:x_/data.xml'].webResourceType, 4);
+  assert.equal(records['webresource:x_/page.html'], undefined);
   assert.equal(records['webresource:x_/script.js'], undefined);
   assert.equal(records['fieldsecurityprofile:Invented profile'].componentType, 70);
   assert.equal(records['role:Invented Role'].componentType, 20);
@@ -560,5 +565,41 @@ test('a compiled connector rises to contract; a blocking compilation diagnostic 
   assert.deepEqual(
     rows.map((row) => [row.id, row.status, row.reason]),
     [['connector:x_fxbad', 'unsupported', 'CONNECTOR_POLICY_UNSUPPORTED']],
+  );
+});
+
+// @test-kind contract: a compiled connector whose only diagnostics are warnings runs at contract level with them attached
+test('a connector with only an OAuth token-only warning reaches contract level and keeps the warning', () => {
+  const name = 'x_5ffxoauth',
+    at = `Connectors/${name}/`;
+  const openapi = {
+    swagger: '2.0',
+    info: { title: 'Invented OAuth' },
+    host: 'api.example.test',
+    basePath: '/v1',
+    schemes: ['https'],
+    securityDefinitions: {
+      oauth: { type: 'oauth2', flow: 'implicit', authorizationUrl: 'https://login.example.test/authorize' },
+    },
+    paths: {
+      '/items': { get: { operationId: 'ListItems', parameters: [], responses: { 200: { description: 'ok' } } } },
+    },
+  };
+  const [record] = mergeInventory(
+    inventoryEntry(at + `${name}_openapidefinition.json`, {
+      size: 100,
+      text: JSON.stringify(openapi),
+      component: 'connector',
+      componentName: name,
+    }),
+  );
+  assert.equal(record.level, 'contract');
+  assert.equal(record.reason, 'CONNECTOR_COMPILED_CONTRACT');
+  const warning = record.diagnostics.find((entry) => entry.code === 'CONNECTOR_AUTH_UNSUPPORTED');
+  assert.equal(warning.severity, 'warning');
+  assert.match(warning.message, /OAuth implicit flow is not run locally/);
+  assert.equal(
+    record.diagnostics.some((entry) => entry.severity === 'error'),
+    false,
   );
 });

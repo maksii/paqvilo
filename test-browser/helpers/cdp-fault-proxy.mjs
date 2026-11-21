@@ -17,7 +17,10 @@ export async function createCdpFaultProxy(endpoint, signal) {
   const peers = new Set();
   const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
   await once(server, 'listening', { signal });
-  let armed;
+  // An armed fault drops the first Page.getFrameTree of a session attached while it is armed: the setup command of the
+  // tab or popup opened for it. Sessions attached earlier (healthy tabs) keep their own reads, which can still be in
+  // flight when a fault is armed, unless the fault is armed for such a session (`arm({ existing: true })`).
+  let armed, fresh;
   const dropped = [];
   server.on('connection', (client) => {
     const upstream = new WebSocket(endpoint);
@@ -28,7 +31,13 @@ export async function createCdpFaultProxy(endpoint, signal) {
       queued = [];
     client.on('message', (bytes) => {
       const message = JSON.parse(bytes.toString());
-      if (armed && message.method === 'Page.getFrameTree' && explicitSessions.has(message.sessionId)) {
+      if (explicitSessions.has(message.sessionId)) events.emit('request:' + message.method, message);
+      if (
+        armed &&
+        message.method === 'Page.getFrameTree' &&
+        explicitSessions.has(message.sessionId) &&
+        fresh.has(message.sessionId) !== armed.existing
+      ) {
         const fault = armed;
         armed = null;
         dropped.push({ method: message.method, sessionId: message.sessionId });
@@ -47,8 +56,11 @@ export async function createCdpFaultProxy(endpoint, signal) {
       const message = JSON.parse(bytes.toString());
       const request = requests.get(message.id);
       requests.delete(message.id);
-      if (request?.method === 'Target.attachToTarget' && message.result?.sessionId)
+      if (request?.method === 'Target.attachToTarget' && message.result?.sessionId) {
         explicitSessions.add(message.result.sessionId);
+        if (armed) fresh.add(message.result.sessionId);
+      }
+      if (request) events.emit('answer:' + message.id);
       if (request && !message.error) events.emit('ack:' + request.method, message.result);
       if (client.readyState === WebSocket.OPEN) client.send(bytes.toString());
     });
@@ -67,9 +79,19 @@ export async function createCdpFaultProxy(endpoint, signal) {
     endpoint: `ws://127.0.0.1:${server.address().port}`,
     dropped,
     nextAck: (method) => once(events, 'ack:' + method, { signal }),
-    arm() {
+    /**
+     * The next `method` command of an explicitly attached session: whether that session was attached for the armed
+     * fault, and a promise of the command's answer.
+     */
+    nextRequest: (method) =>
+      once(events, 'request:' + method, { signal }).then(([message]) => ({
+        fresh: fresh?.has(message.sessionId) === true,
+        answered: once(events, 'answer:' + message.id, { signal }),
+      })),
+    arm({ existing = false } = {}) {
       if (armed) throw Error('A protocol fault is already armed');
-      armed = Promise.withResolvers();
+      armed = { ...Promise.withResolvers(), existing };
+      fresh = new Set();
       return armed.promise;
     },
     disconnect() {

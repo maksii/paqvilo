@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { cli, isMain, UsageError } from '../cli.mjs';
+import { connectionHelp, defaultConnection, exampleRoot } from '../paths.mjs';
 import { loadConnection, connectedClient } from '../../../lense/dataverse/index.mjs';
 import { buildBlueprint } from './blueprint.mjs';
 
@@ -27,19 +28,27 @@ export function planStressRoleVariant(blueprint, persona, roleCount, currentRole
   };
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const args = process.argv.slice(2),
-    arg = (name) => {
-      const i = args.indexOf(name);
-      return i < 0 ? undefined : args[i + 1];
-    },
-    project = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-  if (!arg('--role-count')) throw new Error('--role-count is required (0/1/2/4/8/12).');
+if (isMain(import.meta)) {
+  const { values } = cli(
+    `Usage: node examples/company-operations/portal-security/role-variant.mjs --role-count 0|1|2|4|8|12 [--connection FILE] [--apply]
+
+Run from the toolkit checkout. Plans the P-STRESS persona's business web roles against the live environment; --apply
+writes the role links. Journals stay under the example's ignored .paqvilo/portal-security.
+
+  --role-count N     business roles to keep: 0, 1, 2, 4, 8 or 12
+${connectionHelp('  --connection FILE  ')}
+  --apply            add and remove role links; otherwise save a read-only plan`,
+    { 'role-count': { type: 'string' }, connection: { type: 'string' }, apply: { type: 'boolean' } },
+  );
+  const project = exampleRoot,
+    roleCount = Number(values['role-count']);
+  if (!['0', '1', '2', '4', '8', '12'].includes(values['role-count']))
+    throw new UsageError('--role-count is required (0/1/2/4/8/12).');
   const catalogue = JSON.parse(await fs.readFile(path.join(project, 'data/stress-catalogue.json'))),
     schema = JSON.parse(await fs.readFile(path.join(project, 'dataverse/manifest.json'))),
     blueprint = buildBlueprint(schema, catalogue),
     persona = catalogue.personas.find((p) => p.key === 'P-STRESS');
-  const connection = await loadConnection(arg('--connection') ?? '.paqvilo/dataverse/provisioning.connection.json'),
+  const connection = await loadConnection(values.connection ?? defaultConnection),
     client = connectedClient(connection);
   await client.verify(connection.organisationId);
   const actor = await client.get(`contacts(${persona.contactId})?$select=contactid,pqvd_personcode`),
@@ -52,13 +61,13 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     plan = planStressRoleVariant(
       blueprint,
       persona,
-      Number(arg('--role-count')),
+      roleCount,
       current.map((r) => r.powerpagecomponentid),
     ),
     journal = {
       startedAt: new Date().toISOString(),
       contactId: actor.contactid,
-      mode: args.includes('--apply') ? 'apply' : 'read-only',
+      mode: values.apply ? 'apply' : 'read-only',
       ...plan,
       entries: [],
     },
@@ -67,7 +76,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const out = path.join(dir, 'role-variant-' + new Date().toISOString().replaceAll(':', '-') + '.json'),
     save = () => fs.writeFile(out, JSON.stringify(journal, null, 2));
   await save();
-  if (args.includes('--apply')) {
+  if (values.apply) {
     for (const id of plan.remove) {
       await client.request(`contacts(${actor.contactid})/powerpagecomponent_mspp_webrole_contact(${id})/$ref`, {
         method: 'DELETE',
@@ -89,7 +98,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     journal.verification = planStressRoleVariant(
       blueprint,
       persona,
-      Number(arg('--role-count')),
+      roleCount,
       after.map((r) => r.powerpagecomponentid),
     );
     if (journal.verification.add.length || journal.verification.remove.length)

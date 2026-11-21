@@ -1,5 +1,10 @@
 /** Browser document replacement ends its requests; this does not prove a write committed. */
-export function cancelNavigationRequests(requests, pending, records, { reason, at = Date.now() } = {}) {
+export function cancelNavigationRequests(
+  requests,
+  pending,
+  records,
+  { reason, at = Date.now(), ticks = performance.now() } = {},
+) {
   const cancelled = [];
   for (const request of requests) {
     const record = records.get(request);
@@ -12,7 +17,11 @@ export function cancelNavigationRequests(requests, pending, records, { reason, a
       reason,
       at: new Date(at).toISOString(),
     };
-    record.durationMs = at - record.started;
+    // Elapsed on the runner's monotonic clock when the record carries its start (a wall clock step cannot move it);
+    // `at` stays the reported timestamp.
+    record.durationMs = Number.isFinite(record.startedTicks)
+      ? Math.round(ticks - record.startedTicks)
+      : at - record.started;
     record.finished = false;
     pending.delete(request);
     cancelled.push({

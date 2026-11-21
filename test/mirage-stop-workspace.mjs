@@ -1,12 +1,13 @@
 import { makeTemporaryDirectory, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
-// Shared workspace for the Mirage stop-scope tests: real CLI processes, real detached runtimes and
-// real shells replaying the advertised stop hints from other directories.
+// Shared workspace for the tests of the Mirage lifecycle across real processes (test/mirage-process-boundary.test.mjs,
+// test/mirage-stop-cleanup.test.mjs): real CLI processes, real detached runtimes and real shells replaying the
+// advertised stop hints from other directories. Scenarios that need no real process use
+// test/helpers/mirage-in-process.mjs instead.
 import { after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import net from 'node:net';
 import { execFile } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -14,6 +15,7 @@ import { createFixture } from './fixture.mjs';
 
 import { startReaper, stopRecordedRuntimes } from './mirage-reaper.mjs';
 import { endProcessTree, ownStartedRuntimes } from './helpers/mirage-runtimes.mjs';
+import { catalogueWriter } from './helpers/mirage-in-process.mjs';
 
 export const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 // The grace the product's own stop gives a runtime before SIGKILL (STOP_DEADLINE).
@@ -23,60 +25,6 @@ const TERMINATE_GRACE_MS = 5_000;
 // Created at import so the hook belongs to the file, not to the first test that uses it.
 const portal = createFixture();
 after(() => portal.cleanup());
-
-async function availablePair() {
-  for (let attempt = 0; attempt < 10; attempt++) {
-    const servers = [net.createServer(), net.createServer()];
-    try {
-      const listen = (server, port) =>
-        new Promise((resolve, reject) => {
-          server.once('error', reject);
-          server.listen(port, '127.0.0.1', resolve);
-        });
-      // Stay below the OS ephemeral range: concurrent fixture listeners should
-      // not consume the second planned port immediately after these probes close.
-      await listen(servers[0], 20000 + Math.floor(Math.random() * 10000));
-      const base = servers[0].address().port;
-      if (base === 65535) continue;
-      await listen(servers[1], base + 1);
-      return base;
-    } catch (error) {
-      // EACCES: Windows reserves port ranges (Hyper-V, WSL) that refuse a bind; such a pair is skipped like a used one.
-      if (error.code !== 'EADDRINUSE' && error.code !== 'EACCES') throw error;
-    } finally {
-      await Promise.all(
-        servers.filter((server) => server.listening).map((server) => new Promise((resolve) => server.close(resolve))),
-      );
-    }
-  }
-  throw new Error('The loopback fixture could not reserve consecutive ports.');
-}
-
-// A start that lost its pair is repeated once on another pair. A second loss in the same start needs two independent
-// races; a third start would only delay a real failure's report past the test's own hang guard.
-const PAIR_STARTS = 2;
-
-/**
- * Starts a two-portal group with `mirage start <selectors(base)>` on a free consecutive pair and returns the base port
- * and the start's JSON. Nothing can hold the pair for the runtimes, so another process may take a port before they
- * bind it: Mirage then reports that port in use, or the runtime's listen fails with EADDRINUSE. A start that reports a
- * port of this pair that way is stopped with the same selectors (the portal that did start keeps its state file and
- * would refuse the next start) and the group starts again on another pair.
- */
-export async function startOnPair(work, selectors) {
-  for (let attempt = 1; ; attempt++) {
-    const base = String(await availablePair());
-    try {
-      return { base, started: await work.start(selectors(base)) };
-    } catch (error) {
-      const ports = `(?:${base}|${Number(base) + 1})`;
-      const taken = new RegExp(`Port ${ports} is already in use|EADDRINUSE[^\\n]*:${ports}\\b`);
-      if (attempt >= PAIR_STARTS || !taken.test(String(error?.message))) throw error;
-      const released = await work.run(['mirage', 'stop', ...selectors(base), '--json']);
-      assert.equal(released.status, 0, released.stdout + released.stderr);
-    }
-  }
-}
 
 /** Ends a CLI or shell process and every process it started that is still attached to it. */
 async function stopProcessTree(child) {
@@ -180,27 +128,7 @@ export async function workspace(t) {
     assert.equal(result.status, 0, result.stdout + result.stderr);
     return JSON.parse(result.stdout);
   };
-  const writeCatalogue = async (file, { all = false, project, port = 0 } = {}) => {
-    await fs.mkdir(path.dirname(file), { recursive: true });
-    await fs.writeFile(
-      file,
-      JSON.stringify({
-        sourceRoot: defaults,
-        defaultSite: 'first',
-        portals: all ? 'all' : 'selected',
-        sites: Object.fromEntries(
-          (all ? ['first', 'second'] : ['first']).map((id) => [
-            id,
-            {
-              source: 'portal',
-              environments: { dev: 'https://invented.example.invalid' },
-              mirage: { solutionRoots: [], port, ...(project ? { project } : {}) },
-            },
-          ]),
-        ),
-      }),
-    );
-  };
+  const writeCatalogue = catalogueWriter(defaults);
   const replay = async (hint, capture = false, from = cwd, selectedShell) => {
     const shell = selectedShell ?? (process.platform === 'win32' ? 'powershell.exe' : '/bin/sh');
     const cmd = shell === 'cmd.exe';
@@ -260,9 +188,3 @@ export function fixtureStatusURL(session) {
 const requestStatus = (session) => fetch(fixtureStatusURL(session), { redirect: 'error' });
 export const alive = async (session) => assert.equal((await requestStatus(session)).status, 200);
 export const stopped = (session) => assert.rejects(requestStatus(session), /fetch failed/);
-export const portalProject = (sourceDir) => ({
-  version: 2,
-  defaultPortal: 'first',
-  portals: ['first', 'second'].map((id) => ({ id, path: sourceDir })),
-  solutions: [],
-});

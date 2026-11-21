@@ -448,7 +448,7 @@ test('acceptance rejects unbounded action timeouts and invalid explicit reserves
   for (const navigationCommitReserveMs of [-1, NaN, Infinity, 15000, '3000', null])
     await assert.rejects(
       runAcceptance({ navigationCommitReserveMs }),
-      /navigationCommitReserveMs must be nonnegative and smaller than timeout/,
+      /navigationCommitReserveMs must be non-negative and smaller than timeout/,
     );
 });
 
@@ -478,4 +478,81 @@ test('a live flow closes its write net after its page guard and page, also when 
   assert.deepEqual(stopFailing.calls, ['stop', 'net close'], 'the net closes after a failed guard stop');
 
   await __testing.endFlowPage({ close: async () => {} }, null, null);
+});
+
+// @test-kind contract: a refused --cdp endpoint and a Playwright error reach the report as plain text without ANSI codes
+test('acceptance reports a refused --cdp endpoint with the shared message and strips ANSI codes from errors', async (t) => {
+  const http = await import('node:http');
+  const { chromium } = await import('playwright-core');
+  // The reference tools' shared connection message (mirage/lib/live.mjs).
+  const CDP_CONNECT_FAILURE =
+    'Could not connect to the loopback browser debugging endpoint. Confirm its port and availability.';
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-acceptance-cdp-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  // The local runtime answers its state; the debugging endpoint is a loopback port that was just released.
+  const state = {
+    config: { mode: 'local', pageMode: 'local', endpoints: [] },
+    status: { sourceFingerprint: 'source', implementationFingerprint: 'implementation' },
+  };
+  const server = http.createServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify(state));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const closed = http.createServer();
+  await new Promise((resolve) => closed.listen(0, '127.0.0.1', resolve));
+  const cdpUrl = `http://127.0.0.1:${closed.address().port}`;
+  await new Promise((resolve) => closed.close(resolve));
+  const escape = String.fromCodePoint(27);
+  let launch = async () => ({ newContext: async () => ({}), close: async () => {} });
+  t.mock.method(chromium, 'launch', (...args) => launch(...args));
+  const run = (name) =>
+    runAcceptance({
+      localUrl: `http://127.0.0.1:${server.address().port}`,
+      liveOrigin: 'https://example.invalid',
+      cdpUrl,
+      outputDir: path.join(root, name),
+      flows: [{ name: 'home', mode: 'live', path: '/', steps: [] }],
+    });
+
+  const refused = await run('refused');
+  assert.equal(refused.passed, false);
+  assert.equal(refused.error, CDP_CONNECT_FAILURE);
+  assert.equal(JSON.parse(await fs.readFile(refused.report, 'utf8')).error, CDP_CONNECT_FAILURE);
+
+  launch = async () => {
+    throw new Error(`browserType.launch: ${escape}[31mExecutable doesn't exist${escape}[39m`);
+  };
+  const failed = await run('failed');
+  assert.equal(failed.error, "browserType.launch: Executable doesn't exist");
+});
+
+// @test-kind contract: an unreachable --local origin is one line naming it, never fetch's "fetch failed"
+test('acceptance with a --local origin nothing answers names that origin in one line', async (t) => {
+  const http = await import('node:http');
+  const { execFile } = await import('node:child_process');
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-acceptance-local-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const plan = path.join(root, 'plan.json');
+  await fs.writeFile(plan, JSON.stringify([{ name: 'invented', steps: [] }]));
+  // A loopback port that was just released: nothing answers there.
+  const server = http.createServer();
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  await new Promise((resolve) => server.close(resolve));
+  const cli = path.join(import.meta.dirname, '..', 'acceptance.mjs');
+  const result = await new Promise((resolve) =>
+    execFile(
+      process.execPath,
+      [cli, '--local', origin, '--plan', plan, '--output', path.join(root, 'out')],
+      { encoding: 'utf8', windowsHide: true },
+      (error, stdout, stderr) => resolve({ code: error?.code ?? 0, stdout, stderr }),
+    ),
+  );
+  assert.equal(result.code, 1);
+  assert.equal(
+    result.stderr,
+    `Nothing answers at the --local origin ${origin}/; start Mirage there or pass the origin it prints.\n`,
+  );
 });

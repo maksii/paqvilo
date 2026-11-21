@@ -53,33 +53,40 @@ test('Lense picker searches 500 personas, combines facets and opens a catalogue 
   await root.locator('[data-act="tab"][data-v="tweaks"]').click();
   await root.locator('[data-panel-persona-count]').filter({ hasText: 'of 500 personas' }).waitFor();
   assert.ok((await root.locator('[data-panel-persona-row]').count()) < 100);
-  const defaultSection = root.locator('[data-panel-persona-results]>section').first();
-  assert.equal(await defaultSection.locator('[data-contact]').first().getAttribute('data-contact'), contactId(499));
-  const groups = root.locator('.pp-persona-group');
-  assert.ok((await groups.nth(0).locator('[data-panel-persona-row]').count()) >= 23);
-  assert.ok((await groups.nth(1).locator('[data-panel-persona-row]').count()) >= 24);
+  // The default persona leads, under its own group header; the catalogue groups follow as group headers.
+  const groups = root.locator('[data-panel-persona-results] .group');
+  assert.equal(await groups.first().getAttribute('data-group'), 'persona:default');
+  assert.equal(await groups.first().locator('[data-contact]').first().getAttribute('data-contact'), contactId(499));
+  // One header per group and subgroup: the first two "Group N / Team" sections fill the first page.
+  const teams = root.locator('[data-panel-persona-results] .group[data-group$=":team"]');
+  assert.ok((await teams.nth(0).locator('[data-panel-persona-row]').count()) >= 23);
+  assert.ok((await teams.nth(1).locator('[data-panel-persona-row]').count()) >= 24);
+  // A group with no row on this page starts folded; opened, it offers to show only that group.
+  await root.locator('[data-act="fold"][data-id="persona:__other:"]').click();
   const other = root.locator('[data-act="persona-group"][data-group="__other"]');
   await other.click();
   await root.locator('[data-panel-persona-count]').filter({ hasText: 'of 5 personas' }).waitFor();
   assert.deepEqual(
     await root
-      .locator('[data-panel-persona-facet="groups"] option:checked')
-      .evaluateAll((options) => options.map((option) => ({ value: option.value, label: option.textContent }))),
+      .locator('[data-act="persona-facet"][data-facet="groups"][aria-pressed="true"]')
+      .evaluateAll((chips) => chips.map((chip) => ({ value: chip.dataset.v, label: chip.textContent }))),
     [{ value: '__other', label: 'Other contacts' }],
   );
   assert.equal(await root.locator('[data-panel-persona-row]').count(), 5);
   await root.locator('[data-act="persona-clear"]').click();
-  assert.equal(await root.locator('.pp-persona-filter-disclosure').getAttribute('open'), null);
-  await root.locator('.pp-persona-filter-disclosure>summary').click();
+  assert.equal(await root.locator('[data-panel-persona-facets]').count(), 0, 'clearing closes the filter chips');
+  await root.locator('[data-act="persona-filters"]').click();
   await root.locator('[data-panel-persona-query]').fill('requester');
   await root.locator('[data-panel-persona-count]').filter({ hasText: 'of 1 personas' }).waitFor();
-  await root.locator('[data-panel-persona-facet="roles"]').selectOption('Reviewer');
-  assert.equal(await root.locator('.pp-persona-filter-disclosure>summary').textContent(), 'Filters · 1 active');
-  await root
-    .locator('[data-act="choosepersona"][data-contact="' + contactId(1) + '"]')
-    .first()
-    .click();
-  await Promise.all([page.waitForNavigation({ waitUntil: 'load' }), root.locator('[data-act="signin"]').click()]);
+  await root.locator('[data-act="persona-facet"][data-facet="roles"][data-v="Reviewer"]').click();
+  assert.equal(await root.locator('[data-act="persona-filters"]').getAttribute('aria-label'), 'Filters · 1 active');
+  await Promise.all([
+    page.waitForNavigation({ waitUntil: 'load' }),
+    root
+      .locator('[data-act="signin"][data-contact="' + contactId(1) + '"]')
+      .first()
+      .click(),
+  ]);
   await page.waitForURL(app.url + '/');
   // Decide on a drawn state (collapsed pill or open panel), not on a panel still being drawn.
   await root.locator('.pill:visible, .wrap.open').first().waitFor();

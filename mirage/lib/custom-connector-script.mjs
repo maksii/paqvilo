@@ -47,15 +47,37 @@ const guardReason = (error, probeGuardMs) =>
   error.code === 'ETIMEDOUT'
     ? `the probe did not answer within the ${probeGuardMs} ms guard (probeGuardMs option)`
     : error.message;
+// Whether no folder of the search path holds a file of this name. The system answers EACCES, not ENOENT, for a command
+// no folder holds when one folder of the path cannot be searched (execvp), so the folders decide which it was: a file that
+// exists but cannot be run is a different failure from a command that is absent.
+const absentFromSearchPath = (command, searchPath) =>
+  path.basename(command) === command &&
+  String(searchPath ?? '')
+    .split(path.delimiter)
+    .filter(Boolean)
+    .every((folder) => !fs.existsSync(path.join(folder, command)));
+// The code of a failed spawn: EACCES for a command that is in no folder of the search path is ENOENT.
+const spawnFailureCode = (error, command, searchPath) =>
+  error.code === 'EACCES' && absentFromSearchPath(command, searchPath) ? 'ENOENT' : error.code;
 // `dotnet --version` of a command: { version } when it reports an SDK version, else { version: null, code, reason }.
-function probeVersion(command, spawnSyncImpl = spawnSync, probeGuardMs = DOTNET_PROBE_GUARD_MS) {
+function probeVersion(
+  command,
+  spawnSyncImpl = spawnSync,
+  probeGuardMs = DOTNET_PROBE_GUARD_MS,
+  searchPath = process.env.PATH,
+) {
   let answer;
   try {
     answer = spawnSyncImpl(command, ['--version'], { encoding: 'utf8', timeout: probeGuardMs, windowsHide: true }); // NOSONAR: fixed tool name resolved through PATH by developer tooling
   } catch (error) {
-    return { version: null, code: error.code, reason: error.message };
+    return { version: null, code: spawnFailureCode(error, command, searchPath), reason: error.message };
   }
-  if (answer.error) return { version: null, code: answer.error.code, reason: guardReason(answer.error, probeGuardMs) };
+  if (answer.error)
+    return {
+      version: null,
+      code: spawnFailureCode(answer.error, command, searchPath),
+      reason: guardReason(answer.error, probeGuardMs),
+    };
   if (answer.status !== 0) return { version: null, code: null, reason: `exit status ${answer.status}` };
   const version = answer.stdout.trim();
   return /^\d+\.\d+/.test(version)
@@ -68,13 +90,18 @@ function probeVersion(command, spawnSyncImpl = spawnSync, probeGuardMs = DOTNET_
  */
 export function dotnetSdk(
   command = 'dotnet',
-  { now = Date.now, spawnSyncImpl = spawnSync, probeGuardMs = DOTNET_PROBE_GUARD_MS } = {},
+  {
+    now = Date.now,
+    spawnSyncImpl = spawnSync,
+    probeGuardMs = DOTNET_PROBE_GUARD_MS,
+    searchPath = process.env.PATH,
+  } = {},
 ) {
   const cache = probeCacheOf(spawnSyncImpl);
   if (cache.versions.has(command)) return cache.versions.get(command);
   const failure = cache.failures.get(command);
   if (failure && (failure.probe.code === 'ENOENT' || now() - failure.at < PROBE_RETRY_MS)) return null;
-  const probe = probeVersion(command, spawnSyncImpl, probeGuardMs);
+  const probe = probeVersion(command, spawnSyncImpl, probeGuardMs, searchPath);
   if (probe.version !== null) {
     cache.failures.delete(command);
     cache.versions.set(command, probe.version);
@@ -240,8 +267,8 @@ const project = (sdk) => `<Project Sdk="Microsoft.NET.Sdk">
     <NoWarn>CS1998;CS8632;CS0168</NoWarn>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
-    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.0" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="11.0.0" />
   </ItemGroup>
 </Project>
 `;
@@ -269,11 +296,12 @@ export function createScriptHost({
   killImpl = sendSignal,
   killEscalationMs = BUILD_KILL_ESCALATION_MS,
   env = process.env,
+  searchPath = process.env.PATH,
 } = {}) {
   // Memory-only runtimes never share a predictable, pre-creatable OS temp path.
   // Allocate only after trust and SDK checks, as for state-backed runtimes.
   let root = stateDirectory ? path.join(stateDirectory, 'connector-scripts') : null;
-  const probing = { now, spawnSyncImpl, probeGuardMs };
+  const probing = { now, spawnSyncImpl, probeGuardMs, searchPath };
   const tree = { platform, spawnSyncImpl, killImpl, killEscalationMs, env };
   const available = () => dotnetSdk(command, probing) !== null;
   /** Whether connectorScripts registers this connector's script text. */

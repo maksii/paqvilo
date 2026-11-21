@@ -197,7 +197,7 @@ test('Mirage panel inspects permissions, templates, forms and Solution sources, 
   await page.keyboard.press('ArrowRight');
   assert.equal(await activeTab(), 'tweaks');
   assert.equal(await panelLocator('[role=tabpanel]').getAttribute('aria-labelledby'), 'paqvilo-tab-tweaks');
-  assert.equal(await panelLocator('.search').isVisible(), false);
+  assert.equal(await panelLocator('.tools .search').isVisible(), false);
   await page.keyboard.press('ArrowLeft');
   assert.equal(await activeTab(), 'runtime');
   const fold = panelLocator('[data-act=fold][data-id=runtime-chain]');
@@ -209,7 +209,8 @@ test('Mirage panel inspects permissions, templates, forms and Solution sources, 
   );
   await page.keyboard.press('Enter');
   assert.equal(await fold.getAttribute('aria-expanded'), 'true');
-  assert.match(await panelLocator('.foot').innerText(), /X-ray.*Esc.*search/);
+  // The footer keeps the global keys; Esc and / are shown where they apply.
+  assert.match(await panelLocator('.foot').innerText(), /hide.*panel.*X-ray/);
   await page.route('**/_api/broken', (route) =>
     route.fulfill({
       status: 400,
@@ -238,8 +239,10 @@ test('Mirage panel inspects permissions, templates, forms and Solution sources, 
   const chain = await panelLocator('[data-group="runtime-chain"] .row .name > span:first-child').allInnerTexts();
   assert.deepEqual(chain.slice(0, 4), ['Main', 'Main', 'Partial', 'Greeting']);
   assert.ok(chain.includes('Website header') && chain.includes('Header'));
-  const table = panelLocator('[data-group="runtime-tables"] .row').filter({ hasText: 'contact (Contact)' });
-  await table.getByText('R×', { exact: true }).waitFor();
+  // The display name leads, the logical name beside it; each operation is a word.
+  const table = panelLocator('[data-group="runtime-tables"] .row:has(.what:text-is("contact"))');
+  await table.getByText('no read', { exact: true }).waitFor();
+  assert.equal(await table.locator('.name > span:first-child').innerText(), 'Contact');
   assert.match(await table.locator('.sub').innerText(), /entity set contacts/);
   await panelLocator('[data-group="runtime-forms"] .row')
     .filter({ hasText: 'Edit contact' })
@@ -249,8 +252,8 @@ test('Mirage panel inspects permissions, templates, forms and Solution sources, 
   assert.equal(
     (
       await editor.next(() =>
-        panelLocator('[data-group="runtime-forms"] .row')
-          .filter({ hasText: 'Solution FormXml' })
+        panelLocator('[data-group="runtime-forms"] .row:has(.ico:text-is("Form XML"))')
+          .first()
           .locator('button.main')
           .click(),
       )
@@ -283,22 +286,23 @@ test('Mirage panel inspects permissions, templates, forms and Solution sources, 
     'a setting opens at its record in the shared YAML file',
   );
 
-  // Tweaks: this browser starts anonymous. Signing in as the member persona runs the portal's
-  // sign-in in this page (the local sign-in page: this fixture has no external provider), which
-  // sets the session cookie in this page's browser context and comes back as that contact.
-  await openTab('tweaks');
-  const sessionCard = panelLocator('.card').filter({ hasText: 'Browser session' });
-  await sessionCard.getByText('Anonymous', { exact: true }).waitFor();
-  await panelLocator('[data-panel-persona-query]').fill('alex');
-  await panelLocator('[data-panel-persona-count]').filter({ hasText: 'of 1 personas' }).waitFor();
-  // Local pages are not confined to loopback by default; the status card says so.
+  // Local pages are not confined to loopback by default; the Mirage tab says so.
+  await openTab('mirage');
   await panelLocator('[data-policy="open"]')
     .getByText('Not confined: pages carry only the headers their site settings define', { exact: false })
     .waitFor();
+  // Tweaks: this browser starts anonymous. Signing in as the member persona (its row's sign-in button) runs the
+  // portal's sign-in in this page (the local sign-in page: this fixture has no external provider), which
+  // sets the session cookie in this page's browser context and comes back as that contact.
+  await openTab('tweaks');
+  const sessionCard = panelLocator('.card').filter({ hasText: 'Browser session' });
+  await sessionCard.locator('.who').getByText('Not signed in', { exact: true }).waitFor();
+  await panelLocator('[data-panel-persona-query]').fill('alex');
+  await panelLocator('[data-panel-persona-count]').filter({ hasText: 'of 1 personas' }).waitFor();
   const cookiesBefore = await context.cookies(app.url);
-  await panelLocator('[data-act="choosepersona"][data-contact="alex"]').first().click();
-  await panelLocator('[data-act="signin"]').getByText('Sign in as Alex Local', { exact: true }).waitFor();
-  await Promise.all([page.waitForNavigation({ waitUntil: 'load' }), panelLocator('[data-act="signin"]').click()]);
+  const signIn = panelLocator('[data-act="signin"][data-contact="alex"]').first();
+  assert.equal(await signIn.getAttribute('aria-label'), 'Sign in as Alex Local');
+  await Promise.all([page.waitForNavigation({ waitUntil: 'load' }), signIn.click()]);
   await page.locator('#who').getByText('Alex Local', { exact: true }).waitFor();
   const sessionCookies = (await context.cookies(app.url)).filter(
     (cookie) => !cookiesBefore.some((old) => old.name === cookie.name && old.value === cookie.value),
@@ -319,24 +323,30 @@ test('Mirage panel inspects permissions, templates, forms and Solution sources, 
   await otherContext.close();
   await openTab('tweaks');
   await sessionCard.locator('.who').getByText('Alex Local', { exact: true }).waitFor();
+  // Activity says that the sign-in started and that it finished, under its own kind.
+  await openTab('activity');
+  const signedIn = panelLocator('.body .row').filter({ hasText: 'Signed in as Alex Local' });
+  await signedIn.waitFor();
+  assert.equal(await signedIn.locator('.ico').innerText(), 'Sign-in');
+  assert.equal(await panelLocator('.body .row').filter({ hasText: 'Signing in as Alex Local' }).count(), 1);
 
   // The restricted page is now allowed; its rule is shown as applying to this persona.
   await page.goto(`${app.url}/secure/`);
   await openTab('runtime');
   await panelLocator('.card').filter({ hasText: 'Current persona' }).getByText('allowed', { exact: true }).waitFor();
-  await panelLocator('.card')
-    .filter({ hasText: 'Local Mirage' })
-    .getByText('Signed in as Alex Local', { exact: false })
-    .waitFor();
   const rule = panelLocator('[data-group="runtime-access"] .row').filter({ hasText: 'Members only' });
   await rule.getByText('Restrict read · All content · Member', { exact: false }).waitFor();
   await rule.getByText('current persona', { exact: true }).waitFor();
   await evidence('panel-inspect-member-page');
-  await panelLocator('[data-group="runtime-tables"] .row')
-    .filter({ hasText: 'contact (Contact)' })
-    .getByText('R', { exact: true })
+  await panelLocator('[data-group="runtime-tables"] .row:has(.what:text-is("contact"))')
+    .getByText('read', { exact: true })
     .waitFor();
+  // The runtime and its _sim pages are on the Mirage tab, not in the inspection.
+  assert.equal(await panelLocator('[data-act="copypage"]').count(), 0, 'Inspect starts with the inspection');
+  await openTab('mirage');
   await panelLocator('[data-act="copypage"]').first().click();
+  // The panel writes the clipboard asynchronously and names the copy in its toast once the write has settled.
+  await panelLocator('.toast').getByText('Address copied', { exact: true }).waitFor();
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), `${app.url}/secure/`);
 
   // _sim deep link: requests for this page open in the admin, which the panel leaves alone.
@@ -352,9 +362,9 @@ test('Mirage panel inspects permissions, templates, forms and Solution sources, 
   assert.equal(new URL(admin.url()).hash, '#activity?path=%2Fsecure%2F');
   await admin.getByRole('button', { name: 'Remove filter Path: /secure/' }).waitFor();
   await admin.waitForFunction(() => document.querySelector('#content tbody')?.textContent.includes('/secure/'));
-  // No event marks a draw that never happens. Panel draws run 250 ms after a page event (schedule
-  // in lense/panel.mjs); a quiet period beyond that debounce proves the panel stays absent.
-  await new Promise((resolve) => setTimeout(resolve, 400));
+  // Every draw of a tab, scheduled or not, goes through the panel's draw: one asked for this tab here has
+  // completed when it returns, and has drawn nothing.
+  await panel.draw(admin);
   assert.equal(await admin.locator('#paqvilo-panel').count(), 0);
   await admin.close();
   // Diagnostics opens the Findings tab of Activity (DV-N4-1).
@@ -394,17 +404,29 @@ test('Mirage panel inspects permissions, templates, forms and Solution sources, 
   await evidence('panel-tweaks-confirmation');
   // Regression: the sign-out waited for the Mirage's reload for at most 4 s, then ran in the
   // document that a slower reload destroyed, and this browser stayed signed in (hosted Edge).
-  // Holding the reload's document past that old fallback proves the sign-out waits for the reload itself.
+  // The reload's document is held until the panel's scenario request has been answered, so the sign-out below
+  // follows the reload itself. That no deadline starts it earlier is checked with virtual time in
+  // test/panel.test.mjs ('a scenario sign-in starts at the reload itself, however long the reload takes').
   let heldReloadObserved = false;
+  const scenarioAnswered = Promise.withResolvers(),
+    panelApi = session.api;
+  session.api = async (route, name) => {
+    try {
+      return await panelApi(route, name);
+    } finally {
+      if (name === 'scenario') scenarioAnswered.resolve();
+    }
+  };
   const reloadHeld = async (route) => {
     if (!route.request().isNavigationRequest()) return route.fallback();
     heldReloadObserved = true;
     await page.unroute(`${app.url}/secure/`, reloadHeld);
-    await new Promise((resolve) => setTimeout(resolve, 5000));
+    await scenarioAnswered.promise;
     return route.fallback();
   };
   await page.route(`${app.url}/secure/`, reloadHeld);
   await Promise.all([page.waitForNavigation({ waitUntil: 'load' }), panelLocator('[data-act="confirm-yes"]').click()]);
+  session.api = panelApi;
   assert.equal(heldReloadObserved, true, 'the sign-out navigation entered the held reload route');
   assert.equal(app.state().config.permissionMode, 'enforce');
   assert.equal(app.state().config.activeScenario.id, 'anonymous-enforced');
@@ -417,10 +439,9 @@ test('Mirage panel inspects permissions, templates, forms and Solution sources, 
   await page.goto(`${app.url}/secure/`);
   await page.waitForURL((url) => /\/signin$/i.test(url.pathname) && url.searchParams.get('ReturnUrl') === '/secure/');
   await openTab('tweaks');
-  await panelLocator('[data-act="choosepersona"][data-contact="alex"]').first().click();
   await Promise.all([
     page.waitForURL((url) => url.pathname === '/secure/'),
-    panelLocator('[data-act="signin"]').click(),
+    panelLocator('[data-act="signin"][data-contact="alex"]').first().click(),
   ]);
   await page.locator('#who').getByText('Alex Local', { exact: true }).waitFor();
   await openTab('tweaks');
@@ -429,7 +450,10 @@ test('Mirage panel inspects permissions, templates, forms and Solution sources, 
     panelLocator('[data-act="signout"]').click(),
   ]);
   await openTab('tweaks');
-  await panelLocator('.card').filter({ hasText: 'Browser session' }).getByText('Anonymous', { exact: true }).waitFor();
+  await panelLocator('.card')
+    .filter({ hasText: 'Browser session' })
+    .getByText('Not signed in', { exact: true })
+    .waitFor();
   assert.deepEqual(errors, []);
 });
 
@@ -530,19 +554,16 @@ test("Mirage panel signs this browser in and out through the site's identity pro
   await page.goto(`${app.url}/`);
   await openTab('tweaks');
   const card = panelLocator('.card').filter({ hasText: 'Browser session' });
-  await card
-    .locator('[data-idp="external"]')
-    .getByText(
-      `Signs in through ${provider.caption}${provider.type ? ` (${provider.type})` : ''} · callback ${provider.callbackPath} · local identity provider on port ${idp.port}`,
-      { exact: true },
-    )
-    .waitFor();
+  await card.locator('[data-idp="external"]').waitFor();
+  assert.equal(
+    await card.locator('[data-idp="external"]').getAttribute('title'),
+    `Signs in through ${provider.caption}${provider.type ? ` (${provider.type})` : ''} · callback ${provider.callbackPath} · local identity provider on port ${idp.port}`,
+  );
 
   // Sign in as: ExternalLogin with a login_hint, the local identity provider, its form_post to
   // the callback, then back to this page.
-  await panelLocator('[data-act="choosepersona"][data-contact="alex"]').first().click();
   navigations.length = 0;
-  await panelLocator('[data-act="signin"]').click();
+  await panelLocator('[data-act="signin"][data-contact="alex"]').first().click();
   await page.locator('#who').getByText('Alex Local', { exact: true }).waitFor();
   assert.ok(
     viaIdp('/oauth2/authorize'),

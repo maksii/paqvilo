@@ -166,7 +166,10 @@ test('X-ray inspects fields and sources without activating portal controls acros
     assert.ok(r);
     return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
   };
+  // X-ray re-places its card in its next frame after a page change; until then the card covers what it covered on
+  // screen. A pick waits for that frame, so it clicks the element where it is painted, not the card left over it.
   const pick = async (selector) => {
+    await painted(page);
     const p = await point(selector);
     await page.mouse.click(p.x, p.y);
   };
@@ -193,10 +196,11 @@ test('X-ray inspects fields and sources without activating portal controls acros
   assert.equal(await xray.locator('[data-inspection-evidence]').getAttribute('data-owner-status'), 'exact');
   assert.equal(await page.evaluate(() => window.actions), 0);
   await evidence('01-field-sources');
+  // The column's own definition file is on its component row, not repeated as a source row.
   const fieldSource = xray
-    .locator('[data-evidence-source]')
+    .locator('[data-evidence-role=owner]')
     .filter({ hasText: 'Entity.xml' })
-    .getByRole('button', { name: 'Open source', exact: true });
+    .getByRole('button', { name: /^Open column .+ in the editor$/ });
   assert.match((await nextOpen(() => fieldSource.click()))?.[1] ?? '', /Entities[\\/]fx_widget[\\/]Entity.xml$/);
   await pick('#save');
   assert.equal(await page.evaluate(() => window.actions), 0);
@@ -204,13 +208,14 @@ test('X-ray inspects fields and sources without activating portal controls acros
   assert.equal(await page.evaluate(() => window.actions), 0);
   await xray.getByRole('button', { name: 'Details', exact: true }).click();
   await pick('.updates h2');
-  await titled(page, 'Partial');
+  // The header names the file that matched and the element's tag.
+  await titled(page, 'Partial · h2');
   await xray.getByText('web-templates/Partial.webtemplate.source.html', { exact: false }).first().waitFor();
   const template = await nextOpen(() =>
     xray
       .locator('[data-evidence-source]')
       .filter({ hasText: 'Partial.webtemplate.source.html' })
-      .getByRole('button', { name: 'Open source', exact: true })
+      .getByRole('button', { name: /^Open .+ in the editor$/ })
       .click(),
   );
   assert.match(template?.[1] ?? '', /Partial.webtemplate.source.html$/);
@@ -223,38 +228,66 @@ test('X-ray inspects fields and sources without activating portal controls acros
     wrapper.append(heading);
   });
   await xray.locator('[data-disclosure=static-candidates] > summary').click();
-  await xray.getByRole('button', { name: 'Select matching ancestor' }).first().click();
+  await xray
+    .getByRole('button', { name: /^Select the parent element matching / })
+    .first()
+    .click();
   assert.match(await xray.locator('.element-label').textContent(), /^aside\.updates/);
+  // The sidebar moves under the card X-ray placed beside it. With no X-ray frame pending, the paint the move schedules
+  // is held until the test's own next frame request, so a click sent before that frame meets the stale card in every
+  // run instead of only when the host is slow.
+  await painted(page);
   await page.evaluate(() => {
+    const native = window.requestAnimationFrame.bind(window);
+    window.requestAnimationFrame = (paint) => {
+      window.requestAnimationFrame = (next) => {
+        window.requestAnimationFrame = native;
+        return native((time) => {
+          paint(time);
+          next(time);
+        });
+      };
+      // A request id X-ray keeps while its paint is held, so it requests no other frame meanwhile.
+      return -1;
+    };
     const node = document.querySelector('.updates');
     node.style.position = 'relative';
     document.querySelector('.columns').prepend(node);
   });
+  // The forced order holds: until X-ray paints, the moved heading's center is under its card.
+  assert.equal(
+    await page.evaluate(() => {
+      const r = document.querySelector('.updates h2').getBoundingClientRect();
+      return document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)?.id;
+    }),
+    'paqvilo-xray',
+  );
   await pick('.updates h2');
-  await titled(page, 'Partial');
+  // The header names the file that matched and the element's tag.
+  await titled(page, 'Partial · h2');
   await xray.getByRole('button', { name: 'Details', exact: true }).click();
   await page.evaluate(() => window.scrollTo(0, 0));
-  await page.keyboard.down('Control');
+  await page.keyboard.press('Control');
   await page.locator('#open-dialog').click();
-  await page.keyboard.up('Control');
+  await page.keyboard.press('Control');
   await page.waitForFunction(() => document.getElementById('paqvilo-xray').parentElement.id === 'dialog');
   await pick('#fx_name');
   await waitField(page, 'fx_child.fx_name');
   await xray.getByText('Related children', { exact: true }).first().waitFor({ state: 'attached' });
-  await page.keyboard.down('Control');
+  await page.keyboard.press('Control');
   await page.locator('#nested-open').click();
-  await page.keyboard.up('Control');
+  await page.keyboard.press('Control');
   await pick('#nested-title');
   await waitField(page, 'fx_widget.fx_title');
   await evidence('03-nested-modal');
   await xray.locator('.ancestry summary').click();
-  await xray.getByText('Element & ancestry', { exact: true }).waitFor();
-  await xray.getByRole('button', { name: '↑ Parent', exact: true }).click();
+  await xray.getByText('Parent elements', { exact: true }).waitFor();
+  await xray.getByRole('button', { name: 'Parent', exact: true }).click();
   assert.match(await xray.locator('.element-label').textContent(), /^form/);
   await page.keyboard.press('Escape');
-  await page.keyboard.down('Control');
+  await page.keyboard.press('Control');
   await page.locator('#dialog-close').click();
-  await page.keyboard.up('Control');
+  await page.keyboard.press('Control');
   await page.locator('#embedded').scrollIntoViewIfNeeded();
   const embeddedButton = await page.frameLocator('#embedded').locator('button').boundingBox();
   await page.mouse.click(embeddedButton.x + embeddedButton.width / 2, embeddedButton.y + embeddedButton.height / 2);
@@ -284,6 +317,9 @@ test('X-ray inspects fields and sources without activating portal controls acros
   const cr = await xray.locator('.card').boundingBox();
   assert.ok(cr && cr.x >= 0 && cr.y >= 0 && cr.x + cr.width <= 540 && cr.y + cr.height <= 900);
   await xray.getByRole('button', { name: 'Turn off X-ray' }).click();
+  // X-ray was turned on from the open panel: turning it off brings the panel back, then the page is used again.
+  await scope.locator('.wrap.open').waitFor({ state: 'attached' });
+  await scope.locator('.head [data-act=close]').click();
   await page.locator('#save').click();
   assert.ok((await page.evaluate(() => window.actions)) > 0);
   await page.keyboard.press('Alt+Shift+L');
@@ -461,5 +497,6 @@ test('X-ray identifies the basic form, FormXml and column from a native Mirage-r
   await xray.getByText('Edit widget', { exact: true }).first().waitFor({ state: 'attached' });
   await xray.getByText('Widget form', { exact: true }).first().waitFor({ state: 'attached' });
   assert.equal(await xray.getByText('Styles', { exact: true }).count(), 0);
-  assert.equal(await xray.locator('.title').innerText(), 'Title');
+  // The header names the column once: display name and logical name.
+  assert.equal(await xray.locator('.title').innerText(), 'Title · fx_title');
 });

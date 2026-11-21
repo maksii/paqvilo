@@ -1,3 +1,4 @@
+// @test-kind contract: the model-driven action catalogue, its parameter validation and its declared undos are Paqvilo's own design.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -10,7 +11,7 @@ import {
 test('native action catalogue covers the complete reference vocabulary and separates draft, discard and autosave semantics', () => {
   assert.equal(new Set(MODEL_DRIVEN_ACTIONS.map((action) => action.id)).size, MODEL_DRIVEN_ACTIONS.length);
   assert.equal(MODEL_DRIVEN_ACTIONS.filter((action) => action.id.startsWith('form:')).length, 16);
-  assert.equal(MODEL_DRIVEN_ACTIONS.filter((action) => action.id.startsWith('navigation:')).length, 14);
+  assert.equal(MODEL_DRIVEN_ACTIONS.filter((action) => action.id.startsWith('navigation:')).length, 15);
   assert.equal(MODEL_DRIVEN_ACTIONS.filter((action) => action.id.startsWith('debugging:')).length, 8);
   assert.equal(modelDrivenAction('form:clone-record').effect, 'draft');
   assert.equal(modelDrivenAction('form:refresh-autosave-off').effect, 'discard');
@@ -21,7 +22,33 @@ test('native action catalogue covers the complete reference vocabulary and separ
     'a type-only upstream feature is not advertised as implemented',
   );
   for (const action of MODEL_DRIVEN_ACTIONS)
-    assert.deepEqual(Object.keys(action), ['id', 'label', 'group', 'description', 'effect', 'requirements', 'inputs']);
+    assert.deepEqual(Object.keys(action), [
+      'id',
+      'label',
+      'group',
+      'description',
+      'effect',
+      'requirements',
+      'inputs',
+      'undo',
+    ]);
+});
+
+test('every declared undo is a listed action with valid parameters that is available wherever its action is', () => {
+  const undone = MODEL_DRIVEN_ACTIONS.filter((action) => action.undo);
+  assert.deepEqual(
+    undone.map((action) => action.id),
+    ['form:show-logical-names', 'form:god-mode', 'form:toggle-autosave', 'navigation:pin-to-side-panel'],
+  );
+  for (const action of undone) {
+    const undo = modelDrivenAction(action.undo.id);
+    assert.ok(undo, `${action.id} undoes with a listed action`);
+    assert.deepEqual(validateModelDrivenAction(undo.id, { ...action.undo.params }).action, undo.id);
+    assert.ok(
+      undo.requirements.every((requirement) => action.requirements.includes(requirement)),
+      `${undo.id} needs nothing ${action.id} did not`,
+    );
+  }
 });
 
 test('action parameters reject arbitrary expressions and inherited shapes while preserving Boolean false', () => {
@@ -132,6 +159,7 @@ test('availability follows the page: a list page keeps form actions apart even w
     assert.match(list['form:record-id'].reason, /Open a record form/);
     assert.equal(list['navigation:open-list'].available, true, 'app-level actions stay available on a list');
     assert.match(list['navigation:open-security'].reason, /Power Platform environment ID/);
+    assert.match(list['navigation:open-mobile-client'].reason, /organization unique name/);
     const record = page('entityrecord', '?pagetype=entityrecord&etn=inv_item');
     assert.equal(record['form:show-logical-names'].available, true);
     assert.equal(record['form:record-id'].available, true);

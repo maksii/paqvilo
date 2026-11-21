@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { keepIdleConnections } from './idle-connections.mjs';
 import { createHash, createPublicKey, generateKeyPair, randomBytes, randomUUID, sign, verify } from 'node:crypto';
 import { promisify } from 'node:util';
 import fs from 'node:fs/promises';
@@ -781,6 +782,7 @@ function verifyPkce(entry, verifier) {
     });
     return traces.run(span, () => serve(req, res));
   });
+  keepIdleConnections(server);
   await new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen({ host, port }, resolve);

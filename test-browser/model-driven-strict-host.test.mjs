@@ -1,3 +1,4 @@
+// @test-kind contract: the model-driven inspector's behaviour under a strict CSP and a throwing client API, on an invented loopback fixture.
 import { makeTemporaryDirectory, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -129,28 +130,40 @@ test('a strict CSP and throwing client API keep Actions readable and runnable, X
   // Every documented action is listed; available ones describe themselves and their labels are legible.
   await host.getByRole('tab', { name: 'Actions', exact: true }).click();
   const { MODEL_DRIVEN_ACTIONS } = await import('../lense/model-driven-actions.mjs');
-  await host.getByRole('button', { name: /^Changed fields Show dirty fields/ }).waitFor();
-  assert.equal(await host.locator('.actions-select').count(), MODEL_DRIVEN_ACTIONS.length);
+  await host.locator('.actions-item', { hasText: 'Changed fieldsList fields changed but not saved yet.' }).waitFor();
+  // An action that only reverses another one is that action's Reset, not a row of its own.
+  const undoOnly = new Set(
+    MODEL_DRIVEN_ACTIONS.filter((action) => action.undo && action.undo.id !== action.id).map(
+      (action) => action.undo.id,
+    ),
+  );
+  assert.equal(await host.locator('.actions-select').count(), MODEL_DRIVEN_ACTIONS.length - undoOnly.size);
   const legible = await host.evaluate((element) =>
     [...element.shadowRoot.querySelectorAll('.actions-select')].every(
       (button) => getComputedStyle(button).color !== getComputedStyle(button.closest('.actions-panel')).backgroundColor,
     ),
   );
   assert.equal(legible, true, 'action labels must not render in the panel background color');
-  await host.getByRole('button', { name: /^Changed fields/ }).click();
-  await host.getByRole('button', { name: 'Run action', exact: true }).click();
-  await host.locator('.actions-status').filter({ hasText: 'Completed.' }).waitFor();
-  await host.getByText('The current form draft has no changed attributes.').waitFor();
+  await host.getByRole('button', { name: 'Run Changed fields', exact: true }).click();
+  await host.getByText('No field has unsaved changes.').waitFor();
+  assert.equal(await host.locator('.actions-status').textContent(), '', 'a completed run shows only its result');
+  // Unsupported actions stay listed, with their reasons, in the collapsed "Not available here" group.
+  await host.locator('.actions-unavailable > summary').click();
   assert.match(
-    await host.getByRole('button', { name: /^Table processes/ }).textContent(),
+    await host.locator('.actions-item', { hasText: 'Table processes' }).textContent(),
     /does not report its Web API version/,
   );
 
   // Optional native collection getters throw. Source inspection stays usable,
   // and a name-based field join remains a candidate rather than runtime proof.
   await host.getByRole('tab', { name: 'Inspect', exact: true }).click();
-  await host.getByText('invented · loopback · 1 Solution roots').waitFor();
-  assert.equal(await host.getByText('no exported page matches this address').count(), 0);
+  // The tools lead the tab; the header, not a card, names the site and environment.
+  await host.locator('[data-act="inspect-refresh"]').waitFor();
+  assert.equal(await host.getByText('invented · loopback · 1 Solution', { exact: true }).count(), 0);
+  // The report card is drawn only by the redraw that follows a completed inspection. The inspector state read
+  // further down (inspection error, native structure) is set by that inspection.
+  await host.getByRole('group', { name: 'Inspection sections' }).waitFor();
+  assert.equal(await host.getByText('no web page in your sources has this address').count(), 0);
   await host.getByRole('button', { name: 'Toggle Lense X-ray', exact: true }).click();
   const xray = tab.locator('#paqvilo-xray');
   await tab.waitForFunction(() =>

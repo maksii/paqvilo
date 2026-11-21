@@ -1,13 +1,13 @@
 # Repository maintenance
 
-This guide is for maintainers of the Paqvilo repository. Portal developers should start
-with [getting started](getting-started.md); contributors should use [CONTRIBUTING](../CONTRIBUTING.md).
+For maintainers of the Paqvilo repository. Portal developers start with [getting started](getting-started.md);
+contributors use [CONTRIBUTING](../CONTRIBUTING.md), which owns the CI lanes, hooks and `check:pr`.
 
 ## Repository settings
 
-`scripts/github-admin.mjs` describes the repository settings. Workflows may use GitHub-owned
-actions and `SonarSource/sonarqube-scan-action`; other third-party actions are blocked. Actions stay pinned by full
-commit SHA. Preview its plan before applying it with an authenticated repository administrator account:
+`scripts/github-admin.mjs` declares the repository settings (`--help` lists its options). Without arguments it prints
+the plan as JSON and contacts nothing; `--apply` applies it with the signed-in GitHub CLI and needs repository admin
+permission on the public repository:
 
 ```sh
 gh auth status
@@ -15,86 +15,76 @@ node scripts/github-admin.mjs
 node scripts/github-admin.mjs --apply
 ```
 
-The script updates named rulesets and preserves unrelated ones. It does not publish a
-package, commit source or post announcements. Review its output against the repository's
-actual settings after applying it.
+| Area         | Applied state                                                                                                                                                           |
+| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Merging      | Squash only (PR title and body), auto-merge allowed, branches deleted on merge                                                                                          |
+| `main`       | Strict required checks `CI gate` and `Security gate`, enforced for admins; linear history; resolved conversations; stale reviews dismissed; no force pushes or deletion |
+| Release tags | Ruleset "Immutable release tags": `refs/tags/v*` cannot be updated or deleted                                                                                           |
+| CodeQL       | Ruleset from `.github/code-scanning-ruleset.json` (error alerts, high/critical security alerts), applied once `main` has a CodeQL analysis                              |
+| Actions      | Read-only workflow tokens; only GitHub-owned actions and `SonarSource/sonarqube-scan-action`; full-SHA pins required                                                    |
+| Security     | Secret scanning and push protection, Dependabot alerts and security fixes, private vulnerability reporting                                                              |
+| Environments | `github-pages` deploys from `main`; `npm` admits `v*` tags; Pages is built by Actions with HTTPS enforced                                                               |
+| Metadata     | Description, homepage, topics, Discussions and the `bug`, `enhancement` and `skip-changelog` labels                                                                     |
 
-Main uses pull requests, squash merges, resolved conversations and the required `CI gate`
-and `Security gate` checks. Version tags are immutable. Review requirements should reflect
-the active maintainer team: a sole author cannot approve their own pull request. Keep
-security checks required for administrators.
+The script updates its named rulesets and leaves others alone. It does not publish packages, commit or post
+announcements. Re-run `--apply` after the first Pages deployment (HTTPS certificate) and after the first `main` Security
+run (CodeQL ruleset). It saves the resulting settings to ignored `.paqvilo/admin/setup.json`; compare them with GitHub.
+The script requires no approving reviews; set review requirements to match the active maintainer team (an author cannot
+approve their own PR).
 
-## Validation and security
+A self-hosted runner needs Git, Node and npm at the pinned versions, HTTPS access to the npm registry, NuGet, the .NET
+installer and GitHub archives, free loopback port 80 (the ServiceClient gate), and on Linux passwordless `sudo` or
+Chromium's system libraries (`sudo node node_modules/playwright-core/cli.js install-deps chromium`). CI turns off Git
+auto-maintenance for the runner account and reinstalls dependencies on every run.
 
-PRs targeting `main` or the `0.9.8` maintenance branch run the CI and Security workflows.
-CI runs the pinned Node 24 toolchain on Ubuntu 24.04 and Windows 2025. Mirage and
-example lanes install .NET SDK 10.0.114 from `global.json`; roll-forward accepts only later servicing patches of that
-feature band (10.0.1xx), so a hosted image or a local SDK update never selects a different compiler band. Ordinary PRs
-select Lense, Mirage and example suites conservatively using changed paths and literal
-import consumers. Shared assets, dependency/build/workflow changes and unknown paths
-expand the selection. Full Windows runs also require the locked TDS, DynamicsWebApi, certificate/MSAL.NET and ServiceClient client gates. ServiceClient drops the port from its URL, so its gate binds loopback port 80: hosted runs stop the image's kernel HTTP service first, and a self-hosted Windows runner must leave port 80 free. Python retains its explicit opt-in prerequisites.
-Main pushes, manual full runs and releases run all unit/browser
-suites, Windows/CLR regressions and package smoke. Documentation-only PRs retain quality
-and release checks. Local `npm run ci:verify -- --full` prepares the same mandatory
-fixtures, always executes fresh and writes an ignored receipt for the verified source tree, toolchain
-and platform; ordinary scoped pre-push can reuse that exact result after refreshing dependency audits and signatures. Starting verification revokes previous evidence, so a failed rerun cannot leave a qualifying pass. Confirm the required hosted gates on the final pushed PR head separately from local results. The security workflow performs dependency review and CodeQL
-analysis. Every PR reports the same JavaScript/TypeScript, Actions and C# configurations as main, including
-documentation-only PRs. Omitting an unchanged language leaves CodeQL unable to compare the PR with main and can
-block merging even when `Security gate` succeeds. Runtime suite selection remains independent of these required
-analysis configurations. After successful analysis/processing, `Security gate` checks the analyzed
-ref for open CodeQL findings and fails when any remain or the alert API cannot be
-read. It uses read-only security permissions and does not check out or execute PR
-sources with that token. The first alert is enough to fail; pagination cannot hide
-additional findings. Inspect findings as well as job conclusions; a successful scan
-alone can report alerts.
+## Security alerts
 
-PR scope uses the complete base-to-head diff. A documentation-only commit added to a runtime PR does not narrow its
-selected suites when pushed. A wholly documentation-only PR retains quality and applicable release checks, while
-runtime matrices are skipped. Local commits trigger no hosted run. Do not use CI skip tokens to bypass required gates.
+`Security gate` fails when an applicable job did not succeed (change scope, CodeQL when the change scope requires it,
+and on pull requests that change dependencies the dependency review, which fails on moderate or higher advisories),
+while the analyzed ref has any open CodeQL alert, or when the alert API cannot be read. It uses read-only security
+permissions and never checks out PR sources with that token. A successful scan can still report alerts, so inspect
+findings as well as job conclusions. Every PR must report the same CodeQL configurations as `main` (`actions`, `csharp`,
+`javascript-typescript`); a missing one leaves CodeQL unable to compare the PR with `main` and can block merging even
+when `Security gate` passes.
 
-All PR edits, including description edits, run the applicable source checks and report the same required `CI gate`
-name. A metadata-only run with a different gate name can leave GitHub waiting for the required context despite an
-older successful run. An edit right after a push leaves cancelled matrix jobs named by their template, and
-`check:pr` counts them as replaced once a newer run of that workflow reports on the head. Run
-`npm run check:pr -- --pr <number>` with authenticated GitHub CLI before declaring success; it requires
-the pushed HEAD to match and the effective merge state to be `CLEAN`, as well as completed gates.
+Triage decisions are recorded in
+[`.github/security/codeql-triage.json`](https://github.com/maksii/paqvilo/blob/main/.github/security/codeql-triage.json)
+and in the GitHub alert disposition. Before dismissing an exact false positive, verify the current source, sink, caller
+authority, destination constraints and relevant regressions, and record that constraint, a focused regression where
+applicable, and validation on the affected revision. Do not dismiss an alert because code runs locally or appears in a
+test. Formatting can change fingerprints and reopen an earlier finding: a historical rule/path match is a review aid,
+not permission to dismiss automatically. Do not disable a query, exclude all tests or reuse an old decision without
+checking current behaviour. The `security-extended` suite includes review queries for intentional flows (pinned archive
+downloads, deterministic identifiers, owned loopback protocols); preserve compatibility behaviour when a diagnostic is
+not a security sanitizer.
 
-Report vulnerabilities through [private reporting](https://github.com/maksii/paqvilo/blob/main/SECURITY.md). Alert triage decisions
-are recorded in [`.github/security/codeql-triage.json`](https://github.com/maksii/paqvilo/blob/main/.github/security/codeql-triage.json). A triage entry
-must record the actual source-to-sink constraint, a focused regression where applicable,
-and validation on the affected revision. Do not dismiss an alert merely because code
-runs locally or appears in a test.
+Vulnerability reports go through [private reporting](https://github.com/maksii/paqvilo/blob/main/SECURITY.md).
 
 ## Packages
 
-The [Release workflow](https://github.com/maksii/paqvilo/blob/main/.github/workflows/release.yml) resolves an immutable tag, runs
-all release gates and publishes the tested archive. Stable tags must match package
-metadata and belong to main. Use [branch previews](branch-packages.md) for pre-merge tests.
+The [Release workflow](https://github.com/maksii/paqvilo/blob/main/.github/workflows/release.yml) resolves an immutable
+tag, runs the full CI gates on it and publishes the archive those gates built and tested:
 
-The npm trusted publisher must match the repository, workflow `release.yml` and GitHub
-environment `npm`. The environment's tag policy must admit the intended release tags.
-Review these settings on GitHub and npm before changing the workflow identity. A dry run
-checks packaging but does not prove permission for a registry write.
+| Tag                                     | Condition                                                      | npm dist-tag             | GitHub release |
+| --------------------------------------- | -------------------------------------------------------------- | ------------------------ | -------------- |
+| `v<version>`                            | Equals `package.json` version; commit is an ancestor of `main` | `latest`                 | yes            |
+| `v<version>-<pre>` (not `-preview.`)    | Same                                                           | `next`                   | prerelease     |
+| `v<base>-preview.<token>.<time>.g<sha>` | Created by [the preview helper](branch-packages.md)            | `preview-<branch-token>` | no             |
 
-Before publishing, inspect CI/security findings, install the packed package into a separate
-project, and check the release notes and upgrade instructions. After publication, verify
-the exact npm version and channel. Preview builds must leave `latest` unchanged.
+Pushing a stable or prerelease tag publishes it; pushing a preview tag starts nothing, the helper dispatches its run. A
+manual run takes an existing tag as both ref and input (`gh workflow run release.yml --ref <tag> -f tag=<tag>`; the
+plan step refuses a ref that differs from the input) and defaults to `npm publish --dry-run`. A
+version already on npm is skipped. Publishing uses npm provenance through the trusted publisher configured for
+`maksii/paqvilo`, workflow `release.yml` and environment `npm`; keep these in step when changing the workflow identity.
+A dry run does not prove permission to write to the registry.
 
-Run the [local preview cleanup](branch-packages.md#preview-retention) after publishing previews
-or a stable release. It preserves primary releases, keeps the latest three unreleased previews
-globally, and retires previews covered by a stable release. Apply cleanup interactively with
-your npm login and npm's manual two-factor approval. Publishing stays on trusted publishing;
-there is no GitHub cleanup workflow or maintenance token.
+Before publishing, inspect CI and security findings, install the packed package into a separate project, and check the
+[release notes](release-notes.md). Afterwards, verify the exact npm version and dist-tag, then run the
+[preview cleanup](branch-packages.md#preview-retention).
 
 ## Website
 
-`npm run site:build` builds the static website and checks its local links. Pages builds
-pull requests without deployment; deployment uses main and the `github-pages` environment.
-Check the demo instructions and coverage links on desktop and narrow screens when changing
-the site. Discussion categories and npm access settings are maintained in their respective UIs.
-
-## Review CodeQL results
-
-The extended suite includes review queries for intentional flows, such as pinned archive downloads, deterministic identifiers and owned loopback protocols. The security gate requires zero open alerts after fixes or individual review; it does not mean the analyzer produced zero results. Preserve compatibility behavior when a diagnostic is not a security sanitizer.
-
-Before dismissing an exact false positive, verify the current source, sink, caller authority, destination constraints and relevant regressions. Record the evidence in `.github/security/` and in the GitHub alert disposition. Formatting can change fingerprints and reopen an earlier finding: a historical rule/path match is a review aid, not permission to dismiss it automatically. Do not disable a query, exclude all tests or reuse an old decision without checking current behavior.
+`npm run site:build` builds the static site and checks its local links. The Pages workflow builds pull requests that
+change the site and deploys from `main` through the `github-pages` environment. Check the demo instructions and coverage
+links at desktop and narrow widths when changing the site. Discussion categories and npm access settings are maintained
+in their own UIs.

@@ -7,7 +7,7 @@ import { DataStore, formatMockRecord, normalizeMockLiquidRecord, normalizeMockLi
 import { createSimulator } from '../server.mjs';
 import { createPortalRenderer } from '../lib/liquid.mjs';
 import { normalizeLiveRecord } from '../lib/live.mjs';
-import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, ownedClose, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const definition = {
   dataverseType: 'picklist',
@@ -206,11 +206,7 @@ test('FetchXML root/link/attribute aliases use each entity metadata while aggreg
 });
 test('actual HTTP PATCH keeps scalar API values and renders updated Liquid entity plus FetchXML choice value/label', async (t) => {
   const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-liquid-choice-'));
-  let app;
-  ownedFixture(t).add(async () => {
-    await app?.close();
-    await fs.rm(dir, { recursive: true, force: true });
-  });
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const files = {
     'portal/website.yml': 'adx_name: Choices\nadx_websiteid: site',
     'portal/sitesetting.yml':
@@ -228,20 +224,23 @@ test('actual HTTP PATCH keeps scalar API values and renders updated Liquid entit
     await fs.mkdir(path.dirname(target), { recursive: true });
     await fs.writeFile(target, body);
   }
-  app = await createSimulator({
-    sourceDir: path.join(dir, 'portal'),
-    stateFile: path.join(dir, 'state.json'),
-    solutionRoots: [path.join(dir, 'solution')],
-    watch: false,
-    // The change field list is the wildcard, which hosted sites reject unless exempt.
-    observed: { webApiWildcard: 'exempt', evidence: 'synthetic fixture with a wildcard field list' },
-    // entities[table][id] (EntitySetDrop) only loads records addressed by a GUID.
-    initial: (() => {
-      const seeded = initial();
-      seeded.tables.change[0].changeid = '6f1a2b3c-4d5e-4f60-8a7b-9c0d1e2f3a4b';
-      return seeded;
-    })(),
-  });
+  const app = ownedClose(
+    t,
+    await createSimulator({
+      sourceDir: path.join(dir, 'portal'),
+      stateFile: path.join(dir, 'state.json'),
+      solutionRoots: [path.join(dir, 'solution')],
+      watch: false,
+      // The change field list is the wildcard, which hosted sites reject unless exempt.
+      observed: { webApiWildcard: 'exempt', evidence: 'synthetic fixture with a wildcard field list' },
+      // entities[table][id] (EntitySetDrop) only loads records addressed by a GUID.
+      initial: (() => {
+        const seeded = initial();
+        seeded.tables.change[0].changeid = '6f1a2b3c-4d5e-4f60-8a7b-9c0d1e2f3a4b';
+        return seeded;
+      })(),
+    }),
+  );
   const state = await (await fetch(app.url + '/__sim/api/state')).json();
   const patched = await fetch(app.url + '/_api/changes(6f1a2b3c-4d5e-4f60-8a7b-9c0d1e2f3a4b)', {
     method: 'PATCH',
@@ -274,11 +273,7 @@ test('actual HTTP PATCH keeps scalar API values and renders updated Liquid entit
 
 test('custom mapping choice metadata remains available without an imported solution', async (t) => {
   const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-custom-choice-'));
-  let app;
-  ownedFixture(t).add(async () => {
-    await app?.close();
-    await fs.rm(dir, { recursive: true, force: true });
-  });
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const files = {
     'website.yml': 'adx_websiteid: custom\nadx_name: Custom',
     'sitesetting.yml':
@@ -294,15 +289,18 @@ test('custom mapping choice metadata remains available without an imported solut
   // entities[table][id] (EntitySetDrop) only loads records addressed by a GUID.
   state.tables.change[0].changeid = '6f1a2b3c-4d5e-4f60-8a7b-9c0d1e2f3a4b';
   state.tables.change[0].sample_status = 100000001;
-  app = await createSimulator({
-    sourceDir: dir,
-    stateFile: path.join(dir, 'state.json'),
-    solutionRoots: [],
-    watch: false,
-    // The change field list is the wildcard, which hosted sites reject unless exempt.
-    observed: { webApiWildcard: 'exempt', evidence: 'synthetic fixture with a wildcard field list' },
-    initial: state,
-  });
+  const app = ownedClose(
+    t,
+    await createSimulator({
+      sourceDir: dir,
+      stateFile: path.join(dir, 'state.json'),
+      solutionRoots: [],
+      watch: false,
+      // The change field list is the wildcard, which hosted sites reject unless exempt.
+      observed: { webApiWildcard: 'exempt', evidence: 'synthetic fixture with a wildcard field list' },
+      initial: state,
+    }),
+  );
   const api = await (await fetch(app.url + '/_api/changes(6f1a2b3c-4d5e-4f60-8a7b-9c0d1e2f3a4b)')).json();
   assert.equal(api.sample_status, 100000001);
   assert.equal(api['sample_status@OData.Community.Display.V1.FormattedValue'], 'In progress');

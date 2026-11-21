@@ -14,6 +14,7 @@ import { childOutput } from './helpers/child-output.mjs';
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
 import { recordedRuntimeOwner } from '../test/helpers/mirage-runtimes.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../test/helpers/bounded-command.mjs';
 
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 const listen = (server) => new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -202,12 +203,17 @@ async function devFixture(t) {
   return { dir, external, project, portalProject, launch, endByBrowser };
 }
 
-test('standalone dev starts configured apps, opens the workbench and closes only owned processes', async (t) => {
-  const { portalProject, launch, endByBrowser } = await devFixture(t);
-  await endByBrowser(await launch());
-  await endByBrowser(await launch('/_sim/?example=1#section'));
-  await endByBrowser(await launch(undefined, portalProject));
-});
+// Hang guard only: one scenario of three development sessions in one directory, each with its app server and browser.
+test(
+  'standalone dev starts configured apps, opens the workbench and closes only owned processes',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const { portalProject, launch, endByBrowser } = await devFixture(t);
+    await endByBrowser(await launch());
+    await endByBrowser(await launch('/_sim/?example=1#section'));
+    await endByBrowser(await launch(undefined, portalProject));
+  },
+);
 
 // @test-kind contract: mirage stop of a dev session's runtime ends the dev command with its app servers and owned browser
 test('mirage stop of a dev session runtime ends the dev command with its app servers and owned browser', async (t) => {

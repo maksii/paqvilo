@@ -595,7 +595,6 @@ import { definitionQuery } from './definition-query.mjs';
       predicate,
       binding,
       sourceRefIds: refs.map((ref) => ref.id),
-      label: 'Rendered component identifier joined to the selected export',
       ...extra,
     });
   };
@@ -631,12 +630,15 @@ import { definitionQuery } from './definition-query.mjs';
       id: boundary.id ?? '',
     });
   }
+  // The table is named either by a rendered table identifier or by the configured table of a form, list or view
+  // identified by its rendered ID (a component's record fixes its table; conflicts returned above). Both are exact,
+  // so one form's table does not change certainty with the control picked inside it; origin records which it was.
   if (declaredTable)
     add(
       { kind: 'table', key: 'table:' + declaredTable, entity: declaredTable, name: declaredTable },
       'enclosing',
       'defined-on',
-      observedTable ? 'native-component-id' : 'export-definition',
+      'native-component-id',
       {
         origin: observedTable ? 'observed' : 'configured',
         reason: observedTable ? 'rendered-table-identifier' : 'configured-component-table',
@@ -767,9 +769,7 @@ import { definitionQuery } from './definition-query.mjs';
       'identity',
       'native-field-id',
       {
-        label: chosenGrid
-          ? 'Rendered grid table and declared column joined to the selected export'
-          : 'Rendered field or attribute host joined to the selected export',
+        label: chosenGrid ? 'Matched by grid column on the page' : 'Matched by field name on the page',
       },
     );
   }

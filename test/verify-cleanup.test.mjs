@@ -77,10 +77,20 @@ function portalContext(trace, browser, at, marks) {
   let statusReads = 0;
   const mainFrame = {};
   const requestListeners = [];
+  const navigationWaiters = [];
+  const responses = new WeakMap();
   // the browser reports a main-frame navigation as a navigation request of the main frame, before the document commits
   const navigate = (url) => {
-    const request = { url: () => url, isNavigationRequest: () => true, frame: () => mainFrame };
+    const request = {
+      url: () => url,
+      isNavigationRequest: () => true,
+      frame: () => mainFrame,
+      response: async () => responses.get(request),
+    };
+    const response = respond(request, ++browser.documents);
+    responses.set(request, response);
     for (const listener of requestListeners) listener(request);
+    for (const navigation of navigationWaiters.splice(0)) navigation.resolve(response);
     return request;
   };
   const withSnippet = ['reload', 'replaced-while-inspected', 'keeps-navigating', 'inspection-fails'].includes(at);
@@ -106,10 +116,18 @@ function portalContext(trace, browser, at, marks) {
     on: (event, listener) => {
       if (event === 'request') requestListeners.push(listener);
     },
-    goto: () => {
+    waitForNavigation: (options) => {
+      assert.deepEqual(options, { waitUntil: 'domcontentloaded', timeout: 120_000 });
+      const navigation = deferred();
+      navigationWaiters.push(navigation);
+      return navigation.promise;
+    },
+    goto: (_url, options) => {
+      // The overlay never answers the watcher's reload of this page: the page keeps its document.
+      if (options?.waitUntil === 'commit') return Promise.resolve(null);
       trace.step('page goto');
       browser.gotos += 1;
-      const response = respond(navigate(TARGET_URL), browser.gotos);
+      const response = responses.get(navigate(TARGET_URL));
       if (at !== 'goto') return Promise.resolve(response);
       const navigation = deferred();
       // the interrupt lands while the navigation is in flight; the navigation then completes on its own
@@ -122,7 +140,7 @@ function portalContext(trace, browser, at, marks) {
     waitForLoadState: async () => {
       if (at === 'load') trace.raise();
       // the page starts another navigation once it has loaded: once for 'reload', on every load for 'keeps-navigating'
-      if (at === 'keeps-navigating' || (at === 'reload' && browser.gotos === 1))
+      if (at === 'keeps-navigating' || (at === 'reload' && browser.documents === 1))
         navigate(`${TARGET_URL}?lang=INVENTED`);
     },
     // the diagnostics are captured right before the screenshot
@@ -160,9 +178,14 @@ function portalContext(trace, browser, at, marks) {
 }
 
 // Creates the fixture site and a state directory, both removed after the test, and the verify configuration for them.
-function createVerifyConfig(t) {
+function createVerifyConfig(t, inlineChecks = false) {
   const fixture = createFixture();
   t.after(fixture.cleanup);
+  // This page never goes through the overlay, so no inline replacement is ever recorded: without page custom CSS and
+  // JS the run skips those checks, where it would wait for the record until its deadline. A run that is interrupted
+  // in such a wait keeps them.
+  for (const kind of inlineChecks ? [] : ['custom_css.css', 'custom_javascript.js'])
+    fs.rmSync(path.join(fixture.dir, `web-pages/home/content-pages/Home.en-US.webpage.${kind}`));
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-verify-interrupt-'));
   t.after(() => fs.rmSync(stateDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }));
   return {
@@ -179,12 +202,13 @@ function createVerifyConfig(t) {
 
 // Starts verification on the portal page. `at` names the step the interrupt lands in; 'idle' raises nothing and
 // holds the watcher's idle wait behind the `idle` promise. `finished` resolves to the run's record, and
-// `idleRequested` resolves once the run asks the watcher to become idle, after its dev panel checks.
+// `idleRequested` resolves once the run asks the watcher to become idle before its diagnostics (with 'idle')
+// or for the first time (otherwise).
 function startVerify(t, { at, signal = 'SIGINT', idle = Promise.resolve() }) {
-  const cfg = createVerifyConfig(t);
+  const cfg = createVerifyConfig(t, at === 'until');
   const source = new EventEmitter();
   const trace = interruptTrace(signal, source);
-  const browser = { launched: false, closed: false, gotos: 0, inspected: [], screenshots: [] };
+  const browser = { launched: false, closed: false, gotos: 0, documents: 0, inspected: [], screenshots: [] };
   const marks = [];
   const idleRequested = deferred();
   const output = [];
@@ -202,6 +226,9 @@ function startVerify(t, { at, signal = 'SIGINT', idle = Promise.resolve() }) {
       configurable: true,
       get: () => () => {
         marks.push('watcher idle wait');
+        // The run waits twice: before it asks whether the page is still online, then before the diagnostics. Only
+        // the second wait is the held one.
+        if (at === 'idle' && marks.length === 1) return Promise.resolve();
         if (at === 'idle') t.mock.timers.enable({ apis: ['setTimeout'] });
         idleRequested.resolve();
         return idle;
@@ -364,9 +391,10 @@ test('an interrupt while the page load is awaited stops the run before the docum
   assertInterrupted(await interruptedRun(t, { at: 'load' }), { launched: true });
 });
 
-test('a start page that starts another navigation once it has loaded is read again before the edits are chosen', async (t) => {
+test('a start page that starts another navigation is read without replacing it before the edits are chosen', async (t) => {
   const outcome = await startVerify(t, { at: 'reload' }).finished;
-  assert.equal(outcome.browser.gotos, 2);
+  assert.equal(outcome.browser.gotos, 1, 'the observed replacement owns navigation without an additional goto');
+  assert.equal(outcome.browser.documents, 2);
   assert.deepEqual(outcome.browser.inspected, [pageDocument(2, true)]);
   assert.equal(outcome.report.error, undefined);
   assert.equal(outcome.report.checks.find((check) => check.name === 'page loads through the overlay')?.ok, true);
@@ -381,7 +409,8 @@ test('the evidence screenshot of a verified page is taken under its 120 s hang g
 
 test('a document the page replaces while its snippets are inspected is read again instead of failing the run', async (t) => {
   const outcome = await startVerify(t, { at: 'replaced-while-inspected' }).finished;
-  assert.equal(outcome.browser.gotos, 2);
+  assert.equal(outcome.browser.gotos, 1, 'an inspection invalidated by navigation never forces another goto');
+  assert.equal(outcome.browser.documents, 2);
   assert.deepEqual(outcome.browser.inspected, [pageDocument(1, true), pageDocument(2, true)]);
   assert.equal(outcome.report.error, undefined);
 });
@@ -389,7 +418,12 @@ test('a document the page replaces while its snippets are inspected is read agai
 test('a start page that keeps navigating fails after three reads and names where it went without query values', async (t) => {
   const outcome = await startVerify(t, { at: 'keeps-navigating' }).finished;
   assert.equal(outcome.result, 1);
-  assert.equal(outcome.browser.gotos, 3);
+  assert.equal(
+    outcome.browser.gotos,
+    1,
+    'the read limit follows observed documents instead of issuing more goto calls',
+  );
+  assert.equal(outcome.browser.documents, 4, 'each of the three read documents was replaced as it loaded');
   assert.equal(outcome.report.errorCode, 'VERIFY_FAILED');
   assert.ok(
     outcome.report.error.includes(
@@ -417,11 +451,15 @@ test('the diagnostics after the edits are captured only once the watcher is idle
   // a pause that is still armed would fire on this tick and capture the diagnostics before the watcher is idle
   t.mock.timers.tick(10_000);
   await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(run.marks, ['watcher idle wait'], 'the capture waits while the watcher is busy');
+  assert.deepEqual(
+    run.marks,
+    ['watcher idle wait', 'watcher idle wait'],
+    'the capture waits while the watcher is busy',
+  );
   t.mock.timers.reset();
   idle.resolve();
   const outcome = await run.finished;
-  assert.deepEqual(outcome.marks, ['watcher idle wait', 'afterEdits capture']);
+  assert.deepEqual(outcome.marks, ['watcher idle wait', 'watcher idle wait', 'afterEdits capture']);
   assert.notEqual(outcome.report.diagnostics.afterEdits, null);
   assert.equal(outcome.report.cleanup.temporarySourceRemoved, true);
 });

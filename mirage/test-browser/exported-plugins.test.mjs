@@ -35,7 +35,7 @@ test('backend operations exposes plugin source bindings and persists an editable
     .filter({ has: page.getByRole('heading', { name: 'Widget step 3', exact: true }) });
   await section.getByText('Invented.WidgetRules.Validate · Invented.WidgetRules', { exact: true }).waitFor();
   assert.match(await section.textContent(), /PreValidation.*rank 1/);
-  assert.equal(await section.getByLabel('Local behavior', { exact: true }).inputValue(), 'placeholder');
+  assert.equal(await section.getByLabel('Local behaviour', { exact: true }).inputValue(), 'placeholder');
   const write = (method, route, data) =>
     page.context().request.fetch(app.url + '/_api/' + route, {
       method,
@@ -48,11 +48,11 @@ test('backend operations exposes plugin source bindings and persists an editable
     app.state().diagnostics.some((item) => item.code === 'PLUGIN_STEP_PLACEHOLDER' && item.stepId === pluginId(3)),
   );
   const row = app.store.snapshot().tables.fx_widget[0];
-  await section.getByLabel('Local behavior', { exact: true }).selectOption('mock');
+  await section.getByLabel('Local behaviour', { exact: true }).selectOption('mock');
   await section
     .getByLabel('Mock result (JSON)', { exact: true })
     .fill('{"error":{"message":"Browser configured rejection"}}');
-  await section.getByRole('button', { name: 'Save local behavior', exact: true }).click();
+  await section.getByRole('button', { name: 'Save local behaviour', exact: true }).click();
   await page.getByText('Local operation saved.', { exact: true }).waitFor();
   const operation = app.state().config.operations.find((item) => item.key === `plugin-step:${pluginId(3)}`);
   assert.equal(operation.mode, 'mock');
@@ -82,9 +82,9 @@ test('backend operations exposes plugin source bindings and persists an editable
   const asyncSection = page
     .locator('section')
     .filter({ has: page.getByRole('heading', { name: 'Widget step 9', exact: true }) });
-  assert.equal(await asyncSection.getByLabel('Local behavior', { exact: true }).isDisabled(), false);
-  await asyncSection.getByLabel('Local behavior', { exact: true }).selectOption('disabled');
-  await asyncSection.getByRole('button', { name: 'Save local behavior', exact: true }).click();
+  assert.equal(await asyncSection.getByLabel('Local behaviour', { exact: true }).isDisabled(), false);
+  await asyncSection.getByLabel('Local behaviour', { exact: true }).selectOption('disabled');
+  await asyncSection.getByRole('button', { name: 'Save local behaviour', exact: true }).click();
   await page.getByText('Local operation saved.', { exact: true }).waitFor();
   assert.equal(
     app.state().config.operations.find((item) => item.key === `plugin-step:${pluginId(9)}`).mode,

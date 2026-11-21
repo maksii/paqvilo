@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { loadCatalogue } from '../config.mjs';
 import { pickSiteAndEnv } from '../prompt.mjs';
+import { paqviloCommand } from '../command-hint.mjs';
 
 /** Sets KEY=value in .env text: replaces the (possibly commented-out) line, or appends one. */
 export function setEnvLine(text, key, value) {
@@ -60,6 +61,6 @@ export default async function use(_cfg, args, positionals = []) {
           : `note: ${key} is also set in your shell (${process.env[key]}) and wins over .env`,
       );
   }
-  console.log('start with: npm run dev');
+  console.log(`start with: ${paqviloCommand(['lense', 'dev'], { script: 'dev', config: args.config })}`);
   return 0;
 }

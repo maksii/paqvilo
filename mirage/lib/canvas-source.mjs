@@ -585,7 +585,7 @@ async function readCanvasLayout(files, diagnostic) {
   if (unknownVersion)
     diagnostic(
       'CANVAS_SOURCE_SCHEMA_UNKNOWN',
-      `pa.yaml schema v${unknownVersion} is not recognised; known: ${CANVAS_SCHEMA_VERSIONS.join(', ')}.`,
+      `pa.yaml schema v${unknownVersion} is not recognized; known: ${CANVAS_SCHEMA_VERSIONS.join(', ')}.`,
     );
   result.app.schemaVersion = unknownVersion ?? CANVAS_SCHEMA_VERSIONS.at(-1);
   const layout = await readCanvasLayout(files, diagnostic);
@@ -1025,25 +1025,5 @@ export function canvasSourceWatch(sources = [], projectRoot = process.cwd()) {
   return { roots, contains };
 }
 
-/** Validates the project `canvas` key: { enabled?: boolean, sources?: string[] }. Registered by provider-modules.mjs. */
-export function canvasSettings(value, label = 'canvas') {
-  if (value == null) return value;
-  if (typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} must be an object`);
-  for (const key of Object.keys(value))
-    if (!['enabled', 'sources', 'codeComponents'].includes(key))
-      throw new Error(`Unknown ${label} key '${key}'; expected enabled, sources or codeComponents`);
-  if (value.enabled !== undefined && typeof value.enabled !== 'boolean')
-    throw new Error(`${label}.enabled must be true or false`);
-  if (value.codeComponents !== undefined && typeof value.codeComponents !== 'boolean')
-    throw new Error(`${label}.codeComponents must be true or false`);
-  if (
-    value.sources !== undefined &&
-    (!Array.isArray(value.sources) || value.sources.some((source) => typeof source !== 'string' || !source.trim()))
-  )
-    throw new Error(`${label}.sources must be an array of non-empty paths`);
-  return {
-    ...(value.enabled !== undefined ? { enabled: value.enabled } : {}),
-    ...(value.codeComponents !== undefined ? { codeComponents: value.codeComponents } : {}),
-    ...(value.sources !== undefined ? { sources: [...value.sources] } : {}),
-  };
-}
+// The `canvas` contract lives in canvas-settings.mjs, so the config-load path validates it without this module.
+export { canvasSettings } from './canvas-settings.mjs';

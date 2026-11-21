@@ -3,6 +3,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { answerHelp } from './script-help.mjs';
 
 const core = '(?:0|[1-9][0-9]*)';
 const versionPattern = new RegExp(String.raw`^${core}\.${core}\.${core}(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$`);
@@ -65,7 +66,7 @@ export function releasePlan({ tag, version, sha, onMain }) {
 /** Change only release metadata in the runner checkout, never commit a version bump. */
 export function stampVersion(root, version) {
   baseVersion(version);
-  const files = ['package.json', 'package-lock.json', 'npm-shrinkwrap.json'];
+  const files = ['package.json', 'package-lock.json', 'paqvilo-lock.json'];
   const documents = files.map((file) => JSON.parse(fs.readFileSync(path.join(root, file), 'utf8')));
   if (documents[0].name !== 'paqvilo' || documents.some((document) => document.version !== documents[0].version))
     throw new Error('Package and lockfile versions must agree before stamping.');
@@ -95,7 +96,7 @@ export function verifyArchive(directory, version) {
       }),
     );
   const pkg = read('package.json'),
-    lock = read('npm-shrinkwrap.json');
+    lock = read('paqvilo-lock.json');
   if (
     pkg.name !== 'paqvilo' ||
     pkg.version !== version ||
@@ -107,6 +108,15 @@ export function verifyArchive(directory, version) {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  answerHelp(process.argv.slice(2), {
+    name: 'release-version',
+    usage: `Usage: node scripts/release-version.mjs plan|stamp|verify
+Release workflow steps; takes no options.
+  plan     validates RELEASE_TAG against package.json and HEAD (fetches origin/main for a stable tag) and appends the
+           plan to GITHUB_OUTPUT
+  stamp    writes PACKAGE_VERSION into package.json, package-lock.json and paqvilo-lock.json in the working directory
+  verify   checks the gated archive in dist matches PACKAGE_VERSION and prints its path`,
+  });
   try {
     const command = process.argv[2];
     if (command === 'stamp') stampVersion(process.cwd(), process.env.PACKAGE_VERSION);

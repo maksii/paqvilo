@@ -168,6 +168,28 @@ test('enhanced discovery separates physical XML path from editable field and exc
   assert.throws(() => describe(dir, { changed: true }), /baseline is unavailable/);
 });
 
+// @test-kind contract: a source outside Git or before its first commit names that state in baseline.error, never a raw Git command.
+test('resources baseline outside Git or before the first commit reports the state, not the Git command', (t) => {
+  const dir = tempDirSync('paqvilo-resource-nogit-');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  // The ceiling stops Git at the folder itself, so a repository that holds the temporary directory is not found.
+  const ceiling = process.env.GIT_CEILING_DIRECTORIES;
+  process.env.GIT_CEILING_DIRECTORIES = fs.realpathSync.native(path.dirname(dir));
+  t.after(() => {
+    if (ceiling === undefined) delete process.env.GIT_CEILING_DIRECTORIES;
+    else process.env.GIT_CEILING_DIRECTORIES = ceiling;
+  });
+  assert.deepEqual(describe(dir).baseline, {
+    requested: 'HEAD',
+    commit: null,
+    available: false,
+    error: 'Cannot read baseline HEAD: not a Git repository; baseline comparison skipped',
+  });
+  const init = spawnSync('git', ['init', '-q'], { cwd: dir, windowsHide: true });
+  assert.equal(init.status, 0, String(init.stderr));
+  assert.equal(describe(dir).baseline.error, 'Cannot read baseline HEAD: the repository has no commits yet');
+});
+
 test('resource query validation rejects ambiguous paths and unbounded result limits', () => {
   for (const [args, message] of [
     [{ limit: '0' }, /--limit/],

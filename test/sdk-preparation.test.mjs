@@ -1,3 +1,4 @@
+// @test-kind tooling: verifies the pinned SDK clients and validation fixtures.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -26,7 +27,7 @@ function nugetFixture(t) {
     path.join(path.dirname(project), 'packages.lock.json'),
     JSON.stringify({
       dependencies: {
-        'net10.0': {
+        'net11.0': {
           'Invented.Direct': { type: 'Direct', resolved: '1.2.3' },
           'Invented.Transitive': { type: 'Transitive', resolved: '4.5.6' },
         },
@@ -41,7 +42,7 @@ function nugetFixture(t) {
         path: project,
         frameworks: [
           {
-            framework: 'net10.0',
+            framework: 'net11.0',
             topLevelPackages: [{ id: 'Invented.Direct', resolvedVersion: '1.2.3' }],
             transitivePackages: [{ id: 'Invented.Transitive', resolvedVersion: '4.5.6' }],
           },
@@ -93,7 +94,7 @@ test('NuGet exit-zero reports still fail on direct or transitive advisories at e
     const dependency = files.inventory.projects[0].frameworks[0][key][0];
     files.vulnerable.projects[0].frameworks = [
       {
-        framework: 'net10.0',
+        framework: 'net11.0',
         [key]: [
           {
             ...dependency,
@@ -176,7 +177,7 @@ test('NuGet audit rejects missing frameworks, lock drift and malformed or unavai
     await assert.rejects(auditServiceClientDependencies({ root: files.root, execute: () => response }), /audit/);
   const lock = path.join(path.dirname(files.project), 'packages.lock.json');
   for (const invalid of [[{}, {}], { 'Invented.Direct': {}, 'Invented.Transitive': {} }]) {
-    fs.writeFileSync(lock, JSON.stringify({ dependencies: { 'net10.0': invalid } }));
+    fs.writeFileSync(lock, JSON.stringify({ dependencies: { 'net11.0': invalid } }));
     await assert.rejects(
       auditServiceClientDependencies({
         root: files.root,
@@ -256,7 +257,7 @@ function probes(t, fixture, { head = pin, dirty = '', pythonFailure = false } = 
     return {
       status: 0,
       stdout: args.includes('-c')
-        ? JSON.stringify({ implementation: 'CPython', version: '3.13.6', packages: { msal: '1.39.0' } })
+        ? JSON.stringify({ implementation: 'CPython', version: '3.15.6', packages: { msal: '1.39.0' } })
         : '',
       stderr: '',
     };

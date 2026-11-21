@@ -1,0 +1,454 @@
+{
+  "name": "example-portal-web-api",
+  "version": "1.0.0",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": {
+      "name": "example-portal-web-api",
+      "version": "1.0.0",
+      "devDependencies": {
+        "@eslint/js": "9.39.5",
+        "@types/node": "26.6.6",
+        "@types/powerapps-component-framework": "1.3.18",
+        "eslint": "9.39.5",
+        "globals": "17.14.0",
+        "pcf-scripts": "1.51.1",
+        "pcf-start": "1.51.1",
+        "typescript": "5.9.3",
+        "typescript-eslint": "8.72.2"
+      }
+    },
+    "node_modules/@parcel/watcher": {
+      "version": "2.6.0",
+      "resolved": "https://registry.npmjs.org/@parcel/watcher/-/watcher-2.6.0.tgz",
+      "integrity": "sha512-7FNeNl8NCE7aINx7WXiKQrPYZWC/hvrTsmk6zmxbI7LTXE7hVek/n8AfVgpe2y82zl3w0HvCHN0bVKMBoJcC0w==",
+      "dev": true,
+      "hasInstallScript": true,
+      "license": "MIT",
+      "optional": true,
+      "dependencies": {
+        "detect-libc": "^2.0.3",
+        "is-glob": "^4.0.3",
+        "node-addon-api": "^7.0.0",
+        "picomatch": "^4.0.4"
+      },
+      "engines": {
+        "node": ">= 10.0.0"
+      },
+      "funding": {
+        "type": "opencollective",
+        "url": "https://opencollective.com/parcel"
+      },
+      "optionalDependencies": {
+        "@parcel/watcher-android-arm64": "2.6.0",
+        "@parcel/watcher-darwin-arm64": "2.6.0",
+        "@parcel/watcher-darwin-x64": "2.6.0",
+        "@parcel/watcher-freebsd-x64": "2.6.0",
+        "@parcel/watcher-linux-arm-glibc": "2.6.0",
+        "@parcel/watcher-linux-arm-musl": "2.6.0",
+        "@parcel/watcher-linux-arm64-glibc": "2.6.0",
+        "@parcel/watcher-linux-arm64-musl": "2.6.0",
+        "@parcel/watcher-linux-x64-glibc": "2.6.0",
+        "@parcel/watcher-linux-x64-musl": "2.6.0",
+        "@parcel/watcher-win32-arm64": "2.6.0",
+        "@parcel/watcher-win32-x64": "2.6.0"
+      }
+    },
+    "node_modules/@parcel/watcher/node_modules/picomatch": {
+      "version": "4.0.7",
+      "resolved": "https://registry.npmjs.org/picomatch/-/picomatch-4.0.7.tgz",
+      "integrity": "sha512-qcJu88Q2IWqJsDD529JKMdwGm/dvInW4HvQnRwiH9JtihJvzGOscDtHE3x1pBKeUOTysQ8kVmLnJ2kJu7yhcGA==",
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "engines": {
+        "node": ">=12"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/jonschlinkert"
+      }
+    },
+    "node_modules/@typescript-eslint/eslint-plugin": {
+      "version": "8.72.2",
+      "resolved": "https://registry.npmjs.org/@typescript-eslint/eslint-plugin/-/eslint-plugin-8.72.2.tgz",
+      "integrity": "sha512-222PKFXKihmFpi/pS5njoBgdAqsPhj2/GBmFbrNw8Tq8gEG9Sv+kSlKFy4u2q+mJv9ZzJgM2Gkv/bUzRZwZw5g==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@eslint-community/regexpp": "^4.12.2",
+        "@typescript-eslint/scope-manager": "8.72.2",
+        "@typescript-eslint/type-utils": "8.72.2",
+        "@typescript-eslint/utils": "8.72.2",
+        "@typescript-eslint/visitor-keys": "8.72.2",
+        "ignore": "^7.0.5",
+        "natural-compare": "^1.4.0",
+        "ts-api-utils": "^2.5.0"
+      },
+      "engines": {
+        "node": "^18.18.0 || ^20.9.0 || >=21.1.0"
+      },
+      "funding": {
+        "type": "opencollective",
+        "url": "https://opencollective.com/typescript-eslint"
+      },
+      "peerDependencies": {
+        "@typescript-eslint/parser": "^8.72.2",
+        "eslint": "^8.57.0 || ^9.0.0 || ^10.0.0",
+        "typescript": ">=4.8.4 <6.1.0"
+      }
+    },
+    "node_modules/@typescript-eslint/parser": {
+      "version": "8.72.2",
+      "resolved": "https://registry.npmjs.org/@typescript-eslint/parser/-/parser-8.72.2.tgz",
+      "integrity": "sha512-llP+T1YuJOLlxEciP6OyQGtz5SMxyn+9LA2BvZw5RmToGVa1y4beEDVQL6Gje7T5WFYh19WREjDCN9Ev4gm5AA==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@typescript-eslint/scope-manager": "8.72.2",
+        "@typescript-eslint/types": "8.72.2",
+        "@typescript-eslint/typescript-estree": "8.72.2",
+        "@typescript-eslint/visitor-keys": "8.72.2",
+        "debug": "^4.4.3"
+      },
+      "engines": {
+        "node": "^18.18.0 || ^20.9.0 || >=21.1.0"
+      },
+      "funding": {
+        "type": "opencollective",
+        "url": "https://opencollective.com/typescript-eslint"
+      },
+      "peerDependencies": {
+        "eslint": "^8.57.0 || ^9.0.0 || ^10.0.0",
+        "typescript": ">=4.8.4 <6.1.0"
+      }
+    },
+    "node_modules/@typescript-eslint/type-utils": {
+      "version": "8.72.2",
+      "resolved": "https://registry.npmjs.org/@typescript-eslint/type-utils/-/type-utils-8.72.2.tgz",
+      "integrity": "sha512-STfkR38qIdhfkLpgtXnUjAzsNy4xouqiBO0lrVc/Wpk9Kem5/aHXUx1J8dGC16zpdYN1+yc2ILQ28er1kXX7ag==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@typescript-eslint/types": "8.72.2",
+        "@typescript-eslint/typescript-estree": "8.72.2",
+        "@typescript-eslint/utils": "8.72.2",
+        "debug": "^4.4.3",
+        "ts-api-utils": "^2.5.0"
+      },
+      "engines": {
+        "node": "^18.18.0 || ^20.9.0 || >=21.1.0"
+      },
+      "funding": {
+        "type": "opencollective",
+        "url": "https://opencollective.com/typescript-eslint"
+      },
+      "peerDependencies": {
+        "eslint": "^8.57.0 || ^9.0.0 || ^10.0.0",
+        "typescript": ">=4.8.4 <6.1.0"
+      }
+    },
+    "node_modules/@typescript-eslint/typescript-estree": {
+      "version": "8.72.2",
+      "resolved": "https://registry.npmjs.org/@typescript-eslint/typescript-estree/-/typescript-estree-8.72.2.tgz",
+      "integrity": "sha512-pQEGqIK/cqEvKivVWaFLYpe7XYejFxfuAOi4mu1oAWFvIo36aRHI9esRFTUxcIy/z8N482RJyH+LpZB0ZIU7Ow==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@typescript-eslint/project-service": "8.72.2",
+        "@typescript-eslint/tsconfig-utils": "8.72.2",
+        "@typescript-eslint/types": "8.72.2",
+        "@typescript-eslint/visitor-keys": "8.72.2",
+        "debug": "^4.4.3",
+        "minimatch": "^10.2.2",
+        "semver": "^7.7.3",
+        "tinyglobby": "^0.2.15",
+        "ts-api-utils": "^2.5.0"
+      },
+      "engines": {
+        "node": "^18.18.0 || ^20.9.0 || >=21.1.0"
+      },
+      "funding": {
+        "type": "opencollective",
+        "url": "https://opencollective.com/typescript-eslint"
+      },
+      "peerDependencies": {
+        "typescript": ">=4.8.4 <6.1.0"
+      }
+    },
+    "node_modules/@typescript-eslint/utils": {
+      "version": "8.72.2",
+      "resolved": "https://registry.npmjs.org/@typescript-eslint/utils/-/utils-8.72.2.tgz",
+      "integrity": "sha512-hv3eRYbpPbbpezuax1EfGrzpa3C4ySgNZkPUkLOWOAjU8HsOKowEDAr8C7nsNl1C+SBSKDpvno6VKHnlhvp9iA==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@eslint-community/eslint-utils": "^4.9.1",
+        "@typescript-eslint/scope-manager": "8.72.2",
+        "@typescript-eslint/types": "8.72.2",
+        "@typescript-eslint/typescript-estree": "8.72.2"
+      },
+      "engines": {
+        "node": "^18.18.0 || ^20.9.0 || >=21.1.0"
+      },
+      "funding": {
+        "type": "opencollective",
+        "url": "https://opencollective.com/typescript-eslint"
+      },
+      "peerDependencies": {
+        "eslint": "^8.57.0 || ^9.0.0 || ^10.0.0",
+        "typescript": ">=4.8.4 <6.1.0"
+      }
+    },
+    "node_modules/anymatch": {
+      "version": "3.1.3",
+      "resolved": "https://registry.npmjs.org/anymatch/-/anymatch-3.1.3.tgz",
+      "integrity": "sha512-KMReFUr0B4t+D+OBkjR3KYqvocp2XaSzO55UcB6mgQMd3KbcE+mWTyvVV7D/zsdEbNnV6acZUutkiHQXvTr1Rw==",
+      "dev": true,
+      "license": "ISC",
+      "dependencies": {
+        "normalize-path": "^3.0.0",
+        "picomatch": "^2.0.4"
+      },
+      "engines": {
+        "node": ">= 8"
+      }
+    },
+    "node_modules/browser-sync": {
+      "version": "3.0.4",
+      "resolved": "https://registry.npmjs.org/browser-sync/-/browser-sync-3.0.4.tgz",
+      "integrity": "sha512-mcYOIy4BW6sWSEnTSBjQwWsnbx2btZX78ajTTjdNfyC/EqQVcIe0nQR6894RNAMtvlfAnLaH9L2ka97zpvgenA==",
+      "dev": true,
+      "license": "Apache-2.0",
+      "dependencies": {
+        "browser-sync-client": "^3.0.4",
+        "browser-sync-ui": "^3.0.4",
+        "bs-recipes": "1.3.4",
+        "chalk": "4.1.2",
+        "chokidar": "^3.5.1",
+        "connect": "3.6.6",
+        "connect-history-api-fallback": "^1",
+        "dev-ip": "^1.0.1",
+        "easy-extender": "^2.3.4",
+        "eazy-logger": "^4.1.0",
+        "etag": "^1.8.1",
+        "fresh": "^0.5.2",
+        "fs-extra": "3.0.1",
+        "http-proxy": "^1.18.1",
+        "immutable": "^3",
+        "micromatch": "^4.0.8",
+        "opn": "5.3.0",
+        "portscanner": "2.2.0",
+        "raw-body": "^2.3.2",
+        "resp-modifier": "6.0.2",
+        "rx": "4.1.0",
+        "send": "^0.19.0",
+        "serve-index": "^1.9.1",
+        "serve-static": "^1.16.2",
+        "server-destroy": "1.0.1",
+        "socket.io": "^4.4.1",
+        "ua-parser-js": "^1.0.33",
+        "yargs": "^17.3.1"
+      },
+      "bin": {
+        "browser-sync": "dist/bin.js"
+      },
+      "engines": {
+        "node": ">= 8.0.0"
+      }
+    },
+    "node_modules/browser-sync/node_modules/chokidar": {
+      "version": "3.6.0",
+      "resolved": "https://registry.npmjs.org/chokidar/-/chokidar-3.6.0.tgz",
+      "integrity": "sha512-7VT13fmjotKpGipCW9JEQAusEPE+Ei8nl6/g4FBAmIm0GOOLMua9NDDo/DWp0ZAxCr3cPq5ZpBqmPAQgDda2Pw==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "anymatch": "~3.1.2",
+        "braces": "~3.0.2",
+        "glob-parent": "~5.1.2",
+        "is-binary-path": "~2.1.0",
+        "is-glob": "~4.0.1",
+        "normalize-path": "~3.0.0",
+        "readdirp": "~3.6.0"
+      },
+      "engines": {
+        "node": ">= 8.10.0"
+      },
+      "funding": {
+        "url": "https://paulmillr.com/funding/"
+      },
+      "optionalDependencies": {
+        "fsevents": "~2.3.2"
+      }
+    },
+    "node_modules/browser-sync/node_modules/readdirp": {
+      "version": "3.6.0",
+      "resolved": "https://registry.npmjs.org/readdirp/-/readdirp-3.6.0.tgz",
+      "integrity": "sha512-hOS089on8RduqdbhvQ5Z37A0ESjsqz6qnRcffsMU3495FuTdqSm+7bhJ29JvIOsBDEEnan5DPu9t3To9VRlMzA==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "picomatch": "^2.2.1"
+      },
+      "engines": {
+        "node": ">=8.10.0"
+      }
+    },
+    "node_modules/micromatch": {
+      "version": "4.0.8",
+      "resolved": "https://registry.npmjs.org/micromatch/-/micromatch-4.0.8.tgz",
+      "integrity": "sha512-PXwfBhYu0hBCPw8Dn0E+WDYb7af3dSLVWKi3HGv84IdF4TyFoC0ysxFd0Goxw7nSv4T/PzEJQxsYsEiFCKo2BA==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "braces": "^3.0.3",
+        "picomatch": "^2.3.1"
+      },
+      "engines": {
+        "node": ">=8.6"
+      }
+    },
+    "node_modules/pcf-start": {
+      "version": "1.51.1",
+      "resolved": "https://registry.npmjs.org/pcf-start/-/pcf-start-1.51.1.tgz",
+      "integrity": "sha512-V8NnlctKGdPNL7Rr5oGwI/mOo52dZuxBSCNw1qZh9XTPE4VN9DVYXMJSIM59UTjRzH6EupE5bOtW5Uk+/rxS4Q==",
+      "dev": true,
+      "license": "SEE LICENSE IN LICENSE",
+      "dependencies": {
+        "applicationinsights": "^2.9.8",
+        "browser-sync": "^3.0.4",
+        "yargs": "^17.7.2"
+      },
+      "bin": {
+        "pcf-start": "bin/pcf-start.js"
+      },
+      "engines": {
+        "node": ">=20"
+      }
+    },
+    "node_modules/picomatch": {
+      "version": "2.3.2",
+      "resolved": "https://registry.npmjs.org/picomatch/-/picomatch-2.3.2.tgz",
+      "integrity": "sha512-V7+vQEJ06Z+c5tSye8S+nHUfI51xoXIXjHQ99cQtKUkQqqO1kO/KCJUfZXuB47h/YBlDhah2H3hdUGXn8ie0oA==",
+      "dev": true,
+      "license": "MIT",
+      "engines": {
+        "node": ">=8.6"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/jonschlinkert"
+      }
+    },
+    "node_modules/tinyglobby": {
+      "version": "0.2.17",
+      "resolved": "https://registry.npmjs.org/tinyglobby/-/tinyglobby-0.2.17.tgz",
+      "integrity": "sha512-wXR/dYpcqKmfWpEdZjiKJOwCNFndD0DMnrW/cYjVGttEkBfVgcLFHoNrlj47mjOVic9yyNu65alsgF4NQyTa2g==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "fdir": "^6.5.0",
+        "picomatch": "^4.0.4"
+      },
+      "engines": {
+        "node": ">=12.0.0"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/SuperchupuDev"
+      }
+    },
+    "node_modules/tinyglobby/node_modules/fdir": {
+      "version": "6.5.0",
+      "resolved": "https://registry.npmjs.org/fdir/-/fdir-6.5.0.tgz",
+      "integrity": "sha512-tIbYtZbucOs0BRGqPJkshJUYdL+SDH7dVM8gjy+ERp3WAUjLEFJE+02kanyHtwjWOnwrKYBiwAmM0p4kLJAnXg==",
+      "dev": true,
+      "license": "MIT",
+      "engines": {
+        "node": ">=12.0.0"
+      },
+      "peerDependencies": {
+        "picomatch": "^3 || ^4"
+      },
+      "peerDependenciesMeta": {
+        "picomatch": {
+          "optional": true
+        }
+      }
+    },
+    "node_modules/tinyglobby/node_modules/picomatch": {
+      "version": "4.0.7",
+      "resolved": "https://registry.npmjs.org/picomatch/-/picomatch-4.0.7.tgz",
+      "integrity": "sha512-qcJu88Q2IWqJsDD529JKMdwGm/dvInW4HvQnRwiH9JtihJvzGOscDtHE3x1pBKeUOTysQ8kVmLnJ2kJu7yhcGA==",
+      "dev": true,
+      "license": "MIT",
+      "engines": {
+        "node": ">=12"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/jonschlinkert"
+      }
+    },
+    "node_modules/ts-loader": {
+      "version": "9.6.2",
+      "resolved": "https://registry.npmjs.org/ts-loader/-/ts-loader-9.6.2.tgz",
+      "integrity": "sha512-R4iuczmtgxvtuI556s+hTZ6/7Ee03VCAk/l/M8LY1OAsUgB7YydsCxkgq9D9pKRaD7GJqUi2u8fp9zZP/ufjKA==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "chalk": "^4.1.0",
+        "picomatch": "^4.0.0",
+        "source-map": "^0.7.4"
+      },
+      "engines": {
+        "node": ">=12.0.0"
+      },
+      "peerDependencies": {
+        "loader-utils": "*",
+        "typescript": "*",
+        "webpack": "^4.0.0 || ^5.0.0"
+      },
+      "peerDependenciesMeta": {
+        "loader-utils": {
+          "optional": true
+        }
+      }
+    },
+    "node_modules/ts-loader/node_modules/picomatch": {
+      "version": "4.0.7",
+      "resolved": "https://registry.npmjs.org/picomatch/-/picomatch-4.0.7.tgz",
+      "integrity": "sha512-qcJu88Q2IWqJsDD529JKMdwGm/dvInW4HvQnRwiH9JtihJvzGOscDtHE3x1pBKeUOTysQ8kVmLnJ2kJu7yhcGA==",
+      "dev": true,
+      "license": "MIT",
+      "engines": {
+        "node": ">=12"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/jonschlinkert"
+      }
+    },
+    "node_modules/typescript-eslint": {
+      "version": "8.72.2",
+      "resolved": "https://registry.npmjs.org/typescript-eslint/-/typescript-eslint-8.72.2.tgz",
+      "integrity": "sha512-c/+AKMW1KB81r28Sp0AAdcyXj5dzNmAsZFcsrxKbZTKmcBK2xIwBR31dcSYSDu3bKmzXe8GKrSxO+eDQ401Uzg==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@typescript-eslint/eslint-plugin": "8.72.2",
+        "@typescript-eslint/parser": "8.72.2",
+        "@typescript-eslint/typescript-estree": "8.72.2",
+        "@typescript-eslint/utils": "8.72.2"
+      },
+      "engines": {
+        "node": "^18.18.0 || ^20.9.0 || >=21.1.0"
+      },
+      "funding": {
+        "type": "opencollective",
+        "url": "https://opencollective.com/typescript-eslint"
+      },
+      "peerDependencies": {
+        "eslint": "^8.57.0 || ^9.0.0 || ^10.0.0",
+        "typescript": ">=4.8.4 <6.1.0"
+      }
+    }
+  }
+}

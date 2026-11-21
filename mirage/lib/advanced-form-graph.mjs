@@ -46,7 +46,7 @@ export function advancedFormGraph(definition, records = []) {
         step: row.id,
         owner: portalField(row, 'webform'),
         message:
-          'An explicit exported reference selects a step owned by another form; its source is preserved, while native reuse behavior remains unqualified.',
+          'An explicit exported reference selects a step owned by another form; its source is preserved, while native reuse behaviour remains unqualified.',
       });
     for (const field of ['nextstep', 'conditiondefaultnextstep']) {
       const id = canonicalStepId(portalField(row, field));

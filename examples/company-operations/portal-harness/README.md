@@ -1,151 +1,198 @@
-# Company Operations portal permission harness
+# Company Operations permission harness
 
-One visible `/permission-lab/` page and an internal `/permission-lab/liquid/` endpoint, deployed to a confirmed
-enhanced-model Power Pages website. The page runs the same queries through Liquid and the portal Web API as the signed-in
-Contact, optionally runs prepared CRUD, and stores the results as history in Dataverse. The
-[harness specification](../../../docs/design/power-pages-permission-test-harness.md) defines the cases and contracts.
+One visible `/permission-lab/` page and an internal `/permission-lab/liquid/` endpoint on an enhanced-model Power Pages
+site. As the signed-in Contact, the page runs the same FetchXML through Liquid and the portal Web API, optionally runs
+prepared CRUD and plug-in profiles, and saves every observation as history in Dataverse. The
+[harness design](../../../docs/design/power-pages-permission-test-harness.md) explains the contracts.
 
-Every business read and write uses the authenticated portal session. The application connection only provisions website
-components and checks metadata; it never supplies business-query results to the browser.
+Every business read and write uses the authenticated portal session. The application connection only deploys website
+components and reads metadata; it never supplies business results to the browser. Deploy the
+[permission graph](../portal-security/README.md) first.
 
 ## Prepare and deploy
 
 ```sh
-node portal-harness/compile.mjs
-node portal-harness/deploy.mjs --config .paqvilo/portal-harness/deploy-config.json
+node portal-harness/compile.mjs                                               # offline
+node portal-harness/deploy.mjs --config .paqvilo/portal-harness/deploy-config.json   # writes to the live site
 ```
 
-- `compile.mjs` prepares the shared query plans and escaped Liquid partials from the stress catalogue when available. A
-  private overlay can bind an actual signed-in tester without storing that person in the public catalogue. Generated
-  manifests and templates, resolved GUIDs, deployment configurations, rollback content and observations stay under ignored
-  `.paqvilo/portal-harness/`.
-- `deploy.mjs` writes native `powerpagecomponents` through the saved application connection. Its configuration names a
-  verified website, the CO Test Runner role, the home page, the publishing state and an optional language. It resolves
-  lookup navigation properties and field allowlists against live metadata, refuses ambiguous duplicate settings, keeps
-  existing setting IDs, journals changes and reads every component back. Solution membership and export belong to the
-  [security tools](../portal-security/README.md).
-- `artifactTransportBudgetBytes` (default 20 MiB per run, including encoding overhead and a 2 KiB allowance per part)
-  bounds stored artifacts; exceeding it records incomplete persistence before oversized writes.
+Run from `examples/company-operations`.
+
+- `compile.mjs` builds the query plans and escaped Liquid partials from the stress catalogue (base catalogue if absent)
+  into `.paqvilo/portal-harness/generated/` (`manifest.json`, `templates.json`) and prints the number of read-case plans
+  (37), templates (128) and the manifest hash. Deploy regenerates the same files with live IDs and metadata, so after a
+  deploy `generated/manifest.json` is the deployed manifest until the next `compile.mjs` overwrites it; copy it
+  elsewhere under `.paqvilo/` if a later step (such as `portal-security/qualification-plan.mjs`) needs it.
+- `deploy.mjs` writes native `powerpagecomponents` through the saved application connection; it has no read-only plan
+  mode, so every run writes. Run it only against a site you are authorized to change. Its JSON config:
+
+  | Key                                    | Meaning                                                                                                      |
+  | -------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+  | `connection`                           | Private Dataverse connection file.                                                                           |
+  | `website`, `role`, `home`, `published` | GUIDs of the verified website, the `CO Test Runner` role, the root page and the publishing state (required). |
+  | `language`                             | Optional website language.                                                                                   |
+  | `resolvedIds`, `readiness`             | Live IDs and dependency readiness flags merged into the manifest.                                            |
+  | `overlayFile`, `personaRoleOverrides`  | Private tester overlay (`portal-security/tester-overlay.mjs`) and per-persona web-role lists.                |
+  | `artifactTransportBudgetBytes`         | Stored-artifact budget per run, default 20 MiB including encoding and a 2 KiB allowance per part.            |
+  | `odataPositiveVariants`                | Extra OData positive-control variants.                                                                       |
+
+  It resolves navigation properties and field allowlists from live metadata, refuses ambiguous duplicate settings, keeps
+  existing setting IDs, journals changes and reads every component back. Solution packaging belongs to
+  `portal-security/package.mjs`.
+
+Generated manifests, resolved GUIDs, deployment configs, rollback content and observations stay under
+`.paqvilo/portal-harness/`.
 
 ## What a run does
 
-- **Reads.** 36 cases (R30 has inner and outer variants, so 37 paired observations) plus eight native OData variants.
-  Each physical request creates its own operation, reads back the server-stamped UTC and GUID markers, saves its authored
-  intent, then calls Liquid or `/_api`. Liquid returns a typed, escaped XML envelope with the authored XML and
-  `visibility_query.xml`; the Web API lane records effective XML as unavailable. The page compares complete canonical rows,
-  IDs, counts and duplicate multiplicities.
+- **Reads.** 36 cases (R30 has inner and outer variants, so 37 paired observations) plus OData variants of R01, R03,
+  R05, R09, R12, R23, R24 and R33. Each physical request first creates its own `pqvd_testoperation`, reads back the
+  server-stamped marker values and saves its authored intent, then calls Liquid or `/_api`. Liquid returns a typed,
+  escaped XML envelope with the authored XML and the permission-rewritten `visibility_query.xml`; the Web API lane
+  records effective XML as not exposed. Rows, IDs, counts and duplicate multiplicities are compared canonically.
 - **Paging.** Deterministic order, at most 20 pages. A full last page without more-records metadata needs an extra
-  empty-page proof; repeated tuples across pages mark the result incomplete. OData variants need an advertised count that
-  matches the complete response.
-- **Oracle.** Expected visibility comes from the intended permission graph for each configured persona across the 21
-  business/reference tables, plus authored collision scenarios. It is labelled separately from observed results.
-  Administrator SDK query results are never used as a persona oracle.
-- **CRUD.** Recorder probe CRUD always; with the guards installed, isolated A/B canary name changes with verification and
-  restoration across 18 tables, and disposable stock-equipment Create/Read/Delete with scoped Account/Room bindings. Scope
-  projections, principals, lifecycle fields, standard currencies and baseline records stay protected. Other Create and
-  Delete cases report Blocked until their dependencies exist. An unexpectedly accepted write fails the permission
-  assertion and is restored; failed cleanup keeps residual IDs and restoration payloads.
-- **Plugin profiles and S01.** Plugin profiles and S01 query-budget cases (0 to 16 authored self joins) run from the same
-  page. The 15/16 boundary and permission-expanded join counts are observations, not a join-per-role formula.
-  Transactional plugin captures are rollback-vulnerable and cannot give complete durable coverage.
-- **Async evidence.** P10 keeps its probe until operation-scoped async evidence arrives and its packet set is stable across
-  reads, for at most 120 seconds; longer queues are explicit timeouts.
-- **Large filters.** Non-aggregate fixture filters above the request-URL boundary are split into disjoint ID sets, run
-  identically in both lanes, keeping multiplicity. Aggregate and distinct queries keep their shape.
-- **Artifacts.** A versioned UTF-8 base64 envelope with original byte length and SHA-256, plus a checksum per stored part,
-  so portal URL rewriting cannot alter captured bodies.
-- **History.** Own-run history with exact row additions, removals and field changes, outcome and error changes. Regression
-  comparison requires the same actor, dataset, roles and manifest; comparing different configurations is diagnostic only.
+  empty-page proof; repeated tuples across pages mark the result incomplete. OData variants need an advertised count
+  that matches the complete response.
+- **Oracle.** Expected visibility comes from the intended permission graph per persona across the 21 business and
+  reference tables plus the authored collision scenarios, labelled separately from observed results. Administrator SDK
+  results are never used as a persona oracle.
+- **CRUD.** Recorder probe CRUD always; with the guards installed, isolated A/B canary name changes with verification
+  and restoration on 18 tables, and disposable Stock-equipment Create/Read/Delete with scoped Account and Room bindings.
+  Projections, principals, lifecycle fields, standard currencies and baseline records stay protected. Other Create and
+  Delete cases report Blocked until their dependencies exist. An unexpectedly accepted write fails the assertion and is
+  restored; failed cleanup keeps residual IDs and restoration payloads.
+- **Plug-in profiles and S01.** Plug-in profiles and the S01 query-budget cases (0 to 16 authored self joins) run from
+  the same page. The 15/16 boundary and permission-expanded join counts are observations, not a joins-per-role formula.
+  Transactional plug-in captures can roll back and cannot give complete durable coverage.
+- **Async evidence.** P10 keeps its probe until operation-scoped async evidence arrives and is stable across reads, for
+  at most 120 seconds; longer queues are recorded as timeouts.
+- **Large filters.** Non-aggregate fixture filters whose encoded FetchXML exceeds 3,500 characters are split into
+  disjoint ID sets, run identically in both lanes and merged keeping multiplicity. Aggregate and distinct queries keep
+  their shape.
+- **Artifacts.** A versioned UTF-8 base64 envelope with original byte length and SHA-256, plus a checksum per stored
+  part, so portal URL rewriting cannot alter captured bodies. Exceeding the transport budget records incomplete
+  persistence before any oversized write.
+- **History.** Own-run history with row additions, removals, field, outcome and error changes. Regression comparison
+  requires the same actor, dataset, roles and manifest; anything else is diagnostic only.
 
 ## Reading results
 
-Lane equality is not authorization correctness. Two configurations show why independent fixture-eligibility assertions are
-mandatory: Liquid returned linked Finance data while direct Finance API access was denied, and an inactive permission
-parent with active descendants returned foreign fixture data in both lanes. Deep variants therefore disable the whole
-secondary subtree with a journalled, bounded lease and verify every permission's restoration.
+Lane equality is not authorization correctness. Liquid has returned linked Finance data while direct Finance API access
+was denied, and an inactive permission parent with active descendants returned foreign fixture data in both lanes. Only
+the independent scenario oracle decides.
 
-Permission changes can take effect gradually on the portal: after role changes, queries can keep an earlier principal
-footprint for a while. Treat a changed footprint as needing a cache-controlled capture: record the active permission graph,
-memberships, source and data versions and cache refresh evidence, and repeat the query until the footprint is stable.
+Permission changes reach the portal gradually: after a role change, queries can keep the earlier principal footprint
+for a while. Treat a changed footprint as needing a cache-controlled capture: record the active graph, memberships,
+source and data versions and cache-refresh evidence, and repeat until the footprint is stable.
 
-An empty result, matching lanes or a query-limit rejection alone never proves correct authorization. Errors, sign-in pages
-and query-limit failures stay visible and never become empty arrays.
+Errors, sign-in pages and query-limit failures stay visible and never become empty arrays. An empty result, matching
+lanes or a query-limit rejection alone never proves correct authorization.
 
 ## Tests
 
 ```sh
-node --test portal-harness/test.mjs portal-harness/browser.test.mjs
+node --test portal-harness/test.mjs portal-harness/parity.test.mjs
+node --test portal-harness/browser.test.mjs
 ```
 
-The browser regression uses invented loopback data and checks typed XML parsing, escaping, canonical API parity, operation
-intent, artifact persistence and incomplete backend status. It is separate from signed-in live qualification.
+Run from `examples/company-operations`. Both use invented loopback data. The browser test checks typed XML parsing,
+escaping, canonical API parity, operation intent, artifact persistence and incomplete backend status; it is not
+signed-in live qualification.
 
 ## Compare with Mirage
 
-| Command                                                                                            | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| -------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `node portal-harness/compare-parity.mjs <native-run.json> <mirage-run.json> [private-report.json]` | Compare a native and a Mirage run summary. Actor, roles, dataset, manifest, source and configuration must match, and both must bind permission, membership and data snapshot hashes with the `evidenceQualification` native flags set from independently verified readbacks. Rows compare as multisets; queries keep predicates, projections, ordering, joins and identity literals, normalizing only formatting and generated aliases. A matching row count alone never establishes parity.                                        |
-| `node portal-harness/replay-parity.mjs <private-job.json>`                                         | Replay saved authored pages through Mirage without network requests. The job names `schema`, `catalogue`, `manifest`, `nativeComponents` (an explicit native readback), `baselineOverlay`, `stressOverlay`, `snapshots` and `output`. Optional `variants` binds each run to `baseline`, `stress`, `safe-secondary-subtree-disabled` or `parent-only-disabled-negative-fault`; optional `observedProfiles` supplies evidenced site behaviour per variant (the inactive-parent fault needs `tablePermissionOrphans: "unrestricted"`). |
-| `node portal-harness/mirage-campaign-replay.mjs --job <private-job.json>`                          | Replay frozen native captures through the original exported CLR assemblies, the Mirage Web API handler and the frozen Liquid query templates. No native requests.                                                                                                                                                                                                                                                                                                                                                                   |
-| `node portal-harness/mirage-replay-shards.mjs --job <private-job.json> --workers 10`               | The same replay split across up to ten Node processes, each with its own state, SDK cache, CLR host pool and receipts; the parent verifies every child result before writing an aggregate receipt.                                                                                                                                                                                                                                                                                                                                  |
+Run from `examples/company-operations`. These read private files only and make no native requests; relative paths
+resolve from the working directory.
 
-Keep jobs, overlays, native sources, captures and outputs under ignored `.paqvilo/`: they contain Contact, query and
-recording data.
+- `node portal-harness/compare-parity.mjs <native-run.json> <mirage-run.json> [private-report.json]` compares a native
+  and a Mirage run summary (report default `.paqvilo/portal-harness/mirage-parity.json`; exit code 1 unless equal).
+  Actor, roles, dataset, manifest, source and configuration must match, and both runs must bind permission, membership
+  and data snapshot hashes with `evidenceQualification` flags from independently verified readbacks. Rows compare as
+  multisets; queries keep predicates, projections, ordering, joins and identity literals, normalizing only formatting
+  and generated aliases.
+- `node portal-harness/replay-parity.mjs <private-job.json>` replays saved authored pages through Mirage. The job names
+  `schema`, `catalogue`, `manifest`, `nativeComponents` (an explicit native readback), `baselineOverlay`,
+  `stressOverlay`, `snapshots` (a folder of `live*.json` run files) and `output`. Optional `variants` binds each run ID
+  to `baseline`, `stress`, `safe-secondary-subtree-disabled` or `parent-only-disabled-negative-fault`; optional
+  `observedProfiles` supplies evidenced site behaviour per variant (the inactive-parent fault needs
+  `tablePermissionOrphans: "unrestricted"`).
+- `node portal-harness/mirage-campaign-replay.mjs --job <private-job.json>` replays frozen native captures through the
+  original exported CLR assemblies, the Mirage Web API handler and the frozen Liquid templates.
+- `node portal-harness/mirage-replay-shards.mjs --job <private-job.json> --workers <1..10>` runs the same replay across
+  up to ten Node processes, each with its own state, SDK cache, CLR host pool and receipts; the parent verifies every
+  child result before writing the aggregate receipt.
+
+Jobs, overlays, native sources, captures and outputs contain Contact, query and recording data: keep them under
+`.paqvilo/`.
 
 ### Campaign replay jobs
 
 A schema-version 1 job for `mirage-campaign-replay.mjs` declares absolute `outputRoot`, `cacheRoot`, `exportRoot`,
-`sdkAssembly`, optional `proxyAssembly`, nonempty `selectedStepIds` and `expectedAssemblyHashes` by assembly name. `inputs`
-and each `cells[].inputs` are `{ file: <absolute path>, sha256 }`. Required inputs: `schema`, `catalogue`, `observed`,
-`serviceProfiles`, `assemblyReceipt`, `snapshotBefore`, `snapshotAfter`, `capture`, `registrationBefore`,
+`sdkAssembly`, optional `proxyAssembly`, nonempty `selectedStepIds` and `expectedAssemblyHashes` by assembly name.
+`inputs` and each `cells[].inputs` are `{ file: <absolute path>, sha256 }`. Required inputs: `schema`, `catalogue`,
+`observed`, `serviceProfiles`, `assemblyReceipt`, `snapshotBefore`, `snapshotAfter`, `capture`, `registrationBefore`,
 `registrationAfter`, `siteBefore` and `siteAfter`; `overlay` is optional; cell inputs override common ones.
 
-- Assembly receipts need matching installed and exported hashes with `allMatch: true`; build-only receipts are not enough.
-  Backendless cells also need a frozen `context` input. Service profiles are explicit local backend grants.
-- The worker derives the signed-in identity from the frozen Contact, account, same-site memberships and default roles, and
-  requires stable native data, versions, memberships, graph, registration and site source receipts. It fingerprints the
-  toolkit and project runtime source around every cell, archives the exact input and source bytes, saves immutable
-  per-attempt results and resumes only after checking their hashes. A changed source or job needs a new output directory.
-  Concurrent workers are refused; after a crash, confirm the old process exited before removing its `worker.lock`.
-  `retryUnqualified: true` in the initial job retries completed diagnostic cells.
+- Assembly receipts need matching installed and exported hashes with `allMatch: true`; build-only receipts are not
+  enough. A capture without a recorded portal-call plug-in context (backendless) needs a frozen caller profile in the
+  job's `context` property. Service profiles are explicit local backend grants.
+- The worker derives the signed-in identity from the frozen Contact, account, same-site memberships and default roles,
+  and requires stable native data, versions, memberships, graph, registration and site source receipts. It fingerprints
+  the toolkit and project runtime source around every cell, archives the exact input and source bytes, saves immutable
+  per-attempt results and resumes only after checking their hashes. A changed source or job needs a new output
+  directory. Concurrent workers are refused; after a crash, confirm the old process exited before removing its
+  `worker.lock`. `retryUnqualified: true` retries completed diagnostic cells.
 - For ongoing collection, omit `cells` and set an absolute `cellsDirectory` and `expectedCells` (at most 4096). Add one
   immutable cell file per frozen capture; changing or removing an existing one is rejected.
 - Role-campaign jobs add `roleCampaign` (`domainHash`, `actorId`, `siteId`, `campaignDirectory`, `auxiliaryRoleIds`) and
   common `domain`, `blueprint` and `manifest` inputs; each cell is `id: "m<mask>"`. `exhaustiveRoleCoverageQualified`
   requires all 4096 role subsets with complete, verified page sets.
-- Captures without `recordingInputs` (pre-query Run and operation readbacks) report `recordingInputWitness.verified: false`.
+- Captures without `recordingInputs` (pre-query Run and operation readbacks) report
+  `recordingInputWitness.verified: false`.
 
-Replay qualifies physical reads, recorded plugin artifacts and context, and query-template and API wire results. It does not
-cover authentication, full-page dispatcher execution, browser JavaScript, anonymous CRUD or unrecorded backend fault codes
-(`allRuntimeFaultCodesQualified` stays false for them).
+Replay covers physical reads, recorded plug-in artifacts and context, and query-template and API wire results. It does
+not cover authentication, full-page dispatcher execution, browser JavaScript, anonymous CRUD or unrecorded backend
+fault codes (`allRuntimeFaultCodesQualified` stays false for them).
 
 ## Native role campaign
 
-`node portal-harness/native-campaign.mjs <private-campaign.json>` collects a resumable campaign over subsets of the twelve
-business roles, using the existing authenticated Contact: each run changes its web roles and clears both portal caches.
+```sh
+node portal-harness/native-campaign.mjs <private-campaign.json>
+```
 
-- The job must set `allowNativeRoleMutation`, `campaignDir`, `maxMasksPerBatch` (4096 runs the full lattice), `schema`, the
-  deployment, connection and browser inputs, `nativeRegistration`, `assemblyReceipt` and the five `witnesses` returned by
-  `campaignFrozenWitnesses`. Before changing memberships the runner verifies permissions, data, row versions, the complete
-  website source, the registration graph and assembly bytes against that freeze.
-- Memberships outside the twelve business roles are preserved; the original set and both caches are restored on exit. An
-  interrupted lease is reconciled before collection resumes; unknown drift fails closed.
-- `workerLock` is one shared absolute lock file, named `<site-guid>-<contact-guid>.native-campaign.lock.json`
-  (lowercase GUIDs). It is never stolen; after a crash, confirm the process is dead and reconcile its journal before
-  removing it. An optional `stopFile` requests a stop after the current role mask.
-- `continuationPolicy: "mask-window"` is rejected; collection uses fresh per-page snapshots and cache checks.
-- Collection is reported separately from parity qualification: collected cells still need exact Mirage replay and stable
-  native principal-path and cache proof.
+Changes the live Contact's web roles: it collects a resumable campaign over subsets of the twelve business roles with
+the existing authenticated Contact, clearing both portal caches on each change. Authorized environments only.
 
-## Other tools
+- The config sets `allowNativeRoleMutation: true`, `campaignDir`, `maxMasksPerBatch` (4096 runs the full lattice),
+  `schema`, `siteId`, `contactId`, the deployment, connection and browser inputs, `nativeRegistration`,
+  `assemblyReceipt` and the five `witnesses` returned by `campaignFrozenWitnesses`. Before changing memberships the
+  runner verifies permissions, data, row versions, the complete website source, the registration graph and assembly
+  bytes against that freeze.
+- Memberships outside the twelve business roles are preserved; the original set and both caches are restored on exit.
+  An interrupted lease is reconciled before collection resumes; unknown drift fails closed.
+- `workerLock` is one shared absolute lock file named `<site-guid>-<contact-guid>.native-campaign.lock.json` (lowercase
+  GUIDs). It is never stolen; after a crash, confirm the process is dead and reconcile its journal before removing it.
+  An optional absolute `stopFile` requests a stop after the current role mask.
+- `continuationPolicy` must be `per-page` (default); `mask-window` is rejected.
+- Collected cells still need exact Mirage replay and stable native principal-path and cache proof before they count as
+  parity.
 
-- `query-drop-probes.mjs` prepares templates that use a FetchXML tag with no property access, `.xml` only, `.results` only
-  and both, for admitted and limit-failing queries.
+## Other modules
+
+- `node portal-harness/native-prototype.mjs <private-config.json>` captures one native signed-in R09 read through the
+  live page, which saves its run history in Dataverse; `native-batch-prototype.mjs` is the per-batch worker that
+  `native-campaign.mjs` starts. Both act on the live site named in the private configuration; authorized environments
+  only. The remaining `native-*`, `mirage-*-replay`, `batch-capture` and
+  `odata-probes` files are libraries for the native and replay tools above.
+- `query-drop-probes.mjs` prepares templates that use a FetchXML tag with no property access, `.xml` only,
+  `.results` only and both, for admitted and limit-failing queries.
 - `metadata-envelope.mjs` reads `RetrieveTimestamp()` and bounded `RetrieveMetadataChanges` through a supplied Dataverse
-  client (`readNativeMetadataEnvelope`), and the portal's cached `@Microsoft.Dynamics.CRM.globalmetadataversion` through a
-  PK-only control read on an actor-owned TestRun (`readPortalMetadataEnvelope`). Bracket a measured cohort with both and
-  call `compareMetadataEnvelopeWindow`; only a stable, ordered window with the same source and actor qualifies the
-  cohort's observed cache version.
+  client (`readNativeMetadataEnvelope`), and the portal's cached `@Microsoft.Dynamics.CRM.globalmetadataversion`
+  through a primary-key-only control read on an actor-owned TestRun (`readPortalMetadataEnvelope`). Bracket a measured
+  cohort with both and call `compareMetadataEnvelopeWindow`; only a stable, ordered window with the same source and
+  actor qualifies the cohort's observed cache version.
+- `query-budget-probes.mjs` declares the separate query-admission discriminator domain described in the
+  [harness design](../../../docs/design/power-pages-permission-test-harness.md#separate-query-admission-qualification).
 
 ## References
 

@@ -1,4 +1,5 @@
 import { validatePortalOverrides } from './portal-overrides.mjs';
+import { requiredArgument } from './required-argument.mjs';
 
 const object = (value) =>
   value !== null &&
@@ -45,8 +46,11 @@ export function personaStartPath(value, source = 'Persona startPath') {
 /** Versioned, declarative metadata. Identity/role/account grants are never
  * authored here. Contexts reference configured profiles rather than file paths. */
 export function validatePersonaCatalog(value, source = 'State') {
+  // Only a call without arguments names the function; a request body without a catalogue passes undefined.
+  if (arguments.length === 0) requiredArgument('validatePersonaCatalog(value, source)', 'a persona catalogue object');
   const fail = (message) => {
-    throw personaCatalogError(`${source}: personaCatalog.${message}`);
+    // A message about the catalogue itself (" must be an object") or an index ("[0] ...") takes no separating dot.
+    throw personaCatalogError(`${source}: personaCatalog${/^[\s[]/.test(message) ? '' : '.'}${message}`);
   };
   const keys = (entry, allowed, at) => {
     if (!object(entry)) fail(`${at} must be an object`);

@@ -157,7 +157,9 @@ test('parity and conformance help name their real required plan options', async 
     );
     const message = index === 1 ? JSON.parse(result.stdout).error.message : result.stderr;
     if (index === 1) assert.equal(result.stderr, '');
-    assert.match(message, /ENOENT/);
+    // One line naming the option and the missing file, never the raw ENOENT text.
+    assert.match(message, /^--(?:scenarios|suite) file not found: .*missing.*\. Pass an existing file\.\n?$/);
+    assert.doesNotMatch(message, /ENOENT/);
     assert.doesNotMatch(message, /Unknown (?:argument|option)|ERR_PARSE_ARGS/);
   }
 });
@@ -182,4 +184,21 @@ test('render-sweep --strict with a path that matches no page exits 2 and shows z
   assert.deepEqual({ status: result.status, signal: result.signal }, { status: 2, signal: null }, result.stderr);
   assert.match(result.stdout, /Pages: 0,/);
   assert.match(result.stderr, /no page/);
+});
+
+// @test-kind contract: a local-only catalogue site (loopback http environment) sweeps locally without a live origin, as mirage serve treats it
+test('render-sweep --site sweeps a local-only site whose environment is a loopback http URL', async (t) => {
+  const { config } = await fixture(t);
+  const text = await fs.readFile(config, 'utf8');
+  await fs.writeFile(
+    config,
+    text.replace('{ dev: https://synthetic.example.test }', '{ local: http://127.0.0.1:8787 }'),
+  );
+  assert.equal((await resolveTarget({ config, site: 'synthetic' })).origin, null);
+  const result = await runMirage(
+    ['render-sweep', '--config', config, '--site', 'synthetic', '--persona', 'anonymous', '--json'],
+    t,
+  );
+  assert.deepEqual({ status: result.status, signal: result.signal }, { status: 0, signal: null }, result.stderr);
+  assert.doesNotMatch(result.stdout + result.stderr, /Live origin must be an HTTPS origin/);
 });

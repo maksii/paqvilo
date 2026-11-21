@@ -1,4 +1,5 @@
 // Power Pages Liquid rendering for exported portal sources.
+import { requiredArgument } from './required-argument.mjs';
 import { debugMarkup, debugScript, exportFieldFile } from './source-debug.mjs';
 import { renderSettings } from './render-settings.mjs';
 import { FetchRenderCache } from './fetch-render-cache.mjs';
@@ -9,7 +10,7 @@ import { FetchRenderCache } from './fetch-render-cache.mjs';
 // entities, knowledge, resx), the portal tags (fetchxml, editable, substitution, forms,
 // lists, views, search, chart, powerbi, codecomponent, redirect, outputcache, log,
 // manifest), web template resolution (active web templates by name, then the embedded
-// runtime templates) and the page shell. Behaviour: docs/liquid-parity.md.
+// runtime templates) and the page shell. Behaviour: mirage/docs/liquid-parity.md.
 import { normalizePortalPath, portalField, pageTemplateKind } from './importer.mjs';
 import { metaFilterOptionGroups } from './metafilters.mjs';
 import { DataError } from './data-error.mjs';
@@ -1203,7 +1204,10 @@ export function metafilterGroupsFor(source, query) {
 
 // ---- Renderer
 /** Render exported templates with Power Pages tags and request-local data/identity. */
-export function createPortalRenderer(portal, options = {}) {
+export function createPortalRenderer(
+  portal = requiredArgument('createPortalRenderer(portal)', 'a portal (the importPortal result)'),
+  options = {},
+) {
   // The runtime clock (wall time by default) is the only source of the current time in rendering.
   const clock = clockFunction(options.clock ?? systemClock);
   const choiceColumns = (entity) => choiceColumnsOf(options.metadata, entity);

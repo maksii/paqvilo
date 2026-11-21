@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo deployment-profile design: profile selection, validation, application and status (mirage/docs/deployment-profiles.md)
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -9,14 +10,17 @@ import {
   loadDeploymentProfiles,
   deploymentProfilesSummary,
   deploymentProfilesStatus,
+  withDefinedVariables,
 } from '../lib/deployment-profiles.mjs';
 import { resolveProjectConfig, bootstrapProject } from '../lib/project-config.mjs';
 import { resolveMirageConfig } from '../../lense/config.mjs';
 import { mirageSettings } from '../../lense/config-schema.mjs';
 import { bootstrapReport } from '../bootstrap-report.mjs';
 import { profileFixture } from './fixtures/deployment-profiles.mjs';
+import { ownedClose } from '../testing/owned-fixture.mjs';
 import { initProject, cliArgs, mirageReadiness } from '../../lense/commands/mirage.mjs';
 import { loadProjectConfig } from '../lib/project-config.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 
 // The simulator announces each finished source reload on /__sim/events ("event: reload"). The watcher's write-stability
 // and debounce windows make the time to a reload machine-dependent, so a test waits on these announcements, never a clock:
@@ -176,63 +180,67 @@ test('mapped files require correct PAC sections and reject duplicates, malformed
   );
 });
 
-test('runtime pins profiles atomically, retains overrides and pins across restart, and resets defaults', async (t) => {
-  const fixture = await profileFixture(t);
-  let app = await createSimulator({ ...fixture, watch: false });
-  fixture.onCleanup(() => app?.close());
-  const call = async (route, body) => {
-    const response = await fetch(
-      `${app.url}/__sim/api${route}`,
-      body === undefined
-        ? {}
-        : {
-            method: 'PUT',
-            headers: { 'content-type': 'application/json', 'x-sim-csrf': app.csrf },
-            body: JSON.stringify(body),
-          },
+// Hang guard only: it starts a simulator and drives it through its reloads; on a loaded slow host that is slow, not hung.
+test(
+  'runtime pins profiles atomically, retains overrides and pins across restart, and resets defaults',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const fixture = await profileFixture(t);
+    let app = ownedClose(t, await createSimulator({ ...fixture, watch: false }));
+    const call = async (route, body) => {
+      const response = await fetch(
+        `${app.url}/__sim/api${route}`,
+        body === undefined
+          ? {}
+          : {
+              method: 'PUT',
+              headers: { 'content-type': 'application/json', 'x-sim-csrf': app.csrf },
+              body: JSON.stringify(body),
+            },
+      );
+      return { status: response.status, body: await response.json() };
+    };
+    const variable = () =>
+      app.state().data.environmentvariablevalue.find((row) => row.schemaname === 'sample_Url')?.value;
+    assert.equal(app.portal.snippets.Greeting, 'Development');
+    assert.equal(variable(), 'dev variable');
+    assert.equal(app.state().data.connectionreference[0].connectionid, 'dev-connection');
+    const before = (await call('/status')).body.sourceFingerprint;
+    assert.equal(
+      (await call('/environment/profiles', { profile: 'test', enabled: { connectionReferences: false } })).status,
+      200,
     );
-    return { status: response.status, body: await response.json() };
-  };
-  const variable = () =>
-    app.state().data.environmentvariablevalue.find((row) => row.schemaname === 'sample_Url')?.value;
-  assert.equal(app.portal.snippets.Greeting, 'Development');
-  assert.equal(variable(), 'dev variable');
-  assert.equal(app.state().data.connectionreference[0].connectionid, 'dev-connection');
-  const before = (await call('/status')).body.sourceFingerprint;
-  assert.equal(
-    (await call('/environment/profiles', { profile: 'test', enabled: { connectionReferences: false } })).status,
-    200,
-  );
-  assert.equal(app.portal.snippets.Greeting, 'Test');
-  assert.equal(variable(), 'test variable');
-  assert.equal(app.state().data.connectionreference.length, 0);
-  assert.notEqual((await call('/status')).body.sourceFingerprint, before);
-  assert.equal((await call('/environment/profiles', { profile: 'test', enabled: { pages: false } })).status, 400);
-  assert.equal(app.portal.snippets.Greeting, 'Test');
-  await call('/environment/variables/sample_Url', { value: 'Manual' });
-  assert.equal(variable(), 'Manual');
-  await app.close();
-  app = await createSimulator({ ...fixture, watch: false });
-  assert.equal(app.portal.snippets.Greeting, 'Test');
-  assert.equal(variable(), 'Manual');
-  assert.equal((await call('/environment')).body.profileSelection.pinned, true);
-  const current = (await call('/status')).body.sourceFingerprint;
-  await fs.writeFile(path.join(fixture.root, 'profiles/dev-settings.json'), '{broken');
-  assert.equal((await call('/environment/profiles', null)).status, 400);
-  assert.equal(app.portal.snippets.Greeting, 'Test');
-  assert.equal((await call('/status')).body.sourceFingerprint, current);
-  await fs.writeFile(
-    path.join(fixture.root, 'profiles/dev-settings.json'),
-    fixture.files['profiles/dev-settings.json'],
-  );
-  await call('/environment/profiles', null);
-  assert.equal(app.portal.snippets.Greeting, 'Development');
-  assert.equal(variable(), 'Manual');
-  await call('/environment/variables/sample_Url', { value: null });
-  assert.equal(variable(), 'dev variable');
-  for (const [name, content] of Object.entries(fixture.files).filter(([name]) => name.startsWith('portal/')))
-    assert.equal(await fs.readFile(path.join(fixture.root, name), 'utf8'), content);
-});
+    assert.equal(app.portal.snippets.Greeting, 'Test');
+    assert.equal(variable(), 'test variable');
+    assert.equal(app.state().data.connectionreference.length, 0);
+    assert.notEqual((await call('/status')).body.sourceFingerprint, before);
+    assert.equal((await call('/environment/profiles', { profile: 'test', enabled: { pages: false } })).status, 400);
+    assert.equal(app.portal.snippets.Greeting, 'Test');
+    await call('/environment/variables/sample_Url', { value: 'Manual' });
+    assert.equal(variable(), 'Manual');
+    await app.close();
+    app = ownedClose(t, await createSimulator({ ...fixture, watch: false }));
+    assert.equal(app.portal.snippets.Greeting, 'Test');
+    assert.equal(variable(), 'Manual');
+    assert.equal((await call('/environment')).body.profileSelection.pinned, true);
+    const current = (await call('/status')).body.sourceFingerprint;
+    await fs.writeFile(path.join(fixture.root, 'profiles/dev-settings.json'), '{broken');
+    assert.equal((await call('/environment/profiles', null)).status, 400);
+    assert.equal(app.portal.snippets.Greeting, 'Test');
+    assert.equal((await call('/status')).body.sourceFingerprint, current);
+    await fs.writeFile(
+      path.join(fixture.root, 'profiles/dev-settings.json'),
+      fixture.files['profiles/dev-settings.json'],
+    );
+    await call('/environment/profiles', null);
+    assert.equal(app.portal.snippets.Greeting, 'Development');
+    assert.equal(variable(), 'Manual');
+    await call('/environment/variables/sample_Url', { value: null });
+    assert.equal(variable(), 'dev variable');
+    for (const [name, content] of Object.entries(fixture.files).filter(([name]) => name.startsWith('portal/')))
+      assert.equal(await fs.readFile(path.join(fixture.root, name), 'utf8'), content);
+  },
+);
 
 test('optional sections disable cleanly, project variables win case-insensitively, and bootstrap reports apply defaults', async (t) => {
   const fixture = await profileFixture(t);
@@ -261,38 +269,43 @@ test('optional sections disable cleanly, project variables win case-insensitivel
   assert.equal(active.connectionReferences.length, 0);
 });
 
-test('external profile changes reload local rendering and seeded values with a new fingerprint', async (t) => {
-  const fixture = await profileFixture(t);
-  // Ordered file-list mappings must participate in normal watched development.
-  for (const profile of Object.values(fixture.deploymentProfiles.profiles)) {
-    profile.environmentVariables = [profile.environmentVariables];
-    profile.connectionReferences = [profile.connectionReferences];
-  }
-  const app = await createSimulator({ ...fixture, watch: true });
-  fixture.onCleanup(() => app.close());
-  const reloaded = await reloadEvents(app, fixture);
-  const status = async () => await (await fetch(app.url + '/__sim/api/status')).json();
-  const fingerprint = (await status()).sourceFingerprint;
-  await fs.writeFile(
-    path.join(fixture.root, 'profiles/dev.yml'),
-    'adx_contentsnippet:\n- adx_contentsnippetid: greeting\n  adx_value: Reloaded',
-  );
-  await reloaded(
-    async () => app.portal.snippets.Greeting === 'Reloaded' && (await status()).sourceFingerprint !== fingerprint,
-  );
-  assert.equal(app.portal.snippets.Greeting, 'Reloaded');
-  assert.notEqual((await status()).sourceFingerprint, fingerprint);
-  await fs.writeFile(
-    path.join(fixture.root, 'profiles/dev-settings.json'),
-    JSON.stringify({
-      EnvironmentVariables: [{ SchemaName: 'sample_Url', Value: 'Reloaded variable' }],
-      ConnectionReferences: [],
-    }),
-  );
-  await reloaded(() => app.state().data.environmentvariablevalue[0].value === 'Reloaded variable');
-  assert.equal(app.state().data.environmentvariablevalue[0].value, 'Reloaded variable');
-  assert.equal(app.state().data.connectionreference.length, 0);
-});
+// Hang guard only: a runtime start and two source reloads that follow file-watcher events.
+test(
+  'external profile changes reload local rendering and seeded values with a new fingerprint',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const fixture = await profileFixture(t);
+    // Ordered file-list mappings must participate in normal watched development.
+    for (const profile of Object.values(fixture.deploymentProfiles.profiles)) {
+      profile.environmentVariables = [profile.environmentVariables];
+      profile.connectionReferences = [profile.connectionReferences];
+    }
+    const app = await createSimulator({ ...fixture, watch: true });
+    fixture.onCleanup(() => app.close());
+    const reloaded = await reloadEvents(app, fixture);
+    const status = async () => await (await fetch(app.url + '/__sim/api/status')).json();
+    const fingerprint = (await status()).sourceFingerprint;
+    await fs.writeFile(
+      path.join(fixture.root, 'profiles/dev.yml'),
+      'adx_contentsnippet:\n- adx_contentsnippetid: greeting\n  adx_value: Reloaded',
+    );
+    await reloaded(
+      async () => app.portal.snippets.Greeting === 'Reloaded' && (await status()).sourceFingerprint !== fingerprint,
+    );
+    assert.equal(app.portal.snippets.Greeting, 'Reloaded');
+    assert.notEqual((await status()).sourceFingerprint, fingerprint);
+    await fs.writeFile(
+      path.join(fixture.root, 'profiles/dev-settings.json'),
+      JSON.stringify({
+        EnvironmentVariables: [{ SchemaName: 'sample_Url', Value: 'Reloaded variable' }],
+        ConnectionReferences: [],
+      }),
+    );
+    await reloaded(() => app.state().data.environmentvariablevalue[0].value === 'Reloaded variable');
+    assert.equal(app.state().data.environmentvariablevalue[0].value, 'Reloaded variable');
+    assert.equal(app.state().data.connectionreference.length, 0);
+  },
+);
 
 test('no-profile pin restores source values, removes owned seeds only and preserves manual snippet overrides', async (t) => {
   const fixture = await profileFixture(t);
@@ -332,6 +345,21 @@ test('no-profile pin restores source values, removes owned seeds only and preser
     createSimulator({ ...fixture, deploymentProfiles: stale, watch: false }),
     /configured deployment profile/,
   );
+});
+
+test('a restored pin naming an unconfigured profile names the pin, the configured profiles and the state file', async (t) => {
+  const fixture = await profileFixture(t);
+  await fs.mkdir(path.dirname(fixture.stateFile), { recursive: true });
+  await fs.writeFile(fixture.stateFile, JSON.stringify({ simulator: { deploymentProfilePin: { profile: 'gone' } } }));
+  const configured = Object.keys(fixture.deploymentProfiles.profiles).join(', ');
+  await assert.rejects(createSimulator({ ...fixture, watch: false }), {
+    message: `Select a configured deployment profile: the locally pinned profile "gone" is not configured (configured: ${configured}). Remove simulator.deploymentProfilePin from ${path.resolve(fixture.stateFile)}, or restore the profile.`,
+  });
+  // A request naming an unknown profile (no state file involved) keeps the generic message.
+  const config = resolveDeploymentProfiles(fixture.deploymentProfiles, fixture.projectRoot);
+  assert.throws(() => profileSelection(config, { profile: 'gone' }), {
+    message: 'Select a configured deployment profile.',
+  });
 });
 
 // Negative windows: there is no positive signal for "has not happened". A close that ignored the held reload finishes in a
@@ -503,4 +531,95 @@ test('profile parser failures report file, code and line without exposing source
   );
   assert.equal(report.deploymentProfiles.profiles[0].error.line, 2);
   assert.ok(report.errors.some((message) => message.includes('duplicate.yml')));
+});
+
+// @test-kind contract: an EnvironmentVariables entry without a Solution definition changes nothing, so it is reported and never counted as applied (mirage/docs/deployment-profiles.md)
+test('a profile environment variable without a definition is a diagnostic on both hosts and is not counted', async (t) => {
+  const fixture = await profileFixture(t);
+  await fs.writeFile(
+    path.join(fixture.root, 'profiles', 'dev-settings.json'),
+    JSON.stringify({
+      EnvironmentVariables: [
+        { SchemaName: 'sample_Url', Value: 'dev variable' },
+        { SchemaName: 'sample_Missing', Value: 'nowhere' },
+      ],
+      ConnectionReferences: JSON.parse(fixture.files['profiles/dev-settings.json']).ConnectionReferences,
+    }),
+  );
+  const standalone = {
+    runtime: { kind: 'dataverse-api' },
+    solutionRoots: fixture.solutionRoots,
+    projectRoot: fixture.root,
+    deploymentProfiles: fixture.deploymentProfiles,
+    stateFile: path.join(fixture.root, 'standalone-state.json'),
+    simulation: { level: 'dry-run' },
+    dataverse: { enabled: true, tls: false, tds: { enabled: false } },
+  };
+  for (const options of [{ ...fixture, deploymentProfiles: fixture.deploymentProfiles }, standalone]) {
+    const app = await createSimulator({ ...options, port: 0, watch: false });
+    fixture.onCleanup(() => app.close());
+    const selection = (await (await fetch(`${app.url}/_sim/api/environment`)).json()).profileSelection;
+    assert.equal(selection.counts.environmentVariables, 1, JSON.stringify(selection.counts));
+    const undefinedEntry = selection.diagnostics.filter(
+      (entry) => entry.code === 'DEPLOYMENT_PROFILE_VARIABLE_UNDEFINED',
+    );
+    assert.deepEqual(
+      undefinedEntry.map(({ profile, schemaName }) => [profile, schemaName]),
+      [['dev', 'sample_Missing']],
+    );
+    await app.close();
+  }
+});
+
+// @test-kind contract: the standalone host cannot switch deployment profiles at run time and says so, not that none are configured
+test('a standalone profile switch is refused with its own reason when profiles are configured', async (t) => {
+  const fixture = await profileFixture(t);
+  const catalogue = path.join(fixture.root, 'paqvilo.config.yml'),
+    projectFile = path.join(fixture.root, 'mirage.project.yml');
+  // The reason names where the starting profile is selected: the catalogue site, the project file or the API option.
+  for (const [setup, where] of [
+    [undefined, 'pass the profile as deploymentProfiles.default to createSimulator'],
+    [
+      { config: catalogue, site: 'sample' },
+      `set mirage.deploymentProfiles.default for site sample in the catalogue ${catalogue}`,
+    ],
+    [{ project: projectFile }, `set deploymentProfiles.default in the project file ${projectFile}`],
+  ]) {
+    const app = await createSimulator({
+      runtime: { kind: 'dataverse-api' },
+      solutionRoots: fixture.solutionRoots,
+      projectRoot: fixture.root,
+      deploymentProfiles: fixture.deploymentProfiles,
+      stateFile: path.join(fixture.root, 'standalone-state.json'),
+      simulation: { level: 'dry-run' },
+      port: 0,
+      watch: false,
+      ...(setup ? { setup } : {}),
+    });
+    try {
+      const response = await fetch(`${app.url}/_sim/api/environment/profiles`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json', 'x-sim-csrf': app.csrf },
+        body: JSON.stringify({ profile: 'test' }),
+      });
+      const body = await response.json();
+      assert.equal(response.status, 501);
+      assert.equal(body.supported, false);
+      assert.equal(
+        body.reason,
+        `The standalone host does not switch deployment profiles while it runs: ${where} and restart.`,
+      );
+    } finally {
+      await app.close();
+    }
+  }
+});
+
+test('withDefinedVariables starts from the loaded entries each time', () => {
+  const active = { profile: 'dev', environmentVariables: { a: '1', b: '2' }, diagnostics: [] };
+  const first = withDefinedVariables(active, [{ schemaName: 'A' }]);
+  assert.deepEqual(first.environmentVariables, { a: '1' });
+  const again = withDefinedVariables(first, [{ schemaName: 'a' }, { schemaName: 'b' }]);
+  assert.deepEqual(again.environmentVariables, { a: '1', b: '2' });
+  assert.deepEqual(again.diagnostics, []);
 });

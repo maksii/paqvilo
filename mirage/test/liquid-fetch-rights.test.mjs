@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of Liquid right selection over invented permissions; the native probes it follows are not replay cases
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore } from '../lib/data.mjs';
@@ -99,6 +100,24 @@ test('observed Liquid rights select actual operation grants and Create executes 
       ['one', 'two'],
     );
   assert.throws(() => observedConfig({ liquidFetchRights: 'native-classic' }), /evidence/);
+});
+// @test-kind contract: the configuration contract of a dependent observed setting: native Liquid rights need the native
+// table-permission pipeline that produces their empty denied result, as webApiTwoDigitYearMax needs month-first parsing
+test('liquidFetchRights native-classic is refused without tablePermissionQueryPipeline native-classic', () => {
+  for (const pipeline of [undefined, 'row-filtered'])
+    assert.throws(
+      () =>
+        observedConfig({
+          liquidFetchRights: 'native-classic',
+          ...(pipeline ? { tablePermissionQueryPipeline: pipeline } : {}),
+          evidence: 'Invented observation',
+        }),
+      /^Error: observed\.liquidFetchRights native-classic requires tablePermissionQueryPipeline native-classic; set both or neither$/,
+    );
+  assert.equal(
+    observedConfig({ liquidFetchRights: 'read-only', evidence: 'Invented observation' }).liquidFetchRights,
+    'read-only',
+  );
 });
 test('renderer forwards each right through preview and one deferred backend execution', async () => {
   const value = store(),

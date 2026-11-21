@@ -22,7 +22,7 @@ import fs from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseArgs } from 'node:util';
+import { cli, formatJson, isMain } from '../cli.mjs';
 import { guid, VIEWS as OWN_VIEWS, PLATFORM_VIEW_ADJUSTMENTS } from './generate.mjs';
 import { ids as DATA } from './data.mjs';
 
@@ -3938,25 +3938,30 @@ export async function writeSite(
     await fs.writeFile(target, content);
   }
   await fs.mkdir(path.dirname(manifestFile), { recursive: true });
-  await fs.writeFile(manifestFile, JSON.stringify(manifest, null, 2) + '\n');
+  await fs.writeFile(manifestFile, formatJson(manifest));
   const counts = {};
   for (const r of manifest.records) counts[r.kind] = (counts[r.kind] ?? 0) + 1;
   return { outDir, manifestFile, files: files.size, counts };
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const { values } = parseArgs({
-    options: { identity: { type: 'string' }, out: { type: 'string' }, manifest: { type: 'string' } },
-  });
+if (isMain(import.meta)) {
+  const { values } = cli(
+    `Usage: node examples/project/baseline/site.mjs [--identity FILE] [--out DIR] [--manifest FILE]
+
+Writes an upload-ready PAC site folder with the baseline records. Offline.
+
+  --identity FILE  site identity (default: baseline/site-identity.json in this project)
+  --out DIR        site folder (default: baseline/site in this project)
+  --manifest FILE  record manifest (default: site-manifest.json beside the site folder)
+Relative paths resolve from the working directory.`,
+    { identity: { type: 'string' }, out: { type: 'string' }, manifest: { type: 'string' } },
+  );
   const outDir = values.out ? path.resolve(values.out) : undefined;
   let manifestFile;
   if (values.manifest) manifestFile = path.resolve(values.manifest);
   else if (outDir) manifestFile = path.join(path.dirname(outDir), 'site-manifest.json');
   else manifestFile = undefined;
-  writeSite(outDir, manifestFile, values.identity ? path.resolve(values.identity) : undefined)
-    .then((result) => console.log(JSON.stringify(result)))
-    .catch((error) => /* NOSONAR: module-level promise chain must not block evaluation */ {
-      console.error(error.message);
-      process.exitCode = 1;
-    });
+  console.log(
+    JSON.stringify(await writeSite(outDir, manifestFile, values.identity ? path.resolve(values.identity) : undefined)),
+  );
 }

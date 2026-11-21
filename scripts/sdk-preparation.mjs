@@ -86,7 +86,7 @@ function verifyLockedPackageInventory(framework, lock) {
       malformedNugetReport();
     resolved.set(dependency.id.toLowerCase(), dependency.resolvedVersion);
   }
-  const locked = JSON.parse(fs.readFileSync(lock, 'utf8')).dependencies?.['net10.0'];
+  const locked = JSON.parse(fs.readFileSync(lock, 'utf8')).dependencies?.['net11.0'];
   if (!locked || typeof locked !== 'object' || Array.isArray(locked) || Object.keys(locked).length !== resolved.size)
     malformedNugetReport();
   for (const [name, dependency] of Object.entries(locked))
@@ -96,7 +96,7 @@ function verifyLockedPackageInventory(framework, lock) {
 }
 
 function addVulnerableFrameworkRecords(framework, resolved, affected) {
-  if (framework?.framework !== 'net10.0') malformedNugetReport();
+  if (framework?.framework !== 'net11.0') malformedNugetReport();
   validateNugetDiagnostics(framework);
   for (const key of ['topLevelPackages', 'transitivePackages']) {
     if (framework[key] !== undefined && !Array.isArray(framework[key])) malformedNugetReport();
@@ -131,7 +131,7 @@ export async function auditServiceClientDependencies({ root, execute = spawnSync
   const qualification = { project: digest(project), lock: digest(lock) };
   const read = (vulnerable) => readNugetPackageReport({ root, project, execute, vulnerable });
   const inventory = await read(false);
-  if (inventory.frameworks?.length !== 1 || inventory.frameworks[0]?.framework !== 'net10.0') malformedNugetReport();
+  if (inventory.frameworks?.length !== 1 || inventory.frameworks[0]?.framework !== 'net11.0') malformedNugetReport();
   const framework = inventory.frameworks[0];
   validateNugetDiagnostics(framework);
   const resolved = verifyLockedPackageInventory(framework, lock);
@@ -148,7 +148,7 @@ export async function auditServiceClientDependencies({ root, execute = spawnSync
 const pythonInventory = `
 import base64, csv, hashlib, importlib.metadata, io, json, platform, sys
 expected=json.loads(sys.argv[1])
-assert platform.python_implementation() == 'CPython' and sys.version_info[:2] == (3,13), 'CPython 3.13 required'
+assert platform.python_implementation() == 'CPython' and sys.version_info[:2] == (3,15), 'CPython 3.15 required'
 normal=lambda name: __import__('re').sub(r'[-_.]+','-',name.lower())
 installed={normal(d.metadata['Name']): d for d in importlib.metadata.distributions()}
 assert set(installed)-set(expected)-{'pip','setuptools','wheel'} == set(), 'Unexpected installed distributions'
@@ -271,7 +271,7 @@ function checkSample(files, { allowStale = false } = {}) {
 }
 
 function checkPython(files, expected) {
-  if (!fs.existsSync(files.python)) throw new Error('SDK CPython 3.13 venv missing. Run ci:prepare --sdk.');
+  if (!fs.existsSync(files.python)) throw new Error('SDK CPython 3.15 venv missing. Run ci:prepare --sdk.');
   return JSON.parse(probe(files.python, ['-I', '-c', pythonInventory, JSON.stringify(expected)]));
 }
 
@@ -293,7 +293,7 @@ function repairInvalidVenv(files, expected) {
 
 function selectPythonInterpreter() {
   const candidates =
-    process.platform === 'win32' ? [['py', '-3.13'], ['python']] : [['python3.13'], ['python3'], ['python']];
+    process.platform === 'win32' ? [['py', '-3.15'], ['python']] : [['python3.15'], ['python3'], ['python']];
   let selected;
   for (const [command, ...prefix] of candidates) {
     try {
@@ -301,7 +301,7 @@ function selectPythonInterpreter() {
         ...prefix,
         '-I',
         '-c',
-        "import platform,sys; assert platform.python_implementation()=='CPython' and sys.version_info[:2]==(3,13)",
+        "import platform,sys; assert platform.python_implementation()=='CPython' and sys.version_info[:2]==(3,15)",
       ]);
       selected = [command, ...prefix];
       break;
@@ -309,7 +309,7 @@ function selectPythonInterpreter() {
       /* Try the next installed interpreter; never download or build one. */
     }
   }
-  if (!selected) throw new Error('SDK gates require installed CPython 3.13.');
+  if (!selected) throw new Error('SDK gates require installed CPython 3.15.');
   return selected;
 }
 

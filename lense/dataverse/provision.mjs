@@ -3,8 +3,9 @@ import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { compileManifest, digest, validateManifest } from './manifest.mjs';
 import { metadataId } from './client.mjs';
-import { privateJson, pacExecutable, runProcess } from './connection.mjs';
+import { existingPathError, privateJson, pacExecutable, runProcess } from './connection.mjs';
 import { parseXmlDocument } from '../../mirage/lib/fetchxml-engine.mjs';
+import { requiredArgument } from '../../mirage/lib/required-argument.mjs';
 
 // Dataverse adds a savedqueryid and reserializes metadata XML on publish.
 // Normalize syntax only; preserve every field, filter, join, value and order.
@@ -107,6 +108,104 @@ export function compatible(actual, desired) {
   return JSON.stringify(normalizeExpected(actual, desired)) === JSON.stringify(normalizeExpected(desired, desired));
 }
 
+// The declared properties whose existing values differ, as { property, declared, actual }, with the same
+// normalization as compatible(). Array members are named by their schema name, language code or option value.
+export function metadataDifferences(actual, desired) {
+  if (!actual) return [];
+  const type = (value) => value?.['@odata.type']?.replace(/^#/, '');
+  if (type(desired) && type(actual) && type(actual) !== type(desired))
+    return [{ property: '@odata.type', declared: type(desired), actual: type(actual) }];
+  const differences = [];
+  const memberPath = (parent, key, value, inArray) => {
+    if (inArray) return `${parent}[${value?.SchemaName ?? value?.LanguageCode ?? value?.Value ?? key}]`;
+    return parent ? `${parent}.${key}` : key;
+  };
+  const walk = (have, want, property) => {
+    if (JSON.stringify(have) === JSON.stringify(want)) return;
+    const inArray = Array.isArray(want);
+    const descend =
+      want && typeof want === 'object' && have && typeof have === 'object' && inArray === Array.isArray(have);
+    if (descend && (!inArray || want.length === have.length)) {
+      for (const [key, value] of Object.entries(want))
+        walk(have[key], value, memberPath(property, key, value, inArray));
+      return;
+    }
+    differences.push({ property, declared: want ?? null, actual: have ?? null });
+  };
+  walk(normalizeExpected(actual, desired), normalizeExpected(desired, desired), '');
+  return differences;
+}
+
+// "table:x (Attributes[x_name].MaxLength)" for messages; values stay in plan and journal JSON only.
+const driftLabel = (key, differences) =>
+  differences.length ? `${key} (${differences.map((d) => d.property).join(', ')})` : key;
+
+// Display labels and descriptions of a table (and its primary-name column) or a column: the only drift that
+// `apply --update-labels` changes. Every other property, of these and of every other component kind, stays drift.
+const LABEL_PROPERTY =
+  /^(?:Attributes\[[^\]]+\]\.)?(?:DisplayName|DisplayCollectionName|Description)\.LocalizedLabels\[\d+\]\.Label$/;
+export const labelsOnly = (action, differences) =>
+  ['table', 'column'].includes(action.kind) &&
+  differences.length > 0 &&
+  differences.every((difference) => LABEL_PROPERTY.test(difference.property));
+
+// A metadata definition read from Dataverse as an update body: annotations removed, its type stated.
+function metadataBody(current, type) {
+  const body = structuredClone(current);
+  for (const key of Object.keys(body)) if (key.startsWith('@odata.')) delete body[key];
+  body['@odata.type'] = type;
+  return body;
+}
+
+const LABEL_NAMES = ['DisplayName', 'DisplayCollectionName', 'Description'];
+
+// Updates only the differing display labels of a declared table or column, then verifies them by readback.
+async function updateLabels(client, action, current, differences) {
+  const changed = (prefix) =>
+    LABEL_NAMES.filter((name) => differences.some((d) => d.property.startsWith(`${prefix}${name}.`)));
+  const put = async (route, body, names, declared) => {
+    for (const name of names) body[name] = declared[name];
+    await client.request(route, { method: 'PUT', body, solution: action.solution, mergeLabels: true });
+  };
+  if (action.kind === 'table') {
+    if (!guid.test(current.MetadataId ?? '')) throw new Error(`Table identity of ${action.table} is unavailable.`);
+    const tableNames = changed('');
+    if (tableNames.length) {
+      // A table update carries the table's own properties only; its columns are updated separately.
+      const table = metadataBody(current, 'Microsoft.Dynamics.CRM.EntityMetadata');
+      delete table.Attributes;
+      await put(`EntityDefinitions(${current.MetadataId})`, table, tableNames, action.body);
+    }
+    const declared = action.body.Attributes[0],
+      primaryNames = changed(`Attributes[${declared.SchemaName}].`),
+      primary = current.Attributes?.[0];
+    if (primaryNames.length) {
+      if (!guid.test(primary?.MetadataId ?? ''))
+        throw new Error(`Primary-name identity of ${action.table} is unavailable.`);
+      await put(
+        `EntityDefinitions(LogicalName='${action.table}')/Attributes(${primary.MetadataId})`,
+        metadataBody(primary, declared['@odata.type']),
+        primaryNames,
+        declared,
+      );
+    }
+  } else {
+    if (!guid.test(current.MetadataId ?? '')) throw new Error(`Column identity of ${action.key} is unavailable.`);
+    await put(
+      `EntityDefinitions(LogicalName='${action.table}')/Attributes(${current.MetadataId})`,
+      metadataBody(current, action.body['@odata.type']),
+      changed(''),
+      action.body,
+    );
+  }
+  const actual = await existingComponent(client, action);
+  if (!compatible(actual, action.body))
+    throw new Error(
+      `Dataverse did not retain the declared labels of ${driftLabel(action.key, metadataDifferences(actual, action.body))}.`,
+    );
+  return differences.map(({ property, declared, actual: before }) => ({ property, declared, before }));
+}
+
 async function one(client, route) {
   const rows = await client.list(route);
   if (rows.length > 1) throw new Error('Metadata identity resolved to multiple components.');
@@ -198,6 +297,17 @@ function undeclaredRoots(roots, known) {
   return roots.filter((root) => !known.has(root.objectid?.toLowerCase()));
 }
 
+// Tables declared `includeAllSubcomponents`: their solution root keeps every subcomponent (root behaviour 0), so the
+// solution lists no separate membership for their columns, relationships, keys, forms or views.
+const wholeTables = (manifest) => new Set(manifest.tables.filter((t) => t.includeAllSubcomponents).map((t) => t.name));
+
+function wholeRoot(rows, tableId) {
+  const id = tableId?.toLowerCase();
+  return rows.some(
+    (row) => row.componenttype === 1 && row.rootcomponentbehavior === 0 && row.objectid?.toLowerCase() === id,
+  );
+}
+
 function membershipRoute(solutionId) {
   return `solutioncomponents?$select=solutioncomponentid,objectid,componenttype,rootcomponentbehavior&$filter=_solutionid_value eq ${solutionId}`;
 }
@@ -229,13 +339,17 @@ const planSummary = (actions, membership) => {
     create: actions.filter((a) => a.status === 'create').length,
     exists: actions.filter((a) => a.status === 'exists').length,
     drift: actions.filter((a) => a.status === 'drift').length,
+    labelDrift: actions.filter((a) => a.labelsOnly).length,
     membershipAdd: count('membership:add'),
     rootScoping: count('membership:scope-root'),
     blocked: count('blocked'),
   };
 };
 
-export async function planManifest(manifest, { client } = {}) {
+export async function planManifest(
+  manifest = requiredArgument('planManifest(manifest, { client })', 'a manifest object'),
+  { client } = {},
+) {
   manifest = validateManifest(manifest);
   const compiled = compileManifest(manifest),
     actions = [],
@@ -252,7 +366,7 @@ export async function planManifest(manifest, { client } = {}) {
     const existing = readsExisting(client, action, missingTables) ? await existingComponent(client, action) : null;
     actions.push(planActionResult(action, existing, publisher));
   }
-  const membership = client ? await planMembership(client, actions) : [];
+  const membership = client ? await planMembership(client, actions, wholeTables(manifest)) : [];
   return {
     ...compiled,
     environmentUrl: client?.origin ?? null,
@@ -264,7 +378,7 @@ export async function planManifest(manifest, { client } = {}) {
 }
 
 // Reads solution membership only (GET). Solutions that the plan will create have no membership yet and are skipped.
-async function planMembership(client, actions) {
+async function planMembership(client, actions, whole) {
   const known = new Map(),
     membership = [];
   for (const action of actions) {
@@ -273,14 +387,20 @@ async function planMembership(client, actions) {
   for (const solution of actions.filter((a) => a.kind === 'solution' && a.existingId)) {
     const name = solution.body.uniquename,
       rows = await client.list(membershipRoute(solution.existingId));
-    membership.push(...(await planAdditions(client, name, rows, actions)), ...planRootScoping(name, rows, known));
+    membership.push(
+      ...(await planAdditions(client, name, rows, actions, whole)),
+      ...planRootScoping(name, rows, known, whole),
+    );
   }
   return membership;
 }
 
-async function planAdditions(client, solution, rows, actions) {
+async function planAdditions(client, solution, rows, actions, whole) {
   const additions = [];
-  const want = (objectId, componentType, key) => {
+  // Apply includes (or widens) a whole table's root before its parts, which are then members through it.
+  const covered = (table) => whole.has(table);
+  const want = (objectId, componentType, key, table) => {
+    if (componentType !== 1 && covered(table)) return;
     if (!isMember(rows, objectId, componentType))
       additions.push({ operation: 'membership:add', solution, componentType, objectId, key });
   };
@@ -296,36 +416,47 @@ async function planAdditions(client, solution, rows, actions) {
       });
       continue;
     }
-    want(action.existingId, TYPES[action.kind], action.key);
+    want(action.existingId, TYPES[action.kind], action.key, action.table);
     const companion = companionColumn(action);
-    if (companion) {
+    if (companion && !covered(companion.table)) {
       const attribute = await client.optional(columnRoute(companion));
-      if (attribute?.MetadataId) want(attribute.MetadataId, 2, `${action.key}/${companion.column}`);
+      if (attribute?.MetadataId) want(attribute.MetadataId, 2, `${action.key}/${companion.column}`, companion.table);
     }
   }
   return additions;
 }
 
-function planRootScoping(solution, rows, known) {
+// A root differs from its declaration when it includes every subcomponent of a table declared with only its listed
+// parts (narrowed to them), or lists only parts of a table declared `includeAllSubcomponents` (widened to all).
+function planRootScoping(solution, rows, known, whole) {
   const roots = tableRoots(rows),
     undeclared = new Set(undeclaredRoots(roots, known));
-  return roots.map((root) =>
-    undeclared.has(root)
-      ? {
-          operation: 'blocked',
-          solution,
-          componentType: 1,
-          objectId: root.objectid,
-          reason: 'undeclared table root would include unrelated subcomponents',
-        }
-      : {
-          operation: 'membership:scope-root',
-          solution,
-          componentType: 1,
-          objectId: root.objectid,
-          table: known.get(root.objectid.toLowerCase()),
-        },
-  );
+  const scope = (root, subcomponents) => ({
+    operation: 'membership:scope-root',
+    solution,
+    componentType: 1,
+    objectId: root.objectid,
+    table: known.get(root.objectid.toLowerCase()),
+    subcomponents,
+  });
+  const widened = rows
+    .filter((row) => row.componenttype === 1 && row.rootcomponentbehavior !== 0)
+    .filter((row) => whole.has(known.get(row.objectid?.toLowerCase())))
+    .map((row) => scope(row, 'all'));
+  const narrowed = roots
+    .filter((root) => !whole.has(known.get(root.objectid?.toLowerCase())))
+    .map((root) =>
+      undeclared.has(root)
+        ? {
+            operation: 'blocked',
+            solution,
+            componentType: 1,
+            objectId: root.objectid,
+            reason: 'undeclared table root would include unrelated subcomponents',
+          }
+        : scope(root, 'declared'),
+    );
+  return [...narrowed, ...widened];
 }
 
 function planActionResult(action, existing, publisher) {
@@ -338,9 +469,20 @@ function planActionResult(action, existing, publisher) {
   if (!existing) status = 'create';
   else if (compatible(existing, action.body) && !wrongPublisher) status = 'exists';
   else status = 'drift';
+  const differences =
+    status === 'drift'
+      ? [
+          ...metadataDifferences(existing, action.body),
+          ...(wrongPublisher
+            ? [{ property: 'publisher', declared: publisher.id ?? null, actual: existing._publisherid_value ?? null }]
+            : []),
+        ]
+      : null;
   return {
     ...action,
     status,
+    ...(differences ? { differences } : {}),
+    ...(differences && labelsOnly(action, differences) ? { labelsOnly: true } : {}),
     ...(existing
       ? {
           existingId:
@@ -356,16 +498,22 @@ function planActionResult(action, existing, publisher) {
 }
 
 /* NOSONAR: preserve write, journal and progress callback ordering */ export async function applyManifest(
-  input,
-  { client, journalFile, expectedOrganisationId, onProgress = () => {} },
+  input = requiredArgument('applyManifest(manifest, { client, journalFile })', 'a manifest object'),
+  { client, journalFile, expectedOrganisationId, updateLabels: labelsAllowed = false, onProgress = () => {} },
 ) {
   const manifest = validateManifest(input);
   const identity = await client.verify(expectedOrganisationId);
   const plan = await planManifest(manifest, { client });
-  if (plan.summary.drift)
+  const refused = plan.actions.filter((a) => a.status === 'drift' && !(labelsAllowed && a.labelsOnly));
+  if (refused.length) {
+    const drifted = refused.map((a) => driftLabel(a.key, a.differences));
+    const hint = refused.every((a) => a.labelsOnly)
+      ? 'Only display labels differ: rerun apply with --update-labels to change them to the declared labels.'
+      : 'Inspect a remote plan; additive provisioning will not overwrite them.';
     throw new Error(
-      `Existing metadata has ${plan.summary.drift} incompatible component(s). Inspect a remote plan; additive provisioning will not overwrite them.`,
+      `Existing metadata has ${refused.length} incompatible component(s): ${drifted.join('; ')}. ${hint}`,
     );
+  }
   if (plan.summary.blocked) {
     const roots = plan.membership.filter((e) => e.operation === 'blocked').map((e) => `${e.solution}/${e.objectId}`);
     throw new Error(
@@ -382,26 +530,38 @@ function planActionResult(action, existing, publisher) {
     entries: [],
   };
   if (journalFile) await privateJson(journalFile, journal, true);
-  let publisherId;
+  let publisherId,
+    membershipWrites = 0;
   const solutionIds = new Map();
   const choiceIds = new Map();
-  const include = async (id, type, solution, root = false) => {
-    const solutionId = solutionIds.get(solution);
-    if (!guid.test(solutionId ?? '')) throw new Error('Solution identity is unavailable.');
-    const included = await client.list(
+  const whole = wholeTables(manifest),
+    tableIds = new Map();
+  const members = (solutionId, id, type) =>
+    client.list(
       `solutioncomponents?$select=objectid,componenttype,rootcomponentbehavior&$filter=_solutionid_value eq ${solutionId} and objectid eq ${id} and componenttype eq ${type}`,
     );
-    if (!isMember(included, id, type))
-      await client.request('AddSolutionComponent', {
-        method: 'POST',
-        body: {
-          ComponentId: id,
-          ComponentType: type,
-          SolutionUniqueName: solution,
-          AddRequiredComponents: false,
-          ...(root ? { DoNotIncludeSubcomponents: true } : {}),
-        },
-      });
+  // A table root carries its declared subcomponent scope; a part of a whole root is already a member through it.
+  const include = async (id, type, solution, table, root = false) => {
+    const solutionId = solutionIds.get(solution);
+    if (!guid.test(solutionId ?? '')) throw new Error('Solution identity is unavailable.');
+    const all = root && whole.has(table),
+      tableId = whole.has(table) && !root ? tableIds.get(table) : null;
+    if (tableId && wholeRoot(await members(solutionId, tableId, 1), tableId)) return;
+    const included = await members(solutionId, id, type);
+    if (isMember(included, id, type) && !(all && !wholeRoot(included, id))) return;
+    membershipWrites++;
+    await client.request('AddSolutionComponent', {
+      method: 'POST',
+      body: {
+        ComponentId: id,
+        ComponentType: type,
+        SolutionUniqueName: solution,
+        AddRequiredComponents: false,
+        ...(root ? { DoNotIncludeSubcomponents: !all } : {}),
+      },
+    });
+    if (all && !wholeRoot(await members(solutionId, id, 1), id))
+      throw new Error(`Dataverse did not retain the whole-table root of ${table}.`);
   };
   try {
     for (const planned of plan.actions) {
@@ -409,8 +569,15 @@ function planActionResult(action, existing, publisher) {
       if (journalFile) await privateJson(journalFile, journal);
       // Re-read each identity before its write; preflight snapshots can become stale.
       const current = await existingComponent(client, planned);
-      if (current && !compatible(current, planned.body))
-        throw new Error(`Metadata changed while applying ${planned.key}. Re-plan before continuing.`);
+      let labels = null;
+      if (current && !compatible(current, planned.body)) {
+        const differences = metadataDifferences(current, planned.body);
+        if (!(labelsAllowed && planned.labelsOnly && labelsOnly(planned, differences)))
+          throw new Error(
+            `Metadata changed while applying ${driftLabel(planned.key, differences)}. Re-plan before continuing.`,
+          );
+        labels = await updateLabels(client, planned, current, differences);
+      }
       if (
         planned.kind === 'solution' &&
         current &&
@@ -419,7 +586,8 @@ function planActionResult(action, existing, publisher) {
         throw new Error('Solution publisher changed while applying.');
       let componentId =
         current?.MetadataId ?? current?.publisherid ?? current?.solutionid ?? current?.formid ?? current?.savedqueryid;
-      let status = 'exists';
+      let status = labels ? 'labels-updated' : 'exists';
+      let primaryNameLength = null;
       if (!current) {
         if (planned.kind === 'table-reference') throw new Error('Required existing table disappeared.');
         const body = structuredClone(planned.body);
@@ -438,6 +606,7 @@ function planActionResult(action, existing, publisher) {
         const result = await client.request(planned.route, { method: 'POST', body, solution: planned.solution });
         componentId = planned.id ?? metadataId(result);
         status = 'created';
+        if (planned.kind === 'table') primaryNameLength = await completePrimaryNameLength(client, planned);
         if (planned.kind === 'relationship' && planned.body.Lookup)
           await completeLookupAudit(
             client,
@@ -449,12 +618,14 @@ function planActionResult(action, existing, publisher) {
       if (planned.kind === 'publisher') publisherId = componentId;
       if (planned.kind === 'solution') solutionIds.set(planned.body.uniquename, componentId);
       if (planned.kind === 'choice') choiceIds.set(planned.body.Name, componentId);
+      if (planned.kind === 'table') tableIds.set(planned.table, componentId);
       if (TYPES[planned.kind]) {
         if (!guid.test(componentId ?? '')) throw new Error('Invalid component ID; reconcile before continuing.');
         await include(
           componentId,
           TYPES[planned.kind],
           planned.solution,
+          planned.table,
           ['table', 'table-reference'].includes(planned.kind),
         );
         const companion = companionColumn(planned);
@@ -462,7 +633,7 @@ function planActionResult(action, existing, publisher) {
           const attribute = await requiredMetadata(client, columnRoute(companion));
           if (!guid.test(attribute.MetadataId ?? ''))
             throw new Error(`${companion.label} metadata identity is unavailable; reconcile before exporting.`);
-          await include(attribute.MetadataId, 2, planned.solution);
+          await include(attribute.MetadataId, 2, planned.solution, companion.table);
         }
       }
       const entry = {
@@ -470,6 +641,8 @@ function planActionResult(action, existing, publisher) {
         status,
         componentId,
         bodyHash: digest(planned.body),
+        ...(primaryNameLength ? { primaryNameLength } : {}),
+        ...(labels ? { labels } : {}),
         finishedAt: new Date().toISOString(),
       };
       journal.entries.push(entry);
@@ -484,7 +657,16 @@ function planActionResult(action, existing, publisher) {
         if (journalFile) await privateJson(journalFile, journal);
       },
     });
-    journal.state = 'Created';
+    // The outcome, not the operation: Created when a component was created, Updated when only labels, solution
+    // membership or table-root scoping were written, Unchanged when the run wrote nothing.
+    if (journal.entries.some((entry) => entry.status === 'created')) journal.state = 'Created';
+    else if (
+      membershipWrites ||
+      journal.solutionRoots.changedRoots ||
+      journal.entries.some((entry) => entry.status === 'labels-updated')
+    )
+      journal.state = 'Updated';
+    else journal.state = 'Unchanged';
     journal.finishedAt = new Date().toISOString();
     if (journalFile) await privateJson(journalFile, journal);
     return journal;
@@ -501,11 +683,12 @@ function planActionResult(action, existing, publisher) {
 // into this export. Keep explicitly added subcomponents and narrow only known
 // table roots through the supported AddSolutionComponent action.
 /* NOSONAR: preserve public lifecycle await ordering */ export async function scopeSolutionRoots(
-  input,
+  input = requiredArgument('scopeSolutionRoots(manifest, client)', 'a manifest object'),
   client,
   { onProgress = () => {} } = {},
 ) {
   const manifest = validateManifest(input),
+    whole = wholeTables(manifest),
     known = new Map(),
     changes = [];
   for (const table of manifest.tables) {
@@ -518,8 +701,13 @@ function planActionResult(action, existing, publisher) {
     declared = [];
   for (const action of compileManifest(manifest).actions.filter((a) => TYPES[a.kind])) {
     const current = await existingComponent(client, action);
-    if (!current || !compatible(current, action.body))
-      throw new Error('Declared metadata must exist unchanged before solution scoping.');
+    if (!current)
+      throw new Error(`Declared metadata must exist unchanged before solution scoping: ${action.key} is missing.`);
+    if (!compatible(current, action.body))
+      throw new Error(
+        'Declared metadata must exist unchanged before solution scoping: ' +
+          `${driftLabel(action.key, metadataDifferences(current, action.body))} differs.`,
+      );
     declared.push({ action, current });
   }
   const add = async (id, type, solution) =>
@@ -543,7 +731,14 @@ function planActionResult(action, existing, publisher) {
       roots = tableRoots(before);
     if (undeclaredRoots(roots, known).length)
       throw new Error('Undeclared table root would include unrelated subcomponents; scoping refused.');
-    scopes.push({ solution, sid, route, before, roots });
+    // A table declared includeAllSubcomponents keeps its whole root.
+    scopes.push({
+      solution,
+      sid,
+      route,
+      before,
+      roots: roots.filter((r) => !whole.has(known.get(r.objectid.toLowerCase()))),
+    });
   }
   for (const { solution, sid, route, before, roots } of scopes) {
     if (!roots.length) continue;
@@ -593,6 +788,7 @@ function planActionResult(action, existing, publisher) {
   // IncludeAll roots can mask absent explicit membership. Restore the declared
   // metadata after narrowing; never create/alter a table, column or business row.
   for (const { action, current } of declared) {
+    if (whole.has(action.table)) continue; // a member through its whole table root
     const id = current.MetadataId ?? current.formid ?? current.savedqueryid,
       type = TYPES[action.kind],
       sid = solutionIds.get(action.solution);
@@ -613,7 +809,7 @@ function planActionResult(action, existing, publisher) {
       if (!included.length) await add(primary.MetadataId, 2, action.solution);
     }
   }
-  for (const relation of manifest.relationships.filter((r) => r.kind === 'oneToMany')) {
+  for (const relation of manifest.relationships.filter((r) => r.kind === 'oneToMany' && !whole.has(r.child))) {
     const attribute = await client.get(
         `EntityDefinitions(LogicalName='${relation.child}')/Attributes(LogicalName='${relation.lookup.name}')`,
       ),
@@ -630,6 +826,37 @@ function planActionResult(action, existing, publisher) {
     changedRoots: changes.length,
   });
   return { changedRoots: changes.length, changes };
+}
+
+// Observed on the live developer environment (2026-11-18): creating a table stores its primary-name column with
+// MaxLength 850 whatever the create declares, and a follow-up attribute update sets the declared value, which then
+// persists. Apply makes that update right after the create and verifies it by readback. Returns the journal record of
+// the correction, or null when the platform already kept the declared length.
+async function completePrimaryNameLength(client, action) {
+  const table = action.table,
+    declared = action.body.Attributes[0].MaxLength,
+    route = `${columnRoute({ table, column: action.body.PrimaryNameAttribute })}/Microsoft.Dynamics.CRM.StringAttributeMetadata`;
+  const attribute = await requiredMetadata(client, route);
+  if (attribute.MaxLength === declared) return null;
+  if (!guid.test(attribute.MetadataId ?? ''))
+    throw new Error(`Primary-name metadata identity of ${table} is unavailable; reconcile before continuing.`);
+  const body = structuredClone(attribute);
+  for (const key of Object.keys(body)) if (key.startsWith('@odata.') && key !== '@odata.type') delete body[key];
+  body['@odata.type'] = 'Microsoft.Dynamics.CRM.StringAttributeMetadata';
+  body.MaxLength = declared;
+  await client.request(`EntityDefinitions(LogicalName='${table}')/Attributes(${attribute.MetadataId})`, {
+    method: 'PUT',
+    body,
+    solution: action.solution,
+    mergeLabels: true,
+  });
+  const actual = await client.get(route);
+  if (actual.MaxLength !== declared)
+    throw new Error(
+      `Dataverse did not retain the declared primary-name maxLength ${declared} of ${table} ` +
+        `(it stores ${actual.MaxLength}); reconcile the column before continuing.`,
+    );
+  return { declared, created: attribute.MaxLength, updated: actual.MaxLength };
 }
 
 async function completeLookupAudit(client, table, column, solution) {
@@ -656,7 +883,10 @@ async function completeLookupAudit(client, table, column, solution) {
   if (actual.IsAuditEnabled?.Value !== true) throw new Error('Dataverse did not retain the lookup audit setting.');
   return true;
 }
-export async function completeLookupAuditing(input, client) {
+export async function completeLookupAuditing(
+  input = requiredArgument('completeLookupAuditing(manifest, client)', 'a manifest object'),
+  client,
+) {
   const m = validateManifest(input);
   let checked = 0,
     updated = 0;
@@ -674,7 +904,10 @@ const xmlEscape = (s) =>
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&apos;');
-export async function publishManifest(input, client) {
+export async function publishManifest(
+  input = requiredArgument('publishManifest(manifest, client)', 'a manifest object'),
+  client,
+) {
   const manifest = validateManifest(input);
   const entities = manifest.tables.map((t) => `<entity>${xmlEscape(t.name)}</entity>`).join('');
   const choices = manifest.choices.map((c) => `<optionset>${xmlEscape(c.name)}</optionset>`).join('');
@@ -687,7 +920,7 @@ export async function publishManifest(input, client) {
   return { publishedTables: manifest.tables.length, publishedChoices: manifest.choices.length };
 }
 
-export async function checkKeys(input, client) {
+export async function checkKeys(input = requiredArgument('checkKeys(manifest, client)', 'a manifest object'), client) {
   const manifest = validateManifest(input),
     keys = [];
   for (const table of manifest.tables)
@@ -706,7 +939,12 @@ export async function checkKeys(input, client) {
   return { ready: keys.every((k) => k.status === 'Active'), keys };
 }
 
-export async function exportSolution({ client, solutionName, zipFile, unpackFolder }) {
+export async function exportSolution(
+  { client, solutionName, zipFile, unpackFolder } = requiredArgument(
+    'exportSolution({ client, solutionName, zipFile, unpackFolder })',
+    'an options object with client, solutionName, zipFile and unpackFolder',
+  ),
+) {
   if (!/^[a-z][a-z0-9_]*$/i.test(solutionName)) throw new Error('Invalid solution name.');
   const result = await client.request('ExportSolution', {
     method: 'POST',
@@ -717,7 +955,9 @@ export async function exportSolution({ client, solutionName, zipFile, unpackFold
   const zip = Buffer.from(encoded, 'base64');
   if (zip.subarray(0, 2).toString() !== 'PK') throw new Error('Export is not a ZIP archive.');
   await fs.mkdir(path.dirname(path.resolve(zipFile)), { recursive: true });
-  await fs.writeFile(zipFile, zip, { flag: 'wx', mode: 0o600 });
+  await fs.writeFile(zipFile, zip, { flag: 'wx', mode: 0o600 }).catch((error) => {
+    throw error.code === 'EEXIST' ? existingPathError(zipFile) : error;
+  });
   if (unpackFolder) {
     const result = await runProcess(pacExecutable(), [
       'solution',

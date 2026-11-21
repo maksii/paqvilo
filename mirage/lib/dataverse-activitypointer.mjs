@@ -271,4 +271,20 @@ function install(api) {
   );
 }
 
-export const EXTENSION = { name: 'dataverse-activitypointer', install };
+/** Capability record for the capability registry; dataverse-extensions.mjs adds the operations install registered. */
+function describe() {
+  return {
+    name: 'dataverse-activitypointer',
+    version: 1,
+    kind: 'dataverse-extension',
+    level: 'behaviour',
+    reason:
+      'Read-only activitypointer view over the activity tables (collection, row, $count); every other route answers 501 and writes are refused.',
+    requires: [],
+    principal: 'caller',
+    stateOwner: 'store',
+    lifecycle: 'per-request',
+  };
+}
+
+export const EXTENSION = { name: 'dataverse-activitypointer', install, describe };

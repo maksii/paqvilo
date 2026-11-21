@@ -8,6 +8,7 @@ import { createConnectorRuntime, connectionSettings } from '../lib/connector-run
 import { executeFlowDefinition } from '../lib/flow-runtime.mjs';
 
 // Request bodies by `consumes`, nextLink continuations, OAuth client credentials and response setheader.
+// @test-kind contract: Paqvilo's own custom connector compilation and request building against loopback fixtures
 const NAME = 'x_5ffxreq',
   AT = `Connectors/${NAME}/`;
 const ok = { 200: { description: 'ok' } };
@@ -230,6 +231,7 @@ test('a nextLink page carries the authentication and request policies, stays on 
   assert.equal(seen.length, before + 1);
 });
 
+// @test-kind contract: Paqvilo's own local OAuth handling for custom connectors (token acquisition, static tokens, refusals)
 test('the OAuth client credentials flow acquires and caches a token; other flows answer 501; response setheader applies', async (t) => {
   let issued = 0;
   const { seen, origin } = await serve(t, (req) =>
@@ -301,7 +303,52 @@ test('the OAuth client credentials flow acquires and caches a token; other flows
     code.invoke({ connectorId: NAME, operationId: 'ListItems', parameters: {} }),
     (e) => e.status === 401 && e.code === 'ConnectionUnauthorized' && /authorize/.test(e.message),
   );
-  assert.equal(compiled(oauth('implicit'))[0].blocked.code, 'CONNECTOR_AUTH_UNSUPPORTED');
+  // The implicit and password flows are never signed in locally: a connection's static token runs them, and a connection
+  // without one answers 501 OperationUnsupported. The connector itself is not blocked.
+  for (const flow of ['implicit', 'password']) {
+    const list = compiled(oauth(flow));
+    assert.equal(list[0].blocked, null, flow);
+    assert.equal(list[0].diagnostics.find((d) => d.code === 'CONNECTOR_AUTH_UNSUPPORTED')?.severity, 'warning');
+    process.env.X_FX_REQ_TOKEN = 'invented-static-token';
+    t.after(() => delete process.env.X_FX_REQ_TOKEN);
+    const before = seen.length;
+    await runtime(origin, { token: 'env:X_FX_REQ_TOKEN' }, () => list).invoke({
+      connectorId: NAME,
+      operationId: 'ListItems',
+      parameters: {},
+    });
+    assert.equal(seen.at(-1).headers.authorization, 'Bearer invented-static-token', flow);
+    assert.equal(seen.length, before + 1);
+    // A flow action on that connector runs with the static token too.
+    const run = await executeFlowDefinition({
+      definition: {
+        triggers: { manual: { type: 'Request', kind: 'Http', inputs: {} } },
+        actions: {
+          List: {
+            type: 'OpenApiConnection',
+            runAfter: {},
+            inputs: {
+              host: { apiId: `/providers/Microsoft.PowerApps/apis/${NAME}`, operationId: 'ListItems' },
+              parameters: {},
+            },
+          },
+          Reply: {
+            type: 'Response',
+            runAfter: { List: ['Succeeded'] },
+            inputs: { statusCode: 200, body: { code: "@outputs('List')?['statusCode']" } },
+          },
+        },
+      },
+      input: {},
+      connectors: runtime(origin, { token: 'env:X_FX_REQ_TOKEN' }, () => list),
+    });
+    assert.deepEqual([run.status, run.body], [200, { code: 200 }], flow);
+    assert.equal(seen.at(-1).headers.authorization, 'Bearer invented-static-token');
+    await assert.rejects(
+      runtime(origin, {}, () => list).invoke({ connectorId: NAME, operationId: 'ListItems', parameters: {} }),
+      (e) => e.status === 501 && e.code === 'OperationUnsupported' && /static token reference/.test(e.message),
+    );
+  }
 });
 
 test('a merged paging result keeps no body continuation when complete and the latest one when truncated', async () => {

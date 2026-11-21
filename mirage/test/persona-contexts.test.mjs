@@ -1,3 +1,4 @@
+// @test-kind contract: Mirage's own persona runtime manager and its settings: launches, fingerprints, owned snapshot folders and configuration checks; no native behaviour is claimed.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -8,11 +9,15 @@ import os from 'node:os';
 import path from 'node:path';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
-test('context launches serialize duplicate starts, fingerprint definitions and clean failed snapshots', async () => {
+test('context launches serialize duplicate starts, fingerprint definitions and clean failed snapshots', async (t) => {
+  // The manager's folder is the test's own: its default is under the working directory, which is the checkout here.
+  const owned = await makeTemporaryDirectory(path.join(os.tmpdir(), 'persona-runtimes-'));
+  t.after(() => fs.rm(owned, { recursive: true, force: true }));
   let starts = 0;
   const directories = [],
     closed = [];
   const manager = createPersonaContexts({
+    directory: owned,
     maxInstances: 2,
     snapshot: async (file) => {
       directories.push(path.dirname(file));
@@ -35,11 +40,7 @@ test('context launches serialize duplicate starts, fingerprint definitions and c
     assert.equal(starts, 1);
     assert.equal(first.id, second.id);
     assert.equal(second.created, false);
-    assert.ok(
-      directories.every((directory) =>
-        directory.startsWith(path.join(process.cwd(), '.paqvilo', 'persona-runtimes') + path.sep),
-      ),
-    );
+    assert.ok(directories.every((directory) => directory.startsWith(owned + path.sep)));
     const scenario = await manager.open({ id: 'one', label: 'One' }, { scenario: 'another-start-page' });
     assert.equal(scenario.id, first.id);
     assert.equal(starts, 1);
@@ -55,6 +56,41 @@ test('context launches serialize duplicate starts, fingerprint definitions and c
   for (const directory of directories) await assert.rejects(fs.stat(directory));
   assert.equal(closed.length, 2);
   await assert.rejects(manager.open({ id: 'one', label: 'One' }), /closed/);
+});
+
+test('the first launch removes the snapshot folders a killed parent left, and keeps one a running runtime uses', async (t) => {
+  const owned = await makeTemporaryDirectory(path.join(os.tmpdir(), 'persona-runtimes-'));
+  t.after(() => fs.rm(owned, { recursive: true, force: true }));
+  // Three folders from earlier parents: two abandoned, one whose runtime still runs; and a folder that is not a snapshot.
+  for (const name of ['instance-dead1', 'instance-dead2', 'instance-live', 'notes']) {
+    await fs.mkdir(path.join(owned, name));
+    await fs.writeFile(path.join(owned, name, 'state.json'), 'fixture');
+  }
+  const judged = [];
+  const manager = createPersonaContexts({
+    directory: owned,
+    maxInstances: 2,
+    isAbandoned: async (folder) => {
+      judged.push(path.basename(folder));
+      return path.basename(folder) !== 'instance-live';
+    },
+    snapshot: async (file) => fs.writeFile(file, 'fixture'),
+    start: async () => ({ url: 'http://127.0.0.1:1', close: async () => {} }),
+  });
+  t.after(() => manager.close());
+  assert.deepEqual((await fs.readdir(owned)).sort(), ['instance-dead1', 'instance-dead2', 'instance-live', 'notes']);
+  const first = await manager.open({ id: 'a', label: 'A' });
+  const after = (await fs.readdir(owned)).sort();
+  assert.equal(after.includes('instance-dead1'), false);
+  assert.equal(after.includes('instance-dead2'), false);
+  assert.ok(after.includes('instance-live'), 'a folder a running runtime uses is kept');
+  assert.ok(after.includes('notes'), 'a folder that is not a snapshot is not touched');
+  assert.equal(after.filter((name) => name.startsWith('instance-')).length, 2, 'the live one and the one just created');
+  assert.deepEqual(judged.sort(), ['instance-dead1', 'instance-dead2', 'instance-live']);
+  // Later launches do not judge the folders again.
+  await manager.open({ id: 'b', label: 'B' });
+  assert.equal(judged.length, 3);
+  assert.equal(first.created, true);
 });
 
 test('catalogue/default context limits are validated and resolved for CLI runtimes', async (t) => {

@@ -1,7 +1,7 @@
 # Solution customizations in the local app
 
-Mirage imports app navigation, table metadata, forms and views from selected
-Solution sources. Executable customizations require a separate trust setting:
+Mirage imports app navigation, table metadata, forms and views from the selected Solution sources. Running their code
+(form scripts, JavaScript commands, PCF controls) needs a separate trust setting:
 
 ```yaml
 version: 2
@@ -16,79 +16,55 @@ solutions:
     path: ./solutions/Example
 ```
 
-For a toolkit catalogue, place `modelDriven` under the target's `mirage` settings.
-The same setting is available in **Project setup → Runtime → Run trusted Solution
-extensions**. Save and restart. Trust is off by default. A Solution import alone
-never grants permission to run its code. Trusted code executes in the local app
-with access to its session; review it as you would any project dependency.
+In a toolkit catalogue, put `modelDriven` under the target's `mirage` settings, or use **Project setup → What to run →
+Run your own scripts and controls inside model-driven apps**; save and restart. Trust is off by default and a Solution
+import never grants it. Trusted code runs in the local app with access to its session: review it like any project
+dependency.
 
-Run `paqvilo mirage inspect --project mirage.project.yml --json`, then
-`paqvilo mirage dev --project mirage.project.yml`. Select an imported app from the
-app picker, open a view and a record, and use the staff profile to select the
-identity under test. Dry run lets you exercise records without persisting them.
-Keep fixture records, script sources and their acceptance tests in the project.
+```sh
+paqvilo mirage inspect --project mirage.project.yml --json
+paqvilo mirage dev --project mirage.project.yml
+```
 
-For an optional static check of authored model-driven JavaScript, see [web-resource lint](model-driven-web-resource-lint.md). The project owns its lint dependencies and rules.
+Pick an imported app, open a view and a record, and choose the identity under test in the staff profile. Dry run
+exercises records without persisting them. Keep fixture records, scripts and acceptance tests in the project. For an
+optional static check of authored JavaScript, see [web resource lint](model-driven-web-resource-lint.md).
 
-## Supported baseline
+## What runs
 
-Supported FormXml layout visibility, disabled-state and label flags accept both
-XML Boolean spellings: `true`/`false` and `1`/`0`. Missing flags retain their
-existing layout defaults.
+| Exported component                          | Local behaviour                                                                                                |
+| ------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| Main form XML                               | Tabs, sections, fields, labels, supported related grids and controls                                           |
+| JavaScript web resources                    | Declared local files load in exported form-library order; no remote lookup or expression evaluation            |
+| Form events                                 | OnLoad, column OnChange, OnSave; execution context, named functions, constant parameters and save cancellation |
+| Classic ribbon and modern AppAction actions | Exported buttons, named handlers and supported parameters and rules                                            |
+| Standard field and dataset PCF              | Declared compiled bundle and CSS, manifest properties, lifecycle, outputs and disposal                         |
 
-| Exported component                                     | Local behavior                                                                                                                                               |
-| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Main form XML                                          | Tabs, sections, fields, labels, supported related grids and controls                                                                                         |
-| JavaScript WebResources                                | Declared local files load in exported form-library order; no remote lookup or expression evaluation                                                          |
-| Form events                                            | OnLoad, column OnChange, OnSave; execution context, named functions, handler parameters and save cancellation                                                |
-| Client API                                             | Bounded form attributes and controls, dirty values, required/visible/disabled states, notifications, local navigation and staff-authorized record operations |
-| Classic ribbon and modern AppAction JavaScript actions | Exported buttons, named handlers and supported parameters/rules; the modern baseline supports `PrimaryControl`                                               |
-| Standard field PCF                                     | Declared compiled bundle and CSS, manifest properties, initialization, updates, output notification, outputs and disposal                                    |
+The supported client API members, event semantics and save results are listed in
+[model-driven client API](model-driven-client-api.md). Unsupported calls report their name instead of succeeding.
+Scripts reach data through the shell's adapter, so staff roles, row access, field permissions, write capability,
+simulation level and optimistic concurrency stay enforced; a script can disable a control but not enable a field the
+source or staff policy forbids.
 
-The runtime follows the documented [form Client API](https://learn.microsoft.com/en-us/power-apps/developer/model-driven-apps/clientapi/reference/),
-[ribbon parameters](https://learn.microsoft.com/en-us/dynamics365/customer-engagement/developer/customize-dev/pass-dynamics-365-data-page-parameter-ribbon-actions),
-and [StandardControl lifecycle](https://learn.microsoft.com/en-us/power-apps/developer/component-framework/reference/control)
-for the implemented subset. `setValue` does not automatically fire OnChange;
-scripts use `fireOnChange` when needed. Save handlers run before persistence and
-can cancel the save. Unsupported API calls report their name instead of
-silently pretending to succeed.
+FormXml visibility, disabled-state and label flags, event activation, handler enablement and execution-context flags
+accept `true`/`false` and `1`/`0`. Missing layout flags keep their defaults; missing activation or enablement means on,
+missing execution context means off, and invalid tokens mean off.
 
-See the [client API capability matrix](model-driven-client-api.md) for supported
-methods, event semantics and the remaining limits.
+## Web resources and client sources
 
-The `Xrm.WebApi` adapter supports scalar CRUD, multiselect writes and imported
-single-valued lookup bindings using `@odata.bind`. Reads use the shared
-organization engine for supported OData expressions, lookup expansion, FetchXML
-and continuation paging. Table queries do not inherit a saved view's filter.
-Unknown relationships and external binding or continuation URLs fail before a
-record request. Many-to-many writes and deep inserts remain unsupported.
+- Web resource names come from the exported `Name` and `FileName`; a matching file name alone grants nothing. Only
+  declared resources get local URLs (`/_apps/resources/`, `/_apps/controls/`), served uncached from the app's
+  allowlist. Missing files and malformed definitions appear in `clientExtensions.diagnostics` of the app catalogue
+  (`GET /_apps/api`). Source changes reload through the Solution watcher.
+- Unpacked web resource bodies are read only when a declared JavaScript or stylesheet references them. Across the
+  selected sources and retained PCF assets, import is bounded to 256 MiB of content, 10,000 entries and 256 layers,
+  with 8 MiB per executable file; ZIP archives keep the Solution archive checks. PCF manifests, identity metadata, RESX
+  and images count toward the byte budget. Exceeding an aggregate limit disables the whole client catalogue with
+  `MODEL_CLIENT_IMPORT_LIMIT`; an earlier layer never runs in its place. A PCF file that disappears during import
+  reports a component diagnostic.
 
-Scripts use the local organization through the shell's data adapter. Staff roles,
-row access, field permissions, write capability, simulation level and optimistic
-concurrency remain enforced by the shared backend. Form scripts can further
-disable controls but cannot enable a field forbidden by the source or staff
-policy. Portal visitor identity and table permissions remain separate.
-
-WebResource names resolve from the exported `Name` and `FileName`; a matching
-filesystem name alone does not grant execution. Only declared resources receive
-local app URLs. Missing files and malformed definitions appear in client extension
-diagnostics in the app catalogue (`GET /_apps/api`). Resource responses are local,
-uncached and confined to the app's allowlist. Source changes trigger reload through
-the selected Solution watcher.
-
-Client asset import reads unpacked WebResource bodies only when a declared
-JavaScript or stylesheet references them. Across selected sources and retained
-PCF assets, admission is bounded by 256 MiB of content, 10,000 visited entries and
-256 layers, with an 8 MiB limit per executable file. ZIP archives also retain the
-shared Solution archive size and expansion checks. Exceeding an aggregate limit
-disables the client extension catalogue and reports `MODEL_CLIENT_IMPORT_LIMIT`;
-it never silently executes an earlier layer. A PCF file that disappears during
-import reports a component diagnostic without taking down the organization host.
-PCF manifests, identity metadata, localized RESX and image bytes count toward the
-same byte budget, even when only the declared JavaScript/CSS is served by the app.
-
-For large metadata compositions, `modelDriven.clientSources` can independently
-select an ordered list of local client-asset directories or Solution ZIP files:
+`modelDriven.clientSources` selects an ordered list of client-asset directories or Solution ZIP files independently of
+the metadata sources:
 
 ```yaml
 modelDriven:
@@ -98,139 +74,99 @@ modelDriven:
     - ./client-assets/overrides
 ```
 
-Each directory uses the exported `WebResources`, `Controls`, `AppActions`,
-`Entities` and `Other/Customizations.xml` layout. Relative paths resolve from the
-project or catalogue file; programmatic options resolve from the working directory.
-The complete `solutions` / `solutionRoots` selection still supplies schema, apps,
-forms and views. Client sources are an explicit replacement for client discovery
-in those metadata layers, and later declared resources override earlier ones.
-
-An entry named `<Library>@<version>.js` is a PCF platform library file, not a Solution
-layer; it is served under `/_apps/controls/platform/`. A list with only library files
-imports only those files. A misnamed `.js` entry
-reports `MODEL_PCF_PLATFORM_LIBRARY_INVALID`.
-Omitting `clientSources` preserves ordinary Solution discovery; `[]` imports no
-client extensions. Selection grants no execution trust. Imported WebResources
-retain their file provenance, and missing sources disable the complete client
-catalogue with `MODEL_CLIENT_SOURCE_INVALID`. All selected sources share the same
-aggregate limits above; exceeding them disables the complete catalogue, including
-earlier layers. Missing or escaped declared dependencies are reported and never
-served. Local watchers include the selected client sources.
-
-A named PCF declaration supersedes an earlier control even if its new manifest or
-dependencies are invalid; that failure cannot reactivate the earlier executable.
-A later valid declaration can replace it. An unreadable exported PCF identity
-disables the PCF catalogue with `PCF_IDENTITY_UNRESOLVED`, since its override target
-cannot be established safely; independent WebResources remain available.
-
-These selections and aggregate budgets govern the model-driven client catalogue.
-Power Pages Liquid and native-form PCF use their separate Solution-backed import;
-`modelDriven.clientSources`, including `[]`, does not remove those portal controls.
-That portal import still reads its declared PCF resources during startup and is
-not covered by the model-driven catalogue's aggregate budget.
+- Each directory uses the exported `WebResources`, `Controls`, `AppActions`, `Entities` and
+  `Other/Customizations.xml` layout. Paths resolve from the project or catalogue file (programmatic options from the
+  working directory). `solutions`/`solutionRoots` still supply schema, apps, forms and views; client sources replace
+  client discovery in those layers, and later declared resources override earlier ones.
+- A `clientSources` entry that is a `.js` file named `<Library>@<version>.js` is a PCF platform library, served under
+  `/_apps/controls/platform/`; a misnamed `.js` entry reports `MODEL_PCF_PLATFORM_LIBRARY_INVALID`. A list of only
+  library files imports only those.
+- Omitting `clientSources` keeps ordinary Solution discovery; `[]` imports no client extensions. Selecting sources
+  grants no trust. An entry that does not exist or is not a directory or ZIP file disables the whole client catalogue
+  with `MODEL_CLIENT_SOURCE_INVALID`, whose message names the entry's path. Missing or escaping dependencies are
+  reported and never served. Watchers include the client sources.
+- A named PCF declaration supersedes an earlier one even if it is invalid; the earlier executable never comes back. An
+  unreadable PCF identity disables the PCF catalogue with `PCF_IDENTITY_UNRESOLVED`; web resources stay available.
+- These settings and budgets govern only the model-driven client catalogue. Power Pages Liquid and native-form PCF use
+  their own Solution-backed import, which `clientSources` (even `[]`) does not change and the budget does not cover.
 
 ## PCF inputs and limits
 
-Select an unpacked Solution containing `Controls/<name>/ControlManifest.xml`, its
-`.data.xml` identity and the compiled resources declared by the manifest. Form XML
-must contain the exported desktop custom-control binding. Do not substitute
-TypeScript source for a compiled bundle. Mirage resolves the declared constructor,
-registration or exact classic export; it does not guess from unrelated globals.
+Select an unpacked Solution with `Controls/<name>/ControlManifest.xml`, its `.data.xml` identity and the compiled
+resources the manifest declares; Form XML must contain the exported desktop custom-control binding. TypeScript source is
+not a substitute for the bundle. Mirage resolves the declared constructor, registration or exact classic export, never
+an unrelated global.
 
-Field controls and dataset controls are hosted. One admission rule, shared with the
-Power Pages host (`pcfAdmission`, exported by `code-components.mjs`), decides the kind:
-`standard` field, `standard` dataset or `virtual`. A dataset control bound to a form subgrid
-(`<data-set>` in its desktop `customControl`) receives a DataSet over the subgrid view,
-narrowed to the parent record: `records`, `sortedRecordIds`, `columns`, `getFormattedValue`,
-paging (`setPageSize` up to 100, `loadNextPage`, `loadPreviousPage`, `loadExactPage`,
-`reset`), one sort column (`sorting` then `refresh()`), one AND group of filter
-conditions, `linking.addLinkedEntity` with `addColumn(name, alias)`, selection, and
-`openDatasetItem`, which opens the record. Other filter shapes, several sort columns and
-In conditions set `error` with a reason. Table home grids keep the standard grid.
-A virtual (React) control is hosted only when the project supplies every declared platform
-library, plus ReactDOM of the declared React version, as files in
-`modelDriven.clientSources` named `<Library>@<version>.js` (for example
-`React@16.14.0.js`, `ReactDOM@16.14.0.js`). Mirage ships no React or Fluent. Without them
-the control shows `PCF_VIRTUAL_UNSUPPORTED` with its name and the missing files. Field and
-dataset components get the staff context, its formatting, and per-column `security`
-(`secured` true for field-level secured columns). Unimplemented device APIs and
-unsupported property types remain explicit placeholders. A component's output is checked
-against its bound property and the normal record pipeline. Instances are destroyed
-on form/tab replacement or navigation, including an instance that finishes loading
-after navigation. This is a development host, not the complete licensed client.
-The host preserves the native component namespace classes so exported component
-styles apply without Mirage's field styles overriding them. Components declaring
-required WebAPI access can use the configured local staff adapter; required
-unimplemented host features still prevent the component from executing.
+One admission rule, shared with the Power Pages host (`pcfAdmission` in `mirage/lib/model-driven/pcf-runtime.mjs`),
+classifies a control as a `standard` field, a `standard` dataset or `virtual`.
 
-Command support is similarly bounded. Power Fx commands, dashboards, business
-process flow UI, arbitrary external URLs, unsupported rule types and unimplemented
-platform commands remain unavailable. A disabled command includes a reason. Saving
-recursively from an active lifecycle event is unsupported; cancel and finish the
-handler before initiating another save.
+- **Dataset controls** bound to a form subgrid (`<data-set>` in the desktop `customControl`) get a DataSet over the
+  subgrid view, narrowed to the parent record: `records`, `sortedRecordIds`, `columns`, `getFormattedValue`, paging
+  (`setPageSize` up to 100, `loadNextPage`, `loadPreviousPage`, `loadExactPage`, `reset`), one sort column (`sorting`,
+  then `refresh()`), one AND group of filter conditions, `linking.addLinkedEntity` with `addColumn(name, alias)`,
+  selection and `openDatasetItem`. Other filter shapes, several sort columns and `In` conditions set `error` with a
+  reason. Table home grids keep the standard grid. After `context.mode.trackContainerResize(true)` in `init`,
+  `allocatedWidth` is the container width from the first `updateView` (height stays `-1`), and width changes call
+  `updateView` with `layout` in `updatedProperties`; disabling tracking, destruction or a failed render restores `-1`
+  and stops observing (see the documented [sizing
+  contract](https://learn.microsoft.com/en-us/power-apps/developer/component-framework/reference/mode/trackcontainerresize)).
+- **Virtual (React) controls** run only when the project supplies every declared platform library plus ReactDOM of
+  the declared React version as `clientSources` files (for example `React@16.14.0.js`, `ReactDOM@16.14.0.js`). Mirage
+  ships no React or Fluent; without them the control shows `PCF_VIRTUAL_UNSUPPORTED` with the missing files.
+- Bundles must be production builds (`npm run build -- --buildMode production`). The local app serves scripts under
+  `script-src 'self'`, so a development build that loads its modules with `eval` is refused and the control shows
+  `The local bundle did not register <constructor>. A development build that loads its modules with eval is refused
+by the page's script policy: build the control in production mode.`
+- Field and dataset components get the staff context and its formatting, and per-column `security` (`secured` true for
+  field-secured columns). Outputs are checked against the bound property and the record pipeline. Components declaring
+  required WebAPI use the local staff adapter; other required unimplemented features prevent execution. Unimplemented
+  device APIs and property types stay placeholders. Instances are destroyed on form or tab replacement and navigation,
+  including one that finishes loading afterwards. Native component namespace classes are kept so exported styles
+  apply.
+
+Unavailable commands: Power Fx commands, business process flow UI, arbitrary external URLs, unsupported rule types and
+unimplemented platform commands. A disabled command shows its reason.
 
 ## Prove a project
 
-For each app, verify grid navigation, create/edit/reopen, form load/change/save,
-validation cancellation, a command action and a PCF output reaching the saved row.
-Repeat a denied operation under a restricted staff identity. Check the disabled
-trust state, missing dependencies, browser errors and navigation cleanup. Compare
-native and local screenshots at the same viewport, and record intentional gaps.
-Importing a component or receiving HTTP 200 is not proof that its behavior ran.
-
-See [standalone configuration](standalone-organization.md),
-[simulation persistence](simulation-levels.md) and [model-driven rendering](model-driven-apps.md).
+For each app, check grid navigation, create/edit/reopen, form load/change/save, validation cancellation, a command
+action and a PCF output reaching the saved row. Repeat a denied operation as a restricted staff user. Check the
+disabled trust state, missing dependencies, browser errors and navigation cleanup, and compare native and local
+screenshots at the same viewport. Importing a component or receiving HTTP 200 does not prove its behaviour ran.
 
 ## Preview the same code with Lense
 
-Use the explicit model-driven overlay mode with the same Solution project:
+Lense's model-driven mode overlays the same Solution project on a live app:
 
 ```sh
 paqvilo lense model-driven inspect --project mirage.project.yml --url https://example.crm.dynamics.com --json
 paqvilo lense model-driven dev --project mirage.project.yml --url https://example.crm.dynamics.com --path "/main.aspx?appname=x_example" --resource-map resource-map.json --output .paqvilo/lense-model-driven.json
 ```
 
-The offline `inspect` report includes `clientEvents`, a source registration
-inventory across exported forms. Rows retain the entity, form identity/name,
-event and handler order, `handlerUniqueId`, attribute, source activation flags,
-library/function names, context flag and form-definition source references.
-Library declaration and imported-resource status are separate facts; an available
-script does not prove its function exists or ran. This uses the existing form
-compiler and the exported [FormXml event declarations](https://learn.microsoft.com/en-us/dynamics365/customerengagement/on-premises/developer/customize-dev/form-xml-schema?view=op-9-1).
-It does not inspect a connected organization's registrations or infer arbitrary
-JavaScript dependencies.
-FormXml event activation, handler enablement and execution-context flags accept
-the XML Boolean spellings `true`/`false` and `1`/`0`. Missing activation/enablement
-defaults to on; missing execution context defaults to off. Invalid tokens stay
-off instead of enabling a handler.
+Lense overlays code in its own browser session; the app still uses its online environment and identity, so Save,
+commands and script-triggered record operations change live data. Use an isolated test Solution and records.
 
-Default pages contain at most 100 entries within 128 KiB, with explicit
-`complete`, `truncated`, diagnostics and `nextCursorToken` fields. Continue offline
-with `--event-cursor '<clientEvents.nextCursorToken>'` on the same inspect command.
-The cursor is bound to content-derived inventory revision and filters; changing
-forms, resources, source language or parameter inclusion requires restarting.
-Unavailable forms and oversized rows are diagnosed, and oversized rows are
-omitted with `truncated: true`. `complete` means the traversal finished, including
-those diagnosed gaps. Work limits can yield an empty page with a continuation.
-Follow every continuation before claiming the inventory is complete.
+**Event registration inventory.** The offline `inspect` report has `clientEvents`: per exported form, the entity, form
+identity and name, event and handler order, `handlerId` (the exported `handlerUniqueId`), attribute, activation flags, library and function names,
+context flag and source references, from the exported [FormXml event
+declarations](https://learn.microsoft.com/en-us/dynamics365/customerengagement/on-premises/developer/customize-dev/form-xml-schema?view=op-9-1).
+An available script does not prove its function exists or ran; connected-organization registrations are not read.
 
-Parameter literals are omitted by default. `parameterCount` uses the existing
-safe literal parser; unsupported syntax reports a null count. To explicitly
-include source literals, use `--include-event-parameters` on every page and keep
-that output private. The library API
-`createModelDrivenMetadataIndex(imported).eventRegistrations(request)` in
-`paqvilo/lense/model-driven-metadata.mjs` also accepts exact `library`, `entity`
-and `formId` filters, `includeParameters`, `cursor: page.nextCursor`, and
-`budget: { items, bytes }` (1–512 entries, 2048–524288 bytes). Entity/form filters
-normalize GUID braces/casing; library names retain their exported spelling.
-Library matching shares the host's case-insensitive `$webresource:` prefix
-removal; resource-name spelling remains case-sensitive. The envelope and CLI
-continuation token count toward the byte budget; an oversized revision envelope
-fails explicitly. Oversized diagnostic identity details are omitted with
-`detailsOmitted: true`, so every continuation can advance.
+- Pages hold at most 100 entries within 128 KiB, with `complete`, `truncated`, diagnostics and `nextCursorToken`.
+  Continue with `--event-cursor '<clientEvents.nextCursorToken>'` on the same command; the cursor is bound to the
+  inventory revision and filters, so changed forms, resources, language or parameter inclusion need a restart.
+  `truncated` is true on every page with a continuation and when oversized rows are omitted; a page can be empty with
+  a continuation. Follow every continuation
+  before calling the inventory complete.
+- Parameter literals are omitted unless `--include-event-parameters` is given on every page; keep that output private.
+- The library API `createModelDrivenMetadataIndex(imported).eventRegistrations(request)` in
+  `paqvilo/lense/model-driven-metadata.mjs` also accepts exact `library`, `entity` and `formId` filters,
+  `includeParameters`, `cursor: page.nextCursor` and `budget: { items, bytes }` (1–512 entries, 2048–524288 bytes).
+  Entity and form filters normalize GUID braces and case; library names keep their exported spelling, with a
+  case-insensitive `$webresource:` prefix removed.
 
-Direct `/WebResources/<exported-name>` requests map automatically. Native cache
-prefixes and PCF bundle paths vary; bind paths actually observed in the app:
+**Resource maps.** Direct `/WebResources/<exported-name>` requests map automatically. Native cache prefixes and PCF
+bundle paths vary, so bind the paths you observe:
 
 ```json
 {
@@ -239,33 +175,20 @@ prefixes and PCF bundle paths vary; bind paths actually observed in the app:
 }
 ```
 
-Keep environment URLs, observed paths and reports in the project. Inspect lists
-declared resources and unbound controls offline. During development, the report
-records applied responses and unmatched requests with query values omitted.
-Saving a selected source reloads the owned app tab. A resource mapping does not
-prove it was requested or executed; check the applied count and visible behavior.
+Inspect lists declared resources and unbound controls offline; dev records applied responses and unmatched requests
+(query values omitted). Saving a selected source reloads the owned app tab. Native apps cache web resources and PCF
+constructors, so a reload may make no request to intercept: confirm current-revision application and the actual
+handler, constructor or ribbon behaviour after a save. Mirage loads local resources directly and has no such cache.
 
 ### Inspect and debug the live app
 
-Model-driven dev uses the same Lense panel and **Lense X-ray** picker as Power
-Pages. **Overrides**, **Inspect**, **Issues**, **Activity** and **Explore** retain
-that shell and its source controls; model-driven apps add an **Actions** tab for
-[native developer tools](../../docs/model-driven-actions.md). Use **Alt+Shift+X**
-to toggle inspection. It reports declared resources, exact mapped paths,
-current-revision applications, import diagnostics and runtime errors. Select a
-rendered field or command to inspect its available Solution binding. An unresolved
-native element stays unresolved. Passive inspection does not read field values or
-prove that a delivered bundle's constructor executed. Power Pages retains its
-portal-specific source and Liquid provenance inside the shared panel.
+Model-driven dev uses the Lense panel and **Lense X-ray** picker (**Alt+Shift+X**) as for Power Pages, with an extra
+**Actions** tab for [native developer tools](../../docs/model-driven-actions.md). It reports declared resources, mapped
+paths, current-revision applications, import diagnostics and runtime errors; select a field or command to see its
+Solution binding. Passive inspection reads no field values and does not prove a bundle's constructor ran.
 
-Inspection shows its pending state before reading app context, including a
-reduced-motion-aware scan when X-ray is active. Refresh keeps previous results
-labelled while loading and reports failures with an available Refresh action.
-Closing the inspector or leaving selection mode remains available during a read.
-
-Owned browsers also expose the existing authenticated, loopback
-[agent API](../../docs/lense.md#agent-api-reference). The command prints the
-discovery **path**; keep its contents private. Use that path with:
+Owned browsers expose the loopback [agent API](../../docs/lense.md#agent-api-reference). The command prints the
+discovery path; keep its contents private:
 
 ```sh
 paqvilo lense agent pages --session .paqvilo/agents/SESSION.json --json
@@ -274,17 +197,12 @@ paqvilo lense agent events --session .paqvilo/agents/SESSION.json --after 0 --li
 paqvilo lense agent snapshot --session .paqvilo/agents/SESSION.json --page-id 1 --selector "[data-id]" --limit 30 --json
 ```
 
-Use page IDs returned by `pages`, and advance event cursors with `nextSequence`.
-Screenshots and bounded DOM inspection use the same commands as Power Pages.
-An attached user-owned browser receives no agent server. Other tabs are excluded
-from model-driven interception and inspection. Native popups and separate record
-windows are outside this dedicated-tab session.
+Use page IDs from `pages` and advance event cursors with `nextSequence`. An attached user-owned browser gets no agent
+server. Other tabs, native popups and separate record windows are outside the session.
 
-Start dev with a free `--debug-port 9222` to attach DevTools or VS Code. Local
-JavaScript without an existing source map receives a file-backed identity map;
-existing compiled maps are preserved. ZIP-only resources have no physical local
-file map. Breakpoints can be set in the served bundle when its original map is
-unavailable. A resource map can explicitly admit a physical source-map sidecar:
+**Debugger and source maps.** Start dev with a free `--debug-port 9222` and confirm it in agent status. Local JavaScript
+without a source map gets a file-backed identity map; existing maps are kept; ZIP-only resources have no file map. A
+resource map can admit a physical source-map sidecar:
 
 ```json
 {
@@ -299,86 +217,41 @@ unavailable. A resource map can explicitly admit a physical source-map sidecar:
 }
 ```
 
-`sourceMap.file` is relative to the declared script's physical directory and must
-stay inside it after resolving symlinks. Map/source names use simple relative
-paths without traversal, URL schemes, percent escapes or whitespace. Only the
-explicit sidecar URL is served; original source files are never exposed. Embed
-`sourcesContent` in a valid version 3 map to debug original files without another
-server. Indexed maps and nonempty `sourceRoot` are refused. Missing, malformed or
-oversized maps report `MODEL_SOURCE_MAP_INVALID` while the bundle keeps running;
-an overlay budget refusal reports `MODEL_SOURCE_MAP_LIMIT`. Existing inline maps
-remain unchanged. Each script has at most one sidecar. Sidecar requests are
-reported separately and do not count as executable-resource applications.
-Confirm both the served map and a bound breakpoint before claiming original-source
-debugging. Confirm the debugger port in agent status.
-Generated maps are admitted before allocation: at most 16 MiB for a mapped asset
-and 64 MiB of generated map bytes per overlay revision. A map that exceeds these
-budgets is omitted with `MODEL_SOURCE_MAP_LIMIT`; the original script still runs.
-This avoids expanding newline-heavy bundles into very large debug payloads.
+`sourceMap.file` is relative to the script's directory and must stay inside it after resolving symlinks; map and source
+names are simple relative paths. Only the sidecar URL is served, never original sources: embed `sourcesContent` in a
+version 3 map to debug them. Indexed maps and a nonempty `sourceRoot` are refused. Invalid maps report
+`MODEL_SOURCE_MAP_INVALID` and the bundle still runs; generated maps over 16 MiB per asset or 64 MiB per overlay
+revision are omitted with `MODEL_SOURCE_MAP_LIMIT`. Mirage applies the same budget per asset and per runtime to the maps it generates. Each script has at most one sidecar, and sidecar requests do not
+count as resource applications. Confirm the served map and a bound breakpoint before claiming original-source debugging.
 
-Mirage also adds file-backed maps when serving local Solution scripts, styles and
-PCF bundles at its `/_apps/resources/` and `/_apps/controls/` URLs. Unpacked files map
-to their physical source; ZIP-only resources keep their original bytes because
-there is no editable physical file to name. Existing source maps are preserved.
-Set the Mirage project setting `sourceMaps: false` to disable generated metadata.
-With `--local-simulation`, Lense observes and overlays those exact declared local
-resource URLs as well as `/WebResources/` paths. Native targets retain their explicit
-resource mappings and never infer a resource from an arbitrary hashed URL.
+Mirage itself adds file-backed maps to the scripts, styles and PCF bundles it serves; set the project setting
+`sourceMaps: false` to turn that off.
 
-`model-driven dev --startup-timeout 120000` sets the longest silence allowed without
-start-up progress: 1,000–600,000 ms, default 120,000 ms. Progress is a phase change,
-a completed step, or a page request, its completion or failure, or a navigation
-(including a sign-in redirect). An absolute cap of 600,000 ms also ends a start that
-keeps progressing. Both guards apply until the native document's load event.
-Workers and requests that continue after that event do not hold the start open;
-sign-in and native application readiness remain unverified.
-With `--local-simulation`, the Mirage application readiness marker also gates
-startup. A failure names the guard that ended the start (silence or cap), the last
-phase reached, and the duration. Async waits are interrupted at the guard;
-synchronous filesystem/parsing work observes it when control returns to an async
-boundary. It is not a process watchdog for blocked native code. Late browser
-acquisitions are disposed, only the owned app tab is closed in an attached browser,
-and the attached browser remains running. Ctrl+C cancels pending startup. Cleanup
-drains owned resources separately from the start guards. `--timeout` starts after
-startup and limits session lifetime.
+**Start-up.** `model-driven dev --startup-timeout <ms>` (1,000–600,000, default 120,000) is the longest silence without
+progress (a phase change, completed step, page request or navigation, including a sign-in redirect); an absolute cap of
+600,000 ms also applies. Both run until the native document's load event; sign-in and native app readiness stay
+unverified. A failure names the guard, the last phase and the duration. Ctrl+C cancels start-up. `--timeout` limits the
+session after start-up. `--no-reload` starts with automatic reload paused (the panel's Live control resumes it);
+reloads use GET and never replay a POST, and source saves coalesce to one import and one pending refresh.
 
-Source links use `PAQVILO_EDITOR` from the shell or the selected catalogue's
-`.env`, then the catalogue's `editor`, then `code`. By default, the catalogue is
-`paqvilo.config.yml` beside the project; pass `--config <catalogue>` to select
-another. Personal catalogue overrides apply as in Power Pages Lense.
+Source links use `PAQVILO_EDITOR` (shell or the catalogue's `.env`), then the catalogue's `editor`, then `code`. The
+catalogue defaults to `paqvilo.config.yml` beside the project; `--config <catalogue>` selects another.
 
 ### Pair the panel with a standalone local app
 
-Keep the standalone Mirage process running, then open a separate panel browser:
+Keep a standalone Mirage running and open a separate panel browser on it:
 
 ```sh
 paqvilo mirage start --project ./project.yml --port 8787
 paqvilo lense model-driven dev --project ./project.yml --url http://127.0.0.1:8787 --local-simulation --debug-port 9222
 ```
 
-The project must explicitly enable `modelDriven.trustedExtensions`. The panel
-shows **Local simulation**, exposes only that loopback target and uses the same
-Actions, Inspect, X-ray and debugger tools. APIs the simulator does not expose,
-such as a native environment ID or native effective privilege inspection, remain
-unavailable with their reasons. Source saves retain the normal trust and reload
-rules. Stopping this overlay closes its owned browser or tab and leaves the
-independently started Mirage runtime running. Plain standalone `mirage dev`
-continues to open the app directly; a debugger port alone does not enable the panel.
+The project must enable `modelDriven.trustedExtensions`. The panel shows **Local simulation**, accepts only that
+loopback target and offers the same Actions, Inspect, X-ray and debugger tools; APIs the simulator lacks (such as a
+native environment ID or effective privilege inspection) show their reason. Lense observes Mirage's declared
+`/_apps/resources/` and `/_apps/controls/` URLs as well as `/WebResources/`, and Mirage's readiness marker also gates
+start-up. Stopping the overlay closes its owned browser or tab and leaves Mirage running. Plain `mirage dev` opens the
+app without the panel; a debugger port alone does not add it.
 
-Reloads use an explicit GET and never replay the document's POST. Source saves
-coalesce to one active import and one pending refresh. `--no-reload` starts with
-automatic reload paused. Sources are still watched and imported, and initial
-interception and inspection remain active. The panel Live control enables or
-pauses later automatic reloads.
-
-Native apps can cache WebResources and PCF constructors inside the application.
-A browser reload may make no resource request for Lense to intercept. Exact
-observed mappings must follow the native request's current path/version. Confirm
-both current-revision application and actual handler/constructor/ribbon behavior
-after a source save; applied-resource counts alone do not prove the cache was
-replaced. Mirage loads selected local resources directly and has no such cache.
-
-Lense overlays code in its browser session. The app continues to use its online
-environment and identity, so Save, commands and script-triggered record operations
-can change live data. Use an isolated test Solution and records for that proof.
-Mirage remains the local execution path for in-memory testing.
+See also [standalone configuration](standalone-organization.md), [simulation levels](simulation-levels.md) and
+[model-driven apps](model-driven-apps.md).

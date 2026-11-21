@@ -268,11 +268,17 @@ test('inline script proof hashes match actual CDP source after HTML newline and 
   const page = await context.newPage(),
     cdp = await context.newCDPSession(page),
     scripts = [];
-  cdp.on('Debugger.scriptParsed', (script) => {
-    if (script.url === 'http://127.0.0.1:34568/') scripts.push(script);
+  // The debugger reports the script on its own session, in no order with the page's load: wait for the report itself.
+  const parsed = new Promise((resolve) => {
+    cdp.on('Debugger.scriptParsed', (script) => {
+      if (script.url !== 'http://127.0.0.1:34568/') return;
+      scripts.push(script);
+      resolve();
+    });
   });
   await cdp.send('Debugger.enable');
   await page.goto('http://127.0.0.1:34568/');
+  await parsed;
   assert.equal(scripts.length, 1);
   const actual = await cdp.send('Debugger.getScriptSource', { scriptId: scripts[0].scriptId });
   assert.equal(
@@ -304,8 +310,13 @@ test('external script proofs match actual CDP decoding for BOM, Unicode and CRLF
   const page = await context.newPage(),
     cdp = await context.newCDPSession(page),
     scripts = [];
-  cdp.on('Debugger.scriptParsed', (script) => {
-    if (script.url.endsWith('/widget.js')) scripts.push(script);
+  // The debugger reports the script on its own session, in no order with the page's load: wait for the report itself.
+  const parsed = new Promise((resolve) => {
+    cdp.on('Debugger.scriptParsed', (script) => {
+      if (!script.url.endsWith('/widget.js')) return;
+      scripts.push(script);
+      resolve();
+    });
   });
   await cdp.send('Debugger.enable');
   const loaded = page.waitForResponse((response) => response.url() === app.url + '/widget.js');
@@ -319,6 +330,7 @@ test('external script proofs match actual CDP decoding for BOM, Unicode and CRLF
     })
   ).json();
   assert.equal(proof.channel, 'mirage-resource');
+  await parsed;
   assert.equal(scripts.length, 1);
   const actual = await cdp.send('Debugger.getScriptSource', { scriptId: scripts[0].scriptId });
   assert.equal(proof.scriptProofs[0].generatedHash, createHash('sha256').update(actual.scriptSource).digest('hex'));

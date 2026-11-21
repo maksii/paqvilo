@@ -1,6 +1,17 @@
-import { connectionPath, id } from './registration.mjs';
+import { id } from './registration.mjs';
 import { loadConnection, connectedClient } from '../../../lense/dataverse/index.mjs';
-const connection = await loadConnection(connectionPath());
+import { cli } from '../cli.mjs';
+import { connectionHelp, defaultConnection } from '../paths.mjs';
+const { values } = cli(
+  `Usage: node examples/company-operations/plugins/update-guard-config.mjs [--connection FILE]
+
+Run from the toolkit checkout. Writes the registered chain-step IDs into the three ChainNode guards in the live
+environment (writes).
+
+${connectionHelp('  --connection FILE  ')}`,
+  { connection: { type: 'string' } },
+);
+const connection = await loadConnection(values.connection ?? defaultConnection);
 const c = connectedClient(connection);
 await c.verify(connection.organisationId);
 const ids = [

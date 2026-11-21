@@ -5,6 +5,7 @@
 // are never printed.
 import { simulationSettings } from './simulation-settings.mjs';
 import { globMatcher } from './capability-registry.mjs';
+import { requireRuntimeSources } from './required-argument.mjs';
 
 const PREFLIGHT_STATUSES = Object.freeze(['satisfied', 'missing', 'placeholder', 'unsupported', 'disabled', 'secret']);
 const LEVELS = ['inventory', 'contract', 'behaviour', 'native-qualified'];
@@ -190,8 +191,8 @@ function addScenarioItem(item, push) {
 /**
  * The preflight JSON (schemaVersion 1). Requirements come from the source graph (`graph.requirements()`), the operation
  * catalogue items, local-service probes and provider probes; scenario patterns that match none of those are checked
- * against the capability registry. A requirement blocks only when it is in scope, not satisfied, and a scenario or
- * `strict` asks for blocking.
+ * against the capability registry. A requirement blocks when it is not satisfied and either it is a required local
+ * service, or it is in scope and a scenario or `strict` asks for blocking.
  */
 export function buildPreflightReport({
   runtime,
@@ -237,13 +238,36 @@ export function buildPreflightReport({
   addProbeRequirements(localServices, providers, push);
   // Scenario patterns that match no source requirement are answered by the source graph's components, then by the
   // capability registry, else reported missing.
-  const capabilities = registry?.list() ?? [];
+  // An inventory record takes the level and reason its source-graph node carries: the graph raises what a host serves
+  // (a hosted dashboard whose components render, or one whose gaps it names), so modules and requirement rows agree.
+  const capabilities = (registry?.list() ?? []).map((record) => {
+    const id = `${record.component}:${String(record.name)
+      .slice(String(record.component).length + 1)
+      .trim()
+      .toLowerCase()
+      .replace(/[{}]/g, '')}`;
+    const node = record.kind === 'inventory' ? graph?.nodes?.get?.(id) : null;
+    if (!node || (node.level === record.level && (node.reason ?? null) === (record.reason ?? null))) return record;
+    const updated = { ...record, level: node.level };
+    if (node.reason) updated.reason = node.reason;
+    else delete updated.reason;
+    return updated;
+  });
   // A pattern naming a host surface (`portalRendering`, or `portalRendering/<row id>`) brings that surface's gap rows into
   // scope; the surface is satisfied only when none of them is unsatisfied.
   const scoped = addScenarioRequirements(matchers, rows, graph, capabilities, push);
+  const requiredServices = new Set(
+    localServices.filter((service) => service.required === true).map((service) => `local-service:${service.id}`),
+  );
   const requirements = rows.map((row) => {
     const inScope = matchers ? matchers.some(({ match }) => match(row.id)) || scoped.has(row.surface) : true;
-    return { ...row, inScope, blocking: inScope && row.status !== 'satisfied' && Boolean(selected || strict) };
+    // An unreachable required local service blocks in every mode; a scenario or strict widens blocking to the rest.
+    const required = row.kind === 'local-service' && requiredServices.has(row.id);
+    return {
+      ...row,
+      inScope,
+      blocking: row.status !== 'satisfied' && (required || (inScope && Boolean(selected || strict))),
+    };
   });
   const summary = {
     total: requirements.length,
@@ -300,6 +324,9 @@ export function buildPreflightReport({
         message: `${module} requires ${requires}, which no registered capability provides.`,
       })),
       ...(graph?.diagnostics?.() ?? []),
+      ...operations.flatMap((item) =>
+        (item.contract?.warnings ?? []).map((warning) => ({ ...warning, operationKey: item.key, flow: item.name })),
+      ),
       ...diagnostics,
     ],
   };
@@ -319,9 +346,13 @@ export function preflightExitCode(report) {
  * dataModel, lcid, project, dataPacks, packs (module paths, loaded as createSimulator loads them), environmentVariables, deploymentProfiles, modelDriven, localServices,
  * providers, connections, secrets, canvas, dataverse, projectRoot, initial (its `mappings` join the boot mappings, as on the running host), preset (the startup
  * preset a fresh host applies); plus scenario, strict and env (where env:NAME references
- * resolve, default process.env); loadedPacks takes already discovered packs instead. The one difference from GET /_sim/api/preflight: operation modes are the source defaults.
+ * resolve, default process.env); observed (validated as serve validates it; a refusal throws); loadedPacks takes already discovered packs instead. The one difference from GET /_sim/api/preflight: operation modes are the source defaults.
  */
-export async function preflight({
+export async function preflight(options) {
+  return composePreflight(requireRuntimeSources('preflight(options)', options, { solutionRoots: true }));
+}
+
+async function composePreflight({
   runtime,
   simulation,
   solutionRoots = [],
@@ -349,7 +380,11 @@ export async function preflight({
   env = process.env,
   initial = null,
   preset = null,
-} = {}) {
+  observed = null,
+}) {
+  // The observed settings are validated as the running host validates them (server.mjs), before any source read:
+  // a combination serve refuses is a configuration error here too.
+  (await import('./project-config.mjs')).observedConfig(observed);
   const [
     { loadOrganizationSources },
     catalogue,
@@ -400,6 +435,7 @@ export async function preflight({
       dataverse,
       initial,
       connectorScripts,
+      modelDriven,
     },
   });
   try {

@@ -1445,12 +1445,20 @@ async function stateFixture(t) {
     appsOrigin(sim, sim.origin) +
       '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
   );
-  await page.waitForFunction(() => window.stateLoads === 1 && Boolean(window.Xrm?.Page));
+  // The form shows the state its OnLoad script set once the app reports the form ready, not when the handler starts.
+  await page.waitForFunction(
+    () =>
+      document.documentElement.dataset.mirageAppState === 'ready' &&
+      window.stateLoads === 1 &&
+      Boolean(window.Xrm?.Page),
+  );
   return { page, errors };
 }
 
 /** Asserts the script-set state in the DOM: the hidden and disabled controls, the label, notification, tab and form notice. */
 async function assertScriptState(page, when, { expected }) {
+  // A script's layout change is drawn with the next frame; the document marks the form until that render is shown.
+  await page.waitForFunction(() => !document.documentElement.dataset.mirageLayout);
   const quantity = page.locator('.field[data-id="x_quantity"]').first();
   assert.equal(await quantity.isVisible(), !expected, `${when}: the script hides Quantity`);
   const name = page.getByLabel(expected ? 'Scripted name' : 'Name', { exact: true });

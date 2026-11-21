@@ -17,56 +17,65 @@ import {
 } from '../scripts/code-review.mjs';
 import { browserSources, knipConfig } from '../scripts/code-review.config.mjs';
 import { tempDir } from './fixture.mjs';
+import { COMMAND_HANG_GUARD_MS, SCENARIO_HANG_GUARD_MS } from './helpers/bounded-command.mjs';
 
 const copiedLogic = `export function calculate(items) {\n${Array.from({ length: 20 }, (_, i) => ` const value${i} = items[${i}] * ${i + 1} + ${i + 5};`).join('\n')}\n return [${Array.from({ length: 20 }, (_, i) => `value${i}`).join(',')}];\n}\n`;
 
-test('review tools detect an orphan module, unused export and copied logic without editing sources', async () => {
-  const root = await tempDir('paqvilo-review-');
-  try {
-    const config = path.join(root, 'knip.json');
-    await fs.writeFile(path.join(root, 'package.json'), '{"private":true,"type":"module"}');
-    await fs.writeFile(config, JSON.stringify({ entry: ['entry.mjs'], project: ['*.mjs'], includeEntryExports: true }));
-    await fs.writeFile(path.join(root, 'entry.mjs'), "import { used } from './logic.mjs'; console.log(used());\n");
-    await fs.writeFile(path.join(root, 'logic.mjs'), 'export const used = () => 1; export const unused = () => 2;\n');
-    await fs.writeFile(path.join(root, 'orphan.mjs'), 'export const stranded = 3;\n');
-    const dead = inspectDeadCode(root, config);
-    assert.ok(dead.some((item) => item.type === 'files' && item.file === 'orphan.mjs'));
-    assert.ok(dead.some((item) => item.type === 'exports' && item.name === 'unused'));
-    assert.ok(!dead.some((item) => item.name === 'used'));
-    const block = copiedLogic;
-    for (const file of ['copy-a.mjs', 'copy-b.mjs']) await fs.writeFile(path.join(root, file), block);
-    const clones = inspectClones(root, ['copy-a.mjs', 'copy-b.mjs'], path.join(root, 'reports'));
-    assert.ok(clones.length > 0);
-    const cloneReport = JSON.parse(await fs.readFile(path.join(root, 'reports/jscpd-report.json'), 'utf8'));
-    assert.deepEqual(
-      [cloneReport.duplicates[0].firstFile.name, cloneReport.duplicates[0].secondFile.name].sort(),
-      [path.join(root, 'copy-a.mjs'), path.join(root, 'copy-b.mjs')]
-        .map((file) => syncFs.realpathSync.native(file))
-        .sort(),
-      'persisted evidence points back to source after its temporary snapshot is removed',
-    );
-    assert.equal(compareReview(clones, []).length, clones.length);
-    assert.equal(compareReview(clones, clones).length, 0);
-    assert.equal(
-      compareReview([...clones, clones[0]], clones).length,
-      1,
-      'another occurrence of an accepted clone needs review',
-    );
-    await fs.writeFile(path.join(root, 'copy-a.mjs'), '\n\n' + block);
-    const shifted = inspectClones(root, ['copy-a.mjs', 'copy-b.mjs'], path.join(root, 'shifted'));
-    assert.deepEqual(
-      shifted.map((item) => item.key),
-      clones.map((item) => item.key),
-      'line shifts do not create findings',
-    );
-    assert.equal(
-      await fs.readFile(path.join(root, 'logic.mjs'), 'utf8'),
-      'export const used = () => 1; export const unused = () => 2;\n',
-    );
-  } finally {
-    await fs.rm(root, { recursive: true, force: true });
-  }
-});
+// Hang guard only: it drives a runtime, the CLI or child processes through this file's fixtures; on a loaded slow host that is slow, not hung.
+test(
+  'review tools detect an orphan module, unused export and copied logic without editing sources',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async () => {
+    const root = await tempDir('paqvilo-review-');
+    try {
+      const config = path.join(root, 'knip.json');
+      await fs.writeFile(path.join(root, 'package.json'), '{"private":true,"type":"module"}');
+      await fs.writeFile(
+        config,
+        JSON.stringify({ entry: ['entry.mjs'], project: ['*.mjs'], includeEntryExports: true }),
+      );
+      await fs.writeFile(path.join(root, 'entry.mjs'), "import { used } from './logic.mjs'; console.log(used());\n");
+      await fs.writeFile(path.join(root, 'logic.mjs'), 'export const used = () => 1; export const unused = () => 2;\n');
+      await fs.writeFile(path.join(root, 'orphan.mjs'), 'export const stranded = 3;\n');
+      const dead = inspectDeadCode(root, config);
+      assert.ok(dead.some((item) => item.type === 'files' && item.file === 'orphan.mjs'));
+      assert.ok(dead.some((item) => item.type === 'exports' && item.name === 'unused'));
+      assert.ok(!dead.some((item) => item.name === 'used'));
+      const block = copiedLogic;
+      for (const file of ['copy-a.mjs', 'copy-b.mjs']) await fs.writeFile(path.join(root, file), block);
+      const clones = inspectClones(root, ['copy-a.mjs', 'copy-b.mjs'], path.join(root, 'reports'));
+      assert.ok(clones.length > 0);
+      const cloneReport = JSON.parse(await fs.readFile(path.join(root, 'reports/jscpd-report.json'), 'utf8'));
+      assert.deepEqual(
+        [cloneReport.duplicates[0].firstFile.name, cloneReport.duplicates[0].secondFile.name].sort(),
+        [path.join(root, 'copy-a.mjs'), path.join(root, 'copy-b.mjs')]
+          .map((file) => syncFs.realpathSync.native(file))
+          .sort(),
+        'persisted evidence points back to source after its temporary snapshot is removed',
+      );
+      assert.equal(compareReview(clones, []).length, clones.length);
+      assert.equal(compareReview(clones, clones).length, 0);
+      assert.equal(
+        compareReview([...clones, clones[0]], clones).length,
+        1,
+        'another occurrence of an accepted clone needs review',
+      );
+      await fs.writeFile(path.join(root, 'copy-a.mjs'), '\n\n' + block);
+      const shifted = inspectClones(root, ['copy-a.mjs', 'copy-b.mjs'], path.join(root, 'shifted'));
+      assert.deepEqual(
+        shifted.map((item) => item.key),
+        clones.map((item) => item.key),
+        'line shifts do not create findings',
+      );
+      assert.equal(
+        await fs.readFile(path.join(root, 'logic.mjs'), 'utf8'),
+        'export const used = () => 1; export const unused = () => 2;\n',
+      );
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  },
+);
 
 test('the baseline reader returns no findings for a missing file and the stored findings otherwise', async () => {
   const root = await tempDir('paqvilo-baseline-');
@@ -170,7 +179,7 @@ test('native Git-root identity retains indexed-link refusals when legacy realpat
     ['init', '--quiet'],
     ['add', '.'],
   ])
-    assert.equal(spawnSync('git', args, { cwd: root, windowsHide: true }).status, 0);
+    assert.equal(spawnSync('git', args, { cwd: root, windowsHide: true, timeout: COMMAND_HANG_GUARD_MS }).status, 0);
   await fs.rename(linked, `${linked}-original`);
   await fs.mkdir(privateSource, { recursive: true });
   await fs.writeFile(path.join(privateSource, 'source.mjs'), 'console.log("invented private sentinel");');
@@ -188,6 +197,7 @@ test('native Git-root identity retains indexed-link refusals when legacy realpat
         windowsHide: true,
         windowsVerbatimArguments: true,
         env: { ...process.env, PAQ_TEST_SHORT_ROOT: root },
+        timeout: COMMAND_HANG_GUARD_MS,
       },
     );
     assert.equal(short.status, 0);
@@ -332,7 +342,7 @@ test('Git-indexed linked ancestors cannot expose outside or ignored private sour
     ['init', '--quiet'],
     ['add', '.'],
   ])
-    assert.equal(spawnSync('git', args, { cwd: root, windowsHide: true }).status, 0);
+    assert.equal(spawnSync('git', args, { cwd: root, windowsHide: true, timeout: COMMAND_HANG_GUARD_MS }).status, 0);
   await fs.rename(linked, `${linked}-original`);
   for (const target of [path.join(fixture, 'outside'), path.join(root, '.paqvilo/private')]) {
     await fs.mkdir(target, { recursive: true });
@@ -396,7 +406,7 @@ test('a nested staging snapshot uses its own files rather than an ancestor Git i
     ['init', '--quiet'],
     ['add', '.'],
   ])
-    assert.equal(spawnSync('git', args, { cwd: parent, windowsHide: true }).status, 0);
+    assert.equal(spawnSync('git', args, { cwd: parent, windowsHide: true, timeout: COMMAND_HANG_GUARD_MS }).status, 0);
   const root = path.join(parent, '.paqvilo/hooks/staged');
   await fs.mkdir(path.join(root, 'mirage/lib'), { recursive: true });
   await fs.writeFile(path.join(root, 'package.json'), '{"private":true,"type":"module"}');

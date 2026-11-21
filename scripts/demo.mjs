@@ -12,6 +12,19 @@ import { openBrowser } from '../lense/browser.mjs';
 import { startDevSessions } from '../lense/dev-sessions.mjs';
 import { readDiscovery, agentRequest } from '../lense/commands/agent.mjs';
 import { createDevStop, launchUnderStop } from '../lense/commands/dev.mjs';
+import { answerHelp } from './script-help.mjs';
+
+answerHelp(process.argv.slice(2), {
+  name: 'demo',
+  options: ['--browser', '--headless', '--evidence'],
+  usage: `Usage: npm run demo -- [--browser msedge|chrome|chromium] [--headless] [--evidence]
+Starts two synthetic loopback portals and opens them through the production Lense development session in a browser.
+Offline: no portal or network requests beyond loopback. Writes its disposable sources and demo.log under
+.paqvilo/demo/<timestamp>.
+  --browser <name>   msedge (Windows default), chrome or chromium
+  --headless         run the browser headless
+  --evidence         run headless, exercise the overlay, write evidence.json and exit 1 when diagnostics fail`,
+});
 
 const { values } = parseArgs({
   options: {

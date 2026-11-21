@@ -1,0 +1,5 @@
+# actionlint 1.7.12 predates the generally available Ubuntu 26.04 hosted image.
+# Register only this exact upstream runner label until actionlint includes it.
+self-hosted-runner:
+  labels:
+    - ubuntu-26.04

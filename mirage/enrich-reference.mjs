@@ -1,4 +1,3 @@
-import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
@@ -8,6 +7,7 @@ import { DataStore, parseFetchXml } from './lib/data.mjs';
 import { LiveBridge } from './lib/live.mjs';
 import { collectFetchXmlPages, escapeXmlAttribute } from './lib/paging-validation.mjs';
 import { assertOfflineState, stateFileFingerprint } from './lib/offline-state.mjs';
+import { readJsonOption } from './lib/path-options.mjs';
 
 const serialize = (node) =>
   `<${node.name}${Object.entries(node.attrs)
@@ -132,7 +132,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       store,
       origin: values.origin,
       cdpUrl: values.cdp,
-      plan: JSON.parse(await fs.readFile(values.plan, 'utf8')),
+      plan: await readJsonOption('plan', values.plan),
       beforeCommit: async () => {
         await assertOfflineState(values.state);
         if ((await stateFileFingerprint(values.state)) !== fingerprint)

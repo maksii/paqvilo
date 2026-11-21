@@ -373,7 +373,7 @@ test('changed classic portal metadata reports deployment needs without flagging 
   const changes = model.deploymentChanges(baseline, baseline.changedFiles());
   assert.equal(changes.length, 1);
   assert.equal(changes[0].rel, 'web-pages/about/About.webpage.yml');
-  assert.match(changes[0].reason, /require deployment/);
+  assert.match(changes[0].reason, /change only after you deploy/);
 });
 
 // @test-kind contract: map --check reports every failed online URL as a coded error that names the URL it could not inspect.

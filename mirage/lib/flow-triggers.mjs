@@ -385,7 +385,7 @@ export function createFlowTriggerRunner({
     closing = false,
     stopSequence = Infinity;
   const record = (code, entry) => diagnostic({ code, ...entry });
-  // The human facts of a trigger finding (D-M-2 Findings): the flow's display name, the trigger table and a sentence.
+  // The human facts of a trigger finding (Findings): the flow's display name, the trigger table and a sentence.
   const flowFacts = (workflow, item, entity, status) => {
     const name = workflow?.name ?? item.name ?? item.processId ?? item.key;
     const onEntity = entity ? ` on ${entity}` : '';
@@ -495,7 +495,8 @@ export function createFlowTriggerRunner({
               store.flowChain = oldChain;
             }
             return null;
-          }),
+            // The run finds its job row by id and reaches the state through the store (DataStore#transact `tracked`).
+          }, TRACKED),
         ),
     )
       .catch((error) => {
@@ -535,7 +536,7 @@ export function createFlowTriggerRunner({
           );
           return null;
         },
-        { cloneResult: false },
+        { cloneResult: false, tracked: true },
       ),
     )
       .catch((error) => {
@@ -674,7 +675,7 @@ export function createFlowTriggerRunner({
   // job: the occurrence's job span, failed (with the run's own error) when the run fails.
   async function start(
     host,
-    { input, trigger, job = null, wrap = (fn) => store.transact(fn, { cloneResult: false }) },
+    { input, trigger, job = null, wrap = (fn) => store.transact(fn, { cloneResult: false, tracked: true }) },
   ) {
     const current = candidates().get(host.key);
     if (closed || !current || !eligible(current.item) || flowDefinitionHash(current.definition) !== host.hash) {
@@ -987,6 +988,8 @@ async function callbackKey(store, vault, processId, create) {
   );
   return key;
 }
+// A job run reaches the state only through the store while it runs: its rollback backup copies what it reached.
+const TRACKED = { tracked: true };
 const signature = (key, processId, triggerName, sp, sv, version) =>
   createHmac('sha256', key)
     .update([callbackId(processId), triggerName, sp, sv, version].join('\n'))

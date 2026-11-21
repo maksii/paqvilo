@@ -1939,7 +1939,7 @@
   --dm-on: 1;
 }
 
-/* ---------- Health hero (D-M-9, D-M-11): the dashboard hero with readiness, site, uptime and the key-number strip ---------- */
+/* ---------- Health hero: the dashboard hero with readiness, site, uptime and the key-number strip ---------- */
 .dm-brand:has(.dm-hero-actions) {
   justify-content: space-between;
 }

@@ -41,7 +41,9 @@ const LOGICAL_KEY = /^LogicalName='([^']+)'$/i;
 // GlobalOptionSetDefinitions(Name='x') or GlobalOptionSetDefinitions(<MetadataId>), the two forms the bind documents.
 const GLOBAL_BIND =
   /GlobalOptionSetDefinitions\((?:Name=['"]([^'"]+)['"]|\{?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\}?)\)/i; // NOSONAR: regex kept: a rewrite would change matches or captures
-const WRITE_PATH = /^\/api\/data\/v[\d.]+\/(?:EntityDefinitions(?:[(/]|$)|Publish(?:All)?Xml$)/;
+// PublishXml and PublishAllXml are operations (dataverse-metadata-messages.mjs), so their registered Publish and PublishAll
+// steps run around them as for every other Web API action.
+const WRITE_PATH = /^\/api\/data\/v[\d.]+\/EntityDefinitions(?:[(/]|$)/;
 const PUBLISH = new Set(['PublishXml', 'PublishAllXml']);
 const OWNERSHIP_TYPES = new Set(['UserOwned', 'OrganizationOwned']);
 const DEFAULT_LCID = 1033;
@@ -193,6 +195,19 @@ function lookupOwnerOf(mapping, name) {
   return owner?.schemaName ?? null;
 }
 
+// IsSecured (a bool, or { Value } as the Web API serializes it): column security, enforced by dataverse-fls.mjs.
+function securedOf(value) {
+  const flag = value !== null && typeof value === 'object' ? value.Value : value;
+  if (typeof flag !== 'boolean') throw fail('IsSecured must be true or false.');
+  return flag;
+}
+
+// CanStoreFullImage (Edm.Boolean); absent is false.
+function fullImageOf(value = false) {
+  if (typeof value !== 'boolean') throw fail('CanStoreFullImage must be true or false.');
+  return value;
+}
+
 // Column definition as the read side expects it: dataverseType plus columnMetadata facts (attribute-metadata.mjs).
 function columnField(api, attr, dataverseType, schemaName, primary) {
   const facts = {
@@ -205,9 +220,16 @@ function columnField(api, attr, dataverseType, schemaName, primary) {
     isManaged: false,
     isCustomizable: true, // origin: created through the metadata API (as relationships are)
     ...(primary ? { isPrimaryName: true } : {}),
+    ...(attr.IsSecured === undefined ? {} : { isSecured: securedOf(attr.IsSecured) }),
+    ...(auditEnabledOf(attr.IsAuditEnabled) === undefined
+      ? {}
+      : { isAuditEnabled: auditEnabledOf(attr.IsAuditEnabled) }),
   };
   const field = { dataverseType };
   const range = { minValue: attr.MinValue ?? null, maxValue: attr.MaxValue ?? null };
+  if (attr.SourceType != null) facts.sourceType = Number(attr.SourceType?.Value ?? attr.SourceType);
+  if (typeof attr.FormulaDefinition === 'string' && attr.FormulaDefinition)
+    facts.formulaDefinition = attr.FormulaDefinition;
   switch (dataverseType) {
     case 'nvarchar':
       Object.assign(facts, {
@@ -221,6 +243,7 @@ function columnField(api, attr, dataverseType, schemaName, primary) {
     case 'int':
     case 'bigint':
       Object.assign(facts, range);
+      if (dataverseType === 'int') facts.format = String(attr.Format?.Value ?? attr.Format ?? 'None').toLowerCase();
       break;
     case 'decimal':
     case 'float':
@@ -243,8 +266,12 @@ function columnField(api, attr, dataverseType, schemaName, primary) {
       if (facts.optionSet.isGlobal) field.globalOptionSet = facts.optionSet.name;
       break;
     case 'file':
+      facts.maxSizeInKB = attr.MaxSizeInKB ?? null;
+      break;
     case 'image':
       facts.maxSizeInKB = attr.MaxSizeInKB ?? null;
+      // CanStoreFullImage (default false): the metadata reads the fact, the file seam reads the field.
+      field.canStoreFullImage = facts.canStoreFullImage = fullImageOf(attr.CanStoreFullImage);
       break;
   }
   return { ...field, columnMetadata: facts };
@@ -350,10 +377,12 @@ function userTable(api, key) {
   return found;
 }
 
+// A column by MetadataId or LogicalName='x', the two key forms a GET accepts.
 function columnNamed(api, logical, mapping, attributeId) {
   const service = ids(api);
-  const name = Object.keys(mapping.fields).find(
-    (n) => service.metadataId('attribute', logical, n).toLowerCase() === guidOf(attributeId),
+  const named = LOGICAL_KEY.exec(String(attributeId ?? '').trim())?.[1].toLowerCase();
+  const name = Object.keys(mapping.fields).find((n) =>
+    named ? n === named : service.metadataId('attribute', logical, n).toLowerCase() === guidOf(attributeId),
   );
   if (!name) throw fail(`Attribute ${attributeId} does not exist.`, 404, 'NotFound');
   return name;
@@ -394,6 +423,22 @@ function validateTableFlags(body) {
   for (const flag of ['IsActivity', 'HasActivities', 'HasNotes']) {
     if (typeof body[flag] !== 'boolean') throw fail(`${flag} is required.`);
   }
+  validateChangeTracking(body);
+}
+
+// IsAuditEnabled is a BooleanManagedProperty ({ Value }); a plain boolean is taken too. undefined when the body omits it.
+function auditEnabledOf(value) {
+  if (value === undefined || value === null) return undefined;
+  const flag = typeof value === 'object' ? value.Value : value;
+  if (typeof flag !== 'boolean')
+    throw fail('IsAuditEnabled must be a BooleanManagedProperty with a true or false Value.');
+  return flag;
+}
+
+// ChangeTrackingEnabled is optional on create (off when omitted) and on update; the Web API reads and enforces it.
+function validateChangeTracking(body) {
+  if (body.ChangeTrackingEnabled !== undefined && typeof body.ChangeTrackingEnabled !== 'boolean')
+    throw fail('ChangeTrackingEnabled must be true or false.');
 }
 
 export function createTable(c, body) {
@@ -430,11 +475,12 @@ export function createTable(c, body) {
     dataverseMetadata: {
       schemaName,
       labels,
-      IsAuditEnabled: false,
+      IsAuditEnabled: auditEnabledOf(body.IsAuditEnabled) ?? false,
       ObjectTypeCode: nextObjectTypeCode(mappings),
       IsActivity: body.IsActivity,
       HasActivities: body.HasActivities,
       HasNotes: body.HasNotes,
+      ChangeTrackingEnabled: body.ChangeTrackingEnabled === true,
       createdByMetadataApi: true,
     },
   };
@@ -465,9 +511,14 @@ export function updateTable(c, key, body) {
   for (const name of ['DisplayName', 'DisplayCollectionName', 'Description']) {
     if (body[name] !== undefined) labels[name] = mergeLabels(labels[name], labelMap(body[name]), merge);
   }
+  validateChangeTracking(body);
   const flags = Object.fromEntries(
-    ['IsActivity', 'HasActivities', 'HasNotes'].filter((f) => typeof body[f] === 'boolean').map((f) => [f, body[f]]),
+    ['IsActivity', 'HasActivities', 'HasNotes', 'ChangeTrackingEnabled']
+      .filter((f) => typeof body[f] === 'boolean')
+      .map((f) => [f, body[f]]),
   );
+  const audit = auditEnabledOf(body.IsAuditEnabled);
+  if (audit !== undefined) flags.IsAuditEnabled = audit;
   mapping.dataverseMetadata = { ...dm, labels, ...flags };
   logMetadataChange(c.api, 'change', 'entity', logical);
   return { status: 204 };
@@ -493,11 +544,12 @@ export function dropTable(api, logical) {
 }
 
 // Columns may be added to any table, Solution and seeded tables included (Dataverse allows custom columns there).
-export function createColumn(c, key, body) {
+// options.primary: the column replaces the table's primary name column (an import or layer restore of it).
+export function createColumn(c, key, body, options = {}) {
   const { logical, mapping } = anyTable(c.api, key);
   mapping.fields ??= {};
   if (isElastic(mapping)) assertElasticColumn(body);
-  const name = addColumn(c.api, mapping, logical, body);
+  const name = addColumn(c.api, mapping, logical, body, { primary: options.primary === true });
   const url = attributeIdUrl(c, logical, name);
   return {
     status: 204,
@@ -528,6 +580,20 @@ function updateColumnFacts(body, name, field, facts, merge) {
   updateColumnLabels(body, facts, merge);
   updateColumnLimits(body, name, field, facts);
   updateColumnFormat(body, name, field, facts);
+  if (body.IsSecured !== undefined) facts.isSecured = securedOf(body.IsSecured);
+  const audit = auditEnabledOf(body.IsAuditEnabled);
+  if (audit !== undefined) facts.isAuditEnabled = audit;
+  if (body.MaxSizeInKB !== undefined) {
+    if (!['file', 'image'].includes(field.dataverseType))
+      throw fail(`MaxSizeInKB applies to file and image columns, not ${name}.`);
+    if (!Number.isInteger(body.MaxSizeInKB) || body.MaxSizeInKB < 1)
+      throw fail('MaxSizeInKB must be a positive integer.');
+    facts.maxSizeInKB = body.MaxSizeInKB;
+  }
+  if (body.CanStoreFullImage !== undefined) {
+    if (field.dataverseType !== 'image') throw fail(`CanStoreFullImage applies to image columns, not ${name}.`);
+    field.canStoreFullImage = facts.canStoreFullImage = fullImageOf(body.CanStoreFullImage);
+  }
 }
 
 function updateColumnLabels(body, facts, merge) {
@@ -628,7 +694,11 @@ function deleteKey(c, key, keyId) {
   const { api } = c;
   const { logical, mapping } = userTable(api, key);
   const keys = mapping.alternateKeys ?? [];
-  const found = keys.find((k) => guidOf(ids(api).metadataId('key', logical, k.name)) === guidOf(keyId));
+  // By MetadataId or LogicalName='x', the two key forms a GET accepts.
+  const named = LOGICAL_KEY.exec(String(keyId ?? '').trim())?.[1].toLowerCase();
+  const found = keys.find((k) =>
+    named ? k.name.toLowerCase() === named : guidOf(ids(api).metadataId('key', logical, k.name)) === guidOf(keyId),
+  );
   if (!found) throw fail(`Key ${keyId} does not exist.`, 404, 'NotFound');
   assertNotManaged(api, 'key', logical, found.name, `${logical}.${found.name}`);
   if (found.builtIn) throw fail(`${found.name} is the built-in key of an elastic table and cannot be deleted.`);
@@ -847,4 +917,20 @@ export async function handleMetadataWrite(c) {
   }
   const segmentPath = segment ? '/' + segment : '';
   throw fail(`${method} is not supported for ${route.set}${segmentPath}.`, 405, 'MethodNotAllowed'); // the answer to PATCH on definitions is a guess
+}
+
+/** Capability record for the capability registry; dataverse-extensions.mjs adds the operations install registered. */
+export function describe() {
+  return {
+    name: 'dataverse-metadata-tables',
+    version: 1,
+    kind: 'dataverse-extension',
+    level: 'behaviour',
+    reason:
+      'Table, column and key metadata writes over the Web API with their privileges; an unsupported column type answers 501.',
+    requires: [],
+    principal: 'caller',
+    stateOwner: 'store',
+    lifecycle: 'per-request',
+  };
 }

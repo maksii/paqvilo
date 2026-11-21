@@ -1,5 +1,5 @@
 /** Public CLI tools, their programs and their argument contracts. */
-import { toolOptionsHelp } from './tool-options.mjs';
+import { assertToolPaths, toolOptionsHelp } from './tool-options.mjs';
 export const MIRAGE_TOOLS = Object.freeze({
   'bootstrap-report':
     '(--site ID [--config FILE --env ID --repo DIR] | --source DIR | --project FILE [--portal ID]) [--solution-root DIR ...] [--solution-order derived|explicit] [--deployment-profile NAME] [--data-model standard|enhanced] [--lcid N] [--json] [--output FILE] [--no-cache] [--all-fields]',
@@ -8,9 +8,9 @@ export const MIRAGE_TOOLS = Object.freeze({
   'webapi-inventory': toolOptionsHelp('webapi-inventory'),
   'portal-matrix': toolOptionsHelp('portal-matrix'),
   'parity-suite':
-    '((--local LOOPBACK_ORIGIN | --source DIR | --site ID) --out DIR | --reclassify FILE) [--config FILE] [--env ID] [--repo DIR] [--state FILE] [--preset NAME] [--origin HTTPS_ORIGIN] [--cdp LOOPBACK_URL] [--local-owned] [--anonymous-browser owned|cdp] [--scenarios FILE] [--core | --no-core] [--pack ID ...] [--packs auto|all|none] [--pack-module FILE ...] [--only IDS] [--tags TAGS] [--exclude-tags TAGS] [--label NAME] [--delay-ms N] [--work-dir DIR] [--persona-contact ID] [--no-persona] [--browser NAME] [--ids FILE] [--deployment-profile NAME]',
+    '((--local LOOPBACK_ORIGIN | --source DIR | --site ID) --out DIR | --reclassify FILE | --list) [--config FILE] [--env ID] [--repo DIR] [--state FILE] [--preset NAME] [--origin HTTPS_ORIGIN] [--cdp LOOPBACK_URL] [--local-owned] [--anonymous-browser owned|cdp] [--scenarios FILE] [--core | --no-core] [--pack ID ...] [--packs auto|all|none] [--pack-module FILE ...] [--only IDS] [--tags TAGS] [--exclude-tags TAGS] [--label NAME] [--delay-ms N] [--work-dir DIR] [--persona-contact ID] [--no-persona] [--browser NAME] [--ids FILE] [--deployment-profile NAME]',
   'baseline-suite':
-    'capture|compare --matrix FILE --out DIRECTORY [--side live|mirage] [--config FILE --site ID] [--ids FILE] [--allow-writes] [--allowlist FILE] [--second-live LABEL] [--evidence-changes FILE] [--label NAME] [--only IDS|@FILE] [--all-scenarios] [--env ID] [--source DIR] [--state FILE] [--headed] [--work-dir DIR] [--live DIR] [--mirage DIR]',
+    'capture|compare --matrix FILE --out DIRECTORY [--side live|mirage] [--config FILE --site ID] [--ids FILE] [--allow-writes] [--allowlist FILE] [--second-live LABEL] [--evidence-changes FILE] [--label NAME] [--only IDS|@FILE] [--all-scenarios] [--env ID] [--source DIR] [--state FILE] [--headed] [--work-dir DIR] [--live LABEL] [--mirage LABEL] (LABEL: the label a capture was saved under; compare reads live and mirage by default)',
   'liquid-conformance': '--suite FILE [--rules FILE] [--json | --markdown] [--out FILE] [--timeout MS]',
   acceptance:
     '--local LOOPBACK_ORIGIN --plan FILE [--origin HTTPS_ORIGIN --cdp LOOPBACK_URL] [--output DIRECTORY] [--requires NAME ...] [--strict]',
@@ -24,6 +24,18 @@ export const MIRAGE_TOOLS = Object.freeze({
     '--config FILE [--site ID] [--env ID | --all] [--path /] [--cdp LOOPBACK_URL] [--timeout MILLISECONDS] [--no-rich-text] [--strict] [--json]',
   trace: `list|show (TRACE_ID|PREFIX|--latest [filters])|spans|stats|settings|clear|flush|export|watch ${toolOptionsHelp('trace')}`,
 });
+/** The tools whose argument errors exit 2 (docs/cli.md); every other tool's exit 1. */
+export const MIRAGE_TOOL_USAGE_EXIT = Object.freeze({
+  'render-sweep': 2,
+  'portal-matrix': 2,
+  'liquid-inventory': 2,
+  'liquid-conformance': 2,
+});
+/** The data command's usage, shown by paqvilo mirage --help and by a data invocation without generate or scaffold. */
+export const MIRAGE_DATA_USAGE = `paqvilo mirage data generate --pack PACK_ID [--profile PROFILE] --state FILE [--out FILE] [--seed S]
+    [--count NAME=N ...] [--pack-module PATH] [--materialize-persona-memberships]
+  paqvilo mirage data scaffold [--profile smoke|dev] --state FILE [--rows N] [--seed S] [--out FILE]
+    portal for scaffold or membership materialization: [--site SITE --env ENV --repo PATH] | --project FILE [--portal ID] | --source PORTAL_DIR [--solution-root DIR ...]`;
 export const mirageToolHelp = (name) => `Usage: paqvilo mirage ${name} ${MIRAGE_TOOLS[name]}\n`;
 const stripBracketGroups = (text) => {
   const stripped = text.replaceAll(/\[[^[\]]*\]/g, '');
@@ -32,12 +44,14 @@ const stripBracketGroups = (text) => {
 /** The options a tool's usage line lists outside its [ ] groups. */
 const requiredToolOptions = (name) =>
   [...stripBracketGroups(MIRAGE_TOOLS[name]).matchAll(/--([\w-]+)/g)].map(([, option]) => option);
-/** Refuses a start without a required option, or with a malformed URL value, before any input is read. */
-export function assertToolOptions(name, values, urlOptions = []) {
+/** Refuses a start without a required option, with a malformed URL value or a missing input file, before any input is read. */
+export function assertToolOptions(name, values, urlOptions = [], { paths = true } = {}) {
   const missing = requiredToolOptions(name).find((option) => values[option] === undefined);
   if (missing) throw new Error(`--${missing} is required.\n${mirageToolHelp(name)}`.trimEnd());
   const malformed = urlOptions.find((option) => values[option] !== undefined && !URL.canParse(values[option]));
   if (malformed) throw new Error(`--${malformed} must be a valid URL.`);
+  // Then every input file or directory the options name must exist (paths: false: the tool checks them later itself).
+  if (paths) assertToolPaths(name, values);
 }
 export const MIRAGE_LIFECYCLE = Object.freeze(['init', 'dev', 'start', 'status', 'stop']);
 export const MIRAGE_CORE_COMMANDS = Object.freeze([

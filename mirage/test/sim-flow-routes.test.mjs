@@ -408,3 +408,39 @@ test('a secure approval wait lists options and assignees but keeps the response 
   assert.equal(wait.approval.responses[0].response, 'Reject');
   assert.ok(!JSON.stringify(wait).includes('invented-secret-comment'));
 });
+
+// @test-kind contract: the on-demand start route answers the run's Response, including one produced before the run waits
+test('POST /_sim/api/flow-runs returns the Response a run produced before it started waiting', async (t) => {
+  const clock = fixedClock();
+  const store = await new DataStore({ state: emptyState(), clock, ids: sequentialIds() }).init();
+  const scheduler = createScheduler({ clock, manual: true });
+  storeScheduler(store, scheduler);
+  ownedFixture(t).add(() => scheduler.close());
+  const connectors = createConnectorRuntime({ store, scheduler, clock });
+  const definition = {
+    triggers: { manual: { type: 'Request', kind: 'Button', inputs: { schema: { type: 'object' } } } },
+    actions: {
+      Reply: { type: 'Response', runAfter: {}, inputs: { statusCode: 200, body: { accepted: true } } },
+      Pause: { type: 'Wait', runAfter: { Reply: ['Succeeded'] }, inputs: { interval: { count: 5, unit: 'Minute' } } },
+    },
+  };
+  const api = { store, providers: { connectors } };
+  const runs = createHostFlowRuns({
+    store,
+    clock,
+    scheduler,
+    flowOf: () => ({ definition, mode: 'exported', connectors }),
+  });
+  runs.attach(api);
+  ownedFixture(t).add(() => runs.close());
+  const origin = await serveFlowRoutes(t, createFlowRoutes({ api, csrf: () => CSRF }));
+  const response = await fetch(`${origin}/_sim/api/flow-runs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-sim-csrf': CSRF },
+    body: JSON.stringify({ processId: FLOW }),
+  });
+  assert.equal(response.status, 201);
+  const started = await response.json();
+  assert.equal(started.status, 'Waiting');
+  assert.deepEqual(started.response, { status: 200, body: { accepted: true } });
+});

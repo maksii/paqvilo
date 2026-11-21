@@ -1,6 +1,7 @@
+// @test-kind compatibility: Microsoft Dataverse SDK wire contracts (https://learn.microsoft.com/power-apps/developer/data-platform/webapi/overview) and OAuth client assertions (RFC 7523).
 // SDK verification gate: certificate client authentication (private_key_jwt) against the Mirage Dataverse simulator.
 // A fresh RSA key pair and self-signed certificate are generated per run and registered for the gate application;
-// @azure/msal-node 7.1.1 and MSAL.NET (Microsoft.Identity.Client 4.91.1) each redeem their own client assertion over
+// @azure/msal-node 7.2.2 and MSAL.NET (Microsoft.Identity.Client 4.92.0) each redeem their own client assertion over
 // the TLS authority and call WhoAmI. Included in the full Windows verification gate; also runnable with `npm test` here.
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -16,7 +17,7 @@ const T = { timeout: 600_000 };
 const here = path.dirname(fileURLToPath(import.meta.url));
 const CHILD = path.join(here, 'msal-child.mjs');
 const PROJECT = path.join(here, 'Gate', 'Gate.csproj');
-const EXE = path.join(here, 'Gate', 'bin', 'Release', 'net10.0', process.platform === 'win32' ? 'Gate.exe' : 'Gate');
+const EXE = path.join(here, 'Gate', 'bin', 'Release', 'net11.0', process.platform === 'win32' ? 'Gate.exe' : 'Gate');
 const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ASSERTION_TYPE = 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer';
 const b64 = (value) => Buffer.from(JSON.stringify(value)).toString('base64url');

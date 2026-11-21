@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of managed solution layer stacks over invented archives; no native layer capture is replayed
 // Managed layer stacks and the overwrite customizations option.
 import test, { before } from 'node:test';
 import assert from 'node:assert/strict';
@@ -58,6 +59,24 @@ before(async () => {
         'POST',
         "/EntityDefinitions(LogicalName='fx_widget')/Attributes",
         column('fx_Code', { MaxLength: 20 }),
+        H,
+      )
+    ).status,
+    204,
+  );
+  const label = (text) => ({ LocalizedLabels: [{ Label: text, LanguageCode: 1033 }] });
+  assert.equal(
+    (
+      await src.request(
+        'POST',
+        '/GlobalOptionSetDefinitions',
+        {
+          '@odata.type': '#Microsoft.Dynamics.CRM.OptionSetMetadata',
+          Name: 'fx_tier',
+          OptionSetType: 'Picklist',
+          DisplayName: label('Tier'),
+          Options: [{ Value: 100000000, Label: label('Gold') }],
+        },
         H,
       )
     ).status,
@@ -307,4 +326,74 @@ test('uninstalling Solution field security profile and role layers restores the 
       false,
       name,
     );
+});
+
+// @test-kind contract: the module's own managed-import rule applied to every component of an imported managed table:
+// the table, its columns (the primary name column and its system columns included) and its global choice report IsManaged;
+// the columns and the choice the archive brings carry the solution layer; a column created on top stays unmanaged
+test('every component of an imported managed table reports IsManaged and has its solution layer', async (t) => {
+  const dst = await server(t);
+  assert.equal((await importZip(dst, base)).status, 204);
+  const table = (await dst.request('GET', "/EntityDefinitions(LogicalName='fx_widget')?$select=IsManaged")).json;
+  assert.equal(table.IsManaged, true);
+  const columns = async () =>
+    (
+      await dst.request(
+        'GET',
+        "/EntityDefinitions(LogicalName='fx_widget')/Attributes?$select=LogicalName,IsManaged,MetadataId",
+      )
+    ).json.value;
+  const layersOf = async (kind, id) =>
+    (await dst.request('GET', `/RetrieveComponentLayers(ComponentId=${id},SolutionComponentName='${kind}')`)).json
+      .Layers;
+  for (const column of await columns()) assert.equal(column.IsManaged, true, column.LogicalName);
+  for (const name of ['fx_name', 'fx_code']) {
+    const column = (await columns()).find((item) => item.LogicalName === name);
+    assert.ok(
+      (await layersOf('attribute', column.MetadataId)).some((layer) => layer.msdyn_solutionname === 'fx_base'),
+      name,
+    );
+  }
+  const tier = (await dst.request('GET', "/GlobalOptionSetDefinitions(Name='fx_tier')")).json;
+  assert.equal(tier.IsManaged, true);
+  // A managed choice is deleted only by the uninstall that owns its layer, as a managed table, column or key is.
+  const deleted = await dst.request('DELETE', "/GlobalOptionSetDefinitions(Name='fx_tier')");
+  assert.equal(deleted.status, 400);
+  assert.equal(deleted.json.error.code, '0x8004f013');
+  // The primary name column keeps its role under the managed layer.
+  const primary = (
+    await dst.request(
+      'GET',
+      "/EntityDefinitions(LogicalName='fx_widget')/Attributes(LogicalName='fx_name')/Microsoft.Dynamics.CRM.StringAttributeMetadata?$select=IsPrimaryName",
+    )
+  ).json;
+  assert.equal(primary.IsPrimaryName, true);
+  // Removing a customization of the primary name column restores its managed definition as the primary name column.
+  const nameId = (await columns()).find((item) => item.LogicalName === 'fx_name').MetadataId;
+  assert.equal(
+    (
+      await dst.request('PUT', `/EntityDefinitions(LogicalName='fx_widget')/Attributes(${nameId})`, {
+        MaxLength: 90,
+      })
+    ).status,
+    204,
+  );
+  assert.equal(
+    (await dst.request('POST', '/RemoveActiveCustomization', { LogicalName: 'attribute', Id: nameId })).json.Success,
+    true,
+  );
+  const restored = (
+    await dst.request(
+      'GET',
+      "/EntityDefinitions(LogicalName='fx_widget')/Attributes(LogicalName='fx_name')/Microsoft.Dynamics.CRM.StringAttributeMetadata?$select=IsPrimaryName,IsManaged,MaxLength",
+    )
+  ).json;
+  assert.deepEqual([restored.IsPrimaryName, restored.IsManaged], [true, true]);
+  assert.notEqual(restored.MaxLength, 90);
+  // A column created on top of the managed table is the unmanaged customization it is.
+  assert.equal(
+    (await dst.request('POST', "/EntityDefinitions(LogicalName='fx_widget')/Attributes", column('fx_Note'))).status,
+    204,
+  );
+  assert.equal((await columns()).find((item) => item.LogicalName === 'fx_note').IsManaged, false);
 });

@@ -3,7 +3,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { ensureVerifiedArchive } from './verified-download.mjs';
+import { ensureVerifiedArchive, extractZipOnWindows } from './verified-download.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const assets = {
@@ -115,18 +115,8 @@ export async function provision(
   if (recorded?.archive !== expected || !fs.existsSync(target) || recorded.binary !== digest(target)) {
     const unpacked = path.join(directory, 'unpacked');
     fs.mkdirSync(unpacked, { recursive: true });
-    if (process.platform === 'win32') {
-      execute(
-        'powershell.exe',
-        [
-          '-NoProfile',
-          '-NonInteractive',
-          '-Command',
-          'Expand-Archive -LiteralPath $env:PAQVILO_TOOL_ARCHIVE -DestinationPath $env:PAQVILO_TOOL_DESTINATION -Force',
-        ],
-        { ...process.env, PAQVILO_TOOL_ARCHIVE: archive, PAQVILO_TOOL_DESTINATION: unpacked },
-      );
-    } else execute('tar', ['-xzf', archive, '-C', unpacked]);
+    if (process.platform === 'win32') extractZipOnWindows(archive, unpacked);
+    else execute('tar', ['-xzf', archive, '-C', unpacked]);
     if (!fs.existsSync(target)) throw new Error(`${name} executable missing after extraction.`);
     fs.writeFileSync(receipt, JSON.stringify({ archive: expected, binary: digest(target) }) + '\n');
   }
@@ -154,6 +144,17 @@ export async function checkWorkflows({
   provisionTool = provision,
   run = execute,
 } = {}) {
+  const args = argv.slice(2);
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log(`Usage: node scripts/check-workflows.mjs [--cache-key | --provision]
+  (no option)    provision actionlint and ShellCheck, then check the workflows and Git hooks
+  --cache-key    print only the tool cache key (also to GITHUB_OUTPUT); reads nothing else
+  --provision    only download and verify both tools (may use GITHUB_TOKEN)
+  --help         print this help`);
+    return;
+  }
+  const unknown = args.find((arg) => !['--cache-key', '--provision'].includes(arg));
+  if (unknown) throw new Error(`Unknown option ${unknown}; run with --help to see supported options.`);
   const supported = workflowTools();
   if (argv.includes('--cache-key')) {
     const line = `key=${workflowToolsCacheKey()}\n`;

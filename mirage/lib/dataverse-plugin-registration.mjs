@@ -5,7 +5,7 @@ import { organizationRecord } from './organization-context.mjs';
 // the documented errors. A row runs nothing by itself: overlayRegisteredSteps decides which steps join the pipeline. Seeding is insert-or-replace
 // by id, so reseeding is idempotent and the Solution's rows win on reseed.
 import { DataError } from './data-error.mjs';
-import { ownershipTypeName, privilegeDeniedError, uuidV5 } from './dataverse-security.mjs';
+import { ownershipTypeName, uuidV5 } from './dataverse-security.mjs';
 import { standardTableDef } from './dataverse-standard.mjs';
 import { SDK_MESSAGES, pluginUnsupported } from './exported-plugins.mjs';
 import {
@@ -943,6 +943,22 @@ const base64Bytes = (content) => {
   return Math.floor((content.length * 3) / 4) - padding;
 };
 
+// The display name of an assembly a refusal names: the row's identity columns, else the identity its content carries
+// (a content-only create is refused before the content sets the columns), else "unknown" for each missing part.
+function refusedAssemblyIdentity(row) {
+  let { name, version, culture, publickeytoken } = row;
+  if (name == null && typeof row.content === 'string' && row.content !== '') {
+    try {
+      const facts = assemblyContent(row.content);
+      ({ name, version, culture } = facts);
+      publickeytoken = facts.publicKeyToken;
+    } catch {
+      // Unreadable content: the identity stays unknown.
+    }
+  }
+  return `${name ?? 'unknown'}, Version=${version ?? 'unknown'}, Culture=${culture ?? 'neutral'}, PublicKeyToken=${publickeytoken ?? 'null'}`;
+}
+
 function validateAssembly({ store, data, existing }) {
   const val = (column) => valueOf(data, existing, column);
   // Codes and texts follow the documented error table (PluginAssemblyContentSizeExceeded, InvalidAssemblySourceType,
@@ -953,9 +969,8 @@ function validateAssembly({ store, data, existing }) {
   // Native (N3 package trial, a package-owned assembly) refuses an isolation mode other than sandbox with 403 0x80040256
   // naming the assembly; other assemblies are assumed to answer the same.
   if (data.isolationmode !== undefined && data.isolationmode !== null && Number(data.isolationmode) !== 2) {
-    const row = { ...existing, ...data };
     throw new DataError(
-      `Action failed for assembly '${row.name}, Version=${row.version}, Culture=${row.culture ?? 'neutral'}, PublicKeyToken=${row.publickeytoken ?? 'null'}': No publisher is found, assembly must be registered in isolation.`,
+      `Action failed for assembly '${refusedAssemblyIdentity({ ...existing, ...data })}': No publisher is found, assembly must be registered in isolation.`,
       403,
       'Forbidden',
       { innerCode: '0x80040256' },
@@ -1378,7 +1393,7 @@ function validateStepSecurity({ store, principals, c, data, existing, handler, v
     const allowed =
       principals.roles(c.user).some((role) => ADMIN_ROLES.has(role.name)) ||
       principals.privileges(c.user).has(IMPERSONATE);
-    if (!allowed) throw privilegeDeniedError(c.user, IMPERSONATE, 'sdkmessageprocessingstep');
+    if (!allowed) throw principals.deniedError(c.user, IMPERSONATE, 'sdkmessageprocessingstep');
   }
   // A web hook step takes no configuration (documented); the text and code are guesses.
   validateStepWebhookConfig(store, handler, val);
@@ -1743,7 +1758,47 @@ export function solutionPluginExtension(plugins) {
     api.store.transact(() => {
       sync(api);
     });
-  return { name: 'dataverse-plugin-registration-solution', install: seedSolution, reset: seedSolution, sync };
+  return {
+    name: 'dataverse-plugin-registration-solution',
+    install: seedSolution,
+    reset: seedSolution,
+    sync,
+    describe: () => ({
+      name: 'dataverse-plugin-registration-solution',
+      version: 1,
+      kind: 'dataverse-extension',
+      level: 'behaviour',
+      reason: "Mirrors the Solutions' plug-in registrations into the registration tables at startup and refresh.",
+      requires: [],
+      principal: 'none',
+      stateOwner: 'store',
+      lifecycle: 'in-process',
+    }),
+  };
 }
 
-export const EXTENSION = { name: 'dataverse-plugin-registration', install, reset };
+/** Capability record; dataverse-extensions.mjs adds the operations install registered. */
+function describe() {
+  return {
+    name: 'dataverse-plugin-registration',
+    version: 1,
+    kind: 'dataverse-extension',
+    level: 'behaviour',
+    reason:
+      'Seeds sdkmessage and sdkmessagefilter rows and validates writes to the registration tables; a row runs nothing by itself.',
+    operations: [
+      {
+        name: 'TriggerServiceEndpointCheck',
+        level: 'contract',
+        reason:
+          'Probes only loopback web hooks; queue and topic endpoints pass on a bus mapping without sending, and the probe body is a guess.',
+      },
+    ],
+    requires: [],
+    principal: 'caller',
+    stateOwner: 'store',
+    lifecycle: 'per-request',
+  };
+}
+
+export const EXTENSION = { name: 'dataverse-plugin-registration', install, reset, describe };

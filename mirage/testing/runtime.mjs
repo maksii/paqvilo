@@ -1,7 +1,5 @@
+import { requiredArgument } from '../lib/required-argument.mjs';
 import path from 'node:path';
-import { loadConfig } from '../../lense/config.mjs';
-import { DEFAULT_PORT, discoveries, miragePaths, samePath } from '../../lense/commands/mirage.mjs';
-import { loadProjectConfig } from '../lib/project-config.mjs';
 import { createPortalSession } from './sessions.mjs';
 import { createPersonaSession } from './personas.mjs';
 import { eventLineParts } from './event-line.mjs';
@@ -15,6 +13,27 @@ function requestError(status, value, label = 'Local runtime request') {
     ...(value?.error?.parameter ? { parameter: value.error.parameter } : {}),
     response: value,
   });
+}
+
+// The /_sim/api/status of the runtime at origin. Something that answers there without a Mirage status (another server
+// on the default port, a portal) is RuntimeNotMirage, naming what answered and how to select a runtime.
+async function mirageStatus(request, origin) {
+  let status, answered;
+  try {
+    status = await request('/status');
+  } catch (error) {
+    // A runtime's own refusal carries its error envelope; anything else answered without one.
+    if (typeof error.status !== 'number' || error.response?.error) throw error;
+    answered = `HTTP ${error.status}`;
+  }
+  if (!answered && status !== null && typeof status === 'object' && !Array.isArray(status)) return status;
+  answered ??= 'an answer that is not a Mirage status';
+  throw Object.assign(
+    new Error(
+      `Something other than a Mirage runtime answers at ${origin} (${answered}). Select the runtime by its origin, project file or catalogue site: --origin URL, --project FILE, or --config FILE --site ID.`,
+    ),
+    { code: 'RuntimeNotMirage' },
+  );
 }
 
 // Socket failures after the runtime accepted the connection (undici and Node codes).
@@ -63,9 +82,9 @@ async function* traceFrames(body) {
 }
 
 export function runtimeOrigin(value) {
-  const url = new URL(value);
+  const url = URL.parse(value);
   if (
-    url.protocol !== 'http:' ||
+    url?.protocol !== 'http:' ||
     !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname) ||
     url.username ||
     url.password ||
@@ -73,12 +92,17 @@ export function runtimeOrigin(value) {
     url.search ||
     url.hash
   )
-    throw new Error('Runtime origin must be an HTTP loopback origin without credentials, path or query');
+    throw new Error('Runtime origin must be an HTTP loopback origin without credentials, path or query.');
   return url.origin;
 }
 
+// The catalogue, project and discovery modules find a runtime that was not named by its origin. They load on that path
+// only: their module graph is most of this client's start-up, and a caller that passes an origin never needs it.
+const discovery = () => import('../../lense/commands/mirage.mjs');
+
 // The live runtime whose discovery record names this project (a standalone runtime or a project's portals).
 async function projectRuntimeOrigin(project) {
+  const { discoveries, miragePaths, samePath } = await discovery();
   const file = path.resolve(project);
   const owned = await discoveries(miragePaths(null, { project: file }), { probe: false });
   const urls = [
@@ -100,13 +124,33 @@ async function projectRuntimeOrigin(project) {
   return urls[0];
 }
 
-/** Connect to an existing local runtime. This never starts or stops it. */
-export async function connectRuntime({ origin, config, site, project, fetchImpl = globalThis.fetch } = {}) {
+/**
+ * Connect to an existing local runtime. This never starts or stops it. timeoutMs is the client deadline of each admin
+ * call and is inherited by createSession; 0 sets none. Starting a persona launches a runtime and is a long call, so
+ * its caller may pass a larger value or 0.
+ */
+export async function connectRuntime({
+  origin,
+  config,
+  site,
+  project,
+  fetchImpl = globalThis.fetch,
+  timeoutMs = 30000,
+} = {}) {
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > 2147483647)
+    throw new Error('timeoutMs must be an integer from 0 to 2147483647 (0 disables the client timeout)');
   let cfg;
+  // A caller that named the origin is told that origin did not answer; a discovered one, how to start or name one.
+  const givenOrigin = Boolean(origin);
   if (!origin && project) origin = await projectRuntimeOrigin(project);
+  let samePath;
   if (!origin) {
+    const { loadConfig } = await import('../../lense/config.mjs');
+    const { DEFAULT_PORT, discoveries, miragePaths, samePath: sameLocation } = await discovery();
+    samePath = sameLocation;
     cfg = await loadConfig({ config, site }, process.env, { checkSource: false });
     if (cfg.mirageConfig.project) {
+      const { loadProjectConfig } = await import('../lib/project-config.mjs');
       const project = await loadProjectConfig(cfg.mirageConfig.project);
       cfg.sourceDir =
         project.portals.find((item) => samePath(item.sourceDir, cfg.sourceDir))?.sourceDir ??
@@ -142,15 +186,17 @@ export async function connectRuntime({ origin, config, site, project, fetchImpl 
   // RuntimeConnectionLost; no connection at all (refused, unresolvable, a bad port) is RuntimeUnreachable.
   const lost = (cause) =>
     cause?.message === 'terminated' || CONNECTION_LOST.has(cause?.code) || CONNECTION_LOST.has(cause?.cause?.code);
+  const unreachable = () =>
+    givenOrigin
+      ? `No Mirage runtime answers at ${origin}, the given origin; start the runtime there or give the origin of a running one.`
+      : `No Mirage runtime answers at ${origin}; start one or pass --origin.`;
   const fetchFailure = (cause, { reading = false } = {}) =>
     reading || lost(cause)
       ? Object.assign(
           new Error(`The Mirage runtime at ${origin} closed the connection before the response completed.`, { cause }),
           { code: 'RuntimeConnectionLost' },
         )
-      : Object.assign(new Error(`No Mirage runtime answers at ${origin}; start one or pass --origin.`, { cause }), {
-          code: 'RuntimeUnreachable',
-        });
+      : Object.assign(new Error(unreachable(), { cause }), { code: 'RuntimeUnreachable' });
   const reach = (url, init) =>
     fetchImpl(url, init).catch((error) => {
       if (init.signal?.aborted || !(error instanceof TypeError)) throw error;
@@ -180,12 +226,14 @@ export async function connectRuntime({ origin, config, site, project, fetchImpl 
   };
   const request = async (
     route,
-    { method = 'GET', body, headers = {}, captureReport = false, timeoutMs = 30000 } = {},
+    { method = 'GET', body, headers = {}, captureReport = false, timeoutMs: requestTimeoutMs = timeoutMs } = {},
   ) => {
-    if (!Number.isInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > 2147483647)
+    if (!Number.isInteger(requestTimeoutMs) || requestTimeoutMs < 0 || requestTimeoutMs > 2147483647)
       throw new Error('timeoutMs must be an integer from 0 to 2147483647 (0 disables the client timeout)');
-    if (method !== 'GET') headers['x-sim-csrf'] = (await request('/state?summary=1')).csrf;
-    const signal = timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : undefined;
+    // Status carries the current CSRF token without a full implementation-evidence walk. Explicit
+    // state() calls retain that fresh evidence contract independently of configuration writes.
+    if (method !== 'GET') headers['x-sim-csrf'] = (await request('/status')).csrf;
+    const signal = requestTimeoutMs > 0 ? AbortSignal.timeout(requestTimeoutMs) : undefined;
     try {
       const response = await reach(`${origin}/_sim/api${route}`, {
         method,
@@ -206,15 +254,15 @@ export async function connectRuntime({ origin, config, site, project, fetchImpl 
       if (captureReport && signal?.aborted)
         throw Object.assign(
           new Error(
-            `Shell capture client stopped waiting after ${timeoutMs} ms. Increase captureShell(path, { timeoutMs }) or capture-shell --timeout <milliseconds> (0 disables the timeout). The server may still be working.`,
+            `Shell capture client stopped waiting after ${requestTimeoutMs} ms. Increase captureShell(path, { timeoutMs }) or capture-shell --timeout <milliseconds> (0 disables the timeout). The server may still be working.`,
             { cause },
           ),
-          { code: 'SHELL_CAPTURE_TIMEOUT', timeoutMs },
+          { code: 'SHELL_CAPTURE_TIMEOUT', timeoutMs: requestTimeoutMs },
         );
       throw cause;
     }
   };
-  const status = await request('/status');
+  const status = await mirageStatus(request, origin);
   if (cfg && !samePath(status.sourceDir, cfg.sourceDir))
     throw new Error('Runtime source does not match the catalogue site');
   const setPortalValue = (section, name, value) =>
@@ -227,15 +275,17 @@ export async function connectRuntime({ origin, config, site, project, fetchImpl 
   const configurationRequest = (route, options) => configuration(() => request(route, options));
   // /_sim/api/trace (sim-trace-routes.mjs): the read methods of the in-process simulator.trace, settings, status,
   // configure and clear, and subscribe over the runtime's /_sim/events trace channel.
-  const traceTree = (traceId) => request(`/trace/id/${encodeURIComponent(traceId)}`).catch(unretained);
-  const traceSpan = (spanId) => request(`/trace/span/${encodeURIComponent(spanId)}`).catch(unretained);
+  const traceTree = (traceId = requiredArgument('runtime.trace.tree(traceId)', 'a trace id')) =>
+    request(`/trace/id/${encodeURIComponent(traceId)}`).catch(unretained);
+  const traceSpan = (spanId = requiredArgument('runtime.trace.span(spanId)', 'a span id')) =>
+    request(`/trace/span/${encodeURIComponent(spanId)}`).catch(unretained);
   const trace = Object.freeze({
     query: (filters) => request(`/trace${traceQuery(filters)}`),
     spans: (filters) => request(`/trace/spans${traceQuery(filters)}`),
     tree: traceTree,
     span: traceSpan,
     // The retained spans from the trace root down to spanId (inclusive); [] when the span is not retained.
-    async ancestry(spanId) {
+    async ancestry(spanId = requiredArgument('runtime.trace.ancestry(spanId)', 'a span id')) {
       const span = await traceSpan(spanId);
       const tree = span && (await traceTree(span.traceId));
       if (!tree) return span ? [span] : [];
@@ -272,7 +322,8 @@ export async function connectRuntime({ origin, config, site, project, fetchImpl 
     // runtime filters them). Returns unsubscribe(); unsubscribe.closed resolves when the stream ends (unsubscribe, signal
     // or runtime shutdown) and rejects only when the stream cannot be opened.
     subscribe(listener, { signal, events, traceId } = {}) {
-      if (typeof listener !== 'function') throw new TypeError('Trace listeners must be functions.');
+      if (typeof listener !== 'function')
+        requiredArgument('runtime.trace.subscribe(listener, options)', 'a listener function');
       const controller = new AbortController();
       let stopped = false;
       const unsubscribe = () => {
@@ -319,18 +370,21 @@ export async function connectRuntime({ origin, config, site, project, fetchImpl 
   return Object.freeze({
     origin,
     transportDiagnostics: () => structuredClone(transportDiagnostics),
-    createSession: (options = {}) =>
-      options.personaKey || options.scenario
-        ? createPersonaSession({ ...options, origin, fetchImpl })
-        : createPortalSession({ ...options, origin, fetchImpl }),
+    createSession: (options = {}) => {
+      // Sessions accept 0 to 300000 ms; a connection outside that range leaves the session at its own default.
+      const session = { ...(timeoutMs <= 300000 ? { timeoutMs } : {}), ...options, origin, fetchImpl };
+      return options.personaKey || options.scenario ? createPersonaSession(session) : createPortalSession(session);
+    },
     personas: () => request('/personas'),
     savePersonaCatalog: (catalog, { expectedDigest } = {}) =>
       request('/persona-catalog', { method: 'PUT', body: { catalog, expectedDigest } }),
     resetPersonaCatalog: ({ expectedDigest } = {}) =>
       request('/persona-catalog', { method: 'DELETE', body: { expectedDigest } }),
     personaRuntimes: () => request('/persona-runtimes'),
-    stopPersonaRuntime: (id) => request('/persona-runtimes/' + encodeURIComponent(id), { method: 'DELETE' }),
-    launchPersona: (options) => request('/personas/launch', { method: 'POST', body: options }),
+    stopPersonaRuntime: (id = requiredArgument('runtime.stopPersonaRuntime(id)', 'a persona runtime id')) =>
+      request('/persona-runtimes/' + encodeURIComponent(id), { method: 'DELETE' }),
+    launchPersona: (options = requiredArgument('runtime.launchPersona(options)', 'the persona launch options')) =>
+      request('/personas/launch', { method: 'POST', body: options }),
     status: () => request('/status'),
     state: ({ summary = false } = {}) => request(`/state${summary ? '?summary=1' : ''}`),
     witness: ({ tables } = {}) =>
@@ -362,21 +416,32 @@ export async function connectRuntime({ origin, config, site, project, fetchImpl 
         .map((line) => JSON.parse(line));
     },
     platformSettings: () => request('/platform-settings'),
-    setPlatformSettings: (overrides) =>
-      configurationRequest('/platform-settings', { method: 'PATCH', body: overrides }),
-    resetPlatformSetting: (key) =>
+    setPlatformSettings: (
+      overrides = requiredArgument('runtime.setPlatformSettings(overrides)', 'an object of platform setting overrides'),
+    ) => configurationRequest('/platform-settings', { method: 'PATCH', body: overrides }),
+    resetPlatformSetting: (key = requiredArgument('runtime.resetPlatformSetting(key)', 'a platform setting key')) =>
       configurationRequest(`/platform-settings/${encodeURIComponent(key)}`, { method: 'DELETE' }),
     siteSettings: () => request('/portal-settings'),
-    setSiteSetting: (name, value) => setPortalValue('portal-settings', name, value),
-    resetSiteSetting: (name) =>
+    setSiteSetting: (name = requiredArgument('runtime.setSiteSetting(name, value)', 'a site setting name'), value) =>
+      setPortalValue('portal-settings', name, value),
+    resetSiteSetting: (name = requiredArgument('runtime.resetSiteSetting(name)', 'a site setting name')) =>
       configurationRequest(`/portal-settings/${encodeURIComponent(name)}`, { method: 'DELETE' }),
-    resetSnippet: (name) => configurationRequest(`/portal-snippets/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+    resetSnippet: (name = requiredArgument('runtime.resetSnippet(name)', 'a content snippet name')) =>
+      configurationRequest(`/portal-snippets/${encodeURIComponent(name)}`, { method: 'DELETE' }),
     experiments: (id) => request(`/experiments${id === undefined ? '' : '/' + encodeURIComponent(id)}`),
-    saveExperiment: (preset) => request('/experiments', { method: 'POST', body: preset }),
-    applyExperiment: (id) =>
+    saveExperiment: (preset = requiredArgument('runtime.saveExperiment(preset)', 'an experiment preset')) =>
+      request('/experiments', { method: 'POST', body: preset }),
+    applyExperiment: (id = requiredArgument('runtime.applyExperiment(id)', 'an experiment id')) =>
       configurationRequest(`/experiments/${encodeURIComponent(id)}/apply`, { method: 'POST', body: {} }),
-    deleteExperiment: (id) => request(`/experiments/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    deleteExperiment: (id = requiredArgument('runtime.deleteExperiment(id)', 'an experiment id')) =>
+      request(`/experiments/${encodeURIComponent(id)}`, { method: 'DELETE' }),
     async signIn(context = null, { contactId, roles, configuredPersona = false } = {}) {
+      // Without configuredPersona the contact is an argument: a missing one is refused before any request.
+      if (!configuredPersona && (typeof contactId !== 'string' || !contactId.trim()))
+        requiredArgument(
+          'runtime.signIn(context, { contactId })',
+          'a contactId, or configuredPersona: true; omit signIn to stay anonymous',
+        );
       const state = await request('/state?summary=1');
       if (configuredPersona) {
         const identity = state.config?.identity;
@@ -386,9 +451,7 @@ export async function connectRuntime({ origin, config, site, project, fetchImpl 
       if (typeof contactId !== 'string' || !contactId.trim())
         throw Object.assign(
           new Error(
-            configuredPersona
-              ? 'No configured persona contact. Configure an active contact or pass contactId; omit signIn to stay anonymous.'
-              : 'Sign-in requires contactId; omit signIn to stay anonymous.',
+            'No configured persona contact. Configure an active contact or pass contactId; omit signIn to stay anonymous.',
           ),
           { code: 'MISSING_PERSONA_CONTACT' },
         );
@@ -416,11 +479,17 @@ export async function connectRuntime({ origin, config, site, project, fetchImpl 
         throw requestError(response.status(), await response.json().catch(() => null), 'Local sign-out');
       return response.json();
     },
-    records: (table, query = {}) => request(`/records/${encodeURIComponent(table)}?${new URLSearchParams(query)}`),
-    setSnippet: (name, value) => setPortalValue('portal-snippets', name, value),
-    liveConnect: (cdpUrl) => request('/live/connect', { method: 'POST', body: { cdpUrl } }),
+    records: (table = requiredArgument('runtime.records(table, query)', 'a table logical name'), query = {}) =>
+      request(`/records/${encodeURIComponent(table)}?${new URLSearchParams(query)}`),
+    setSnippet: (name = requiredArgument('runtime.setSnippet(name, value)', 'a content snippet name'), value) =>
+      setPortalValue('portal-snippets', name, value),
+    liveConnect: (cdpUrl = requiredArgument('runtime.liveConnect(cdpUrl)', 'a loopback browser debugging URL')) =>
+      request('/live/connect', { method: 'POST', body: { cdpUrl } }),
     liveDisconnect: () => request('/live/disconnect', { method: 'POST', body: {} }),
-    captureShell: (path, options = {}) =>
+    captureShell: (
+      path = requiredArgument('runtime.captureShell(path, options)', 'a portal-relative path'),
+      options = {},
+    ) =>
       request('/assets/capture-shell', {
         method: 'POST',
         body: { path, ...(options.richText === false ? { richText: false } : {}) },

@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { cli, isMain } from '../cli.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const hash = (text) => createHash('sha256').update(text).digest('hex');
@@ -409,7 +410,11 @@ export async function prepare({
   await fs.writeFile(path.join(output, 'templates.json'), JSON.stringify(templates, null, 2) + '\n');
   return { manifest, templates };
 }
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMain(import.meta)) {
+  cli(`Usage: node portal-harness/compile.mjs
+
+Builds the harness query plans and Liquid partials from the stress catalogue (base catalogue if absent) into the
+example's ignored .paqvilo/portal-harness/generated. Offline.`);
   const result = await prepare();
   console.log(
     JSON.stringify({

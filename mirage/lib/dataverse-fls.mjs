@@ -608,6 +608,22 @@ function createFieldSecurity({
 /** Extension entry: seeds its tables, exposes api.fieldSecurity and registers the bound function and the project / beforeWrite hooks. */
 export const fieldSecurity = {
   name: 'dataverse-fls',
+  // Column security runs locally on every read projection, query path and write (mirage/test/dataverse-fls.test.mjs,
+  // fls-paths-oracles.test.mjs, read-projection-fls.test.mjs). RetrievePrincipalAttributePrivileges answers the real
+  // profile grants, but who may read another principal's privileges is an assumed rule: contract.
+  describe() {
+    return {
+      name: 'dataverse-fls',
+      version: 1,
+      kind: 'dataverse-extension',
+      level: 'behaviour',
+      operations: [{ name: 'RetrievePrincipalAttributePrivileges', level: 'contract' }],
+      requires: [],
+      principal: 'caller',
+      stateOwner: 'store',
+      lifecycle: 'per-request',
+    };
+  },
   install(api) {
     const { store, principals } = api;
     // The organization GUID comes from the organization row: api.settings.organizationId is null at runtime.

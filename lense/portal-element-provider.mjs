@@ -1,6 +1,8 @@
 /** Serializable early bootstrap. Only a backend-held writer can admit response descriptors. */
 // NOSONAR: window preserves the browser WindowProxy boundary when page code reassigns globalThis.
-export function installPortalProvenanceRegistry({ secret, slot, domProvenanceSlot, limit = 50000 }) {
+export function installPortalProvenanceRegistry({ secret, slot, domProvenanceSlot, releaseKey, limit = 50000 }) {
+  // A slot that already exists belongs to the page (it cannot be replaced): the registry is refused for this document.
+  // The transport finds no function of this bootstrap there, so it claims nothing and reports the document.
   if (!secret || !slot || Object.hasOwn(window, slot)) return; // NOSONAR: preserve the page window receiver and binding
   const marker = 'data-paqvilo-source';
   const apply = Reflect.apply,
@@ -45,7 +47,7 @@ export function installPortalProvenanceRegistry({ secret, slot, domProvenanceSlo
   for (const name of ['type', 'target', 'attributeName', 'oldValue', 'addedNodes'])
     recordGetters[name] = getter(MutationRecord.prototype, name);
   const recordValue = (record, name) => read(recordGetters[name], record);
-  let claimed = false,
+  let disposed = false,
     truncated = false;
   const markerOf = (node) => (node && read(nodeType, node) === 1 ? attribute(node, marker) : null);
   const remember = (node, id, inertOwner = null) => {
@@ -305,6 +307,7 @@ export function installPortalProvenanceRegistry({ secret, slot, domProvenanceSlo
       revoked.add(node);
     },
     dispose() {
+      disposed = true;
       disconnect();
       if (descriptorOf(templatePrototype, 'content')?.get === contentGetter)
         define(templatePrototype, 'content', templateDescriptor);
@@ -315,10 +318,17 @@ export function installPortalProvenanceRegistry({ secret, slot, domProvenanceSlo
   });
   const capability = freeze({
     query,
+    // Every claim with the secret returns the same writer: a DevTools session that Chromium re-attaches to this
+    // unchanged document loses its earlier object handles and must claim the writer again.
     claim(value) {
-      if (claimed || value !== secret) return null;
-      claimed = true;
-      return writer;
+      return value === secret && !disposed ? writer : null;
+    },
+    // The backend retires a registry by its context when the writer never reached it: a claim still in flight, a claim
+    // that was never admitted, a context beyond its record limit. The key only closes this registry; it admits nothing.
+    release(value) {
+      if (!releaseKey || value !== releaseKey) return false;
+      writer.dispose();
+      return true;
     },
   });
   define(window, slot, { value: capability, configurable: false, writable: false }); // NOSONAR: preserve the page window receiver and binding

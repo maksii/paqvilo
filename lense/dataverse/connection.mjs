@@ -6,6 +6,8 @@ import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { isLoopbackOrigin } from './client.mjs';
 import { matchNamedLine } from '../../mirage/lib/text-scanning.mjs';
+import { paqviloCommand } from '../command-hint.mjs';
+import { requiredArgument } from '../../mirage/lib/required-argument.mjs';
 
 const GUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 export function environmentOrigin(value, { allowLoopback = false } = {}) {
@@ -95,9 +97,19 @@ export function parseRegistrationOutput(output) {
   };
 }
 
+/** The refusal of an exclusive write whose target exists, keeping the EEXIST code. */
+export function existingPathError(file) {
+  return Object.assign(new Error(`${path.resolve(file)} already exists; choose another path or remove it.`), {
+    code: 'EEXIST',
+  });
+}
+
 export async function privateJson(file, value, exclusive = false) {
   await fs.mkdir(path.dirname(path.resolve(file)), { recursive: true });
-  if (exclusive) return fs.writeFile(file, JSON.stringify(value, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+  if (exclusive)
+    return fs.writeFile(file, JSON.stringify(value, null, 2) + '\n', { flag: 'wx', mode: 0o600 }).catch((error) => {
+      throw error.code === 'EEXIST' ? existingPathError(file) : error;
+    });
   const temp = `${file}.${randomUUID()}.tmp`;
   await fs.writeFile(temp, JSON.stringify(value, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
   try {
@@ -132,7 +144,9 @@ export async function activeEnvironment() {
   };
 }
 
-export function publicConnection(connection) {
+export function publicConnection(
+  connection = requiredArgument('publicConnection(connection)', 'a connection loaded with loadConnection'),
+) {
   const {
     schemaVersion,
     environmentUrl,
@@ -173,9 +187,12 @@ export function publicConnection(connection) {
   };
 }
 
-function privateStatePath(file) {
+function privateStatePath(file, option) {
   if (!path.resolve(file).split(path.sep).includes('.paqvilo'))
-    throw new Error('Connection and registration state must be under an ignored .paqvilo directory.');
+    throw new Error(
+      `${option} ${file} is outside an ignored .paqvilo directory; credential and connection files must be under ` +
+        '.paqvilo (for example .paqvilo/dataverse/), so move it there and pass that path.',
+    );
 }
 
 function originOf(value) {
@@ -217,29 +234,52 @@ function registrationExists(message) {
 async function refuseExistingRegistration({ connectionFile, environmentUrl, applicationName, allowAdditional }) {
   if (allowAdditional) return;
   const origin = environmentUrl ? originOf(environmentUrl) : null;
+  const name = (value) => (typeof value === 'string' ? value.trim().toLowerCase() : null);
   const existing = (await registrationRecords(path.dirname(path.resolve(connectionFile)))).find(
     (record) =>
-      (origin !== null && originOf(record.environmentUrl) === origin) || record.applicationName === applicationName,
+      (origin !== null && originOf(record.environmentUrl) === origin) ||
+      name(record.applicationName) === name(applicationName),
   );
   if (!existing) return;
   throw registrationExists(
     `An application is already registered for this environment or name in ${existing.file}. ` +
-      `Reuse it with 'paqvilo dataverse inspect' or 'verify' using --connection ${existing.file}. ` +
+      `Reuse it with ${paqviloCommand(['dataverse', 'inspect'], { extra: ['--connection', existing.file] })} (or verify). ` +
       'Pass --allow-additional-application to create another.',
   );
 }
 
 function applicationsUnchecked() {
   return new Error(
-    'Existing applications could not be checked with PAC, so no application was created. ' +
+    'Existing applications could not be checked with PAC (the listing failed or was not recognized), ' +
+      'so no application was created. ' +
       'Pass --allow-additional-application to register without this check.',
   );
 }
 
-// PAC CLI 2.13.1 `pac admin list-service-principal` offers only --filter and --max and no machine-readable output,
-// so the listing is parsed from its table.
-// Output is split into cells on tabs and runs of two or more spaces, so a longer name that only starts with the
-// requested one is a different application. Output is parsed here and never copied into a message.
+const LISTING_MAX = 50;
+
+// PAC CLI 2.13.1 `pac admin list-service-principal` offers only --filter and --max and no machine-readable output.
+// Its table is `App Id`, `Secret Expiry` and `Name`, separated by single spaces and padded to the widest value, so
+// each name is the rest of its row from the header's `Name` column. Anything else (no header, a row that is not an
+// application id at the header's positions, a full page that may hide more rows) cannot be read with confidence and
+// returns null. Output is parsed here and never copied into a message.
+function parseServicePrincipalListing(stdout) {
+  const lines = stdout.split(/\r?\n/);
+  const headerIndex = lines.findIndex((line) => /^App Id +Secret Expiry +Name *$/.test(line));
+  if (headerIndex < 0 || lines.slice(0, headerIndex).some((line) => /^\s*Error:/i.test(line))) return null;
+  const header = lines[headerIndex];
+  const expiryStart = header.indexOf('Secret Expiry');
+  const nameStart = header.lastIndexOf('Name');
+  const names = [];
+  for (const row of lines.slice(headerIndex + 1).filter((line) => line.trim())) {
+    const name = row.slice(nameStart).trim();
+    if (!new RegExp(`^${GUID} *$`, 'i').test(row.slice(0, expiryStart)) || row[nameStart - 1] !== ' ' || !name)
+      return null;
+    names.push(name);
+  }
+  return names.length >= LISTING_MAX ? null : names;
+}
+
 async function listedApplicationNames(applicationName) {
   let result;
   try {
@@ -247,43 +287,47 @@ async function listedApplicationNames(applicationName) {
       'admin',
       'list-service-principal',
       '--filter',
-      applicationName,
+      applicationName.trim(),
       '--max',
-      '50',
+      String(LISTING_MAX),
     ]);
   } catch {
     throw applicationsUnchecked();
   }
-  if (result.code !== 0 || result.timedOut) throw applicationsUnchecked();
-  return result.stdout
-    .split(/\r?\n/)
-    .flatMap((line) => line.split(/\t| {2,}/))
-    .map((cell) => cell.trim().toLowerCase());
+  const names = result.code === 0 && !result.timedOut ? parseServicePrincipalListing(result.stdout) : null;
+  if (!names) throw applicationsUnchecked();
+  return names;
 }
 
-// The tenant listing is the registry: an application it already lists under the requested name is not created again.
+// The tenant listing is the registry: an application it already lists under the requested name, in any letter case,
+// is not created again. A listing that cannot be read refuses registration (fail closed).
 async function refuseListedApplication({ applicationName, allowAdditional }) {
   if (allowAdditional) return;
   const wanted = applicationName.trim().toLowerCase();
-  if ((await listedApplicationNames(applicationName)).includes(wanted))
+  if ((await listedApplicationNames(applicationName)).some((name) => name.toLowerCase() === wanted))
     throw registrationExists(
       `An application named ${applicationName.trim()} is already registered in this tenant, ` +
         'and the check matches by application name. ' +
-        'Reuse its existing connection file with paqvilo dataverse inspect or verify --connection FILE, ' +
+        `Reuse its existing connection file with ${paqviloCommand(['dataverse'])} inspect or verify --connection FILE, ` +
         'or pass --allow-additional-application to create another.',
     );
 }
 
-export async function registerApplication({
-  connectionFile,
-  environment,
-  applicationName,
-  role = 'System Customizer',
-  allowAdditionalApplication = false,
-  protect = protectSecret,
-}) {
+export async function registerApplication(
+  {
+    connectionFile,
+    environment,
+    applicationName,
+    role = 'System Customizer',
+    allowAdditionalApplication = false,
+    protect = protectSecret,
+  } = requiredArgument(
+    'registerApplication({ connectionFile, environment, applicationName })',
+    'an options object with connectionFile and applicationName',
+  ),
+) {
   if (!connectionFile || !applicationName) throw new Error('Registration requires --connection and --name.');
-  privateStatePath(connectionFile);
+  privateStatePath(connectionFile, '--connection');
   if (existsSync(connectionFile))
     throw new Error(
       'Connection already exists; registration will not create a duplicate app. Inspect or use another connection path.',
@@ -339,7 +383,10 @@ export async function registerApplication({
   });
   if (result.code !== 0 || result.timedOut || reportedError)
     throw new Error(
-      'PAC registration failed or its commit is partial/unknown. Encrypted recovery details saved; do not blindly register another app.',
+      `PAC registration failed or its commit is partial/unknown: an application named ${applicationName.trim()}` +
+        (partialApplicationId ? ` (application ID ${partialApplicationId})` : '') +
+        ' may have been created in the tenant. Check the tenant app registrations and remove it if it exists; ' +
+        `encrypted recovery details are saved in ${path.resolve(pending)}. Do not register another app until then.`,
     );
   let credentials;
   try {
@@ -365,18 +412,17 @@ export async function registerApplication({
   return publicConnection(connection);
 }
 
-export async function connectExistingApplication({
-  registrationFile,
-  secretFile,
-  connectionFile,
-  role,
-  consumeSecretFile = false,
-}) {
+export async function connectExistingApplication(
+  { registrationFile, secretFile, connectionFile, role, consumeSecretFile = false } = requiredArgument(
+    'connectExistingApplication({ registrationFile, secretFile, connectionFile })',
+    'an options object with registrationFile, secretFile and connectionFile',
+  ),
+) {
   if (!registrationFile || !secretFile || !connectionFile)
     throw new Error('Connect requires registration, secret-file and connection paths.');
-  privateStatePath(registrationFile);
-  privateStatePath(secretFile);
-  privateStatePath(connectionFile);
+  privateStatePath(registrationFile, '--registration');
+  privateStatePath(secretFile, '--secret-file');
+  privateStatePath(connectionFile, '--connection');
   if (existsSync(connectionFile))
     throw new Error('Connection already exists; existing credentials will not be overwritten.');
   const registration = JSON.parse(await fs.readFile(registrationFile, 'utf8'));
@@ -490,7 +536,10 @@ function credentialFieldsFromLines(text, normalize) {
   return null;
 }
 
-export async function loadConnection(file, { allowLoopback = false } = {}) {
+export async function loadConnection(
+  file = requiredArgument('loadConnection(file)', 'a connection file path'),
+  { allowLoopback = false } = {},
+) {
   const connection = JSON.parse(await fs.readFile(file, 'utf8'));
   if (connection.schemaVersion !== 1) throw new Error('Unsupported connection schema.');
   connection.environmentUrl = environmentOrigin(connection.environmentUrl, { allowLoopback });

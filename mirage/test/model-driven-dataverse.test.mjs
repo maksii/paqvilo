@@ -399,6 +399,24 @@ test('a paused source commit queues shell readers and Web API writes until publi
   assert.equal(overlay.value, 'Concurrent value');
 });
 
+// @test-kind contract: mirage/docs/model-driven-apps.md: a source reload reapplies Site Manager overlays and keeps later source edits to untouched fields
+test('a source reload reapplies a sparse overlay and keeps source edits to untouched fields', async (t) => {
+  const fixture = await modelDrivenFixture(t, { dataverse: { enabled: true } });
+  const client = await connect(fixture.sim, t);
+  await json(
+    await client.org('PATCH', client.entityPath('adx_sitesetting', SETTING), { adx_value: 'API override' }),
+    204,
+  );
+  await fs.writeFile(
+    path.join(fixture.sourceDir, 'site-settings/Mode.sitesetting.yml'),
+    `adx_sitesettingid: ${SETTING}\nadx_name: Example/ReloadedSource\nadx_value: New export value`,
+  );
+  await fixture.sim.reload();
+  const current = await json(await client.ui('GET', 'adx_sitesetting', SETTING));
+  assert.equal(current.row.adx_name, 'Example/ReloadedSource');
+  assert.equal(current.row.adx_value, 'API override');
+});
+
 test('an API sparse overlay preserves untouched sibling source changes after restart', async (t) => {
   const fixture = await modelDrivenFixture(t, { dataverse: { enabled: true } });
   const client = await connect(fixture.sim, t);

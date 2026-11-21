@@ -20,7 +20,7 @@
       "name": "pqvd_baselineparent",
       "entitySet": "pqvd_baselineparents",
       "primaryId": "pqvd_baselineparentid",
-      "keys": [["pqvd_code"]]
+      "keys": []
     },
     {
       "name": "pqvd_baselineitem",
@@ -134,7 +134,7 @@
         "pqvd_decimal": 12.34,
         "pqvd_float": 1.5,
         "pqvd_amount": 199.99,
-        "pqvd_bigint": 9007199254740992,
+        "pqvd_bigint": "9007199254740993",
         "pqvd_datetime": "2026-03-04T10:30:00Z",
         "pqvd_dateonly": "2026-03-05",
         "pqvd_datetimetzi": "2026-03-06T08:00:00Z",
@@ -162,7 +162,6 @@
       },
       "refs": {
         "pqvd_parentid": "parent1",
-        "pqvd_contactid": null,
         "pqvd_accountid": "account",
         "pqvd_customerid": "account",
         "pqvd_anyid": "parent2"
@@ -368,7 +367,6 @@
       },
       "refs": {
         "pqvd_parentid": null,
-        "pqvd_contactid": null,
         "pqvd_accountid": "account"
       },
       "deferredRefs": []
@@ -387,7 +385,6 @@
       },
       "refs": {
         "pqvd_parentid": null,
-        "pqvd_contactid": null,
         "pqvd_accountid": "account"
       },
       "deferredRefs": []
@@ -406,7 +403,6 @@
       },
       "refs": {
         "pqvd_parentid": null,
-        "pqvd_contactid": null,
         "pqvd_accountid": "account"
       },
       "deferredRefs": []

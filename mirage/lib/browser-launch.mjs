@@ -9,68 +9,55 @@ export function browserChannel({ platform = process.platform, env = process.env 
 // Hang guard for a browser launch or CDP attach: stops only a start that never answers.
 export const BROWSER_HANG_GUARD_MS = 120_000;
 
-// Backport of microsoft/playwright#43605: Windows TCP port randomization makes busy loopback
-// sessions fail with net::ERR_NO_BUFFER_SPACE. Remove with the first stable Playwright upgrade
-// that disables it by default; test/browser-backport.test.mjs fails when the pinned defaults change.
-export const DISABLED_FEATURES = Object.freeze([
+// Reviewed Playwright 1.65.1 defaults. Anonymous capture extends this one switch;
+// the pinned-default regression compares the complete list with Playwright itself.
+export const CHROMIUM_DISABLED_FEATURES = Object.freeze([
   'AvoidUnnecessaryBeforeUnloadCheckSync',
   'DestroyProfileOnBrowserClose',
-  'DialMediaRouteProvider',
-  'GlobalMediaControls',
   'HttpsUpgrades',
+  'HttpsFirstBalancedModeAutoEnable',
   'LensOverlay',
   'MediaRouter',
   'PaintHolding',
   'ThirdPartyStoragePartitioning',
-  'BlockOriginHeaderModificationOnRedirect',
   'AvoidCorsURLLoaderRestartOnRedirect',
-  'Translate',
-  'AutoDeElevate',
+  'TcpPortRandomizationWin',
   'OptimizationHints',
   'NetworkTimeServiceQuerying',
   'AimEnabled',
+  'PreconnectToSearch',
   'msForceBrowserSignIn',
   'msEdgeUpdateLaunchServicesPreferredVersion',
 ]);
-export const DEFAULT_DISABLED_FEATURES = '--disable-features=' + DISABLED_FEATURES.join(',');
-export const BACKPORTED_DISABLED_FEATURES = DEFAULT_DISABLED_FEATURES + ',TcpPortRandomizationWin';
+export const CHROMIUM_DEFAULT_DISABLED_FEATURES = '--disable-features=' + CHROMIUM_DISABLED_FEATURES.join(',');
 
-/** Add the Windows loopback default to Playwright launch options, preserving caller overrides.
- * @param {unknown} options Invalid public input is forwarded unchanged for Playwright to validate.
- */
-export function windowsLaunchOptions(options = {}, platform = process.platform) {
-  if (platform !== 'win32' || options === null || typeof options !== 'object' || Array.isArray(options)) return options;
-  // Invalid public-API input must reach Playwright unchanged. In particular,
-  // spreading a string must not turn a validation error into an accepted array.
-  if (
-    options.args !== undefined &&
-    (!Array.isArray(options.args) || options.args.some((value) => typeof value !== 'string'))
-  )
-    return options;
-  const ignoredOption = options.ignoreDefaultArgs;
-  if (
-    ignoredOption !== undefined &&
-    typeof ignoredOption !== 'boolean' &&
-    (!Array.isArray(ignoredOption) || ignoredOption.some((value) => typeof value !== 'string'))
-  )
-    return options;
-  if (options.ignoreDefaultArgs === true) return options;
-  // Playwright applies ignoreDefaultArgs to caller args too. Keep an explicit
-  // caller override intact rather than filtering its identical default switch.
-  if (options.args?.includes(DEFAULT_DISABLED_FEATURES)) return options;
-  const ignored = options.ignoreDefaultArgs || [];
-  if (ignored.includes(DEFAULT_DISABLED_FEATURES)) return options;
-  return {
-    ...options,
-    ignoreDefaultArgs: [...ignored, DEFAULT_DISABLED_FEATURES],
-    // Preserve caller ordering and overrides, exactly as an upstream default
-    // change would: Playwright appends caller args after its own defaults.
-    args: [BACKPORTED_DISABLED_FEATURES, ...(options.args || [])],
+/** An anonymous capture extends the upstream feature switch without changing its numeric CDP port. */
+export function captureLaunchOptions(channel, port, platform = process.platform) {
+  const options = {
+    headless: true,
+    timeout: BROWSER_HANG_GUARD_MS,
+    ...(channel !== 'chromium' ? { channel } : {}),
+    args: [`--remote-debugging-port=${port}`],
   };
+  // Edge otherwise signs a fresh Windows profile into the host account and adds
+  // its Microsoft cookies. Replace exactly the upstream switch, retaining every
+  // reviewed mitigation, and add only the anonymous-capture feature.
+  if (platform === 'win32') {
+    options.ignoreDefaultArgs = [CHROMIUM_DEFAULT_DISABLED_FEATURES];
+    options.args.unshift(CHROMIUM_DEFAULT_DISABLED_FEATURES + ',msImplicitSignin');
+  }
+  return options;
+}
+
+// Playwright 1.65.1 includes the Windows TCP port randomization fix upstream.
+// Forward caller options unchanged; overriding its entire default feature list would
+// discard new upstream defaults on future supported releases.
+export function windowsLaunchOptions(options = {}) {
+  return options;
 }
 
 /** Build Playwright launch options with the shared channel selection. */
 export function browserLaunchOptions(options = {}, config = {}) {
   const channel = options.channel ?? browserChannel(config);
-  return windowsLaunchOptions({ ...options, channel: channel === 'chromium' ? undefined : channel }, config.platform);
+  return windowsLaunchOptions({ ...options, channel: channel === 'chromium' ? undefined : channel });
 }

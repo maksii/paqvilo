@@ -1295,7 +1295,7 @@ const legend = (planned) =>
 const MAP_TEXT =
   'Six layers from the people who call this runtime down to the services it declares. Hover or focus a card to light up the cards it connects to directly; select it (click, Enter or Space) for its facts, every connection in words and the view that manages it.';
 /**
- * The map section's one (i) (Health, D-M-11, DV-N4e-2): what the map shows, then the legend under its own heading, in
+ * The map section's one (i) (Health): what the map shows, then the legend under its own heading, in
  * one popover.
  */
 const legendInfo = (planned) =>
@@ -1563,7 +1563,7 @@ export const KPIS = Object.freeze([
     noTimeline: 'storage providers count writes; they are not recorded as activity steps',
   },
 ]);
-// Why a tile and Activity › Stats can show different numbers for the same thing (DV-N4-8), on hover.
+// Why a tile and Activity › Stats can show different numbers for the same thing, on hover.
 const KPI_HINT = Object.freeze({
   counter:
     'Total since this runtime started, on every host, including runs whose activity is no longer kept. Activity › Stats counts the steps of the kept activities that match its filters (a run can be several steps), so either number can be the higher one.',
@@ -1582,7 +1582,7 @@ const interval = (ms) => {
   return `${Math.round(ms / 3_600_000)} h`;
 };
 /**
- * The time range of the tile graphs (DV-N4c-5): from the runtime start to `now` in about 24 buckets of at least 1 s.
+ * The time range of the tile graphs: from the runtime start to `now` in about 24 buckets of at least 1 s.
  * Null without a start time.
  */
 export function timelineRange(startedAt, now = Date.now(), buckets = 24) {
@@ -1635,7 +1635,7 @@ export function sparkline(values, { width = 100, height = 26 } = {}) {
 }
 
 /**
- * `timelines` (Health with Expand, DV-N4c-5): { loading } while it loads, { reason } when there is none, else
+ * `timelines` (Health with Expand): { loading } while it loads, { reason } when there is none, else
  * { bucketMs, series: { <kpi key>: counts per bucket | null }, findings: counts | null } from the stats route and /diagnostics. Without it the graphs are the
  * per-refresh change (the default arrangement).
  */
@@ -1745,7 +1745,7 @@ function kpiDelta(kpi, activity, previous, icons) {
     ? `<button type="button" class="ui-button ui-small dm-kpi-expand" data-dashboard-expand aria-expanded="${expanded}" aria-controls="dashboard-kpi-list">${toggleLabel}</button>`
     : '';
   const list = `<ul class="dm-kpi-list" id="dashboard-kpi-list">${tiles.join('')}</ul>`;
-  // Health (D-M-11): the tiles are a section card like the system map, with Expand / Hide graphs and the (i) in its
+  // Health: the tiles are a section card like the system map, with Expand / Hide graphs and the (i) in its
   // header.
   if (compact)
     return (
@@ -1771,7 +1771,7 @@ const ms = (value) => {
   return `${Math.round(value)} ms`;
 };
 /**
- * What the Health hero adds (D-M-9, D-M-11): readiness (ok, degraded, blocked), the site, the uptime and one strip of
+ * What the Health hero adds: readiness (ok, degraded, blocked), the site, the uptime and one strip of
  * key numbers, each opening the matching activity. `stats` is the trace stats answer (failed activities, p95), when
  * this host serves it.
  */
@@ -2215,7 +2215,7 @@ export function renderDashboard(
     kit,
     docOf,
   });
-  // arrangement 'health' (/_sim/#health, D-M-6): the counters come first and the map is a collapsible card.
+  // arrangement 'health' (/_sim/#health): the counters come first and the map is a collapsible card.
   const health = arrangement === 'health' && !planned && !starting;
   const map = dashboardMapInfo(kit, health, planned, icons, nodes, edges);
   if (starting) return startingDashboard(head, guide, kit);

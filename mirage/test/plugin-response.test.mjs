@@ -11,6 +11,7 @@ import { DataStore } from '../lib/data.mjs';
 import { dispatchSdkCall, prepareClrRuntime } from '../lib/plugin-clr.mjs';
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 const user = '10000000-0000-0000-0000-000000000001',
   id = '20000000-0000-0000-0000-000000000001',
   changed = '20000000-0000-0000-0000-000000000002',
@@ -248,9 +249,10 @@ test('Cascaded same-table child Delete outputs do not become root SDK Delete Res
   assert.deepEqual(store.snapshot().tables.secondary, []);
 });
 
+// Hang guard only: it compiles and runs an original CLR plug-in through the .NET host; on a loaded slow host that is slow, not hung.
 test(
   'Original DLL SDK callers receive post-operation Results, deletions, typed custom values and isolated nested/failing responses',
-  { skip: CLR_SKIP },
+  { skip: CLR_SKIP, timeout: SCENARIO_HANG_GUARD_MS },
   async (t) => {
     const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-original-response-'));
     t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));

@@ -27,6 +27,7 @@ async function failureRuntime(t) {
 public sealed class Plain:IPlugin {public void Execute(IServiceProvider p){throw new Exception("Invented ordinary failure");}}
 public sealed class AuthoredUnsupported:IPlugin {public void Execute(IServiceProvider p){throw new NotSupportedException("Invented authored unsupported failure");}}
 public sealed class Controlled:IPlugin {public void Execute(IServiceProvider p){throw new InvalidPluginExecutionException("Invented controlled failure");}}
+public sealed class Coded:IPlugin {public void Execute(IServiceProvider p){throw new InvalidPluginExecutionException(OperationStatus.Canceled,123,"Invented coded failure");}}
 public sealed class SdkFault:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));((IOrganizationServiceFactory)p.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId).Retrieve("secondary",new Guid("${id(99)}"),new ColumnSet("name"));}}
 public sealed class AdapterFault:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));var e=new Entity("widget");e["title"]=new int[,]{{1}};((IOrganizationServiceFactory)p.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId).Create(e);}}
 public sealed class OutputFault:IPlugin {public void Execute(IServiceProvider p){((IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext))).SharedVariables["opaque"]=new object();}}
@@ -192,5 +193,31 @@ test(
       assert.deepEqual(f.store.tableRows('child'), []);
       await mounted.backend.close();
     }
+  },
+);
+
+// @test-kind contract: a CLR InvalidPluginExecutionException carries the same CDS annotations a JavaScript handler's fault
+// carries (plugin-fault.mjs pluginFailure): SubErrorCode is the authored code, OperationStatus the authored status value
+test(
+  'a CLR InvalidPluginExecutionException keeps its SubErrorCode and OperationStatus annotations on the Web API error',
+  { skip: CLR_SKIP },
+  async (t) => {
+    const runtime = await failureRuntime(t);
+    const prefer = { annotations: '*' };
+    const f = fixture(),
+      mounted = await attachClrSteps(t, {
+        store: f.store,
+        steps: [step(20, 'Create', 'Coded')],
+        runtime: retypeClrRuntime(runtime, { typeName: 'Invented.Coded' }),
+      });
+    const failure = await errorOf(f.invoke);
+    const body = dataverseError(failure, { prefer }).body.error;
+    assert.equal(body.code, '0x80040265');
+    assert.equal(body.message, 'Invented coded failure');
+    assert.equal(body['@Microsoft.PowerApps.CDS.ErrorDetails.SubErrorCode'], '123');
+    // OperationStatus.Canceled is member 1 of Microsoft.Xrm.Sdk.OperationStatus.
+    assert.equal(body['@Microsoft.PowerApps.CDS.ErrorDetails.OperationStatus'], '1');
+    assert.equal(body['@Microsoft.PowerApps.CDS.ErrorDetails.Plugin.ExceptionFromPluginExecute'], 'Invented.Coded');
+    await mounted.backend.close();
   },
 );

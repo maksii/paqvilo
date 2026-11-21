@@ -183,7 +183,8 @@ export function createDataverseAdmin({
     if (method === 'GET' && relative === '/dataverse')
       return json(res, 200, {
         ...dataverseSummary(),
-        managedIdentity: managedIdentitySummary({ reveal: true }),
+        // A HEAD mirrored onto this GET (server.mjs admin) never spends the once-shown identity header.
+        managedIdentity: managedIdentitySummary({ reveal: req.headMirror !== true }),
         // Grant names for the admin checkboxes; the registration accepts these names or their URN forms.
         grantTypes: Object.keys(GRANT_TYPES),
         applications: registrations().map(publicApp),
@@ -204,8 +205,13 @@ export function createDataverseAdmin({
         const body = await jsonObjectBody(req);
         const appId = lower(body.appId ?? randomUUID());
         if (!DATAVERSE_GUID.test(appId)) throw error('appId must be a GUID.');
-        if (registrations().some((app) => lower(app.appId) === appId))
-          throw error('An application with this appId is already registered.', 409, 'DATAVERSE_APPLICATION_EXISTS');
+        // applicationid identifies one application user (dataverse-security.mjs indexes users by it), so an appId a
+        // managed identity already uses is refused as well.
+        if (
+          registrations().some((app) => lower(app.appId) === appId) ||
+          userRows().some((user) => lower(user.applicationid) === appId)
+        )
+          throw error(`An application user with appId ${appId} already exists.`, 409, 'DATAVERSE_APPLICATION_EXISTS');
         const fields = registrationFields(body, { requireName: true });
         const roleIds = roleIdsFor(body.roles ?? ['System Administrator']);
         // Creates the application user in its own transaction first, so a refusal leaves no registration behind.
@@ -495,6 +501,9 @@ export function createDataverseAdmin({
           throw error('accessmode must be an integer.');
         if (typeof body.fullname !== 'string' || !body.fullname.trim()) throw error('fullname is required.');
         if (typeof body.domainname !== 'string' || !body.domainname.trim()) throw error('domainname is required.');
+        // domainname identifies one user, case-insensitively, as the security index and sign-in lookups read it.
+        if (userRows().some((user) => lower(user.domainname) === lower(body.domainname)))
+          throw error(`A user with domainname ${body.domainname} already exists.`, 409, 'DATAVERSE_USER_EXISTS');
         const objectId = lower(body.objectId ?? randomUUID());
         if (!DATAVERSE_GUID.test(objectId)) throw error('objectId must be a GUID.');
         const systemuserid = uuidV5(dataverse.organizationId, `systemuser:oid:${objectId}`);

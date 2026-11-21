@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 
 const transientStatuses = new Set([408, 500, 502, 503, 504]);
 const throttleStatuses = new Set([403, 429]);
@@ -195,4 +196,22 @@ export async function ensureVerifiedArchive(url, file, expected, options) {
   fs.rmSync(file, { force: true });
   console.log(`Downloading ${path.basename(file)} from ${new URL(url).host}.`);
   await downloadVerifiedArchive(url, file, expected, options);
+}
+
+/**
+ * Extracts a verified .zip on Windows with the archive tool the operating system ships, named by its full path under
+ * the system directory. The result therefore does not depend on what the caller's environment puts in PSModulePath
+ * (Windows PowerShell started from PowerShell 7 loads that version's incompatible Archive module) or first on PATH
+ * (a GNU tar there cannot read zip).
+ */
+export function extractZipOnWindows(archive, destination, { env = process.env, stdio = 'inherit' } = {}) {
+  const systemRoot = env.SystemRoot ?? env.SYSTEMROOT ?? env.windir;
+  if (!systemRoot || !path.isAbsolute(systemRoot))
+    throw new Error('Archive extraction needs the SystemRoot environment variable.');
+  const tar = path.join(systemRoot, 'System32', 'tar.exe');
+  const result = spawnSync(tar, ['-xf', archive, '-C', destination], { env, stdio, windowsHide: true });
+  if (result.status !== 0)
+    throw new Error(`${tar} could not extract ${path.basename(archive)} (${result.status ?? result.error?.message}).`, {
+      cause: result.error,
+    });
 }

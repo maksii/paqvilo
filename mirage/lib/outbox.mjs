@@ -3,7 +3,9 @@
 // Attachment bytes go to an optional storage provider (put/delete); rows keep metadata and the storage key, never bytes.
 import { randomUUID } from 'node:crypto';
 import { DataError } from './data-error.mjs';
+import { stampMs, systemClock } from './runtime-clock.mjs';
 import { registerSettingParser } from './config-keys.mjs';
+import { outboxSettings } from './outbox-settings.mjs';
 import { packCheck, registerPackExport } from './pack-exports.mjs';
 
 export const OUTBOX_TABLE = 'paqvilo_outboxentry';
@@ -108,8 +110,9 @@ export function createOutbox({
   if (!store || typeof store.transact !== 'function') throw new TypeError('createOutbox requires a DataStore');
   if (storage && (typeof storage.put !== 'function' || typeof storage.delete !== 'function'))
     throw new TypeError('Outbox storage must provide put and delete');
-  const now = () => +(clock?.now?.() ?? Date.now());
   const uuid = () => ids?.uuid?.() ?? randomUUID();
+  // Stored dates, held across a small backward step of the wall clock (runtime-clock.mjs stampMs).
+  const stamp = () => stampMs(store, clock ?? systemClock);
   const rowsOf = () => store.state.tables?.[OUTBOX_TABLE] ?? [];
   // The organization composes the table at startup (dataverse-organization.mjs INTERNAL_TABLES); this seed covers a bare store.
   const seed = () => {
@@ -165,7 +168,7 @@ export function createOutbox({
     async capture(entry = {}, { nested = false } = {}) {
       const { state, bodyType } = validateOutboxCapture(entry);
       const entryId = uuid(),
-        at = now(),
+        at = stamp(), // createdOn, held across a small backward clock step
         diagnostics = [],
         stored = [],
         flight = [];
@@ -247,11 +250,11 @@ export function createOutbox({
       return row ? view(row) : null;
     },
     markDelivered(entryId) {
-      return transition(entryId, 'delivered', { deliveredOn: new Date(now()).toISOString() });
+      return transition(entryId, 'delivered', { deliveredOn: new Date(stamp()).toISOString() });
     },
     markFailed(entryId, reason) {
       return transition(entryId, 'failed', {
-        failedOn: new Date(now()).toISOString(),
+        failedOn: new Date(stamp()).toISOString(),
         failureReason: text(reason, 'reason', 4000) ?? 'Failed',
       });
     },
@@ -308,24 +311,6 @@ export async function waitForOutbox(outbox, predicate, { timeoutMs = 5000, clock
 }
 
 const isPlain = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-/** Validates `providers.outbox`: { kind: 'local' | 'pack:<id>' = 'local', retention?: 1..1000000 }. */
-function outboxSettings(value, label = 'providers.outbox') {
-  if (value === undefined) value = {};
-  if (!isPlain(value)) throw new Error(`${label} must be an object`);
-  for (const key of Object.keys(value))
-    if (!['kind', 'retention'].includes(key))
-      throw new Error(`Unknown ${label} key '${key}'; expected kind or retention`);
-  const kind = value.kind ?? 'local';
-  if (typeof kind !== 'string' || (kind !== 'local' && !/^pack:[a-z0-9][a-z0-9._-]*$/.test(kind)))
-    throw new Error(`${label}.kind must be local or pack:<id>`);
-  if (
-    value.retention !== undefined &&
-    (!Number.isInteger(value.retention) || value.retention < 1 || value.retention > 1_000_000)
-  )
-    throw new Error(`${label}.retention must be an integer from 1 through 1000000`);
-  return { kind, ...(value.retention !== undefined ? { retention: value.retention } : {}) };
-}
-
 /** Pack `outboxHandlers`: handler names mapping to functions. */
 function validateOutboxHandlers(map) {
   if (!isPlain(map) || Object.values(map).some((handler) => typeof handler !== 'function'))

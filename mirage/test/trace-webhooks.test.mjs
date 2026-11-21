@@ -1,5 +1,5 @@
 // @test-kind contract: Paqvilo's tracing and activity design (docs/design/tracing.md)
-// Tracing of service endpoint deliveries (D-R3-5, DV-A-5, DV-A-15, DV-C-7): a web hook POST is an http-out span that, at
+// Tracing of service endpoint deliveries (D-R3-5): a web hook POST is an http-out span that, at
 // level full, carries the RemoteExecutionContext it sent and the receiver's answer on every drive (the asynchronous
 // pipeline, after commit, and the synchronous I/O bridge); a Service Bus queue or topic send is a `webhook` span with
 // transport 'servicebus'; TriggerServiceEndpointCheck is an http-out span; a secret span names its vault and secret, never
@@ -61,8 +61,11 @@ before(async () => {
   });
   receiver = {
     origin: `http://127.0.0.1:${port}`,
+    // A connection of its own per read: a pooled one may sit idle past the receiver's keep-alive timeout between tests.
     log: async (prefix) =>
-      (await (await fetch(`http://127.0.0.1:${port}/__log`)).json()).filter((entry) => entry.path.startsWith(prefix)),
+      (await (await fetch(`http://127.0.0.1:${port}/__log`, { headers: { connection: 'close' } })).json()).filter(
+        (entry) => entry.path.startsWith(prefix),
+      ),
     async stop() {
       if (child.exitCode === null && child.signalCode === null) {
         const exited = new Promise((resolve) => child.once('exit', resolve));

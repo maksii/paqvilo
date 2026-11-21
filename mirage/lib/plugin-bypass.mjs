@@ -35,7 +35,7 @@ export function pluginBypassOwnership(item) {
     kind: 'unknown',
     qualification: 'unqualified-local-custom-adapter',
     customizationLevel: item.customizationLevel ?? item.customizationlevel ?? null,
-    reason: 'Source metadata does not establish system/Microsoft solution ownership for bypass behavior.',
+    reason: 'Source metadata does not establish system/Microsoft solution ownership for bypass behaviour.',
   };
 }
 

@@ -41,7 +41,7 @@ function renderingGapReason(expanded, control, kind, modern, pcf) {
       return 'Code component is not admitted by its local manifest.';
   } else if (control.componentName) return 'Canvas component definition is unavailable.';
   else if (!KINDS.has(kind)) return 'This control is not rendered by the local player.';
-  else if (modern) return 'Modern control behavior is approximated; version-specific properties may be unsupported.';
+  else if (modern) return 'Modern control behaviour is approximated; version-specific properties may be unsupported.';
   else if (kind === 'htmlviewer')
     return 'HTML viewer supports a restricted safe markup and typography subset; links and external media are omitted.';
   else if (kind === 'icon') return 'Icons use approximate text glyphs.';

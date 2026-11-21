@@ -6,7 +6,7 @@ import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { DataStore, emptyState } from '../lib/data.mjs';
-import { createPrincipals, ensureSecurityModel } from '../lib/dataverse-security.mjs';
+import { createPrincipals, ensureSecurityModel, privilegeDeniedError } from '../lib/dataverse-security.mjs';
 import { dataverseError, parseDataverseRoute, parsePrefer } from '../lib/dataverse-odata.mjs';
 import { createRecordHandlers, createRecordHooks } from '../lib/dataverse-records.mjs';
 import { createChangeLog } from '../lib/dataverse-changes.mjs';
@@ -98,7 +98,12 @@ function harness(files = FILES, options = {}) {
     has: (name) => ops.some((o) => o.name === name),
     find: () => null,
   };
-  const api = { store, change: (fn) => fn(), registry, principals: { privileges: () => grants } };
+  const api = {
+    store,
+    change: (fn) => fn(),
+    registry,
+    principals: { privileges: () => grants, deniedError: privilegeDeniedError },
+  };
   const { sync } = install(api, options);
   const op = (name) => ops.find((o) => o.name === name);
   const call = (name, { method = 'GET', params = {}, body, user = ADMIN } = {}) =>

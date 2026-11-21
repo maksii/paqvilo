@@ -4,6 +4,7 @@ import { pluginExecutionLifetime, pluginInvocationDepth } from './plugin-executi
 import { globalMetadataVersion } from './metadata-version.mjs';
 import { parseDataverseTop } from './dataverse-top.mjs';
 import { organizationRecord } from './organization-context.mjs';
+import { stampPersonName } from './dataverse-person-name.mjs';
 import { assertDataverseRootBody } from './dataverse-reader-details.mjs';
 // Record handlers for the simulated Dataverse Web API: collections, single rows,
 // properties, navigation, $ref and collection-bound actions. The Dataverse layer
@@ -44,7 +45,7 @@ import { assertExpand, assertExpandText, childLinks } from './dataverse-expand.m
 import { FORMATTED, NAVIGATION, createWebApiFormatter } from './webapi-format.mjs';
 import { orderODataProperties } from './odata-property-order.mjs';
 import { baseCurrencyRow, ownershipOf, privilegeDeniedError, privilegeName, uuidV5 } from './dataverse-security.mjs';
-import { dateTimeBehavior, fieldKind, formattedValue, guidKey, isDateOnlyField, isoUtc } from './dataverse-values.mjs';
+import { dateTimeBehavior, fieldKind, formattedValue, guidKey, isDateOnlyField } from './dataverse-values.mjs';
 import { fixedScaleNumeric } from './exact-numeric.mjs';
 import {
   ADMIN_READ_COLUMNS,
@@ -2090,7 +2091,12 @@ export function createRecordHandlers({
       });
     }
     if (readFilter !== null) {
-      throw privilegeDeniedError(c.user, privilegeName('read', principals.privilegeNoun(logical)), logical);
+      // The caller's own role and privilege counts, as the security module states them for any other refused read.
+      throw privilegeDeniedError(c.user, privilegeName('read', principals.privilegeNoun(logical)), logical, {
+        roleCount: principals.roles?.(c.user)?.length ?? 0,
+        privilegeCount: principals.privileges?.(c.user)?.size ?? 0,
+        objectTypeCode: objectTypeCode(logical),
+      });
     }
   }
 
@@ -2366,12 +2372,14 @@ export function createRecordHandlers({
       : {};
   }
   // The main operation (after PreOperation, before the row is stored) runs the synchronous mainOperation hooks on the
-  // final row: platform values derived from it, such as the exchange rate and base amounts (dataverse-currency.mjs).
-  const mainOperation = (c) =>
-    hookList('mainOperation').length
-      ? (mapping, operation, row, previous, target, request = {}) =>
-          runHooks('mainOperation', c, mapping, { operation, row, previous, target, ...request })
-      : undefined;
+  // final row: platform values derived from it, such as a person's composed full name (dataverse-person-name.mjs) and
+  // the exchange rate and base amounts (dataverse-currency.mjs).
+  const mainOperation =
+    (c) =>
+    (mapping, operation, row, previous, target, request = {}) => {
+      stampPersonName(store, mapping, operation, row, target);
+      runHooks('mainOperation', c, mapping, { operation, row, previous, target, ...request });
+    };
   const derivedCreateColumns = new WeakMap();
   // A create's privilege refusal, raised after its PreValidation stage (privilegeRefusal).
   const createRefusals = new WeakMap();
@@ -3234,7 +3242,7 @@ export function createRecordHandlers({
   function bulkStampsInternal(c, logical, targets, update) {
     const context = internalContext(c),
       mapping = store.resolveMapping(logical),
-      now = isoUtc(store.clock.now());
+      now = store.recordStamp();
     return targets.map((target) => {
       const data = store.normalizeRecord(mapping, sdkValueToRecord(target), context.identity),
         created = {};
@@ -3268,7 +3276,7 @@ export function createRecordHandlers({
       stamps = [],
       derived = [];
     // Whole seconds, as a single write stamps them (touchRow, createdon ??= in data.mjs).
-    const now = isoUtc(store.clock.now());
+    const now = store.recordStamp();
     for (const target of raw) {
       const text = target[mapping.idColumn];
       if (update && text == null) throw invalid(`The ${mapping.idColumn} property is required.`);

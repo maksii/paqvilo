@@ -382,3 +382,19 @@ export function install(api) {
 export function reset(api) {
   return api.store.transact(() => seed(api.store));
 }
+
+/** Capability record for the capability registry; dataverse-extensions.mjs adds the operations install registered. */
+export function describe() {
+  return {
+    name: 'dataverse-standard',
+    version: 1,
+    kind: 'dataverse-extension',
+    level: 'contract',
+    reason:
+      'Seeds insert-only dataverseOnly stand-in mappings of the standard tables from the Microsoft Learn table reference (facts only); the platform tables themselves are not run.',
+    requires: [],
+    principal: 'none',
+    stateOwner: 'store',
+    lifecycle: 'in-process',
+  };
+}

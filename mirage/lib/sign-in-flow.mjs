@@ -229,6 +229,9 @@ export function createExternalSignIn({
   // token exchange carries the client secret and answers tokens, so its bodies are never captured.
   const providerFetch = (operation, url, init = {}, capture = 'full') =>
     tracedFetch(store?.traces, { module: 'identity', operation, url, init, capture });
+  // The provider is a loopback listener, usually in this process. This bounds a provider that never answers; it is
+  // not a speed expectation: on a busy host the provider's own answer shares this event loop and takes seconds.
+  const PROVIDER_READ_GUARD_MS = 60_000;
   // The sign-in's contact, external identity and invitation writes run through the organization's record pipeline
   // (dataverse-records.mjs store.recordPipeline) as portal writes the site has authorized, so each is a traced Dataverse
   // operation with its plug-in steps (D-R3-12); a store without an organization writes directly.
@@ -338,7 +341,7 @@ export function createExternalSignIn({
         parentId: context?.spanId,
         traceId: span?.traceId,
         spanId: span?.spanId,
-        // The signed-in contact names the session (D-M-2 Who); the visitor cookie stays its own field.
+        // The signed-in contact names the session (Who); the visitor cookie stays its own field.
         visitorId: context?.visitor,
         sessionKey: sessionKeyOf(contactId, context),
       })
@@ -530,7 +533,17 @@ export function createExternalSignIn({
   // ---- provider metadata and token validation (as the platform reads its provider) ----
   const metadataCache = new Map();
   const getJson = async (target) => {
-    const response = await providerFetch('metadata', target, { signal: AbortSignal.timeout(5000) });
+    let response;
+    try {
+      response = await providerFetch('metadata', target, { signal: AbortSignal.timeout(PROVIDER_READ_GUARD_MS) });
+    } catch (error) {
+      // As for the token request: the sign-in page names the provider, not a generic rendering failure.
+      throw new SignInProblem(
+        `The identity provider's metadata at ${target} is not reachable (${error.message}).`,
+        'EXTERNAL_LOGIN_METADATA_UNAVAILABLE',
+        502,
+      );
+    }
     if (!response.ok)
       throw new SignInProblem(
         `The identity provider answered ${response.status} for ${target}.`,
@@ -865,7 +878,7 @@ export function createExternalSignIn({
           method: 'POST',
           headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
           body,
-          signal: AbortSignal.timeout(5000),
+          signal: AbortSignal.timeout(PROVIDER_READ_GUARD_MS),
         },
         'none',
       );
@@ -914,7 +927,7 @@ export function createExternalSignIn({
     try {
       response = await providerFetch('userinfo', endpoint, {
         headers: { authorization: `Bearer ${accessToken}`, accept: 'application/json' },
-        signal: AbortSignal.timeout(5000),
+        signal: AbortSignal.timeout(PROVIDER_READ_GUARD_MS),
       });
     } catch (error) {
       return warn('USERINFO_UNAVAILABLE', `The UserInfo endpoint ${endpoint} is not reachable (${error.message}).`);

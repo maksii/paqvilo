@@ -221,6 +221,79 @@ test('a worker record whose process ID now names another process does not retain
   )();
 });
 
+// @test-kind tooling: a membership guard whose holder has ended is removed, so a later member joins at once
+test('a membership guard left by an ended member is recovered', async (t) => {
+  const directory = checkout(t),
+    lock = path.join(directory, '.paqvilo/ci/workspace.lock');
+  const environment = {};
+  const release = await acquireCiWorkspaceLease(directory, environment);
+  ownedFixture(t).add(release);
+  const ended = spawn(process.execPath, ['-e', '0'], { stdio: 'ignore', windowsHide: true });
+  await once(ended, 'exit');
+  fs.mkdirSync(path.join(lock, 'membership'));
+  fs.writeFileSync(path.join(lock, 'membership', 'owner.json'), JSON.stringify({ pid: ended.pid, identity: '1' }));
+  const finishMember = await acquireCiWorkspaceLease(directory, { ...environment }, { inherit: true });
+  assert.equal(fs.readdirSync(path.join(lock, 'members')).length, 1, 'the member is recorded');
+  assert.equal(fs.existsSync(path.join(lock, 'membership')), false, 'the recovered guard is released');
+  await finishMember();
+});
+
+// @test-kind tooling: a membership guard whose holder still runs makes a later member wait until the guard is released
+test('a member waits for a live membership guard holder', async (t) => {
+  const directory = checkout(t),
+    lock = path.join(directory, '.paqvilo/ci/workspace.lock');
+  const environment = {};
+  const release = await acquireCiWorkspaceLease(directory, environment);
+  ownedFixture(t).add(release);
+  const guard = path.join(lock, 'membership');
+  fs.mkdirSync(guard);
+  fs.writeFileSync(
+    path.join(guard, 'owner.json'),
+    JSON.stringify({ pid: process.pid, identity: processIdentity(process.pid) }),
+  );
+  const mkdirSync = fs.mkdirSync;
+  let attempts = 0;
+  t.mock.method(fs, 'mkdirSync', (target, ...rest) => {
+    if (String(target).includes('membership.new-')) attempts += 1;
+    return mkdirSync(target, ...rest);
+  });
+  const joining = acquireCiWorkspaceLease(directory, { ...environment }, { inherit: true });
+  // Each attempt is one 10 ms timer, so this waits for the events of the attempts rather than for elapsed time.
+  while (attempts < 2) await new Promise(setImmediate);
+  assert.deepEqual(fs.readdirSync(path.join(lock, 'members')), [], 'the member has not joined while the guard is held');
+  fs.rmSync(guard, { recursive: true, force: true });
+  const finishMember = await joining;
+  assert.equal(fs.readdirSync(path.join(lock, 'members')).length, 1, 'the member joins once the guard is released');
+  await finishMember();
+});
+
+// @test-kind tooling: a membership guard whose removal fails part-way never blocks the next member
+test('a membership guard whose removal fails part-way never blocks the next member', async (t) => {
+  const directory = checkout(t),
+    lock = path.join(directory, '.paqvilo/ci/workspace.lock');
+  const environment = {};
+  const release = await acquireCiWorkspaceLease(directory, environment);
+  ownedFixture(t).add(release);
+  const rmSync = fs.rmSync;
+  let failed = false;
+  t.mock.method(fs, 'rmSync', (target, ...rest) => {
+    const name = path.basename(String(target));
+    if (!failed && name.startsWith('membership') && !name.startsWith('membership.new-')) {
+      // The first guard removal loses its holder record and then fails, as a scanner's lock on Windows can.
+      failed = true;
+      fs.unlinkSync(path.join(target, 'owner.json'));
+      throw Object.assign(new Error('busy'), { code: 'EBUSY' });
+    }
+    return rmSync(target, ...rest);
+  });
+  const finishFirst = await acquireCiWorkspaceLease(directory, { ...environment }, { inherit: true });
+  assert.equal(failed, true, 'the first guard removal failed');
+  const finishSecond = await acquireCiWorkspaceLease(directory, { ...environment }, { inherit: true });
+  assert.equal(fs.readdirSync(path.join(lock, 'members')).length, 2, 'both members joined');
+  await finishSecond();
+  await finishFirst();
+});
+
 // A child process that runs until stop(); its start identity is read while it is alive.
 async function idler(t) {
   const child = spawn(process.execPath, ['--eval', 'console.log("ready");setInterval(()=>{},1000);'], {
@@ -330,4 +403,26 @@ test('a recorded PID reused by a process that ended while its identity was read 
     ),
     false,
   );
+});
+
+test('a lane joins the lease when the membership guard is released while its own claim is refused', async (t) => {
+  const directory = checkout(t),
+    environment = {};
+  const release = await acquireCiWorkspaceLease(directory, environment);
+  ownedFixture(t).add(release);
+  // Two lanes start together: the move of this lane's claim is refused while the other lane holds the guard, and that
+  // lane has released it by the time the refusal is inspected.
+  const rename = fs.renameSync;
+  let refused = 0;
+  t.mock.method(fs, 'renameSync', (from, to) => {
+    if (path.basename(String(to)) === 'membership' && refused === 0) {
+      refused += 1;
+      throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' });
+    }
+    return rename(from, to);
+  });
+  const finish = await acquireCiWorkspaceLease(directory, { ...environment }, { inherit: true });
+  assert.equal(refused, 1);
+  await finish();
+  await release();
 });

@@ -2,11 +2,16 @@
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
-import { parseArgs } from 'node:util';
 import { parseOptions } from '../lense/cli-options.mjs';
-import { MIRAGE_TOOLS, MIRAGE_LIFECYCLE, mirageToolHelp } from '../mirage/tool-registry.mjs';
+import {
+  MIRAGE_TOOLS,
+  MIRAGE_TOOL_USAGE_EXIT,
+  MIRAGE_LIFECYCLE,
+  MIRAGE_CORE_COMMANDS,
+  mirageToolHelp,
+} from '../mirage/tool-registry.mjs';
 import { parseToolHelp } from '../mirage/tool-options.mjs';
-import { forwardTerminationSignals } from '../lense/signal-forwarding.mjs';
+import { exitOnUnhandledTermination, exitStatus, forwardTerminationSignals } from '../lense/signal-forwarding.mjs';
 
 const HELP = `paqvilo — Power Platform source development
 
@@ -17,12 +22,14 @@ Usage: paqvilo lense <command> [options]
        paqvilo dataverse <command> [options]
        paqvilo analyze --source DIR | --project FILE | --config FILE [options]
        paqvilo doctor --setup [--json] [--config FILE] [--browser CHANNEL]
+       paqvilo --version | -v   Print the toolkit version (also paqvilo lense --version, paqvilo mirage --version).
 
   lense   Overlay local sources, inspect resources and browser sessions.
           dev, list, use, doctor, analyze, map, status, audit, resources, verify, agent, model-driven
   mirage  Render exported portals with Liquid and simulated Dataverse on loopback.
-          demo, init, dev, start, status, stop, serve, inspect, data
+          ${[...new Set(['demo', ...MIRAGE_LIFECYCLE, ...MIRAGE_CORE_COMMANDS])].join(', ')}
           ${Object.keys(MIRAGE_TOOLS).join(', ')}
+  lense setup and mirage setup are aliases of paqvilo setup.
   doctor  Check installed dependencies and browser readiness.
   analyze Review declared Power Platform sources offline, including standalone projects.
   init    Scaffold a consumer project; --check, --ready and --refresh-editor maintain it.
@@ -32,7 +39,7 @@ Usage: paqvilo lense <command> [options]
 Run paqvilo lense --help, paqvilo mirage --help or paqvilo dataverse --help for options.
 `;
 const DOCTOR_HELP =
-  'Usage: paqvilo doctor --setup [--json] [--config FILE] [--browser CHANNEL]\n\n  --setup    Check installed dependencies and browser readiness.\n  --json     Print the readiness report as JSON.\n  --config   Resolve the catalogue browser without importing portal sources.\n  --browser  Explicit browser channel, overriding the catalogue.';
+  'Usage: paqvilo doctor --setup [--json] [--config FILE] [--browser CHANNEL]\n\n  --setup    Check installed dependencies and browser readiness.\n  --json     Print the readiness report as JSON.\n  --config   Catalogue whose browser is checked (default: ./paqvilo.config.yml when present), read without importing portal sources.\n  --browser  Explicit browser channel, overriding the catalogue.\nWithout a catalogue or --browser the browser is not checked, and the report says so.';
 const ANALYZE_HELP = `Usage: paqvilo analyze [--source PATH | --project FILE | --config FILE] [options]
 
 Review declared Power Platform sources locally, including standalone Dataverse projects.
@@ -49,6 +56,7 @@ Review declared Power Platform sources locally, including standalone Dataverse p
 
 Analysis does not run builds, project modules, native tools, flows or live requests.
 See docs/static-analysis.md for supported source formats and evidence boundaries.`;
+const LENSE_CLI = '../lense/cli.mjs';
 const argv = process.argv.slice(2);
 const [product, ...args] = argv;
 // A flag after the option terminator is a positional value, never a request for help/JSON.
@@ -60,22 +68,23 @@ function failure(error, code, label = 'paqvilo', items = args) {
   else console.error(`${label}: ${error.message.replace(/[\r\n]+/g, ' ')}`);
   process.exitCode = 1;
 }
-// A repeated single-value option is an invalid_argument whatever the command's fallback code is.
-const argumentFailureCode = (error, fallback) => (error.code === 'invalid_argument' ? error.code : fallback);
-const exitStatus = (code, signal) => {
-  if (code != null) return code;
-  if (signal === 'SIGINT') return 130;
-  return signal === 'SIGTERM' ? 143 : 1;
-};
-if (['--version', '-v', '--help', '-h'].includes(product)) {
+// An unknown option (unsupported_option), a repeated or malformed one (invalid_argument) and a catalogue that does not
+// exist (CONFIG_NOT_FOUND, lense/config.mjs) keep their code whatever the command's fallback code is.
+const argumentFailureCode = (error, fallback) =>
+  ['invalid_argument', 'unsupported_option', 'CONFIG_NOT_FOUND'].includes(error.code) ? error.code : fallback;
+const toolkitVersion = () => JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url))).version;
+if (['lense', 'mirage'].includes(product) && args.length === 1 && ['--version', '-v'].includes(args[0])) {
+  // Both products are part of the toolkit and share its version.
+  console.log(toolkitVersion());
+} else if (['--version', '-v', '--help', '-h'].includes(product)) {
   try {
-    const { values } = parseArgs({
+    const { values } = parseOptions({
       args: argv,
       options: { version: { type: 'boolean', short: 'v' }, help: { type: 'boolean', short: 'h' } },
     });
-    console.log(values.help ? HELP : JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url))).version);
+    console.log(values.help ? HELP : toolkitVersion());
   } catch (error) {
-    failure(error, 'INVALID_ARGUMENT', 'paqvilo', argv);
+    failure(error, argumentFailureCode(error, 'INVALID_ARGUMENT'), 'paqvilo', argv);
   }
 } else if (product === undefined) {
   console.log(HELP);
@@ -106,18 +115,48 @@ if (['--version', '-v', '--help', '-h'].includes(product)) {
     });
     if (values.help) console.log(DOCTOR_HELP);
     else {
-      if (!values.setup) throw new Error('doctor requires --setup. Run paqvilo doctor --help for options.');
+      if (!values.setup) {
+        const { paqviloCommand } = await import('../lense/command-hint.mjs');
+        throw new Error(`doctor requires --setup. Run ${paqviloCommand(['doctor', '--help'])} for options.`);
+      }
       if (values.config !== undefined && !values.config.trim()) throw new Error('--config requires a non-empty value');
       let browser = values.browser;
+      let unreadable;
       if (browser !== undefined && !['msedge', 'chrome', 'chromium'].includes(browser))
         throw new Error('--browser must be msedge, chrome or chromium');
-      if (values.config) {
-        const { loadCatalogue } = await import('../lense/config.mjs');
-        const catalogue = loadCatalogue({ config: values.config });
-        browser ??= catalogue.settings.values.PAQVILO_BROWSER ?? catalogue.root.browser.channel;
+      if (browser === undefined) {
+        // --config, else the working directory's catalogue as the other commands find it.
+        const local = 'paqvilo.config.yml';
+        const config = values.config ?? (fs.existsSync(local) ? local : undefined);
+        if (config) {
+          const { loadCatalogue } = await import('../lense/config.mjs');
+          try {
+            const catalogue = loadCatalogue({ config });
+            browser = catalogue.settings.values.PAQVILO_BROWSER ?? catalogue.root.browser.channel;
+          } catch (error) {
+            // An explicit --config must load. The working directory's catalogue may be an unfinished project, which
+            // the setup page sends here: the other checks still run and the browser is reported as not checked.
+            if (values.config !== undefined) throw error;
+            unreadable = String(error.message)
+              .replace(/[\r\n]+/g, ' ')
+              .trim()
+              .replace(/:$/, '');
+          }
+        }
       }
       if (browser !== undefined && !['msedge', 'chrome', 'chromium'].includes(browser))
         throw new Error('--browser must be msedge, chrome or chromium');
+      let browserNotChecked;
+      if (!browser) {
+        const { paqviloCommand } = await import('../lense/command-hint.mjs');
+        const check = paqviloCommand(['doctor', '--setup'], { extra: ['--browser', '<channel>'] });
+        const reason = unreadable
+          ? `paqvilo.config.yml in this folder could not be read: ${unreadable}`
+          : 'no --browser, and no paqvilo.config.yml in this folder names one';
+        browserNotChecked = `Browser: not checked (${reason}). Check it with: ${check} (msedge, chrome or chromium), or with --config FILE.`;
+      }
+      // Without a browser to check, the report says so: a JSON report gains prerequisites.browserNotChecked.
+      const capture = Boolean(browserNotChecked && values.json);
       const child = spawn(
         process.execPath,
         [
@@ -126,10 +165,23 @@ if (['--version', '-v', '--help', '-h'].includes(product)) {
           ...(values.json ? ['--json'] : []),
           ...(browser ? ['--browser', browser] : []),
         ],
-        { stdio: 'inherit', windowsHide: true },
+        { stdio: ['inherit', capture ? 'pipe' : 'inherit', 'inherit'], windowsHide: true },
       );
-      child.on('exit', (code, signal) => {
+      let output = '';
+      if (capture) child.stdout.on('data', (chunk) => (output += chunk));
+      child.on('close', (code, signal) => {
         process.exitCode = exitStatus(code, signal);
+        if (capture) {
+          let report;
+          try {
+            report = JSON.parse(output);
+          } catch {
+            process.stdout.write(output);
+            return;
+          }
+          if (report.prerequisites) report.prerequisites.browserNotChecked = browserNotChecked;
+          console.log(JSON.stringify(report, null, 2));
+        } else if (browserNotChecked && !values.json) console.log(browserNotChecked);
       });
       child.on('error', (error) => {
         failure(error, 'SETUP_CHECK_FAILED', 'paqvilo doctor');
@@ -165,11 +217,14 @@ if (['--version', '-v', '--help', '-h'].includes(product)) {
     parseToolHelp(args[0], args.slice(1));
     console.log(mirageToolHelp(args[0]));
   } catch (error) {
-    failure(error, 'INVALID_ARGUMENT', `paqvilo mirage ${args[0]}`);
+    // An unknown option is unsupported_option everywhere; the tools' other help-time refusals keep INVALID_ARGUMENT.
+    failure(error, error.code === 'unsupported_option' ? error.code : 'INVALID_ARGUMENT', `paqvilo mirage ${args[0]}`);
+    // With --help as without it, a refused argument exits with the tool's own argument-error code.
+    process.exitCode = MIRAGE_TOOL_USAGE_EXIT[args[0]] ?? 1;
   }
 } else if (!['lense', 'mirage', 'dataverse', 'analyze'].includes(product)) {
   const message = `Unknown command ${JSON.stringify(product)}. Choose lense, mirage, dataverse, analyze, init, setup or doctor. Run paqvilo --help for options.`;
-  failure(new Error(message), 'UNKNOWN_PRODUCT', 'paqvilo', argv);
+  failure(new Error(message), 'unknown_command', 'paqvilo', argv);
 } else {
   const lifecycle = new Set(MIRAGE_LIFECYCLE);
   const tools = new Set(Object.keys(MIRAGE_TOOLS));
@@ -178,16 +233,16 @@ if (['--version', '-v', '--help', '-h'].includes(product)) {
     program = '../lense/dataverse/cli.mjs';
     forwarded = args;
   } else if (product === 'analyze') {
-    program = '../lense/cli.mjs';
+    program = LENSE_CLI;
     forwarded = ['analyze', ...args];
   } else if (product === 'lense') {
-    program = '../lense/cli.mjs';
+    program = LENSE_CLI;
     forwarded = args;
   } else if (args[0] === 'demo') {
     program = '../lense/commands/demo.mjs';
     forwarded = args.slice(1);
   } else if (lifecycle.has(args[0])) {
-    program = '../lense/cli.mjs';
+    program = LENSE_CLI;
     forwarded = ['mirage', ...args];
   } else if (tools.has(args[0])) {
     program = `../mirage/${args[0]}.mjs`;
@@ -199,21 +254,31 @@ if (['--version', '-v', '--help', '-h'].includes(product)) {
     if (overview) helpSupplement = `Public Mirage tools:\n${Object.keys(MIRAGE_TOOLS).map(mirageToolHelp).join('')}`; // NOSONAR: preserve callback identity and iteration arguments
     if (overview && hasFlag(args, '--help', '-h'))
       helpSupplement +=
-        '\nMirage demo: paqvilo mirage demo (editable sample and development browser).\nMirage lifecycle: init, dev, start, status, stop (catalogue and browser options: paqvilo lense --help).';
+        '\nMirage demo: paqvilo mirage demo (editable sample and development browser).\nMirage lifecycle: init, dev, start, status, stop (catalogue and browser options: paqvilo lense --help).\nMirage setup: paqvilo mirage setup is an alias of paqvilo setup (local configuration workspace at /_setup/).';
   }
-  const child = spawn(process.execPath, [fileURLToPath(new URL(program, import.meta.url)), ...forwarded], {
-    stdio: 'inherit',
-    windowsHide: true,
-  });
-  child.on('error', (error) => {
-    failure(error, 'SPAWN_FAILED');
-  });
-  // A terminal interrupt is also sent to the child; allow its browser/runtime cleanup to finish.
-  const stopForwarding = forwardTerminationSignals(child);
-  child.on('exit', (code, signal) => {
-    stopForwarding();
-    process.exitCode = exitStatus(code, signal);
-    // A failed help parse must not prefix a JSON error with human-readable help.
-    if (code === 0 && helpSupplement) console.log(helpSupplement);
-  });
+  if (program === LENSE_CLI) {
+    // The lense command line (lense, analyze and the Mirage lifecycle) runs in this process: a second Node process
+    // only to relay its arguments, output and exit code cost every command a process start.
+    process.argv.splice(1, Infinity, fileURLToPath(new URL(program, import.meta.url)), ...forwarded);
+    // A signal that ends the command when nothing handles it ends it with the exit code of that signal, as the
+    // relaying process reported it. Windows reports a console interrupt by its own exit code, in one process as in two.
+    exitOnUnhandledTermination();
+    await import(program);
+  } else {
+    const child = spawn(process.execPath, [fileURLToPath(new URL(program, import.meta.url)), ...forwarded], {
+      stdio: 'inherit',
+      windowsHide: true,
+    });
+    child.on('error', (error) => {
+      failure(error, 'SPAWN_FAILED');
+    });
+    // A terminal interrupt is also sent to the child; allow its browser/runtime cleanup to finish.
+    const stopForwarding = forwardTerminationSignals(child);
+    child.on('exit', (code, signal) => {
+      stopForwarding();
+      process.exitCode = exitStatus(code, signal);
+      // A failed help parse must not prefix a JSON error with human-readable help.
+      if (code === 0 && helpSupplement) console.log(helpSupplement);
+    });
+  }
 }

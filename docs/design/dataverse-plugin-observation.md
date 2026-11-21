@@ -1,79 +1,119 @@
-# Company Operations example: plugin observations
+# Company Operations example: Dataverse plug-in observations
 
-Reference design for the synthetic [Company Operations model](company-operations-demo.md) and [permission harness](power-pages-permission-test-harness.md). Commands and qualification limits are documented in the [project guide](../../examples/company-operations/README.md) and [plugin laboratory guide](../../examples/company-operations/plugins/README.md).
+Design of the Dataverse plug-ins that observe the synthetic [Company Operations model](company-operations-demo.md)
+(document 1) and the [permission harness](power-pages-permission-test-harness.md) (document 2): what is observed and
+why, the evidence contract, security constraints and the platform behaviour relied on. Building, installing and running
+them is in the [plug-in laboratory guide](../../examples/company-operations/plugins/README.md); file names below are
+relative to its folder.
 
-The observer records incoming RetrieveMultiple queries; the controlled pipeline suite records SDK chains. Browser intent, portal responses and backend evidence share operation identifiers while retaining their separate origins. Prepared collector/flow contracts do not imply those cloud services have been deployed or observed.
+Status: the plug-ins, registration tooling, collector and worker source and the Mirage replay binding are implemented in
+`examples/company-operations/plugins`. The hosted durable collector, managed-identity federation, Key Vault and the
+flow-only secret are contracts only: this project does not deploy them, and `registrations.json` marks them not ready.
+Anything else not implemented is marked **Proposed** where it occurs. The **Evidence schema and metadata** section is
+parsed by `prepare-schema.mjs`; keep its heading and table rows exact.
 
 ## Solution ownership and dependency order
 
-| Import order | Solution                         | Owns                                                                                                                                                                                                                  |
-| ------------ | -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1            | `PaqviloCompanyOperationsCore`   | Nineteen custom business/reference tables, standard-table extensions, business choices, keys and relationships from document 1.                                                                                       |
-| 2            | `PaqviloCompanyOperationsForms`  | Business forms/views; depends on Core.                                                                                                                                                                                |
-| 3            | `PaqviloPermissionTestSupport`   | Three history/probe tables and six support choices from document 2; depends on Core.                                                                                                                                  |
-| 4            | `PaqviloPluginEvidence`          | Three tables, three choices, relationships, evidence forms/views defined below; depends on Core and TestSupport.                                                                                                      |
-| 5            | `PaqviloBehaviorPlugins`         | Assemblies, steps/images, Custom API, environment-variable definitions, companion flow, and the extensions to TestSupport tables below; depends on PluginEvidence and TestSupport.                                    |
-| 6            | `PaqviloCompanyOperationsPortal` | One explicitly selected website, native roles/permissions, page components and settings; imports after the metadata/code prerequisites. Contact-role assignments and fixture data remain separately provisioned data. |
+| Import order | Solution                         | Owns                                                                                                       |
+| ------------ | -------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| 1            | `PaqviloCompanyOperationsCore`   | 19 custom business/reference tables, standard-table extensions, choices, keys, relationships (document 1). |
+| 2            | `PaqviloCompanyOperationsForms`  | Business forms and views.                                                                                  |
+| 3            | `PaqviloPermissionTestSupport`   | Three history/probe tables and six support choices (document 2).                                           |
+| 4            | `PaqviloPluginEvidence`          | The evidence tables, choices, relationships, forms and views below.                                        |
+| 5            | `PaqviloBehaviorPlugins`         | Assemblies, steps, images, Custom API, environment variables and the TestSupport extensions below.         |
+| 6            | `PaqviloCompanyOperationsPortal` | One website, roles, permissions, page components and settings; Contact-role assignments stay data.         |
 
-Initial installation creates the complete metadata manifest through the Dataverse API, publishes, waits for active keys and seeds the merged fixture catalogue before importing/activating Behavior plugin steps. The incomplete seed operation has fixed authored placeholder markers; the active OperationIntentGuard overwrites those even for trusted SDK creation. Seeding precedes guard activation, and the guard must remain unchanged. These segmented exports require existing tables; they are not standalone initial table packages. Reconcile project forms/views after table-root scoping, then audit native export dependencies. See document 1's API bootstrap prerequisite and Microsoft's [segmentation limitations](https://learn.microsoft.com/en-us/power-platform/alm/segmented-solutions-alm).
+- Dependencies run one way: TestSupport imports without evidence lookups, which BehaviorPlugins adds. The segmented
+  exports update existing tables
+  ([segmentation](https://learn.microsoft.com/en-us/power-platform/alm/segmented-solutions-alm)). Azure bindings, secure
+  step configuration and connection references are provisioned per environment.
+- Seeding precedes activation of the BehaviorPlugins steps: `OperationIntentGuard` overwrites markers even for trusted
+  SDK creation and gets no seed exception.
+- 28 tables, 25 custom and three standard: 22 business/reference tables (19 custom plus Account, Contact and system
+  Money Currency), three support and three evidence tables. The harness has 21 roots because the custom
+  CurrencyReference replaces the system Currency root. Technical findings live in `pqvd_testoperation`, not
+  `pqvd_finding`.
 
-Website-bound components belong to the separate Company Operations portal project. Azure bindings, secure step configuration and connection references need an installation manifest and environment-specific provisioning. They are not assumed portable merely because an assembly is in a solution. No circular solution dependency: TestSupport imports without evidence lookups; BehaviorPlugins adds those lookups after PluginEvidence exists.
+## Platform behaviour the design relies on
 
-The model contains 22 business/reference tables: 19 custom tables plus Account, Contact and the system Money Currency dependency. The paired harness has 21 direct roots because observable CurrencyReference replaces the system Currency root. Infrastructure adds three support and three evidence tables. Total explicitly designed tables: **28, comprising 25 custom and three standard tables**. Existing platform configuration tables such as plugin steps and environment variables are dependencies, not new custom tables. `pqvd_finding` remains an inspection finding; technical findings live in `pqvd_testoperation`.
+_Documented_ means linked Microsoft documentation; _observed_ means seen in this project's live captures and encoded in
+the code; _assumed_ means not qualified.
 
-Keep source, seed data, registration/query manifests and acceptance tests in `examples/company-operations/` or its separately registered project. No company schema, roles or portal routes enter reusable `lense/` or `mirage/`. Reuse the existing C# example's build conventions where appropriate, but create separate assemblies `Paqvilo.Demo.QueryObservation` and `Paqvilo.Demo.PipelineTests`. Pin SDK/reference dependencies in a lockfile and record the build/package hash; qualify managed-identity interfaces against the selected SDK rather than assuming an old package contains them.
+- _Documented._ RetrieveMultiple's `Query` can be FetchExpression, QueryExpression or QueryByAttribute; OData reads can
+  arrive as QueryExpression ([query
+  types](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/best-practices/business-logic/implement-all-types-of-queries-when-filtering-preoperation-retrievemultiple)).
+  Record the runtime type; make no conversion calls in the hot pipeline.
+- _Documented._ Liquid `variable.xml` shows the query with permissions applied, a plug-in sees it only at its registered
+  stage and order, and neither is physical SQL ([event
+  pipeline](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/event-framework)). The late artifact is
+  `PluginReceivedQuery.Stage20.Late`, attributed `RegisteredStageOnly.NotFinalSql`. Permission-join expansion has no
+  documented formula: compare captures, never assert one join per role.
+- _Documented._ FetchXML allows 15 link-entities unless support raises `QueryLinkEntityLimit`
+  ([joins](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/fetchxml/join-tables)); execution Depth
+  is limited to 8 by default and unrelated to permission depth
+  ([Depth](https://learn.microsoft.com/en-us/dotnet/api/microsoft.xrm.sdk.iexecutioncontext.depth)). Never change
+  either limit; assert lineage, not Depth.
+- _Documented._ In-transaction writes roll back with a failing request; the trace log survives but is capped at 10 KB
+  and purged after about 24 hours
+  ([tracing](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/logging-tracing)). Hence the durable
+  collector design.
+- _Documented._ `RetrieveEnvironmentVariableSecretValue` runs only from flows; secure step configuration is not
+  exported; filtering attributes mean "sent", not "changed"; plug-ins cannot call private Custom API messages, and a
+  Custom API plug-in gets no step configuration
+  ([registration](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/register-plug-in), [Custom
+  API](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/custom-api)).
+- _Observed._ Nested operations can run in internal ObjectModel contexts that drop the caller's `UserId` and
+  SharedVariables, so ChainB seals its step ID into the server-owned `pqvd_configstatus` for `ChainNodeGuard`.
+- _Observed._ A different `tag` on a descendant request fails with a duplicate-key fault; only the root sets it.
+- _Assumed._ Power Pages forwards no `tag` from browser headers; root correlation uses markers or probe fields.
+- _Assumed._ System Currency may lack the pipeline a custom table gets, so R21 is observed on `pqvd_currencyreference`;
+  zero Currency events beside a working positive control stays unqualified.
 
-## CurrencyReference observer and guard cohort
+## Operation identity and correlation
 
-Document 1 defines immutable custom CurrencyReference rows and keys; document 2 routes R21 to that observable root. Register the normal four incoming-query observers on `pqvd_currencyreference`: stage10/order10, stage20/order10, stage20/order9900 and stage40/order9900. Register BusinessProjectionGuard for Create/Update/Delete with appropriate preimages; all non-trusted mutations of name/code/symbol/precision/system-Currency mapping are rejected. Extend ProjectionAssociationGuard for `pqvd_access_currencyreferences`, retaining the sole configured trusted SDK writer convention. Do not disable guards for probes. This is a separately built/registered/exported cohort with its own assembly hashes and source receipts.
+One `pqvd_testoperation` row is the technical finding for **one root request attempt**, identified by its primary GUID.
+Retries, pages, CRUD steps and SDK roots get new GUIDs; nested SDK pipelines share the root with distinct span IDs;
+paired Liquid and Web API reads share a pair key. A retry never overwrites a failed attempt.
 
-Preserve system `transactioncurrency` Money relationships and any existing diagnostic registration. A system Currency SDK message/filter may not provide the same supported observable pipeline as a custom business table; zero currency events with a working business positive control stays unqualified. Recording R21 on the custom reference covers that observation path only; it does not stand in for system Currency events. Scoped system-Currency reads/bindings and optional explicit joins remain separate dependency tests. Provision/publish the custom table and keys, seed reference rows and scoped projections, then build/register the cohort and export server-created metadata.
+- A portal POST cannot choose the GUID, so `OperationIntentGuard` (Create, stage 20, order 5) assigns it, derives the
+  Contact from the Run and stamps the markers `CO-UTC:<yyyy-MM-ddTHH:mm:ss.fffZ>` and `CO-OP:<lowercase id>`, capture
+  state Pending and the actor provenance, all immutable afterwards.
+- The caller injects both markers into the root criteria, in an AND with the original root filter, never in a
+  link-entity and without changing OR precedence; the null arm keeps null names:
 
-## Supported observations and limits
-
-RetrieveMultiple's `InputParameters["Query"]` can contain FetchExpression, QueryExpression or QueryByAttribute. Capture the actual runtime type. General Dataverse OData reads can become QueryExpression; do not assume every Power Pages request arrives as FetchXML. Avoid query-conversion SDK calls inside this hot pipeline. [Query types and conversion guidance](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/best-practices/business-logic/implement-all-types-of-queries-when-filtering-preoperation-retrievemultiple).
-
-Liquid's `variable.xml` exposes a resultant query with permission application. A plugin observes the Query object **at its registered stage and order**. Neither exposes physical SQL. A later step or platform processing may still alter the query; call a late PreOperation artifact `PluginReceivedQuery.Stage20.Late`, never `FinalSql` or guaranteed final query. The exact permission-join expansion for every role/permission combination is not a documented fixed formula. Discover it by comparing captured queries and outputs, not by asserting one join per role. [Liquid FetchXML](https://learn.microsoft.com/en-us/power-pages/configure/liquid/template-tags), [event pipeline](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/event-framework).
-
-FetchXML defaults to at most fifteen link-entity elements; Microsoft support can raise QueryLinkEntityLimit organization-wide. Record the effective budget and measure its boundary separately from the default 15/16 control. [Support-managed increases](https://support.microsoft.com/en-au/topic/timeline-does-not-render-and-shows-records-could-not-be-loaded-4ce9200a-1afe-3ef4-ac11-a74b91f4f40c). Permission relationship depth and SDK execution Depth are different things. A permission tree with ten Parent edges does not imply ten nested plugin calls. Dataverse's default execution-depth limit is eight; record observed failures without changing environment limits or making application correctness depend on a specific Depth. [FetchXML link limit](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/fetchxml/join-tables), [execution Depth](https://learn.microsoft.com/en-us/dotnet/api/microsoft.xrm.sdk.iexecutioncontext.depth?view=dataverse-sdk-latest).
-
-`RetrieveEnvironmentVariableSecretValue` is restricted to Power Automate flows and cannot be called directly from plugin code. Its positive test is a companion flow, separately identified in evidence. Plugin secret/configuration tests use secure step configuration and managed-identity Azure access. [Secret action restriction](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/webapi/reference/retrieveenvironmentvariablesecretvalue?view=dataverse-latest).
-
-## Single operation record and query correlation
-
-One `pqvd_testoperation` row is the technical finding for **one root request attempt**, identified by its primary GUID. Its header links all observations; child events and existing result-artifact rows hold complete payloads. A pair key connects Liquid/API counterparts. Retried reads, additional pages, CRUD steps and SDK root requests get different operation GUIDs. Nested SDK child pipelines intentionally share their root operation and have distinct request/span IDs. Never overwrite a failed attempt with its retry or use one GUID for simultaneous Liquid and API requests.
-
-1. Create the Contact-scoped run as in document 2. Create an operation stub through the portals Web API with run, case, pair key, lane, variant, phase, attempt, page, expected message and root table. Read the returned row GUID; this is `operationId`. Do not depend on an undocumented ability to choose a primary GUID in a portal POST.
-2. `OperationIntentGuard` runs at Create stage20, order5. If Target.Id is empty, it assigns a server-generated GUID before setting the marker; that same GUID is returned by the POST. It derives the runner Contact from the run, stamps `pqvd_markertime`, and sets `pqvd_markerutc = CO-UTC:<UTC ISO timestamp>` and `pqvd_markeroperation = CO-OP:<Target.Id>`. Use invariant UTC milliseconds (`yyyy-MM-ddTHH:mm:ss.fffZ`) and read the stored marker string, without timezone conversion. It initializes capturestate Pending and actorprovenance PortalRelationshipClaim, or the explicitly configured SDK/collector provenance. These fields become immutable. Client timestamp is separately labelled in artifacts.
-3. The caller builds `CO-OP:<lowercase operationId>` and injects the two marker conditions below. Persist the actual authored query/hash before sending it. The Liquid dispatcher retrieves the operation through the current user's permissions and verifies run, case, lane, table, attempt and marker values. Only allowlisted manifest queries execute.
-4. The observer extracts both markers from root-table predicates, records their locations, and sends the exact query/context to the collector with operationId. Repeated identical pairs caused by a rewrite are accepted and counted; conflicting operation/time values are ambiguous and quarantined. A malformed, mismatched or missing marker is a diagnostic, never an invitation to guess the actor.
-5. The collector merges server summary fields into that operation and inserts immutable event parts. The browser saves its own result parts with `pqvd_operationid`, polls its readable events, and compares all three fronts.
-
-The root primary-name registry is `account.name`, `contact.fullname`, `transactioncurrency.currencyname`, and `pqvd_name` on every custom business table. Reserved `CO-UTC:` and `CO-OP:` values must be absent from seeded business names. This is checked when generating fixtures. Put the guard below inside an AND with the original root criteria; do not put it inside a linked entity or let it change existing OR precedence. Disable duplicate Run clicks; if multiple backend root spans still arrive for one intent, retain every span and flag duplicate invocation rather than replacing an event or claiming one physical execution.
-
-```xml
-<filter type="or">
-  <condition attribute="pqvd_name" operator="null"></condition>
-  <filter type="and">
-    <condition attribute="pqvd_name" operator="ne" value="CO-UTC:2026-10-12T09:00:00.000Z"></condition>
-    <condition attribute="pqvd_name" operator="ne" value="CO-OP:11111111-1111-4111-8111-111111111111"></condition>
+  ```xml
+  <filter type="or">
+    <condition attribute="pqvd_name" operator="null"></condition>
+    <filter type="and">
+      <condition attribute="pqvd_name" operator="ne" value="CO-UTC:2026-10-12T09:00:00.000Z"></condition>
+      <condition attribute="pqvd_name" operator="ne" value="CO-OP:11111111-1111-4111-8111-111111111111"></condition>
+    </filter>
   </filter>
-</filter>
-```
+  ```
 
-The null arm prevents `ne` conditions from removing records with a null name. This guard is semantically inert only for the checked synthetic dataset; record that precondition. Inject it before executing aggregates/distinct queries as well. QueryExpression uses an equivalent nested FilterExpression with Null/NotEqual operators. OData variants use the equivalent parenthesized null/or/ne expression with the same two literals. Record the actual input type and encoding; an OData request is not a byte-identical FetchXML query.
+  The guard is inert only while no root primary name (`account.name`, `contact.fullname`,
+  `transactioncurrency.currencyname`, `pqvd_name`) holds a `CO-UTC:` or `CO-OP:` value. The committed catalogues hold
+  none; **Proposed**: a fixture-generation check.
 
-`logicalQueryHash` hashes the versioned canonical query after removing **only this recognized reserved root guard**, plus paging differences explicitly excluded by that version. Both paired lanes must have the same logical hash. `physicalQueryHash` hashes the exact submitted bytes and differs between operations because markers differ. Preserve exact authored/Liquid/plugin strings independently. Never strip ordinary business filters or all name inequalities when normalizing.
-
-QueryByAttribute cannot express these inequalities or nested logic. Its separate SDK calibration case uses equality on `pqvd_operationid` and `pqvd_querymarkerutc` of isolated ChainNode fixtures. It returns a planned subset and has its own oracle; it is not the paired business-read lane. Capture unmarked QueryByAttribute requests only as bounded diagnostic counters, without full payloads.
-
-Markers provide correlation, **not authentication**. `context.UserId`/`InitiatingUserId` identify Dataverse system/application users, not the signed-in portal Contact. Header Contact/roles inherit the run's relationship-scoped actor claim; label that provenance, and retain backend identities separately. Publishing raw captures to that Contact is acceptable only for this restricted synthetic lab with validated operation ownership. Do not generalize this to a real-data multi-tenant logger without independently verified request identity binding. A marker alone cannot authorize disclosure.
-
-If an operation stub is missing, the authenticated collector may create a quarantined operation with the same GUID and nullable run/Contact, `Quarantined` state and the captured markers. It is not portal-readable. Reconciliation attaches it only to a validated existing run/intent; mismatches remain quarantined. No lookup to a Contact inferred from query text and no Global permission workaround.
+- The observer reads markers only from root-table name predicates and needs exactly one distinct pair and an intent
+  with those stored markers and a Run; otherwise it captures nothing and never guesses an actor.
+- `physicalQueryHash` hashes the exact received query. `logicalQueryHash` must match across paired lanes; the harness
+  hashes the authored template before marker values are filled in. **Proposed**: a versioned canonical form of received
+  queries that removes only the reserved guard and declared paging differences.
+- QueryByAttribute cannot express the guard; it is an SDK calibration case on ChainNode fixtures, not a paired lane.
+- **Markers correlate; they never authenticate.** `UserId` and `InitiatingUserId` are Dataverse users, not the portal
+  Contact. Publishing raw captures to the run's Contact suits only this synthetic lab, never a real-data logger.
+- `TransactionalLab` writes nothing for an operation without a Run, and the worker keeps such receipts in Blob storage.
+  **Proposed**: a private `Quarantined` operation (rules below), attached later only to a validated run and intent,
+  never to a Contact inferred from query text.
 
 ## Evidence schema and metadata
 
-Use prefix `pqvd`, stable component IDs and option prefix `18327`. `!` means application-required unless the quarantine exception below applies. Text lengths are characters; Time is DateTime/UserLocal with UTC serialization; L is a single-target lookup. External/context GUIDs are Text(36), avoiding assumptions about UI support for custom GUID attributes. Standard primary GUID, name, timestamps, state/status and auditing are present. Evidence tables are standard organisation-owned tables; ChainNode is standard **user/team-owned** so Assign can be tested.
+Use prefix `pqvd`, stable component IDs and option prefix `18327`. `!` means application-required unless the quarantine
+exception below applies. Text lengths are characters; Time is DateTime/UserLocal with UTC serialization; L is a
+single-target lookup. External/context GUIDs are Text(36), avoiding assumptions about UI support for custom GUID
+attributes. Standard primary GUID, name, timestamps, state/status and auditing are present. Evidence tables are standard
+organization-owned tables; ChainNode is standard **user/team-owned** so Assign can be tested.
 
 | Table / entity set                           | Columns                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -81,11 +121,19 @@ Use prefix `pqvd`, stable component IDs and option prefix `18327`. `!` means app
 | `pqvd_pluginevent` / `pqvd_pluginevents`     | `pqvd_name` Text(160)!, `pqvd_operationid` L(pqvd_testoperation)!, `pqvd_eventkey` Text(64)!, `pqvd_partnumber` Integer!, `pqvd_partcount` Integer!, `pqvd_source` Choice!, `pqvd_artifacttype` Text(64)!, `pqvd_capturetime` Time!, `pqvd_message` Text(64), `pqvd_stage` Integer, `pqvd_mode` Integer, `pqvd_executionorder` Integer, `pqvd_depth` Integer, `pqvd_isintransaction` Boolean, `pqvd_backenduserid` Text(36), `pqvd_initiatinguserid` Text(36), `pqvd_correlationid` Text(36), `pqvd_requestid` Text(36), `pqvd_platformoperationid` Text(36), `pqvd_spanid` Text(36)!, `pqvd_parentspanid` Text(36), `pqvd_querytype` Text(40), `pqvd_linkcount` Integer, `pqvd_contenttype` Text(80)!, `pqvd_payloadtext` Multiline(262144)!, `pqvd_payloadhash` Text(64)!, `pqvd_provenance` Text(80)!.                                                                                                                            |
 | `pqvd_chainnode` / `pqvd_chainnodes`         | `pqvd_name` Text(160)!, `pqvd_operationid` L(pqvd_testoperation)!, `pqvd_nodecode` Text(40)!, `pqvd_parentnodeid` L(pqvd_chainnode), `pqvd_hop` Text(16)!, `pqvd_hopindex` Integer!, `pqvd_scenario` Text(40)!, `pqvd_requestnonce` Text(36), `pqvd_completionnonce` Text(36), `pqvd_querymarkerutc` Text(64)!, `pqvd_payloadjson` Multiline(16384), `pqvd_sampletext` Text(160), `pqvd_sampledecimal` Decimal(precision 4, range -1000000..1000000), `pqvd_samplemoney` Money(precision 2, nonnegative), `pqvd_sampledate` DateOnly, `pqvd_sampletime` Time, `pqvd_sampleboolean` Boolean, `pqvd_samplechoice` Choice(pqvd_operation), `pqvd_samplemultichoice` MultiSelect(pqvd_engagementkind), `pqvd_samplecontactid` L(contact), `pqvd_configstatus` Text(80). Standard owner/owning business unit, transactioncurrencyid and state/status remain available.                                                                    |
 
-Only run/runner lookups may be absent on quarantined operation rows. Use a generated GUID pair key, case/variant `unmatched`, the parsed root table/message, a valid SDK lane placeholder and actorprovenance UnmatchedBackend; serversummary explicitly marks the originating lane unknown until reconciled. Never put `unmatched` into a Choice field. Creation guard fills markers from primary GUID and server time; observers preserve actual captured values in events even if they mismatch. ChainNode code/operation/query-marker fields are immutable after Create; guard validates them at C/U20/order5 with a declared Before image on U. Attempt/page/part indices start at 1; hopindex starts at 1, counts/depth are nonnegative, and Boolean flags default false. No alternate key on large text or query content. The committed Source4 manifest keeps the operation variant column at 40 characters; the 128-character length applies only to the Source5 cohort.
+Only run/runner lookups may be absent on quarantined operation rows. Use a generated GUID pair key, case/variant
+`unmatched`, the parsed root table/message, a valid SDK lane placeholder and actorprovenance UnmatchedBackend;
+serversummary explicitly marks the originating lane unknown until reconciled. Never put `unmatched` into a Choice field.
+Creation guard fills markers from primary GUID and server time; observers preserve actual captured values in events even
+if they mismatch. ChainNode code/operation/query-marker fields are immutable after Create; guard validates them at
+C/U20/order5 with a declared Before image on U. Attempt/page/part indices start at 1; hopindex starts at 1, counts/depth
+are nonnegative, and Boolean flags default false. No alternate key on large text or query content. The committed Source4
+manifest keeps the operation variant column at 40 characters; the 128-character length applies only to the Source5
+cohort.
 
 | Key / relationship              | Definition                                                                                                                                                                                                                                                 |
 | ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pqvd_ak_pluginevent_part`      | Operation lookup + event key + part number; all required. Event key hashes execution span, stage, step ID, artifact type and ordinal. Repeated receipt is idempotent; differing payload under the same key is a conflict.                                  |
+| `pqvd_ak_pluginevent_part`      | Operation lookup + event key + part number; all required. Event key hashes execution span, stage, step ID and artifact type. Repeated receipt is idempotent; differing payload under the same key is a conflict.                                           |
 | `pqvd_ak_chainnode_code`        | Operation lookup + node code; both required. SDK Upsert profile uses this key.                                                                                                                                                                             |
 | `pqvd_testrun_operations`       | Run -> operation through `pqvd_runid`.                                                                                                                                                                                                                     |
 | `pqvd_contact_testoperations`   | Contact -> operation through `pqvd_runnercontactid`; reporting relationship only, not another portal root.                                                                                                                                                 |
@@ -95,7 +143,10 @@ Only run/runner lookups may be absent on quarantined operation rows. Use a gener
 | `pqvd_contact_chainnodes`       | Contact -> ChainNode through sample-contact lookup; never a permission root.                                                                                                                                                                               |
 | `pqvd_chainnode_peers`          | Native N:N ChainNode self-relationship; intersect `pqvd_chainnodepeer`, columns `pqvd_chainnodeidone` and `pqvd_chainnodeidtwo`, role names/metadata frozen in registry. Confirm exported metadata and use those actual names in SDK association requests. |
 
-Custom 1:N relationships use Delete Restrict, Assign/Share/Unshare/Reparent/Merge Cascade None. Do not cascade deletion of history. Standard owner/currency metadata is preserved. Self N:N peer deletion follows platform intersect cleanup; it does not grant access to the other node. Operation has no alternate key: its primary GUID is the unique operation identity.
+Custom 1:N relationships use Delete Restrict, Assign/Share/Unshare/Reparent/Merge Cascade None. Do not cascade deletion
+of history. Standard owner/currency metadata is preserved. Self N:N peer deletion follows platform intersect cleanup; it
+does not grant access to the other node. Operation has no alternate key: its primary GUID is the unique operation
+identity.
 
 Create three independent global choices with values starting at 183270000 in listed order:
 
@@ -105,195 +156,188 @@ Create three independent global choices with values starting at 183270000 in lis
 | `pqvd_capturestate` | Pending, Partial, Complete, NoBackendInvocationObserved, CaptureFailed, Quarantined |
 | `pqvd_eventsource`  | DataversePlugin, AzureCollector, PowerAutomate, SDKClient, LocalModel               |
 
-`pqvd_lane` uses pqvd_testlane; `pqvd_source` uses pqvd_eventsource. Reuse support pqvd_phase/operation choices where declared. Capture Complete means all expected artifacts for that operation were acknowledged, not that its business request passed. Serversummary records expected/present/missing steps and per-artifact persistence states. An operation that failed before PostOperation can have complete failure evidence without a fabricated post event.
+`pqvd_lane` uses pqvd_testlane; `pqvd_source` uses pqvd_eventsource. Reuse support pqvd_phase/operation choices where
+declared. Capture Complete means all expected artifacts for that operation were acknowledged, not that its business
+request passed. Serversummary records expected/present/missing steps and per-artifact persistence states. An operation
+that failed before PostOperation can have complete failure evidence without a fabricated post event.
 
 BehaviorPlugins owns these **extensions**, not new tables:
 
 | Existing table    | Added columns / relationships                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pqvd_testresult` | `pqvd_operationid` L(pqvd_testoperation), optional for legacy identity/run summaries; required by application for individual request artifacts. `pqvd_testoperation_results`: operation -> result. Existing result keys/engine choices stay unchanged. Backend plugin evidence resides in server-owned events, never disguised as a client engine.                                                                                             |
+| `pqvd_testresult` | `pqvd_operationid` L(pqvd_testoperation), optional for legacy identity/run summaries; required by application for individual request artifacts. `pqvd_testoperation_results`: operation -> result. Existing result keys/engine choices stay unchanged. Backend plug-in evidence resides in server-owned events, never disguised as a client engine.                                                                                            |
 | `pqvd_crudprobe`  | `pqvd_activeoperationid` L(pqvd_testoperation), `pqvd_triggernonce` Text(36), `pqvd_pluginscenario` Text(40), `pqvd_hopbudget` Integer(0..10). `pqvd_testoperation_probes`: operation -> probe. Probe ownership and run remain immutable. These fields trigger the chain; they do not confer business permissions.                                                                                                                             |
 | `pqvd_equipment`  | `pqvd_canaryrunid` L(pqvd_testrun), optional and immutable. `pqvd_testrun_canaryequipments`: run -> disposable equipment. BehaviorPlugins owns this lookup and relationship. Only newly created unassigned Stock equipment with a CO-CANARY tag can bind it. A Delete-only Parent permission beneath the runner's own Run permits cleanup without granting general IT equipment deletion. Existing business equipment leaves this lookup null. |
 
-Add main forms `CO Test Operation`, `CO Plugin Event`, `CO Chain Node` in PluginEvidence; read-only evidence fields, events/nodes subgrids on operation, typed values/owner on node. Public views: `CO My Run Operations` (parameterized portal use, not personal security), `CO Pending Captures`, `CO Quarantined Captures`, `CO Plugin Events by Operation`, `CO Chain Nodes by Operation`, `CO Failed Capture Operations`. BehaviorPlugins owns five supplemental main forms: `CO Test Operation Pipeline` adds the results subgrid; `CO Test Result Pipeline` includes the Operation lookup; `CO CRUD Probe Pipeline` exposes trigger fields; `CO Test Run Pipeline` adds the operations subgrid. `CO Equipment Canary Diagnostics` exposes the immutable canary Run lookup, tag, Stock state and assignment for cleanup review. Preserve initial Core/Support/Evidence forms without BehaviorPlugins-owned references so exports retain dependency direction. This supplemental approach avoids a shared unmanaged form introducing reverse dependencies. Lookup/Quick Find views use names/IDs and safe summary columns, never entire query/context payloads. No Global grants.
+Add main forms `CO Test Operation`, `CO Plugin Event`, `CO Chain Node` in PluginEvidence; read-only evidence fields,
+events/nodes subgrids on operation, typed values/owner on node. Public views: `CO My Run Operations` (parameterized
+portal use, not personal security), `CO Pending Captures`, `CO Quarantined Captures`, `CO Plugin Events by Operation`,
+`CO Chain Nodes by Operation`, `CO Failed Capture Operations`. BehaviorPlugins owns five supplemental main forms: `CO
+Test Operation Pipeline` adds the results subgrid; `CO Test Result Pipeline` includes the Operation lookup; `CO CRUD
+Probe Pipeline` exposes trigger fields; `CO Test Run Pipeline` adds the operations subgrid. `CO Equipment Canary
+Diagnostics` exposes the immutable canary Run lookup, tag, Stock state and assignment for cleanup review. Preserve
+initial Core/Support/Evidence forms without BehaviorPlugins-owned references so exports retain dependency direction.
+This supplemental approach avoids a shared unmanaged form introducing reverse dependencies. Lookup/Quick Find views use
+names/IDs and safe summary columns, never entire query/context payloads. No Global grants.
 
-## Recorder permissions and immutable server evidence
+## Recorder permissions and server-owned evidence
 
-`CO Test Runner` gains Parent permissions Run -> Operation (C/R/U/Append/Append To, no D), Operation -> Events (R only), Operation -> ChainNode (R only). It keeps document 2's own probe CRUD, result recording and Contact-self permissions. Runs are Contact-scoped; no additional Contact root on Operation, no Global evidence permission and no portal Create/Update/Delete on Events or ChainNode. ChainNode writes use the SDK chain's backend identity.
-
-Explicit Web API fields expose operation intent/client-summary columns and readable server summaries. Event fields needed for diagnostics are readable only. Add operation/trigger lookups to appropriate existing allowlists; no `*`. Do not assume a Web API field allowlist distinguishes read from write: enforce server-owned columns with `OperationIntentGuard` and `EvidenceWriteGuard` on Create/Update/Delete. Public operation updates may change authored query/hash/client summary/Liquid XML/client-finished time only. Run, actor, identity tuple, markers and backend summaries are immutable to the portal caller. Server actor fields are derived, not accepted from browser payloads. Result-to-operation and probe-to-operation bindings must agree with the immutable run; reject cross-run moves. Guard registration inventory: operation C/U/D20/order5; event C/U/D20/order5; run/result/probe C/U20/order5 for immutable ownership/run/binding validation. All use single-table filters and required preimages on U/D. Trusted writer exceptions are field-specific, not a blanket bypass.
-
-The collector's dedicated Dataverse application user has narrow create/read/update rights to operations/events and read of run metadata; no business-table read, no write of grants or web roles. Backend mutation authorization is an explicit configured system-user allowlist, never a Boolean supplied by clients or a marker. Guard exclusions avoid recursion on evidence tables. Scope violations and forged server-field writes are required negative tests. Client artifacts remain editable regression evidence; server event payloads are append-only for ordinary callers. A trusted collector/administrator can still alter records: do not claim cryptographic audit attestation.
-
-Quarantined operations with no run have no parent permission and remain private to the recorder administrators. Raw event captures are synthetic-data diagnostics; snapshots never contain credentials, cookies, authorization headers, secret values, secure configuration strings or acquired tokens.
+- `CO Test Runner` gets Parent permissions Run -> Operation (Read, Create, Update, Append, Append To; no Delete),
+  Operation -> Events (Read) and Operation -> ChainNode (Read), beside document 2's own permissions
+  (`portal-security/blueprint.mjs`). No Contact root on Operation, no Global evidence permission, no portal writes to
+  events or chain nodes. Quarantined operations have no Run and so no portal path.
+- Web API field lists do not separate read from write, so guards enforce the server-owned columns: the portal may change
+  only the authored query, hashes, client summary, Liquid XML and client finish time, and server actor fields are
+  derived, never accepted from the browser. `registration.mjs` generates the guard inventory; the refusals are listed
+  under [what the guards enforce](../../examples/company-operations/plugins/README.md#what-the-guards-enforce).
+- Trusted writers are an explicit configured system-user allowlist (`trustedWriterIds`), never a client Boolean or a
+  marker. **Proposed**: a hosted collector application user with create, read and update on operations and events, read
+  on runs, and no business-table read or grant writes.
+- Events are append-only for ordinary callers, but a trusted writer or administrator can still alter them: no
+  cryptographic attestation is claimed. The one deletion path through the guards is the owned-evidence contract that
+  the lab registration turns on for `verify-live.mjs --cleanup`: a root Delete by the sole configured SDK writer, bound
+  to a maintenance intent of the same run that names the event and its payload hash
+  ([optional contracts](../../examples/company-operations/plugins/README.md#optional-contracts-off-by-default)).
+- Snapshots never contain credentials, cookies, authorization headers, secret values, secure configuration or tokens;
+  values under sensitive key names are redacted.
 
 ## Set A: incoming-query observer
 
-Bind each portal capture to its immutable operation actor using the platform's `IPluginExecutionContext2`: when `IsPortalsClientCall` is true, `PortalsContactId` must be nonempty and match the recorded Contact. An empty/mismatched Contact or getter failure withholds capture. This permits authored filters containing another Contact without confusing those filters with caller identity. Where the interface is unavailable or the flag is false, the conservative unanimous permission-Contact condition fallback must be labelled `NotIdentityAttestation`. SDK operations separately require the configured SDK caller and immutable SDK actor provenance. These checks qualify recording ownership; they do not grant table access. [Microsoft's portal context properties](https://learn.microsoft.com/en-us/dotnet/api/microsoft.xrm.sdk.ipluginexecutioncontext2?view=dataverse-sdk-latest).
+`IncomingQueryObserver` runs synchronously on RetrieveMultiple of every business/reference table plus a diagnostic
+ChainNode registration, at stage 10/order 10, 20/10 (before the deliberate mutator), 20/9900 (late view; another
+higher-order step means it is not last) and 40/9900 (query plus returned rows and paging). Steps exist only where the
+environment's message filter allows them; no unfiltered global step. Four snapshots per query are test overhead, not a
+production logger pattern.
 
-Register `IncomingQueryObserver` on each of the 21 direct business/reference roots' eligible RetrieveMultiple filters, including custom `pqvd_currencyreference`. Resolve SDK message/filter metadata when producing the registration manifest; unavailable combinations are explicit blockers/unsupported entries, not invented registrations. No unfiltered global RetrieveMultiple step. Exclude run/result/probe/evidence, platform metadata and configuration tables. A separate marked diagnostic registration on ChainNode supplies SDK calibration cases.
+- The observer never changes the Query, rows, ordering, security, paging or expected exceptions, and records nothing for
+  unmarked queries. Nested marked queries are part of the suite, so it does not return early at Depth > 1 unless
+  `rootObservationOnly` is configured.
+- Capture binds to the intent's immutable actor (see the guide's guard list); this qualifies recording ownership and
+  grants no table access.
+- FetchExpression is stored as the exact string, parsed with DTD processing prohibited, and its link-entities are
+  counted recursively. **Proposed**: a stored link tree, filter and alias inventories and a normalized hash.
+  QueryExpression and QueryByAttribute become typed DTOs with an explicit marker for unsupported types; converted XML is
+  never labelled original FetchXML.
+- A failed stage is never filled by rerunning the query, and a missing post snapshot is not an empty result.
+- **Proposed**: header `pqvd_receivedqueryhash` and `pqvd_receivedlinkcount` summarize a RetrieveMultiple root's late
+  snapshot and stay null for CRUD and SDK roots, whose server summary indexes child queries by span.
+- CurrencyReference rows and `pqvd_access_currencyreferences` are fixture-maintenance only; guards stay on for probes.
 
-| Stage / order                 | Mode        | Purpose                                                                                                                                                   |
-| ----------------------------- | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| PreValidation 10 / order 10   | Synchronous | Earliest registered view of incoming Query and context; record actual IsInTransaction.                                                                    |
-| PreOperation 20 / order 10    | Synchronous | Before the suite's deliberate query mutator.                                                                                                              |
-| PreOperation 20 / order 9900  | Synchronous | Late configured view before core operation. Record the full installed step inventory/order; a higher-order external step means this is not last.          |
-| PostOperation 40 / order 9900 | Synchronous | Query snapshot plus BusinessEntityCollection summary, row IDs/typed selected attributes, paging and count metadata. Does not replace portal lane results. |
+## Durable capture
 
-Four snapshots per marked query are deliberate test overhead, not a production logger recommendation. The observer never changes Query, result rows, ordering, security, paging, or expected exceptions. It may add namespaced SharedVariables solely for instrumentation. Eligibility checks parse markers locally; unmarked/unsupported queries return without network/database recording. Do not blanket-return at Depth > 1: nested marked queries are part of the suite. Bound payload size and total collector wait per operation; exceeding a bound records incomplete capture without silently modifying the query.
+An in-transaction write rolls back with its request, so **evidence that survives a failed request needs an external
+durable collector**. `deploy.mjs` installs `TransactionalLab`, labelled rollback-vulnerable; see
+[capture modes](../../examples/company-operations/plugins/README.md#capture-modes). The `DurableCollector` contract:
 
-FetchExpression: preserve exact `.Query` string before parsing. Parse XML with DTD/external-entity processing disabled. Count every link-entity recursively and store a tree inventory containing name/from/to/alias/link-type and depth; also inventory filters and aliases, normalized hash and exact hash. Canonicalization keeps joins, operator/values and placement; it is not a security evaluator. Store authored, Liquid and each stage artifact separately, even when identical.
+- The plug-in posts each snapshot synchronously and checks the durable receipt; an independent worker writes it to
+  Dataverse outside the request transaction and may retry its own writes, never the business mutation. No
+  fire-and-forget threads or recursive SDK logging.
+- Each receipt waits at most `timeoutMs` (default and maximum 2000 ms) within 8000 ms per operation. A failure traces
+  safe IDs only, leaves capture incomplete and lets the query proceed: fail-open capture is not test success.
+- Payloads over 2 MiB UTF-8 are traced as incomplete. Parts split at Unicode-safe boundaries of at most 128,000 UTF-16
+  code units and carry the full hash and part count; a repeated receipt is idempotent, a different payload under the
+  same key a conflict. **Proposed**: a 20 MiB per-run budget and private blob references (never SAS or bearer URLs).
+- Capture, collector and Dataverse times are kept apart; order by spans and stages. `NoBackendInvocationObserved` means
+  nothing arrived in the window (cache reuse, early validation, missing registration or capture failure remain
+  possible), never proof of authorization denial.
 
-QueryExpression: serialize a typed DTO containing EntityName, ColumnSet/AllColumns/attribute expressions, Distinct, TopCount, NoLock if present, PageInfo/cookie/total-count request, orders, root criteria, condition EntityName/operator/typed values, every nested LinkEntity's link direction, join operator, aliases, columns, criteria and orders. Include version-specific supported properties and an explicit unsupported-type marker rather than dropping them. QueryByAttribute: capture table, columns, ordered attribute/value pairs, order and paging. Never label reconstructed or converted XML as original FetchXML. Optional conversion belongs to an independent SDK diagnostic after capture and is tagged `ConvertedQueryXml`.
+## Set B: pipeline context and SDK chain
 
-Post snapshots include returned entity IDs, logical names, selected typed fields, MoreRecords, PagingCookie, TotalRecordCount and available count-limit metadata. Redact/allowlist attributes according to the synthetic manifest. Do not rerun the query to get a response for a failed stage or treat a missing post snapshot as an empty result.
+The root is a portal PATCH of the Contact's own `pqvd_crudprobe` setting operation, scenario, hop budget (1 to 10) and a
+fresh nonce; `RecordingBindingGuard` checks them against the intent, and other updates start nothing. A denied business
+write never triggers a privileged fallback. `ChainA` (probe Update, stage 40) creates node B with the root `tag`;
+`ChainB` (node Create) moves it to hop C; `ChainC` (node Update, B -> C only) runs the profile's leaf action.
+`PipelineContextObserver` records stages 10, 20 and 40 with two secure profiles, `AsyncContextObserver` a separate
+asynchronous execution, `DepthChain` the depth scenario, and the disabled `QueryShapeMutator` an SDK-only query change.
 
-For a root RetrieveMultiple operation, header receivedqueryhash/linkcount summarize the root's late stage20 snapshot, or explicitly label the available fallback stage. For CRUD/SDK chain roots with several child queries, those singular fields remain null; serversummary indexes child queries by request/span ID. SDK child queries must be allowed by the parent scenario manifest even when their table/message differs from the root header. Portal Liquid/API reads must match the declared root table/message exactly. Never collapse several child queries into the last received string.
+- Nested operations are real SDK requests through `IOrganizationService.Execute`, with typed requests where a `tag` is
+  needed, under `context.UserId`; never direct `Execute` calls, never silent null or system identity.
+- Recursion is bounded by operation, scenario allowlist, hop transition, node code, nonce and budget, not by suppressing
+  Depth > 1. Plug-in instances hold no per-execution state. Assertions use recorded lineage. Operator-visible behaviour:
+  [SDK chain behaviour](../../examples/company-operations/plugins/README.md#sdk-chain-behaviour).
+- A 60-second wall-clock budget is enforced for the depth chain. **Proposed**: the same budget for every profile.
+- **Proposed**: projection and invariant handlers for mutable business scenarios under a fixture-maintenance identity.
+  None is installed, so `BusinessProjectionGuard` limits portal updates to safe fields.
 
-## Durable capture including failed transactions
+Profiles (scenario `ABC` for P01, otherwise the code). Eligibility comes from SDK message-filter metadata; an
+unsupported combination has a reason, and absent registration is not a pass. `verify-live.mjs` runs the implemented
+ones.
 
-A synchronous in-transaction Dataverse Create/Update of a finding can roll back with the request that caused it. PreValidation can also be transactional when nested. Therefore **full three-front mode requires an external durable collector**, not a promise that every observer writes a surviving Dataverse row inside the same request. Tracing survives rollback but is capped at 10 KB and normally purged after 24 hours; use it for IDs/hashes/counts, not complete XML/context. [Trace persistence/limits](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/logging-tracing), [transaction failures](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/handle-exceptions).
+- Implemented: P01 ABC chain; P02 CRUD (Create, Update, Retrieve, QueryExpression and QueryByAttribute reads, Delete;
+  a FetchExpression read is **Proposed**); P03 Associate/Disassociate through `pqvd_chainnode_peers`; P04 Upsert by key
+  twice; P05 Assign to the demo team (needs `provision-owner-team.mjs`); P06 state Update then SetState; P07 Custom API;
+  P09 depth budgets 1, 3, 7, 8, 9 and 10; P10 async; P11 shared variables and parent context; P12 secure configuration
+  and `pqvd_LabProfile` (missing and invalid-type cases **Proposed**).
+- Blocked (the probe guard requires `DurableCollector`): P08 controlled rollback; P13 managed identity, Key Vault and
+  echo service; P14 flow secret (contract `collector/flow-secret-contract.json`). ChainC refuses P13 and P14; their leaf
+  actions are **Proposed**.
+- **Proposed**: P15 bulk messages and P16 Merge and other specialized messages, from an external SDK client only;
+  ExecuteMultiple, ExecuteTransaction and bulk messages never run inside synchronous plug-ins
+  ([batch guidance](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/best-practices/business-logic/avoid-batch-requests-plugin)).
 
-The plugin sends each marked snapshot synchronously to an authenticated HTTPS collector. The collector persists the payload in durable blob/queue storage before acknowledging an immutable receipt ID. An independent worker upserts the operation summary and inserts event chunks into Dataverse. This transport is outside the Dataverse request transaction. Do not use fire-and-forget threads, async-void plugin code or recursive SDK logging from the observer. The worker may retry its own recording requests; it must never retry the original business mutation. Apply the same transport to pipeline/context events, including those preceding intentional faults.
+An expected fault aborts the transaction, so faulting leaf calls get their own root; a failed in-transaction SDK
+write is never caught and continued.
 
-Collector authentication uses managed identity with a fixed configured audience and endpoint allowlist. Set a bounded network timeout, default 2 seconds per receipt and maximum 8 seconds total observer transport wait per marked request. Record overhead. A timeout/auth failure logs only operation/event IDs and safe status through ITracingService, leaves capture failed/partial and allows normal query processing. Fail-open capture does not mean test success. A collector outage cannot guarantee preservation of full failed-query XML; the page marks missing backend evidence visibly. Do not claim trace fallback has full fidelity.
+## Images, Custom API and snapshots
 
-Chunk payloads at Unicode-safe boundaries, at most 128,000 UTF-16 code units per Dataverse part. Reuse document 2's full artifact hash/reassembly contract; event parts hold identical full hash and part count. Default limits: 2 MiB UTF-8 per event, 20 MiB combined client/server artifacts per run. A size overflow keeps a diagnostic prefix plus byte count/hash and `Incomplete`, not a successful truncated capture. Optional durable blob references are authenticated and never SAS/bearer URLs stored in public rows. Record collector-accepted versus Dataverse-persisted states separately.
+- Images list exact columns, never all attributes; Upsert is not assumed to provide Update images, and asynchronous
+  steps register their own.
+- `pqvd_EchoLabContext` is public because plug-ins cannot call private messages. Its execute privilege is the installed
+  ChainNode Read privilege, it returns IDs and a typed echo, never secrets, and it is not a portal endpoint.
+- Every event is a schema-versioned DTO, never reflection over SDK objects. Context interfaces report availability
+  separately from a successful read (false, empty GUID and unavailable stay distinct); parents, images, rows and strings
+  are bounded with counts and truncation flags; unknown types are named, never given an invented value; SharedVariables
+  are limited to `pqvd.lab.*` and `tag`; the business `operationId` is kept apart from platform IDs
+  ([context and tag](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/understand-the-data-context)).
+  The sandbox never hashes binaries: `audit-installation.mjs` maps assembly identity to hashes outside it.
 
-Portal wait is bounded, default 30 seconds after lane completion; pending persistence is resumable by operation ID. Backend events can arrive out of order or after a rolled-back request. Store capture time, collector time and Dataverse createdon separately; order by explicit spans/stages, not insertion time. The successful stub persists because it was created in an earlier portal request. NoBackendInvocationObserved means no event was seen during the observation window; cache reuse, pre-pipeline validation, missing registration or capture failure remain possible explanations, never proof of authorization denial.
+## Secrets and Azure
 
-## Join-budget and permission-collision experiments
+- The unsecure step configuration is validated at construction and holds no credentials. The secure configuration holds
+  a **synthetic** secret; only presence, validity and version label are recorded, never value, length or hash. Two step
+  profiles with different versions prove per-step construction. Secure values are provisioned after import from the
+  symbolic references in `secure-provisioning.json`.
+- `deploy.mjs` defines the `pqvd_Lab*` environment variables with safe defaults and a valueless secret definition; a
+  missing endpoint blocks collection rather than pointing at an invented host. Ordinary values use
+  `RetrieveEnvironmentVariableValue` (`DefinitionSchemaName`); the flow secret action takes `EnvironmentVariableName`.
+- **Proposed**, P14: `CO Lab Secret Verification` runs only for an allowlisted ChainNode in `FlowPending`, validates
+  operation, scenario and nonce, and returns only success, version label, run reference and a safe error category, with
+  secure inputs and outputs on every action carrying the secret. Its sanitized callback is gated by the flow connection
+  identity. No secret reaches Dataverse, traces or run history; a direct plug-in call is expected to fail.
+- P13: the collector token comes from `IManagedIdentityService.AcquireToken` (qualify it against the selected SDK). It
+  needs version 2 federation, a certificate-signed assembly bound to the identity and Azure RBAC; strong-name signing is
+  insufficient ([managed identity](https://learn.microsoft.com/en-us/power-platform/admin/set-up-managed-identity)).
+  **Proposed**: Key Vault verification of a synthetic secret and an allowlisted echo service.
+- Outbound calls go only to the configured HTTPS, non-loopback collector without a query string, with redirects off,
+  `Connection: close` and a bounded response ([sandbox web
+  access](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/access-web-services)). URLs never come
+  from portal fields. Missing bindings and timeouts are recorded outcomes, not simulated successes, and collector
+  readiness does not claim P13 or P14.
 
-Extend the runner manifest with optional suite `S01 QueryBudget`. For the 16 collision personas in document 1, vary independently the number of enabled capability roots and same-scope redundant permission paths; record exact website role/permission IDs and access-grant versions. Suggested role combinations are 0, 1, 2, 4, 8 and 12 business roles, plus the separate runner role. Never obtain an extra role by widening scope beyond the declared synthetic persona. Configuration changes/redundant permission-tree installation are fixture administration, not the signed-in page granting itself roles.
+## Join budget, comparison and the harness page
 
-For each fixed fixture/profile, generate authored queries with 0..14 joins, a 15-join boundary control and a 16-join control that is invalid at the default organization budget. The generator uses declared single-target business relationships and controlled seed rows; complete alias/from/to metadata and an independent result oracle are required. Include minimal Finding reads, explicit reverse deep-chain reads, N:N grant reads, branch-local joins and inner/outer variants. Increasing authored join count and increasing permission-path count are separate dimensions. Baseline R27 stays minimally authored so permission expansion can be measured without an unnecessary duplicate chain.
+The harness runs S01 and owns the page ([harness guide](../../examples/company-operations/portal-harness/README.md)).
+Rules for reading their evidence:
 
-Capture authored link count, Liquid exposed count, stage10/20-early/20-late counts, hashes/trees, result counts/IDs, failure code/body and whether post/backend events exist. Store the first failure and the last success. Permission paths may be deduplicated or rewritten with a different shape; do not assert linear growth. A platform refusal can occur before the observer runs; label that missing evidence accurately. Count the received XML when it is FetchExpression; a QueryExpression tree is measured in its own representation. No change to platform link/depth limits, Global grants or permission weakening is part of the experiment.
+- Authored join count and permission-path count are independent; paths may be deduplicated, so linear growth is never
+  asserted. Extra roles come from fixture administration, never from widening a persona or from the page.
+- A refusal can precede the observer; label that missing evidence. Link limits, authorization denial, missing fixtures,
+  collector failure and data drift are different outcomes; an expected 16-link rejection can pass as a constraint test
+  while its parity status stays an error. Unique markers can reduce cache reuse; record it.
+- Complete payloads live in result parts (client) and event parts (server); a header value that does not fit stays null,
+  never silently truncated. Backend outputs are observations, never the oracle. Generated aliases, timestamps and IDs
+  are ignored only by named, versioned comparison rules.
 
-Unique markers alter query literals and can reduce cache reuse; record this measurement condition. Link/URL limits, authorization denial, missing fixture references, collector failure and data drift are different outcomes. An expected 16-link rejection can be a passing constraint test while its result-parity status remains an error outcome rather than matching empty arrays.
+## Local models and the Source5 cohort
 
-## Set B: pipeline context and actual SDK chain
+Mirage runs the original assemblies against native captures
+([replay in Mirage](../../examples/company-operations/plugins/README.md#replay-in-mirage)) but does not reproduce the
+hosted pipeline or Azure: local events are models. SDK tests do not prove Power Pages authorization.
 
-The normal root is a prepared PATCH of the current Contact's disposable `pqvd_crudprobe`. Bind activeoperation to a WebAPI/CRUD operation, set pluginscenario=`ABC`, hopbudget=3 and a fresh triggernonce. Probe guard verifies the same run, fixed allowed scenario, bounded budget and nonce change. Existing counter/value updates without these fields do not start the chain. A denied business write does not trigger a privileged fallback chain; the own probe is the declared positive control.
-
-| Plugin                    | Registration                                                                                | SDK action / resulting pipeline                                                                                                                                                         |
-| ------------------------- | ------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ChainA`                  | Probe Update, stage40 synchronous, order100; filtering triggernonce                         | On a genuine changed nonce, create ChainNode B with operation, nodecode=`B`, hop=`B`, scenario and parent instrumentation span. This SDK Create triggers B.                             |
-| `ChainB`                  | ChainNode Create, stage40 synchronous, order100                                             | For hop B only, Update that node with hop C and a new requestnonce, plus typed sample-field changes. This SDK Update triggers C.                                                        |
-| `ChainC`                  | ChainNode Update, stage40 synchronous, order100; filtering hop/requestnonce/completionnonce | For a verified B -> C transition, capture the input/images/shared state and execute the selected leaf operation profile. The flow completion profile is a separate verified transition. |
-| `PipelineContextObserver` | Eligible messages on Probe/ChainNode, stages10/20/40 synchronous                            | Capture context and typed parameters/images before and after the suite action. Paired order10 and9900 observations at stage40 show action/output differences where meaningful.          |
-| `AsyncContextObserver`    | Probe Update, stage40 asynchronous; filtering triggernonce                                  | Demonstrate a new asynchronous execution and persisted correlation, outside the root transaction. No assumption of identical shared-variable/parent context.                            |
-| `DepthChain`              | ChainNode Create, stage40 synchronous, order110                                             | Only explicit Depth scenario: create the next isolated node with incremented hop index until budget or platform rejection.                                                              |
-| `QueryShapeMutator`       | ChainNode RetrieveMultiple, stage20 synchronous, order100                                   | SDK-only Mutator scenario, add one known nonrestrictive guard in both FetchExpression/QueryExpression; prove early/late snapshots differ. Never installed as a business query modifier. |
-
-These are SDK-generated nested operations, not C# calls directly to another plugin's Execute method. Use typed CreateRequest/UpdateRequest/DeleteRequest/etc. through service.Execute when a tag must be attached; convenience methods without request parameters cannot be assumed to carry it. A normal root often observes A/B/C at Depth 1/2/3, but assertions are based on recorded parent/span lineage and actual SDK calls. Use `IOrganizationServiceFactory.CreateOrganizationService(context.UserId)` for the normal child operations. A separately named RunAs profile compares a configured step identity and InitiatingUserId; never silently use null/system identity. Backend service privileges are provisioned separately from portal web roles. Chain nodes are isolated test data and no nested call changes grants or business records.
-
-Prevent recursion using immutable operation ID, scenario allowlist, hop transition, node code, nonce and budget. Filtering attributes mean an attribute was included in Update, not that its value changed; compare the registered preimage. Do not suppress all nested Depth > 1 invocations. Stateless plugin instances must not keep per-execution services/context in instance/static fields. [Registration/filtering/image rules](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/register-plug-in), [plugin instance guidance](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/write-plug-in).
-
-Probe scenario codes are `ABC` for P01 and `P02`..`P14` for the other registered profiles, with `Depth` as the P09 depth chain's internal node scenario. All non-depth profiles use the bounded A -> B -> C entry and select a leaf action at C; P10 also observes its independently registered async step. The query-mutator profile is SDK-only and uses its own root operation. Every root has a 60-second suite wall-clock budget, leaving room within the platform execution timeout; network waits and leaf count are bounded. Budget exhaustion stops further test actions, captures a sanitized Incomplete outcome and never continues an unbounded chain. Platform faults still propagate/roll back normally.
-
-For mutable business scenarios, implement the required invariant/projection handlers from document 1 in BehaviorPlugins as named ancillary components, with their own registration manifest: protect role-specific principals and lifecycle fields, validate membership/department/assignment relationships, and maintain current-assignment/access intersections when authorized state changes occur. Scope recomputation and expiry administration run under an explicitly configured fixture-maintenance identity outside the portal test action; they are not privileged fallback writes. Seed checks alone are insufficient for a live mutable suite. A structure-only installation can run qualified seeded read tests, but must block scenarios requiring absent projection services as document 2 specifies.
-
-## Operation coverage manifest
-
-`all operations` means the explicit general-purpose matrix below, plus supported optional profiles. Dataverse has many specialized messages; this specification does not promise every product-specific operation or an eligible stage for every message. Query SdkMessage/SdkMessageFilter metadata and table capabilities into a versioned registration/capability manifest. Unsupported combinations have a reason and evidence; absent registration is not a pass. Do not register a generic Execute interceptor. [Eligible events](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/event-framework).
-
-| Profile                  | Operations / evidence                                                                                                                                                                                                                              |
-| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| P01 ABC                  | Probe Update -> Node Create -> Node Update; sparse Target, pre/post images and lineage across three plugins.                                                                                                                                       |
-| P02 CRUD                 | Create leaf nodes X/Y; Retrieve X; RetrieveMultiple in all three query types; Update X; Delete temporary nodes. Returned IDs and post-delete absence recorded. Leaf hops do not trigger B/C.                                                       |
-| P03 Associations         | Associate and Disassociate X/Y through `pqvd_chainnode_peers`; capture Target, Relationship and RelatedEntities and independently verify intersect visibility.                                                                                     |
-| P04 Upsert               | SDK Upsert using operation/nodecode alternate key; compare first create and second update, resulting ID and RecordCreated. Record actual nested message sequence rather than assuming it.                                                          |
-| P05 Ownership            | Assign user/team-owned node to a preconfigured demo team, observe owner changes and effective SDK identity. No Assign test on organisation-owned business tables.                                                                                  |
-| P06 State                | Update statecode/statuscode, then separately execute eligible SetState message for comparison; preserve observed messages/status values.                                                                                                           |
-| P07 Custom API           | SDK calls `pqvd_EchoLabContext`, unbound, synchronous main-operation plugin; returns only typed operation/span/context summary. No portal direct custom-action dependency.                                                                         |
-| P08 Rollback             | C throws a controlled InvalidPluginExecutionException after B and C evidence is durably acknowledged. Probe/child changes roll back, external events survive; absence of later stages is expected.                                                 |
-| P09 Depth                | Separate explicitly selected test, budgets 1,3,7,8,9,10, creating a bounded single-child chain. Record last completed depth, platform fault and missing rejected-hop event. Do not raise the platform limit or loop indefinitely.                  |
-| P10 Async                | Async probe with immutable operation lookup and nonce; observe mode/transaction/context differences and root commit requirement.                                                                                                                   |
-| P11 Shared/context       | PreValidation, PreOperation, PostOperation and parent SharedVariables/tag propagation, plus configured identity variants.                                                                                                                          |
-| P12 Configuration        | Valid/missing/malformed unsecure/secure config, ordinary environment default/current/missing/invalid-type values; secret tests below.                                                                                                              |
-| P13 Azure                | Managed identity collector acknowledgment, synthetic Key Vault secret verification and echo-service response; missing Azure is blocked configuration.                                                                                              |
-| P14 Flow secret          | Flow-only RetrieveEnvironmentVariableSecretValue; sanitized flow completion triggers a separate node Update callback.                                                                                                                              |
-| P15 Bulk optional        | External SDK client submits CreateMultiple, UpdateMultiple, UpsertMultiple and eligible DeleteMultiple against supported test tables; record actual capabilities and observed per-record/bulk events. Never call these from the synchronous chain. |
-| P16 Specialized optional | Merge on disposable standard Account/Contact fixtures, and other explicitly enumerated product-specific requests only with separately prepared fixtures and authorization. Not baseline coverage.                                                  |
-
-SDK leaf calls use separate root profiles where an expected fault would abort the transaction. Never catch a failed in-transaction SDK write and continue as if the transaction remained usable. Portal CRUD remains a queue of individual requests; the external SDK driver is another lane, with its own backend identity and run provenance. ExecuteMultiple/ExecuteTransaction/bulk messages belong in external clients, not inside synchronous plugins. [Batch-request guidance](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/best-practices/business-logic/avoid-batch-requests-plugin).
-
-The optional bulk adapter captures Targets and supported `IPluginExecutionContext4` image arrays with record indices. It is feature-gated by SDK/table capabilities, not inferred from single-row events. [Multiple-operation plugin guidance](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/write-plugin-multiple-operation).
-
-## Registration images and Custom API contract
-
-Specify aliases and exact column lists in the registration manifest. Never select all attributes. Base image set on Probe: ownercontactid, runid, activeoperationid, triggernonce, pluginscenario, hopbudget, counter, value. Base image set on Node: operationid, nodecode, parentnodeid, hop/hopindex, scenario, nonces, querymarkerutc, typed sample fields, ownerid, statecode/statuscode, transactioncurrencyid. Use actual prefixed names from the schema, not these shorthand labels.
-
-| Message / stage                                        | Images                                                                                                                                       |
-| ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| Create stage40                                         | `After` postimage only; no preimage.                                                                                                         |
-| Update stage20                                         | `Before` preimage.                                                                                                                           |
-| Update stage40                                         | `Before` preimage and `After` postimage.                                                                                                     |
-| Delete stage20/40                                      | `Before` preimage only; no postimage.                                                                                                        |
-| Retrieve / RetrieveMultiple / Associate / Disassociate | No fabricated images; input/output snapshots provide evidence.                                                                               |
-| Assign / SetState / Merge and other eligible messages  | Register only combinations supported by metadata/documentation; capture actual availability. Upsert is not assumed to provide Update images. |
-
-Stage10 observer records whatever image collection exists without depending on an unavailable preimage. The deliberate Query mutator has no images. Async image aliases/column lists are independently registered and captured; no assumption that synchronous images automatically appear there. [Supported image messages and stages](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/register-plug-in).
-
-Custom API `pqvd_EchoLabContext`: unbound Action, allowed custom processing step type None, **IsPrivate=false**, because private Custom API messages cannot be invoked from plugins. Request OperationId Guid and Payload String(max application 4096); response SummaryJson String and SpanId Guid. Main plugin only at stage30 through the API's PluginType binding. It has no secure/unsecure constructor configuration: Custom API main-operation plugins do not support that configuration. Its nonsecret recording settings come from the declared environment definitions; ordinary configured steps supply the secure-configuration tests. Validate operation/scenario and payload allowlist; return message/depth/user IDs and typed echoes, no secrets. Set ExecutePrivilegeName to the existing ChainNode Read privilege resolved from installed table metadata; do not invent a custom privilege. This is not a new portal endpoint and does not imply the portals API supports custom actions. [Custom API restrictions and implementation](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/custom-api).
-
-## Context and object snapshot contract
-
-Every event uses a schema-versioned DTO, not arbitrary reflection of SDK objects. Record message, primary/secondary entity names/IDs, stage, mode, execution order, depth, IsInTransaction, UserId, InitiatingUserId, BusinessUnitId, OrganizationId, CorrelationId, RequestId when available, OperationId/OperationCreatedOn, OwningExtension reference, isolation/offline flags and supported interface version. Nullable/unavailable fields retain that state. Capture installed step/assembly version and hashes in the run manifest.
-
-Capture supported context extensions on the root and bounded parent frames: SDK2 portal flag/Contact, SDK4 image collections, SDK5 redacted user-agent presence, SDK6 environment/tenant and SDK7 application-user flag. Report interface availability separately from successful getter observation, including safe getter-error type; false, empty GUID and unavailable are distinct. Bound SDK4 collections to eight collections, eight images per collection and 64 attributes per image, preserving counts and truncation flags. Payloads identify assembly name/version/MVID; the private installation receipt maps that identity to binary SHA256. Never attempt runtime filesystem access or binary hashing inside the sandbox.
-
-Input/output snapshots preserve parameter names and runtime types: sparse Entity Target with attribute presence, EntityReference, EntityCollection/BusinessEntityCollection, Relationship, RelatedEntities, QueryBase, key attributes, Money, OptionSetValue, OptionSetValueCollection, AliasedValue, Guid, dates, numbers, Boolean and safe strings. Entity DTOs include Id/LogicalName, KeyAttributes, RowVersion/EntityState when supplied, allowlisted FormattedValues and bounded RelatedEntities. Distinguish absent attribute, explicit null and default values. Describe unsupported SDK types with type name/availability, not a made-up JSON value. Error snapshots contain safe fault code/type/message and transaction outcome; sanitize URLs/headers/secret material.
-
-Pre/PostEntityImages record alias, requested columns, actual attribute presence, IDs and typed values. SharedVariables record only `pqvd.lab.*` and documented safe `tag`; parent snapshots are bounded to twelve contexts with a truncation flag, preserving selected IDs/stages/variables rather than recursively serializing everything. Services, tokens, secure constructor strings and arbitrary third-party SharedVariables are not captured. A synthetic fixture may deliberately set tagged unsafe values to verify redaction.
-
-PreValidation-to-later SharedVariables handling needs the documented ParentContext path for Create/Update/Delete and RetrieveExchangeRate; ordinary stages also have their own collection. Test both accessible paths and observed missing values rather than assuming automatic copying. Set `pqvd.lab.operation`, `span`, `parentSpan`, `nonce` deliberately in the executing context's SharedVariables before nested calls; record their observed child/parent accessibility. SDK request `tag` is the documented immutable custom string shared-variable mechanism; pass a safe operation/span string on each nested request and compare what arrives. Do not pass arbitrary namespaced parameters to built-in SDK messages as an assumed transport. Do not assume Power Pages forwards a tag from arbitrary browser headers. Root portal correlation comes from query markers or probe fields. [Context, ParentContext and tag](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/understand-the-data-context).
-
-Async and flow work create separate executions/transactions. Carry the persisted operation lookup and nonce, not an assumed in-memory context. Store business operationId separately from platform CorrelationId/RequestId/OperationId; these identifiers serve different purposes and must not overwrite each other.
-
-## Configuration, environment variables and Azure profiles
-
-Use plugin constructor `(string unsecureConfiguration, string secureConfiguration)` with a validated immutable configuration object. Unsecure configuration contains schema version, profile allowlist, collector HTTPS endpoint/audience, maximum payload/time budgets, registered backend writer IDs and environment-variable schema names. It contains no credentials. Secure configuration contains a **synthetic test secret** for comparison tests; record only presence, parse outcome, configured version label and success Boolean. Never record its value, length or hash as a substitute for redaction.
-
-Secure step configuration is not exported in solution files. Deliver a post-import secure-provisioning manifest naming step IDs and secret references, never literal secrets; read it only in the authorized installation workflow. Test two same-class steps with different secure/unsecure versions to prove per-step construction/configuration behaviour without state leakage. Missing/malformed secure values produce the planned sanitized error or status. [Secure configuration portability](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/register-plug-in).
-
-Define nonsecret environment variables `pqvd_LabProfile` (Text), `pqvd_LabCollectorUrl` (Text), `pqvd_LabTimeoutMs` (Number) and `pqvd_LabFeatureFlags` (JSON), plus secret definition `pqvd_LabFlowSecret` referencing a synthetic Key Vault secret. Defaults are Disabled, empty URL, 2000 and `{}` respectively; missing endpoint leaves collection blocked rather than directing traffic to an invented host. Provide definition metadata and environment override manifest; do not export private current values. Ordinary values use RetrieveEnvironmentVariableValue with parameter `DefinitionSchemaName` after SDK qualification; a lookup fallback must explicitly apply current-value-over-default and reject ambiguous multiple current values. Test default, override, missing definition, missing value and invalid type separately. Flow secret action parameter is `EnvironmentVariableName`, not DefinitionSchemaName. [Variable value API](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/webapi/reference/retrieveenvironmentvariablevalue?view=dataverse-latest), [environment-variable behaviour](https://learn.microsoft.com/en-us/power-apps/maker/data-platform/environmentvariables).
-
-`CO Lab Secret Verification` companion flow triggers only an allowlisted ChainNode with scenario `P14` and configstatus `FlowPending`. C creates that committed leaf with a persisted requestnonce; the flow validates operation/scenario/nonce, calls RetrieveEnvironmentVariableSecretValue, performs a synthetic verification, and returns **only** success/presence, definition/version label, flow run reference and safe error category. Enable secure inputs/outputs on actions carrying the secret; no secret in Dataverse, trace, history or callback. A sanitized completionnonce/configstatus Update triggers C's separate FlowCallback branch, which does not restart ABC. Gate the callback by configured flow connection user identity and expected immutable operation/nonce. Record Flow source events and callback plugin events under the operation. A direct-plugin attempt, if included as an optional negative profile, is labelled unsupported-by-contract; failure is expected and no bypass/impersonation is attempted. [Key Vault secret-variable integration](https://learn.microsoft.com/en-us/power-apps/maker/data-platform/environmentvariables-azure-key-vault-secrets).
-
-P13 uses `IManagedIdentityService.AcquireToken(IEnumerable<string> scopes)` for the collector, Key Vault and an allowlisted echo service. Provision Microsoft's recommended **version 2** managed-identity federation, certificate-signed assembly/package, assembly-to-identity binding and target Azure RBAC. Strong-name test signing alone is insufficient for this cloud binding. Scope/audience is explicit per resource. Obtain tokens only in memory. Key Vault uses a synthetic fixture secret and reports verification Boolean/version, never its value or hash. The echo service accepts only operation/span/typed test payload and returns receipt/version/typed echo; it never receives full secure configuration. [Managed-identity setup](https://learn.microsoft.com/en-us/power-platform/admin/set-up-managed-identity).
-
-Sandbox outbound calls use allowed HTTP/HTTPS DNS hosts, bounded timeouts and disabled KeepAlive where required by the platform guidance. Do not accept arbitrary URLs from portal fields or call loopback/private-IP test servers from live plugins. Missing bindings, forbidden scopes, Azure authorization failures and network timeouts are recorded configuration outcomes, not simulated successes. The mandatory collector and optional Key Vault/echo tests have separate readiness flags: collector-only setup can complete query-capture tests without claiming P13/P14 coverage. [Sandbox web access](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/access-web-services).
-
-## One-page integration and reproducible comparison
-
-Document 2's visible page remains the only page. Add `Backend capture` details to each row and selectors for S01/P01..P14, with optional SDK/bulk runs imported from the external driver's saved run. `Run reads` executes both Liquid/API lanes and joins their backend evidence. `Run reads and prepared CRUD` additionally triggers declared probe profiles. Depth/rollback/cloud profiles are explicit selections, never silently included in a normal read run.
-
-Show compact JSON first: case, pairId, operationId, engine, returned IDs/count, logical/physical query hashes, backend capture state, query stage/hash/link counts and persisted artifact IDs. Expand blocks in order: authored intent; Liquid exposed XML; plugin received Query by stage/type; portal raw results; SDK context/parameters/images/lineage; configuration/cloud outcomes; diffs/persistence errors. API remains an API-only business-read lane even when backend diagnostics are displayed alongside it.
-
-The operation header is the single place to find evidence, not a single unlimited text field. Large client payloads are in TestResult parts; server payloads in PluginEvent parts. Header fields are bounded summaries/previews with pointers; setting authoredquery/liquidxml requires the complete value to fit, otherwise leave them null and point to complete parts. Do not silently truncate a header and present it as the complete query.
-
-Compare runs using suite/source/schema/registration versions, fixture/grant/role snapshots and logical query hashes. Separate data parity, constraint outcomes, query-tree differences, context/image/identity differences, chain lineage and durability. Generated backend aliases, timestamps, request IDs and durations remain raw but are ignored only by named versioned comparison rules. Backend plugin outputs are another observation, not an oracle substituting for the independent fixture expectation. Record successful root commit, expected rollback or unknown outcome before interpreting child rows.
-
-## Validation and qualification
-
-The laboratory contract includes unpacked solutions, two plugin assemblies, registration/step/image manifests, typed capture DTO schema, marker/query generator, collector/worker source and deployment manifest, companion flow/connection references, secure-provisioning manifest without secrets, external SDK driver and project-owned tests. Document exact portal/Dataverse versions, SDK versions, cloud dependencies and supported/unsupported message matrix in each qualified run.
-
-Required checks:
-
-- Metadata exports resolve every table/column/key/relationship and entity set: core has 19 custom business/reference tables, support has three and evidence has three. Preserve the three existing standard tables and avoid circular dependencies. All lookup/choice extensions have one owning solution.
-- Marker guard preserves seeded results including null-name, OR-filter, outer-join, aggregate and distinct cases. Physical IDs/hashes differ across lanes/pages/retries, logical hashes agree, and ambiguous/cross-run markers are rejected/quarantined.
-- FetchExpression captures exact XML; QueryExpression and QueryByAttribute DTOs preserve types/operators/joins/values/paging. Observer neither changes results nor invokes query converters. Early/late isolated mutator snapshots demonstrate stage attribution.
-- Join-budget tests retain both last-success/first-failure evidence and pre-pipeline failures. No claim that every role adds a fixed join count or that a captured query is SQL.
-- Forced rollback leaves root/child business changes absent but collector receipts and persisted events intact. Collector offline, oversized payload, worker duplicate/out-of-order delivery and persistence timeout produce visible incomplete states, not false complete records.
-- P01..P14 run with declared capability/binding prerequisites; images follow valid stage/message rules, sparse Target differs from images, shared/tag paths and identities are recorded, async/flow boundaries are explicit. P15/P16 remain optional/unsupported when capabilities are absent.
-- Server event writes and server-owned header edits are blocked for portal identities; Contact A cannot read/bind B's operations/events/nodes. The ordinary employee's business Delete remains denied while own probe and SDK disposable-node Delete controls pass.
-- No secret/token/header/credential appears in solution source, logs, artifacts or exported runs. Flow-only secret action is not implemented as a plugin direct call. Secure config and managed-identity installation are qualified rather than inferred from import success.
-- Reopen the one-page run and reproduce browser/Liquid/backend query/context diffs from saved complete parts without executing queries again. Missing backend observations and pending worker receipts remain visible.
-
-Offline checks use invented fixtures and explicit simulator packs. Mirage can run explicitly configured local CLR plugins and supported flow adapters with independent safety bounds. It does not reproduce the hosted Dataverse event pipeline or Azure services; local events must be labelled as models. Direct SDK tests do not prove Power Pages authorization. Live tests require separate authorization and the intended identity/environment. Changes to reusable toolkit code need relevant regressions and `npm run validate`.
-
-Site/cloud qualification, durable collector deployment and supported message discovery require separate validation against the selected environment. These specifications define acceptance criteria; they do not show that anything is deployed or qualified.
-
-Source5 adds original-context observation for Stock canary Equipment Create/Update/Delete and an optional CRUD Probe equipment lookup. Immutable SDK-prepared intents bind operation GUID, exact target GUID, expected message, Contact-owned Run and actual Context2 portal actor. Create and Update carry the exact CO-OP operation sentinel; Delete uses a trusted preparation of that sentinel before the source freeze and captures the original Before image. Probe-to-Equipment association validates the same Run/actor and disposable Stock ownership. Room rebinds preserve Building/Account ownership, assignment and financial/projection invariants. Existing guards remain enabled. Source5 has its own assemblies, registrations, schema and recordings; Source4 captures do not qualify it.
+Source5 observes disposable Stock canary Equipment Create, Update and Delete in their original portal context and adds
+an optional probe equipment lookup ([optional
+contracts](../../examples/company-operations/plugins/README.md#optional-contracts-off-by-default)). SDK-prepared
+intents, valid for 30 minutes, bind operation, target, message, Contact-owned Run and the portal actor. Create and
+Update carry the `CO-OP:` sentinel in the name; Delete uses one prepared before the source freeze and captures the
+`Before` image. Room rebinds stay in the Building and owning Account. Source5 has its own assemblies, registrations,
+schema and recordings; Source4 captures do not qualify it.

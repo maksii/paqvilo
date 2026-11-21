@@ -2,7 +2,7 @@
 // The flow Dataverse connector (connector-runtime.mjs dataverseProvider) is one dataverse span per call under its connector
 // span (docs/design/tracing.md): the store reads and the organization record entries it drives open none of their own,
 // with or without the organization's record pipeline. The span is module dataverse with the canonical operation and
-// attribute connector (D-R3-9); at level full it carries the written values and the read rows' count (DV-C-14).
+// attribute connector (D-R3-9); at level full it carries the written values and the read rows' count.
 // Invented schema only.
 import test from 'node:test';
 import assert from 'node:assert/strict';

@@ -562,6 +562,49 @@ test('with a revision source the mapped-table memo compares no fields while the 
   assert.notEqual(after, before);
 });
 
+// @test-kind contract: inside one read epoch of the overlay the mapped-table memo keeps the epoch's first projection, so a bulk reader inside a transaction (no revision) compares the mappings once; a runtime start read every mapping once per table before.
+test('inside one read epoch the mapped-table memo compares the mappings once, and again after the epoch', () => {
+  let reads = 0;
+  const counted = (target) =>
+    new Proxy(target, {
+      ownKeys(object) {
+        reads += 1;
+        return Reflect.ownKeys(object);
+      },
+    });
+  const overlay = createSolutionMetadataOverlay();
+  const mapped = createMappedTables({ revision: () => null, readEpoch: () => overlay.readEpochToken() });
+  const base = { lcid: 1033, entities: {}, forms: [], views: [], modelDrivenApps: [] };
+  const state = {
+    mappings: { t: { fields: counted({ x: { dataverseType: 'int', label: 'Before' } }) } },
+    dataverse: { metadataLog: [] },
+  };
+  const view = () => mapped(overlay(base, state), state);
+  assert.equal(overlay.readEpochToken(), null);
+  const outside = view();
+  reads = 0;
+  view();
+  const perComparison = reads;
+  assert.ok(perComparison > 0, 'without an epoch or a revision every call compares the mapping fields');
+  overlay.withReadEpoch(() => {
+    reads = 0;
+    const first = view();
+    assert.equal(first, outside);
+    assert.equal(reads, perComparison, 'the first call of the epoch compares');
+    for (let index = 0; index < 50; index++) assert.equal(view(), first);
+    assert.equal(reads, perComparison, 'later calls of the epoch read no mapping field');
+    // The epoch retains its first projection, as the overlay does for its own value.
+    state.mappings.t.fields.x.label = 'Inside';
+    assert.equal(view(), first);
+    // A nested epoch that names its own validity is a new projection: it compares again.
+    overlay.withReadEpoch(() => assert.equal(view().entities.t.fields.x.label, 'Inside'), { valid: () => true });
+    assert.equal(view().entities.t.fields.x.label, 'Inside');
+  });
+  assert.equal(overlay.readEpochToken(), null);
+  state.mappings.t.fields.x.label = 'After';
+  assert.equal(view().entities.t.fields.x.label, 'After');
+});
+
 // @test-kind contract: a mapping-only table keeps the label its mapping field declares.
 test('a mapping-only table keeps the label of its mapping field and falls back to the column name', () => {
   const metadata = createMappedTables()(

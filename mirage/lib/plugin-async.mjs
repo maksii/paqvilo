@@ -13,7 +13,7 @@ import {
   traceJob,
   wholeSecond,
 } from './committed-work.mjs';
-import { clockFunction, systemClock, systemIds } from './runtime-clock.mjs';
+import { clockFunction, stampMs, systemClock, systemIds } from './runtime-clock.mjs';
 import { createRequestContext, runWithRequest } from './request-context.mjs';
 import { PLUGIN_MAX_DEPTH, recordToSdkEntity } from './plugin-clr.mjs';
 import { multipleMessage } from './plugin-single-multiple.mjs';
@@ -22,7 +22,7 @@ import { DataError } from './data-error.mjs';
 
 // Each run gets its own request context: the starting request's correlation (carried by the committed event, else the chain)
 // as the parent, mode async, the writer as principal; a plug-in trace log and nested events then carry that correlation.
-// The human facts of an asynchronous step finding (D-M-2 Findings): the step's display name, the table and a sentence.
+// The human facts of an asynchronous step finding (Findings): the step's display name, the table and a sentence.
 const stepFacts = (item, itemId, event, outcome) => {
   const name = item?.name ?? itemId;
   const onEntity = event?.entity ? ` on ${event.entity}` : '';
@@ -149,16 +149,36 @@ function jobExecutionFrame(store, id, event) {
   };
 }
 // Claims a Ready job (Locked, In Progress) and returns its finish/cancel; null when the job left Ready (a cancel) or is gone.
+// Every job transaction finds its row again by id and reaches the state through the store alone, so its rollback backup
+// copies only what the job reached (DataStore#transact `tracked`), not the whole state per job.
+const TRACKED = { tracked: true };
+
+// UTC remains wall time. Only elapsed SYSTEM time is monotonic; a virtual clock owns its elapsed time.
+function executionTimer(clock, wallNow) {
+  const systemElapsed = (clock ?? systemClock) === systemClock;
+  const elapsedNow = systemElapsed ? () => performance.now() : wallNow;
+  let startedElapsedMs;
+  return {
+    start(wallStartMs) {
+      // Reuse the existing virtual wall sample, rather than advancing a caller-supplied clock again.
+      startedElapsedMs = systemElapsed ? elapsedNow() : wallStartMs;
+    },
+    seconds: () => (elapsedNow() - startedElapsedMs) / 1000,
+  };
+}
+
 function claimJob(store, id, item, systemJobs, diagnostic, { pluginAttempt = false } = {}) {
   const clockMs = () => clockFunction(store.clock ?? systemClock)();
-  const now = () => new Date(clockMs()).toISOString();
-  // The start of this attempt (store clock, ms). retry, finish, cancel and stepMissing add its elapsed seconds to
-  // executiontimespan, accumulated across retries (each retry claims again); a removed row takes no time.
+  // A stored date, held across a small backward step of the wall clock (runtime-clock.mjs stampMs).
+  const now = () => new Date(stampMs(store, store.clock ?? systemClock)).toISOString();
+  // UTC stamps follow the configured wall clock. System elapsed time follows the monotonic clock so a host
+  // correction cannot make executiontimespan negative or inflate it. Virtual clocks retain their own elapsed time.
+  const execution = executionTimer(store.clock, clockMs);
+  // retry, finish, cancel and stepMissing accumulate each claimed attempt's elapsed seconds; a removed row takes no time.
   let startedMs = null;
   const addExecution = (row) => {
     if (startedMs === null) return;
-    const nowMs = clockMs();
-    row.executiontimespan = Math.round(((row.executiontimespan ?? 0) + (nowMs - startedMs) / 1000) * 1000) / 1000;
+    row.executiontimespan = Math.round(((row.executiontimespan ?? 0) + execution.seconds()) * 1000) / 1000;
   };
   const { rows, index } = liveJob(store, id);
   if (index < 0 || rows[index].statecode !== 0) return null;
@@ -189,6 +209,7 @@ function claimJob(store, id, item, systemJobs, diagnostic, { pluginAttempt = fal
     rows[index].data = JSON.stringify({ ...payload, pluginAttempts: attempt });
   }
   startedMs = clockMs();
+  execution.start(startedMs);
   Object.assign(rows[index], {
     statecode: 2,
     statuscode: 20,
@@ -365,21 +386,24 @@ export function createAsyncPluginRunner({
       let job = null;
       await store.transact(() => {
         job = claimJob(store, id, item, systemJobs, diagnostic);
-      });
+      }, TRACKED);
       if (!job) return;
       try {
         if (!item) {
-          await store.transact(() => job.stepMissing());
+          await store.transact(() => job.stepMissing(), TRACKED);
           return;
         }
         const skipped = skippedRegistration(item, event, 'webhook', id);
         if (skipped) {
-          await store.transact(() => job.cancel(...[skipped].flat()));
+          await store.transact(() => job.cancel(...[skipped].flat()), TRACKED);
           return;
         }
         if (!webhooks) {
           diagnostic({ code: 'WEBHOOK_NOT_DELIVERED', stepId: itemId, reason: 'no-adapter' });
-          await store.transact(() => job.cancel('Simulator: no asynchronous webhook delivery adapter is configured.'));
+          await store.transact(
+            () => job.cancel('Simulator: no asynchronous webhook delivery adapter is configured.'),
+            TRACKED,
+          );
           return;
         }
         const answer = await webhooks.afterCommit({
@@ -404,7 +428,7 @@ export function createAsyncPluginRunner({
           correlationId: event.correlationId ?? chain.id,
           diagnostic,
         });
-        await store.transact(() => (answer?.canceled ? job.cancel(answer.canceled) : job.finish(null)));
+        await store.transact(() => (answer?.canceled ? job.cancel(answer.canceled) : job.finish(null)), TRACKED);
         diagnostic({
           code: 'PLUGIN_ASYNC_COMPLETED',
           ...stepFacts(item, itemId, event, 'completed'),
@@ -415,7 +439,7 @@ export function createAsyncPluginRunner({
         });
       } catch (error) {
         span?.fail(error);
-        await store.transact(() => job.finish(error));
+        await store.transact(() => job.finish(error), TRACKED);
         diagnostic({
           code: 'PLUGIN_ASYNC_FAILED',
           ...stepFacts(item, itemId, event, `failed: ${error.message}`),
@@ -444,7 +468,7 @@ export function createAsyncPluginRunner({
       // restart cannot reset the four-attempt budget, even after a crash.
       await store.transact(() => {
         job = claimJob(store, id, item, systemJobs, diagnostic, { pluginAttempt: true });
-      });
+      }, TRACKED);
       if (!job) return;
       await store.transact(() => {
         const previousChain = store.flowChain,
@@ -549,10 +573,10 @@ export function createAsyncPluginRunner({
           store.pluginExecutionUserId = previousExecution;
           store.pluginPlatformUserId = previousPlatform;
         }
-      });
+      }, TRACKED);
       return retrying ? retryCommittedJob : undefined;
     } catch (error) {
-      if (job) await store.transact(() => job.recover());
+      if (job) await store.transact(() => job.recover(), TRACKED);
       diagnostic({
         code: 'PLUGIN_ASYNC_QUEUE_FAILED',
         stepId: itemId,

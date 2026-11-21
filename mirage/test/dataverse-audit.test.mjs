@@ -1,5 +1,6 @@
 // Simulated Dataverse auditing: seeding, enablement, audit actions, impersonation, the
 // history functions and their privileges.
+// @test-kind unproven: local model of Dataverse auditing; the shapes follow the Audit table reference, no native capture is cited
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { rm } from 'node:fs/promises';
@@ -8,7 +9,7 @@ import { join } from 'node:path';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { AUDIT_ACTION, install, recordUserAccess, reset, writeAudit } from '../lib/dataverse-audit.mjs';
 import { DataError } from '../lib/data-error.mjs';
-import { uuidV5 } from '../lib/dataverse-security.mjs';
+import { privilegeDeniedError, uuidV5 } from '../lib/dataverse-security.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const ORG = '6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f';
@@ -56,7 +57,7 @@ function apiFor(store, grants, schema = { tables: { widget: { logicalName: 'widg
     change: (fn) => fn(),
     registry: { register: (op) => ops.push(op) },
     recordHooks: { add: (name, fn) => (hooks[name] = fn) },
-    principals: { privileges: (user) => user.grants, authorize: () => 1 },
+    principals: { privileges: (user) => user.grants, authorize: () => 1, deniedError: privilegeDeniedError },
     grants,
   };
 }
@@ -164,6 +165,32 @@ test('N:N associate and disassociate audit through the afterWrite hook', async (
   );
   const page = await history(api, 'w1');
   assert.equal(page.body.AuditDetailCollection.AuditDetails[0]['@odata.type'], RELATIONSHIP);
+});
+
+// @test-kind unproven: the Audit table reference lists Assign/Remove Role To User (55/56) and To Team (53/54); which table flag gates them is not documented, so organization auditing alone is modelled
+test('a role assigned or removed from either side is audited on the user or team as a security role change', async () => {
+  for (const org of [true, false]) {
+    const api = await setup({ org });
+    const mapping = (logicalName) => ({ logicalName });
+    const write = (logical, operation, id, relationship, relatedId) =>
+      api.hooks.afterWrite({ identity: IDENTITY }, mapping(logical), { operation, id, relationship, relatedId });
+    await write('systemuser', 'associate', 'u1', 'systemuserroles_association', 'r1');
+    await write('role', 'disassociate', 'r1', 'systemuserroles_association', 'u1');
+    await write('team', 'associate', 't1', 'teamroles_association', 'r1');
+    await write('role', 'disassociate', 'r1', 'teamroles_association', 't1');
+    assert.deepEqual(
+      auditRows(api).map((r) => [r.action, r.operation, r.objecttypecode, r.objectid.id]),
+      org
+        ? [
+            [55, 2, 'systemuser', 'u1'],
+            [56, 2, 'systemuser', 'u1'],
+            [53, 2, 'team', 't1'],
+            [54, 2, 'team', 't1'],
+          ]
+        : [],
+      org ? 'organization auditing on' : 'organization auditing off',
+    );
+  }
 });
 
 test("the schema's object-keyed table flag drives auditing when the mapping says nothing, and an association never throws", async () => {
@@ -311,6 +338,47 @@ test('record change history pages with a paging cookie and newest rows first', a
   const page2 = second.body.AuditDetailCollection;
   assert.deepEqual([page2.MoreRecords, page2.AuditDetails.length, page2.PagingCookie], [false, 2, '']);
   assert.equal(page2.AuditDetails[1].NewValue.name, 'v0');
+});
+
+// Lab night medium-20261119 (WSL runners): the wall clock stepped back about a second between a create and its update,
+// so the update's row was stamped older and the history listed the create first. The history follows the write order, a
+// small step is held (runtime-clock.mjs stampMs), and a deliberate set-back or a future-dated stored row stays honest.
+test('a wall clock stepped back between two writes keeps the later audit row newest', async () => {
+  const api = await setup();
+  let now = CLOCK;
+  // One organization clock: the store's record stamps and the audit stamps read the same time.
+  api.clock = () => now;
+  api.store.clock = { now: api.clock };
+  // A stored row dated after the clock (an imported state) does not pin the stamps of new rows.
+  api.store.state.tables.audit.push({
+    auditid: 'imported',
+    objecttypecode: 'other',
+    createdon: '2099-01-01T00:00:00.000Z',
+  });
+  await api.store.create('widget', { name: 'A' }, IDENTITY);
+  await flush(api);
+  const id = widgetId(api);
+  now -= 1000;
+  await api.store.update('widget', id, { name: 'B' }, IDENTITY);
+  await flush(api);
+  now -= 3600000;
+  await api.store.update('widget', id, { name: 'C' }, IDENTITY);
+  await flush(api);
+  const [, created, updated, setBack] = auditRows(api);
+  assert.deepEqual(
+    [created.createdon, updated.createdon, setBack.createdon],
+    [new Date(CLOCK).toISOString(), new Date(CLOCK).toISOString(), new Date(CLOCK - 1000 - 3600000).toISOString()],
+    'a 1 s step is held at the last stamp; a 1 h set-back is honoured',
+  );
+  const details = (await history(api, id)).body.AuditDetailCollection.AuditDetails;
+  assert.deepEqual(
+    details.map((detail) => [detail.OldValue?.name ?? null, detail.NewValue.name]),
+    [
+      ['B', 'C'],
+      ['A', 'B'],
+      [null, 'A'],
+    ],
+  );
 });
 
 test('attribute change history and audit details return only the matching column', async () => {

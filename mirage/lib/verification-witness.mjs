@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { requiredArgument } from './required-argument.mjs';
 
 // Typed representation preserves absent versus explicit undefined, Date,
 // bigint and duplicate rows without ambiguous sentinel objects.
@@ -20,8 +21,13 @@ const hash = (value) =>
   createHash('sha256')
     .update(JSON.stringify(canonical(value)))
     .digest('hex');
-const fail = (message) => {
-  throw Object.assign(new Error(message), { status: 400, code: 'InvalidVerificationSelection' });
+// parameter: the refused query parameter (`tables` for a table selection), as other admin refusals name it.
+const fail = (message, parameter) => {
+  throw Object.assign(new Error(message), {
+    status: 400,
+    code: 'InvalidVerificationSelection',
+    ...(parameter ? { parameter } : {}),
+  });
 };
 const HASH_KEYS = ['permissions', 'mappings', 'settings', 'sources', 'operationMode', 'actor', 'fixtures', 'selection'];
 const receiptScope = (value) => ({
@@ -39,9 +45,9 @@ export function verificationTableSelection(tables, state) {
     tables.some((table) => typeof table !== 'string' || !/^[a-z][a-z0-9_]{0,127}$/i.test(table)) ||
     new Set(tables).size !== tables.length
   )
-    fail('Select between one and 32 distinct logical fixture tables.');
+    fail('Select between one and 32 distinct logical fixture tables.', 'tables');
   if (tables.some((table) => !Object.hasOwn(state.tables ?? {}, table) || !Object.hasOwn(state.mappings ?? {}, table)))
-    fail('Every selected fixture table must exist in the current runtime data and mappings.');
+    fail('Every selected fixture table must exist in the current runtime data and mappings.', 'tables');
   return [...tables].sort((a, b) => Number(a > b) - Number(a < b));
 }
 
@@ -128,7 +134,10 @@ export function verificationWitness({ state, tables, identity, portal, runtime }
   return witness;
 }
 
-export function compareVerificationWitnesses(before, after) {
+export function compareVerificationWitnesses(
+  before = requiredArgument('compareVerificationWitnesses(before, after)', 'two verification witnesses'),
+  after = requiredArgument('compareVerificationWitnesses(before, after)', 'two verification witnesses'),
+) {
   for (const value of [before, after]) {
     if (
       value?.kind !== 'MirageVerificationWitness' ||

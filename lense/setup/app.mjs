@@ -269,24 +269,51 @@ function keepPlace(paint) {
   const again = id && document.getElementById(id);
   if (again) window.scrollBy(0, again.getBoundingClientRect().top - top);
 }
-// While a button is pressed, polls leave the page alone, so the click lands on the button that was pressed.
+// While a pointer or a held Space presses, polls leave the page alone, so the click lands on the control that was
+// pressed. Repaints that cannot wait for a later poll run through whenReleased. Every way a press can end without its
+// release reaching the page (a native dialog, another window, a hidden tab) clears all presses, so a load or save
+// waiting for the release always goes on.
+const presses = new Set(),
+  afterPress = [];
 let pressing = false;
+function press(kind, down) {
+  if (down) presses.add(kind);
+  else presses.delete(kind);
+  pressing = presses.size > 0;
+  if (!pressing) for (const run of afterPress.splice(0)) run();
+}
+const whenReleased = (run) => (pressing ? afterPress.push(run) : run());
+// For an async step about to repaint: resolves at once, or when the press that is under way ends.
+const released = () => new Promise((resolve) => whenReleased(resolve));
+// The release waits one task, so the click of that press runs first.
+const releaseAfterClick = (kind) => setTimeout(() => press(kind, false));
+document.addEventListener('pointerdown', () => press('pointer', true), true);
+for (const type of ['pointerup', 'pointercancel'])
+  document.addEventListener(type, () => releaseAfterClick('pointer'), true);
+// A press can end without pointerup: a context menu opens, the window loses focus, or the button was released elsewhere.
+document.addEventListener('contextmenu', () => press('pointer', false), true);
 document.addEventListener(
-  'pointerdown',
-  () => {
-    pressing = true;
+  'pointermove',
+  (event) => {
+    if (event.buttons === 0 && presses.has('pointer')) press('pointer', false);
   },
   true,
 );
-for (const type of ['pointerup', 'pointercancel'])
-  document.addEventListener(
-    type,
-    () =>
-      setTimeout(() => {
-        pressing = false;
-      }),
-    true,
-  );
+function releaseAll() {
+  presses.clear();
+  press('pointer', false);
+}
+window.addEventListener('blur', releaseAll);
+document.addEventListener('visibilitychange', () => document.visibilityState === 'hidden' && releaseAll());
+// Space activates a button on keyup, so holding it presses that button. Enter clicks on keydown: nothing to keep.
+const pressKey = (event) => event.key === ' ' && event.target.closest?.('button, input[type=submit]');
+document.addEventListener('keydown', (event) => pressKey(event) && press('key', true), true);
+document.addEventListener('keyup', (event) => event.key === ' ' && releaseAfterClick('key'), true);
+// The page's own questions: the release of a key or button held when the dialog opens goes to the dialog.
+function ask(question) {
+  releaseAll();
+  return confirm(question);
+}
 function renderPreservingContext() {
   // Sections the user saw keep their open state; sections that appear for the first time take their default.
   const sections = [...document.querySelectorAll('#content details[data-section-key]')];
@@ -350,8 +377,12 @@ async function load() {
     // A successful load needs no banner: the status strip shows the result; errors and saves still report in #notice.
     state = await request('/_setup/api/status');
     await Promise.all([loadQuick(), pollPreview(true)]);
+    // This render shows the found preview, so the next poll repaints only when it starts or stops.
+    liveChanged();
     await loadRuntimeInfo();
     dirty = false;
+    // Links and summaries stay usable while loading; one being pressed keeps its click.
+    await released();
     renderPreservingContext();
     $('#notice').hidden = true;
     if (firstRender) {
@@ -403,6 +434,7 @@ async function save(payload) {
     dirty = false;
     savedAt = Date.now();
     if (!state.runtime && quickSession()?.ready) restartHint = true;
+    await released();
     renderPreservingContext();
     notice(view === 'quick' ? 'Saved.' : savedNotice(state.runtime));
     return true;
@@ -705,7 +737,7 @@ function siteEditor(site) {
     `<div class="row"><button type="button" class="button" data-add-profile>Add profile</button><label class="checkbox-line"><input type="radio" name="profile-default" value="" ${current ? '' : 'checked'}>No default profile</label></div>` +
     (project
       ? `<fieldset class="quick-group"><legend>Code apps</legend><p>Register each local app. Changes apply after restarting the preview.</p><div data-code-apps>${(state.layers.shared.values?.codeApps ?? []).map((app, index) => codeAppRow(app, index)).join('')}</div><button type="button" class="button" data-add-code-app>Add code app</button></fieldset>`
-      : '<p class="muted small">Code apps run from a standalone project file (paqvilo setup --project), not from this settings file.</p>') +
+      : `<p class="muted small">Code apps run from a standalone project file (<code>${esc(state.commands.prefix)} setup --project</code>), not from this settings file.</p>`) +
     `<div class="toolbar"><button type="submit" class="button primary">Save</button><span class="muted">Writes the ${layer} settings file. Applies when the preview restarts.</span></div></form>`
   );
 }
@@ -957,9 +989,18 @@ function rerenderTable(key, search = false) {
     }
   }
 }
+// The open state each kit section was shown with. The browser queues a section's toggle event, which a section
+// replaced first never delivers here, so a render reads the sections the user changed before replacing them.
+const shownUiOpen = new WeakMap();
+function rememberUiOpen(root) {
+  for (const node of root?.querySelectorAll('details[data-ui-section]') ?? [])
+    if (shownUiOpen.has(node) && shownUiOpen.get(node) !== node.open) uiOpen.set(node.dataset.uiSection, node.open);
+}
 function applyUiOpen(root) {
-  for (const node of root.querySelectorAll('details[data-ui-section]'))
+  for (const node of root.querySelectorAll('details[data-ui-section]')) {
     if (uiOpen.has(node.dataset.uiSection)) node.open = uiOpen.get(node.dataset.uiSection);
+    shownUiOpen.set(node, node.open);
+  }
 }
 
 // A collapsible section: one title row with its (i) guidance and status badge; the guidance never sits inside the heading.
@@ -1274,6 +1315,7 @@ function refreshSystem(force = false) {
   const html = systemBody();
   if (!force && html === body.dataset.rendered) return;
   keepPlace(() => {
+    rememberUiOpen(body);
     body.innerHTML = html;
     body.dataset.rendered = html;
     applyUiOpen(body);
@@ -1365,7 +1407,8 @@ function refreshPreviewView(silent) {
   return shouldRefreshRuntimeInfo();
 }
 function renderPreviewStatusChange() {
-  if (!pending && !dirty && liveChanged()) renderPreservingContext();
+  // A pressed button is not replaced, so its click lands; a later poll repaints.
+  if (!pending && !dirty && !pressing && liveChanged()) renderPreservingContext();
 }
 async function pollPreview(silent = false) {
   if (previewPolling || !state || document.visibilityState !== 'visible') return;
@@ -1412,6 +1455,9 @@ const liveChanged = () => {
   return changed;
 };
 function quickHtml() {
+  // The map's toggle event is queued: a repaint in the task of the click reads what the user chose from the map shown.
+  const shownMap = $('#quick details[data-section-key="quick-map"]');
+  if (shownMap) quickMapOpen = shownMap.open;
   const target = quickTarget(),
     session = quickSession(),
     live = isLive() ? dashboard : null;
@@ -1469,8 +1515,10 @@ function refreshQuick(force = false) {
   const html = quickHtml();
   if (!force && html === host.dataset.rendered) return;
   keepPlace(() => {
+    rememberUiOpen(host);
     host.innerHTML = html;
     host.dataset.rendered = html;
+    applyUiOpen(host);
     afterSystem();
   });
   syncShell();
@@ -1532,7 +1580,7 @@ async function previewAction(action) {
   if (
     action === 'stop' &&
     liveRuntime() &&
-    !confirm(
+    !ask(
       'This page is served by the preview. Stopping it also closes this page until you open setup again. Stop the preview?',
     )
   )
@@ -1563,8 +1611,11 @@ async function previewAction(action) {
   } catch (error) {
     previewError = error.message;
   }
-  refreshQuick(true);
-  refreshRun(true);
+  // The answer can arrive while another control is pressed: that click lands first.
+  whenReleased(() => {
+    refreshQuick(true);
+    refreshRun(true);
+  });
   clearTimeout(previewTimer);
   previewTimer = setTimeout(() => pollPreview(), 1500);
 }
@@ -1623,7 +1674,9 @@ function setView(next) {
   if (!state || firstRender) return;
   void Promise.all([view === 'quick' && !quick ? loadQuick() : null, pollPreview(true)]).then(async () => {
     await loadRuntimeInfo();
-    render();
+    // A draft started in the view just shown, or a save under way, is not replaced; a save repaints with these reads.
+    // A section opened or closed in the view just shown keeps that state.
+    whenReleased(() => !dirty && !pending && renderPreservingContext());
   });
   render();
 }
@@ -1707,6 +1760,8 @@ async function openFolder(folder) {
   else if (match) here.textContent = `This folder is a ${kindText(data.kind)}. Choose “Use this folder”.`;
   else if (data.kind) here.textContent = `This folder holds a ${kindText(data.kind)}, not a ${noun}.`;
   else here.textContent = `This folder is not a ${noun}. Open one of the folders below.`;
+  // The folder rows are buttons: a row pressed while this folder was read keeps its click.
+  await released();
   $('#folder-picker-list').innerHTML =
     (data.parent
       ? `<li><button type="button" class="folder-row" data-folder-open="${esc(data.parent)}"><span>↑ Up one folder</span></button></li>`
@@ -1740,7 +1795,7 @@ function useFolder() {
   if (
     PICK[kind].noun &&
     data.kind?.type !== kind &&
-    !confirm(`This folder does not look like a ${PICK[kind].noun}. Use it anyway?`)
+    !ask(`This folder does not look like a ${PICK[kind].noun}. Use it anyway?`)
   )
     return;
   const into = picker.into && document.getElementById(picker.into),
@@ -2365,40 +2420,41 @@ function advancedBody() {
   );
 }
 function guidanceBody() {
-  // Arguments quoted by the server (status.commandArgs), as the restart command quotes them.
+  // Arguments quoted by the server (status.commandArgs), as the restart command quotes them; the command prefix for
+  // the served folder from status.commands.
   const project = state.kind === 'project',
     arg = esc(state.commandArgs?.file ?? ''),
-    at = state.commandArgs?.site ? ` ${esc(state.commandArgs.site)}` : '';
+    at = state.commandArgs?.site ? ` ${esc(state.commandArgs.site)}` : '',
+    run = esc(state.commands.prefix);
   const steps = [
-    [
-      'Install and check',
-      'In a scaffold, run <code>npm run setup</code>; otherwise <code>npx paqvilo doctor --setup</code>.',
-    ],
+    // The server names the project's npm script only when the project defines it (lense/command-hint.mjs).
+    ['Install and check', `Run <code>${esc(state.commands.setup)}</code>.`],
     [
       'Scaffold or compare',
-      `${project ? '' : '<code>npx paqvilo init --check</code> lists remaining scaffold tasks. '}<code>npx paqvilo mirage demo</code> copies the shipped example project.`,
+      (project ? '' : '<code>' + run + ' init --check</code> lists remaining scaffold tasks. ') +
+        `<code>${run} mirage demo</code> copies the shipped example project.`,
     ],
     [
       'Inspect',
-      project ? `<code>npx paqvilo mirage inspect ${arg}</code>` : `<code>npx paqvilo lense doctor ${arg} --all</code>`,
+      project ? `<code>${run} mirage inspect ${arg}</code>` : `<code>${run} lense doctor ${arg} --all</code>`,
     ],
     [
       'Generate data (optional)',
-      `<code>npx paqvilo mirage data scaffold --profile smoke --state .paqvilo/smoke-state.json ${arg}${at}</code>`,
+      `<code>${run} mirage data scaffold --profile smoke --state .paqvilo/smoke-state.json ${arg}${at}</code>`,
     ],
     ...(project
       ? []
       : [
           [
             'Standalone project (optional)',
-            `<code>npx paqvilo mirage init ${arg}${at}</code>, then <code>npx paqvilo setup --project &lt;file&gt;</code>`,
+            `<code>${run} mirage init ${arg}${at}</code>, then <code>${run} setup --project &lt;file&gt;</code>`,
           ],
         ]),
     [
       'Start a preview',
       project
-        ? `<code>npx paqvilo mirage serve ${arg}</code>`
-        : `<code>npx paqvilo mirage dev ${arg}${at}</code> locally, or <code>npx paqvilo lense dev ${arg}${at}</code> for an authorized environment`,
+        ? `<code>${run} mirage serve ${arg}</code>`
+        : `<code>${run} mirage dev ${arg}${at}</code> locally, or <code>${run} lense dev ${arg}${at}</code> for an authorized environment`,
     ],
   ];
   // One row per guide: several keys can name the same document.
@@ -2512,6 +2568,7 @@ function renderViewSelection() {
     button.setAttribute('aria-pressed', String(button.dataset.view === view));
 }
 function renderView(created, personal, opened) {
+  rememberUiOpen($('#content'));
   const afterCreate = (body) =>
     created ? body : kit.notice('Create the configuration above first; this stage edits it.', 'neutral');
   const rail = $('#stage-rail');
@@ -2523,6 +2580,7 @@ function renderView(created, personal, opened) {
     $('#breadcrumb').textContent = 'Quick setup';
     $('#content').innerHTML =
       datalists() + `<section id="quick" class="panel quick" aria-label="Quick setup">${quickHtml()}</section>`;
+    applyUiOpen($('#content'));
     afterSystem();
     if (state.canEdit === false)
       for (const button of document.querySelectorAll('#content form[data-form] button[type=submit]'))
@@ -2713,9 +2771,12 @@ function handleRunSiteChange(target) {
   liveChanged();
   renderPreservingContext();
   void pollDashboard();
-  void loadRuntimeInfo().then(() => {
-    if (quickSite === target.value) renderPreservingContext();
-  });
+  void loadRuntimeInfo().then(() =>
+    whenReleased(() => {
+      // as in setView: a draft started meanwhile, or a save under way, is not replaced
+      if (quickSite === target.value && !dirty && !pending) renderPreservingContext();
+    }),
+  );
   return true;
 }
 function handleFoundWebsiteChange(target) {
@@ -2742,7 +2803,7 @@ function handleRuntimePartChange(target) {
   if (yaml ? !Object.hasOwn(state.layers, target.value) : !['shared', 'personal'].includes(target.value)) return;
   if (
     dirty &&
-    !confirm(
+    !ask(
       yaml
         ? 'Discard unsaved form changes and open another document?'
         : 'Discard unsaved form changes and switch configuration layer?',
@@ -2950,7 +3011,7 @@ document.addEventListener('click', (event) => {
     setView('all');
   // Links to a document (a linked-project finding, a references-only row) open it in the YAML editor first.
   if (document_ && state?.layers[document_] && document_ !== (state.layers[yamlLayer] ? yamlLayer : layer)) {
-    if (dirty && !confirm('Discard unsaved form changes and open another document?')) {
+    if (dirty && !ask('Discard unsaved form changes and open another document?')) {
       event.preventDefault();
       return;
     }
@@ -3015,6 +3076,7 @@ const SUBMIT = {
     ) {
       await loadQuick();
       quickEditing = null;
+      await released();
       render();
       notice(
         `Created ${fileName(state.layers.shared.file)} in ${state.directory}. Check the folders it uses in step 2.`,
@@ -3561,7 +3623,7 @@ $('#content').addEventListener('submit', async (event) => {
   }
 });
 $('#refresh').addEventListener('click', () => {
-  if (!dirty || confirm('Discard unsaved form changes and reload status?')) void load();
+  if (!dirty || ask('Discard unsaved form changes and reload status?')) void load();
 });
 window.addEventListener('beforeunload', (event) => {
   if (dirty) {

@@ -179,7 +179,7 @@ test('plan, apply, compare and query run end to end, and a rerun is idempotent',
     expectedOrganisationId: gate.organizationId,
     journalFile: path.join(dir, 'journal-rerun.json'),
   });
-  assert.equal(rerun.state, 'Created');
+  assert.equal(rerun.state, 'Unchanged', 'a rerun that created nothing does not report Created');
   const mutations = gate
     .requests()
     .slice(before)

@@ -8,10 +8,18 @@ import {
   inspectNativeODataPermissionFilter,
   serializeODataPermissionNode,
 } from './odata-permission-model.mjs';
+import { cli } from '../cli.mjs';
 
-const jobFile = process.argv[2];
-if (!jobFile || process.argv.length !== 3)
-  throw new Error('Usage: node portal-security/odata-permission-diagnostic.mjs <private-job.json>');
+const {
+  positionals: [jobFile],
+} = cli(
+  `Usage: node examples/company-operations/portal-security/odata-permission-diagnostic.mjs <private-job.json>
+
+Replays a frozen native OData permission capture offline; the job's output must stay under an ignored .paqvilo.
+Relative paths resolve from the working directory.`,
+  {},
+  { positionals: 1 },
+);
 const read = async (file) => JSON.parse(await readFile(file, 'utf8'));
 const job = await read(jobFile);
 if (

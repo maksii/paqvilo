@@ -1,3 +1,4 @@
+// @test-kind contract: generated guides reflect the toolkit manifest, onboarding paths and validation commands.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -6,6 +7,7 @@ import { prepareProject } from '../lense/project-scaffold.mjs';
 import { tempDir } from './fixture.mjs';
 
 test('generated guides link correctly for single/multi/no-pack variants and agree on onboarding and validation', async (t) => {
+  const toolkit = JSON.parse(await fs.readFile(new URL('../package.json', import.meta.url), 'utf8'));
   const work = await tempDir('paqvilo-init-guides-');
   t.after(() => fs.rm(work, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   for (const [index, options] of [
@@ -27,6 +29,7 @@ test('generated guides link correctly for single/multi/no-pack variants and agre
       }
     }
     const manifest = JSON.parse(await fs.readFile(path.join(directory, 'package.json'), 'utf8'));
+    assert.equal(manifest.engines.node, toolkit.engines.node);
     assert.equal(manifest.scripts['check:project'], 'paqvilo init --ready --config ./paqvilo.config.yml');
     assert.match(manifest.scripts['validate:configured'], /check:project.*npm test.*test:browser -- --strict/);
     assert.doesNotMatch(manifest.scripts.setup, /refresh-editor|--browser/);
@@ -38,7 +41,7 @@ test('generated guides link correctly for single/multi/no-pack variants and agre
     const minimumNode = manifest.engines.node.match(/\d+\.\d+\.\d+/)[0];
     assert.ok(guide.includes(`Node **${minimumNode} or later in the ${minimumNode.split('.')[0]}.x LTS line**`));
     for (const phrase of [
-      'Node **24',
+      `Node **${minimumNode.split('.')[0]}`,
       'lockfile',
       'ci failure',
       'version-matched',

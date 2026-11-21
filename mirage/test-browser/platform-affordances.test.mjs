@@ -1,6 +1,7 @@
 import { widgetFormFiles, widgetFormState, CONTACT, ACCOUNT } from '../test/support/widget-form.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { openPortalPage } from './shared-browser.mjs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -103,7 +104,7 @@ test('capturing preform alone retains hidden offline notification through its PW
 
   const page = await browser.newPage();
   await page.route('**/*', (route) => (route.request().url().startsWith(app.url) ? route.continue() : route.abort()));
-  await page.goto(app.url);
+  await openPortalPage(page, app.url);
   assert.equal(await page.locator('#offlineNotificationBar').isVisible(), false);
   const response = await fetch(app.url + '/resource/powerappsportal/dist/pwa-style.bundle-55718a4c0d.css');
   assert.equal(response.headers.get('x-sim-resource-provider'), 'local-platform-partial');
@@ -117,7 +118,7 @@ test('existing lookup selection is visible on open and keyboard Remove value cha
   await signInContext(context, app, CONTACT, { roles: ['Member'] });
   const page = await context.newPage();
   await page.route('**/*', (route) => (route.request().url().startsWith(app.url) ? route.continue() : route.abort()));
-  await page.goto(app.url + '/?id=' + CONTACT);
+  await openPortalPage(page, app.url + '/?id=' + CONTACT);
   await page.locator('button.launchentitylookup[aria-label*="Company"]').click();
   const dialog = page.locator('#parentcustomerid_lookupmodal section.modal-lookup');
   const checkbox = dialog.locator('tbody [role="checkbox"]').first();
@@ -147,7 +148,7 @@ for (const targetRead of [true, false]) {
     await signInContext(context, app, CONTACT, { roles: ['Member'] });
     const page = await context.newPage();
     await page.route('**/*', (route) => (route.request().url().startsWith(app.url) ? route.continue() : route.abort()));
-    await page.goto(app.url + '/?id=' + CONTACT);
+    await openPortalPage(page, app.url + '/?id=' + CONTACT);
     if (targetRead)
       await page.locator('#parentcustomerid_entityname').evaluate((input) => {
         input.value = 'contact';
@@ -174,7 +175,7 @@ for (const width of [1200, 390]) {
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
     await page.route('**/*', (route) => (route.request().url().startsWith(app.url) ? route.continue() : route.abort()));
-    await page.goto(app.url);
+    await openPortalPage(page, app.url);
     for (const resource of bundlePaths.slice(1)) {
       const response = await fetch(app.url + resource);
       assert.equal(response.headers.get('x-sim-resource-provider'), 'local-platform-partial');

@@ -192,7 +192,7 @@ function classifyMetadataPath(parts, lower, file, parent, xml, form, view) {
 }
 
 function classifyEntityMetadataPath(parts, lower, file, parent, xml, form, view) {
-  if (parent === 'formulas' && /\.ya?ml$/i.test(file) && (parts.length === 2 || lower.at(-4) === 'entities'))
+  if (parent === 'formulas' && /\.(?:ya?ml|xaml)$/i.test(file) && (parts.length === 2 || lower.at(-4) === 'entities'))
     return { kind: 'formula', formulaFile: parts.at(-1), ...(parts.length > 2 ? { entityDir: parts.at(-3) } : {}) };
   if (lower.at(-3) === 'entities' && parts.at(-2) && file === 'entity.xml')
     return { kind: 'entity', entityDir: parts.at(-2) };
@@ -559,10 +559,13 @@ function attributeFacts(node) {
   if (!valid(name)) return null;
   const optionSet = child(node, 'optionset');
   const displayMask = t('DisplayMask');
+  const type = norm(t('Type')) || 'nvarchar';
   return compact({
     name,
     schemaName: node.attrs.PhysicalName ?? t('Name'),
-    type: norm(t('Type')) || 'nvarchar',
+    type,
+    // A file or image column exports its MaxSizeInKB as MaxValue.
+    maxSizeInKB: type === 'file' || type === 'image' ? num(t('MaxValue')) : undefined,
     requiredLevel: norm(t('RequiredLevel')) || undefined,
     displayMask,
     isPrimaryName: /(?:^|\|)PrimaryName(?:\||$)/i.test(displayMask ?? '') || undefined,
@@ -681,6 +684,8 @@ function entityFacts(node, info) {
     dataProviderId: h('DataProviderId') ? norm(h('DataProviderId')).replace(/[{}]/g, '') : undefined,
     changeTrackingEnabled: flag(h('ChangeTrackingEnabled')),
     isOptimisticConcurrencyEnabled: flag(h('IsOptimisticConcurrencyEnabled')),
+    isAuditEnabled: flag(h('IsAuditEnabled')),
+    isCustomizable: flag(h('IsCustomizable')),
     isActivity: bit(h('IsActivity')),
     // Document management (SharePoint document locations) enabled for the table.
     documentManagement: bit(h('IsDocumentManagementEnabled')),
@@ -2219,6 +2224,8 @@ function mergeEntityProperties(table, entity, file) {
   if (entity.changeTrackingEnabled !== undefined) table.changeTrackingEnabled = entity.changeTrackingEnabled;
   if (entity.isOptimisticConcurrencyEnabled !== undefined)
     table.isOptimisticConcurrencyEnabled = entity.isOptimisticConcurrencyEnabled;
+  if (entity.isAuditEnabled !== undefined) table.isAuditEnabled = entity.isAuditEnabled;
+  if (entity.isCustomizable !== undefined) table.isCustomizable = entity.isCustomizable;
   if (entity.isActivity !== undefined) table.isActivity = entity.isActivity;
   if (entity.documentManagement !== undefined) {
     table.documentManagement = entity.documentManagement;

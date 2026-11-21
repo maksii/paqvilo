@@ -224,8 +224,11 @@ const kindOf = (def) => {
   const type = String(def?.dataverseType ?? def?.columnMetadata?.type ?? '').toLowerCase();
   return type === 'file' || type === 'image' ? type : null;
 };
-// Solution-imported columns live in mapping.fieldMetadata; project mappings in mapping.fields.
-const columnsOf = (mapping) => mapping?.fields ?? mapping?.fieldMetadata ?? {};
+/**
+ * A table's columns by logical name: Solution-imported columns live in mapping.fieldMetadata, project mappings and
+ * API-created columns in mapping.fields (which wins for a column in both).
+ */
+export const columnsOf = (mapping) => ({ ...mapping?.fieldMetadata, ...mapping?.fields });
 const fileColumn = (mapping, column) => {
   const def = columnsOf(mapping)[column],
     kind = kindOf(def);
@@ -234,8 +237,12 @@ const fileColumn = (mapping, column) => {
 const imageColumns = (mapping) => Object.entries(columnsOf(mapping)).filter(([, def]) => kindOf(def) === 'image');
 // Without an isPrimary flag, the column named entityimage is taken as the primary image.
 const isPrimary = (column, def) => def?.isPrimary === true || column === 'entityimage';
+// The column limit as each writer stores it: a project mapping's MaxSizeInKB, the metadata API's and a Solution's
+// columnMetadata.maxSizeInKB (solution-schema reads it from the exported MaxValue).
 const maxBytes = (kind, def) =>
-  Number(def?.MaxSizeInKB ?? def?.columnMetadata?.MaxSizeInKB ?? DEFAULT_MAX_KB[kind]) * 1024;
+  Number(
+    def?.MaxSizeInKB ?? def?.columnMetadata?.MaxSizeInKB ?? def?.columnMetadata?.maxSizeInKB ?? DEFAULT_MAX_KB[kind],
+  ) * 1024;
 
 function assertSize(kind, limit, size) {
   if (size <= limit) return;
@@ -1664,3 +1671,19 @@ const sasHeaders = (mimeType, name) => ({
   'Content-Type': mimeType ?? 'application/octet-stream',
   'Content-Disposition': contentDisposition('attachment', name ?? 'download'),
 });
+
+/** Capability record for the capability registry; dataverse-extensions.mjs adds the operations install registered. */
+export function describe() {
+  return {
+    name: 'dataverse-files',
+    version: 1,
+    kind: 'dataverse-extension',
+    level: 'behaviour',
+    reason:
+      'File and image columns: single and chunked uploads, ranged downloads and the block messages against the store or storage route; upload sessions are in memory.',
+    requires: [],
+    principal: 'caller',
+    stateOwner: 'store',
+    lifecycle: 'per-request',
+  };
+}

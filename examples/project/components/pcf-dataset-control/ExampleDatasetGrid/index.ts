@@ -44,7 +44,7 @@ export class ExampleDatasetGrid implements ComponentFramework.StandardControl<II
       previous.type = 'button';
       previous.textContent = 'Previous';
       previous.addEventListener('click', () => {
-        void dataset.paging.loadPreviousPage();
+        dataset.paging.loadPreviousPage();
       });
       paging.appendChild(previous);
     }
@@ -53,7 +53,7 @@ export class ExampleDatasetGrid implements ComponentFramework.StandardControl<II
       next.type = 'button';
       next.textContent = 'Next';
       next.addEventListener('click', () => {
-        void dataset.paging.loadNextPage();
+        dataset.paging.loadNextPage();
       });
       paging.appendChild(next);
     }

@@ -10,6 +10,7 @@ import { scanSolutionSources } from '../../mirage/lib/solution-schema.mjs';
 import { inventoryCounts } from '../model-driven.mjs';
 import { miragePaths } from './mirage.mjs';
 import { GIT_HANG_GUARD_MS, GIT_MISSING_MESSAGE, gitAnswered, gitMissing } from '../git.mjs';
+import { paqviloCommand } from '../command-hint.mjs';
 
 const chooseLazily = (condition, yes, no) => {
   if (condition()) return yes();
@@ -385,9 +386,13 @@ function printInEffect(inEffect, profileInfo, mirageText) {
 }) {
   console.log(`catalogue: ${catalogue.configFile}`);
   console.log(`checkout:  ${catalogue.sourceRoot}`);
-  console.log(
-    `personal:  ${catalogue.settings.file}${fs.existsSync(catalogue.settings.file) ? '' : '   (not there yet: copy .env.example, or run "npm run use")'}\n`,
-  );
+  const use = paqviloCommand(['lense', 'use'], { script: 'use', config: args.config });
+  let personal = '';
+  if (!fs.existsSync(catalogue.settings.file))
+    personal = fs.existsSync(path.join(catalogue.configDir, '.env.example'))
+      ? `   (not there yet: copy .env.example, or run "${use}")`
+      : `   (not there yet: run "${use}")`;
+  console.log(`personal:  ${catalogue.settings.file}${personal}\n`);
   for (const site of sites) printSite(site, { inEffect, rel, mirageText });
   console.log('');
   if (inEffect) printInEffect(inEffect, profileInfo, mirageText);
@@ -417,8 +422,13 @@ function printInEffect(inEffect, profileInfo, mirageText) {
     for (const dir of unconfigured) console.log(`  ${rel(dir)}   [${detectFormat(dir)}]`);
     console.log('  add them under "sites:" in paqvilo.config.yml (source + environments) to work on them.');
   }
-  console.log('\nchoose:  npm run use            (remembers it in .env)');
-  console.log('         npm run dev -- --site <site> --env <environment>     (this run only)');
+  console.log(`\nchoose:  ${use}            (remembers it in .env)`);
+  const dev = paqviloCommand(['lense', 'dev'], {
+    script: 'dev',
+    config: args.config,
+    extra: ['--site', '<site>', '--env', '<environment>'],
+  });
+  console.log(`         ${dev}     (this run only)`);
 }
 
 export default async function list(_cfg, args) {
