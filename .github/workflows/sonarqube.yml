@@ -74,7 +74,7 @@ jobs:
       - name: Restore the pinned ecosystem fixture archives
         id: ecosystem-cache
         if: steps.fixtures.outputs.ecosystem == 'true'
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: .paqvilo/ci/ecosystem/*.tar.gz
           key: ecosystem-fixtures-${{ runner.os }}-${{ steps.fixtures.outputs.ecosystem_key }}
@@ -83,7 +83,7 @@ jobs:
       # Saved as soon as preparation verified them, so a run whose tests fail still keeps them for the next run.
       - name: Save the pinned ecosystem fixture archives
         if: steps.fixtures.outputs.ecosystem == 'true' && steps.ecosystem-cache.outputs.cache-hit != 'true' && hashFiles('.paqvilo/ci/ecosystem/*.tar.gz') != ''
-        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: .paqvilo/ci/ecosystem/*.tar.gz
           key: ecosystem-fixtures-${{ runner.os }}-${{ steps.fixtures.outputs.ecosystem_key }}
