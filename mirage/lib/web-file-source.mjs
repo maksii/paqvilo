@@ -6,7 +6,7 @@ const GONE = new Set(['ENOENT', 'ENOTDIR', 'EISDIR']);
 /** What the local file reader says when the file was replaced or rewritten while it read it. */
 const CHANGED = /^Local file changed (?:before|during) reading$/;
 /** What it says for anything that is not a regular file within its limit. */
-const NOT_REGULAR = /^Local file is not regular/;
+const NOT_REGULAR = 'Local file is not regular';
 /** Reads of one response while a save or a checkout keeps replacing the file. */
 const READS = 3;
 
@@ -46,7 +46,7 @@ export async function readWebFileSource(file, root, pathname, { read = readLocal
     } catch (error) {
       if (GONE.has(error.code)) throw missing(file, pathname, error);
       // The reader opens a folder where the platform allows it and then refuses it as not regular.
-      if (NOT_REGULAR.test(error.message) && (await stat(file).catch(() => null))?.isDirectory())
+      if (error.message?.startsWith(NOT_REGULAR) && (await stat(file).catch(() => null))?.isDirectory())
         throw missing(file, pathname, error);
       if (attempt >= READS || !CHANGED.test(error.message)) throw error;
     }
