@@ -65,6 +65,7 @@ import {
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { readLocalFile } from '../lense/local-file.mjs';
+import { readWebFileSource, webFileSourcePaths } from './lib/web-file-source.mjs';
 import { randomBytes, randomUUID, createHash, timingSafeEqual } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -384,6 +385,21 @@ import {
 const DATAVERSE_BLOCKED_ATTACHMENTS =
   'ade;adp;app;asa;ashx;asmx;asp;bas;bat;cdx;cer;chm;class;cmd;com;config;cpl;crt;csh;dll;exe;fxp;hlp;hta;htr;htw;ida;idc;idq;inf;ins;isp;its;jar;js;jse;ksh;lnk;mad;maf;mag;mam;maq;mar;mas;mat;mau;mav;maw;mda;mdb;mde;mdt;mdw;mdz;msc;msh;msh1;msh1xml;msh2;msh2xml;mshxml;msi;msp;mst;ops;pcd;pif;prf;prg;printer;pst;reg;rem;scf;scr;sct;shb;shs;shtm;shtml;soap;stm;tmp;url;vb;vbe;vbs;vsmacros;vss;vst;vsw;ws;wsc;wsf;wsh;svg';
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
+/**
+ * A state file whose content cannot be parsed or fails its integrity check, as the runtime reports it at start: the
+ * bare parser message names neither the file nor what to do. Any other failure (a lock, a permission) explains itself.
+ */
+function unreadableStateFile(stateFile, cause) {
+  if (!(cause instanceof SyntaxError) && cause.code !== 'StateIntegrity') return cause;
+  const failure = new Error(
+    `The local state file ${stateFile} cannot be read: ${cause.message}. It is left as it is. Move it aside to start from the sources and the preset, or pass --state <other file>; put a good copy back to keep its data.`,
+    { cause },
+  );
+  if (cause.code) failure.code = cause.code;
+  if (cause.status) failure.status = failure.statusCode = cause.status;
+  return failure;
+}
+
 const toolkitPackage = JSON.parse(await fs.readFile(new URL('../package.json', import.meta.url), 'utf8'));
 const DOCS = docsLinks(toolkitPackage.version, toolkitPackage.repository?.url ?? toolkitPackage.repository);
 // Bind evidence to the mirage loaded by this process as well as portal sources. The cached form is the same digest and
@@ -865,7 +881,7 @@ export async function createSimulator(options) {
         (restoredState ?? (await readStateFile(stateFile, { sections: ['simulator'] }))).simulator
           ?.deploymentProfilePin ?? null;
     } catch (cause) {
-      if (cause.code !== 'ENOENT') throw cause;
+      if (cause.code !== 'ENOENT') throw unreadableStateFile(stateFile, cause);
     }
     bootstrapTimings.profilePinMs = Math.round(performance.now() - preloadStarted);
     bootstrapTimings.statePreloadMs = restoredState === undefined ? 0 : bootstrapTimings.profilePinMs;
@@ -6744,8 +6760,7 @@ export async function createSimulator(options) {
         ? deniedPageRoute(portal, url, currentIdentity(), assetAccess, routeOptions)
         : null;
     if (asset && !deniedRoute) {
-      const root = await fs.realpath(portal.sourceDir),
-        file = await fs.realpath(asset.file);
+      const { root, file } = await webFileSourcePaths(portal.sourceDir, asset.file, url.pathname);
       const relative = path.relative(root, file);
       if (relative.startsWith('..') || path.isAbsolute(relative))
         throw error('Asset escaped the export directory.', 403);
@@ -6804,7 +6819,7 @@ export async function createSimulator(options) {
           'x-sim-source-sha256': observed.baseline.sourceSha256,
           'x-sim-observed-sha256': observed.baseline.sha256,
         });
-      let body = await readLocalFile(file, { root, maxBytes: Number.MAX_SAFE_INTEGER });
+      let body = await readWebFileSource(file, root, url.pathname);
       const originalBody = body;
       let generatedDebugUrl = null;
       const contentType = asset.mimeType || mime(file),
@@ -7831,7 +7846,10 @@ export async function createSimulator(options) {
           organizationHost.canvas.diagnostics = previous.canvasDiagnostics;
           watchCovered = Math.max(watchCovered, notified);
           recordDiagnostic({ code: 'RELOAD_FAILED', message: err.message });
-          throw err;
+          // A change reported while this pass read the sources (a checkout still writing, a folder put back) was not
+          // read by it: it gets its own pass, as after a pass that published. Only the last pass's failure is thrown.
+          if (watchNotified > notified) reloadRequested = true;
+          if (!reloadRequested || closing) throw err;
         }
       }
     })().finally(() => {

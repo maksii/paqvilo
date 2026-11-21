@@ -301,3 +301,28 @@ test('portal sessions remain isolated between concurrent runtimes and expire aft
   ownedFixture(t).add(() => restarted.close());
   assert.equal((await read(restarted)).signedIn, false);
 });
+
+test('a state file that cannot be parsed refuses the start, naming the file and what to do, and is left as it is', async (t) => {
+  const { app, root, stateFile } = await fixture(t);
+  await app.store.compact();
+  await app.close();
+  const saved = await fs.readFile(stateFile);
+  for (const damaged of [saved.subarray(0, Math.floor(saved.length / 2)), Buffer.alloc(0)]) {
+    await fs.writeFile(stateFile, damaged);
+    await assert.rejects(createSimulator({ sourceDir: root, stateFile, watch: false }), (error) => {
+      assert.ok(error.message.includes(`The local state file ${stateFile} cannot be read: `), error.message);
+      assert.match(
+        error.message,
+        /Move it aside to start from the sources and the preset, or pass --state <other file>/,
+      );
+      assert.ok(error.cause instanceof SyntaxError);
+      return true;
+    });
+    assert.deepEqual(await fs.readFile(stateFile), damaged, 'the refused start did not touch the file');
+  }
+  // What the message names: with the file moved aside the runtime starts from its sources.
+  await fs.rename(stateFile, `${stateFile}.aside`);
+  const restarted = await createSimulator({ sourceDir: root, stateFile, watch: false });
+  ownedFixture(t).add(() => restarted.close());
+  assert.equal((await fetch(restarted.url)).status, 200);
+});

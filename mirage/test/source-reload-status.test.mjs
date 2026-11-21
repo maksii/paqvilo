@@ -181,3 +181,39 @@ test('a notification during a reload that restarts the watcher runs one more rel
   assert.equal(after.reloading, false);
   assert.equal(after.pendingReload, false);
 });
+
+test('a change the watcher reports during a pass that fails is read by a further pass at once', async (t) => {
+  const { dir, gate, watcher, sim, status } = await startWatchedRuntime(t);
+  const before = await status();
+  gate.onMatch = () => {
+    gate.onMatch = null;
+    watcher.emit('all', 'change', path.join(dir, 'Home.webpage.yml'));
+    throw new Error('Invented failure while the sources were read');
+  };
+  // Without a further pass this request fails with the invented error and the reported change stays unread.
+  await sim.reload();
+  const after = await status();
+  assert.ok(after.revision > before.revision, 'a pass after the failed one published');
+  const { diagnostics } = await fetch(`${sim.adminOrigin}/__sim/api/diagnostics`).then((response) => response.json());
+  assert.equal(
+    diagnostics.some((item) => item.code === 'RELOAD_FAILED'),
+    false,
+    'the pass that published dropped the finding of the failed one',
+  );
+});
+
+test('a reload pass that fails with no change reported meanwhile still fails its request and leaves status idle', async (t) => {
+  const { dir, gate, watcher, sim, status } = await startWatchedRuntime(t);
+  const before = await status();
+  gate.onMatch = () => {
+    gate.onMatch = null;
+    throw new Error('Invented failure while the sources were read');
+  };
+  await assert.rejects(sim.reload(), /Invented failure while the sources were read/);
+  const after = await status();
+  assert.equal(after.revision, before.revision);
+  assert.equal(after.reloading, false);
+  assert.equal(after.pendingReload, false);
+  void dir;
+  void watcher;
+});

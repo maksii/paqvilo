@@ -1646,6 +1646,7 @@ export function enablePanel(context, session, opts = {}) {
     }
     return rel ? { rel, line, col, where } : { where };
   };
+  const crashedPages = new WeakSet();
   const watch = (page) => {
     const removers = [];
     const listen = (event, handler) => removers.push(on(page, event, handler));
@@ -1660,6 +1661,11 @@ export function enablePanel(context, session, opts = {}) {
     });
     listen('framenavigated', (frame) => {
       if (frame === page.mainFrame()) apiRoutes.committed(frame.url());
+    });
+    // A tab whose renderer ended answers no ask until a new document is committed in it.
+    listen('crash', () => crashedPages.add(page));
+    listen('framenavigated', (frame) => {
+      if (frame === page.mainFrame()) crashedPages.delete(page);
     });
     // A failed same-origin response becomes one Issues row whose detail is its JSON error message and inner message
     // (redacted). The row belongs to the document that received the response.
@@ -2359,7 +2365,7 @@ export function enablePanel(context, session, opts = {}) {
   // Removes the panel from the tab's current document. Settles with null once removed or the tab closed, otherwise
   // with the reason. The queued cleanup also retires this token, so a late draw cannot recreate the panel after a
   // paused debugger resumes; the guard ends a wait on such a tab, which never answers. A crashed tab emits `crash`, not
-  // `close`, and is reported with the reason its ask failed.
+  // `close`, and is reported with the reason its ask failed, at once: also when it had crashed before this removal.
   const removeFrom = async (page) => {
     let timer, onClose, onCrash, next;
     const ended = new Promise((resolve) => {
@@ -2390,6 +2396,8 @@ export function enablePanel(context, session, opts = {}) {
         // A failed ask is asked again in the document that replaced the one asked. Its commit may be reported after
         // the failure, so without one yet the next commit is awaited; the guard or a closed tab ends that wait.
         if (commits === seen) {
+          // A tab that had crashed before it was asked reports no crash now, and no document replaces the one asked.
+          if (crashedPages.has(page)) return outcome.failed;
           next = Promise.withResolvers();
           const renewed = await Promise.race([next.promise, ended]);
           next = null;

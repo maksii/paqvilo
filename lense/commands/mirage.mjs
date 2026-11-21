@@ -24,6 +24,7 @@ import { LENSE_OPTIONS, MIRAGE_ACTION_OPTIONS } from '../cli-options.mjs';
 import { persistCommandPayload, pruneCommandPayloads } from '../command-payload.mjs';
 import { withMirageDebugOutput } from '../mirage-debug-output-scope.mjs';
 import { guardShutdownSignals } from '../signal-forwarding.mjs';
+import { watchRuntimeGone } from '../runtime-liveness.mjs';
 // Every identity read of a recorded PID is awaited, so a start keeps its heartbeat and cancellation responsive.
 import {
   endRecordedWindowsProcess,
@@ -1468,15 +1469,24 @@ export function codeAppInterrupt() {
  * Ends a dev session when the runtime it started exits on its own, however it exits. `exit` holds the exit once it happened
  * (null before). `ending` is set when the dev session starts its own teardown: the runtime's exit is then expected.
  */
-export function endSessionOnRuntimeExit(session, controller, runtimeEnded) {
-  const state = { exit: null, ending: false };
-  session.exited?.then((exit) => {
+export function endSessionOnRuntimeExit(session, controller, runtimeEnded, { watch = watchRuntimeGone } = {}) {
+  const state = { exit: null, ending: false, stopWatching: () => {} };
+  // A runtime this command reused is not its child and carries no exit: its end is observed at its listener. How it
+  // ended is then unknown, so the session reports that it no longer runs and ends as after a failed runtime.
+  let exited = session.exited;
+  if (!exited && session.started === false && session.pid && session.url) {
+    const watched = watch(session);
+    state.stopWatching = watched.stop;
+    exited = watched.gone.then(() => ({ code: null, signal: null, observed: false }));
+  }
+  exited?.then((exit) => {
     state.exit = exit;
     if (state.ending || controller.signal.aborted) return; // Ctrl+C, a failure or the teardown already ends the session.
-    const how = exit.code === 0 ? 'stopped' : `exited (${exit.signal ?? 'code ' + exit.code})`;
+    let how = exit.code === 0 ? 'stopped' : `exited (${exit.signal ?? 'code ' + exit.code})`;
+    if (exit.observed === false) how = 'is no longer running';
     console.log(`mirage   ${session.url} (pid ${session.pid}) ${how}; ending this development session`);
     if (exit.code !== 0) {
-      console.log(`mirage   see the runtime log: ${session.log}`);
+      if (session.log) console.log(`mirage   see the runtime log: ${session.log}`);
       process.exitCode ||= 1;
     }
     runtimeEnded();
@@ -2161,14 +2171,15 @@ export async function start(
     if (owner && currentIdentity === owner.processIdentity) {
       const runtime = await ownedRuntime(session, owner, { started, timeout, startup });
       if (runtime) {
-        existing = { ...session, log: owner.log, ready: true, runtime };
+        existing = { ...session, log: owner.log, ready: true, runtime, processIdentity: owner.processIdentity };
         break;
       }
     }
   }
-  if (existing)
-    return {
-      ...existing,
+  if (existing) {
+    const { processIdentity, ...reused } = existing;
+    const result = {
+      ...reused,
       ...(existing.runtime && !existing.runtime.simulation && identity.simulation
         ? { runtime: { ...existing.runtime, simulation: identity.simulation } }
         : {}),
@@ -2177,6 +2188,10 @@ export async function start(
       launch,
       writesFiles: [],
     };
+    // What a development session checks the reused process against; not part of the printed result.
+    Object.defineProperty(result, 'processIdentity', { value: processIdentity, enumerable: false });
+    return result;
+  }
   await refuseStateFileOwner(owned, identity, startup);
   if (startup.now() >= started + timeout)
     throw new Error(
@@ -2579,8 +2594,9 @@ async function rivalIdentities(paths, { childPid, identity, startup }) {
 
 /**
  * Runs under the ownership lock, where a concurrent start's record is visible: a live rival on this state file
- * refuses the start, whose child the caller then stops. A record whose PID no longer carries its start identity
- * belongs to an exited runtime, so it is dropped instead. A record whose identity cannot be read is kept. Another
+ * refuses the start, whose child the caller then stops. A record whose process has exited, or whose PID no longer
+ * carries its start identity, belongs to an exited runtime, so it is dropped instead. A record of a live process whose
+ * identity cannot be read is kept. Another
  * host's record is always kept, and refuses the start when it is on this state file.
  * The identities come from `identities`, read before the lock, so this stays synchronous.
  */
@@ -2598,6 +2614,9 @@ function otherSessionsForStart(
       continue;
     }
     if (item.pid === startedPid) continue;
+    // A local record whose process has exited owns nothing any more. Without this, runtimes that were killed leave
+    // one record each until the next `mirage stop`.
+    if (!alive(item.pid)) continue;
     const state = rivalState(item, identity, { alive, identities });
     if (state === 'rival') throw stateFileConflict(item, identity);
     if (state !== 'stale') kept.push(item);
@@ -4485,6 +4504,7 @@ export async function stopDevelopmentSession(
 ) {
   // The teardown starts here: the runtime's exit from now on is expected, so its listener stays silent.
   if (runtime) runtime.ending = true;
+  runtime?.stopWatching?.();
   try {
     await codeAppServers?.close();
   } finally {

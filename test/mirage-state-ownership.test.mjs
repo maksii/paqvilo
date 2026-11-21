@@ -94,6 +94,43 @@ test('a dead runtime entry on the same state file does not block a start with ot
   assert.equal(spawned, 1);
 });
 
+test('a start removes the records of runtimes that have exited, on any state file, and keeps a live one', async (t) => {
+  const { root, paths, stateFile } = await fixture(t);
+  const other = path.resolve(root, 'other', 'state.json');
+  const record = (pid, file) => ({
+    pid,
+    processIdentity: `identity ${pid}`,
+    discovery: path.join(paths.discoveryRoot, `session-${pid}.json`),
+    stateFile: file,
+    identity: identityFor(file, 'always'),
+    ready: true,
+  });
+  // Runtimes that were killed leave their records behind: two on this state file, one on another, beside a live one.
+  await updateOwnedSessions(paths, () => [
+    record(DEAD, stateFile),
+    record(DEAD + 10, stateFile),
+    record(DEAD + 20, other),
+    record(RIVAL, other),
+  ]);
+  await assert.rejects(
+    start(
+      cfg(root),
+      { port: '0', state: stateFile, 'preset-mode': 'bootstrap' },
+      {
+        paths,
+        alive: (pid) => pid === RIVAL,
+        spawnRuntime: () => exitedChild(CHILD),
+        identityOf: async (pid) => (pid === RIVAL ? `identity ${RIVAL}` : 'child identity'),
+      },
+    ),
+    /Mirage exited before it became ready/,
+  );
+  assert.deepEqual(
+    (await ownedSessions(paths)).map((item) => item.pid),
+    [RIVAL],
+  );
+});
+
 // @test-kind contract: an identical live runtime on the same state file is still reused without spawning
 test('an identical live runtime on the same state file is still reused without spawning', async (t) => {
   const { root, paths, stateFile } = await fixture(t);

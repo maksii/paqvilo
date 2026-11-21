@@ -283,6 +283,17 @@ this session.` A trusted CLR plug-in descriptor with
 
 ### Fixed
 
+- `mirage dev` on a Mirage that was already running (for example after an earlier dev command was killed) ends with
+  "is no longer running" when that Mirage ends, instead of staying open on an address nothing answers.
+- A crashed tab no longer delays the end of a dev session by about a minute of clean-up timeouts; the tab is reported
+  at once.
+- A source change that arrives while a Mirage reload fails (a checkout that is still writing) is read by a further
+  reload, instead of staying unread until the next save.
+- A web file that is deleted or rewritten while Mirage runs (a save, `git checkout`) answers 404 or its new content
+  until the reload, not a 500 "Portal rendering needs attention" page.
+- A state file that cannot be parsed stops the start with a message that names the file and what to do, instead of a
+  bare JSON parser message.
+- The next start removes the records of Mirage runtimes that were killed; before, they stayed until `mirage stop`.
 - Locks left by killed or interrupted processes (Mirage ownership, setup save) no longer block later commands; a lock
   taken on another machine or in WSL is never taken over, and a lock that cannot be cleared ends the command after
   30 s with a message naming the file.

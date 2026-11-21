@@ -1317,7 +1317,48 @@ test('a tab that crashes during the removal makes dispose report it at once', as
   assert.equal(tab.page.listenerCount('crash'), 0, 'the removal released its crash listener');
 });
 
-// @test-kind contract: closing a tab immediately releases its panel listeners
+// @test-kind contract: a tab that crashed before the removal is reported at once, with no wait for a document or the guard
+test('a tab that had crashed before the removal makes dispose report it without waiting for the guard', async (t) => {
+  const { tab, panel } = await setup();
+  // The renderer ended while the session ran: `crash` was reported then, and nothing reports it again.
+  tab.page.emit('crash', tab.page);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const removal = scriptedRemoval(tab.page, [() => Promise.reject(new Error('page.evaluate: Target crashed'))]);
+  // No timer is advanced: a removal that waited for its 30 s guard would never settle here.
+  await assert.rejects(
+    panel.dispose(),
+    /could not be confirmed removed from 1 tab\(s\): page\.evaluate: Target crashed/,
+  );
+  assert.equal(removal.asks(), 1);
+});
+
+// @test-kind contract: a crashed tab that was reloaded is asked like any other tab
+test('a tab that crashed and then loaded a new document is waited for as a live tab is', async (t) => {
+  const { tab, panel } = await setup();
+  const main = tab.page.mainFrame();
+  tab.page.emit('crash', tab.page);
+  tab.page.emit('framenavigated', main);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let asked;
+  const failedAsk = new Promise((resolve) => {
+    asked = resolve;
+  });
+  scriptedRemoval(tab.page, [
+    () => {
+      asked();
+      return Promise.reject(new Error('invented evaluation failure'));
+    },
+  ]);
+  const reported = assert.rejects(
+    panel.dispose(),
+    /could not be confirmed removed from 1 tab\(s\): invented evaluation failure/,
+  );
+  await failedAsk;
+  await new Promise((resolve) => setImmediate(resolve));
+  t.mock.timers.tick(30_000);
+  await reported;
+});
+
 test('closing a tab immediately releases its panel listeners', async () => {
   const { tab } = await setup();
   assert.ok(tab.page.listenerCount('console') > 0);

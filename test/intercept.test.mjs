@@ -792,6 +792,35 @@ test('the release hang guard runs on the clock its caller passes', async () => {
   assert.equal(guards.size, 0, 'no release guard remains armed');
 });
 
+test('a crashed tab is released without waiting for DevTools answers it cannot give, and a healthy tab is restored', async () => {
+  const { guards, clock } = ownedClock();
+  const b = fakeBrowser();
+  const crashed = b.openTab();
+  const healthy = b.openTab();
+  const errors = [];
+  const dispose = await interceptOrigin(b.context, ORIGIN, async () => {}, {
+    onError: (error) => errors.push(error.message),
+    clock,
+  });
+  // The renderer of the first tab is gone: from here none of its DevTools commands, the detach included, answers.
+  const asked = [];
+  crashed.cdp.send = (method) => (asked.push(method), new Promise(() => {}));
+  crashed.cdp.detach = () => (asked.push('detach'), new Promise(() => {}));
+  let healthyDetached = 0;
+  healthy.cdp.detach = async () => void healthyDetached++;
+  crashed.page.emit('crash');
+  const before = b.sent.filter((command) => command.method === 'Fetch.disable').length;
+  await dispose();
+  assert.deepEqual(asked, [], 'the crashed tab was asked nothing');
+  assert.equal(guards.size, 0, 'no release guard was left waiting for the crashed tab');
+  assert.deepEqual(errors, []);
+  assert.equal(b.sent.filter((command) => command.method === 'Fetch.disable').length, before + 1);
+  assert.equal(healthyDetached, 1);
+  assert.equal(crashed.cdp.listenerCount('Fetch.requestPaused'), 0);
+  assert.equal(crashed.page.listenerCount('crash'), 0);
+  assert.equal(crashed.page.listenerCount('close'), 0);
+});
+
 test('setup commands and an attachment answering after a renderer start of any length still install interception', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const live = liveTimers(t, INTERCEPT);

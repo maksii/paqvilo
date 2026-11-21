@@ -271,11 +271,19 @@ export async function interceptOrigins(
     record.ending.abort();
     sessions.delete(record.cdp);
     record.page.off('close', record.onClose);
+    record.page.off('crash', record.onCrash);
     if (record.late) record.page.off('domcontentloaded', record.late);
     record.cdp.off('Fetch.requestPaused', record.onPaused);
     if (record.onDraftSignal) record.cdp.off('Runtime.bindingCalled', record.onDraftSignal);
     for (const [name, listener] of record.repairListeners ?? []) record.cdp.off(name, listener);
     record.closing = (async () => {
+      // A crashed tab has no renderer and answers no DevTools command, the detach included: nothing of it is left to
+      // restore, so its release drops what this process holds and asks the browser nothing.
+      if (record.crashed) {
+        for (const route of record.routes) activeRoutes.delete(route);
+        record.routes.clear();
+        return;
+      }
       // Each DevTools answer is bounded: an unanswered command must not keep the release waiting.
       const step = async (label, action) => {
         if (!(await settlesWithin(Promise.resolve().then(action), CDP_RELEASE_MS, clock)))
@@ -413,6 +421,10 @@ export async function interceptOrigins(
       release(record).catch(() => {});
     };
     page.once('close', record.onClose);
+    record.onCrash = () => {
+      record.crashed = true;
+    };
+    page.once('crash', record.onCrash);
     // Waits for `work` until the page closes or interception stops; the hang guard names a renderer that never answers.
     const setupStep = async (phase, work) => {
       if (stopped || record.closed) throw new Error('Browser page closed during interception setup');
