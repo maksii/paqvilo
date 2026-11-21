@@ -13,7 +13,8 @@ import { processIdentity } from '../lense/process-identity.mjs';
 
 const variable = 'PAQ_CI_WORKSPACE_LEASE';
 function checkout(t) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paq-ci-lease-'));
+  // The physical path, as the lease records it (macOS's /var is a link into /private).
+  const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'paq-ci-lease-')));
   ownedFixture(t).remove(() => fs.rmSync(directory, { recursive: true, force: true }));
   return directory;
 }
