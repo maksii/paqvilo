@@ -88,6 +88,26 @@ test('Windows editor discovery returns the full CLI path from PATH/PATHEXT or th
   assert.equal(resolveEditorCommand('ed', { platform: 'win32', env: { PATH: 'C:/Tools' }, fs: fake }), tool);
 });
 
+test('macOS editor discovery uses code on PATH, else the VS Code app bundle CLI, else the name as given', () => {
+  const bundle = (root, app, command) => path.join(root, app, 'Contents', 'Resources', 'app', 'bin', command);
+  const stable = bundle('/Applications', 'Visual Studio Code.app', 'code');
+  const insiders = bundle('/Users/invented/Applications', 'Visual Studio Code - Insiders.app', 'code-insiders');
+  let files = new Set([stable, insiders]);
+  const fake = { statSync: (file) => ({ isFile: () => files.has(file) }) };
+  const env = { HOME: '/Users/invented', PATH: '/usr/bin:/bin' };
+  const resolve = (editor, overrides = {}) =>
+    resolveEditorCommand(editor, { platform: 'darwin', env: { ...env, ...overrides }, fs: fake });
+  // VS Code installs no `code` on PATH until its "Install 'code' command in PATH" command is run.
+  assert.equal(resolve('code'), stable, 'the CLI inside /Applications/Visual Studio Code.app');
+  assert.equal(resolve('code-insiders'), insiders, 'an app installed in ~/Applications');
+  files = new Set([stable, insiders, '/usr/local/bin/code']);
+  assert.equal(resolve('code', { PATH: '/usr/local/bin:/usr/bin' }), 'code', 'code on PATH is spawned by name');
+  files = new Set();
+  assert.equal(resolve('code'), 'code', 'nothing found: spawn reports it as not found');
+  assert.equal(resolve('subl'), 'subl', 'other editors are spawned by name');
+  assert.equal(resolve('/opt/tools/editor'), '/opt/tools/editor');
+});
+
 test('an editor that cannot be found names the editor and the settings that choose it', async (t) => {
   const dir = tempDirSync('paqvilo-editor-none-');
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
