@@ -28,15 +28,21 @@ export async function stateFileEndpoint(stateFile, { platform = process.platform
     .update(platform === 'win32' ? real.toLowerCase() : real)
     .digest('hex')
     .slice(0, 32);
-  return platform === 'win32' ? `\\\\.\\pipe\\paqvilo-state-${key}` : path.join(tmpdir, `paqvilo-state-${key}.sock`);
+  return platform === 'win32'
+    ? String.raw`\\.\pipe\paqvilo-state-` + key
+    : path.join(tmpdir, `paqvilo-state-${key}.sock`);
+}
+
+/** " (pid N, url)" of the runtime that holds a claim, as far as it said who it is. */
+function holderText(holder) {
+  if (!holder?.pid) return '';
+  return holder.url ? ` (pid ${holder.pid}, ${holder.url})` : ` (pid ${holder.pid})`;
 }
 
 const inUse = (stateFile, holder) =>
   Object.assign(
     new Error(
-      `The state file ${stateFile} is in use by another Mirage runtime${
-        holder?.pid ? ` (pid ${holder.pid}${holder.url ? `, ${holder.url}` : ''})` : ''
-      }. Two runtimes cannot write one state file: each would overwrite the other's saves. Stop that runtime, or start this one with --state <other file>.`,
+      `The state file ${stateFile} is in use by another Mirage runtime${holderText(holder)}. Two runtimes cannot write one state file: each would overwrite the other's saves. Stop that runtime, or start this one with --state <other file>.`,
     ),
     { status: 409, code: 'StateFileInUse', holder: holder ?? null },
   );

@@ -110,8 +110,13 @@ export function onProjectCodeFault(listener) {
 }
 
 const TOOLKIT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-/** The location of one stack frame: the text in its last parentheses, or all of it after `at`. */
-const LOCATION = /^\s+at (?:.*\(([^()]*)\)|(.*?))\s*$/;
+/** The location of one stack frame: the text in its last parentheses, or all of it after `at`; null when it is no frame. */
+function frameLocation(line) {
+  const text = line.trim();
+  if (text === line || !text.startsWith('at ')) return null;
+  const open = text.lastIndexOf('(');
+  return open !== -1 && text.endsWith(')') ? text.slice(open + 1, -1) : text.slice(3).trim();
+}
 const FILE_POSITION = /^((?:file:\/\/|[A-Za-z]:[\\/]|\/).*):(\d+):\d+$/;
 
 /**
@@ -121,10 +126,10 @@ const FILE_POSITION = /^((?:file:\/\/|[A-Za-z]:[\\/]|\/).*):(\d+):\d+$/;
 export function projectCodeOrigin(error, toolkitRoot = TOOLKIT_ROOT) {
   if (typeof error?.stack !== 'string') return null;
   for (const line of error.stack.split('\n').slice(1)) {
-    const location = LOCATION.exec(line);
-    if (!location) return null;
+    const location = frameLocation(line);
+    if (location === null) return null;
     // A frame without a file (node:internal, native, eval) says nothing about the origin: look at the next one.
-    const frame = FILE_POSITION.exec(location[1] ?? location[2]);
+    const frame = FILE_POSITION.exec(location);
     if (!frame) continue;
     let file = frame[1];
     if (file.startsWith('file:')) {

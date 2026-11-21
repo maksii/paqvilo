@@ -1884,6 +1884,13 @@ export async function createSimulator(options) {
   const releaseProjectCodeFaults = onProjectCodeFault(recordDiagnostic);
   packFileNotice = (file) => recordDiagnostic(packChangeNotice(file));
   for (const file of changedPackFiles) packFileNotice(file);
+  // What a reload reports besides SOURCES_RELOADED: the record kinds the new portal lost, and the pack files that
+  // still differ from what runs (packs are not part of a reload).
+  const recordReloadNotices = (previousPortal, nextPortal, reloadRevision) => {
+    const loss = portalSourceLoss(previousPortal, nextPortal);
+    if (loss) recordDiagnostic({ ...loss, revision: reloadRevision });
+    for (const file of changedPackFiles) packFileNotice(file);
+  };
   // Findings of the project file (an unknown key of a version-1 project is ignored and reported) at startup.
   for (const entry of project?.diagnostics ?? []) recordDiagnostic(entry);
   await organizationHost.createBackend();
@@ -7871,10 +7878,7 @@ export async function createSimulator(options) {
             changed: changed.slice(0, 20),
             message: `Reloaded portal and solution sources (${changed.length} changed path(s)); mappings, schemas and the permission model were recompiled.`,
           });
-          const loss = portalSourceLoss(previous.sourcePortal, sourcePortal);
-          if (loss) recordDiagnostic({ ...loss, revision });
-          // Still true after this reload: packs are not part of it.
-          for (const file of changedPackFiles) packFileNotice?.(file);
+          recordReloadNotices(previous.sourcePortal, sourcePortal, revision);
           if (watch && watchedLayers !== layerSignature()) {
             await restartWatcher();
             // The restart cancelled the reload a notification during this pass scheduled, and the new watcher does not
@@ -7908,7 +7912,7 @@ export async function createSimulator(options) {
           recordDiagnostic({ code: 'RELOAD_FAILED', message: err.message });
           // A change reported while this pass read the sources (a checkout still writing, a folder put back) was not
           // read by it: it gets its own pass, as after a pass that published. Only the last pass's failure is thrown.
-          if (watchNotified > notified) reloadRequested = true;
+          reloadRequested ||= watchNotified > notified;
           if (!reloadRequested || closing) throw err;
         }
       }

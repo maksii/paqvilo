@@ -2633,6 +2633,10 @@ function copyBulkParentFrame(phaseFrame, bulkParent, asyncExecution) {
               });
           // The step span's input at level full is the context the handler receives (stepInput without one).
           if (invocationContext) span?.setInput(() => contextStepInput(invocationContext, store));
+          const stepLabel = `plug-in step ${item.name ?? item.typeName ?? item.id} (${item.id})`;
+          const rejectWrite = (message) => {
+            throw new DataError(String(message), 400, 'PluginValidation', { declaredValidationMessage: true });
+          };
           try {
             const bridgeTargets = () => {
               bridgedSent = bridgedPlainInputs(
@@ -2643,7 +2647,7 @@ function copyBulkParentFrame(phaseFrame, bulkParent, asyncExecution) {
             };
             /* NOSONAR: closure intentionally captures the loop state */ output = inSpan(span, () =>
               /* NOSONAR: closure intentionally captures the loop state */ execution.run(() =>
-                projectCode(`plug-in step ${item.name ?? item.typeName ?? item.id} (${item.id})`, () =>
+                /* NOSONAR: closure intentionally captures the loop state */ projectCode(stepLabel, () =>
                   handler({
                     // The operation's shared variables, the same collection as a plug-in type handler's
                     // context.SharedVariables: what a handler leaves there is what later steps of the operation see.
@@ -2685,11 +2689,7 @@ function copyBulkParentFrame(phaseFrame, bulkParent, asyncExecution) {
                       : {}),
                     ...(typed ? { context: handlerContext } : {}),
                     trace,
-                    reject: (message) => {
-                      throw new DataError(String(message), 400, 'PluginValidation', {
-                        declaredValidationMessage: true,
-                      });
-                    },
+                    reject: rejectWrite,
                   }),
                 ),
               ),

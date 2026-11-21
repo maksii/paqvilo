@@ -28,9 +28,9 @@ function missing(file, pathname, cause) {
 export async function webFileSourcePaths(sourceDir, file, pathname, { realpath = fs.realpath } = {}) {
   try {
     return { root: await realpath(sourceDir), file: await realpath(file) };
-  } catch (cause) {
-    if (GONE.has(cause.code)) throw missing(file, pathname, cause);
-    throw cause;
+  } catch (error) {
+    if (GONE.has(error.code)) throw missing(file, pathname, error);
+    throw error;
   }
 }
 
@@ -43,12 +43,12 @@ export async function readWebFileSource(file, root, pathname, { read = readLocal
   for (let attempt = 1; ; attempt++) {
     try {
       return await read(file, { root, maxBytes: Number.MAX_SAFE_INTEGER });
-    } catch (cause) {
-      if (GONE.has(cause.code)) throw missing(file, pathname, cause);
+    } catch (error) {
+      if (GONE.has(error.code)) throw missing(file, pathname, error);
       // The reader opens a folder where the platform allows it and then refuses it as not regular.
-      if (NOT_REGULAR.test(cause.message) && (await stat(file).catch(() => null))?.isDirectory())
-        throw missing(file, pathname, cause);
-      if (attempt >= READS || !CHANGED.test(cause.message)) throw cause;
+      if (NOT_REGULAR.test(error.message) && (await stat(file).catch(() => null))?.isDirectory())
+        throw missing(file, pathname, error);
+      if (attempt >= READS || !CHANGED.test(error.message)) throw error;
     }
   }
 }
