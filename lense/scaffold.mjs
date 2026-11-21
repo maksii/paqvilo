@@ -1,8 +1,23 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-/** Check every existing path component; never traverse a symbolic link/junction. */
-export async function assertScaffoldPath(file, { directory = false } = {}) {
+/**
+ * A link the operating system installs above every user folder, such as macOS's /tmp, /var and /etc (links into
+ * /private): owned by root, in a folder owned by root that no group or other user may write, so neither a project nor
+ * another account can have placed or replaced it. Windows reports every owner as 0, so no link counts there.
+ */
+async function systemLink(current, info, platform) {
+  if (platform === 'win32' || info.uid !== 0) return false;
+  try {
+    const parent = await fs.stat(path.dirname(current));
+    return parent.uid === 0 && (parent.mode & 0o022) === 0;
+  } catch {
+    return false;
+  }
+}
+
+/** Check every existing path component; never traverse a symbolic link/junction other than a system link. */
+export async function assertScaffoldPath(file, { directory = false, platform = process.platform } = {}) {
   const target = path.resolve(file);
   const parts = [];
   for (let current = target; ; current = path.dirname(current)) {
@@ -17,6 +32,7 @@ export async function assertScaffoldPath(file, { directory = false } = {}) {
       if (error.code === 'ENOENT') continue;
       throw error;
     }
+    if (info.isSymbolicLink() && current !== target && (await systemLink(current, info, platform))) continue;
     if (info.isSymbolicLink() || ((current !== target || directory) && !info.isDirectory())) {
       throw new Error(`Scaffold path must be a regular directory without symbolic links: ${current}`);
     }
