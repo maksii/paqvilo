@@ -301,7 +301,7 @@ test('documentation CI retains required CodeQL configurations without scheduling
   for (const workflow of [ci, security]) {
     assert.equal(workflow.jobs.gate.if, 'always()');
     assert.equal(workflow.on.pull_request.paths, undefined, 'required gates must report on documentation PRs');
-    assert.ok(workflow.on.pull_request.branches.includes('0.9.8'), 'release PRs must receive both gates');
+    assert.ok(workflow.on.pull_request.branches.includes('0.9.9'), 'release PRs must receive both gates');
   }
 });
 
@@ -833,10 +833,10 @@ test('every PR retains all main CodeQL configurations regardless of changed lang
   assert.equal(analysis.with.category, '/language:${{ matrix.language }}');
 });
 
-test('CI and security run required gates for baseline PRs targeting 0.9.8', () => {
+test('CI and security run required gates for baseline PRs targeting 0.9.9', () => {
   for (const file of ['ci', 'security']) {
     const workflow = YAML.parse(fs.readFileSync(new URL(`../.github/workflows/${file}.yml`, import.meta.url), 'utf8'));
-    assert.ok(workflow.on.pull_request.branches.includes('0.9.8'), file);
+    assert.ok(workflow.on.pull_request.branches.includes('0.9.9'), file);
     assert.ok(workflow.on.pull_request.branches.includes('main'), file);
   }
 });

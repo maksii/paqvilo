@@ -1,6 +1,6 @@
 {
   "name": "paqvilo",
-  "version": "0.9.8",
+  "version": "0.9.9",
   "description": "Local development toolkit for Microsoft Power Pages, Dataverse and Power Platform: a local simulator (Mirage) and live-portal source previews (Lense).",
   "keywords": [
     "power-pages",
