@@ -5,6 +5,9 @@
   const approach = app.dataset.demoWorkspace;
   const canWrite = app.dataset.demoCanWrite === 'true';
   function applyAccess(){if(canWrite)return;app.querySelectorAll('[data-delete-account],[data-delete-contact],[data-delete-note],[data-edit-note],[data-delete-record],[data-toggle-state],[data-edit-account],[data-create-contact],[data-save-account],a[href*="mode=create"],a[href*="mode=edit"],[data-contact][data-mode=edit],[data-note-form]').forEach(node=>node.hidden=true);}
+  // A code component page renders inside the platform's form#liquid_form, where the HTML parser drops a nested <form> tag; that page marks its forms as divs, rebuilt here as script-created forms, which may nest.
+  app.querySelectorAll('div[data-note-form],div[data-contact-form]').forEach(div=>{const form=document.createElement('form');for(const {name,value} of div.attributes)form.setAttribute(name,value);form.append(...div.childNodes);div.replaceWith(form);});
+  applyAccess();
   const base = '/approach/' + approach + '/';
   const find = selector => app.querySelector(selector);
   const status = find('[data-status]');
@@ -172,8 +175,12 @@
   }
   async function waitForControls() {
     if(approach!=='pcf')return;
-    for(let attempt=0;attempt<100;attempt++){if(accountFields.every(name=>field(name)))break;await new Promise(resolve=>setTimeout(resolve,100));}
-    for(const name of accountFields){const input=field(name);if(!input)throw new Error('The PCF control for '+name+' did not load.');input.name=name;input.id='pcf-'+name;const label=find('[data-field="'+name+'"]>label');if(label)label.htmlFor=input.id;}
+    // The component renders its fields when its bundle has loaded, however long that takes; a host that cannot render or load it shows an alert in its place instead.
+    await new Promise((resolve,reject)=>{
+      const check=()=>{const failed=initialForm.querySelector('[role=alert]');if(!failed&&!accountFields.every(name=>field(name)))return;observer.disconnect();if(failed)reject(new Error('The PCF control did not load. '+failed.textContent));else resolve();};
+      const observer=new MutationObserver(check);observer.observe(initialForm,{childList:true,subtree:true,attributes:true,attributeFilter:['role']});check();
+    });
+    for(const name of accountFields){const input=field(name);input.name=name;input.id='pcf-'+name;const label=find('[data-field="'+name+'"]>label');if(label)label.htmlFor=input.id;}
     const industry=field('industrycode');if(industry?.tagName==='INPUT'){industry.setAttribute('aria-label','Industry');industry.setAttribute('list','demo-industries');}
   }
   find('[data-account-query]')?.addEventListener('submit',event=>{event.preventDefault();busy(event.submitter,()=>listAccounts());});

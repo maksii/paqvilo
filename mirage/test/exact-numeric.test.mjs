@@ -1,12 +1,11 @@
 // @test-kind contract: exact numeric arithmetic, JSON lexemes and formatting over invented values and loopback fixtures.
 import test from 'node:test';
-import { CLR_SKIP, clrSdk } from './fixtures/clr-sdk.mjs';
+import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
 import { DataStore } from '../lib/data.mjs';
 import { createSimulator } from '../server.mjs';
 import { localOrganizationService, sdkValueToRecord } from '../lib/local-organization-service.mjs';
@@ -47,9 +46,6 @@ const profile = {
   evidence: 'Invented exact numeric column source',
   grants: [{ entity: 'precisionrow', operations: ['read', 'create', 'update', 'delete'] }],
 };
-// A hang guard for the one-file csc.exe build of the invented plug-in; a normal build finishes in about a second.
-// hang guard only: a blocked synchronous child cannot be ended by the test runner
-const CLI_HANG_GUARD_MS = 170_000;
 const text = (value) => (typeof value === 'object' ? value.value : String(value));
 const typed = (type, value) => ({ $type: type, value });
 
@@ -307,12 +303,7 @@ var q=new QueryExpression("precisionrow"){ColumnSet=new ColumnSet("counter","qua
 var link=q.AddLink("precisionrow","precisionrowid","precisionrowid");link.EntityAlias="precise";link.Columns=new ColumnSet("quantity");link.LinkCriteria.AddCondition("quantity",ConditionOperator.GreaterThan,99999999999.1234567890m);var joined=s.RetrieveMultiple(q);if(joined.Entities.Count!=1||(decimal)((AliasedValue)joined.Entities[0]["precise.quantity"]).Value!=99999999999.1234567891m)throw new Exception("Typed linked decimal or predicate lost");
 ((Entity)c.InputParameters["Target"])["title"]="Precision original passed";((ITracingService)services.GetService(typeof(ITracingService))).Trace("Original exact numeric casts and queries passed");}}}`,
     );
-    const build = spawnSync(
-      path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),
-      ['/nologo', '/target:library', '/out:' + assembly, '/reference:' + sdk, source],
-      { shell: false, windowsHide: true, encoding: 'utf8', timeout: CLI_HANG_GUARD_MS },
-    );
-    assert.equal(build.status, 0, build.stdout + build.stderr);
+    compileClr(source, assembly, { references: [sdk] });
     const runtime = await prepareClrRuntime({
       trust: 'execute-local-assembly',
       root,

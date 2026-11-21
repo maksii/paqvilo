@@ -6,6 +6,7 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { personaFixture, contactId } from '../test/fixtures/persona-catalog.mjs';
 import { createPersonaBrowserContext } from '../testing/personas.mjs';
+import { workspaceSettled } from './shared-browser.mjs';
 
 let browser;
 before(async () => {
@@ -21,6 +22,8 @@ test('persona pickers: search/facets, pinning, shared routes, contact role picke
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
   await page.goto(app.url + '/_sim/#identity?q=requester&tag=edit');
+  // The picker is mounted again by each render of the view: it is used once the view has everything it asked for.
+  await workspaceSettled(page);
   const picker = page.locator('#browser-persona-picker');
   await picker.locator('[data-persona-result-count]').filter({ hasText: '1 of 60' }).waitFor();
   assert.equal(await picker.locator('[data-persona-query]').inputValue(), 'requester');
@@ -39,6 +42,7 @@ test('persona pickers: search/facets, pinning, shared routes, contact role picke
   await picker.locator('[data-persona-result-count]').filter({ hasText: '27 of 60' }).waitFor();
   assert.match(page.url(), /tag=review/);
   await page.reload();
+  await workspaceSettled(page);
   await page.locator('#browser-persona-picker [data-persona-result-count]').filter({ hasText: '27 of 60' }).waitFor();
   await page.getByRole('button', { name: 'Choose persona', exact: true }).click();
   const dialog = page.locator('dialog.persona-picker-dialog');
@@ -77,6 +81,33 @@ test('persona pickers: search/facets, pinning, shared routes, contact role picke
   await context.close();
 });
 
+// @test-kind contract: Paqvilo's own persona picker keeps a group the user folded or opened when an update comes before the browser's queued toggle event; the order is forced by pinning in the task of the click.
+test('a persona group folded or opened in the task of a picker update keeps that state', async (t) => {
+  const { app } = await personaFixture(t);
+  const context = await browser.newContext();
+  ownedFixture(t).add(() => context.close());
+  const page = await context.newPage();
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  await page.goto(app.url + '/_sim/#identity');
+  await workspaceSettled(page);
+  const picker = page.locator('#browser-persona-picker');
+  await picker.locator('[data-persona-result-count]').filter({ hasText: '60 of 60' }).waitFor();
+  const group = picker.locator('[data-persona-group]').first();
+  // The click changes the group at once and queues its toggle event; a pin updates the picker before it.
+  const clickThenUpdate = () =>
+    picker.evaluate((root) => {
+      root.querySelector('[data-persona-group] > summary').click();
+      root.querySelector('[data-persona-pin]').click();
+    });
+  const shown = await group.evaluate((node) => node.open);
+  await clickThenUpdate();
+  assert.equal(await group.evaluate((node) => node.open), !shown, 'the update undid what the click did');
+  await clickThenUpdate();
+  assert.equal(await group.evaluate((node) => node.open), shown);
+  assert.deepEqual(errors, []);
+});
+
 test('native grouped sign-in remains usable without JS; browser automation applies context options', async (t) => {
   const { app } = await personaFixture(t);
   const context = await browser.newContext({ javaScriptEnabled: false });
@@ -93,6 +124,7 @@ test('native grouped sign-in remains usable without JS; browser automation appli
     origin: app.url,
     personaKey: 'person-2',
     instanceKey: 'browser-test',
+    timeoutMs: 0,
   });
   assert.notEqual(opened.origin, app.url);
   assert.deepEqual(opened.context.pages(), []);
@@ -103,6 +135,23 @@ test('native grouped sign-in remains usable without JS; browser automation appli
   assert.equal(await childPage.evaluate(() => navigator.language), 'fr-FR');
   assert.equal(await childPage.locator('h1').textContent(), 'Context greeting');
   await opened.context.close();
+});
+
+test('the sign-in page remembers the persona that signed in as a recent choice', async (t) => {
+  const { app } = await personaFixture(t);
+  const context = await browser.newContext();
+  ownedFixture(t).add(() => context.close());
+  const page = await context.newPage();
+  await page.goto(app.url + '/SignIn');
+  await page.locator('[data-persona-query]').fill('person-1');
+  await page.locator('[data-persona-row="person-1"] [name="personaKey"]').first().click();
+  await page.waitForURL(app.url + '/');
+  // A signed-in visitor is sent on from the sign-in page, so the picker is seen again after the session ends.
+  await context.clearCookies();
+  await page.goto(app.url + '/SignIn');
+  const recent = page.locator('[data-persona-shortcuts="recent"]:not([hidden]) [data-persona-row="person-1"]');
+  await recent.first().waitFor();
+  assert.ok((await recent.count()) >= 1);
 });
 
 test('a pending persona launch keeps the picker and its caption bound to the submitted persona', async (t) => {

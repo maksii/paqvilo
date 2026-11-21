@@ -8,7 +8,7 @@ import path from 'node:path';
 import { AssetCache } from '../lib/asset-cache.mjs';
 import { createSimulator } from '../server.mjs';
 import { renderComponent } from '../lib/platform.mjs';
-import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, ownedClose, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const base = '/webresources/msdyn_/RichTextEditorControl/libs/ckeditor_latest/';
 const origin = 'https://invented.invalid';
@@ -67,11 +67,7 @@ test('compatibility mode excludes an incomplete captured managed RTE definition'
 });
 test('a runtime renders compatibility for a cached core alone and native when its language resource is captured', async (t) => {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-rte-readiness-'));
-  let app;
-  ownedFixture(t).add(async () => {
-    await app?.close();
-    await fs.rm(root, { recursive: true, force: true });
-  });
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   await fs.writeFile(path.join(root, 'website.yml'), 'adx_websiteid: site\nadx_name: RTE fixture');
   await fs.writeFile(path.join(root, 'Home.webpage.yml'), 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\n');
   await fs.writeFile(path.join(root, 'Home.webpage.copy.html'), '{% entityform name: "form" %}');
@@ -112,11 +108,10 @@ test('a runtime renders compatibility for a cached core alone and native when it
     },
   };
   await cache.capture([base + 'ckeditor.js'], bridge);
-  app = await createSimulator({ sourceDir: root, stateFile, origin, initial, watch: false });
+  let app = ownedClose(t, await createSimulator({ sourceDir: root, stateFile, origin, initial, watch: false }));
   assert.match(await fetch(app.url).then((response) => response.text()), /"compatibility":true/);
   await app.close();
-  app = null;
   await cache.capture([base + 'lang/editor-language-resources.js'], bridge);
-  app = await createSimulator({ sourceDir: root, stateFile, origin, initial, watch: false });
+  app = ownedClose(t, await createSimulator({ sourceDir: root, stateFile, origin, initial, watch: false }));
   assert.match(await fetch(app.url).then((response) => response.text()), /"compatibility":false/);
 });

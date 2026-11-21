@@ -1,10 +1,14 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseOptions } from '../cli-options.mjs';
-import { prepareProject } from '../project-scaffold.mjs';
-import { checkProject, readyProject } from '../project-check.mjs';
-import { refreshEditor } from '../project-editor.mjs';
 import { choose } from '../prompt.mjs';
+import { paqviloCommand } from '../command-hint.mjs';
+
+// Loaded by the operation that needs them: each brings in the catalogue schema and with it every Mirage setting parser
+// (some 300 modules), which help and argument errors never use.
+const scaffold = () => import('../project-scaffold.mjs');
+const check = () => import('../project-check.mjs');
+const editor = () => import('../project-editor.mjs');
 
 export const INIT_HELP = `Usage: paqvilo init [dir] [options]
 
@@ -78,18 +82,35 @@ function validateInitOperations(values) {
   if (values.interactive && values.json) throw new Error('--interactive cannot be combined with --json');
 }
 
-function printReadyReport(report) {
+/** The init --check command for the project the gate read, as it runs from the working directory. */
+function readyCheckCommand(report, config) {
+  // init resolves --config from the project folder: a project elsewhere is named with its catalogue spelled out.
+  if (path.relative(process.cwd(), report.directory) === '')
+    return paqviloCommand(['init', '--check'], { script: 'check:scaffold', config });
+  // The catalogue the gate read, so the hint runs against the same one from the working directory.
+  const catalogue = path.resolve(report.directory, config ?? 'paqvilo.config.yml');
+  return paqviloCommand(['init', '--check'], { extra: [report.directory, ...(config ? ['--config', catalogue] : [])] });
+}
+
+function printReadyReport(report, config) {
+  const fallback = `Complete this item; run ${readyCheckCommand(report, config)} for file:line guidance.`;
   for (const group of ['completion', 'adoption', 'paths'])
     for (const item of report[group].diagnostics)
-      console.log(
-        `${item.file ?? '.'}${item.line ? ':' + item.line : ''}: [${item.code}] ${item.action ?? 'Complete this item; use init --check for file:line guidance.'}`,
-      );
+      console.log(`${item.file ?? '.'}${item.line ? ':' + item.line : ''}: [${item.code}] ${item.action ?? fallback}`);
   for (const site of report.doctor.sites)
     console.log(
       `${site.ready ? 'READY' : 'ERROR'} ${site.site}: offline Lense/Sources/Mirage checks; ${site.profiles.filter((profile) => !profile.valid).length} invalid profile(s).`,
     );
-  if (!report.doctor.ok)
-    console.log('Offline doctor gate failed; run paqvilo lense doctor --all --mirage for detailed local diagnostics.');
+  if (!report.doctor.ok) {
+    // The catalogue the gate read, so the hint runs against the same one from the working directory.
+    const catalogue = path.resolve(report.directory, config ?? 'paqvilo.config.yml');
+    const doctor = paqviloCommand(['lense', 'doctor'], {
+      script: 'doctor',
+      extra: ['--all', '--mirage'],
+      config: catalogue,
+    });
+    console.log(`Offline doctor gate failed; run ${doctor} for detailed local diagnostics.`);
+  }
   console.log(
     report.ok
       ? 'Configured project is ready for local preview and acceptance checks.'
@@ -99,7 +120,9 @@ function printReadyReport(report) {
 
 function printCheckReport(report) {
   for (const item of report.todo)
-    console.log(`${item.file}:${item.line}: ${item.severity ?? 'error'} [${item.kind}] ${item.text}`);
+    console.log(
+      `${item.file}${item.line ? ':' + item.line : ''}: ${item.severity ?? 'error'} [${item.kind}] ${item.text}`,
+    );
   console.log(report.ok ? 'Project scaffold is complete.' : `${report.todo.length} unfinished scaffold item(s).`);
 }
 
@@ -127,9 +150,12 @@ async function generateInitProject(directory, values) {
       'Browser for this project?',
       ['msedge', 'chrome', 'chromium'].map((value) => ({ value })),
       'msedge',
+      '--browser',
     );
   try {
-    return await prepareProject(directory, {
+    return await (
+      await scaffold()
+    ).prepareProject(directory, {
       name: values.name,
       sites: values.site,
       packs: values.pack,
@@ -182,13 +208,18 @@ export async function runInit(args = process.argv.slice(2)) {
   validateInitOperations(values);
   const directory = path.resolve(positionals[0] ?? '.');
   let report;
-  if (values.check) report = checkProject(directory, { config: values.config });
-  else if (values.ready) report = await readyProject(directory, { config: values.config });
+  if (values.check) report = (await check()).checkProject(directory, { config: values.config });
+  else if (values.ready) report = await (await check()).readyProject(directory, { config: values.config });
   else if (values['refresh-editor'])
-    report = await refreshEditor(directory, { config: values.config, workspaceOnly: values['workspace-only'] });
+    report = await (
+      await editor()
+    ).refreshEditor(directory, {
+      config: values.config,
+      workspaceOnly: values['workspace-only'],
+    });
   else report = await generateInitProject(directory, values);
   if (values.json) console.log(JSON.stringify(report, null, 2));
-  else if (values.ready) printReadyReport(report);
+  else if (values.ready) printReadyReport(report, values.config);
   else if (values.check) printCheckReport(report);
   else printGeneratedReport(report);
   return report.ok ? 0 : 1;

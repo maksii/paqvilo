@@ -504,6 +504,16 @@ function parseFrom(s) {
   return items;
 }
 
+// A derived table without its alias (102), naming the token after it or the end of the statement.
+function missingDerivedAlias(next) {
+  const near = next ? `'${next.raw}'` : 'the end of the statement';
+  return new TdsSqlError(
+    102,
+    `A derived table needs an alias: write (SELECT ...) AS name. Incorrect syntax near ${near}.`,
+    next ? { pos: next.pos, line: next.line } : {},
+  );
+}
+
 function parseTableSource(s) {
   const tok = peek(s);
   if (eatPunct(s, '(')) {
@@ -513,7 +523,7 @@ function parseTableSource(s) {
     const query = parseQuery(s);
     expectPunct(s, ')');
     const alias = parseAlias(s);
-    if (alias === null) throw syntaxError(peek(s));
+    if (alias === null) throw missingDerivedAlias(peek(s));
     return { type: 'Derived', query, alias };
   }
   if (!isName(tok)) throw syntaxError(tok);

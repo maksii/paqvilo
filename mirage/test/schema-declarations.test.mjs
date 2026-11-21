@@ -1,9 +1,10 @@
+// @test-kind contract: Paqvilo's own generator of Dataverse schema declarations (emitted types, diagnostics, deterministic output).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import ts from 'typescript';
+import { tsc } from '../../test/tsc.mjs';
 import { generateSchemaDeclarations } from '../fixtures.mjs';
 
 const schema = () => ({
@@ -69,18 +70,11 @@ const closedEmptyTags: FixtureRow<'x_item'> = {x_itemid:'local-id',x_emptytags:'
 const omittedOrNull: FixtureRow<'x_item'> = {x_itemid:'local-id',x_empty:null,x_emptytags:[]};
 void [row,partial,kind,wrongChoice,noIdentity,noName,wrongLookup,wrongColumn,closedEmpty,closedEmptyTags,omittedOrNull];`,
   );
-  const program = ts.createProgram([fixture], {
-    strict: true,
-    noEmit: true,
-    target: ts.ScriptTarget.ES2022,
-    module: ts.ModuleKind.NodeNext,
-    moduleResolution: ts.ModuleResolutionKind.NodeNext,
-    types: [],
-  });
-  const failures = ts
-    .getPreEmitDiagnostics(program)
-    .map((error) => ts.flattenDiagnosticMessageText(error.messageText, ' '));
-  assert.deepEqual(failures, []);
+  const checked = tsc(
+    ['--strict', '--noEmit', '--target', 'es2022', '--module', 'nodenext', '--moduleResolution', 'nodenext', fixture],
+    { cwd: dir },
+  );
+  assert.equal(checked.status, 0, checked.output);
 });
 test('declarations are deterministic across source and selection ordering and disclose unresolved metadata', () => {
   const input = schema(),

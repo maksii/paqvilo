@@ -10,7 +10,11 @@ import { registerHooks, syncBuiltinESMExports } from 'node:module';
 const sources = new Map(
   [
     '../bin/paqvilo.mjs',
+    '../lense/cli.mjs',
+    '../lense/cli-help.mjs',
+    '../lense/cli-envelope.mjs',
     '../lense/cli-options.mjs',
+    '../lense/startup-progress.mjs',
     '../lense/signal-forwarding.mjs',
     '../mirage/tool-registry.mjs',
     '../mirage/tool-options.mjs',

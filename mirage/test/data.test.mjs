@@ -18,9 +18,73 @@ import {
 import { initialState } from '../lib/bootstrap.mjs';
 import { FetchRenderCache } from '../lib/fetch-render-cache.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { fixedClock, stampMs } from '../lib/runtime-clock.mjs';
+
+// The hold bound of lib/runtime-clock.mjs (CLOCK_STEP_HOLD_MS).
+const CLOCK_STEP_HOLD_MS = 5000;
 
 const user = { contactId: 'c1', accountId: 'a1', roles: ['Member'] };
 // @test-kind security: a cached permission decision cannot grant access to a different row that shares an identifier
+// Lab night medium-20261119 saw the WSL wall clock step back 0.9 to 1.3 s. A stored stamp holds across such a small step
+// (runtime-clock.mjs stampMs) so a later write never looks older; a deliberate set-back (fixedClock.set, an hour) is
+// honoured, a replaced state starts from the clock again, and a reading that is not a number never poisons later stamps.
+test('record stamps hold only across a small backward clock step, and a replaced state releases the hold', async () => {
+  const T = Date.parse('2026-05-04T09:30:00.000Z');
+  const clock = fixedClock(T);
+  const state = emptyState();
+  state.mappings.x_item = { logicalName: 'x_item', entitySet: 'x_items', idColumn: 'x_itemid', fields: {} };
+  state.tables.x_item = [];
+  const store = await new DataStore({ state, clock }).init();
+  const stamp = async () => (await store.create('x_item', {}, { admin: true })).createdon;
+  const at = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
+  assert.equal(await stamp(), at(T));
+  clock.advance(-1000);
+  assert.equal(await stamp(), at(T), 'a 1 s step back is held at the last stamp');
+  clock.set(T - 3600000);
+  assert.equal(await stamp(), at(T - 3600000), 'a 1 h set-back is a deliberate clock set and is honoured');
+  clock.set(T);
+  assert.equal(await stamp(), at(T));
+  clock.advance(-1000);
+  await store.replaceState(store.snapshot());
+  assert.equal(await stamp(), at(T - 1000), 'a replaced state is stamped from the clock again');
+
+  const holder = {};
+  let reading = Number.NaN;
+  const reader = () => reading;
+  assert.ok(Number.isNaN(stampMs(holder, reader)));
+  reading = T;
+  assert.equal(stampMs(holder, reader), T, 'a reading that is not a number is not held');
+  reading = T - CLOCK_STEP_HOLD_MS;
+  assert.equal(stampMs(holder, reader), T, 'a step of CLOCK_STEP_HOLD_MS is still held');
+  reading = T - CLOCK_STEP_HOLD_MS - 1;
+  assert.equal(stampMs(holder, reader), T - CLOCK_STEP_HOLD_MS - 1, 'a larger step is honoured');
+});
+
+// The store's clock object and an organization's clock function read the same wall clock: one hold per store keeps the rows
+// of the two writers (a job row and an audit row, say) in order across a step, while an override that reads a far-away time
+// stamps at its own time.
+test('two writers with different clock objects on one store share one hold, and a far-away clock stamps its own time', () => {
+  const T = Date.parse('2026-05-04T09:30:00.000Z');
+  const clock = fixedClock(T);
+  const store = {};
+  const organizationClock = () => clock.now();
+  assert.equal(stampMs(store, clock), T);
+  clock.advance(-1000);
+  assert.equal(stampMs(store, organizationClock), T, 'the second writer is held at the first writer’s stamp');
+  assert.equal(stampMs(store, clock), T);
+  assert.equal(
+    stampMs(store, () => T - 86400000),
+    T - 86400000,
+    'an override a day behind stamps at its own time',
+  );
+  assert.equal(
+    stampMs(store, () => T + 86400000),
+    T + 86400000,
+    'an override a day ahead stamps at its own time',
+  );
+  assert.equal(stampMs(store, clock), T - 1000, 'the store clock, a day behind that stamp, stamps at its own time');
+});
+
 test('permission memoization cannot grant another row with a duplicate identifier', () => {
   for (const reversed of [false, true]) {
     const rows = [

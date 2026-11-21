@@ -2,7 +2,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { fileURLToPath } from 'node:url';
 import { codeApps } from '../mirage/lib/code-apps-vite.mjs';
+import { tsc } from './tsc.mjs';
 
 test('Vite integration only activates for configured local development and validates its origin and app', () => {
   const plugin = codeApps({ app: 'invented', mirageUrl: 'http://127.0.0.1:8787' });
@@ -124,27 +126,21 @@ test('Vite module entry wrappers install bootstrap before the application entry'
 });
 
 // @test-kind tooling: verifies the published declarations typecheck a consumer.
-test('published Vite and browser client declarations typecheck a consumer', async () => {
-  const { execFile } = await import('node:child_process');
-  const { promisify } = await import('node:util');
-  const { fileURLToPath } = await import('node:url');
-  const compiler = fileURLToPath(import.meta.resolve('typescript/bin/tsc'));
+test('published Vite and browser client declarations typecheck a consumer', () => {
   const fixture = fileURLToPath(new URL('./fixtures/code-apps-consumer.mts', import.meta.url));
-  await assert.doesNotReject(() =>
-    promisify(execFile)(process.execPath, [
-      compiler,
-      '--noEmit',
-      '--strict',
-      '--skipLibCheck',
-      '--module',
-      'nodenext',
-      '--moduleResolution',
-      'nodenext',
-      '--target',
-      'es2022',
-      fixture,
-    ]),
-  );
+  const checked = tsc([
+    '--noEmit',
+    '--strict',
+    '--skipLibCheck',
+    '--module',
+    'nodenext',
+    '--moduleResolution',
+    'nodenext',
+    '--target',
+    'es2022',
+    fixture,
+  ]);
+  assert.equal(checked.status, 0, checked.output);
 });
 
 test('inline module scripts are gated separately and relative imports resolve from their HTML file', async () => {

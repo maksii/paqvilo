@@ -23,7 +23,13 @@ import { addonHandlers } from './dataverse-addon-common.mjs';
 import { sourceOrganizationExtensions } from './source-organization-extensions.mjs';
 import { createOrganizationRuntime } from './dataverse-organization.mjs';
 import { createOrganizationBackend } from './organization-backend.mjs';
-import { startDataverseApi, metadataRead, operationCall, unboundFunction } from './dataverse-api.mjs';
+import {
+  startDataverseApi,
+  metadataRead,
+  operationCall,
+  dispatchTaggedRoute,
+  isBuiltInFunction,
+} from './dataverse-api.mjs';
 import { createManagedIdentityEndpoints } from './dataverse-managed-identity.mjs';
 import { connectorOf, createConnectorRuntime } from './connector-runtime.mjs';
 import { createHostFlowRuns } from './flow-runs.mjs';
@@ -47,7 +53,7 @@ import { localServiceSettings, describeLocalServices, preflightLocalServices } f
 import { collectPackExport } from './pack-exports.mjs';
 import { runWithPackRegistries } from './extensions.mjs';
 import { runWithQueryResolvers } from './dataverse-conditions.mjs';
-import { createCapabilityRegistry, packCapabilityRecords } from './capability-registry.mjs';
+import { createCapabilityRegistry, describeExtension, packCapabilityRecords } from './capability-registry.mjs';
 import { buildPreflightReport } from './capability-report.mjs';
 import { attachmentBody as storedAttachmentBody } from './dataverse-storage-routing.mjs';
 import { ATTACHMENT_COLUMNS } from './dataverse-files.mjs';
@@ -78,7 +84,7 @@ const originOf = (text) => {
   }
 };
 import { organizationPrincipalContext } from './dataverse-principal-context.mjs';
-import { parseDataverseRoute, parsePrefer } from './dataverse-odata.mjs';
+import { dataverseError, parseDataverseRoute, parsePrefer } from './dataverse-odata.mjs';
 import { currentRequest } from './request-context.mjs';
 import { initialOrganizationState } from './organization-bootstrap.mjs';
 
@@ -796,9 +802,11 @@ export function inventorySummary(records = []) {
  * and composeHostDescription: the Power Pages host serves personas, the live bridge and portal rendering; the standalone host
  * does not. dataverseApi is the validated Dataverse HTTP API switch of that host.
  */
-export function hostSurfaces({ host = 'standalone', dataverseApi = false } = {}) {
+export function hostSurfaces({ host = 'standalone', dataverseApi = false, modelDriven = true } = {}) {
   const portal = host === 'power-pages';
   return {
+    // modelDriven.enabled false switches the model-driven host off on either host (the runtime kind sets it otherwise).
+    ...(modelDriven === false ? { modelDriven: false } : {}),
     dataverseApi: Boolean(dataverseApi),
     setup: true,
     records: true,
@@ -837,13 +845,14 @@ export async function activeDeploymentProfile({
   projectRoot = process.cwd(),
   sourceDir,
   pin = null,
+  pinStateFile = null,
 } = {}) {
   if (!deploymentProfiles?.profiles || !Object.keys(deploymentProfiles.profiles).length) return null;
   const config = resolveDeploymentProfiles(deploymentProfiles, projectRoot, {
     sourceDir: sourceDir ?? projectRoot,
     sourceRoot: projectRoot,
   });
-  return Object.assign(await loadDeploymentProfiles(config, pin), { config });
+  return Object.assign(await loadDeploymentProfiles(config, pin, { pinStateFile }), { config });
 }
 
 /** Status `routes`: the /_sim/api prefixes of the routers a host mounts (each router's `routes` export), in mounting order, unique. */
@@ -936,6 +945,23 @@ function canvasAppsOf(records = [], projectRoot = process.cwd()) {
  * handlers as the selected staff user. Reads run in a read transaction; writes take the host change slot atomically.
  */
 export function codeAppDataverse({ organization, change, origin }) {
+  // The Web API dispatcher's dependencies, as the model-driven transport passes them (dataverse-model-driven.mjs).
+  const webApi = () => ({
+    store: organization.store,
+    settings: organization.settings,
+    operations: organization.registry,
+    routes: organization.routes,
+    api: organization.api,
+    principals: organization.principals,
+    metadata: organization.metadata,
+    recordHandlers: organization.records,
+    changes: organization.changes,
+    tenantId: organization.tenantId,
+    organizationId: organization.organizationId,
+    environmentId: organization.environmentId,
+    clock: organization.clock,
+    limits: organization.limits,
+  });
   return async ({ method, path: pathname, search = '', headers = {}, body, principal }) => {
     const url = new URL(pathname + search, origin() ?? 'http://organization.local'); // NOSONAR: reserved or loopback placeholder host, not a real transport
     const route = parseDataverseRoute(url.pathname);
@@ -958,9 +984,27 @@ export function codeAppDataverse({ organization, change, origin }) {
         ...principalContext,
         requestId: currentRequest()?.correlationId ?? organization.ids.uuid(),
       };
+      // Unbound and bound functions (WhoAmI and the other built-ins, share actions) go through the Web API's own
+      // dispatcher as the bridge session's user; entity routes keep the record handlers below.
+      // callUrl carries the @alias parameter values of a function written in the alias form.
+      const webApiCall = (target, verb = method, callUrl = url) =>
+        dispatchTaggedRoute(
+          webApi(),
+          {
+            req: { method: verb, headers },
+            method: verb,
+            url: callUrl,
+            origin: url.origin,
+            prefer: context.prefer,
+            meta: {},
+          },
+          target,
+          { ...context, url: callUrl, method: verb, route: target, req: { method: verb, headers } },
+          context.body,
+        );
       // The SDK customapi request does not carry a verb. Use the registry only for an unambiguous,
       // unbound function. Bound operations need source binding metadata and target identification.
-      const customApi = codeAppFunctionCall({ organization, route, method, headers, body, url, context });
+      const customApi = codeAppFunctionCall({ organization, route, method, headers, body, context, webApiCall });
       if (customApi.handled) return customApi.value;
       const extension = organization.routes.find((entry) => !entry.anonymous && entry.match(url.pathname, method));
       if (extension) return extension.handler({ ...context, req: { headers } });
@@ -969,15 +1013,44 @@ export function codeAppDataverse({ organization, change, origin }) {
         route,
         { ...context, req: { headers } },
       );
-      return operated ?? organization.records.handle(context);
+      if (operated) return operated;
+      return ['function', 'boundFunction'].includes(route.kind)
+        ? webApiCall(route)
+        : organization.records.handle(context);
     };
-    return method === 'GET'
-      ? organization.read(call)
-      : change(() => organization.runOwned(() => organization.runAtomic(call)));
+    try {
+      return await (method === 'GET'
+        ? organization.read(call)
+        : change(() => organization.runOwned(() => organization.runAtomic(call))));
+    } catch (error) {
+      // A refusal carries the status and Dataverse code the Web API answers that user, not the store's own code. It is
+      // still thrown, so the bridge answers it and keeps a plug-in fault's trace identity (traceError) on the root.
+      if (!(error instanceof DataError)) throw error;
+      const { status, body } = dataverseError(error, { origin: url.origin, tenantId: organization.tenantId, method });
+      const answered = new DataError(body?.error?.message ?? error.message, status, body?.error?.code ?? error.code);
+      if (error.traceError) Object.defineProperty(answered, 'traceError', { value: error.traceError });
+      throw answered;
+    }
   };
 }
 
-function codeAppFunctionCall({ organization, route, method, headers, body, url, context }) {
+// Function parameters as the Web API URL alias form: the params text and a copy of url with one @pN query value each
+// (strings quoted, objects and arrays as JSON), which parseFunctionParameters reads back.
+function aliasForm(url, parameters) {
+  const aliased = new URL(url);
+  const params = Object.entries(parameters).map(([name, value], index) => {
+    if (!/^[A-Za-z_]\w*$/.test(name))
+      throw new DataError(`${name} is not a valid parameter name.`, 400, 'InvalidRequest');
+    let text = String(value);
+    if (typeof value === 'string') text = `'${value.replaceAll("'", "''")}'`;
+    else if (value !== null && typeof value === 'object') text = JSON.stringify(value);
+    aliased.searchParams.set(`@p${index}`, text);
+    return `${name}=@p${index}`;
+  });
+  return { params: params.join(','), url: aliased };
+}
+
+function codeAppFunctionCall({ organization, route, method, headers, body, context, webApiCall }) {
   const candidate = route.candidate?.name ?? (route.kind === 'function' ? route.name : null);
   const noParameters = body == null || (typeof body === 'object' && !Array.isArray(body) && !Object.keys(body).length);
   if (
@@ -987,18 +1060,17 @@ function codeAppFunctionCall({ organization, route, method, headers, body, url, 
     !(noParameters || (body && typeof body === 'object' && !Array.isArray(body) && !Buffer.isBuffer(body)))
   )
     return { handled: false };
-  if (candidate === 'WhoAmI' && noParameters)
-    return {
-      handled: true,
-      value: unboundFunction(
-        { organizationId: organization.organizationId, store: organization.store },
-        { method: 'GET', origin: url.origin, url },
-        { kind: 'function', name: candidate, version: route.version ?? 'v9.2' },
-        context,
-      ),
-    };
   const fn = organization.registry.find({ name: candidate, kind: 'function', binding: 'unbound' }); // NOSONAR: custom registry lookup, not Array#find
   const action = organization.registry.find({ name: candidate, kind: 'action', binding: 'unbound' }); // NOSONAR: custom registry lookup, not Array#find
+  // A built-in Web API function (WhoAmI, RetrieveTotalRecordCount, ...) runs as its GET, the body's parameters written
+  // in the URL alias form: Name(P=@p0)?@p0=<literal>.
+  if (!fn && !action && isBuiltInFunction(candidate)) {
+    const { params, url } = aliasForm(context.url, noParameters ? {} : body);
+    return {
+      handled: true,
+      value: webApiCall({ kind: 'function', name: candidate, params, version: route.version ?? 'v9.2' }, 'GET', url),
+    };
+  }
   if (!fn || action) return { handled: false };
   const functionRoute = { kind: 'function', name: candidate, params: '', version: route.version ?? 'v9.2' };
   return {
@@ -1096,7 +1168,7 @@ function assembleOrganizationHost(c, options) {
     createTraceStore({
       settings: options.trace ?? {},
       stateDirectory: () => c.stateDirectory ?? null,
-      // A table filter names the logical or the entity set name (DV-N4-2).
+      // A table filter names the logical or the entity set name.
       entityNames: (name) => options.store.entityNames?.(name) ?? [name],
       ...traceClockOptions(options.store.clock ?? systemClock),
     });
@@ -1461,19 +1533,7 @@ function registerSharedCapabilities(c, add, providers, api, connectors) {
       operations: [],
       requires: [providers.messaging.bus.descriptor.name],
     });
-  for (const entry of c.installed)
-    add(
-      entry.describe?.(api) ?? {
-        name: entry.name,
-        kind: 'organization-module',
-        level: 'inventory',
-        operations: [],
-        requires: [],
-        principal: 'none',
-        stateOwner: 'unknown',
-        lifecycle: { install: true, reset: Boolean(entry.reset), close: Boolean(entry.close) },
-      },
-    );
+  for (const entry of c.installed) add(describeExtension(entry, api));
 }
 
 function registerOperationCapabilities(c, result, seen, diagnostic) {
@@ -1589,7 +1649,8 @@ function hostLifecycle(c) {
       schema,
       metadataFields,
       metadataSnapshot,
-      log = () => {},
+      // The Dataverse API log (refused tokens, listener errors) becomes a DATAVERSE_API finding of this host on both hosts.
+      log = (...args) => diagnostic({ code: 'DATAVERSE_API', message: String(args[0]?.message ?? args[0]) }),
       initializing = false,
     }) {
       await lifecycle.loadExtensions();
@@ -1992,6 +2053,7 @@ export async function composeHostDescription({
   const surfaces = hostSurfaces({
     host,
     dataverseApi: dataverseApiEnabled({ host, runtime: settings, dataverse: config.dataverse }),
+    modelDriven: config.modelDriven?.enabled !== false,
   });
   // A startup preset is applied as a fresh running host applies it (standalone-runtime.mjs), so rows the preset seeds
   // (service endpoints, plug-in types) resolve here as they do on that host.

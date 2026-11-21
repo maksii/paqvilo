@@ -518,4 +518,47 @@ function installGit(api) {
   });
 }
 
-export const EXTENSION = { name: 'dataverse-addon-git', install: installGit };
+/** Capability record for the capability registry; dataverse-extensions.mjs adds the operations install registered. */
+function describe() {
+  return {
+    name: 'dataverse-addon-git',
+    version: 1,
+    kind: 'dataverse-extension',
+    level: 'contract',
+    reason:
+      'The remote is a local directory of JSON commit objects, not a Git repository; whole solutions are compared.',
+    operations: [
+      {
+        name: 'DisconnectFromGit',
+        level: 'contract',
+        reason: 'No test in mirage/test exercises it.',
+      },
+      {
+        name: 'PullChangesFromGitAsync',
+        level: 'contract',
+        reason: 'No test in mirage/test exercises it.',
+      },
+      {
+        name: 'ExportSolutionFromGitAsync',
+        level: 'contract',
+        reason: 'No test in mirage/test exercises it.',
+      },
+      {
+        name: 'PreValidateGitComponents',
+        level: 'contract',
+        reason: 'No test in mirage/test exercises it.',
+      },
+      {
+        name: 'ValidateSourceControlConnection',
+        level: 'contract',
+        reason: 'No test in mirage/test exercises it.',
+      },
+    ],
+    requires: [],
+    principal: 'caller',
+    stateOwner: 'store',
+    lifecycle: 'per-request',
+  };
+}
+
+export const EXTENSION = { name: 'dataverse-addon-git', install: installGit, describe };

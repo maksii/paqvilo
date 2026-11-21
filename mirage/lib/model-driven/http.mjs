@@ -328,7 +328,7 @@ export function createModelDrivenHandler({
           if (!['GET', 'HEAD'].includes(req.method))
             throw Object.assign(
               fail(
-                'The Web API on the app address accepts GET only; use Xrm.WebApi or the Dataverse Web API listener to change data.',
+                'The Web API on the app address accepts GET and HEAD only; use Xrm.WebApi or the Dataverse Web API listener to change data.',
                 405,
               ),
               { code: 'AppAddressReadOnly' },

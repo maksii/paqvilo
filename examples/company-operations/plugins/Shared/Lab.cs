@@ -56,6 +56,11 @@ namespace Paqvilo.Demo.Lab {
   protected static Entity Target(IPluginExecutionContext c)=>c.InputParameters.Contains("Target")?c.InputParameters["Target"] as Entity:null;
   protected static bool PlatformField(Entity t,string k)=>new[]{"modifiedby","modifiedon","modifiedonbehalfby","utcconversiontimezonecode","timezoneruleversionnumber"}.Contains(k)||k==t.LogicalName+"id"&&t.GetAttributeValue<Guid>(k)==t.Id;
   protected static void Require(bool value,string message){if(!value)throw new InvalidPluginExecutionException("CO "+message);}
+  // Dataverse runs a root SDK Delete's PreOperation steps as SYSTEM under its own "ObjectModel Implementation" Delete of
+  // the same row; only InitiatingUserId keeps the caller. A Delete nested in a plug-in, portal request or cascade has
+  // another parent, or a wrapper that is not itself the root.
+  protected static bool PlatformRootDelete(IPluginExecutionContext c){var parent=c.ParentContext;return c.MessageName=="Delete"&&c.Depth==1&&parent!=null&&parent.ParentContext==null&&parent.Stage==30&&parent.Depth==1&&parent.MessageName=="Delete"&&parent.PrimaryEntityName==c.PrimaryEntityName&&parent.PrimaryEntityId==c.PrimaryEntityId&&parent.InitiatingUserId==c.InitiatingUserId&&parent.OwningExtension?.LogicalName=="sdkmessageprocessingstep"&&parent.OwningExtension.Name=="ObjectModel Implementation";}
+  protected bool SoleWriterRootDelete(IPluginExecutionContext c){if(!PlatformRootDelete(c)||!Guid.TryParse(Configuration.writerId,out var writer)||Configuration.trustedWriterIds.Length!=1||!Configuration.Trusted(writer)||c.InitiatingUserId!=writer||!(c is IPluginExecutionContext2 x))return false;try{return !x.IsPortalsClientCall;}catch{return false;}}
  }
  public static class Snapshot {
   public const int SchemaVersion=2;

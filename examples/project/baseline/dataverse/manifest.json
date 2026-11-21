@@ -80,6 +80,7 @@
       "ownership": "organization",
       "notes": true,
       "solution": "PaqviloBaseline",
+      "includeAllSubcomponents": true,
       "primaryName": {
         "name": "pqvd_name",
         "label": "Name",
@@ -126,6 +127,7 @@
       "notes": true,
       "activities": true,
       "solution": "PaqviloBaseline",
+      "includeAllSubcomponents": true,
       "primaryName": {
         "name": "pqvd_name",
         "label": "Name",
@@ -390,6 +392,7 @@
       "pluralLabel": "Baseline Children",
       "ownership": "user",
       "solution": "PaqviloBaseline",
+      "includeAllSubcomponents": true,
       "primaryName": {
         "name": "pqvd_name",
         "label": "Name",

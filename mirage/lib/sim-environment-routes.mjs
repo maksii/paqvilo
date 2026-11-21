@@ -123,7 +123,8 @@ export function applyEnvironmentOverride(store, state, schemaName, value, { secr
 
 /**
  * environment: { definitions(), profiles(), setOverride(schemaName, value|null) → definition, selectProfile?(body) → summary,
- * extra?() → host fields of GET /environment }. profiles() and a missing selectProfile answer { supported: false, reason }.
+ * selectProfileUnsupported?() → the reason a host without selectProfile gives, extra?() → host fields of GET /environment }.
+ * profiles() may answer { supported: false, reason }; a missing selectProfile answers 501 { supported: false, reason }.
  * Errors are thrown with { status, code } for the host's error handler. Resolves true when it answered.
  */
 export function createEnvironmentRoutes({
@@ -153,7 +154,11 @@ export function createEnvironmentRoutes({
     }
     if (relative === '/environment/profiles' && method === 'PUT') {
       if (!environment.selectProfile) {
-        json(res, 501, environment.profiles());
+        // Why this host cannot switch: its own reason, never the profile summary.
+        json(res, 501, {
+          supported: false,
+          reason: environment.selectProfileUnsupported?.() ?? 'This host does not switch deployment profiles.',
+        });
         return true;
       }
       await change(async () => json(res, 200, await environment.selectProfile(await jsonBody(req))));

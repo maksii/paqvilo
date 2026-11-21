@@ -1,3 +1,4 @@
+// @test-kind contract: the acceptance runner's own navigation and settling rules
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -149,6 +150,33 @@ test("network quiet waits for the current documents' requests, ignores dead and 
   );
 });
 
+test('a page turn that starts a request keeps the page unsettled until a turn starts none', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
+  const records = [
+    { frameId: 'main', loaderId: 'L1', method: 'GET', type: 'XHR', path: '/first', finishedTimestamp: 1 },
+  ];
+  let turns = 0;
+  // The first turn starts a request during it, and that request ends. Later turns start nothing.
+  const roundTrip = async () => {
+    turns += 1;
+    if (turns === 1)
+      records.push({
+        frameId: 'main',
+        loaderId: 'L1',
+        method: 'GET',
+        type: 'XHR',
+        path: '/chained',
+        finishedTimestamp: 2,
+      });
+  };
+  const result = await onMockedClock(
+    t,
+    awaitNetworkQuiet(() => records, { timeout: 600_000, poll: 10, roundTrip }),
+    10,
+  );
+  assert.deepEqual({ settled: result.settled, roundTrips: result.roundTrips }, { settled: true, roundTrips: 2 });
+});
+
 test('a pending document of a frame whose parent document was replaced no longer holds the page busy', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
   // Chromium may report neither the child's removal nor an end for its document request.
@@ -191,4 +219,17 @@ test('a pending document of a frame whose parent document was replaced no longer
     10,
   );
   assert.deepEqual([swapped.settled, swapped.waitedMs], [true, 50]);
+});
+
+test('a page turn that never answers ends unsettled at the timeout', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
+  let result;
+  awaitNetworkQuiet(() => [], { timeout: 1000, poll: 10, roundTrip: () => new Promise(() => {}) }).then(
+    (value) => (result = value),
+  );
+  for (let i = 0; i < 200 && result === undefined; i++) {
+    t.mock.timers.tick(10);
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.deepEqual(result && { settled: result.settled, pending: result.pending }, { settled: false, pending: [] });
 });

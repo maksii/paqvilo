@@ -35,12 +35,13 @@
 **/out/
 **/*.min.js
 **/package-lock.json
-/npm-shrinkwrap.json
+/paqvilo-lock.json
 /licenses/
 /site/media/
 /docs/assets/
 /examples/project/baseline/portal/
 /examples/project/baseline/solution/
+/examples/project/baseline/site/
 /examples/project/portal/
 /examples/project/solution/
 /examples/project/code-site/

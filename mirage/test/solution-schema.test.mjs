@@ -103,6 +103,26 @@ test('solution paths are classified for table metadata, forms, views and environ
   assert.equal(classifySolutionPath('WebResources/script.js'), null);
 });
 
+// @test-kind unproven: an export's file and image MaxValue is read as MaxSizeInKB; no capture pairs the two values
+test('table IsAuditEnabled and IsCustomizable, and a file or image MaxValue, are read from Entity.xml', async (t) => {
+  const root = await tree(t, {
+    'Entities/sample_item/Entity.xml': entityXml('sample_item', {
+      attributes:
+        attribute('sample_itemid', 'primarykey') +
+        attribute('sample_file', 'file', '<MaxValue>1024</MaxValue>') +
+        attribute('sample_image', 'image', '<MaxValue>2048</MaxValue>') +
+        attribute('sample_count', 'int', '<MaxValue>99</MaxValue>'),
+      extra: '<IsAuditEnabled>1</IsAuditEnabled><IsCustomizable>0</IsCustomizable>',
+    }),
+  });
+  const table = buildSolutionSchema(await scanSolutionSources([root])).tables.sample_item;
+  assert.deepEqual([table.isAuditEnabled, table.isCustomizable], [true, false]);
+  assert.deepEqual(
+    ['sample_file', 'sample_image', 'sample_count'].map((name) => table.attributes[name].maxSizeInKB),
+    [1024, 2048, undefined],
+  );
+});
+
 // @test-kind compatibility: Microsoft Learn BooleanAttributeMetadata reports a Two Options column with TrueOption and FalseOption
 test('an exported Two Options column imports as a boolean option set and reports BooleanAttributeMetadata', async (t) => {
   const twoOptions =

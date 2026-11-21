@@ -1,45 +1,33 @@
 # Documentation
 
-Paqvilo provides local-first, pro-code tools for Microsoft Power Pages. Start with [getting started](getting-started.md) for Node.js and npm setup, a working local example and your own exported site.
+Commands in these guides are written as `paqvilo …`. In a project, run them as `npx --no-install paqvilo …` (the
+installed copy); in a toolkit checkout, as `node bin/paqvilo.mjs …`.
 
-The [CLI guide](cli.md) covers command help, quoting on Windows/Linux, Unicode and OneDrive paths, defaults, JSON output and exit codes.
+| Task                                                                      | Guide                                                                                          |
+| ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Install, try the demo and connect your own export                         | [Getting started](getting-started.md)                                                          |
+| Explore the populated demo and its VS Code workflow                       | [Demo](demo.md)                                                                                |
+| Generate an empty consumer project, check readiness, refresh editor files | [Project scaffold](project-scaffold.md)                                                        |
+| Configure a project in the browser (`paqvilo setup`)                      | [Setup workspace](setup.md)                                                                    |
+| Set sources, environments, browsers and several sites                     | [Configuration](configuration.md)                                                              |
+| Command help, quoting, paths, JSON output and exit codes                  | [CLI](cli.md)                                                                                  |
+| Fix a failed install, demo or first run                                   | [Troubleshooting](getting-started.md#troubleshooting), [FAQ](faq.md)                           |
+| Preview local changes on a live portal                                    | [Lense](lense.md)                                                                              |
+| Render exported pages locally; every Mirage runtime contract              | [Mirage](../mirage/README.md), [Mirage reference](../mirage/docs/README.md)                    |
+| Choose a workflow and check what is supported                             | [Coverage](coverage.md), [FAQ](faq.md)                                                         |
+| Understand components, data flows and the project boundary                | [Architecture](architecture.md)                                                                |
+| Add personas, data packs, handlers and project tests                      | [Project extensions](project-extensions.md), [demo project](../examples/project/README.md)     |
+| Use the toolkit from tests or scripts                                     | [Public API](public-api.md)                                                                    |
+| Review sources offline (`analyze`, Doctor advice)                         | [Static analysis](static-analysis.md)                                                          |
+| Inspect or overlay model-driven app sources                               | [Model-driven actions](model-driven-actions.md)                                                |
+| Provision project-owned Dataverse schema and data                         | [Dataverse provisioning](dataverse-provisioning.md)                                            |
+| Compare Mirage with a live portal on native components                    | [Native component baseline](baseline.md)                                                       |
+| Upgrade, or test a branch build                                           | [Release notes](release-notes.md), [preview packages](branch-packages.md)                      |
+| Contribute to the toolkit                                                 | [Contributing](../CONTRIBUTING.md), [test kinds](test-kinds.md), [code review](code-review.md) |
+| Maintain releases, dependencies, security checks and hosting              | [Repository maintenance](repository-admin.md), [dependency upgrades](dependency-upgrades.md)   |
+| Projects that informed toolkit features                                   | [Kudos](kudos.md)                                                                              |
 
-[Offline static analysis](static-analysis.md) covers Doctor quality advice, the `analyze` gate, rules and research-backed improvement plans.
-
-| Task                                                                       | Guide                                                                                 |
-| -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| Install and open your first portal                                         | [Getting started](getting-started.md)                                                 |
-| Generate an empty consumer project and refresh editor paths                | [Project scaffold](project-scaffold.md)                                               |
-| Configure a project in the local setup workspace                           | [Project setup](setup.md), [setup journey](setup.md#journey)                          |
-| Watch a running preview: system map, activity and preflight                | [Health and Activity](../mirage/docs/sim-administration.md#monitor)                   |
-| Follow one request through Web API, Dataverse, plug-ins, flows and renders | [Request tracing](../mirage/docs/tracing.md)                                          |
-| Explore the populated sample and its sources                               | [Demo guide](demo.md)                                                                 |
-| Compare supported workflows and their limits                               | [Coverage](coverage.md)                                                               |
-| Answer common setup and workflow questions                                 | [FAQ](faq.md)                                                                         |
-| Compare with Fiddler and DevTools overrides                                | [Workflow comparison](../README.md#beyond-fiddler-and-devtools-overrides)             |
-| Preview local changes on a live portal                                     | [Lense](lense.md)                                                                     |
-| Identify a selected element and distinguish source candidates              | [Selection evidence](lense.md#selection-evidence)                                     |
-| Render exported pages locally                                              | [Mirage](../mirage/README.md)                                                         |
-| Set sources, environments and browser choices                              | [Configuration](configuration.md)                                                     |
-| Add personas, datasets and acceptance tests                                | [Project starter](../examples/project/README.md), [extensions](project-extensions.md) |
-| Integrate tests or other tools                                             | [Public API](public-api.md)                                                           |
-| Provision project-owned Dataverse schema and data                          | [Dataverse tooling](dataverse-provisioning.md)                                        |
-| Upgrade or test a branch build                                             | [Release notes](release-notes.md), [preview packages](branch-packages.md)             |
-| Use the browser agent API                                                  | [Lense automation](lense.md#automation-and-evidence)                                  |
-| Compare Mirage with a live portal on native components                     | [Native component baseline](baseline.md)                                              |
-| Understand support and project boundaries                                  | [Architecture](architecture.md)                                                       |
-| Contribute to the toolkit                                                  | [Contributing](../CONTRIBUTING.md)                                                    |
-| Maintain releases, security checks and hosting                             | [Repository maintenance](repository-admin.md)                                         |
-| Explore the projects that inspired toolkit features                        | [Kudos](kudos.md)                                                                     |
-
-## Runtime reference
-
-The [Mirage reference](../mirage/docs/README.md) covers source imports, Liquid, FetchXML, Web API, forms, lists, permissions and parity evidence.
-
-## Example reference designs
-
-The separate [Company Operations regression project](../examples/company-operations/README.md) demonstrates deep permission paths, synthetic datasets and plugin observations. Its [data model](design/company-operations-demo.md), [permission harness](design/power-pages-permission-test-harness.md) and [plugin laboratory](design/dataverse-plugin-observation.md) are project specifications. Follow their installation and qualification prerequisites before using them against an authorized environment.
-
-## Command notation
-
-Run commands from your portal project. `npx --no-install paqvilo` uses its installed toolkit. References shorten this to `paqvilo`; keep the local prefix in your terminal. From a toolkit checkout, use `node bin/paqvilo.mjs`.
+The separate [Company Operations project](../examples/company-operations/README.md) is a synthetic regression project
+for deep permission paths and plug-in observations; its specifications are the
+[data model](design/company-operations-demo.md), [permission harness](design/power-pages-permission-test-harness.md) and
+[plug-in laboratory](design/dataverse-plugin-observation.md).

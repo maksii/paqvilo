@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { loadConnection, connectedClient } from '../../../lense/dataverse/index.mjs';
 import { privateJson, runProcess } from '../../../lense/dataverse/connection.mjs';
 import { metadataXml } from '../../../lense/dataverse/provision.mjs';
+import { cli, isMain, UsageError } from '../cli.mjs';
 const here = path.dirname(fileURLToPath(import.meta.url)),
   project = path.resolve(here, '..');
 
@@ -139,13 +140,18 @@ export async function importQuickFind(connection, resume) {
   await privateJson(path.join(folder, 'journal.json'), journal);
   return { solutions: journal.entries.length, views: updates.length, journal: path.join(folder, 'journal.json') };
 }
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const args = process.argv.slice(2),
-    connection = args[args.indexOf('--connection') + 1];
-  if (!args.includes('--connection') || !connection) throw new Error('--connection required');
-  console.log(
-    JSON.stringify(
-      await importQuickFind(connection, args.includes('--resume') ? args[args.indexOf('--resume') + 1] : undefined),
-    ),
+if (isMain(import.meta)) {
+  const { values } = cli(
+    `Usage: node forms/import-quickfind.mjs --connection FILE [--resume FILE]   (npm run forms:import-quickfind)
+
+Run from examples/company-operations. Imports Quick Find view settings through a solution into the live environment
+(writes).
+
+  --connection FILE  connection file
+  --resume FILE      continue an interrupted import from its journal.json
+Relative paths resolve from the working directory.`,
+    { connection: { type: 'string' }, resume: { type: 'string' } },
   );
+  if (!values.connection) throw new UsageError('--connection FILE is required.');
+  console.log(JSON.stringify(await importQuickFind(values.connection, values.resume)));
 }

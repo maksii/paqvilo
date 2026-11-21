@@ -5,10 +5,18 @@ import { loadConnection, connectedClient } from 'paqvilo/dataverse';
 import { openNativeBrowser } from './native-browser.mjs';
 import { captureNativeSnapshot, compareNativeSnapshots, snapshotHash } from './native-capture.mjs';
 import { capturedQueries } from './parity.mjs';
+import { cli } from '../cli.mjs';
 
-const file = process.argv[2];
-if (!file || process.argv.length !== 3)
-  throw new Error('Usage: node portal-harness/native-prototype.mjs <private-config.json>');
+const {
+  positionals: [file],
+} = cli(
+  `Usage: node portal-harness/native-prototype.mjs <private-config.json>
+
+Run from examples/company-operations. Captures one native signed-in read against the live site named by the private
+configuration; authorized environments only. A relative path resolves from the working directory.`,
+  {},
+  { positionals: 1 },
+);
 const config = JSON.parse(await readFile(file, 'utf8'));
 const origin = new URL(config.portalOrigin);
 if (

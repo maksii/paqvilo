@@ -1,7 +1,8 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { loadConnection, connectedClient } from '../../../lense/dataverse/index.mjs';
+import { cli, isMain, UsageError } from '../cli.mjs';
+import { connectionHelp, defaultConnection, exampleRoot } from '../paths.mjs';
 import { privateJson } from '../../../lense/dataverse/connection.mjs';
 import { componentId } from './blueprint.mjs';
 
@@ -158,15 +159,36 @@ export async function withDeepVariant(client, siteId, callback, { onProgress = (
   return result;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const args = process.argv.slice(2),
-    arg = (name) => {
-      const i = args.indexOf(name);
-      return i < 0 ? undefined : args[i + 1];
+if (isMain(import.meta)) {
+  const { values } = cli(
+    `Usage: node examples/company-operations/portal-security/deep-variant.mjs --site GUID --apply [--connection FILE]
+       [--timeout-seconds 10..1800] [--out DIR]
+       node examples/company-operations/portal-security/deep-variant.mjs --site GUID --apply [--connection FILE]
+       --restore-journal FILE
+
+Run from the toolkit checkout. Temporarily disables the six secondary IT service permission nodes on the live site and
+restores them on release, timeout or signal.
+
+  --site GUID              isolated website target
+  --apply                  required: this runner always writes
+${connectionHelp('  --connection FILE        ')}
+  --timeout-seconds N      lease length, 10 to 1800 (default 600)
+  --out DIR                journal directory under an ignored .paqvilo (default: the example's
+                           .paqvilo/portal-security/deep-variant)
+  --restore-journal FILE   restore from an interrupted lease journal under an ignored .paqvilo (takes no
+                           --timeout-seconds or --out)`,
+    {
+      site: { type: 'string' },
+      apply: { type: 'boolean' },
+      connection: { type: 'string' },
+      'timeout-seconds': { type: 'string' },
+      out: { type: 'string' },
+      'restore-journal': { type: 'string' },
     },
-    siteId = arg('--site'),
-    directory = path.resolve(arg('--out') ?? 'examples/company-operations/.paqvilo/portal-security/deep-variant'),
-    duration = Number(arg('--timeout-seconds') ?? 600);
+  );
+  const siteId = values.site,
+    directory = path.resolve(values.out ?? path.join(exampleRoot, '.paqvilo/portal-security/deep-variant')),
+    duration = Number(values['timeout-seconds'] ?? 600);
   if (
     !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(siteId ?? '') ||
     !directory.split(path.sep).includes('.paqvilo') ||
@@ -174,14 +196,17 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     duration < 10 ||
     duration > 1800
   )
-    throw new Error('Provide --site GUID, ignored --out and bounded timeout 10–1800 seconds');
-  if (!args.includes('--apply')) throw new Error('This bounded variant runner requires explicit --apply');
-  const connection = await loadConnection(arg('--connection') ?? '.paqvilo/dataverse/provisioning.connection.json'),
+    throw new UsageError('Provide --site GUID, ignored --out and bounded timeout 10–1800 seconds.');
+  if (!values.apply) throw new UsageError('This bounded variant runner requires explicit --apply.');
+  const recoveryFile = values['restore-journal'];
+  const leaseOnly = ['out', 'timeout-seconds'].find((name) => values[name] !== undefined);
+  if (recoveryFile && leaseOnly)
+    throw new UsageError(`--${leaseOnly} applies only to a new lease, not to --restore-journal.`);
+  if (recoveryFile && !path.resolve(recoveryFile).split(path.sep).includes('.paqvilo'))
+    throw new UsageError('Recovery journal must stay in ignored .paqvilo.');
+  const connection = await loadConnection(values.connection ?? defaultConnection),
     client = connectedClient(connection);
   await client.verify(connection.organisationId);
-  const recoveryFile = arg('--restore-journal');
-  if (recoveryFile && !path.resolve(recoveryFile).split(path.sep).includes('.paqvilo'))
-    throw new Error('Recovery journal must stay in ignored .paqvilo');
   await fs.mkdir(directory, { recursive: true });
   const journalFile = recoveryFile ? path.resolve(recoveryFile) : path.join(directory, 'lease-' + Date.now() + '.json'),
     releaseFile = journalFile + '.release',

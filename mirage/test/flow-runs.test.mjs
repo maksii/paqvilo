@@ -279,6 +279,28 @@ test('prune keeps the newest runs and journals within the limits and reports wha
   assert.ok(notes.some((n) => n.code === 'FLOW_RUN_JOURNAL_PRUNED'));
 });
 
+// A wall clock stepped back between two starts (lab night medium-20261119 saw ~1 s steps on WSL) stamps the later run older,
+// and two starts in one tick tie: the later started run still lists first, and pruning drops the oldest run.
+test('a wall clock stepped back or a tied starttime keeps the later started run newest in list and prune', async (t) => {
+  const { clock, runs } = await fixture(t, { limits: { keepRuns: 2, keepJournals: 2 } });
+  const first = await runs.start({ processId: FLOW });
+  await runs.complete(first.id);
+  clock.advance(-1000);
+  const second = await runs.start({ processId: FLOW });
+  const third = await runs.start({ processId: FLOW });
+  assert.deepEqual(
+    runs.list().map((run) => run.id),
+    [third.id, second.id, first.id],
+  );
+  await runs.complete(second.id);
+  await runs.complete(third.id);
+  assert.deepEqual(
+    runs.list().map((run) => run.id),
+    [third.id, second.id],
+    'pruning beyond keepRuns drops the oldest run, never the newest',
+  );
+});
+
 test('two resumes of one wait: exactly one answers, the other is FlowRunNotWaiting', async (t) => {
   const { runs } = await fixture(t);
   const run = await runs.start({ processId: FLOW });

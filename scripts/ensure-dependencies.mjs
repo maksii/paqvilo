@@ -2,31 +2,39 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawnSync } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
 import { parseArgs } from 'node:util';
 import { createRequire } from 'node:module';
 
 const canonicalDependencies = (value) =>
   JSON.stringify(Object.entries(value ?? {}).sort(([a], [b]) => a.localeCompare(b)));
-const MINIMUM_NODE = '24.22.1';
+const publishedLock = (root) => {
+  const snapshot = path.join(root, 'paqvilo-lock.json');
+  return fs.existsSync(snapshot) ? snapshot : path.join(root, 'npm-shrinkwrap.json');
+};
+const MINIMUM_NODE = '26.13.1';
+// Match the one-command Git hang guard used by lense/git.mjs. This bootstrap
+// stays built-in-only so readiness also works before toolkit dependencies exist.
+export const GIT_PREREQUISITE_HANG_GUARD_MS = 120_000;
 
 /** Readiness checks never install or contact a registry, and can run before dependencies exist. */
 function projectDependencyReadiness(root, { resolved = false } = {}) {
   try {
     const manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
     const packageLockPath = path.join(root, 'package-lock.json');
-    const shrinkwrapPath = path.join(root, 'npm-shrinkwrap.json');
-    const lockPath = fs.existsSync(packageLockPath) ? packageLockPath : shrinkwrapPath;
+    const snapshotPath = publishedLock(root);
+    const lockPath = fs.existsSync(packageLockPath) ? packageLockPath : snapshotPath;
     const lock = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
     if (
       fs.existsSync(packageLockPath) &&
-      fs.existsSync(shrinkwrapPath) &&
-      fs.readFileSync(packageLockPath, 'utf8') !== fs.readFileSync(shrinkwrapPath, 'utf8')
+      fs.existsSync(snapshotPath) &&
+      fs.readFileSync(packageLockPath, 'utf8') !== fs.readFileSync(snapshotPath, 'utf8')
     )
       return {
         ready: false,
         canInstall: false,
-        reason: 'package-lock.json and npm-shrinkwrap.json disagree. Keep the distributable shrinkwrap synchronized.',
+        reason:
+          'package-lock.json and paqvilo-lock.json disagree. Keep the distributable dependency snapshot synchronized.',
       };
     if (!lock.packages?.[''])
       return { ready: false, canInstall: false, reason: 'package-lock.json must contain a modern packages lockfile' };
@@ -183,29 +191,69 @@ export async function browserExecutable(
   };
 }
 
+/** Probe once without blocking readiness cancellation or abandoning the child. */
+export async function probeGitVersion({ signal, execute = execFile } = {}) {
+  signal?.throwIfAborted();
+  const completed = Promise.withResolvers();
+  const closed = Promise.withResolvers();
+  const child = execute(
+    'git', // NOSONAR: fixed tool name resolved through PATH by developer tooling
+    ['--version'],
+    {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: GIT_PREREQUISITE_HANG_GUARD_MS,
+      signal,
+    },
+    (error, stdout, stderr) => {
+      let status = 0;
+      if (error) status = Number.isInteger(error.code) ? error.code : null;
+      completed.resolve({
+        status,
+        stdout,
+        stderr,
+        error,
+      });
+    },
+  );
+  child.once('close', closed.resolve);
+  const result = await completed.promise;
+  await closed.promise;
+  signal?.throwIfAborted();
+  return result;
+}
+
 export async function prerequisiteReadiness({
   browser,
   nodeVersion = process.versions.node,
-  probeGit,
+  probeGit = probeGitVersion,
   locateBrowser = browserExecutable,
+  signal,
 } = {}) {
+  signal?.throwIfAborted();
   const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(nodeVersion);
   const parts = match?.slice(1).map(Number);
   const node = {
     version: nodeVersion,
-    minimumMajor: 24,
+    minimumMajor: 26,
     minimumVersion: MINIMUM_NODE,
-    ready: Boolean(parts?.[0] === 24 && (parts[1] > 22 || (parts[1] === 22 && parts[2] >= 1))),
+    ready: Boolean(parts?.[0] === 26 && (parts[1] > 13 || (parts[1] === 13 && parts[2] >= 1))),
   };
-  const result = probeGit
-    ? probeGit()
-    : spawnSync('git', ['--version'], { encoding: 'utf8', windowsHide: true, timeout: 5000 }); // NOSONAR: fixed tool name resolved through PATH by developer tooling
+  const result = await probeGit({ signal });
+  signal?.throwIfAborted();
+  let gitError = null;
+  if (result.status !== 0) {
+    if (result.error?.code === 'ENOENT') gitError = 'Git was not found on PATH (ENOENT).';
+    else if (Number.isInteger(result.status)) gitError = `Git --version exited with status ${result.status}.`;
+    else gitError = `Git readiness probe did not complete: ${result.error?.message ?? 'no process result'}`;
+  }
   const git = {
     ready: result.status === 0,
     version: result.status === 0 ? result.stdout.trim() : null,
-    error: result.status === 0 ? null : (result.error?.message ?? 'Git is not available on PATH'),
+    error: gitError,
   };
   const browserResult = browser ? await locateBrowser(browser) : null;
+  signal?.throwIfAborted();
   return {
     node,
     git,
@@ -214,11 +262,37 @@ export async function prerequisiteReadiness({
   };
 }
 
+/**
+ * A node:util parseArgs refusal as one line naming the option, without Node's positional-argument advice. This script
+ * runs before dependencies are installed and is copied standalone, so it cannot import the toolkit's option helpers.
+ */
+function parseArgsMessage(error) {
+  const unknown = /^Unknown option '([^']*)'/.exec(error.message);
+  if (unknown) return `Unknown option ${unknown[1]}`;
+  return error.message
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join(' ');
+}
+
 function readOptions() {
   try {
-    const { values: options } = parseArgs({
-      options: { check: { type: 'boolean' }, json: { type: 'boolean' }, browser: { type: 'string' } },
-    });
+    let options;
+    try {
+      ({ values: options } = parseArgs({
+        options: {
+          check: { type: 'boolean' },
+          json: { type: 'boolean' },
+          browser: { type: 'string' },
+          help: { type: 'boolean', short: 'h' },
+        },
+      }));
+    } catch (error) {
+      if (error.code?.startsWith('ERR_PARSE_ARGS_')) error.message = `${parseArgsMessage(error)} (see --help)`;
+      throw error;
+    }
+    if (options.help) return { options };
     if (options.json && !options.check)
       throw new Error('--json requires --check so machine-readable setup never installs dependencies');
     if (options.browser && !['msedge', 'chrome', 'chromium'].includes(options.browser))
@@ -251,7 +325,7 @@ function printReadinessReport(options, result, prerequisites, report) {
     console.log(`paqvilo: ${result.reason}`);
     const nodeStatus = prerequisites.node.ready
       ? 'ready'
-      : `Node.js ${MINIMUM_NODE} or newer in the 24.x LTS line required`;
+      : `Node.js ${MINIMUM_NODE} or newer in the 26.x LTS line required`;
     console.log(`Node ${prerequisites.node.version}: ${nodeStatus}`);
     console.log(`Git: ${prerequisites.git.version ?? prerequisites.git.error}`);
     if (prerequisites.browser)
@@ -261,24 +335,107 @@ function printReadinessReport(options, result, prerequisites, report) {
   }
 }
 function reportMissingPrerequisite(prerequisites, browser) {
+  if (prerequisites.node.ready && !prerequisites.git.ready) {
+    console.error(`paqvilo: Git prerequisite is not ready: ${prerequisites.git.error}`);
+    return;
+  }
   let missing = `${browser} browser executable`;
-  if (!prerequisites.node.ready) missing = `Node.js ${MINIMUM_NODE} or newer in the 24.x LTS line`;
-  else if (!prerequisites.git.ready) missing = 'Git on PATH';
+  if (!prerequisites.node.ready) missing = `Node.js ${MINIMUM_NODE} or newer in the 26.x LTS line`;
   console.error(`paqvilo: missing prerequisite: ${missing}`);
 }
+/** Materialize the shipped dependency snapshot only while a packaged installation is repaired. */
+export function withNpmInstallLock(directory, install) {
+  const lock = path.join(directory, 'package-lock.json');
+  let contents;
+  try {
+    contents = readInstallSnapshot(directory);
+  } catch (error) {
+    if (error.code === 'ENOENT') return install();
+    throw error;
+  }
+  let descriptor;
+  try {
+    descriptor = fs.openSync(lock, 'wx');
+  } catch (error) {
+    if (error.code === 'EEXIST') return install();
+    throw error;
+  }
+  let created;
+  try {
+    fs.writeFileSync(descriptor, contents);
+    created = fs.fstatSync(descriptor);
+  } finally {
+    fs.closeSync(descriptor);
+  }
+  let result;
+  let failure;
+  try {
+    result = install();
+  } catch (error) {
+    failure = { error };
+  }
+  removeInstallLock(directory, lock, created, contents);
+  if (failure) throw failure.error;
+  return result;
+}
+
+function readInstallSnapshot(directory) {
+  try {
+    return fs.readFileSync(path.join(directory, 'paqvilo-lock.json'));
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    return fs.readFileSync(path.join(directory, 'npm-shrinkwrap.json'));
+  }
+}
+
+function removeInstallLock(directory, lock, created, contents) {
+  // Rename first: later checks and deletion refer only to our private path, never
+  // to a replacement another process might create at the original lock path.
+  const recovery = fs.mkdtempSync(path.join(directory, '.paqvilo-install-lock-'));
+  const moved = path.join(recovery, 'package-lock.json');
+  fs.renameSync(lock, moved);
+  const descriptor = fs.openSync(moved, 'r');
+  let owned;
+  try {
+    const current = fs.fstatSync(descriptor);
+    owned =
+      current.isFile() &&
+      current.dev === created.dev &&
+      current.ino === created.ino &&
+      fs.readFileSync(descriptor).equals(contents);
+  } finally {
+    fs.closeSync(descriptor);
+  }
+  if (!owned) {
+    // An exclusive hard link restores the changed file without overwriting a
+    // newer lock. If restoration fails, retain the recovery file for the user.
+    try {
+      fs.linkSync(moved, lock);
+    } catch (error) {
+      throw new Error(`The temporary package lock changed; it has been preserved at ${moved}.`, { cause: error });
+    }
+  }
+  fs.unlinkSync(moved);
+  fs.rmdirSync(recovery);
+  if (!owned) throw new Error('The temporary package lock changed during dependency repair; it has been preserved.');
+}
+
 function installProjects(root, projects) {
   const args = ['ci', '--ignore-scripts', '--no-audit', '--no-fund'];
   for (const project of projects) {
     if (project.ready) continue;
     const cwd = path.resolve(root, project.directory);
-    const installation =
-      process.platform === 'win32'
-        ? spawnSync(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', `npm ${args.join(' ')}`], {
-            cwd,
-            stdio: 'inherit',
-            windowsHide: true,
-          })
-        : spawnSync('npm', args, { cwd, stdio: 'inherit' }); // NOSONAR: fixed tool name resolved through PATH by developer tooling
+    const installation = withNpmInstallLock(
+      cwd,
+      () =>
+        process.platform === 'win32'
+          ? spawnSync(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', `npm ${args.join(' ')}`], {
+              cwd,
+              stdio: 'inherit',
+              windowsHide: true,
+            })
+          : spawnSync('npm', args, { cwd, stdio: 'inherit' }), // NOSONAR: fixed tool name resolved through PATH by developer tooling
+    );
     if (installation.error)
       console.error(`paqvilo: ${project.name} dependency installation failed: ${installation.error.message}`);
     if (installation.status !== 0) return installation.status ?? 1;
@@ -289,6 +446,15 @@ async function main() {
   const parsed = readOptions();
   if (parsed.error) return 1;
   const { options } = parsed;
+  if (options.help) {
+    console.log(`Usage: node scripts/ensure-dependencies.mjs [--check] [--json] [--browser msedge|chrome|chromium]
+  (no option)        install the locked dependencies of every package when they are missing or stale (npm run setup)
+  --check            only report readiness offline; installs nothing
+  --json             print the readiness report as JSON (requires --check)
+  --browser <name>   also check that msedge, chrome or chromium is installed
+  --help             print this help`);
+    return 0;
+  }
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
   const result = dependencyReadiness(root);
   verifyResolvedDependencies(root, result);

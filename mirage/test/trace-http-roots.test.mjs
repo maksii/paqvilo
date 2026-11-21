@@ -938,8 +938,10 @@ test('Power Pages: a /_sim administration write is a sim root acting as the simu
   const root = (await ended(sim.trace, traceId)).root;
   assert.deepEqual(
     [root.kind, root.module, root.origin.host, root.actor.kind, root.actor.name, root.attributes.routeFamily],
-    ['http', 'sim', 'sim', 'system', 'simulator', '__sim'],
+    ['http', 'sim', 'sim', 'system', 'simulator', '_sim'],
   );
+  // The root names the route as the documentation writes it, as the standalone host does.
+  assert.equal(root.name, 'POST /_sim/api/session/sign-out');
   const read = await fetch(sim.url + '/_sim/api/status');
   await read.text();
   assert.equal(read.headers.get('x-trace-id'), null, 'an administration read opens no root');

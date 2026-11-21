@@ -23,7 +23,7 @@ const BROWSER_CLOSE_GUARD_MS = 30_000;
 const DEBUGGER_POLL_MS = 200;
 
 /**
- * @param {Awaited<ReturnType<import('./config.mjs').loadConfig>>} cfg
+ * @param {Awaited<ReturnType<typeof import('./config.mjs').loadConfig>>} cfg
  * @param {{headless?: boolean, profileDir?: string, debugPort?: number, hangGuardMs?: number, closeGuardMs?: number}} [overrides]
  * @returns {Promise<{context: import('playwright-core').BrowserContext, attached: boolean, close: () => Promise<void>}>}
  */
@@ -304,8 +304,9 @@ async function closeLaunchedBrowser(context, stopKeeping, previousWindow, guardM
       }
     }
   } finally {
-    await context.close().catch((error) => {
-      if (!closedOnItsOwn(context, error)) throw error;
+    // A browser that stopped answering cannot hold the close: it ends at the guard like the steps before it.
+    await bounded(context.close(), guardMs).catch((error) => {
+      if (!closedOnItsOwn(context, error)) throw stepHangGuardError(error, 'Closing the browser', guardMs);
     });
   }
 }
@@ -386,7 +387,14 @@ async function connectAttachedBrowser(endpoint, guardMs) {
   try {
     return await chromium.connectOverCDP(endpoint, { timeout: guardMs });
   } catch (error) {
-    throw hangGuardError(error, 'Attaching to the debugging endpoint', guardMs);
+    if (error?.name === 'TimeoutError') throw hangGuardError(error, 'Attaching to the debugging endpoint', guardMs); // One line with the cause, without Playwright's API prefix, call log or the endpoint itself.
+    const reason = String(error?.message ?? error)
+      .split('\n')[0]
+      .replace(/^browserType\.connectOverCDP:\s*/, '');
+    throw new Error(
+      `Cannot attach to the --cdp-url browser debugging endpoint (${reason}). Start the browser with a remote debugging port and pass that endpoint to --cdp-url.`,
+      { cause: error },
+    );
   }
 }
 
@@ -636,11 +644,11 @@ export async function attachSession(context, session) {
 
 // a reload that has not got its document by then is given up on, so later saves still reload
 const RELOAD_TIMEOUT = 60_000;
-const STYLE_TIMEOUT = 5000;
 
 // Reload through an explicit GET. Chromium's reload() can repeat the POST that produced a
 // form result, so a local save must never use it to replay the user's last submission.
-async function refreshDocument(page, signal) {
+// It waits only until the new document arrives: a page held at a breakpoint would never finish loading.
+export async function refreshDocument(page, signal) {
   if (signal?.aborted) return false;
   try {
     await bounded(
@@ -675,7 +683,7 @@ async function bounded(promise, ms, signal) {
     return await Promise.race([
       promise,
       new Promise((_, reject) => {
-        timer = setTimeout(() => reject(guardTimeoutError()), ms);
+        if (ms != null) timer = setTimeout(() => reject(guardTimeoutError()), ms);
         onAbort = () => reject(new Error('browser operation stopped'));
         if (signal?.aborted) onAbort();
         else signal?.addEventListener('abort', onAbort, { once: true });
@@ -840,9 +848,11 @@ export async function refreshPages(context, session, files, { force = false, out
         outcome.how = 'skipped';
         return;
       }
+      // A page that answers late still swaps: how long its renderer takes says nothing about whether the swap
+      // applies. Closing or navigating the page rejects the evaluation, and stopping the session ends the wait.
       const result = await bounded(
         p.evaluate(swapStyles, { urls: plan.cssUrls, styles: styles.map(({ before, after }) => ({ before, after })) }),
-        STYLE_TIMEOUT,
+        null,
         signal,
       ).catch(() => null);
       // Imported CSS has no link of its own, and a style block that is not in the page yet

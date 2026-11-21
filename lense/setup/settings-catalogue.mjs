@@ -2,7 +2,7 @@
 // an invented YAML example and the setup stage (1..10, docs/setup.md journey) that configures it.
 // Mirage keys take doc/contract/redact from mirage/lib/config-keys.mjs, the one registration point.
 import { MIRAGE_SETTINGS, pendingSettingParsers } from '../../mirage/lib/config-keys.mjs';
-import '../../mirage/lib/provider-modules.mjs';
+import '../../mirage/lib/settings-contracts.mjs';
 
 // Choices mirror the choice([...]) parsers and enum checks; test/setup-settings-catalogue.test.mjs proves each
 // one is accepted and a foreign value rejected, so a parser change fails the test instead of drifting.
@@ -113,7 +113,7 @@ const MIRAGE = {
   codeApps: { kind: 'list', stage: 3, example: 'codeApps:\n  - name: invented-app\n    dir: ./code-apps/invented\n' },
 };
 // A secret-bearing member of a non-redacted key: the application secret is an environment variable name.
-// What a reference looks like for each references-only key (secret-resolver.mjs, connector-runtime.mjs, dataverse-api.md).
+// What a reference looks like for each references-only key (secret-resolver.mjs, connector-runtime.mjs, mirage/docs/dataverse-api.md).
 const REDACT_HELP = {
   secrets:
     'References only: each <vault>/<secret> entry names an environment variable (variable: NAME) or carries source: protected with a protectedValue written by the secrets CLI. Validation refuses value and secret fields.',

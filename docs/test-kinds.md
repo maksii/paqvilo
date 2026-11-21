@@ -1,10 +1,22 @@
 # Test kinds
 
-Every test file declares what kind of truth its assertions encode, so a reader knows whether a failing assertion
-means "the code regressed" or "the expectation may be refined". `scripts/check-test-tags.mjs` enforces the tags on
-every test file a change adds or modifies. Test files that predate the rule are listed in
+Every test file declares what kind of truth its assertions encode, so a reader knows whether a failing assertion means
+"the code regressed" or "the expectation may be refined". `scripts/check-test-tags.mjs` enforces the tags on every test
+file a change adds, modifies or deletes (`*.test.js`, `*.test.mjs`, `*.test.cjs`, and a `test.mjs` runner module that
+calls a test function), and on changed parity case and known-gap files. Test files that predate the rule are listed in
 `scripts/test-kinds-legacy.json`: the checker skips a listed file while it has no `@test-kind` line at all and checks it
 in full once one is added, so tag the whole file when you start. New files are never added to the list.
+
+| Command                                         | Checks                                                    | Run by              |
+| ----------------------------------------------- | --------------------------------------------------------- | ------------------- |
+| `node scripts/check-test-tags.mjs --staged`     | The index against `HEAD`                                  | pre-commit hook     |
+| `node scripts/check-test-tags.mjs --base <rev>` | `HEAD` against its merge base with `<rev>`                | local `ci:verify`   |
+| `node scripts/check-test-tags.mjs --event`      | The pull request or push range of the GitHub event        | CI change-scope job |
+| `node scripts/check-test-tags.mjs <file...>`    | Tag syntax of the named files only (no parity protection) | by hand             |
+| `node scripts/check-test-tags.mjs --report`     | Counts per kind and replay cases; never fails             | by hand             |
+
+With no arguments the checker checks nothing, says so and exits 0; `--help` lists the modes. A named file that does
+not exist, `--base` without a revision and `--event` without `GITHUB_EVENT_PATH` fail with a one-line message.
 
 ## Tag syntax
 
@@ -14,21 +26,24 @@ A file-level tag in the first 40 lines applies to every test in the file. The re
 // @test-kind parity: replays recorded oracle cases from mirage/test/parity/cases; every expected value is read from a case file built from two or more captures
 ```
 
-A tag on the line(s) directly above a `test(`, `it(`, `describe(`, `suite(` or loop that declares tests overrides
-the file kind for that test until the next tagged or top-level test:
+A tag directly above a `test(`, `it(`, `describe(`, `suite(` (including `.only`/`.skip`/`.todo`), or a `for (` or
+`[...].forEach(` loop that declares tests, overrides the file kind for that declaration. Comment and blank lines may sit
+between the tag and the declaration. The region ends before the next declaration at the same or a shallower indentation,
+so a tag on an indented `it(` covers only that test; the innermost region wins. A file without a file-level tag needs a
+tag on every top-level test:
 
 ```js
 // @test-kind unproven: local model of service-protection backoff; no native capture yet
 test('backoff waits for the retry-after window', ...);
 ```
 
-Several kinds may be combined with `+` when an assertion set genuinely spans them (`parity+security`). Every tag
-needs a reason after the colon; `parity` and `observation` need the evidence source (where and how it was
-observed, never secrets, tokens, private record ids or business data).
+Several kinds may be combined with `+` when an assertion set genuinely spans them (`parity+security`). Every tag needs a
+reason after the colon (at least 8 characters); `parity` and `observation` need the evidence source (at least 20
+characters: where and how it was observed, never secrets, tokens, private record ids or business data). A file has at
+most one file-level tag.
 
-Node `t.test(...)` subtests, including `await t.test(...)`, also accept a tag immediately above the call.
-Their nested proof region ends with the subtest body; the surrounding fixture setup and diagnostic policy
-keep their own kind.
+Node `t.test(...)` subtests, including `await t.test(...)`, also accept a tag immediately above the call. Their nested
+proof region ends with the subtest body; the surrounding fixture setup and diagnostic policy keep their own kind.
 
 ## Kinds
 
@@ -45,9 +60,8 @@ keep their own kind.
 ## Rules
 
 - A failing `parity` or `security` assertion means the code is wrong. Fix the code; do not edit the assertion.
-- A hand-written test cannot be newly tagged `parity`. The checker accepts a new `parity` tag only as the file-level
-  tag of a replay runner: a file whose tests are registered only through `replayParityCases` or
-  `replayParityDirectory`.
+- A hand-written test cannot be newly tagged `parity`. The checker accepts a new `parity` tag only as the file-level tag
+  of a replay runner: a file whose tests are registered only through `replayParityCases` or `replayParityDirectory`.
 - Existing `parity` tags stay protected. Removing or rewriting a protected line, inserting lines between the first and
   last code line of a parity body, deleting a file or stripping a legacy file's tags needs a
   `// @parity-evidence: <proof>` line in the same change, or a retirement entry for the file.
@@ -58,27 +72,27 @@ keep their own kind.
 - When a test mixes kinds, split it or tag each test; do not tag a whole file `parity` because one test is.
 - The [frontend](https://github.com/maksii/paqvilo/blob/main/mirage/test/fixtures/frontend-parity-evidence.md),
   [platform](https://github.com/maksii/paqvilo/blob/main/mirage/test/fixtures/platform-parity-evidence.md) and
-  [Canvas and Code Apps](https://github.com/maksii/paqvilo/blob/main/mirage/test/fixtures/canvas-code-apps-package-evidence.md) evidence maps name the
-  observations behind each area. A filename containing `parity`, an invented browser fixture or an upstream
-  compatibility model does not establish native parity.
+  [Canvas and Code Apps](https://github.com/maksii/paqvilo/blob/main/mirage/test/fixtures/canvas-code-apps-package-evidence.md)
+  evidence maps name the observations behind each area. A filename containing `parity`, an invented browser fixture or
+  an upstream compatibility model does not establish native parity.
 
 ## Replay cases
 
-Replay cases are how `parity` is asserted. A recorded oracle run becomes a case file, and one runner replays every
-case into Mirage and compares the whole output. The expected value is never typed by hand.
+Replay cases are how `parity` is asserted. A recorded oracle run becomes a case file, and one runner replays every case
+into Mirage and compares the whole output. The expected value is never typed by hand.
 
 ### Where things live
 
 | Path                                              | Role                                                                                         |
 | ------------------------------------------------- | -------------------------------------------------------------------------------------------- |
 | `mirage/testing/parity-cases.mjs`                 | Validation, building, diffing and the replay runner (exported from `paqvilo/mirage/testing`) |
-| `scripts/parity-cases.mjs`                        | CLI: `build`, `check`, `report`                                                              |
+| `scripts/parity-cases.mjs`                        | CLI: `build`, `check`, `report` (`--help` prints the usage)                                  |
 | `mirage/test/parity-replay.test.mjs`              | The runner that registers the cases of every surface                                         |
 | `mirage/test/parity/cases/<surface>/<suite>.json` | Case files (data only)                                                                       |
 | `mirage/test/parity/adapters/<surface>.mjs`       | One adapter per surface: recorded input to Mirage to output in the oracle's shape            |
 | `mirage/test/parity/known-gaps/<surface>.json`    | Declared differences between Mirage and the recording                                        |
 | `scripts/parity-retirements.json`                 | Ledger of retirements that the checker accepts                                               |
-| `scripts/parity-tags-legacy.json`                 | Hand-written parity tags that predate replay cases (shrink-only)                             |
+| `scripts/parity-tags-legacy.json`                 | Hand-written `parity` tag lines the checker still accepts; entries are only removed          |
 
 ### Case files
 
@@ -125,9 +139,9 @@ A case file is data, and its surface and suite must match its path. Example, wit
 - `history` is an array of `{ "date": "YYYY-MM-DD", "change": "...", "evidence": "..." }` entries.
 
 `input` holds everything the adapter needs to drive Mirage, including host context used by the oracle run, such as
-culture, time zone or a fixed clock. `output` is the recorded result in a portable shape. `volatile` lists the
-pointers whose values differed between captures (ids, timestamps, etags); they are stored as `"<volatile>"` and the
-replay checks only that such a value is present.
+culture, time zone or a fixed clock. `output` is the recorded result in a portable shape. `volatile` lists the pointers
+whose values differed between captures (ids, timestamps, etags); they are stored as `"<volatile>"` and the replay checks
+only that such a value is present.
 
 Oracle kinds:
 
@@ -153,9 +167,9 @@ A recorder emits a raw capture:
 `capture.sha256` is optional: when present (64 lowercase hex characters) it is the hash of the raw record the results
 came from; when absent, `build` hashes the capture file's bytes.
 
-`build` writes a case file. Run it from the root of the tree that holds `mirage/test/parity/cases`: without `--out`,
-the file goes to `mirage/test/parity/cases/<surface>/<suite>.json` under the current directory. The example uses an
-invented corpus:
+`build` writes a case file. Run it from the root of the tree that holds `mirage/test/parity/cases`: without `--out`, the
+file goes to `mirage/test/parity/cases/<surface>/<suite>.json` under the current directory. The example uses an invented
+corpus:
 
 ```sh
 node scripts/parity-cases.mjs build --surface docs-demo --suite accounts --oracle-kind official-package --oracle-name "Demo oracle" --oracle-version 1.0.0 --oracle-scope "Invented documentation corpus." --capture run-1.json --capture run-2.json
@@ -163,31 +177,35 @@ node scripts/parity-cases.mjs build --surface docs-demo --suite accounts --oracl
 
 `build` checks the captures before it writes:
 
-- It needs at least two captures. Each lists the same case ids in the same order with equal `input`; otherwise the
-  first mismatching id is named.
-- `output` comes from the first capture. `volatile` lists the most specific pointers at which any other capture
-  differs from the first (a differing array length or key set is reported at the container pointer). Those values
-  are stored as `"<volatile>"`.
+- It needs at least two captures. Each lists the same case ids in the same order with equal `input`; otherwise the first
+  mismatching id is named.
+- `output` comes from the first capture. `volatile` lists the most specific pointers at which any other capture differs
+  from the first (a differing array length or key set is reported at the container pointer). Those values are stored as
+  `"<volatile>"`.
 - A case whose output differs at the root pointer is rejected as not reproducible.
 - The result must pass `validateParityCases` before it is written.
 
 When the output path already holds a case file, `build` keeps every existing case and history entry, appends new case
-ids and captures, and keeps the recorded oracle unless new oracle options differ from it. A capture id already
-recorded with a different `sha256` is refused. A changed existing case or a changed oracle is refused unless
-`--revise-change` and `--revise-evidence` are both given, and the revision then appends one `history` entry dated
-today:
+ids and captures, and keeps the recorded oracle unless new oracle options differ from it. A capture id already recorded
+with a different `sha256` is refused. A changed existing case or a changed oracle is refused unless `--revise-change`
+and `--revise-evidence` are both given, and the revision then appends one `history` entry dated today:
 
 ```sh
 node scripts/parity-cases.mjs build --surface docs-demo --suite accounts --capture run-5.json --capture run-6.json --revise-change "abs-negative corrected to 8" --revise-evidence "run-5 and run-6 captured 2026-11-11"
 ```
+
+A revised case keeps every volatile pointer already recorded and adds the pointers at which the new captures differ. To
+remove a recorded pointer, add `--revise-drop-volatile "<case-id>#<pointer>"` (repeatable) to the revision. It is
+refused when the new captures still differ at that pointer or when the case records no such pointer. A recorded pointer
+that is absent from the new output must be dropped this way.
 
 ### Adapters
 
 An adapter is the one reviewed projection between Mirage values and oracle values for its surface. It exports either a
 default `run(input, context)` (stateless), or `open(context)` resolving to `{ run(input, context), close() }`. With
 `open`, one session serves one case file: the first case opens it, cases run in file order, and `close` runs after the
-file. When both are exported, `open` is used. `liquid-render` is stateless; `dataverse-webapi` opens one
-invented-schema session per case file.
+file. When both are exported, `open` is used. `liquid-render` is stateless; `dataverse-webapi` opens one invented-schema
+session per case file.
 
 `context` is the frozen object `{ surface, suite }`. The adapter never receives the case id or the recorded output.
 
@@ -212,9 +230,9 @@ invented-schema session per case file.
 { "accounts#account-read": { "/body/name": "The recorded display name differs from the stored name." } }
 ```
 
-A key must name a recorded case in the same suite; otherwise the test `<surface>/<suite> known gaps name recorded
-cases` fails. A recorded case cannot receive a new gap unless the retirement ledger names this known-gap file. A
-`run` that throws fails its case, except under a whole-case gap.
+A key must name a recorded case in the same suite; otherwise the test `<surface>/<suite> known gaps name recorded cases`
+fails. A recorded case cannot receive a new gap unless the retirement ledger names this known-gap file. A `run` that
+throws fails its case, except under a whole-case gap.
 
 ### Verifying and reporting
 
@@ -224,9 +242,11 @@ node scripts/parity-cases.mjs check
 node scripts/parity-cases.mjs report
 ```
 
-The runner names each test `<surface>/<suite>#<id>`. `check` validates every case file and known-gap file. `report`
-prints, per oracle kind, the suites, cases and declared gaps (whole-case and pointer). Run it for current numbers,
-because they change with each recording.
+The runner names each test `<surface>/<suite>#<id>`. A failing case reports `output differs at <pointers>` followed by
+the actual-versus-expected diff, in which volatile values show as `<volatile>` and declared gap pointers as
+`<known gap>`. `check` validates every case file and known-gap file. `report` prints, per oracle kind, the suites, cases
+and declared gaps (whole-case and pointer); `--json` prints the same totals as JSON. Run it for current numbers, because
+they change with each recording.
 
 ### Retirements
 
@@ -245,10 +265,10 @@ because they change with each recording.
 }
 ```
 
-- `file` is a repository-relative POSIX path. `reason` has at least 20 characters and `authority` at least 10,
-  naming who approved the change.
-- Only entries that the change adds count. An entry exempts its file from the removal check on protected parity
-  lines, from the deletion check of a case file, and from the new-gap check of a known-gap file.
+- `file` is a repository-relative POSIX path. `reason` has at least 20 characters and `authority` at least 10, naming
+  who approved the change.
+- Only entries that the change adds count. An entry exempts its file from the removal check on protected parity lines,
+  from the deletion check of a case file, and from the new-gap check of a known-gap file.
 - An entry does not permit editing recorded cases; a recorded case changes only with a `history` entry.
 
 ### Using the lane in a project
@@ -267,5 +287,6 @@ await replayParityDirectory({
 });
 ```
 
-Captures that contain private data (exports, identities, raw records) stay in the project and are not committed to
-this repository. The CLI's `check` and `report` commands take a case directory as their argument.
+Captures that contain private data (exports, identities, raw records) stay in the project and are not committed to this
+repository. The CLI's `check` and `report` commands take the case directory as an optional argument (default
+`mirage/test/parity/cases` under the current directory) and read known gaps from its sibling `known-gaps` directory.

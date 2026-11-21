@@ -9,6 +9,8 @@ import { consumerStateIsOwned, verifyConsumerToolOwnership } from './consumer-to
 import { packageDependencyEvidence } from './package-dependency-evidence.mjs';
 import { assertSmokeProcess, CHILD_HANG_GUARD_MS } from './smoke-process.mjs';
 import { offlineSmokeEnv, runSmokeNpm } from './smoke-npm.mjs';
+import { packedPackage } from './npm-pack.mjs';
+import { answerHelp } from './script-help.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const directory = path.join(root, '.paqvilo', 'distribution');
@@ -38,7 +40,7 @@ function finishWorkDirectory(work, { keep, remove, report }) {
   }
 }
 function packAndInstallBootstrap(work, run) {
-  const packed = JSON.parse(run(['pack', '--json', '--ignore-scripts', '--pack-destination', work], root))[0];
+  const packed = packedPackage(run(['pack', '--json', '--ignore-scripts', '--pack-destination', work], root));
   validateReleaseFiles(packed.files);
   const archive = `file:${path.join(work, packed.filename).replaceAll('\\', '/')}`;
   const bootstrap = path.join(work, 'bootstrap');
@@ -49,7 +51,7 @@ function packAndInstallBootstrap(work, run) {
   );
   run(['install', '--offline', '--ignore-scripts', '--no-audit', '--no-fund'], bootstrap);
   const dependencyEvidence = packageDependencyEvidence(
-    JSON.parse(fs.readFileSync(path.join(bootstrap, 'node_modules/paqvilo/npm-shrinkwrap.json'), 'utf8')),
+    JSON.parse(fs.readFileSync(path.join(bootstrap, 'node_modules/paqvilo/paqvilo-lock.json'), 'utf8')),
     JSON.parse(fs.readFileSync(path.join(bootstrap, 'package-lock.json'), 'utf8')),
     'paqvilo',
   );
@@ -472,4 +474,13 @@ async function smokePackage(work) {
 }
 
 const isEntry = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isEntry)
+  answerHelp(process.argv.slice(2), {
+    name: 'package-smoke',
+    usage: `Usage: npm run release:smoke   (node scripts/package-smoke.mjs under npm)
+Packs the toolkit, installs it offline into fresh consumer projects and exercises the installed CLI, public API,
+project lifecycle, project tests and workspace browser debugging. Works in .paqvilo/distribution and keeps the archive
+and dependency evidence in .paqvilo/distribution/last; PAQVILO_KEEP_WORK=1 keeps the work directory. Installs use the
+npm cache only (prepare it with npm run cache:package). Takes no options; --help prints this help.`,
+  });
 if (isEntry) await withWorkDirectory(directory, smokePackage, { keep: process.env.PAQVILO_KEEP_WORK === '1' });

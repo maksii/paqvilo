@@ -302,6 +302,8 @@ test('actual model-driven CLI switches declared references with caution, mapping
     await selector.evaluate((node) => {
       node.add(new Option('Foreign URL', 'https://example.invalid'));
       node.value = 'https://example.invalid';
+      // A choice other than this target enables Go.
+      node.dispatchEvent(new Event('change', { bubbles: true }));
     });
     await page.locator('[data-target-go]').click();
     assert.equal(new URL(page.url()).origin, origins[0], 'unlisted option cannot supply an origin');
@@ -364,7 +366,12 @@ test('actual model-driven CLI switches declared references with caution, mapping
       if (response) await response.arrayBuffer();
       assert.ok(!response || !response.ok, 'retired origin agent is not still authorized');
     }
-    await fs.writeFile(f.js, 'window.targetRevision="review-save";');
+    // The save is one rename: the file has its content, size and time before its name changes, and the watcher reports
+    // a change only for a state of the file it has not seen. A write in place has two states (emptied, then written),
+    // so it can cause two reloads, and the second would replace the document in the middle of the steps below.
+    const staged = path.join(f.directory, 'x_script.next.js');
+    await fs.writeFile(staged, 'window.targetRevision="review-save";');
+    await fs.rename(staged, f.js);
     t.diagnostic('model-target phase: source refresh requested');
     await page.waitForFunction(() => window.targetRevision === 'review-save');
     t.diagnostic('model-target phase: source refresh applied');

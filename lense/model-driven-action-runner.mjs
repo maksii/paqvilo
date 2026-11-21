@@ -2,12 +2,15 @@
 // by this module.
 
 /** Passive API presence checks. Do not call getId/getValue or read form values here. */
-export function modelDrivenActionAvailability({ origin, actions = [] }) {
+export function modelDrivenActionAvailability({ origin, actions = [], localSimulation = false }) {
   // Inside the function: page.evaluate serializes this function alone.
   const REQUIREMENT_TEXT = {
     metadata:
       'This app does not report its Web API version (getGlobalContext().getVersion), so table metadata cannot be read.',
-    environment: 'This app does not report a Power Platform environment ID; a local simulator has none.',
+    environment: localSimulation
+      ? 'Opens a page of a real Power Platform environment; local simulation has none.'
+      : 'This app does not report its Power Platform environment ID.',
+    organization: 'This app does not report its organization unique name.',
     privileges: 'This app does not expose the security role privileges of the signed-in user.',
     navigate: 'This app cannot open addresses (Xrm.Navigation.openUrl).',
     'open-form': 'This app cannot open forms from a script (Xrm.Navigation.openForm).',
@@ -16,15 +19,15 @@ export function modelDrivenActionAvailability({ origin, actions = [] }) {
     'save-events': 'This form does not expose save events.',
     refresh: 'This form cannot be refreshed from a script.',
     context: 'This app does not expose its global context.',
+    subgrids: 'No subgrid on this form can be refreshed from a script (formContext.ui.controls).',
+    prefill: 'Mirage cannot open a new form with prefilled values, so it cannot prepare a clone.',
   };
   const missingReason = (missing, onRecord) => {
     if (['form', 'saved-record'].includes(missing) && !onRecord)
       return 'Open a record form to use this; this page is not a form.';
     if (missing === 'saved-record') return 'Save the record first; this form has no saved record yet.';
     if (!missing) return undefined;
-    return (
-      REQUIREMENT_TEXT[missing] ?? `The current native page does not provide ${missing.replaceAll('-', ' ')} support.`
-    );
+    return REQUIREMENT_TEXT[missing] ?? 'Not available on this page.';
   };
   // A bounded client API (or a native getter) may throw for an unsupported member;
   // that member is unavailable, never a failure of every other check.
@@ -59,7 +62,18 @@ export function modelDrivenActionAvailability({ origin, actions = [] }) {
     'side-panes': () => xrm?.App?.sidePanes?.createPane && xrm?.Utility?.getPageContext,
     'form-selector': () => form?.ui?.formSelector?.getCurrentItem,
     environment: () => context?.organizationSettings?.bapEnvironmentId,
+    organization: () => context?.organizationSettings?.uniqueName,
     privileges: () => typeof context?.userSettings?.getSecurityRolePrivilegesInfo === 'function',
+    // The control types only, never values: a subgrid control the client API exposes with refresh().
+    subgrids: () => {
+      const found = [];
+      safe(() => form.ui.controls.forEach((control) => found.push(control)));
+      return found.some(
+        (control) => safe(() => control.getControlType()) === 'subgrid' && typeof control.refresh === 'function',
+      );
+    },
+    // Mirage opens forms only in this tab and ignores form parameters.
+    prefill: () => !localSimulation,
   };
   return actions.map((action) => {
     const missing = action.requirements?.find((requirement) => !checks[requirement] || !safe(checks[requirement]));
@@ -84,6 +98,7 @@ export function modelDrivenActionAvailability({ origin, actions = [] }) {
   params = {},
   requestId,
   cloud = {},
+  localSimulation = false,
 }) {
   const ack = (accepted) => ({ accepted, requestId });
   const host = document.getElementById('paqvilo-panel') ?? document.getElementById('paqvilo-model-inspector');
@@ -161,8 +176,17 @@ export function modelDrivenActionAvailability({ origin, actions = [] }) {
       }
       return { restored, unavailable };
     };
+    // The page changes of this session still in place, by the action that made them: its panel row offers Reset.
+    state.active = () => ({
+      'form:show-logical-names': state.labels.length > 0,
+      'form:god-mode': state.restores.length > 0,
+      'form:toggle-autosave': Boolean(state.guard),
+      'navigation:pin-to-side-panel': state.panes.length > 0,
+    });
     state.clearLabels = () => {
-      for (const node of state.labels.splice(0)) node.remove();
+      const labels = state.labels.splice(0);
+      for (const node of labels) node.remove();
+      return labels.length;
     };
     state.cancelPending = () => {
       state.pending.clear();
@@ -209,7 +233,15 @@ export function modelDrivenActionAvailability({ origin, actions = [] }) {
     state.clearTarget();
     state.key = key;
   }
-  const marker = {};
+  const marker = {},
+    // Page changes this request records after this index are its own; a failure reverts them.
+    firstRestore = state.restores.length,
+    // Badges and side panes this request added; a failure removes them too.
+    rollback = [];
+  const drop = (items, item) => {
+    const at = items.indexOf(item);
+    if (at !== -1) items.splice(at, 1);
+  };
   state.pending.set(requestId, marker);
   const live = () =>
     receiver() && !state.retired && state.pending.get(requestId) === marker && JSON.stringify(target()) === key;
@@ -237,6 +269,8 @@ export function modelDrivenActionAvailability({ origin, actions = [] }) {
     message: message + (rows.length > 200 ? ' Showing the first 200 rows.' : ''),
   });
   const result = (title, message, extra = {}) => ({ status: 'ok', title, message, ...extra });
+  // "1 label", "3 labels".
+  const amount = (n, one, many) => `${n} ${n === 1 ? one : many}`;
   const list = (collection) => {
     if (!collection) return [];
     const all = safe(() => collection.get());
@@ -245,19 +279,19 @@ export function modelDrivenActionAvailability({ origin, actions = [] }) {
     collection.forEach?.((entry) => entries.push(entry));
     return entries;
   };
-  const requireForm = () => (form?.data?.entity && form?.ui ? form : fail('A native record form is required.'));
+  const requireForm = () => (form?.data?.entity && form?.ui ? form : fail('Open a record form first.'));
   const entity = () => logical(captured.entity);
   const recordId = () => guid(captured.id);
   const client = () => {
-    if (!context?.getClientUrl) fail('The native client URL is unavailable.');
+    if (!context?.getClientUrl) fail('This app does not report its address (getClientUrl).');
     const url = new URL(context.getClientUrl());
     if (url.origin !== origin || url.username || url.password || url.search || url.hash)
-      fail('The native client URL does not match this Lense environment.');
+      fail('The app reports an address that does not match this Lense environment.');
     return url.href.replace(/\/$/, '');
   };
   const apiRoot = () => {
     const version = /^(\d+)\.(\d+)(?:\.|$)/.exec(context?.getVersion?.() ?? '');
-    if (!version) fail('The native Web API version is unavailable.');
+    if (!version) fail('This app does not report its Web API version.');
     return `${client()}/api/data/v${version[1]}.${version[2]}/`;
   };
   const get = async (path) => {
@@ -281,9 +315,13 @@ export function modelDrivenActionAvailability({ origin, actions = [] }) {
         },
       });
       check();
-      if (!response.ok) fail(`The native read failed (HTTP ${response.status}).`, 'error');
+      if (!response.ok)
+        throw Object.assign(new Error(`The Web API request failed (HTTP ${response.status}).`), {
+          status: 'error',
+          http: response.status,
+        });
       const limit = 2 * 1024 * 1024;
-      if (!response.body?.getReader) fail('The native read does not provide a bounded response stream.', 'error');
+      if (!response.body?.getReader) fail('The Web API answer could not be read.', 'error');
       const reader = response.body.getReader(),
         chunks = [];
       let size = 0;
@@ -295,7 +333,7 @@ export function modelDrivenActionAvailability({ origin, actions = [] }) {
           size += next.value.byteLength;
           if (size > limit) {
             await reader.cancel().catch(() => {});
-            fail('The native result exceeds the action’s 2 MiB read limit.', 'error');
+            fail('The Web API answer is larger than 2 MiB.', 'error');
           }
           chunks.push(next.value);
         }
@@ -313,11 +351,11 @@ export function modelDrivenActionAvailability({ origin, actions = [] }) {
       try {
         return JSON.parse(body);
       } catch {
-        fail('The native read did not return JSON.', 'error');
+        fail('The Web API did not answer with JSON.', 'error');
       }
     } catch (error) {
       check();
-      if (timedOut) fail('The native read timed out.', 'error');
+      if (timedOut) fail('The Web API did not answer within 10 seconds.', 'error');
       throw error;
     } finally {
       clearTimeout(timer);
@@ -327,13 +365,17 @@ export function modelDrivenActionAvailability({ origin, actions = [] }) {
   const metadata = async (name) => {
     const definition = await get(
       `EntityDefinitions(LogicalName='${logical(name)}')?$select=LogicalName,EntitySetName,PrimaryIdAttribute,PrimaryNameAttribute`,
-    );
-    if (!/^[a-z]\w*$/i.test(definition.EntitySetName ?? '')) fail('The actual entity-set metadata is unavailable.');
+    ).catch((error) => {
+      if (error.http === 404)
+        fail(`This environment has no table named ${logical(name)}. Check the logical name.`, 'error');
+      throw error;
+    });
+    if (!/^[a-z]\w*$/i.test(definition.EntitySetName ?? '')) fail('The table metadata has no entity set.');
     return definition;
   };
   const openUrl = async (value) => {
     check();
-    if (!xrm?.Navigation?.openUrl) fail('Native URL navigation is unavailable.');
+    if (!xrm?.Navigation?.openUrl) fail('This app cannot open addresses (Xrm.Navigation.openUrl).');
     await xrm.Navigation.openUrl(value);
   };
   const requestForm = (options, values) => {
@@ -347,8 +389,8 @@ export function modelDrivenActionAvailability({ origin, actions = [] }) {
         safe(() =>
           receiver()?.followup?.(requestId, {
             status: 'error',
-            title: 'Native form request failed',
-            message: String(error?.message ?? 'The native form request failed.').slice(0, 1000),
+            title: 'Form did not open',
+            message: String(error?.message ?? 'The app could not open the form.').slice(0, 1000),
           }),
         );
     });
@@ -369,7 +411,7 @@ export function modelDrivenActionAvailability({ origin, actions = [] }) {
       typeof id !== 'string' ||
       !/^(?:Default-)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)
     )
-      fail('The native environment ID is unavailable.');
+      fail('This app does not report its Power Platform environment ID.');
     return id;
   };
   const portal = (name) => {
@@ -408,7 +450,7 @@ export function modelDrivenActionAvailability({ origin, actions = [] }) {
       if (typeof query !== 'string' || query.length > 100 || /[\x00-\x1f\x7f]/.test(query))
         fail('Enter a user search of at most 100 characters.', 'error');
       const filter =
-        'isdisabled eq false and applicationid eq null' +
+        'isdisabled eq false and azureactivedirectoryobjectid ne null' +
         (query.trim()
           ? ` and (contains(fullname,'${query.trim().replaceAll("'", "''")}') or contains(domainname,'${query.trim().replaceAll("'", "''")}'))`
           : '');
@@ -431,41 +473,42 @@ export function modelDrivenActionAvailability({ origin, actions = [] }) {
         }));
       outcome = {
         ...rowsResult(
-          'Active native users',
+          'Users',
           ['Name', 'Domain', 'User ID', 'Directory object ID'],
           choices.map((user) => [user.name, user.domain, user.id, user.objectId]),
-          'Only enabled non-application users with directory identities are selectable. Showing at most 100 results.',
+          'Enabled users with a Microsoft Entra ID, application users included (at most 100). Pick one below to act as that user.',
         ),
         users: choices,
       };
     } else if (action === 'identity:status') {
       const user = context?.userSettings;
       if (typeof user?.getSecurityRolePrivilegesInfo !== 'function')
-        fail('The native privilege-detail API is unavailable.');
+        fail('This app does not expose the security role privileges of the signed-in user.');
       const privileges = await user.getSecurityRolePrivilegesInfo();
       check();
       const allowed = Object.values(privileges ?? {}).some(
         (privilege) => privilege.privilegeName === 'prvActOnBehalfOfAnotherUser',
       );
       outcome = result(
-        'Native identity',
+        'Signed-in user',
         allowed
-          ? 'The signed-in user has the native acting-as privilege. Server authorization still applies to each request.'
-          : 'The exact native acting-as privilege was not found.',
+          ? 'You may act as another user (Act on Behalf of Another User). Server permissions still apply to each request.'
+          : 'You may not act as another user: your security roles lack Act on Behalf of Another User.',
         { identity: { canImpersonate: allowed, signedInUserId: guid(user.userId), name: bounded(user.userName) } },
       );
     } else if (action === 'admin:environment-context') {
-      if (!context) fail('The native global context is unavailable.');
-      // Each value is read on its own: one the app does not report (a local simulator has no Power Platform environment) shows as not reported.
+      if (!context) fail('This app does not expose its global context.');
+      // Each value is read on its own; one the app does not report (a local simulator has no Power Platform
+      // environment) is left out of the list.
       const org = safe(() => context.organizationSettings) ?? {},
         user = safe(() => context.userSettings) ?? {},
-        read = (owner, key) => safe(() => owner[key]) ?? 'not reported';
+        read = (owner, key) => safe(() => owner[key]);
       outcome = rowsResult(
         'Environment and signed-in user',
         ['Property', 'Value'],
         [
           ['Client URL', client()],
-          ['Version', safe(() => context.getVersion?.()) ?? 'not reported'],
+          ['Version', safe(() => context.getVersion?.())],
           ['Environment ID', read(org, 'bapEnvironmentId')],
           ['Organization ID', read(org, 'organizationId')],
           ['Unique name', read(org, 'uniqueName')],
@@ -478,7 +521,7 @@ export function modelDrivenActionAvailability({ origin, actions = [] }) {
               .map((role) => role.name)
               .join(', '),
           ],
-        ],
+        ].filter(([, value]) => value != null && value !== ''),
       );
     } else if (action === 'form:record-id' || action === 'form:record-url') {
       requireForm();
@@ -494,9 +537,13 @@ export function modelDrivenActionAvailability({ origin, actions = [] }) {
       outcome = result(action.endsWith('record-id') ? 'Record ID' : 'Record URL', value, { copyText: value });
     } else if (action === 'form:show-logical-names' || action === 'form:clear-logical-names') {
       requireForm();
-      state.clearLabels();
+      const removed = state.clearLabels();
       let count = 0;
-      if (action.endsWith('show-logical-names'))
+      if (action.endsWith('show-logical-names')) {
+        // Inline and !important: the app's own button and label rules cannot resize or move a badge, and an app whose
+        // Content-Security-Policy refuses injected <style> elements (Mirage does) still applies it.
+        const look =
+          'position:absolute!important;z-index:2!important;box-sizing:border-box!important;display:flex!important;align-items:center!important;justify-content:flex-start!important;width:max-content!important;height:auto!important;margin:0!important;padding:0 4px!important;font:11px/15px Consolas,monospace!important;letter-spacing:0!important;text-transform:none!important;text-indent:0!important;color:#005a9e!important;background:#eff6fc!important;border:1px solid #c7e0f4!important;border-radius:2px!important;white-space:normal!important;overflow-wrap:anywhere!important;text-align:left!important;cursor:copy!important;';
         for (const attribute of list(form.data.entity.attributes).slice(0, 200)) {
           const name = safe(() => attribute.getName());
           if (!/^[a-z]\w*$/i.test(name ?? '')) continue;
@@ -513,22 +560,65 @@ export function modelDrivenActionAvailability({ origin, actions = [] }) {
           label.type = 'button';
           label.textContent = name;
           label.dataset.paqModelLogicalName = '';
-          label.style.cssText =
-            'font:11px Consolas,monospace;color:#005a9e;background:#eff6fc;border:1px solid #c7e0f4;padding:2px 4px;';
+          // The click answers on the label itself: it says the name was copied, or that the browser refused.
+          const answer = (text) => {
+            label.textContent = text;
+            clearTimeout(label.paqAnswer);
+            label.paqAnswer = setTimeout(() => {
+              label.textContent = name;
+            }, 1500);
+          };
           label.addEventListener('click', (event) => {
             event.preventDefault();
             event.stopPropagation();
-            navigator.clipboard?.writeText(name).catch(() => {});
+            Promise.resolve(navigator.clipboard?.writeText(name) ?? Promise.reject(new Error('no clipboard'))).then(
+              () => answer(`${name} copied`),
+              () => answer(`${name}: copy blocked`),
+            );
           });
-          node.prepend(label);
+          // Out of flow, so the form's grid or flex layout keeps every cell where it was. The badge takes the place of
+          // the label text: it starts at the label's content box and is at least as wide and tall, so it covers the
+          // display name (kept in the tooltip) and never reaches the control and its value. A name longer than the
+          // label grows the badge to at most 24 characters, then wraps. A field without a visible label gets the badge
+          // just above its top-left corner.
+          const found = node.tagName === 'LABEL' ? node : node.querySelector('label'),
+            caption = found?.getClientRects().length ? found : null;
+          if (caption) {
+            const box = caption.getBoundingClientRect(),
+              style = getComputedStyle(caption),
+              inset = (...sides) => sides.reduce((sum, side) => sum + (Number.parseFloat(style[side]) || 0), 0);
+            const width = Math.max(
+                0,
+                box.width - inset('paddingLeft', 'paddingRight', 'borderLeftWidth', 'borderRightWidth'),
+              ),
+              height = Math.max(
+                0,
+                box.height - inset('paddingTop', 'paddingBottom', 'borderTopWidth', 'borderBottomWidth'),
+              );
+            // The display name without the required marker the app appends to the caption (Name*).
+            let shown = caption.textContent.trim();
+            while (shown.endsWith('*')) shown = shown.slice(0, -1).trimEnd();
+            label.title = `${shown} · click to copy ${name}`;
+            label.style.cssText = `${look}min-width:${width}px!important;max-width:max(${width}px,24ch)!important;min-height:${height}px!important;`;
+            caption.prepend(label);
+          } else {
+            label.title = `Click to copy ${name}`;
+            label.style.cssText = `${look}margin-top:-17px!important;`;
+            node.prepend(label);
+          }
           state.labels.push(label);
+          rollback.push(() => {
+            drop(state.labels, label);
+            label.remove();
+          });
           count++;
         }
+      }
       outcome = result(
         'Logical names',
         action.endsWith('clear-logical-names')
-          ? 'Labels added by this session were removed.'
-          : `${count} matched field labels added.`,
+          ? `Reset: ${amount(removed, 'logical-name label', 'logical-name labels')} removed.`
+          : `${count} field labels show their logical names. Point at one for the display name; click it to copy the logical name.`,
       );
     } else if (action === 'form:changed-fields') {
       requireForm();
@@ -540,10 +630,10 @@ export function modelDrivenActionAvailability({ origin, actions = [] }) {
           safe(() => attribute.getValue()),
         ]);
       outcome = rowsResult(
-        'Changed fields — form draft',
-        ['Column', 'Type', 'Draft value'],
+        'Changed fields',
+        ['Column', 'Type', 'Unsaved value'],
         rows,
-        rows.length ? '' : 'The current form draft has no changed attributes.',
+        rows.length ? '' : 'No field has unsaved changes.',
       );
     } else if (action === 'form:show-optionset-values') {
       requireForm();
@@ -557,7 +647,7 @@ export function modelDrivenActionAvailability({ origin, actions = [] }) {
         'Choice values',
         ['Column', 'Label', 'Value'],
         rows,
-        rows.length ? '' : 'No native choice options are available on this form.',
+        rows.length ? '' : 'This form has no choice fields.',
       );
     } else if (action === 'form:all-fields') {
       requireForm();
@@ -570,14 +660,16 @@ export function modelDrivenActionAvailability({ origin, actions = [] }) {
           .filter((name) => !name.includes('@'))
           .sort(/* NOSONAR: preserve default string coercion */)
           .map((name) => [name, saved[name], saved[name + '@OData.Community.Display.V1.FormattedValue']]),
-        'Saved server state; unsaved form changes are not included.',
+        'Values saved on the server; unsaved changes on the form are not included.',
       );
+      outcome.hideEmpty = true;
     } else if (action === 'form:open-web-api') {
       requireForm();
       const definition = await metadata(entity()),
         url = `${apiRoot()}${definition.EntitySetName}(${recordId()})`;
       await openUrl(url);
-      outcome = result('Record Web API', 'Opened the native record endpoint.');
+      // The address carries the record and environment IDs; the action's row already names what opened.
+      outcome = result('Record Web API', 'Opened in a new tab.');
     } else if (action === 'form:refresh-subgrids') {
       requireForm();
       const grids = list(form.ui.controls).filter((control) => safe(() => control.getControlType()) === 'subgrid');
@@ -588,44 +680,84 @@ export function modelDrivenActionAvailability({ origin, actions = [] }) {
           await grid.refresh();
           refreshed++;
         }
-      if (!refreshed) fail('No refreshable native subgrids are available on this form.');
-      outcome = result('Subgrids', `${refreshed} native subgrids refreshed.`);
+      if (!refreshed) fail('No subgrid on this form can be refreshed from a script (formContext.ui.controls).');
+      outcome = result('Subgrids', `Refreshed ${refreshed} subgrid${refreshed === 1 ? '' : 's'}.`);
     } else if (action === 'form:god-mode') {
       requireForm();
       if (state.restores.length)
         fail('Restore this session’s existing form overrides before applying them again.', 'error');
       let changed = 0;
-      const override = (object, getter, setter, value) => {
+      // How many states of each kind changed; the result names only those kinds.
+      const kinds = new Map();
+      // A control the app refuses to change (Mirage does not render header and footer controls) is skipped and named
+      // in the result; it does not undo the states that did change.
+      const refused = new Map();
+      const override = (object, getter, setter, value, kind) => {
         if (typeof object?.[getter] !== 'function' || typeof object?.[setter] !== 'function') return;
-        const before = object[getter]();
-        if (before === value) return;
-        object[setter](value);
-        state.restores.push(() => object[setter](before));
-        changed++;
+        try {
+          const before = object[getter]();
+          if (before === value) return;
+          object[setter](value);
+          state.restores.push(() => object[setter](before));
+          changed++;
+          kinds.set(kind, (kinds.get(kind) ?? 0) + 1);
+        } catch {
+          const name = safe(() => object.getName?.()) || 'unnamed';
+          if (!refused.has(name)) refused.set(name, safe(() => object.getLabel?.()) || name);
+        }
       };
       for (const attribute of list(form.data.entity.attributes))
-        override(attribute, 'getRequiredLevel', 'setRequiredLevel', 'none');
+        override(attribute, 'getRequiredLevel', 'setRequiredLevel', 'none', 'required');
       for (const control of list(form.ui.controls)) {
-        override(control, 'getVisible', 'setVisible', true);
-        override(control, 'getDisabled', 'setDisabled', false);
+        override(control, 'getVisible', 'setVisible', true, 'control');
+        override(control, 'getDisabled', 'setDisabled', false, 'locked');
       }
       for (const tab of list(form.ui.tabs)) {
-        override(tab, 'getVisible', 'setVisible', true);
-        for (const section of list(tab.sections)) override(section, 'getVisible', 'setVisible', true);
+        override(tab, 'getVisible', 'setVisible', true, 'tab');
+        for (const section of list(tab.sections)) override(section, 'getVisible', 'setVisible', true, 'section');
       }
+      // "3 header fields can't be changed here: Status, Budget, Remaining", by display name.
+      const refusedText = (keys, labels) => {
+        const where = ['header', 'footer'].find((region) => keys.every((key) => key.startsWith(`${region}_`)));
+        const shown = labels.slice(0, 20).map(bounded).join(', ') + (labels.length > 20 ? ', and more' : '');
+        const fields = where
+          ? amount(keys.length, `${where} field`, `${where} fields`)
+          : amount(keys.length, 'field', 'fields');
+        return `${fields} can't be changed here: ${shown}.`;
+      };
+      const names = [...refused.keys()],
+        counted = (kind, one, many, done) => {
+          const n = kinds.get(kind);
+          return n ? [`${n} ${n === 1 ? one : many} ${done}`] : [];
+        },
+        made = [
+          ...counted('control', 'hidden control', 'hidden controls', 'shown'),
+          ...counted('tab', 'hidden tab', 'hidden tabs', 'shown'),
+          ...counted('section', 'hidden section', 'hidden sections', 'shown'),
+          ...counted('locked', 'locked control', 'locked controls', 'enabled'),
+          ...counted('required', 'required field', 'required fields', 'made optional'),
+        ];
       outcome = result(
         'Form overrides',
-        `${changed} client states changed. Server permissions still apply. Use Restore form overrides to revert them.`,
+        (changed
+          ? `${amount(changed, 'change', 'changes')} on this form: ${made.join(', ')}. Server permissions still apply.`
+          : 'Nothing to change on this form: nothing is hidden, locked or required.') +
+          (names.length ? `\n${refusedText(names, [...refused.values()])}` : ''),
       );
     } else if (action === 'form:restore-overrides') {
       requireForm();
       const restored = state.restore();
-      const unavailable = restored.unavailable ? ` ${restored.unavailable} controls are no longer available.` : '';
-      outcome = result('Form overrides restored', `${restored.restored} states restored.${unavailable}`);
+      const n = restored.restored,
+        gone = restored.unavailable === 1 ? '1 is' : `${restored.unavailable} are`,
+        unavailable = restored.unavailable ? ` ${gone} no longer on the form.` : '';
+      outcome = result(
+        'Form overrides restored',
+        `Reset: ${amount(n, 'form setting', 'form settings')} restored to ${n === 1 ? 'its' : 'their'} state before the run.${unavailable}`,
+      );
     } else if (action === 'form:toggle-autosave') {
       requireForm();
       const owner = form.data.entity;
-      if (!owner.addOnSave || !owner.removeOnSave) fail('Native save-handler registration and removal are required.');
+      if (!owner.addOnSave || !owner.removeOnSave) fail('This form does not expose save events.');
       if (typeof params.enabled !== 'boolean') fail('Choose whether to block autosave.', 'error');
       if (state.guard) {
         state.guard.entity.removeOnSave(state.guard.handler);
@@ -641,23 +773,31 @@ export function modelDrivenActionAvailability({ origin, actions = [] }) {
       }
       outcome = result(
         'Autosave guard',
-        params.enabled
-          ? 'Autosave mode 70 is blocked. Save and Save & Close are unchanged.'
-          : 'This session’s autosave guard was removed.',
+        params.enabled ? 'Autosave is blocked. Save and Save & Close still work.' : 'Reset: autosave works again.',
       );
     } else if (action === 'form:refresh-autosave-off') {
       requireForm();
-      if (!form.data.refresh) fail('Native form refresh is unavailable.');
-      if (
-        safe(() => form.data.entity.getIsDirty()) &&
-        !globalThis.confirm('Discard unsaved changes and refresh this native record?')
-      )
-        fail('The draft was kept.', 'cancelled');
+      if (!form.data.refresh) fail('This form cannot be refreshed from a script.');
+      // On a dirty form the native app asks itself (Unsaved changes: Save and continue, Discard changes or close), so
+      // Lense adds no second prompt. The refresh settles either way; the form state and the saved record's modifiedon
+      // say which answer was given.
+      const dirty = safe(() => form.data.entity.getIsDirty()) === true,
+        id = safe(() => recordId()),
+        savedAt = async () =>
+          id ? (await get(`${(await metadata(entity())).EntitySetName}(${id})?$select=modifiedon`)).modifiedon : null;
+      const before = dirty ? await savedAt() : null;
       await form.data.refresh(false);
-      outcome = result('Record refreshed', 'Refreshed without saving. Autosave behavior was not changed.');
+      if (dirty && safe(() => form.data.entity.getIsDirty()) === true)
+        fail('The draft was kept: the Unsaved changes prompt was closed.', 'cancelled');
+      const saved = dirty && before !== null && (await savedAt()) !== before;
+      let message = 'Refreshed without saving.';
+      if (saved)
+        message = 'The Unsaved changes prompt saved the draft (Save and continue), then the record was refreshed.';
+      else if (dirty) message = 'Refreshed without saving; the draft was discarded.';
+      outcome = result('Record refreshed', message);
     } else if (action === 'form:clone-record') {
       requireForm();
-      if (!xrm?.Navigation?.openForm) fail('Native create-form navigation is unavailable.');
+      if (!xrm?.Navigation?.openForm) fail('This app cannot open forms from a script (Xrm.Navigation.openForm).');
       const definition = await metadata(entity()),
         attributes = await get(
           `EntityDefinitions(LogicalName='${entity()}')/Attributes?$select=LogicalName,IsValidForCreate,AttributeType,IsPrimaryId`,
@@ -701,15 +841,15 @@ export function modelDrivenActionAvailability({ origin, actions = [] }) {
       }
       requestForm({ entityName: entity(), openInNewWindow: true }, values);
       outcome = result(
-        'Clone draft requested',
-        'Requested an unsaved create form with the eligible draft values. No record was created by this action. Native main forms do not report opening completion.',
+        'Clone requested',
+        'The app opens a new form with this record’s values in a new window. No record is created until you save it there.',
       );
     } else if (action === 'form:open-editor') {
       requireForm();
       const id = guid(captured.form),
         solutionId = await solution();
       await openUrl(`${portal('maker')}/e/${environment()}/s/${solutionId}/entity/${entity()}/form/edit/${id}`);
-      outcome = result('Form editor', 'Opened the current native form editor.');
+      outcome = result('Form editor', 'Opened this form in the form designer.');
     } else if (action === 'form:table-processes') {
       requireForm();
       const name = entity(),
@@ -731,7 +871,7 @@ export function modelDrivenActionAvailability({ origin, actions = [] }) {
           ]),
           ...(apis.value ?? []).map((row) => ['Custom API', row.displayname ?? row.uniquename, row.customapiid]),
         ],
-        'Active workflows and table-bound custom APIs. Native paging may contain additional results.',
+        'Active processes and the custom APIs bound to this table, at most 200 of each.',
       );
       outcome.links = [
         ...(workflows.value ?? []).map((row) => ({ entity: 'workflow', id: row.workflowid, label: row.name })),
@@ -745,26 +885,27 @@ export function modelDrivenActionAvailability({ origin, actions = [] }) {
         .filter((row) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(row.id ?? ''))
         .map((row) => ({ label: bounded(row.label), url: pageUrl(row.entity, row.id, 'entityrecord').href }));
     } else if (action === 'navigation:open-record-by-id' || action === 'navigation:new-record') {
-      if (!xrm?.Navigation?.openForm) fail('Native form navigation is unavailable.');
+      if (!xrm?.Navigation?.openForm) fail('This app cannot open forms from a script (Xrm.Navigation.openForm).');
       const name = logical(params.entity);
       await metadata(name);
+      const where = localSimulation ? 'this tab' : 'a new window';
       requestForm({
         entityName: name,
         ...(action.endsWith('open-record-by-id') ? { entityId: guid(params.id) } : {}),
-        openInNewWindow: true,
+        openInNewWindow: !localSimulation,
       });
       outcome = result(
-        'Native form requested',
+        'Form requested',
         action.endsWith('new-record')
-          ? 'Requested an unsaved create form. Native main forms do not report opening completion.'
-          : 'Requested the native record form. Native main forms do not report opening completion.',
+          ? `The app opens a new ${name} form in ${where}. No record is created until you save it.`
+          : `The app opens the ${name} record in ${where}.`,
       );
     } else if (action === 'navigation:pin-to-side-panel') {
       if (!xrm?.App?.sidePanes?.createPane || !xrm?.Utility?.getPageContext)
-        fail('Native app side panes are unavailable.');
+        fail('This app has no side panes (Xrm.App.sidePanes).');
       const input = xrm.Utility.getPageContext().input;
       if (!['entityrecord', 'entitylist'].includes(input?.pageType))
-        fail('This page cannot be pinned as a native table or record pane.');
+        fail('Only a record or a table list can be pinned to a side pane.');
       const pane = await xrm.App.sidePanes.createPane({ canClose: true });
       if (!live()) {
         try {
@@ -772,15 +913,33 @@ export function modelDrivenActionAvailability({ origin, actions = [] }) {
         } catch {
           /* The new pane may already be closed. */
         }
-        fail('The app changed before the native pane was ready.', 'cancelled');
+        fail('The app changed before the side pane was ready.', 'cancelled');
       }
       state.panes.push(pane);
+      rollback.push(() => {
+        drop(state.panes, pane);
+        Promise.resolve(pane.close?.()).catch(() => {});
+      });
       await pane.navigate({
         pageType: input.pageType,
         entityName: logical(input.entityName),
         ...(input.pageType === 'entityrecord' ? { entityId: guid(input.entityId ?? captured.id) } : {}),
       });
-      outcome = result('Native side pane', 'Opened the current page in a native side pane.');
+      outcome = result('Side pane', 'Opened this page in a side pane.');
+    } else if (action === 'navigation:close-side-panes') {
+      const panes = state.panes.splice(0);
+      for (const pane of panes)
+        try {
+          await pane.close?.();
+        } catch {
+          /* The user may have closed the pane already. */
+        }
+      outcome = result(
+        'Side pane',
+        panes.length
+          ? `Reset: ${amount(panes.length, 'side pane', 'side panes')} closed.`
+          : 'This session has no open side pane.',
+      );
     } else if (action.startsWith('navigation:')) {
       let url;
       if (action === 'navigation:open-list') {
@@ -794,7 +953,7 @@ export function modelDrivenActionAvailability({ origin, actions = [] }) {
       else if (action === 'navigation:open-advanced-find') url = pageUrl(undefined, undefined, 'advancedfind');
       else if (action === 'navigation:open-mobile-client') {
         const unique = context?.organizationSettings?.uniqueName;
-        if (typeof unique !== 'string' || !unique) fail('The native organization name is unavailable.');
+        if (typeof unique !== 'string' || !unique) fail('This app does not report its organization unique name.');
         url = new URL(`${client()}/nga/main.htm`);
         url.searchParams.set('org', unique);
         url.searchParams.set('server', client());
@@ -809,10 +968,10 @@ export function modelDrivenActionAvailability({ origin, actions = [] }) {
       else fail('This navigation operation is not supported.');
       await openUrl(String(url));
       outcome = result(
-        'Native navigation',
+        'Opened',
         action === 'navigation:open-security'
           ? 'Opened this environment’s admin hub. Use its security settings to manage users and permissions.'
-          : 'Opened the selected native destination.',
+          : 'Opened in a new tab.',
       );
     } else if (action.startsWith('debugging:')) {
       const changes = {
@@ -846,25 +1005,33 @@ export function modelDrivenActionAvailability({ origin, actions = [] }) {
       }
       if (
         safe(() => form?.data?.entity?.getIsDirty()) &&
-        !globalThis.confirm('Reload this native app and discard the unsaved draft?')
+        !globalThis.confirm('Reload the app and discard your unsaved changes?')
       )
         fail('The draft was kept.', 'cancelled');
       check();
-      if (url.href === location.href)
-        outcome = result('Native diagnostics', 'The selected diagnostic option is already applied.');
+      if (url.href === location.href) outcome = result('Diagnostics', 'This option is already on.');
       else {
-        deliver(result('Native diagnostics', 'Reloading with the selected native diagnostic options.'));
+        deliver(
+          result(
+            'Diagnostics',
+            action === 'debugging:clear-flags'
+              ? 'Reloading without diagnostic options.'
+              : 'Reloading with this option on.',
+          ),
+        );
         location.assign(url.href);
         return ack(true);
       }
-    } else fail('This action is not part of the fixed native operation contract.');
+    } else fail('Unknown action.');
     check();
     deliver(outcome);
   } catch (error) {
+    // A failed action leaves the page as it found it: its partial changes are reverted, newest first.
+    for (const callback of [...state.restores.splice(firstRestore), ...rollback].reverse()) safe(callback);
     if (receiver())
       deliver({
+        // No title: the panel heads a failure with the action's own label.
         status: !live() ? 'cancelled' : (error.status ?? 'error'),
-        title: 'Model-driven action',
         message: !live()
           ? 'The app or record changed. Run the action again on the current page.'
           : String(error.message ?? 'The action failed.').slice(0, 1000),

@@ -9,13 +9,16 @@ import http from 'node:http';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { cacheSpecs } from '../scripts/prime-package-cache.mjs';
+import { packedPackage } from '../scripts/npm-pack.mjs';
 import { fileURLToPath } from 'node:url';
+import { SCENARIO_HANG_GUARD_MS } from './helpers/bounded-command.mjs';
 
 const exec = promisify(execFile);
 
+// Hang guard only: it serves and installs a package through a local registry; on a loaded slow host that is slow, not hung.
 test(
   'demo dependency packument is primed for an offline install when only its tarball was cached',
-  { skip: !process.env.npm_execpath && 'requires npm CLI context' },
+  { skip: !process.env.npm_execpath && 'requires npm CLI context', timeout: SCENARIO_HANG_GUARD_MS },
   async (t) => {
     const npm = process.env.npm_execpath;
     assert.ok(npm, 'run this test through npm');
@@ -37,9 +40,9 @@ test(
         env: { ...process.env, npm_config_userconfig: userconfig },
         windowsHide: true,
       });
-    const packed = JSON.parse(
+    const packed = packedPackage(
       (await run(['pack', '--json', '--ignore-scripts', '--offline', '--cache', cache], pkg)).stdout,
-    )[0];
+    );
     const archive = await fs.readFile(path.join(pkg, packed.filename));
     let origin;
     const server = http.createServer((req, res) => {
@@ -74,7 +77,10 @@ test(
       JSON.stringify({ name: 'consumer', private: true, dependencies: { 'invented-sdk': '1.0.0' } }),
     );
     const options = ['--cache', cache, '--registry', origin, '--ignore-scripts', '--no-audit', '--no-fund'];
-    await run(['cache', 'add', `${origin}/invented-sdk/-/invented-sdk-1.0.0.tgz`, ...options], consumer);
+    await run(
+      ['cache', 'add', `${origin}/invented-sdk/-/invented-sdk-1.0.0.tgz`, '--allow-remote=root', ...options],
+      consumer,
+    );
     await assert.rejects(run(['install', '--offline', '--package-lock=false', ...options], consumer), /ENOTCACHED/);
     const specs = cacheSpecs(
       { packages: { 'node_modules/invented-sdk': { version: '1.0.0', dev: true } } },
@@ -90,7 +96,7 @@ test(
     );
     await fs.writeFile(path.join(primerRoot, 'index.js'), 'export default 1;\n');
     await fs.writeFile(
-      path.join(primerRoot, 'npm-shrinkwrap.json'),
+      path.join(primerRoot, 'paqvilo-lock.json'),
       JSON.stringify({
         name: 'paqvilo',
         version: '1.0.0',

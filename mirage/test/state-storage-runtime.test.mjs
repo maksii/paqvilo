@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createSimulator } from '../server.mjs';
 import { readStateFile } from '../lib/state-storage.mjs';
-import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, ownedClose, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const id = (n) => `00000000-0000-0000-0000-${String(n).padStart(12, '0')}`;
 
@@ -19,20 +19,22 @@ test('HTTP writes journal, report save timing, share queued sessions and reopen 
   );
   const file = join(root, 'state.json'),
     options = { sourceDir: root, stateFile: file, persistence: { journalThresholdBytes: 0 }, watch: false };
-  let app = await createSimulator({
-    ...options,
-    initial: {
-      settings: { permissionMode: 'permissive' },
-      mappings: { item: { idColumn: 'itemid', entitySet: 'items', fields: { name: { type: 'string' } } } },
-      tables: {
-        item: [
-          { itemid: id(1), name: 'before' },
-          { itemid: id(2), name: 'before' },
-        ],
+  let app = ownedClose(
+    t,
+    await createSimulator({
+      ...options,
+      initial: {
+        settings: { permissionMode: 'permissive' },
+        mappings: { item: { idColumn: 'itemid', entitySet: 'items', fields: { name: { type: 'string' } } } },
+        tables: {
+          item: [
+            { itemid: id(1), name: 'before' },
+            { itemid: id(2), name: 'before' },
+          ],
+        },
       },
-    },
-  });
-  ownedFixture(t).add(() => app.close());
+    }),
+  );
   const csrf = (await (await fetch(app.url + '/__sim/api/state?summary=1')).json()).csrf;
   const patch = async (record, name) => {
     const response = await fetch(`${app.url}/_api/items(${id(record)})`, {
@@ -52,7 +54,7 @@ test('HTTP writes journal, report save timing, share queued sessions and reopen 
   }
   assert.equal((await readStateFile(file)).tables.item[1].name, 'session-two');
   await app.close();
-  app = await createSimulator(options);
+  app = ownedClose(t, await createSimulator(options));
   assert.equal(app.store.state.tables.item[0].name, 'session-one');
   assert.equal(app.store.state.tables.item[1].name, 'session-two');
 });

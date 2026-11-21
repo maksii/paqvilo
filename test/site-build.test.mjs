@@ -42,23 +42,39 @@ test('site builds replace stale output and retain only deliberate public files',
     '.nojekyll',
     'assets',
     'coverage.html',
+    'favicon.svg',
     'guide.html',
     'guide.js',
     'index.html',
     'media',
+    'sitemap.xml',
     'style.css',
   ]);
   assert.deepEqual(fs.readdirSync(path.join(output, 'assets')).sort(), [
     'lense-visual.png',
     'mirage-visual.png',
     'overview.svg',
+    'social-preview.png',
   ]);
+  for (const [built, original] of [
+    ['favicon.svg', 'site/favicon.svg'],
+    ['sitemap.xml', 'site/sitemap.xml'],
+    ['assets/social-preview.png', 'docs/assets/social-preview.png'],
+  ])
+    assert.ok(
+      fs.readFileSync(path.join(output, built)).equals(fs.readFileSync(path.join(checkout, original))),
+      `${built} retains the deliberate public source bytes`,
+    );
   const media = fs.readdirSync(path.join(root, 'site/media')).sort();
   assert.deepEqual(fs.readdirSync(path.join(output, 'media')).sort(), media);
   // The site lives in the toolkit repository: WebP stills and short MP4 clips within the media budget.
   assert.ok(
-    media.every((name) => /^[0-9]{2}[a-z]-[a-z0-9-]+\.(?:webp|mp4)$/.test(name)),
-    'media files are named <shot>-<name>.webp|mp4',
+    media.every(
+      (name) =>
+        ['00-lense-visual.webp', '00-mirage-visual.webp'].includes(name) ||
+        /^[0-9]{2}[a-z]-[a-z0-9-]+\.(?:webp|mp4)$/.test(name),
+    ),
+    'media files are the two homepage illustrations or named <shot>-<name>.webp|mp4',
   );
   const size = (name) => fs.statSync(path.join(root, 'site/media', name)).size;
   assert.ok(media.reduce((total, name) => total + size(name), 0) <= 15 * 1024 * 1024, 'site/media stays within 15 MB');

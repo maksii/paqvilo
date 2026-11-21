@@ -217,7 +217,7 @@ nav {
 .top-actions {
   flex: none;
 }
-/* D-M-7: the breadcrumb names the page (there is no title block); the current item carries the accent colour. */
+/* the breadcrumb names the page (there is no title block); the current item carries the accent colour. */
 .breadcrumb strong {
   color: var(--ui-accent);
   font-weight: 650;
@@ -1004,7 +1004,7 @@ button[aria-busy='true'] {
     justify-content: flex-start;
   }
 }
-/* Phone width: the top bar keeps the breadcrumb and one "Apps & actions" menu (DV-N4b-9). */
+/* Phone width: the top bar keeps the breadcrumb and one "Apps & actions" menu. */
 .top-more {
   display: none;
 }
@@ -1069,7 +1069,7 @@ button[aria-busy='true'] {
     margin-top: 8px;
   }
 }
-/* Phone width: compact bars so the content starts in the first quarter of the screen (DV-N4b-9). */
+/* Phone width: compact bars so the content starts in the first quarter of the screen. */
 @media (max-width: 759px) {
   .sidebar[data-nav-collapsible] {
     padding: 8px 14px;

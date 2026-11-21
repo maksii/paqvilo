@@ -1,3 +1,4 @@
+import { requiredArgument } from './lib/required-argument.mjs';
 import fs from 'node:fs/promises';
 import { simulatorBackgroundRequest } from './lib/simulator-background-requests.mjs';
 import { cancelNavigationRequests } from './lib/navigation-cancellations.mjs';
@@ -13,7 +14,7 @@ import { chromium } from 'playwright-core';
 import { BROWSER_HANG_GUARD_MS, windowsLaunchOptions } from './lib/browser-launch.mjs';
 import { editRichText, assertRichText } from './lib/richtext-actions.mjs';
 import { reconcileSupersededRead, correlateNetworkConsole } from './lib/request-evidence.mjs';
-import { auditQuery } from './lib/audit-log.mjs';
+import { auditQuery, hostMonotonicMs } from './lib/audit-log.mjs';
 import { redactUrl } from './parity-suite.mjs';
 import {
   awaitWritesBeforeDocument,
@@ -22,9 +23,12 @@ import {
   frameState,
 } from './lib/navigation-settle.mjs';
 import { classifyNativeNetworkFailures } from './lib/native-network-baseline.mjs';
-import { observeReadAborts, reconcileIntentionalReadAbort } from './lib/intentional-abort.mjs';
+import { observeReadAborts, oneProofPerRecord, reconcileIntentionalReadAbort } from './lib/intentional-abort.mjs';
 import { answerRoute } from './lib/closed-route.mjs';
 import { openBrowserWriteNet, connectCdpTransport } from './lib/browser-write-net.mjs';
+import { readJsonOption } from './lib/path-options.mjs';
+import { localUnreachable } from './lib/local-state-fetch.mjs';
+import { connectLoopbackBrowser, stripAnsi } from './lib/live.mjs';
 
 const safeUrl = (value) => {
   try {
@@ -46,10 +50,15 @@ const failureUrl = (value, { isLive = false } = {}) => {
   }
 };
 const safeMessage = (value) =>
-  String(value ?? '')
+  stripAnsi(value)
     .replace(/Bearer\s+\S+/gi, 'Bearer [redacted]')
     .replace(/((?:access_token|id_token|password|secret|authorization|cookie)\s*[=:]\s*)[^\s&]+/gi, '$1[redacted]')
-    .replace(/https?:\/\/[^\s)]+/g, (url) => safeUrl(url));
+    // Sentence punctuation after a URL (`origin http://127.0.0.1:1; start ...`) is not part of it.
+    .replace(/https?:\/\/[^\s)]+/g, (url) => {
+      let end = url.length;
+      while (end > 0 && ';,.:'.includes(url[end - 1])) end--;
+      return safeUrl(url.slice(0, end)) + url.slice(end);
+    });
 const LOOPBACK_HOSTS = Object.freeze(['127.0.0.1', 'localhost', '[::1]']);
 const loopback = (value) => {
   const url = new URL(value);
@@ -231,8 +240,11 @@ const expectedFields = (record, fields, contains) =>
  * asserts every required capability is executable (behaviour or above). Throws CapabilityUnavailable with the gaps.
  */
 export async function assertAcceptanceCapabilities({ localUrl, requires = [], timeout = 15000 }) {
-  const response = await fetch(new URL('/__sim/api/preflight', loopback(localUrl).origin), {
+  const origin = loopback(localUrl).origin;
+  const response = await fetch(new URL('/__sim/api/preflight', origin), {
     signal: AbortSignal.timeout(timeout),
+  }).catch((error) => {
+    throw localUnreachable(origin, error, timeout);
   });
   if (!response.ok) throw new Error(`Simulator preflight returned HTTP ${response.status}`);
   const report = await response.json();
@@ -242,26 +254,28 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
 }
 
 /** Run explicit actions against exported portal UI; record failures rather than converting partial flows into passes. */
-/* NOSONAR: single-pass routine, splitting it would change shared state */ export async function runAcceptance({
-  localUrl,
-  liveOrigin,
-  cdpUrl,
-  outputDir,
-  flows,
-  nativeNetworkBaseline,
-  channel = process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium'),
-  timeout = 15000,
-  navigationCommitReserveMs,
-  // Optional async hook run on the local browser context before the flows, e.g. a
-  // paqvilo-mirage-auth session sign-in of the persona under test.
-  prepareContext = null,
-  // Optional hook, called synchronously once a local navigation's hold for its pending writes is created.
-  onNavigationHold = null,
-  // Strict acceptance: capability ids or patterns (capability-registry.mjs globs) the flows need; with strict true the run
-  // refuses before any browser starts when the simulator's preflight reports one below behaviour (CapabilityUnavailable).
-  requires = null,
-  strict = false,
-}) {
+/* NOSONAR: single-pass routine, splitting it would change shared state */ export async function runAcceptance(
+  {
+    localUrl,
+    liveOrigin,
+    cdpUrl,
+    outputDir,
+    flows,
+    nativeNetworkBaseline,
+    channel = process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium'),
+    timeout = 15000,
+    navigationCommitReserveMs,
+    // Optional async hook run on the local browser context before the flows, e.g. a
+    // paqvilo-mirage-auth session sign-in of the persona under test.
+    prepareContext = null,
+    // Optional hook, called synchronously once a local navigation's hold for its pending writes is created.
+    onNavigationHold = null,
+    // Strict acceptance: capability ids or patterns (capability-registry.mjs globs) the flows need; with strict true the run
+    // refuses before any browser starts when the simulator's preflight reports one below behaviour (CapabilityUnavailable).
+    requires = null,
+    strict = false,
+  } = requiredArgument('runAcceptance(options)', 'an options object with localUrl, outputDir and flows'),
+) {
   if (!Number.isFinite(timeout) || timeout <= 0) throw new Error('timeout must be a positive finite number.');
   if (
     navigationCommitReserveMs !== undefined &&
@@ -269,7 +283,7 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
       navigationCommitReserveMs < 0 ||
       navigationCommitReserveMs >= timeout)
   )
-    throw new Error('navigationCommitReserveMs must be nonnegative and smaller than timeout.');
+    throw new Error('navigationCommitReserveMs must be non-negative and smaller than timeout.');
   const local = loopback(localUrl);
   if (!['http:', 'https:'].includes(local.protocol)) throw new Error('Local simulator requires HTTP(S).');
   const live = liveOrigin ? new URL(liveOrigin) : null;
@@ -285,6 +299,8 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
   const readState = async (full = false) => {
     const response = await fetch(new URL('/__sim/api/state' + (full ? '' : '?summary=1'), local.origin), {
       signal: AbortSignal.timeout(timeout),
+    }).catch((error) => {
+      throw localUnreachable(local.origin, error, timeout);
     });
     if (!response.ok) throw new Error(`Simulator state returned HTTP ${response.status}`);
     const state = await response.json();
@@ -299,9 +315,11 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
     )
       throw new Error('Local acceptance requires local data/page providers and no live endpoint routing.');
   };
+  // A refused requirement needs only the host's capability report. Do not make it wait for the
+  // unrelated implementation evidence scan which a successful acceptance run still requires below.
+  if (strict && requires?.length) await assertAcceptanceCapabilities({ localUrl: local.origin, requires, timeout });
   const state = await readState();
   requireLocal(state);
-  if (strict && requires?.length) await assertAcceptanceCapabilities({ localUrl: local.origin, requires, timeout });
   if (!state.status?.sourceFingerprint || !state.status?.implementationFingerprint)
     throw new Error('Acceptance requires the portal source and loaded mirage implementation fingerprints.');
   const result = {
@@ -342,7 +360,7 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
       if (!live || !cdpUrl)
         throw new Error('Live observations require --origin and the intended existing --cdp browser.');
       loopback(cdpUrl);
-      attachedBrowser = await chromium.connectOverCDP(cdpUrl, { timeout: BROWSER_HANG_GUARD_MS });
+      attachedBrowser = await connectLoopbackBrowser(cdpUrl, { timeout: BROWSER_HANG_GUARD_MS });
       if (attachedBrowser.contexts().length !== 1) throw new Error('Use exactly one attached browser identity.');
       const context = attachedBrowser.contexts()[0];
       if (context.serviceWorkers().some((worker) => new URL(worker.url()).origin === live.origin))
@@ -425,7 +443,6 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
         if (cancelled.length) {
           observation.navigationCancelledRequests ??= [];
           observation.navigationCancelledRequests.push(...cancelled);
-          lastRequestActivity = Date.now();
         }
       };
       page.on('framedetached', (frame) =>
@@ -439,7 +456,7 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
               pending.has(request) ||
               (record.finished === false &&
                 request.failure()?.errorText === 'net::ERR_ABORTED' &&
-                Date.now() - record.endedAt <= 250)
+                performance.now() - record.endedTicks <= 250)
             );
           }),
           'frame-detached',
@@ -463,7 +480,7 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
                 (pending.has(request) ||
                   (record.finished === false &&
                     request.failure()?.errorText === 'net::ERR_ABORTED' &&
-                    Date.now() - record.endedAt <= 250))
+                    performance.now() - record.endedTicks <= 250))
               );
             }),
             'document-replaced',
@@ -516,7 +533,9 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
                   commitReserveMs: reserve,
                   commitReservePolicy: budget.policy,
                   comparableNavigationMs: budget.comparableMs ?? null,
-                  writeHoldAllowanceMs: Math.max(0, remaining - reserve),
+                  // What is left of the chain's shared hold, not of the step that happens to run when this hop is
+                  // paused: a later hop can be paused between steps or in the next step, whose deadline is later.
+                  writeHoldAllowanceMs: Math.max(0, budgetDeadline - now),
                   actionRemainingMs: Number.isFinite(actionDeadline) ? Math.max(0, actionDeadline - Date.now()) : null,
                 });
               }
@@ -542,6 +561,7 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
           frameEvents.push({
             event,
             observedAt: new Date().toISOString(),
+            observedTicks: performance.now(),
             ...(event === 'frameNavigated'
               ? {
                   frameId: value.frame.id,
@@ -575,6 +595,8 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
           method: event.request.method,
           startedAt: new Date(event.wallTime * 1000).toISOString(),
           startedTimestamp: event.timestamp,
+          // The runner's receipt on its monotonic clock, comparable with its Playwright request events (lib/request-evidence.mjs).
+          observedTicks: performance.now(),
           parentTrace: Object.entries(event.request.headers ?? {}).find(
             ([name]) => name.toLowerCase() === 'x-sim-parent-trace',
           )?.[1],
@@ -716,7 +738,6 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
         }
       });
       const proofInputs = new Map();
-      let lastRequestActivity = Date.now();
       page.on('request', (request) => {
         const frame = requestFrame(request);
         const record = {
@@ -727,14 +748,18 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
           started: Date.now(),
         };
         Object.defineProperty(record, 'documentToken', { value: frameDocuments.get(frame) });
+        // The runner's monotonic clock, comparable with its receipt of the CDP send (lib/intentional-abort.mjs).
+        Object.defineProperty(record, 'startedTicks', { value: performance.now() });
         pending.set(request, record);
         requestRecords.set(request, record);
-        if (record.type !== 'eventsource') lastRequestActivity = Date.now();
         const url = new URL(request.url());
         proofInputs.set(request, {
           method: record.method,
           path: url.origin === local.origin ? url.pathname + url.search : url.href,
           startedAt: new Date(record.started).toISOString(),
+          startedTicks: record.startedTicks,
+          // The host's monotonic clock, shared with the loopback server's audit entries (lib/audit-log.mjs).
+          startedHostMs: hostMonotonicMs(),
           parentTrace: request.headers()['x-sim-parent-trace'],
           identity: observedIdentity,
           stream: record.type === 'eventsource',
@@ -750,8 +775,9 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
         page.on(event, (request) => {
           const record = pending.get(request);
           if (record) {
-            if (record.type !== 'eventsource') lastRequestActivity = Date.now();
-            record.durationMs = Date.now() - record.started;
+            // Elapsed time on the runner's monotonic clock; endedAt stays the reported wall timestamp.
+            Object.defineProperty(record, 'endedTicks', { value: performance.now() });
+            record.durationMs = Math.round(record.endedTicks - record.startedTicks);
             record.endedAt = Date.now();
             record.finished = event === 'requestfinished';
             pending.delete(request);
@@ -797,11 +823,30 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
       };
       // A user acts once a loaded page has finished its own requests: exported pages chain
       // load-time reads and writes after their ready handlers (bounded and recorded).
+      // Every task (and, in a visible document, animation frame) the page had queued has run. A hidden document runs no
+      // animation frames, so it waits for a task only. `until` bounds the turn: a page that never answers ends at it.
+      const pageTurn = (until = Infinity) => {
+        const turn = page.evaluate(
+          () =>
+            new Promise((resolve) =>
+              document.visibilityState === 'hidden'
+                ? setTimeout(resolve, 0)
+                : requestAnimationFrame(() => setTimeout(resolve, 0)),
+            ),
+        );
+        if (!Number.isFinite(until)) return turn;
+        let timer;
+        return Promise.race([
+          turn,
+          new Promise((resolve) => (timer = setTimeout(resolve, Math.max(0, until - Date.now())))),
+        ]).finally(() => clearTimeout(timer));
+      };
       const loadQuiet = async () => {
         const quiet = await awaitNetworkQuiet(() => [...cdpRecords.values()], {
           frames: () => frameState(frameEvents),
           timeout: actionTimeout,
           ignore: (row) => simulatorBackgroundRequest(row.url ?? row.path, origin),
+          roundTrip: pageTurn,
         });
         observation.loadWaits ??= [];
         observation.loadWaits.push({ url: safeUrl(page.url()), ...quiet });
@@ -821,35 +866,28 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
           let lastProofCheck = 0;
           // Native save callbacks can schedule a subgrid refresh after the modal
           // closes. Observe that work before initiating another navigation.
-          while ((active().length || Date.now() - lastRequestActivity < 500) && Date.now() < deadline) {
-            await new Promise((resolve) => setTimeout(resolve, 100));
-            if (!isLive && Date.now() - lastProofCheck > 750) {
-              lastProofCheck = Date.now();
-              const response = await fetch(local.origin + '/__sim/api/audit/export', {
-                signal: AbortSignal.timeout(timeout),
-              });
-              if (response.ok) {
-                const audit = await response.json();
-                const frameTree = await cdp.send('Page.getFrameTree');
-                const currentFrames = flattenFrameTree(frameTree.frameTree);
-                observation.finalFrameTree = currentFrames.map(({ id, parentId, loaderId }) => ({
-                  id,
-                  parentId,
-                  loaderId,
-                }));
-                reconcilePendingFrames({
+          for (;;) {
+            while (active().length && Date.now() < deadline) {
+              await new Promise((resolve) => setTimeout(resolve, 100));
+              if (!isLive && Date.now() - lastProofCheck > 750) {
+                lastProofCheck = Date.now();
+                await reconcileFrameProof({
+                  cdp,
+                  localOrigin: local.origin,
+                  timeout,
                   observation,
                   pending,
                   proofInputs,
                   cdpRecords,
-                  audit,
-                  localOrigin: local.origin,
                   observedIdentity,
                   frameEvents,
-                  currentFrames,
                 });
               }
             }
+            if (Date.now() >= deadline) break;
+            const count = pending.size;
+            await pageTurn(deadline).catch(() => {});
+            if (pending.size === count && !active().length) break;
           }
           await Promise.allSettled(responseObservations);
           throwIfActiveRequests(active);
@@ -907,7 +945,11 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
               waitUntil: step.waitUntil ?? 'domcontentloaded',
             });
             actionDeadline = Infinity;
-            entry.status = response?.status();
+            entry.status = response?.status() ?? (await committedDocumentStatus(page));
+            if (entry.status === undefined)
+              throw new Error(
+                `The document response of ${step.path} was not observable; another debugging client may be intercepting the tab (for a reference read, use a Lense session started with --no-overrides).`,
+              );
             if (entry.status !== (step.status ?? 200))
               throw new Error(`Expected HTTP ${step.status ?? 200}, observed ${entry.status}.`);
             if (!isLive) await loadQuiet();
@@ -983,7 +1025,10 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
             // signs this flow's browser context in through the session API: `roles` is a
             // manual role override and `contactId` alone signs in with that local contact's
             // memberships. Without `contactId` the step keeps the signed-in contact, else the
-            // configured persona's. The open page then reloads as the new identity.
+            // configured persona's. The open page then reloads as the new identity, so the work it queued under the
+            // old identity settles first, as before a navigate step.
+            await settle();
+            actionDeadline = Date.now() + actionTimeout;
             const current = await readState();
             const signedIn = await (await context.request.get(new URL('/__sim/api/session', local.origin).href)).json();
             const contactId =
@@ -1007,6 +1052,9 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
               await loadQuiet();
             }
           } else if (step.action === 'preset') {
+            // The step leaves the page for the simulator's access view; the work the page queued settles first.
+            await settle();
+            actionDeadline = Date.now() + actionTimeout;
             await page.goto(local.origin + '/__sim/#access');
             await page.getByLabel('Available preset', { exact: true }).selectOption(step.id);
             await page
@@ -1046,7 +1094,6 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
         actionTimeout = timeout;
         page.setDefaultTimeout(timeout);
         page.setDefaultNavigationTimeout(timeout);
-        await page.waitForTimeout(300);
         await settle();
         await capture('final');
         if (
@@ -1068,17 +1115,19 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
           unexpectedResponses = observation.failedResponses;
         observation.sourceAborts = sourceAborts;
         observation.sourceCancelledReads = [];
-        if (!isLive)
-          unexpectedRequests = unexpectedRequests.filter((failure) => {
-            const proof = reconcileIntentionalReadAbort(failure, {
+        if (!isLive) {
+          const proofs = unexpectedRequests.map((failure) =>
+            reconcileIntentionalReadAbort(failure, {
               resources: observation.resources,
               cdpRecords: [...cdpRecords.values()],
               sourceAborts,
               origin: local.origin,
-            });
-            if (proof) observation.sourceCancelledReads.push(proof);
-            return !proof;
-          });
+            }),
+          );
+          const proven = new Set(oneProofPerRecord(proofs.filter(Boolean)));
+          observation.sourceCancelledReads.push(...proven);
+          unexpectedRequests = unexpectedRequests.filter((_failure, index) => !proven.has(proofs[index]));
+        }
         if (!isLive && nativeNetworkBaseline) {
           const compared = await classifyNativeNetworkFailures(
             [...unexpectedRequests, ...unexpectedResponses],
@@ -1130,9 +1179,15 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
         observation.error = safeMessage(error.message);
         observation.pendingRequests = [...pending.values()].map((record) => ({
           ...record,
-          elapsedMs: Date.now() - record.started,
+          elapsedMs: Math.round(performance.now() - record.startedTicks),
         }));
-        await capture('failure').catch(() => {});
+        // The failure evidence has the flow's budget: the failed step's own deadline is spent, often by that failure.
+        actionTimeout = timeout;
+        page.setDefaultTimeout(timeout);
+        page.setDefaultNavigationTimeout(timeout);
+        await capture('failure').catch((captureError) => {
+          observation.screenshotError = safeMessage(captureError.message);
+        });
       } finally {
         await Promise.allSettled(responseObservations);
         observation.finalUrl = safeUrl(page.url());
@@ -1189,7 +1244,9 @@ function reconcilePendingFrames({
   observedIdentity,
   frameEvents,
   currentFrames,
+  sharedHostClock,
 }) {
+  const found = [];
   for (const [request, record] of pending) {
     const proof = reconcileSupersededRead(proofInputs.get(request), {
       cdpRecords: [...cdpRecords.values()],
@@ -1198,14 +1255,73 @@ function reconcilePendingFrames({
       identity: observedIdentity,
       frameEvents,
       currentFrames,
+      sharedHostClock,
     });
-    if (proof) {
-      record.navigationObservation = proof;
-      observation.supersededReads ??= [];
-      observation.supersededReads.push(proof);
-      pending.delete(request);
-    }
+    if (proof) found.push({ request, record, proof });
   }
+  // A browser record proves one pending read at most, also across checks.
+  const claimed = new Set((observation.supersededReads ?? []).map((proof) => proof.requestId));
+  const proven = new Set(
+    oneProofPerRecord(
+      found.map((row) => row.proof),
+      claimed,
+    ),
+  );
+  for (const { request, record, proof } of found) {
+    if (!proven.has(proof)) continue;
+    record.navigationObservation = proof;
+    observation.supersededReads ??= [];
+    observation.supersededReads.push(proof);
+    pending.delete(request);
+  }
+}
+
+/**
+ * Reconciles the pending frame records with the simulator's audit export and the page's frame tree. A failed export
+ * leaves them as they are; the next check asks again.
+ */
+async function reconcileFrameProof({
+  cdp,
+  localOrigin,
+  timeout,
+  observation,
+  pending,
+  proofInputs,
+  cdpRecords,
+  observedIdentity,
+  frameEvents,
+}) {
+  const before = hostMonotonicMs();
+  const response = await fetch(localOrigin + '/__sim/api/audit/export', { signal: AbortSignal.timeout(timeout) });
+  if (!response.ok) return;
+  const audit = await response.json();
+  // The server read its host clock while serving: inside this bracket it is the runner's clock (not another VM's).
+  const sharedHostClock = audit.hostMs >= before && audit.hostMs <= hostMonotonicMs();
+  const frameTree = await cdp.send('Page.getFrameTree');
+  const currentFrames = flattenFrameTree(frameTree.frameTree);
+  observation.finalFrameTree = currentFrames.map(({ id, parentId, loaderId }) => ({ id, parentId, loaderId }));
+  reconcilePendingFrames({
+    observation,
+    pending,
+    proofInputs,
+    cdpRecords,
+    audit,
+    localOrigin,
+    observedIdentity,
+    frameEvents,
+    currentFrames,
+    sharedHostClock,
+  });
+}
+
+// page.goto answers null when Playwright saw no response for its navigation: a same-document navigation, or a document
+// another debugging client served or replaced (a Lense session with overrides). The committed document's navigation
+// timing still records the status it was served with, whoever served it; 0 or no entry means it is not observable.
+async function committedDocumentStatus(page) {
+  const status = await page
+    .evaluate(() => performance.getEntriesByType('navigation')[0]?.responseStatus)
+    .catch(() => undefined);
+  return status || undefined;
 }
 
 function flattenFrameTree(node) {
@@ -1235,7 +1351,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   try {
     const values = parseToolArgs('acceptance', process.argv.slice(2));
     assertToolOptions('acceptance', values, ['local', 'origin', 'cdp']);
-    const flows = JSON.parse(await fs.readFile(values.plan, 'utf8'));
+    const flows = await readJsonOption('plan', values.plan);
     const result = await runAcceptance({
       localUrl: values.local,
       liveOrigin: values.origin,

@@ -78,9 +78,11 @@ test('only findings the working tree adds are reported, NOSONAR lines excepted, 
     'lib/fresh.mjs:2 @typescript-eslint/no-floating-promises',
   ];
 
-  assert.deepEqual(await reported('HEAD', 2), [...untracked, 'lib/numbers.mjs:2 unicorn/prefer-number-properties']);
+  // Both scans only read the fixture repository, so they run concurrently.
+  const [head, previous] = await Promise.all([reported('HEAD', 2), reported('HEAD~1', 2)]);
+  assert.deepEqual(head, [...untracked, 'lib/numbers.mjs:2 unicorn/prefer-number-properties']);
   assert.deepEqual(
-    await reported('HEAD~1', 2),
+    previous,
     [
       ...untracked,
       'lib/numbers.mjs:1 unicorn/prefer-number-properties',

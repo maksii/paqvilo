@@ -81,6 +81,7 @@ async function world({
         settings: dataverseSettings({ enabled: true }),
         log: () => {},
         extensions: [...EXTENSIONS],
+        clock: typeof clock === 'function' ? clock : clock?.now,
       })
     : null;
   if (traceLevel !== null) {
@@ -121,7 +122,16 @@ async function world({
   };
 }
 
+// Each job fixture read advances by 1 ms: ordering remains observable without a mutable host clock.
+// Keep this default local to the system-job suite; explicit/manual clocks and other fixture worlds retain their inputs.
+const JOB_EPOCH = Date.parse('2026-10-20T10:03:04.567Z');
+function systemJobWorld(options) {
+  let now = JOB_EPOCH;
+  return world({ clock: { now: () => now++ }, ...options });
+}
+
 describe('async steps write asyncoperation system jobs when the Dataverse API is on', () => {
+  const world = systemJobWorld;
   let world_;
   afterEach(async () => {
     await world_?.close();
@@ -725,3 +735,112 @@ describe('TriggerServiceEndpointCheck probes a loopback webhook endpoint', () =>
     assert.deepEqual(seen, []);
   });
 });
+
+// @test-kind contract: a controlled job clock preserves start/handler/completion order across host-clock correction
+it('the system-job fixture orders start and completion around the actual handler despite host clock reversal', async (t) => {
+  const wallBefore = Date.now();
+  let wallNow = wallBefore;
+  const wall = t.mock.method(Date, 'now', () => wallNow);
+  let fixture;
+  let handlerAt;
+  let handled = 0;
+  const handlers = pluginHandlers([
+    {
+      id: 'invented',
+      pluginSteps: {
+        [STEP]: () => {
+          handled++;
+          handlerAt = fixture.store.clock.now();
+          wallNow -= 60000;
+        },
+      },
+    },
+  ]);
+  try {
+    fixture = await systemJobWorld({ dataverse: true, handlers, steps: [step()] });
+    await fixture.store.create(
+      'contoso_widget',
+      { contoso_widgetid: WIDGET, contoso_name: 'clock witness' },
+      { admin: true },
+    );
+    await fixture.runner.drain();
+    const [job] = fixture.store.tableRows('asyncoperation');
+    assert.equal(handled, 1);
+    assert.equal(wallNow, wallBefore - 60000);
+    assert.equal(job.statecode, 3);
+    assert.equal(job.statuscode, 30);
+    assert.ok(Date.parse(job.startedon) >= JOB_EPOCH);
+    assert.ok(Date.parse(job.startedon) < handlerAt, `${job.startedon} before handler ${handlerAt}`);
+    assert.ok(handlerAt < Date.parse(job.completedon), `handler ${handlerAt} before ${job.completedon}`);
+    assert.ok(job.executiontimespan > 0);
+  } finally {
+    try {
+      await fixture?.close();
+    } finally {
+      wall.mock.restore();
+    }
+  }
+});
+
+// @test-kind contract: real system elapsed time is monotonic while UTC fields follow actual host-clock corrections
+for (const wallStep of [-60000, 60000]) {
+  it(`a default-clock job measures elapsed time independently of a ${wallStep < 0 ? 'backward' : 'forward'} wall-clock step`, async (t) => {
+    const wallBefore = Date.now();
+    let wallNow = wallBefore;
+    let elapsedNow = 1000;
+    const wall = t.mock.method(Date, 'now', () => wallNow);
+    const monotonic = t.mock.method(performance, 'now', () => elapsedNow);
+    let fixture;
+    let handled = 0;
+    const handlers = pluginHandlers([
+      {
+        id: 'invented',
+        pluginSteps: {
+          [STEP]: () => {
+            handled++;
+            // The actual synchronous plug-in handler is the protocol gate between claim and completion.
+            wallNow += wallStep;
+            elapsedNow += 1500;
+          },
+        },
+      },
+    ]);
+    try {
+      // Use the original default world here, not the monotonic fixture wrapper used by the parity cases.
+      fixture = await world({ dataverse: true, handlers, steps: [step()] });
+      await fixture.store.create(
+        'contoso_widget',
+        { contoso_widgetid: WIDGET, contoso_name: 'default clock witness' },
+        { admin: true },
+      );
+      await fixture.runner.drain();
+      const [job] = fixture.store.tableRows('asyncoperation');
+      t.diagnostic(
+        JSON.stringify({
+          kind: 'plugin-system-clock',
+          wallStep,
+          started: Date.parse(job?.startedon),
+          completed: Date.parse(job?.completedon),
+          elapsedSeconds: Number.isFinite(job?.executiontimespan) ? job.executiontimespan : null,
+          elapsedFinite: Number.isFinite(job?.executiontimespan),
+          monotonicElapsedMs: 1500,
+        }),
+      );
+      assert.equal(handled, 1);
+      assert.equal(job.statecode, 3);
+      assert.equal(job.statuscode, 30);
+      assert.equal(job.executiontimespan, 1.5);
+      assert.equal(job.startedon, new Date(wallBefore).toISOString());
+      assert.equal(job.completedon, new Date(wallNow).toISOString());
+      assert.equal(fixture.api.organization.clock(), wallNow);
+      assert.equal(fixture.store.clock.now(), wallNow);
+    } finally {
+      try {
+        await fixture?.close();
+      } finally {
+        monotonic.mock.restore();
+        wall.mock.restore();
+      }
+    }
+  });
+}

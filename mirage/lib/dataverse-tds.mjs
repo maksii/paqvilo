@@ -3,7 +3,8 @@
 // handlers as the caller, so table permissions, field security, business units, sharing and service protection apply.
 //
 // startDataverseTds({ store, authority, principals, records, limits, metadataFields, clock, origin, tlsOrigin, tenantId,
-//                     version, tls, host, port, enabled, traces }) -> { port, close() }
+//                     version, tls, host, port, enabled, traces, fieldSecurity }) -> { port, close() }
+//   fieldSecurity () -> api.fieldSecurity (the FLS extension) or null: masked columns are refused as operands (maskedColumnsOf).
 //   traces the trace store (default store.traces): one root span per statement (host tds).
 //   tls   { key, cert } shared with the HTTPS listener, or null: an in-memory certificate is then generated.
 //   enabled false (tds.enabled): the listener still runs, as Dataverse keeps the endpoint reachable, and every login is refused.
@@ -138,6 +139,21 @@ async function scanTdsTable(catalog, logical, { columns, pushdown } = {}, contex
   return rows.map((formatted) => projectRow(table, null, formatted));
 }
 
+// Column security as the Web API applies it to operands (api.fieldSecurity.maskedFor; TDS has no UnMaskedData): per table,
+// the catalog columns the caller reads masked or may not see, which the evaluator refuses as operands (0x80041155).
+function maskedColumnsOf(catalog, fieldSecurity, user) {
+  const cache = new Map();
+  return (logical) => {
+    if (!fieldSecurity?.maskedFor) return null;
+    if (!cache.has(logical)) {
+      const table = catalog.tables.get(logical);
+      const masked = table.columns.filter((c) => fieldSecurity.maskedFor(user, table.logicalName, attributeOf(c)));
+      cache.set(logical, new Set(masked.map((c) => c.name)));
+    }
+    return cache.get(logical);
+  };
+}
+
 function createTdsStatementRunner(tracing, state, root, traces, params, timedOut) {
   if (!tracing) return null;
   return async (node, run) => {
@@ -193,6 +209,7 @@ export async function startDataverseTds({
   port,
   enabled = true,
   traces = store.traces,
+  fieldSecurity = null,
 }) {
   // Wrapped (TDS 7.x) TLS is capped at 1.2; strict (TDS 8) TLS takes the defaults.
   const contextsOf = (certificate) => ({
@@ -299,6 +316,7 @@ export async function startDataverseTds({
       const catalog = buildCatalog({ store, metadataFields });
       return await executeBatch(sql, {
         catalog,
+        maskedColumns: maskedColumnsOf(catalog, fieldSecurity?.(), user),
         scan: (logical, request) => scanTdsTable(catalog, logical, request, { ...readContext, catalog }),
         params,
         principal,

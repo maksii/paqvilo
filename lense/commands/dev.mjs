@@ -4,10 +4,11 @@ import { DEV_READY } from '../dev-messages.mjs';
 import chokidar from 'chokidar';
 import { openBrowser, refreshPages } from '../browser.mjs';
 import { loadDevTargets } from '../config.mjs';
+import { paqviloCommand } from '../command-hint.mjs';
 import { urlKey } from '../portal-model.mjs';
 import { compareWebFile } from '../online.mjs';
 import { gitDirectories } from '../git.mjs';
-import { panelVisibilityNotice } from '../panel.mjs';
+import { panelVisibilityNotice, servedByLocalMirage } from '../panel.mjs';
 import { guardShutdownSignals, shutdownSignalCounter } from '../signal-forwarding.mjs';
 import { startupProgress, startupWaitOptions, waitForStartupPage } from '../startup-progress.mjs';
 
@@ -100,7 +101,7 @@ function printSummaryDiagnostics(session, cfg, model, rewriter, log) {
     log(`  NEEDS DEPLOY: ${unsupported.rel} - ${unsupported.reason}`);
   if (model.warnings.length > 3 || rewriter.unsupported.length > 3)
     log(
-      `diagnostics ${plural(model.warnings.length, 'source warning')}, ${plural(rewriter.unsupported.length, 'deployment-only source')}; full details in the panel or "paqvilo doctor"`,
+      `diagnostics ${plural(model.warnings.length, 'source warning')}, ${plural(rewriter.unsupported.length, 'deployment-only source')}; full details in the panel or "${paqviloCommand(['lense', 'doctor'], { script: 'doctor' })}"`,
     );
 }
 
@@ -271,7 +272,7 @@ export function printSummary(session, log = console.log) {
   log(`site        ${cfg.siteName} @ ${cfg.envName}  ${cfg.origin}`);
   if (cfg.chosen)
     log(
-      `            (site from ${cfg.chosen.site}, environment from ${cfg.chosen.env}; "npm run list" shows the choices)`,
+      `            (site from ${cfg.chosen.site}, environment from ${cfg.chosen.env}; "${paqviloCommand(['lense', 'list'], { script: 'list', config: cfg.configFile })}" shows the choices)`,
     );
   for (const note of cfg.notes ?? []) log(`  note: ${note}`);
   if (cfg.caution)
@@ -482,9 +483,10 @@ export function watchSources(
     baselineTimer.unref();
   };
   const locate = async () => {
-    let directories;
+    // Where a checkout keeps its repository does not change during a session: Git is asked once per session.
+    let directories = session.repository ?? null;
     try {
-      directories = await gitDirectories(cfg.sourceDir);
+      directories ??= await gitDirectories(cfg.sourceDir);
     } catch (err) {
       gitNoAnswer(err);
       return;
@@ -492,6 +494,8 @@ export function watchSources(
     located = true;
     gitSilent = false;
     if (closed) return;
+    // The session reads the repository's files from here on, so a save or a poll starts Git only for what changed.
+    session.followRepository?.(directories);
     // Git answered that there is no repository: no HEAD to follow; do not spawn Git for it on every poll.
     if (directories === null) tracksHead = false;
     if (directories && gitWatch) {
@@ -868,11 +872,11 @@ function applySetupUrl(targets, setupUrl) {
 function logAllPortals(selection) {
   if (selection.mode !== 'all') return;
   console.log(
-    `portals     all ${selection.targets.length} configured origins; activated on visit. Use the panel to switch, "paqvilo list" to inspect.`,
+    `portals     all ${selection.targets.length} configured origins; activated on visit. Use the panel to switch, "${paqviloCommand(['lense', 'list'], { script: 'list' })}" to inspect.`,
   );
 }
 
-function logBrowserProfile(attached, cfg, profile) {
+export function logBrowserProfile(attached, cfg, profile) {
   const profileName = profile.name ? ` profile ${profile.name}` : '';
   const profileDirectory =
     profile.profileDirectory && profile.kind === 'external' ? ` (${profile.profileDirectory})` : '';
@@ -894,9 +898,9 @@ function logDevPanel(runtime, cfg) {
   const { keys } = panel;
   const visibilityNotice = panelVisibilityNotice(panel);
   if (visibilityNotice) console.log(visibilityNotice);
-  console.log(
-    `dev panel   on the page: ${keys.panel} opens it, ${keys.hide} hides or shows it, ${keys.mode} switches local / online`,
-  );
+  // In front of a local Mirage there is no Online to switch to: the panel has no switch and the key does nothing.
+  const mode = servedByLocalMirage(cfg) ? '' : `, ${keys.mode} switches local / online`;
+  console.log(`dev panel   on the page: ${keys.panel} opens it, ${keys.hide} hides or shows it${mode}`);
 }
 
 function logDebugPort(debugPort) {

@@ -5,7 +5,6 @@
 // ponytail: GetFeatureControlStringSettingsForNamespaceWithUserContext ignores its setting names and additional filters.
 import { DataError } from './data-error.mjs';
 import { argsOf, featureNotEnabled, registerAddon, STAMPED_COLUMNS } from './dataverse-addon-common.mjs';
-import { privilegeDeniedError } from './dataverse-security.mjs';
 
 const key = (value) => String(value ?? '').toLowerCase();
 const sameId = (a, b) => key(a) === key(b);
@@ -89,7 +88,7 @@ function operations(api) {
   // The System Administrator role check of dataverse-security-messages2.mjs; the privilege name in the refusal is a guess.
   const requireSystemAdministrator = (c) => {
     if (!api.principals.roles(c.user).some((role) => role.name === ADMIN_ROLE))
-      throw privilegeDeniedError(c.user, 'prvSystemAdministrator', 'organization');
+      throw api.principals.deniedError(c.user, 'prvSystemAdministrator', 'organization');
   };
   // Creates a copy of each row through the create rule of the caller; returns the new primary key of each old one.
   async function copyRows(c, logical, rows, columnsOf) {
@@ -464,4 +463,20 @@ function install(api) {
   for (const op of operations(api)) registerAddon(api, op);
 }
 
-export const EXTENSION = { name: 'dataverse-addon-featurecontrol', install };
+/** Capability record for the capability registry; dataverse-extensions.mjs adds the operations install registered. */
+function describe() {
+  return {
+    name: 'dataverse-addon-featurecontrol',
+    version: 1,
+    kind: 'dataverse-extension',
+    level: 'contract',
+    reason:
+      'Feature-control shapes, probe answers, card defaults and the profile clone are not confirmed natively (module header).',
+    requires: [],
+    principal: 'caller',
+    stateOwner: 'store',
+    lifecycle: 'per-request',
+  };
+}
+
+export const EXTENSION = { name: 'dataverse-addon-featurecontrol', install, describe };

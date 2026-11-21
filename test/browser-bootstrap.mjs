@@ -11,8 +11,8 @@ if (!(process.env.NODE_OPTIONS || '').split(/\s+/).includes(preload))
   process.env.NODE_OPTIONS = [process.env.NODE_OPTIONS, preload].filter(Boolean).join(' ');
 
 // The hook is registered in every process that loads this bootstrap (the browser lanes and their child processes), on
-// every platform: it removes Playwright's default timeouts (the runner's --test-timeout is the hang guard). On Windows
-// the same hook also applies the Chromium backport.
+// every platform: it removes Playwright's default timeouts (the runner's --test-timeout is the hang guard).
+// Browser launch defaults, including the Windows TCP fix, come from the pinned upstream release.
 registerHooks({
   load(url, context, nextLoad) {
     const loaded = nextLoad(url, context);
@@ -22,7 +22,7 @@ registerHooks({
       ...loaded,
       source:
         (typeof loaded.source === 'string' ? loaded.source : Buffer.from(loaded.source).toString('utf8')) +
-        `\nconst paqviloTestBrowser = require(${JSON.stringify(helper)});\npaqviloTestBrowser.installTestTimeouts(module.exports, ${JSON.stringify(directory)});\npaqviloTestBrowser.installChromiumBackport(module.exports.chromium, ${JSON.stringify(directory)});\n`,
+        `\nconst paqviloTestBrowser = require(${JSON.stringify(helper)});\npaqviloTestBrowser.installTestTimeouts(module.exports, ${JSON.stringify(directory)});\n`,
     };
   },
 });

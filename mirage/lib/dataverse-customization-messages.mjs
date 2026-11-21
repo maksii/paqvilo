@@ -14,7 +14,7 @@
 import { DataError } from './data-error.mjs';
 import { randomUUID } from 'node:crypto';
 import { contextUrl, parseDataverseRoute, parsePrefer } from './dataverse-odata.mjs';
-import { privilegeDeniedError, privilegeName } from './dataverse-security.mjs';
+import { privilegeName } from './dataverse-security.mjs';
 import { zipOf } from './dataverse-solutions.mjs';
 import { componentsOf } from './dataverse-solution-messages.mjs';
 
@@ -124,7 +124,7 @@ function operations(api) {
   const write = (fn) => api.change(() => store.transact(fn, { isolated: true }));
   const need = (c, operation, schemaName, entity) => {
     const name = privilegeName(operation, schemaName);
-    if (!(api.principals.privileges(c.user).get(name) > 0)) throw privilegeDeniedError(c.user, name, entity); // NOSONAR: operand can be NaN or undefined, the negated test differs
+    if (!(api.principals.privileges(c.user).get(name) > 0)) throw api.principals.deniedError(c.user, name, entity); // NOSONAR: operand can be NaN or undefined, the negated test differs
   };
   const respond = (c, name, body) => ({
     status: 200,
@@ -435,4 +435,65 @@ function operations(api) {
 // Registers the operations. Synchronous: the registry only stores definitions.
 export function install(api) {
   for (const op of operations(api)) api.registry.register(op);
+}
+
+/** Capability record for the capability registry; dataverse-extensions.mjs adds the operations install registered. */
+export function describe() {
+  return {
+    name: 'dataverse-customization-messages',
+    version: 1,
+    kind: 'dataverse-extension',
+    level: 'behaviour',
+    operations: [
+      {
+        name: 'RetrieveApplicationRibbon',
+        level: 'contract',
+        reason: 'No ribbon model: answers the documented default (empty) RibbonDiffXml.',
+      },
+      {
+        name: 'RetrieveEntityRibbon',
+        level: 'contract',
+        reason: 'No ribbon model: answers the documented default (empty) RibbonDiffXml.',
+      },
+      {
+        name: 'UpdateRibbonClientMetadata',
+        level: 'contract',
+        reason: 'No ribbon model: answers the documented default (empty) RibbonDiffXml.',
+      },
+      {
+        name: 'QueueUpdateRibbonClientMetadata',
+        level: 'contract',
+        reason: 'No ribbon model: answers the documented default (empty) RibbonDiffXml.',
+      },
+      {
+        name: 'ValidateUnpublished',
+        level: 'contract',
+        reason: 'Assumed answers (module header).',
+      },
+      {
+        name: 'IsComponentCustomizable',
+        level: 'contract',
+        reason: 'Assumed answers (module header).',
+      },
+      {
+        name: 'SubstituteForAttribute',
+        level: 'contract',
+        reason: 'Assumed answers (module header).',
+      },
+      {
+        name: 'SubstituteForComponent',
+        level: 'contract',
+        reason: 'Assumed answers (module header).',
+      },
+      {
+        name: 'InstantiateFilters',
+        level: 'contract',
+        reason: 'Assumed answers (module header).',
+      },
+    ],
+    requires: [],
+    principal: 'caller',
+    stateOwner: 'store',
+    lifecycle: 'per-request',
+  };
 }

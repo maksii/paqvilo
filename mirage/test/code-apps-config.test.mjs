@@ -47,9 +47,38 @@ test('codeAppSettings validates names, relative dirs and loopback localAppUrl', 
   assert.throws(() => codeAppSettings([{ name: 'a', dir: '../outside' }]), /relative to the project root/);
   assert.throws(() => codeAppSettings([{ name: 'a', dir: 'C:\\abs' }]), /relative to the project root/);
   assert.throws(() => codeAppSettings([{ name: 'a', dir: 'a', localAppUrl: 'https://app.example.test' }]), /loopback/);
-  assert.throws(
-    () => codeAppSettings([{ name: 'a', dir: 'a', extra: 1 }]),
-    /codeApps\[0\]\.extra is not a supported setting/,
+  assert.throws(() => codeAppSettings([{ name: 'a', dir: 'a', extra: 1 }]), /Unknown codeApps\[0\] key 'extra'/);
+  // Each refusal states the rule it enforces (mirage/docs/code-apps.md).
+  const refusal = (entry) => {
+    try {
+      codeAppSettings(Array.isArray(entry) ? entry : [entry]);
+    } catch (error) {
+      return error.message;
+    }
+    assert.fail('expected a refusal');
+  };
+  assert.equal(
+    refusal({ name: '-a', dir: 'a' }),
+    'codeApps[0].name must be 1-64 letters, digits or hyphens, starting with a letter or digit',
+  );
+  assert.equal(
+    refusal([
+      { name: 'a', dir: 'a' },
+      { name: 'A', dir: 'b' },
+    ]),
+    "codeApps[1].name 'A' is not unique (names are compared ignoring case)",
+  );
+  assert.equal(
+    refusal({ name: 'a', dir: 'a', localAppUrl: 'http://localhost:3000/#x' }),
+    'codeApps[0].localAppUrl must be a loopback http(s) URL without credentials or fragment',
+  );
+  assert.match(
+    refusal({ name: 'a', dir: 'a', devServer: { command: ['npm', 'run\ndev'] } }),
+    /devServer\.command must be a nonempty array of strings whose first element is not blank and none contains NUL or a line break$/,
+  );
+  assert.match(
+    refusal({ name: 'a', dir: 'a', devServer: { command: ['vite'], env: { 'A=B': 'x' } } }),
+    /devServer\.env must map environment names \(without = or NUL\) to strings without NUL$/,
   );
 });
 

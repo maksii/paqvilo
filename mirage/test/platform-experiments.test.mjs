@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo configuration settings, experiment presets and source/runtime isolation.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -11,6 +12,7 @@ import { applyPortalOverrides } from '../lib/portal-overrides.mjs';
 import { applyExperiment, validateExperimentPresets } from '../lib/experiment-presets.mjs';
 import { id, xml, initial, fixture } from './fixtures/platform-experiments.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 
 test('platform budgets are per-store, preserve aggregate semantics and validate values', async () => {
   const a = new DataStore({ state: initial() }),
@@ -135,7 +137,14 @@ test('organization attachment policies enforce base64 size, extensions and MIME 
   await store.create('annotation', { filename: 'a.exe', mimetype: 'text/plain', documentbody: 'YWFhYWFhYQ==' });
   assert.equal(store.tableRows('annotation').length, 2);
 });
-test('two runtimes share sources but isolate configuration, presets, reload, restart and invalid imports', async (t) => {
+// @test-kind contract: runtime configuration isolation uses live status for tokens/revisions and does not require implementation-evidence reads.
+test(
+  'two runtimes share sources but isolate configuration, presets, reload, restart and invalid imports',
+  // Hang guard only: one scenario of two runtimes over one source, with reloads and a restart.
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  isolatedRuntimeConfiguration,
+);
+async function isolatedRuntimeConfiguration(t) {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-experiments-'));
   await fixture(root);
   let a, b;
@@ -147,20 +156,30 @@ test('two runtimes share sources but isolate configuration, presets, reload, res
   const first = { sourceDir: root, stateFile: path.join(root, 'state-a.json'), initial: initial(), watch: false };
   a = await createSimulator(first);
   b = await createSimulator({ ...first, stateFile: path.join(root, 'state-b.json') });
-  const workspace = await (await fetch(a.url + '/__sim/api/state')).json();
+  const stat = fs.stat;
+  let implementationStats = 0;
+  const serverFile = path.resolve(import.meta.dirname, '../server.mjs');
+  t.mock.method(fs, 'stat', (file, ...args) => {
+    if (typeof file === 'string' && path.resolve(file) === serverFile) {
+      implementationStats++;
+      return Promise.reject(Object.assign(new Error('Invented implementation evidence failure'), { code: 'EACCES' }));
+    }
+    return stat(file, ...args);
+  });
+  const workspace = await (await fetch(a.url + '/__sim/api/status')).json();
   const request = async (url, route, method, body) => {
     const response = await fetch(url + '/__sim/api' + route, {
       method,
       headers: {
         'content-type': 'application/json',
-        'x-sim-csrf': url === a.url ? workspace.csrf : (await (await fetch(b.url + '/__sim/api/state')).json()).csrf,
+        'x-sim-csrf': url === a.url ? workspace.csrf : (await (await fetch(b.url + '/__sim/api/status')).json()).csrf,
       },
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     });
     return { status: response.status, data: await response.json() };
   };
   const revision = async () => {
-    const value = (await fetch(a.url + '/__sim/api/state').then((r) => r.json())).status.revision;
+    const value = (await fetch(a.url + '/__sim/api/status').then((r) => r.json())).revision;
     assert.equal(typeof value, 'number');
     return value;
   };
@@ -219,7 +238,8 @@ test('two runtimes share sources but isolate configuration, presets, reload, res
   assert.match(await (await fetch(a.url)).text(), /Override greeting/);
   assert.equal((await fetch(a.url + query, auth(a))).status, 200);
   assert.equal(await fs.readFile(path.join(root, 'sitesetting.yml'), 'utf8'), before);
-});
+  assert.equal(implementationStats, 0, 'configuration, CSRF and revision reads do not need implementation evidence');
+}
 
 test('attachment policy checks plugin mutations and leaves untouched legacy files editable', async () => {
   const state = initial();

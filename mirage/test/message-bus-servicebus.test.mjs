@@ -79,8 +79,27 @@ test('send, peek-lock receive and complete round-trip body, properties and messa
   await assert.rejects(bus.complete('77777777-7777-4777-8777-777777777777'), { code: 'MessageLockLost' });
 });
 
+// @test-kind tooling: an acknowledged, unscheduled fixture message is available independently of wall-clock corrections.
+test('an unscheduled AMQP message stays visible after the broker wall clock moves backwards', async (t) => {
+  let wallClock = Date.now();
+  t.mock.method(Date, 'now', () => wallClock);
+  const { broker, bus } = await fixture(t);
+  await bus.send('fx-orders', { x_name: 'Unscheduled clock correction' });
+  assert.equal(broker.count('fx-orders'), 1, 'the send acknowledgement follows enqueue');
+  wallClock -= 1000;
+  const messages = await bus.receive('fx-orders');
+  assert.equal(messages.length, 1, 'an ordinary message has no scheduled visibility deadline');
+  const enqueuedAt = broker.clockTrace.find((entry) => entry.phase === 'enqueue').now;
+  assert.ok(
+    broker.clockTrace.some((entry) => entry.phase === 'deliver' && entry.now < enqueuedAt),
+    'the broker processed the receive after its clock moved behind the acknowledged enqueue',
+  );
+  assert.deepEqual(messages[0].body, { x_name: 'Unscheduled clock correction' });
+  await bus.complete(messages[0].lockToken);
+});
+
 test('AMQP map keys preserve constructor and prototype-shaped application properties as data', async (t) => {
-  const { bus } = await fixture(t);
+  const { broker, bus } = await fixture(t);
   const properties = Object.fromEntries([
     ['__proto__', 'owned value'],
     ['constructor', 'constructor value'],
@@ -88,6 +107,10 @@ test('AMQP map keys preserve constructor and prototype-shaped application proper
   ]);
   await bus.send('fx-orders', { x_name: 'Prototype-shaped keys' }, { properties });
   const [message] = await bus.receive('fx-orders');
+  assert.ok(
+    message,
+    `AMQP receive returned no message: ${JSON.stringify({ queued: broker.count('fx-orders'), clockTrace: broker.clockTrace })}`,
+  );
   assert.deepEqual(message.properties, properties);
   assert.equal(Object.getPrototypeOf(message.properties), Object.prototype);
   assert.equal(Object.hasOwn(message.properties, '__proto__'), true);
@@ -165,7 +188,8 @@ test('a message larger than the broker frame size crosses as a multi-frame trans
 });
 
 test('a scheduled message carries x-opt-scheduled-enqueue-time and stays invisible until due', async (t) => {
-  const { broker, bus } = await fixture(t);
+  const lockMs = 30_000; // The broker's existing default, made explicit to read the exact transfer's delivery time.
+  const { broker, bus } = await fixture(t, { broker: { lockMs } });
   // An hour ahead stays invisible however slow the runner; a second message due shortly shows delivery once due.
   const later = new Date(Date.now() + 3_600_000);
   const sent = await bus.send('fx-orders', { n: 5 }, { scheduledEnqueueTime: later });
@@ -174,7 +198,17 @@ test('a scheduled message carries x-opt-scheduled-enqueue-time and stays invisib
   const soon = new Date(Date.now() + 200);
   await bus.send('fx-orders', { n: 6 }, { scheduledEnqueueTime: soon });
   const [message] = await bus.receive('fx-orders', { waitMs: WAIT_HANG_GUARD_MS });
-  assert.ok(Date.now() >= soon.getTime(), 'not delivered before its scheduled enqueue time');
+  // The broker writes this exact transfer's lock deadline from the same clock sample used to check visibility.
+  const deliveredAt = Date.parse(message.lockedUntil) - lockMs;
+  assert.ok(Number.isFinite(deliveredAt), 'the returned message has a captured delivery-time lock deadline');
+  // The receive is the gate: delivery has happened before an unrelated host-clock correction.
+  const wall = t.mock.method(Date, 'now', () => soon.getTime() - 1);
+  try {
+    assert.equal(Date.now(), soon.getTime() - 1, 'the post-delivery host clock is behind the schedule');
+    assert.ok(deliveredAt >= soon.getTime(), 'not delivered before its scheduled enqueue time');
+  } finally {
+    wall.mock.restore();
+  }
   assert.deepEqual(message.body, { n: 6 });
   assert.equal(message.scheduledEnqueueTime, soon.toISOString());
   assert.equal(broker.count('fx-orders'), 2, 'the message scheduled later is still held');

@@ -12,6 +12,7 @@ import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
 import { createAsyncPluginRunner } from '../lib/plugin-async.mjs';
 import { sdkValueToRecord, localOrganizationService } from '../lib/local-organization-service.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 
 const user = '10000000-0000-0000-0000-000000000001',
   rowId = '20000000-0000-0000-0000-000000000001',
@@ -229,9 +230,10 @@ test('Internal backend Delete authorization does not dispatch a phantom Retrieve
   assert.ok(messages.includes('delete'));
 });
 // @test-kind compatibility: Learn event pipeline (transactions, images, PreValidation outside transaction, async after commit); the evidence file records nativeQualified false.
+// Hang guard only: it compiles and runs an original CLR plug-in through the .NET host; on a loaded slow host that is slow, not hung.
 test(
   'Original compiled DLL executes context, service calls, images and rollback; timeout closes its host',
-  { skip: CLR_SKIP },
+  { skip: CLR_SKIP, timeout: SCENARIO_HANG_GUARD_MS },
   async (t) => {
     const sdk = clrSdk(),
       root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-clr-fixture-'));

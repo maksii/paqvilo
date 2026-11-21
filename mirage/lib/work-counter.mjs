@@ -5,7 +5,7 @@ const storeWork = new WeakMap();
 
 /** Starts the work counters of `store` at zero. */
 export function trackWork(store) {
-  storeWork.set(store, { rowsVisited: 0, indexLookups: 0 });
+  storeWork.set(store, { rowsVisited: 0, indexLookups: 0, stateCopies: 0, backupMembers: 0, backupRows: 0 });
 }
 
 /** The live counters of `store` (undefined for a store without counters). */

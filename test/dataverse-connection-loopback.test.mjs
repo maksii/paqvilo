@@ -216,6 +216,7 @@ test('register refuses a second application for an environment or name recorded 
   for (const [environment, applicationName] of [
     ['https://ORG.example.test', 'Another Application'],
     ['https://other.example.test', 'Invented Provisioning'],
+    ['https://other.example.test', ' invented PROVISIONING '],
   ]) {
     await assert.rejects(
       registerApplication({ connectionFile: target, environment, applicationName }),
@@ -248,12 +249,25 @@ const PAC_VERB_DOUBLE = [
   '};',
   "if (verb === 'who' && process.env.PAQVILO_TEST_PAC_WHO === 'ok')",
   "  reply('Org URL: https://org.example.test\\nEnvironment ID: 22222222-2222-4222-8222-222222222222\\nOrg ID: 33333333-3333-4333-8333-333333333333\\nUnique Name: invented\\nFriendly Name: Invented\\n', 0);",
-  "if (verb === 'list-service-principal' && process.env.PAQVILO_TEST_PAC_LIST === 'same')",
-  "  reply('Application ID  Display Name  Role\\n11111111-1111-4111-8111-111111111111  Invented Provisioning  System Customizer\\n', 0);",
-  "if (verb === 'list-service-principal' && process.env.PAQVILO_TEST_PAC_LIST === 'longer')",
-  "  reply('11111111-1111-4111-8111-111111111111  Invented Provisioning Extended  System Customizer\\n', 0);",
+  "if (verb === 'list-service-principal' && process.env.PAQVILO_TEST_PAC_LIST !== 'fail')",
+  '  reply(JSON.parse(process.env.PAQVILO_TEST_PAC_LIST), 0);',
   'process.exit(1);',
 ].join('\n');
+
+// The shape of PAC CLI 2.13.1 `pac admin list-service-principal` output, observed on the live developer environment
+// on 2026-11-18 (ids and names invented here): a sign-in line, a header whose columns are separated by single spaces
+// and padded to the widest value, one row per application, CRLF line ends and a trailing blank line. With no matching
+// application the header is unpadded and no row follows.
+const LISTING_ID = '11111111-1111-4111-8111-111111111111';
+const LISTING_EXPIRY = '2027-04-10 19:21:32Z';
+function pacListing(names) {
+  if (!names.length) return 'Connected as someone@example.test\r\nApp Id Secret Expiry Name\r\n\r\n';
+  const header = `${'App Id'.padEnd(36)} ${'Secret Expiry'.padEnd(20)} Name`;
+  const rows = names.map((name) => `${LISTING_ID} ${LISTING_EXPIRY} ${name}`);
+  return ['Connected as someone@example.test', header, ...rows, '', ''].join('\r\n');
+}
+const LISTED_SAME = pacListing(['Invented Provisioning Extended', 'INVENTED PROVISIONING']);
+const LISTED_LONGER = pacListing(['Invented Provisioning Extended', 'Old Invented Provisioning']);
 
 function installPacDouble(t, root, { who = false, list = 'fail' }) {
   const log = path.join(root, 'pac-verbs.log');
@@ -277,7 +291,7 @@ function installPacDouble(t, root, { who = false, list = 'fail' }) {
   process.env.PAQVILO_PAC_EXECUTABLE = process.execPath;
   process.env.PAQVILO_TEST_PAC_LOG = log;
   process.env.PAQVILO_TEST_PAC_WHO = who ? 'ok' : 'fail';
-  process.env.PAQVILO_TEST_PAC_LIST = list;
+  process.env.PAQVILO_TEST_PAC_LIST = list === 'fail' ? 'fail' : JSON.stringify(list);
   return () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split('\n').filter(Boolean) : []);
 }
 
@@ -299,7 +313,7 @@ const fakeProtect = async () => 'cHJvdGVjdGVk';
 // @test-kind security: an application the environment already lists under the requested name is refused before any create call
 test('register refuses a name the environment already lists, before creating an application', async (t) => {
   const root = registrationRoot(t);
-  const verbs = installPacDouble(t, root, { who: true, list: 'same' });
+  const verbs = installPacDouble(t, root, { who: true, list: LISTED_SAME });
   await assert.rejects(
     registerApplication({ ...listedName, connectionFile: path.join(root, listedName.connectionFile) }),
     (error) =>
@@ -327,7 +341,7 @@ test('register stops when PAC cannot list existing applications', async (t) => {
 // @test-kind security: a longer listed name that only starts with the requested name does not refuse the registration
 test('a longer listed application name does not block registration', async (t) => {
   const root = registrationRoot(t);
-  const verbs = installPacDouble(t, root, { who: true, list: 'longer' });
+  const verbs = installPacDouble(t, root, { who: true, list: LISTED_LONGER });
   await assert.rejects(
     registerApplication({
       ...listedName,
@@ -339,10 +353,78 @@ test('a longer listed application name does not block registration', async (t) =
   assert.deepEqual(verbs(), ['who', 'list-service-principal', 'create-service-principal']);
 });
 
+// @test-kind security: a listed name with single and repeated spaces, in another letter case, is refused before creation
+test('register refuses a listed name with spaces in another letter case, before creating an application', async (t) => {
+  for (const [requested, listed] of [
+    ['invented dataverse provisioning', 'Invented Dataverse Provisioning'],
+    ['Invented  Team   Provisioning ', 'INVENTED  TEAM   PROVISIONING'],
+  ])
+    await t.test(JSON.stringify(requested), async (st) => {
+      const root = registrationRoot(st);
+      const verbs = installPacDouble(st, root, { who: true, list: pacListing([`${listed} Trial`, listed]) });
+      await assert.rejects(
+        registerApplication({
+          ...listedName,
+          applicationName: requested,
+          connectionFile: path.join(root, listedName.connectionFile),
+          protect: fakeProtect,
+        }),
+        (error) => error.code === 'REGISTRATION_EXISTS',
+      );
+      assert.deepEqual(verbs(), ['who', 'list-service-principal']);
+    });
+});
+
+// @test-kind security: a listing that cannot be read with confidence refuses registration (fail closed)
+test('register refuses when the application listing cannot be parsed, before creating an application', async (t) => {
+  const unparseable = {
+    'two-space columns without the PAC header':
+      'Application ID  Display Name  Role\n11111111-1111-4111-8111-111111111111  Invented Provisioning  Reader\n',
+    'rows without a header': `${LISTING_ID} ${LISTING_EXPIRY} Invented Provisioning\r\n`,
+    'a PAC error with a zero exit code': 'Error: invented failure\r\nApp Id Secret Expiry Name\r\n',
+    'a row that is not an application id': pacListing(['Invented Other']).replace(LISTING_ID, 'not-an-id'.padEnd(36)),
+    'an unpadded header with rows': `App Id Secret Expiry Name\r\n${LISTING_ID} ${LISTING_EXPIRY} Invented Other\r\n`,
+    'a full page that may hide more rows': pacListing(Array.from({ length: 50 }, (_, i) => `Invented Other ${i}`)),
+    'empty output': '',
+  };
+  for (const [label, list] of Object.entries(unparseable))
+    await t.test(label, async (st) => {
+      const root = registrationRoot(st);
+      const verbs = installPacDouble(st, root, { who: true, list });
+      await assert.rejects(
+        registerApplication({
+          ...listedName,
+          connectionFile: path.join(root, listedName.connectionFile),
+          protect: fakeProtect,
+        }),
+        (error) => error.code === undefined && /could not be checked/.test(error.message),
+      );
+      assert.deepEqual(verbs(), ['who', 'list-service-principal']);
+    });
+});
+
+// @test-kind security: an empty tenant listing allows creation, and a failed create names the application it may have made
+test('an empty listing reaches creation, and a failed create names the application that may exist', async (t) => {
+  const root = registrationRoot(t);
+  const verbs = installPacDouble(t, root, { who: true, list: pacListing([]) });
+  await assert.rejects(
+    registerApplication({
+      ...listedName,
+      connectionFile: path.join(root, listedName.connectionFile),
+      protect: fakeProtect,
+    }),
+    (error) =>
+      /application named Invented Provisioning may have been created/.test(error.message) &&
+      /remove it/.test(error.message) &&
+      error.message.includes(path.resolve(root, `${listedName.connectionFile}.registration.json`)),
+  );
+  assert.deepEqual(verbs(), ['who', 'list-service-principal', 'create-service-principal']);
+});
+
 // @test-kind security: the override skips the listing, so a listed name reaches creation exactly once
 test('the override skips the listing and reaches creation once', async (t) => {
   const root = registrationRoot(t);
-  const verbs = installPacDouble(t, root, { who: true, list: 'same' });
+  const verbs = installPacDouble(t, root, { who: true, list: LISTED_SAME });
   await assert.rejects(
     registerApplication({
       ...listedName,
@@ -358,7 +440,7 @@ test('the override skips the listing and reaches creation once', async (t) => {
 // @test-kind security: a failed secret protection stops registration before the application is created
 test('a failed secret protection stops registration before the application is created', async (t) => {
   const root = registrationRoot(t);
-  const verbs = installPacDouble(t, root, { who: true, list: 'longer' });
+  const verbs = installPacDouble(t, root, { who: true, list: LISTED_LONGER });
   await assert.rejects(
     registerApplication({
       ...listedName,
@@ -377,7 +459,7 @@ test('register refuses an environment recorded by any json file beside the conne
   const root = registrationRoot(t);
   const directory = path.join(root, '.paqvilo', 'dataverse');
   fs.mkdirSync(directory, { recursive: true });
-  const verbs = installPacDouble(t, root, { who: true, list: 'same' });
+  const verbs = installPacDouble(t, root, { who: true, list: LISTED_SAME });
   for (const name of ['connection.json', 'prod.json', 'x.connection.json']) {
     const sibling = path.join(directory, name);
     fs.writeFileSync(
@@ -429,7 +511,7 @@ test('json files that are not connection records do not block registration', asy
 // @test-kind contract: the listed-name refusal says the check covers the tenant and matches by application name
 test('a listed-name refusal names the tenant and says the check matches by application name', async (t) => {
   const root = registrationRoot(t);
-  installPacDouble(t, root, { who: true, list: 'same' });
+  installPacDouble(t, root, { who: true, list: LISTED_SAME });
   await assert.rejects(
     registerApplication({ ...listedName, connectionFile: path.join(root, listedName.connectionFile) }),
     (error) =>

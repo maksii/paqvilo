@@ -732,6 +732,29 @@ describe('dataverse workflows: classic triggers on Dataverse writes', () => {
     });
   });
 
+  it('a mocked real-time failure answers the real-time failure code, as a failing handler does', async () => {
+    const id = await create({ name: 'lambda', note: 'kept' });
+    const definition = store.tableRows('workflow').find((row) => row.workflowid === WF(45));
+    store.transact(() => {
+      definition.ondemand = true;
+      store.state.dataverse.workflowOverrides = { [WF(45)]: { mode: 'mock', status: 31, message: 'rt fail' } };
+    });
+    try {
+      const response = await call(webApi(`workflows(${WF(45)})/${CRM}ExecuteWorkflow`), {
+        method: 'POST',
+        body: { EntityId: id },
+      });
+      assert.equal(response.status, 400);
+      const { error } = await response.json();
+      assert.deepEqual([error.code, error.message], ['0x80040265', 'rt fail']);
+    } finally {
+      store.transact(() => {
+        definition.ondemand = false;
+        delete store.state.dataverse.workflowOverrides[WF(45)];
+      });
+    }
+  });
+
   // The trigger looks the written row up through the table's primary-key index. A linear search per write made every
   // PATCH on a 300k-row table cost a full pass even with no trigger firing (the storage volume gate's HTTP PATCHes).
   it('a real-time trigger finds the written row by key, without reading the whole table', async () => {

@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { startDataverseApi } from '../lib/dataverse-api.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 
 const ADMIN_APP = '22222222-2222-2222-2222-222222222222';
 const BASIC_APP = '33333333-3333-3333-3333-333333333333';
@@ -210,7 +211,13 @@ describe('activitypointer by-id reads and privilege', () => {
 describe('activitypointer union past one page', () => {
   const guid = (n) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 
-  it("follows each source's nextLink, so the union holds every row past 5000 and the count is exact", async () => {
+  it(
+    "follows each source's nextLink, so the union holds every row past 5000 and the count is exact",
+    // Hang guard only: the union case builds and serialises a page of 5000 rows out of 5005.
+    { timeout: SCENARIO_HANG_GUARD_MS },
+    unionPastOnePage,
+  );
+  async function unionPastOnePage() {
     const dv = await start();
     try {
       const recordFields = dv.metadata.recordFields;
@@ -235,7 +242,7 @@ describe('activitypointer union past one page', () => {
     } finally {
       await dv.close();
     }
-  });
+  }
 
   it('refreshes projected definitions between requests instead of retaining a previous page cache', async () => {
     const dv = await start();

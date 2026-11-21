@@ -268,10 +268,12 @@ test('an unsupported policy blocks the connector; a script operation without the
         trustedScripts: trusted,
         connections: { [NAME]: { connector: NAME, settings: { auth: { apiKey: 'env:X_UNSET_KEY' } } } },
       });
-      assert.match(
-        inspectFlowDefinition(flow('GetItem', { id: '1' }), {}, { connectors: untrusted }).errors.join(' '),
-        /CONNECTOR_SCRIPT_UNTRUSTED/,
+      const refusal = inspectFlowDefinition(flow('GetItem', { id: '1' }), {}, { connectors: untrusted }).errors.join(
+        ' ',
       );
+      assert.match(refusal, /CONNECTOR_SCRIPT_UNTRUSTED/);
+      // The reason's own full stop is not doubled by the appended advice.
+      assert.match(refusal, /of its text; configure an explicit action mock or disable it\.$/);
       await assert.rejects(
         async () => untrusted.invoke({ connectorId: NAME, operationId: 'GetItem', parameters: { id: '1' } }),
         (e) =>

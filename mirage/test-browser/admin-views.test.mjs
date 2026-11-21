@@ -6,7 +6,7 @@
 // status, and visible help on every control.
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { loopbackServer, serveAdminFile } from './shared-browser.mjs';
+import { loopbackServer, serveAdminFile, workspaceSettled } from './shared-browser.mjs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -253,7 +253,7 @@ test('module views render their data on first entry, act through the real app an
   await page.getByRole('heading', { name: 'Health', exact: true }).waitFor();
   // The published list decides for /_sim/api routes: Platform rules shown, nothing probed.
   await page.locator('#navigation').getByRole('link', { name: 'Platform rules', exact: true }).waitFor();
-  // Navigation groups (D-M-1): Workspace › Home, Monitor › Health (and Activity where the host serves traces).
+  // Navigation groups: Workspace › Home, Monitor › Health (and Activity where the host serves traces).
   const groups = await page
     .locator('#navigation details')
     .evaluateAll((nodes) =>
@@ -300,7 +300,7 @@ test('module views render their data on first entry, act through the real app an
   // Flows & jobs: the waiting approval is there on first entry; answering it removes it and the run moves on.
   await nav(page, 'Flows & jobs');
   await page.locator('table[data-table="flow-runs"] tbody tr').nth(1).waitFor();
-  // Results read as in Activity (D-M-2): the platform status follows only when it says more (DV-N4-16).
+  // Results read as in Activity: the platform status follows only when it says more.
   const resultOf = (index) =>
     page
       .locator('table[data-table="flow-runs"] tbody tr')
@@ -317,7 +317,35 @@ test('module views render their data on first entry, act through the real app an
   await page.getByRole('button', { name: 'Answer wait fx-approval' }).click();
   await page.getByLabel('Responder').fill('reviewer@example.test');
   assert.deepEqual(await undescribed(page), []);
+  // The answer is announced at once; the answer form stays locked until the refresh that follows the answer has shown
+  // the lists, so the stale wait cannot be answered again. That refresh is held to observe it.
+  const answered = 'POST /__sim/api/flow-waits/fx-approval';
+  const refreshHeld = Promise.withResolvers();
+  const refreshRelease = Promise.withResolvers();
+  const holdRefresh = async (route) => {
+    if (calls.includes(answered)) {
+      refreshHeld.resolve();
+      await refreshRelease.promise;
+    }
+    await route.fallback();
+  };
+  await page.route('**/__sim/api/state*', holdRefresh);
   await page.getByRole('button', { name: 'Approve', exact: true }).click();
+  await refreshHeld.promise;
+  assert.match(await page.locator('#notification').textContent(), /Run \S+ (is scheduled to resume|keeps waiting)/);
+  const answerForm = page.locator('#flow-wait-form');
+  assert.equal(
+    await answerForm.locator('button[aria-busy="true"]').count(),
+    1,
+    'the answer is pending while the lists are stale',
+  );
+  assert.equal(
+    await answerForm.locator('button:not([disabled]), input:not([disabled])').count(),
+    0,
+    'the stale answer form cannot be used',
+  );
+  refreshRelease.resolve();
+  await page.unroute('**/__sim/api/state*', holdRefresh);
   await page.getByText('No run is waiting.').waitFor();
   assert.equal(await page.locator('[data-ui-section="flows:waits"] .ui-section-summary').innerText(), '0 waiting');
   await page.waitForFunction(
@@ -350,7 +378,7 @@ test('module views render their data on first entry, act through the real app an
   );
   // M2 §7 defect 1: nothing in the run table is cut off at the right edge.
   assert.deepEqual(await clippedControls(page), []);
-  // D-M-7: the filters live in a drawer opened from the toolbar; applying closes it and shows the filter as a chip.
+  // the filters live in a drawer opened from the toolbar; applying closes it and shows the filter as a chip.
   const toggle = page.locator('[data-filter-toggle="flows-filters"]');
   assert.equal(await page.locator('#flows-filters').isVisible(), false);
   await toggle.click();
@@ -512,12 +540,26 @@ test('every sidebar link lands at the top of a view headed by its label; step an
     assert.equal(await page.evaluate(() => window.scrollY), 0, `${label} opens at its top`);
     assert.equal(await page.locator('#breadcrumb').innerText(), label);
     assert.equal(await page.locator('#breadcrumb-group').innerText(), group);
-    // D-M-7: no title block; the breadcrumb names the page in the accent colour and the H1 stays for focus only.
+    // no title block; the breadcrumb names the page in the accent colour and the H1 stays for focus only.
     assert.equal(await page.locator('#content .eyebrow').count(), 0, `${label} has no eyebrow`);
     assert.equal(await page.locator('#view-title').evaluate((node) => node.getBoundingClientRect().height <= 1), true);
     assert.equal(await page.title(), `${label} · Paqvilo simulator workspace`);
   }
 
+  // A view is left while its data is unanswered: the first read of the persona catalogue, which belongs to Portal
+  // identity & permissions, is held until the panel below has been landed on.
+  const personasRelease = Promise.withResolvers();
+  let personasHeld = false;
+  const holdPersonas = async (route) => {
+    if (!personasHeld) {
+      personasHeld = true;
+      await personasRelease.promise;
+    }
+    await route.fallback();
+  };
+  await page.route('**/__sim/api/personas', holdPersonas);
+  await nav(page, 'Portal identity & permissions');
+  await page.getByRole('heading', { name: 'Portal identity & permissions', exact: true }).waitFor();
   // A step link names the panel that does the step: it opens, scrolls to, focuses and outlines that panel.
   await nav(page, 'Scenarios');
   await page.getByRole('heading', { name: 'Scenarios', exact: true }).waitFor();
@@ -529,6 +571,16 @@ test('every sidebar link lands at the top of a view headed by its label; step an
         box = panel.getBoundingClientRect();
       return panel.contains(document.activeElement) && box.top >= 0 && box.top < innerHeight;
     }),
+  );
+  // The view that was left gets its answer now. Nothing is outstanding once the workspace is no longer busy, and the
+  // landed panel is still the one in focus: a view that is not open does not render over the one that is.
+  assert.equal(personasHeld, true);
+  personasRelease.resolve();
+  await page.unroute('**/__sim/api/personas', holdPersonas);
+  await page.waitForFunction(() => document.querySelector('#content').getAttribute('aria-busy') === 'false');
+  assert.ok(
+    await page.evaluate(() => document.querySelector('[data-panel="reset"]').contains(document.activeElement)),
+    'the landed panel keeps the focus when the view that was left is answered',
   );
   // A deep link to a collapsed module panel opens and lands on it, and the outline goes away again after the
   // product's 2.5 s timer (admin/app.mjs land), which a fake clock advances instead of the test waiting it out.
@@ -694,7 +746,7 @@ test('Home guides the first run, Health counters and the places that change thin
   });
   const { page, errors } = await open(t, origin, '#home');
   // Home: the checklist states what is done from what the runtime reports; runtime facts are in Runtime state.
-  // Every row has a state from a fact (DV-N4-14): 3 portal requests since start mean the portal was opened; the
+  // Every row has a state from a fact: 3 portal requests since start mean the portal was opened; the
   // last step is done once this browser opened Activity. The counter counts the rows.
   const steps = () =>
     page
@@ -710,12 +762,20 @@ test('Home guides the first run, Health counters and the places that change thin
     'To do See what happened 1 finding to review',
   ]);
   assert.equal(await counter(), '3 of 5 done');
+  // Opening Activity counts when it is opened: its lists are still unanswered when the user goes back to Home.
+  const listsRelease = Promise.withResolvers();
+  const holdLists = async (route) => {
+    await listsRelease.promise;
+    await route.fallback();
+  };
+  await page.route('**/__sim/api/trace?*', holdLists);
   await nav(page, 'Activity');
   await page.getByRole('heading', { name: 'Activity', exact: true }).waitFor();
   await nav(page, 'Home');
-  await page.waitForFunction(
-    () => document.querySelector('[data-panel="checklist"] .panel-heading .badge')?.textContent === '4 of 5 done',
-  );
+  listsRelease.resolve();
+  await page.unroute('**/__sim/api/trace?*', holdLists);
+  await workspaceSettled(page);
+  assert.equal(await counter(), '4 of 5 done');
   assert.equal((await steps()).at(-1), 'Done See what happened 1 finding to review');
   await page.locator('[data-panel="checklist"]').getByRole('link', { name: 'Findings →' }).waitFor();
   await page.locator('[data-panel="sign-in"] dt', { hasText: 'Sign-in route' }).waitFor();
@@ -889,12 +949,12 @@ test('the top bar keeps the page title whole and its buttons inside the window b
   assert.equal(sameRow, true, '1400 px: the breadcrumb and the top bar buttons share one row');
 });
 
-// D-M-6 / D-M-7: every view starts with its content, keeps its prose behind (i) icons and fits the window.
+// every view starts with its content, keeps its prose behind (i) icons and fits the window.
 const LIST_VIEWS = new Set(['flows', 'records', 'operations']);
 test('every view: content at the top, at most 280 characters of prose, list rows right under the toolbar, no sideways scroll', async (t) => {
   const traces = createTraceStore({ settings: { level: 'summary' } });
   recordTraffic(traces);
-  // Scenario-sized values (DV-N4c-2): a record with six long columns and long column names and platform settings with long texts.
+  // Scenario-sized values: a record with six long columns and long column names and platform settings with long texts.
   const state = structuredClone(MONITOR_STATE);
   // Data records opens on contact here.
   state.data.contact = [
@@ -950,10 +1010,10 @@ test('every view: content at the top, at most 280 characters of prose, list rows
       const m = await page.evaluate(measureView);
       if (m.scrollX) failures.push(`${id} @${width}: scrolls sideways`);
       if (m.infoPairs.length) failures.push(`${id} @${width}: two (i) side by side: ${m.infoPairs.join(', ')}`);
-      // DV-N4c-2: at 1440 every table fits its frame, row actions included (a phone scrolls inside the frame).
+      // at 1440 every table fits its frame, row actions included (a phone scrolls inside the frame).
       if (width === 1440 && m.frames.length)
         failures.push(`${id}: table frame scrolls sideways: ${m.frames.join(', ')}`);
-      // DV-N4b-9: on a phone the content starts within the first quarter of the screen (Activity's own phone
+      // on a phone the content starts within the first quarter of the screen (Activity's own phone
       // layout is measured by activity-e2e, which owns that view).
       if (width !== 1440) {
         if (id !== 'activity' && (m.firstY === null || m.firstY > 844 * 0.25))
@@ -970,7 +1030,7 @@ test('every view: content at the top, at most 280 characters of prose, list rows
   assert.deepEqual(errors, []);
 });
 
-// D-M-8: every converted table is the shared table: its headers sort (aria-sort) and ↑/↓ move between rows.
+// every converted table is the shared table: its headers sort (aria-sort) and ↑/↓ move between rows.
 test('the shared table sorts by a header click on every converted view and moves between rows with the arrow keys', async (t) => {
   const state = structuredClone(MONITOR_STATE);
   Object.assign(state.config, {
@@ -1100,7 +1160,7 @@ test('the shared table sorts by a header click on every converted view and moves
   assert.deepEqual(errors, []);
 });
 
-// DV-N4c-1: audit shared table controls and sortable headers; for each populated table exercise one
+// audit shared table controls and sortable headers; for each populated table exercise one
 // sortable column in both directions, comparing displayed values for col- keys. Fixtures give the module tables (packs, services, flows,
 // capabilities, environment variables) two rows or more.
 test('shared tables expose controls and sortable headers, and toggle one sort control per populated table', async (t) => {
@@ -1187,9 +1247,11 @@ test('shared tables expose controls and sortable headers, and toggle one sort co
     await page.evaluate((hash) => {
       location.hash = hash;
     }, id);
+    // The view's own data has arrived: the title is set by the first render, before the view's requests are answered.
     await page.waitForFunction(
       (name) =>
         document.querySelector('#view-title')?.textContent === name &&
+        document.querySelector('#content').getAttribute('aria-busy') !== 'true' &&
         !document.querySelector('#content [role="status"]')?.textContent.startsWith('Loading'),
       label,
     );
@@ -1197,7 +1259,7 @@ test('shared tables expose controls and sortable headers, and toggle one sort co
     await page.evaluate(() => {
       for (const section of document.querySelectorAll('#content details')) section.open = true;
     });
-    // D-M-11 table parity, per table (empty ones included): a search box in its toolbar row, "Filters" when more
+    // Table parity, per table (empty ones included): a search box in its toolbar row, "Filters" when more
     // than one column filters, and the bottom bar with the count, rows per page and Previous/Next. The page's main
     // list (Data records, Flows runs, Backend operations, the Activity tab lists) takes its search and Filters from the
     // page toolbar row; Data records pages
@@ -1296,7 +1358,7 @@ test('shared tables expose controls and sortable headers, and toggle one sort co
       }
     }
   }
-  // The tables DV-N4c-1 named that this fixture fills were among the checked ones.
+  // The tables the table audit names that this fixture fills were among the checked ones.
   for (const name of [
     'packs-registered',
     'packs-library',
@@ -1333,7 +1395,7 @@ test('shared tables expose controls and sortable headers, and toggle one sort co
   assert.deepEqual(errors, []);
 });
 
-// DV-N4c-3/4/5: on Health the banner's Errors counts failed activities (the rows its link lists), Expand draws each
+// On Health the banner's Errors counts failed activities (the rows its link lists), Expand draws each
 // tile's stats-route timeline since start (a gauge says why it has none, Findings graphs /diagnostics), and every
 // (i) sits on the line of what it explains.
 test('Health: Errors counts failed activities, Expand graphs timelines since start, each (i) beside its label', async (t) => {
@@ -1429,7 +1491,7 @@ test('Health: Errors counts failed activities, Expand graphs timelines since sta
   assert.deepEqual(errors, []);
 });
 
-// DV-N4d-1: a group's (i) sits in its legend (Portal identity's web-role memberships, Live connection's confinement
+// a group's (i) sits in its legend (Portal identity's web-role memberships, Live connection's confinement
 // exceptions) and the group keeps its title as its name; on a phone a panel title keeps its (i) while its button wraps
 // (Entity mappings).
 test('a fieldset (i) sits beside its legend, and a phone panel title keeps its (i) beside it', async (t) => {

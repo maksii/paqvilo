@@ -6,6 +6,7 @@ import { EventEmitter, once } from 'node:events';
 import http from 'node:http';
 import { setImmediate } from 'node:timers/promises';
 import { request } from 'playwright-core';
+import { createHash } from 'node:crypto';
 import { createPortalProvenanceTransport, readEndedByContextClose } from '../lense/portal-provenance-transport.mjs';
 import { createDomProvenanceTransport } from '../lense/dom-provenance-transport.mjs';
 import { liveTimers } from './helpers/live-timers.mjs';
@@ -14,12 +15,86 @@ const LENSE = import.meta.resolve('../lense/');
 const ORIGIN = 'https://portal.invalid';
 const PAGE = ORIGIN + '/invented-page';
 
-/** A DevTools session whose frame tree reports `loader`; `hold()` makes the next frame-tree reads wait for the test. */
+// A reported loss as text; one that a reload cannot repair is marked.
+const reportText = (error) => (error.reloadHelps === false ? 'no reload: ' : '') + error.message;
+
+/** Where V8 locates a bootstrap's registry method: the zero-based line and column of its parameter list. */
+const methodLocation = (source, signature) => {
+  const before = source.slice(0, source.indexOf(signature) + signature.indexOf('('));
+  return { lineNumber: before.split('\n').length - 1, columnNumber: before.length - before.lastIndexOf('\n') - 1 };
+};
+
+/** Whether a sent command calls a verified registry `claim` (its object id names the context: method:<context>:...). */
+const isClaim = ({ method, params }) =>
+  method === 'Runtime.callFunctionOn' && /^method:\d+:\d+:claim$/.test(params.objectId);
+
+/**
+ * A DevTools session whose frame tree reports `loader`; `hold()` makes the next frame-tree reads wait for the test.
+ * Every context of a registered bootstrap gets that bootstrap's registry as the browser reports it: the parsed
+ * bootstrap script, a global slot and its `claim` and `release` functions located in that script. `useRegistries()`
+ * makes later contexts have no slot (`absent`), a page-made lookalike whose functions lie elsewhere (`forged`), or a
+ * registry whose bootstrap script the browser does not report (`unreported`).
+ */
 function fakeSession() {
-  const sent = [];
+  const sent = [],
+    bootstraps = [];
   let loader = 'initial-loader',
     held = null,
-    gone = false;
+    gone = false,
+    registries = 'genuine',
+    claimAnswer = { result: { objectId: 'invented-writer' } };
+  const answer = (method, params) => {
+    if (method === 'Page.addScriptToEvaluateOnNewDocument') {
+      bootstraps.push({ source: params.source, slot: /"slot":"(\w+)"/.exec(params.source)[1] });
+      return { identifier: 'invented-script' };
+    }
+    if (method === 'Runtime.evaluate' && params.expression === 'this')
+      return { result: { objectId: 'global:' + params.contextId } };
+    const [kind, context, index, name] = String(params.objectId).split(':');
+    const bootstrap = bootstraps[index];
+    if (method === 'Runtime.getProperties' && kind === 'global')
+      return {
+        result:
+          registries === 'absent'
+            ? []
+            : bootstraps.map((item, position) => ({
+                name: item.slot,
+                isOwn: true,
+                writable: false,
+                configurable: false,
+                value: { type: 'object', objectId: `registry:${context}:${position}` },
+              })),
+      };
+    if (method === 'Runtime.getProperties' && kind === 'registry')
+      return {
+        result: ['claim', 'release'].map((member) => ({
+          name: member,
+          isOwn: true,
+          writable: false,
+          configurable: false,
+          value: { type: 'function', objectId: `method:${context}:${index}:${member}` },
+        })),
+      };
+    if (method === 'Runtime.getProperties' && kind === 'method')
+      return {
+        internalProperties: [
+          {
+            name: '[[FunctionLocation]]',
+            value: {
+              value: {
+                scriptId: registries === 'forged' ? 'page-script' : `bootstrap:${context}:${index}`,
+                ...methodLocation(bootstrap.source, name + '(value) {'),
+              },
+            },
+          },
+        ],
+      };
+    if (method === 'Runtime.callFunctionOn' && kind === 'method' && name === 'claim') {
+      if (claimAnswer instanceof Error) throw claimAnswer;
+      return claimAnswer;
+    }
+    return {};
+  };
   const cdp = Object.assign(new EventEmitter(), {
     send: async (method, params = {}) => {
       sent.push({ method, params });
@@ -29,17 +104,36 @@ function fakeSession() {
         if (held) await held.promise;
         return { frameTree: { frame: { id: 'main', loaderId: loader } } };
       }
-      if (method === 'Page.addScriptToEvaluateOnNewDocument') return { identifier: 'invented-script' };
-      if (method === 'Runtime.evaluate' && params.expression?.includes('claim'))
-        return { result: { objectId: 'invented-registry' } };
-      return {};
+      return answer(method, params);
     },
   });
+  const emit = cdp.emit.bind(cdp);
+  // The browser parses each bootstrap in a new context of a configured origin.
+  cdp.emit = (event, payload) => {
+    const delivered = emit(event, payload);
+    if (event === 'Runtime.executionContextCreated' && payload.context.origin === ORIGIN && registries !== 'unreported')
+      bootstraps.forEach((bootstrap, index) =>
+        emit('Debugger.scriptParsed', {
+          executionContextId: payload.context.id,
+          scriptId: `bootstrap:${payload.context.id}:${index}`,
+          url: '',
+          hash: createHash('sha256').update(bootstrap.source).digest('hex'),
+        }),
+      );
+    return delivered;
+  };
   return {
     cdp,
     sent,
     navigate(next) {
       loader = next;
+    },
+    // The answer of every later registry claim: a protocol answer, or an Error the command rejects with.
+    answerClaims(answer) {
+      claimAnswer = answer;
+    },
+    useRegistries(kind) {
+      registries = kind;
     },
     close() {
       gone = true;
@@ -96,28 +190,36 @@ const disposalErrors = () =>
     }
   })());
 
-async function attachedPortal(t) {
+/** A markup attachment whose `open()` announces a new document of the configured origin, which then claims its registry. */
+async function attachedPortalDocument(t) {
   const session = fakeSession(),
     reports = [];
   const transport = createPortalProvenanceTransport({ request: {} }, [{ origin: ORIGIN }]);
   const attachment = await transport.onAttach({
     cdp: session.cdp,
     configure: (method, params) => session.cdp.send(method, params),
-    report: (error) => reports.push(error.message),
+    report: (error) => reports.push(reportText(error)),
   });
   ownedFixture(t).add(() => attachment.dispose());
-  // A new document of the configured origin claims the registry its bootstrap installed.
-  session.navigate('document-loader');
-  session.cdp.emit('Network.requestWillBeSent', {
-    type: 'Document',
-    requestId: 'invented-request',
-    frameId: 'main',
-    loaderId: 'document-loader',
-    request: { url: PAGE },
-  });
-  session.cdp.emit('Runtime.executionContextCreated', {
-    context: { id: 7, origin: ORIGIN, auxData: { isDefault: true, frameId: 'main' } },
-  });
+  const open = () => {
+    session.navigate('document-loader');
+    session.cdp.emit('Network.requestWillBeSent', {
+      type: 'Document',
+      requestId: 'invented-request',
+      frameId: 'main',
+      loaderId: 'document-loader',
+      request: { url: PAGE },
+    });
+    session.cdp.emit('Runtime.executionContextCreated', {
+      context: { id: 7, origin: ORIGIN, auxData: { isDefault: true, frameId: 'main' } },
+    });
+  };
+  return { session, reports, attachment, open };
+}
+
+async function attachedPortal(t) {
+  const { session, reports, attachment, open } = await attachedPortalDocument(t);
+  open();
   await settle(() => session.sent.filter(({ method }) => method === 'Page.getFrameTree').length >= 3);
   await setImmediate();
   const proof = {
@@ -197,11 +299,10 @@ async function attachedDom(t) {
   const attachment = await transport.onAttach({
     cdp: session.cdp,
     configure: (method, params) => session.cdp.send(method, params),
-    report: (error) => reports.push(error.message),
+    report: (error) => reports.push(reportText(error)),
   });
   ownedFixture(t).add(() => attachment.dispose());
-  const claimed = () =>
-    session.sent.some(({ method, params }) => method === 'Runtime.evaluate' && params.expression?.includes('claim'));
+  const claimed = () => session.sent.some(isClaim);
   // A new document's context reads its loader before claiming the registry its bootstrap installed.
   const open = () => {
     session.navigate('document-loader');
@@ -229,6 +330,41 @@ test('a script-provenance context whose loader read answers after the old 3 s de
   assert.deepEqual(reports, []);
   assert.equal(live.size, 0, 'no command guard remains armed');
 });
+
+for (const [kind, attach] of [
+  ['script', attachedDom],
+  ['markup', attachedPortalDocument],
+])
+  test(`a ${kind}-provenance claim is sent once, only to a verified registry: a document without a registry is quiet, an unverifiable, refused or rejected one on a live document is reported`, async (t) => {
+    const claims = (session) => session.sent.filter(isClaim).length;
+    for (const [registries, answer, expected, sent] of [
+      ['absent', null, [], 0],
+      ['forged', null, ['held'], 0],
+      ['unreported', null, ['claimed'], 0],
+      ['genuine', { result: { type: 'object', subtype: 'null', value: null } }, ['claimed'], 1],
+      ['genuine', new Error('Cannot find context with specified id'), ['claimed'], 1],
+    ]) {
+      const { session, reports, open } = await attach(t);
+      session.useRegistries(registries);
+      session.answerClaims(answer);
+      open();
+      await settle(() => claims(session) === sent && reports.length === expected.length);
+      // Every continuation the verification and the claim's answer could start has run.
+      await setImmediate();
+      assert.equal(claims(session), sent, `${registries}: the claim is sent at most once, and only when verified`);
+      assert.deepEqual(
+        reports.map((message) =>
+          /^no reload: a page script holds the place of the (?:script|page) provenance registry in a document, so provenance for that document is not recorded$/.test(
+            message,
+          )
+            ? 'held'
+            : (/registry of a document could not be (claimed)/.exec(message)?.[1] ?? message),
+        ),
+        expected,
+        registries,
+      );
+    }
+  });
 
 test('disposing a script-provenance attachment ends a waiting command at once, and a never-answered one is reported', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
@@ -305,18 +441,17 @@ async function mirageDom(t) {
   const attachment = await transport.onAttach({
     cdp: session.cdp,
     configure: (method, params) => session.cdp.send(method, params),
-    report: (error) => reports.push(error.message),
+    report: (error) => reports.push(reportText(error)),
   });
   ownedFixture(t).add(() => attachment.dispose());
   const bootstrap = session.sent.find(({ method }) => method === 'Page.addScriptToEvaluateOnNewDocument').params.source;
-  const secret = /"secret":"([a-f0-9]{64})"/.exec(bootstrap)[1],
+  const notifyKey = /"notifyKey":"([a-f0-9]{64})"/.exec(bootstrap)[1],
     binding = /"binding":"([^"]+)"/.exec(bootstrap)[1];
   session.navigate('document-loader');
   session.cdp.emit('Runtime.executionContextCreated', {
     context: { id: 9, origin: ORIGIN, auxData: { isDefault: true, frameId: 'main' } },
   });
-  const claimed = () =>
-    session.sent.some(({ method, params }) => method === 'Runtime.evaluate' && params.expression?.includes('claim'));
+  const claimed = () => session.sent.some(isClaim);
   await settle(claimed);
   await setImmediate();
   session.cdp.emit('Debugger.scriptParsed', {
@@ -353,7 +488,7 @@ async function mirageDom(t) {
       executionContextId,
       payload: JSON.stringify({
         version: 1,
-        secret,
+        key: notifyKey,
         id,
         relationship: 'created-by',
         frames: [{ url: SCRIPT, line: 1, column: 1 }],
@@ -368,8 +503,14 @@ async function mirageDom(t) {
       )
       .flatMap(({ params }) => params.arguments[0].value)
       .find((entry) => entry.id === id)?.proof;
-  /** The next document of the frame: its commit notification, what follows it, its context and claimed registry, and its parsed script. */
+  let current = 9;
+  /**
+   * The next document of the frame, in Chromium's order: the end of the current document's context, the commit
+   * notification, what follows it, the new context and its claimed registry, and its parsed script.
+   */
   const commit = async (loaderId, executionContextId, afterCommit = () => {}) => {
+    session.cdp.emit('Runtime.executionContextDestroyed', { executionContextId: current });
+    current = executionContextId;
     session.cdp.emit('Page.frameNavigated', { frame: { id: 'main', loaderId } });
     afterCommit();
     session.navigate(loaderId);
@@ -378,10 +519,7 @@ async function mirageDom(t) {
     });
     await settle(() =>
       session.sent.some(
-        ({ method, params }) =>
-          method === 'Runtime.evaluate' &&
-          params.contextId === executionContextId &&
-          params.expression?.includes('claim'),
+        (command) => isClaim(command) && command.params.objectId.startsWith(`method:${executionContextId}:`),
       ),
     );
     await setImmediate();
@@ -522,7 +660,7 @@ async function pageReadInFlight(t) {
   const attachment = await transport.onAttach({
     cdp: session.cdp,
     configure: (method, params) => session.cdp.send(method, params),
-    report: (error) => reports.push(error.message),
+    report: (error) => reports.push(reportText(error)),
   });
   ownedFixture(t).add(() => attachment.dispose());
   session.cdp.emit('Network.responseReceived', {
@@ -604,5 +742,240 @@ test('closing the browser context while a page answer is unread or in flight end
     end(browser.reads[0]);
     for (let i = 0; i < 10; i++) await setImmediate();
     assert.deepEqual(reports, []);
+  }
+});
+
+// Calls of a verified registry `release`; the context is the second part of the method's object id.
+const retirements = (session) =>
+  session.sent
+    .filter(({ method, params }) => method === 'Runtime.callFunctionOn' && /:release$/.test(params.objectId ?? ''))
+    .map((command) => ({ ...command, contextId: Number(command.params.objectId.split(':')[1]) }));
+
+test('disposal retires the registry of every live document context, also beyond the record limit and before its claim', async () => {
+  for (const create of [createDomProvenanceTransport, createPortalProvenanceTransport]) {
+    const session = fakeSession();
+    const transport = create({ request: {} }, [{ origin: ORIGIN }]);
+    const attachment = await transport.onAttach({
+      cdp: session.cdp,
+      configure: (method, params) => session.cdp.send(method, params),
+      report: () => {},
+    });
+    session.navigate('document-loader');
+    const ids = Array.from({ length: 130 }, (_, index) => 100 + index);
+    for (const id of ids)
+      session.cdp.emit('Runtime.executionContextCreated', {
+        context: { id, origin: ORIGIN, auxData: { isDefault: true, frameId: 'main' } },
+      });
+    // A context of another origin, an isolated world and a destroyed context have no registry to retire.
+    session.cdp.emit('Runtime.executionContextCreated', {
+      context: { id: 300, origin: 'https://other.invalid', auxData: { isDefault: true, frameId: 'main' } },
+    });
+    session.cdp.emit('Runtime.executionContextCreated', {
+      context: { id: 301, origin: ORIGIN, auxData: { isDefault: false, frameId: 'main' } },
+    });
+    session.cdp.emit('Runtime.executionContextDestroyed', { executionContextId: ids.pop() });
+    // Disposed in the same turn: no claim has been answered for any context yet.
+    await attachment.dispose();
+    assert.deepEqual(
+      retirements(session)
+        .map(({ contextId }) => contextId)
+        .sort((a, b) => a - b),
+      ids,
+      create.name,
+    );
+    assert.ok(
+      session.sent.findIndex(({ method }) => method === 'Page.removeScriptToEvaluateOnNewDocument') <
+        session.sent.findIndex((command) => /:release$/.test(command.params?.objectId ?? '')),
+      `${create.name}: the bootstrap is removed before the registries are retired`,
+    );
+  }
+});
+
+test('a document that was open before the bootstrap is never sent the release key', async () => {
+  for (const create of [createDomProvenanceTransport, createPortalProvenanceTransport]) {
+    const session = fakeSession();
+    const transport = create({ request: {} }, [{ origin: ORIGIN }]);
+    const attachment = await transport.onAttach({
+      cdp: session.cdp,
+      configure: (method, params) => session.cdp.send(method, params),
+      report: () => {},
+    });
+    // The frame still shows the loader it had when the transport attached.
+    session.cdp.emit('Runtime.executionContextCreated', {
+      context: { id: 5, origin: ORIGIN, auxData: { isDefault: true, frameId: 'main' } },
+    });
+    await settle(() => session.sent.filter(({ method }) => method === 'Page.getFrameTree').length >= 2);
+    await setImmediate();
+    await attachment.dispose();
+    assert.deepEqual(
+      session.sent.filter(({ method }) => method === 'Runtime.evaluate'),
+      [],
+      create.name,
+    );
+  }
+});
+
+test('disposal sends the release key only to a verified registry', async () => {
+  for (const create of [createDomProvenanceTransport, createPortalProvenanceTransport]) {
+    const session = fakeSession();
+    const transport = create({ request: {} }, [{ origin: ORIGIN }]);
+    const attachment = await transport.onAttach({
+      cdp: session.cdp,
+      configure: (method, params) => session.cdp.send(method, params),
+      report: () => {},
+    });
+    session.navigate('document-loader');
+    session.useRegistries('forged');
+    session.cdp.emit('Runtime.executionContextCreated', {
+      context: { id: 7, origin: ORIGIN, auxData: { isDefault: true, frameId: 'main' } },
+    });
+    await attachment.dispose();
+    const bootstrap = session.sent.find(({ method }) => method === 'Page.addScriptToEvaluateOnNewDocument').params
+      .source;
+    const releaseKey = /"releaseKey":"([a-f0-9]{64})"/.exec(bootstrap)[1];
+    assert.deepEqual(retirements(session), [], create.name);
+    assert.equal(
+      session.sent.some(
+        ({ method, params }) =>
+          method !== 'Page.addScriptToEvaluateOnNewDocument' && JSON.stringify(params).includes(releaseKey),
+      ),
+      false,
+      `${create.name}: the release key goes to no registry that is not the bootstrap's own`,
+    );
+    assert.equal(
+      session.sent.some(({ method }) => method === 'Runtime.callFunctionOn'),
+      false,
+      `${create.name}: nothing is called on a registry that is not the bootstrap's own`,
+    );
+  }
+});
+
+const tookOver = (kind) =>
+  `no reload: a document took over the window of its frame's initial empty document, so its ${kind} provenance is not recorded`;
+const kinds = new Map([
+  [attachedDom, 'script'],
+  [attachedPortalDocument, 'page'],
+]);
+
+test('a document that takes over the live context of its frame is reported once per frame, without reload advice, and never claimed', async (t) => {
+  for (const [attach, kind] of kinds) {
+    const { session, reports, open } = await attach(t);
+    const verifications = () => session.sent.filter(({ method }) => method === 'Runtime.getProperties').length;
+    // The initial empty document's context, whose bootstrap installed no registry.
+    session.useRegistries('absent');
+    open();
+    await settle(() => verifications() > 0);
+    await setImmediate();
+    // The same-origin document commits into that window: Chromium reports the navigation, and no new context.
+    session.useRegistries('genuine');
+    session.cdp.emit('Page.frameNavigated', {
+      frame: { id: 'main', loaderId: 'reused-loader', url: PAGE },
+      type: 'Navigation',
+    });
+    await setImmediate();
+    assert.deepEqual(reports, [tookOver(kind)], attach.name);
+    // Another document of the same frame takes over a live context again: the frame was already reported.
+    session.useRegistries('absent');
+    const before = verifications();
+    session.cdp.emit('Runtime.executionContextCreated', {
+      context: { id: 21, origin: ORIGIN, auxData: { isDefault: true, frameId: 'main' } },
+    });
+    await settle(() => verifications() > before);
+    await setImmediate();
+    session.cdp.emit('Page.frameNavigated', {
+      frame: { id: 'main', loaderId: 'next-reused-loader', url: PAGE },
+      type: 'Navigation',
+    });
+    await setImmediate();
+    assert.deepEqual(reports, [tookOver(kind)], `${attach.name}: one report per frame`);
+    assert.equal(session.sent.some(isClaim), false, `${attach.name}: nothing is claimed in a reused window`);
+  }
+});
+
+test('a document restored from the back/forward cache is claimed again and is not reported as a reused window', async (t) => {
+  for (const [attach] of kinds) {
+    const { session, reports, open } = await attach(t);
+    open();
+    await settle(() => session.sent.filter(isClaim).length === 1);
+    // Chromium's order for a restore: the contexts are cleared, the restored document's context is reported again,
+    // then its navigation of type BackForwardCacheRestore.
+    session.navigate('restored-loader');
+    session.cdp.emit('Runtime.executionContextsCleared', {});
+    const restored = session.sent.length;
+    session.cdp.emit('Runtime.executionContextCreated', {
+      context: { id: 23, origin: ORIGIN, auxData: { isDefault: true, frameId: 'main' } },
+    });
+    session.cdp.emit('Page.frameNavigated', {
+      frame: { id: 'main', loaderId: 'restored-loader' },
+      type: 'BackForwardCacheRestore',
+    });
+    await settle(() => session.sent.slice(restored).some(isClaim));
+    await setImmediate();
+    assert.equal(
+      session.sent
+        .slice(restored)
+        .some((command) => isClaim(command) && command.params.objectId.startsWith('method:23:')),
+      true,
+      `${attach.name}: the restored document is claimed`,
+    );
+    assert.deepEqual(reports, [], attach.name);
+  }
+});
+
+// @test-kind security: a registry is verified only against the bootstrap the browser reported for the current context;
+// after a renderer swap the same numeric context and script ids can name a page-made function at the claim location
+test('after the contexts are cleared, a reused context id with a lookalike at the old bootstrap location receives nothing', async (t) => {
+  for (const [attach] of kinds) {
+    const { session, open } = await attach(t);
+    open();
+    await settle(() => session.sent.filter(isClaim).length === 1);
+    const contextId = Number(session.sent.find(isClaim).params.objectId.split(':')[1]);
+    // A new renderer process restarts its ids: the next document's context has the same id, its functions report the
+    // same script id and location, and the browser reports no bootstrap for it.
+    session.cdp.emit('Runtime.executionContextsCleared', {});
+    session.useRegistries('unreported');
+    const after = session.sent.length;
+    session.cdp.emit('Runtime.executionContextCreated', {
+      context: { id: contextId, origin: ORIGIN, auxData: { isDefault: true, frameId: 'main' } },
+    });
+    await settle(() => session.sent.slice(after).some(({ method }) => method === 'Runtime.getProperties'));
+    await setImmediate();
+    await setImmediate();
+    assert.equal(
+      session.sent.slice(after).some(({ method }) => method === 'Runtime.callFunctionOn'),
+      false,
+      `${attach.name}: nothing is sent to the lookalike`,
+    );
+  }
+});
+
+test('a document without a target origin that takes over a live context is not reported', async (t) => {
+  for (const [attach] of kinds) {
+    const { session, reports, open } = await attach(t);
+    session.useRegistries('absent');
+    open();
+    await settle(() => session.sent.some(({ method }) => method === 'Runtime.getProperties'));
+    await setImmediate();
+    session.cdp.emit('Page.frameNavigated', {
+      frame: { id: 'main', loaderId: 'srcdoc-loader', url: 'about:srcdoc' },
+      type: 'Navigation',
+    });
+    await setImmediate();
+    assert.deepEqual(reports, [], attach.name);
+    assert.equal(session.sent.some(isClaim), false);
+  }
+});
+
+test('verifying a registry never reads the indexed properties of the page global, which are its frames windows', async (t) => {
+  for (const [attach] of kinds) {
+    const { session, open } = await attach(t);
+    open();
+    await settle(() => session.sent.some(isClaim));
+    const globalReads = session.sent.filter(
+      ({ method, params }) => method === 'Runtime.getProperties' && params.objectId.startsWith('global:'),
+    );
+    assert.ok(globalReads.length > 0, attach.name);
+    for (const { params } of globalReads)
+      assert.equal(params.nonIndexedPropertiesOnly, true, `${attach.name}: a frame window is never materialized`);
   }
 });

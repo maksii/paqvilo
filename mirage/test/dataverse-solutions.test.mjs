@@ -2,7 +2,7 @@
 // Round trip: a solution built from metadata writes that name it in MSCRM.SolutionUniqueName is exported, then imported into a
 // fresh simulator, where the table, columns, option set and relationship exist and the Web API creates a row in the table.
 // @test-kind contract: Paqvilo's own solution import, upgrade and job behaviour; no recorded platform capture backs these assertions
-import { describe, it, before, after } from 'node:test';
+import { describe, it, before, after, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { dataverseSettings } from '../lib/dataverse-settings.mjs';
@@ -718,6 +718,10 @@ describe('Solution lifecycle messages', { concurrency: false }, () => {
     managedV1 = exportedArchive(
       (await source.request('POST', '/ExportSolution', { SolutionName: SOLUTION, Managed: true })).json,
     );
+  });
+  // Each test's own organizations end with it; only the shared source one lives for the whole suite.
+  afterEach(async () => {
+    for (const server of opened.splice(1)) await server.close();
   });
   after(async () => {
     for (const server of opened) await server.close();

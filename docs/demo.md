@@ -1,24 +1,20 @@
 # Explore the demo
 
-The demo is a populated Power Pages workspace for comparing native, Web API and PCF development. It includes editable sources and deployment artefacts. It runs locally without a Power Pages account.
-
-After [installing Paqvilo](getting-started.md#1-install), run from your project terminal:
+The demo is a populated Power Pages workspace that implements one account workflow in several ways (native, Web API,
+PCF, server logic, Liquid, plug-ins) with editable sources and deployment archives. It runs locally without a Power
+Pages account. After [installing Paqvilo](getting-started.md#1-install):
 
 ```sh
 npx --no-install paqvilo mirage demo
 ```
 
-The command creates `paqvilo-example/`, selects a free port and opens the browser. Keep the terminal running. Close the browser or press **Ctrl+C** to stop.
-
-The pack also includes editor/reader persona groups and isolated **Entra · editor** and
-**Entra · reader** scenarios. Open them under **Manage data and personas > Identity &
-permissions** to try the local Microsoft Entra simulation, including the styled searchable
-operator dialog and sign-out. It uses invented contacts and loopback endpoints. See the
-[demo's sign-in walkthrough](../examples/project/README.md#try-simulated-microsoft-entra).
+The command creates `paqvilo-example/`, selects a free port and opens the browser. Keep the terminal running; close the
+browser or press **Ctrl+C** to stop. Rerunning preserves source edits and restores the sample dataset. The
+[demo project README](../examples/project/README.md) describes its files and the simulated Microsoft Entra sign-in.
 
 ## Prefer VS Code tasks
 
-Create a folder and open it through **File > Open Folder** in VS Code. In **Terminal > New Terminal**, run these lines once:
+In an empty folder opened in VS Code (**File > Open Folder**), run once in **Terminal > New Terminal**:
 
 ```sh
 npm init -y
@@ -26,28 +22,42 @@ npm install --save-dev paqvilo
 npx --no-install paqvilo mirage demo --scaffold
 ```
 
-Open **File > Open Workspace from File**, then select `paqvilo-example/paqvilo-demo.code-workspace`. In **Run and Debug**, select **Demo: Mirage and browser debugger** and press **F5**. Its task installs the demo's dependencies, starts Mirage and attaches the debugger to that dedicated Edge browser. The scaffold command itself starts no runtime.
+`--scaffold` prepares the project and workspace without starting a runtime. Open
+`paqvilo-example/paqvilo-demo.code-workspace` (**File > Open Workspace from File**), select **Demo: Mirage and browser
+debugger** in **Run and Debug** and press **F5**: its task installs the demo's dependencies, starts Mirage and attaches
+the debugger to the dedicated Edge browser. Set breakpoints in `portal/web-files/demo-workspace.js`. **Terminal > Run
+Task** also offers **demo: Start Mirage**, **demo: Run acceptance tests** and **demo: Build Dataverse plugins**.
 
-The generated `AGENTS.md` describes the demo's commands, source folders and local/live boundaries for coding agents. Repeating the scaffold command preserves your guidance and restores the file if it is missing.
-
-Use **Inspect** to open a source file in VS Code. Edit and save to preview it; set a JavaScript breakpoint in `portal/web-files/demo-workspace.js` to debug the custom workspace. **Terminal > Run Task** also offers **demo: Start Mirage** and **demo: Run acceptance tests**.
-
-Close the development browser before starting another session. Disconnecting the debugger alone keeps that browser running. Debug tasks use port `9222`; change both the task and launch configuration if that port is occupied. To use **Demo: Lense and browser debugger**, first add your deployed portal as an environment in `paqvilo.config.yml`, then enter its environment name when prompted. Sign in through that browser; its form submissions use live data.
+- The generated `AGENTS.md` gives coding agents the demo's commands, folders and local/live boundaries. Rerunning the
+  scaffold command keeps your edits to it and restores it if missing.
+- Close the development browser before starting another session; disconnecting the debugger alone leaves it running.
+- Debug configurations use port `9222`; if it is taken, change it in both the task and the launch configuration.
+- **Demo: Lense and browser debugger** needs your deployed portal as an environment in `paqvilo.config.yml`; it prompts
+  for the environment name. Its form submissions use live data.
 
 ## Try a complete account scenario
 
-1. Choose **Sign in**, then select **Alex Example 01**.
-2. Open **Approach > Web API**. Compare **Active**, **All** and **Inactive**, search by name and use **Next** and **Previous**. Open **Arcwell Services**, edit a typed field, save and reopen it.
-3. Select a primary contact or parent account through its lookup dialog. Search, page through the results and choose a row. Use **Tab** to move between controls, **Enter** to search or select, and **Escape** to close the dialog.
-4. Search the related contact list. Add a contact, edit it in its dialog and delete the test row. Use an account with more than eight contacts, or add enough test rows, to exercise contact paging.
-5. Download the service brief. Edit its note and confirm the attachment remains available. Add a note with a small attachment; the custom workspace accepts files up to 1 MB.
-6. Open **Out of the box**, select the same account and choose **New contact** in its subgrid. Check the prefilled account, save, then use the row menu to view, edit and delete the contact. Open **PCF** to compare 14 typed code-component editors. The sample does not include a PCF dataset control.
-7. Open **Extended** to calculate an estimate, read an account overview and run the location request/response simulation.
-8. Open **Liquid > Partials and parameters**, **Lists and views**, then **Data and conditions**. Compare the two- and four-row previews, choose a view with **Apply view**, and use **Apply filter** to compare statuses. Inspect parameterized includes, the component manifest, custom view cells and filtered FetchXML results.
-9. In **Web API**, try an account name shorter than three characters or a contact last name shorter than two. Check the validation message. Save a valid name and email with surrounding spaces, then reopen the record to inspect normalization. These scenarios use the sample's local models of its eight registered plugin steps.
-10. Press **Alt+Shift+P** and open **Inspect**. Follow the page, template, form, view, field, plugin and permission links into their source files.
-
-The Web API and PCF account lists keep their selected view and search in the URL. Reloading after a source edit restores those filters; browser Back restores the previous query.
+1. Choose **Sign in to try CRUD**, then **Alex Example 01** (editor).
+2. Open **Approach > Web API**. Choose **Active accounts**, **All accounts** or **Inactive accounts** in **View**, or
+   type part of a name, and press **Search**; page with **Next** and **Previous**. Open **Arcwell Services**, choose
+   **Edit account**, change a typed field, choose **Save account** and reopen it. The selected view and search are kept
+   in the URL, so a reload after a source edit restores them.
+3. Pick a primary contact or parent account in its lookup dialog: search, page and choose a row (**Tab**, **Enter** and
+   **Escape** work).
+4. Search the related contacts; add, edit and delete one. Contacts page after eight rows.
+5. Download the service brief, edit its note and check the attachment remains. Add a note with a file under 1 MB.
+6. Open **Out of the box**: choose **New contact** in the subgrid, check the prefilled account, save, then view, edit
+   and delete it from the row menu. Open **PCF** to edit the account through 14 typed code-component editors (no page
+   hosts a PCF dataset control).
+7. Open **Extended** to calculate an estimate, read an account overview and run the location request/response flow.
+8. Open **Liquid > Partials and parameters**, **Lists and views** and **Data and conditions**. Compare the two- and
+   four-row previews, use **Apply view** and **Apply filter**, and inspect the includes, component manifest, view cells
+   and FetchXML results.
+9. In **Web API**, save an account name shorter than three characters or a contact last name shorter than two to see the
+   plug-in validation message; save a name and email with surrounding spaces to see normalization.
+10. Open an account in **Out of the box**, press **Alt+Shift+P**, open **Inspect** and follow the page, template, form,
+    view, field, plug-in and permission links into their sources. The **Web API** pages have no basic forms, so their
+    inspection lists the page, templates, snippets and rendered controls.
 
 | Approach       | Source pattern                                                                     | What to inspect                                                       |
 | -------------- | ---------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
@@ -56,24 +66,26 @@ The Web API and PCF account lists keep their selected view and search in the URL
 | PCF            | Web API workspace with exported typed code components                              | Component manifests, resources and editor outputs                     |
 | Extended       | Server logic and a local flow simulation                                           | Operation contracts and returned results                              |
 | Liquid         | Parameterized partials, manifest-backed components, custom lists/views and queries | Include chains, view columns, variables, loops, snippets and FetchXML |
-| Plugins        | Account/contact validation and normalization on Create and Update                  | Eight exported steps, C# sources and explicit local models            |
+| Plug-ins       | Account/contact validation and normalization on Create and Update                  | Eight exported steps, C# sources and their local JavaScript models    |
 
-These are implemented sample scenarios. They do not demonstrate every Power Pages field or platform feature. See [coverage](coverage.md) for the supported boundary.
+These are sample scenarios, not every Power Pages feature; [coverage](coverage.md) states the supported boundary.
 
-## Check access and empty states
+## Check access, backend logic and empty states
 
-Use **Tweaks** to switch from **Alex Example 01**, the editor, to **Alex Demo 01**, the reader. The reader can read accounts, related contacts and notes. Web API and PCF hide write actions; native redirect links can open a form that denies creation or editing. Write requests are denied. Switch back to Alex Example 01 to continue editing. Compare global account access with contact relationships scoped through the parent account. Inspect shows the exported role grants and local permission context.
+- **Reader access.** In **Tweaks**, switch to **Alex Demo 01** (reader). Readers see accounts, related contacts and
+  notes; Web API and PCF hide write actions and write requests are denied. Account access is global; contact access is
+  scoped through the parent account. Inspect shows the exported role grants.
+- **Backend operations.** Under **Manage data and personas > Backend operations**, set a local JSON response mock, call
+  the operation from **Extended** and compare; **Use source default** restores it. See
+  [operation modes](../mirage/docs/operations.md) before enabling exported code.
+- **Plug-ins.** The same catalogue lists the plug-in steps. The sample pack supplies their local handlers; Mirage does
+  not run the compiled assembly. See the [plug-in guide](../mirage/docs/dataverse-plugins.md).
+- **Empty state.** Under **Manage data and personas > Plugins & presets**, apply **Empty account workspace**, refresh,
+  then apply **Populated account workspace** to restore.
 
-Open **Manage data and personas > Backend operations** to inspect the exported server logic and flow. Set a local JSON response mock, call the operation from **Extended** and compare its result. Choose **Use source default** to restore its configured behavior. These controls affect local simulation. See [operation modes](../mirage/docs/operations.md) before enabling exported code.
+## Edit and deploy
 
-The same catalogue shows the plugin steps. The sample pack supplies their synchronous local handlers; Mirage does not execute the compiled assembly. Other imported plugins start as visible placeholders unless configured. See the [plugin guide](../mirage/docs/dataverse-plugins.md) before relying on a local write result.
-
-Open **Manage data and personas > Plugins & presets**. Apply **Empty account workspace**, refresh and check the empty views. Restore **Populated account workspace** to continue. Running the demo command again preserves source edits and restores the sample dataset.
-
-## Make your first source edit
-
-Open `paqvilo-example/portal/web-files/demo.css` in VS Code, change a style and save. Check the browser after refresh. Use Inspect to locate another source before editing it.
-
-The sample also contains PAC exports, unpacked Solution sources and PCF projects. Its [project guide](../examples/project/README.md) describes the files; its [deployment guide](../examples/project/deployment/README.md) explains deployment to your own environment. Your online sign-in, environment settings and data remain separate from the local demo.
-
-For a Git baseline on Windows, run `git init` and `git config core.longpaths true` in the demo folder before `git add -A`; exported multistep metadata can exceed Windows’ default path limit.
+Open `paqvilo-example/portal/web-files/demo.css`, change a style and save; the browser refreshes with the edit. Use
+Inspect to find any other source. To put the sample in your own environment, follow its
+[deployment guide](../examples/project/deployment/README.md). Before `git add` of the demo on Windows, run
+`git config core.longpaths true`: exported multistep metadata exceeds the default path limit.

@@ -32,8 +32,8 @@ import { PLATFORM_TYPES } from './dataverse-operation-contracts.mjs';
 import { delegatedPluginParent } from './plugin-delegation.mjs';
 import { bridgeTargetInputs, multipleMessage } from './plugin-single-multiple.mjs';
 import { exactNumeric, stringifyExactJson } from './exact-numeric.mjs';
+import { isLoopbackUrl } from './loopback-url.mjs';
 
-const LOOPBACK = /^(?:(?:[a-z0-9-]+\.)*localhost|127(?:\.\d{1,3}){3}|\[::1\])$/i;
 const WEBHOOK_CONTRACT = 8;
 const MAX_BODY = 256 * 1024; // above 256 KB four optional properties are removed and the size header is sent
 const NS = 'http://schemas.microsoft.com/xrm/2011/Contracts';
@@ -49,15 +49,8 @@ export const hostnameOf = (text) => {
   }
 };
 
-/** The one loopback guard: http or https to localhost, *.localhost, 127.0.0.0/8 or ::1. TriggerServiceEndpointCheck uses it too. */
-export function isLoopbackUrl(text) {
-  try {
-    const url = new URL(text);
-    return ['http:', 'https:'].includes(url.protocol) && LOOPBACK.test(url.hostname);
-  } catch {
-    return false;
-  }
-}
+// The one loopback guard (loopback-url.mjs): http or https to localhost, *.localhost, 127.0.0.0/8 or ::1.
+export { isLoopbackUrl };
 
 // A failed synchronous webhook shows the documented "Endpoint unavailable" error; the inner code is a guess.
 const unavailable = () => new DataError('Endpoint unavailable', 400, 'InvalidRequest', { innerCode: '0x80040265' });
@@ -75,11 +68,17 @@ export async function loopbackAddresses(text, lookup) {
 
 /** The one outbound helper: throws (synchronously) for a non-loopback URL before any network call, rejects a host name that
  * resolves to any non-loopback address, pins the checked addresses for that connection, and refuses redirects.
+ * Every request opens a connection of its own (Connection: close): a request written to a pooled connection that the
+ * receiver's idle timeout is closing at that moment is reset without an answer, and a POST cannot be repeated safely, so a
+ * web hook or connector call would fail although its receiver is up.
  * `lookup` (default dns.promises.lookup) is injectable for tests. */
 export function loopbackFetch(url, { lookup = dns.promises.lookup, ...init } = {}) {
   if (!isLoopbackUrl(url)) throw unavailable();
+  const headers = new Headers(init.headers);
+  headers.set('connection', 'close');
+  const request = { ...init, headers };
   return loopbackAddresses(String(url), lookup).then((addresses) =>
-    addresses ? fetchAtAddresses(url, init, addresses) : fetchRefusingRedirects(url, init),
+    addresses ? fetchAtAddresses(url, request, addresses) : fetchRefusingRedirects(url, request),
   );
 }
 

@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
-import { runWorkspaceTask, stopOwnedChild } from './helpers/workspace-task.mjs';
+import { browserClosed, runWorkspaceTask, stopOwnedChild } from './helpers/workspace-task.mjs';
 import YAML from 'yaml';
 import { prepareProject } from '../lense/project-scaffold.mjs';
 import { createFixture } from '../test/fixture.mjs';
@@ -56,6 +56,51 @@ test('owned task shutdown drains pending stdio after the direct child exit', asy
   assert.deepEqual(await assertChildStdioDrain(gate, stopOwnedChild), [0, null]);
   await fs.rm(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   await assert.rejects(fs.stat(work), { code: 'ENOENT' });
+});
+
+// @test-kind tooling: the teardown helper's reading of a Browser.close outcome, with invented browser and session objects.
+test('a browser close counts as delivered when answered or when the connection drops under it', async () => {
+  const closedError = Object.assign(new Error('Target page, context or browser has been closed'), {
+    name: 'TargetClosedError',
+  });
+  const outcome = (send, connected = true) => browserClosed({ isConnected: () => connected }, { send: () => send() });
+  assert.equal(await outcome(() => Promise.resolve({})), true, 'answered');
+  assert.equal(await outcome(() => Promise.reject(closedError)), true, 'target closed');
+  assert.equal(await outcome(() => Promise.reject(new Error('Invented drop')), false), true, 'disconnected');
+  assert.equal(await outcome(() => Promise.reject(new Error('Invented protocol error'))), false, 'refused');
+});
+
+// @test-kind tooling: the teardown helper's hang guard after a delivered browser close, with an invented child.
+test('a child that does not exit after its browser closed is ended and reported as a failure', async () => {
+  const child = (exits) => {
+    let close;
+    const closed = new Promise((resolve) => {
+      close = resolve;
+    });
+    const owned = {
+      exitCode: null,
+      signalCode: null,
+      signals: [],
+      kill(signal) {
+        owned.signals.push(signal);
+        owned.signalCode = signal;
+        close([null, signal]);
+      },
+    };
+    if (exits) close([0, null]);
+    return { owned, closed };
+  };
+  const hung = child(false);
+  await assert.rejects(stopOwnedChild(hung.owned, hung.closed, { graceful: true, hangGuardMs: 1 }), {
+    message: 'the child did not exit after its browser closed',
+  });
+  assert.deepEqual(hung.owned.signals, ['SIGTERM']);
+  const stopping = child(true);
+  assert.deepEqual(await stopOwnedChild(stopping.owned, stopping.closed, { graceful: true, hangGuardMs: 1 }), [
+    0,
+    null,
+  ]);
+  assert.deepEqual(stopping.owned.signals, [], 'a child that exits on its own is not signalled');
 });
 
 test('empty-project debugger task matches the actual local development ready line and reuses its browser', async (t) => {

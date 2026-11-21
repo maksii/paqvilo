@@ -1,3 +1,4 @@
+// @test-kind unproven: local models of the Liquid render budget and the FetchXML render cache; no native recording is replayed by these tests.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -95,6 +96,7 @@ test('a render cache preserves every RetrieveMultiple plugin invocation', async 
   assert.equal(calls, 6);
 });
 
+// @test-kind contract: Mirage's render settings validation and resolution (catalogue, site options, programmatic); no native behaviour is claimed.
 test('render settings validate catalogue defaults and site options and resolve programmatically', () => {
   assert.deepEqual(renderSettings(), { timeLimitMs: 60000 });
   for (const label of ['defaults.mirage', 'sites.demo.mirage']) {
@@ -171,7 +173,11 @@ test('indexed equality retains GUID decorations, OR predicates, paging totals an
   }
 });
 
+// @test-kind contract: Mirage's own runtime answers its status while a render is running, and its configured render limit ends a render; no native behaviour is claimed.
 test('runtime answers status after a render has begun and before a long Liquid loop completes', async (t) => {
+  // The long render must finish however slow the host: it runs under the largest limit the setting accepts, so no
+  // elapsed time decides this half. The limit that must expire is the 5 ms one below.
+  const UNREACHED_LIMIT_MS = 3_600_000;
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-render-budget-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
@@ -193,7 +199,7 @@ test('runtime answers status after a render has begun and before a long Liquid l
     stateFile: path.join(root, 'state.json'),
     initial: fixture(),
     watch: false,
-    render: { timeLimitMs: 15000 },
+    render: { timeLimitMs: UNREACHED_LIMIT_MS },
   });
   ownedFixture(t).add(() => app.close());
   const started = Promise.withResolvers(),
@@ -212,7 +218,7 @@ test('runtime answers status after a render has begun and before a long Liquid l
   const status = await fetch(new URL('/_sim/api/status', app.url));
   assert.equal(status.status, 200);
   assert.equal(complete, false, 'status must respond during the active render');
-  assert.deepEqual((await status.json()).render, { timeLimitMs: 15000 });
+  assert.deepEqual((await status.json()).render, { timeLimitMs: UNREACHED_LIMIT_MS });
   const rendered = await page;
   assert.equal(rendered.status, 200);
   assert.match(rendered.html, /75000/);

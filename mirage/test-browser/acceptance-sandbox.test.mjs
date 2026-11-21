@@ -6,11 +6,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { runAcceptance } from '../acceptance.mjs';
 import { createSimulator } from '../server.mjs';
-import { sharedBrowser, loopbackServer } from './shared-browser.mjs';
+import { ACCEPTANCE_HANG_GUARD_MS, sharedBrowser, loopbackServer } from './shared-browser.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 // The runner's action budget for these flows: never the limiting factor on a loaded host.
-const ACTION_BUDGET_MS = 120_000;
+const ACTION_BUDGET_MS = ACCEPTANCE_HANG_GUARD_MS;
 
 const browser = sharedBrowser();
 async function output(t) {

@@ -45,7 +45,7 @@ function detail(ctx, pack) {
       { label: 'Export', render: (item) => `<code>${e(item.name)}</code>` },
       { label: 'Count', render: (item) => e(item.total) },
     ],
-    'The pack exports no recognised handler or provider.',
+    'The pack exports no recognized handler or provider.',
     `Exports of ${pack.id}`,
   );
   const presets = list(

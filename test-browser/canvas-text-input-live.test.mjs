@@ -151,6 +151,9 @@ test("the app's value wins over text that was already sent, and typing continues
   const typed = page.waitForResponse(sentText('ab'));
   await search.pressSequentially('ab');
   assert.equal((await typed).ok(), true);
+  // The player draws the answer after it has read its body, and each draw rebuilds the input. No row starts with
+  // "ab", so the empty gallery is that draw; the input taken after it is replaced only by the reset's draw.
+  await page.waitForFunction(() => document.querySelectorAll('[data-control="Rows"] [data-item-index]').length === 0);
   const before = await search.elementHandle();
   const reset = page.waitForResponse(actionIs('select'));
   await page.locator('[data-control="Clear"]').evaluate((button) => button.click());

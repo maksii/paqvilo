@@ -256,4 +256,20 @@ function install(api) {
   }
 }
 
-export const EXTENSION = { name: 'dataverse-addon-pva', install };
+/** Capability record for the capability registry; dataverse-extensions.mjs adds the operations install registered. */
+function describe() {
+  return {
+    name: 'dataverse-addon-pva',
+    version: 1,
+    kind: 'dataverse-extension',
+    level: 'contract',
+    reason:
+      'Store-backed bot and workspace rows with guessed sharing, list and snapshot shapes; publishing and the chat service need pack handlers.',
+    requires: [],
+    principal: 'caller',
+    stateOwner: 'store',
+    lifecycle: 'per-request',
+  };
+}
+
+export const EXTENSION = { name: 'dataverse-addon-pva', install, describe };

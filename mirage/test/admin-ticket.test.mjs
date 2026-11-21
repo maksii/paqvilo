@@ -122,6 +122,18 @@ test('a consumed ticket is refused on reuse with the uniform TicketInvalid answe
   assertTicketInvalid(await consume(app, ticket, { cookie: binding }));
 });
 
+test('a HEAD of a ticket URL is refused without spending the ticket the navigation needs', async (t) => {
+  const { app } = await fixture(t);
+  const { ticket, binding } = await mintTicket(app, { action: 'sign-in', contactId: 'alex' });
+  const head = await send(`${app.url}/__sim/session-token/${ticket}`, {
+    method: 'HEAD',
+    headers: { cookie: binding },
+  });
+  assert.equal(head.status, 405);
+  assert.equal(head.headers.allow, 'GET');
+  assert.equal((await consume(app, ticket, { cookie: binding })).status, 302);
+});
+
 test('a ticket is refused after its sixty seconds on the store clock', async (t) => {
   const { app, clock } = await fixture(t);
   const { ticket, binding } = await mintTicket(app, { action: 'sign-in', contactId: 'alex' });

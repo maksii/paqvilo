@@ -130,7 +130,9 @@ async function startRun(api, processId, input, { kinds, trigger }) {
   }).catch((error) => {
     throw Object.assign(error, { runId });
   });
-  return { result, runId: result?.runId ?? runId, kind: inspected.kind };
+  // The run's Response: the answer itself, or the one a run produced before it started waiting (result.response).
+  const response = Number.isInteger(result?.status) ? result : (result?.response ?? null);
+  return { result, response, runId: result?.runId ?? runId, kind: inspected.kind };
 }
 const segment = (value) => {
   try {
@@ -246,13 +248,16 @@ function flowRoot(traces, req, url, { origin, route, signed }) {
           } catch (error) {
             throw failure(400, 'InvalidRequest', error.message);
           }
-          const { result, runId } = await startRun(api, processId, input, { kinds: ['http'], trigger: 'Http' });
-          if (Number.isInteger(result?.status))
+          const { result, response, runId } = await startRun(api, processId, input, {
+            kinds: ['http'],
+            trigger: 'Http',
+          });
+          if (response)
             reply(
-              result.status,
-              result.body ?? null,
+              response.status,
+              response.body ?? null,
               Object.fromEntries(
-                Object.entries(result.headers ?? {}).filter(
+                Object.entries(response.headers ?? {}).filter(
                   ([key]) => /^(?:content-type|x-.*)$/i.test(key) && !/^(?:x-sim|x-trace-id$)/i.test(key),
                 ),
               ),
@@ -329,17 +334,17 @@ function flowRoot(traces, req, url, { origin, route, signed }) {
         }
         // An HTTP Request trigger: the body is the trigger body; the flow's Response answers, else 202 (the native 202 body is a guess).
         if (triggersRoute && req.method === 'POST' && triggersRoute[1]) {
-          const { result, runId } = await startRun(api, segment(triggersRoute[1]), await body(req), {
+          const { result, response, runId } = await startRun(api, segment(triggersRoute[1]), await body(req), {
             kinds: ['http'],
             trigger: 'Http',
           });
           // Only content-type and x-* headers reach the simulator origin (never x-sim*, the root's x-trace-id, cookies, redirects or CSP).
-          if (Number.isInteger(result?.status))
+          if (response)
             reply(
-              result.status,
-              result.body ?? null,
+              response.status,
+              response.body ?? null,
               Object.fromEntries(
-                Object.entries(result.headers ?? {}).filter(
+                Object.entries(response.headers ?? {}).filter(
                   ([name]) => /^(?:content-type|x-.*)$/i.test(name) && !/^(?:x-sim|x-trace-id$)/i.test(name),
                 ),
               ),
@@ -352,7 +357,7 @@ function flowRoot(traces, req, url, { origin, route, signed }) {
           const input = await body(req);
           if (typeof input.processId !== 'string' || !input.processId)
             throw failure(400, 'InvalidRequest', 'A flow run needs processId.');
-          const { result, runId } = await startRun(api, input.processId, input.input ?? {}, {
+          const { result, response, runId } = await startRun(api, input.processId, input.input ?? {}, {
             kinds: ['manual', 'http', 'recurrence', 'connector'],
             trigger: 'Manual',
           });
@@ -362,9 +367,7 @@ function flowRoot(traces, req, url, { origin, route, signed }) {
           }
           reply(201, {
             ...(runs.get(runId) ? { ...runs.get(runId), journal: undefined } : { runId }),
-            ...(Number.isInteger(result?.status)
-              ? { response: { status: result.status, body: result.body ?? null } }
-              : {}),
+            ...(response ? { response: { status: response.status, body: response.body ?? null } } : {}),
           });
           return true;
         }

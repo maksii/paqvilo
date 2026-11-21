@@ -181,7 +181,7 @@ test('native progress proves the actual localized step label, opens that field f
       .locator('#paqvilo-xray')
       .locator('.ie-row')
       .filter({ hasText: 'Field: title' })
-      .getByRole('button', { name: 'Open source', exact: true })
+      .getByRole('button', { name: /^Open .+ in the editor$/ })
       .click();
     const body = { ...(await action), route: '/es-ES/' };
     const opening = await inspector.lookupSource(body);

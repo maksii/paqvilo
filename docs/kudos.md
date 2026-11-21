@@ -1,9 +1,8 @@
 # Kudos
 
-Thank you to the authors and maintainers who publish their tools, examples and
-ideas. Their work helped us identify useful improvements for Paqvilo. The features
-below were implemented independently within our existing runtime; no source code,
-assets or tests were copied, and no dependencies were added from these projects.
+Thank you to the authors and maintainers who publish their tools, examples and ideas. Their work helped us identify
+useful improvements for Paqvilo. The features below were implemented independently within our existing runtime; no
+source code, assets or tests were copied, and no dependencies were added from these projects.
 
 | Project                                                                                                                                                                         | Ideas that informed Paqvilo                                                                            |
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
@@ -18,7 +17,7 @@ assets or tests were copied, and no dependencies were added from these projects.
 | [davidjbclark / xrm-mock](https://github.com/davidjbclark/xrm-mock)                                                                                                             | Attribute metadata getters, form-selector collections and per-control choice options.                  |
 | [Shko Online / ComponentFramework Mock](https://github.com/Shko-Online/ComponentFramework-Mock)                                                                                 | PCF dataset resize and lifecycle coverage.                                                             |
 | [Microsoft / Power Platform Playwright Samples](https://github.com/microsoft/power-platform-playwright-samples)                                                                 | Form-context interactions, validity APIs and browser test scenarios.                                   |
-| [MarkMpn / SQL 4 CDS](https://github.com/MarkMpn/Sql4Cds)                                                                                                                       | SQL `LIKE` collation and escape behavior coverage.                                                     |
+| [MarkMpn / SQL 4 CDS](https://github.com/MarkMpn/Sql4Cds)                                                                                                                       | SQL `LIKE` collation and escape behaviour coverage.                                                    |
 | [TarogStar / DataverseFakes](https://github.com/TarogStar/DataverseFakes)                                                                                                       | Access-team membership and cleanup scenarios.                                                          |
 | [rappen / Plugin Trace Viewer](https://github.com/rappen/PluginTraceViewer)                                                                                                     | Preserving diagnostic traces when business transactions roll back.                                     |
 | [MscrmTools / Easy Translator](https://github.com/MscrmTools/MsCrmTools.Translator)                                                                                             | Source language propagation into ribbon and form metadata.                                             |
@@ -32,6 +31,6 @@ assets or tests were copied, and no dependencies were added from these projects.
 | [carfup / Delta Assembly vs CRM](https://github.com/carfup/XTBPlugins.DeltaAssemblyvsCrm)                                                                                       | Comparing exported plug-in registration facts.                                                         |
 | [MscrmTools / Scripts Finder](https://github.com/MscrmTools/MsCrmTools.ScriptsFinder)                                                                                           | Paged source form-event inventories and missing-library diagnostics.                                   |
 
-See the existing [data-pack guide](../mirage/docs/data-packs.md),
-[flow guide](../mirage/docs/operations.md), [model-driven client API](../mirage/docs/model-driven-client-api.md)
-and [public API reference](public-api.md) for using these features.
+See the existing [data-pack guide](../mirage/docs/data-packs.md), [flow guide](../mirage/docs/operations.md),
+[model-driven client API](../mirage/docs/model-driven-client-api.md) and [public API reference](public-api.md) for using
+these features.

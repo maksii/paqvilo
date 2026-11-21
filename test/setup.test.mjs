@@ -5,7 +5,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { dependencyReadiness, browserExecutable, prerequisiteReadiness } from '../scripts/ensure-dependencies.mjs';
+import {
+  dependencyReadiness,
+  browserExecutable,
+  prerequisiteReadiness,
+  withNpmInstallLock,
+} from '../scripts/ensure-dependencies.mjs';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
@@ -21,13 +26,102 @@ function project(t) {
   return { root, write };
 }
 
+test('npm 12 repairs an installed package using its shipped lock snapshot and removes the temporary lock', (t) => {
+  const { root, write } = project(t);
+  const snapshot = { name: 'invented-package', lockfileVersion: 3, packages: { '': { version: '1.0.0' } } };
+  write('paqvilo-lock.json', snapshot);
+  const lock = path.join(root, 'package-lock.json');
+  const result = withNpmInstallLock(root, () => {
+    assert.deepEqual(JSON.parse(fs.readFileSync(lock, 'utf8')), snapshot);
+    return { status: 0 };
+  });
+  assert.deepEqual(result, { status: 0 });
+  assert.equal(fs.existsSync(lock), false);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, 'paqvilo-lock.json'), 'utf8')), snapshot);
+  assert.throws(
+    () =>
+      withNpmInstallLock(root, () => {
+        throw new Error('invented install failure');
+      }),
+    /invented install failure/,
+  );
+  assert.equal(fs.existsSync(lock), false, 'a failed installation also releases only its temporary lock');
+});
+
+test('dependency repair preserves an existing package lock and a lock changed during installation', (t) => {
+  const { root, write } = project(t);
+  write('paqvilo-lock.json', { snapshot: true });
+  write('package-lock.json', { existing: true });
+  const lock = path.join(root, 'package-lock.json');
+  withNpmInstallLock(root, () => assert.deepEqual(JSON.parse(fs.readFileSync(lock, 'utf8')), { existing: true }));
+  assert.deepEqual(JSON.parse(fs.readFileSync(lock, 'utf8')), { existing: true });
+  fs.unlinkSync(lock);
+  assert.throws(
+    () => withNpmInstallLock(root, () => write('package-lock.json', { changed: true })),
+    /has been preserved/,
+  );
+  assert.deepEqual(JSON.parse(fs.readFileSync(lock, 'utf8')), { changed: true });
+});
+
+test('repair cleanup preserves a replacement lock even when its bytes match the snapshot', (t) => {
+  const { root, write } = project(t);
+  write('paqvilo-lock.json', { snapshot: true });
+  const lock = path.join(root, 'package-lock.json');
+  assert.throws(
+    () =>
+      withNpmInstallLock(root, () => {
+        fs.renameSync(lock, path.join(root, 'previous-lock.json'));
+        write('package-lock.json', { snapshot: true });
+      }),
+    /has been preserved/,
+  );
+  assert.deepEqual(JSON.parse(fs.readFileSync(lock, 'utf8')), { snapshot: true });
+});
+
+// @test-kind security: controlled cleanup ordering proves dependency repair cannot delete a concurrently replaced lock.
+test('repair cleanup leaves a lock created after its ownership check untouched', (t) => {
+  const { root, write } = project(t);
+  write('paqvilo-lock.json', { snapshot: true });
+  const lock = path.join(root, 'package-lock.json');
+  const readFile = fs.readFileSync;
+  let armed = false;
+  let replaced = false;
+  fs.readFileSync = (file, ...options) => {
+    const result = readFile(file, ...options);
+    if (armed && (file === lock || typeof file === 'number')) {
+      armed = false;
+      if (fs.existsSync(lock)) fs.renameSync(lock, path.join(root, 'previous-lock.json'));
+      write('package-lock.json', { concurrent: true });
+      replaced = true;
+    }
+    return result;
+  };
+  try {
+    assert.equal(
+      withNpmInstallLock(root, () => {
+        armed = true;
+        return 'installed';
+      }),
+      'installed',
+    );
+  } finally {
+    fs.readFileSync = readFile;
+  }
+  assert.equal(replaced, true, 'the replacement is created after the cleanup read');
+  assert.deepEqual(JSON.parse(fs.readFileSync(lock, 'utf8')), { concurrent: true });
+  assert.equal(
+    fs.readdirSync(root).some((name) => name.startsWith('.paqvilo-install-lock-')),
+    false,
+  );
+});
+
 test('npm layout resolves Mirage dependencies through the root without a second installation', (t) => {
   const { root: install, write: put } = project(t);
   const lock = {
     packages: { '': { dependencies: { library: '1.0.0' } }, 'node_modules/library': { version: '1.0.0' } },
   };
   put('package.json', { dependencies: { library: '1.0.0' } });
-  put('npm-shrinkwrap.json', lock);
+  put('paqvilo-lock.json', lock);
   put('mirage/package.json', { dependencies: { library: '1.0.0' } });
   put('mirage/package-lock.json', lock);
   put('node_modules/library/package.json', { version: '1.0.0', main: 'index.js' });
@@ -57,12 +151,12 @@ test('bootstrap matches dependencies regardless of JSON property ordering', (t) 
   assert.equal(dependencyReadiness(root).ready, true);
 });
 
-test('bootstrap accepts the distributable shrinkwrap and rejects stale lock copies', (t) => {
+test('bootstrap accepts the distributable dependency snapshot and rejects stale lock copies', (t) => {
   const { root: state, write: writeJson } = project(t);
   const lock = { packages: { '': { dependencies: { a: '1.0.0' } }, 'node_modules/a': { version: '1.0.0' } } };
   writeJson('package.json', { dependencies: { a: '1.0.0' } });
   writeJson('package-lock.json', lock);
-  writeJson('npm-shrinkwrap.json', lock);
+  writeJson('paqvilo-lock.json', lock);
   writeJson('node_modules/a/package.json', { version: '1.0.0' });
   fs.writeFileSync(path.join(state, 'node_modules/a/index.js'), 'module.exports = {};');
   assert.equal(dependencyReadiness(state).ready, true);
@@ -74,9 +168,15 @@ test('bootstrap accepts the distributable shrinkwrap and rejects stale lock copi
   const packed = path.join(state, 'packed');
   fs.mkdirSync(packed);
   fs.writeFileSync(path.join(packed, 'package.json'), JSON.stringify({ dependencies: { a: '1.0.0' } }));
-  fs.copyFileSync(path.join(state, 'npm-shrinkwrap.json'), path.join(packed, 'npm-shrinkwrap.json'));
+  fs.copyFileSync(path.join(state, 'paqvilo-lock.json'), path.join(packed, 'paqvilo-lock.json'));
   fs.cpSync(path.join(state, 'node_modules'), path.join(packed, 'node_modules'), { recursive: true });
   assert.equal(dependencyReadiness(packed).ready, true);
+  fs.renameSync(path.join(packed, 'paqvilo-lock.json'), path.join(packed, 'npm-shrinkwrap.json'));
+  assert.equal(dependencyReadiness(packed).ready, true, 'older installed packages retain their legacy lock fallback');
+  withNpmInstallLock(packed, () => {
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(packed, 'package-lock.json'), 'utf8')), lock);
+  });
+  assert.equal(fs.existsSync(path.join(packed, 'package-lock.json')), false);
 });
 
 test('bootstrap accepts omitted optional fallback packages but rejects installed version drift', (t) => {
@@ -168,7 +268,7 @@ test('offline browser readiness checks only executable presence and distinguishe
   assert.equal(missing.git.ready, false);
   assert.equal(missing.browser.ready, false);
   const ready = await prerequisiteReadiness({
-    nodeVersion: '24.22.1',
+    nodeVersion: '26.13.1',
     probeGit: () => ({ status: 0, stdout: 'git version test\n' }),
   });
   assert.equal(ready.ready, true);
@@ -179,12 +279,12 @@ test('offline browser readiness checks only executable presence and distinguishe
 test('bootstrap enforces the supported Node LTS line and security patch floor', async () => {
   for (const [nodeVersion, expected] of [
     ['22.23.4', false],
-    ['24.22.0', false],
-    ['24.22.1', true],
-    ['24.23.0', true],
+    ['26.13.0', false],
+    ['26.13.1', true],
+    ['26.14.0', true],
     ['25.0.0', false],
-    ['26.12.1', false],
-    ['24.22.1-rc.1', false],
+    ['24.22.3', false],
+    ['26.13.1-rc.1', false],
     ['invalid', false],
   ]) {
     const result = await prerequisiteReadiness({
@@ -192,7 +292,7 @@ test('bootstrap enforces the supported Node LTS line and security patch floor', 
       probeGit: () => ({ status: 0, stdout: 'git version test\n' }),
     });
     assert.equal(result.node.ready, expected, nodeVersion);
-    assert.equal(result.node.minimumVersion, '24.22.1');
+    assert.equal(result.node.minimumVersion, '26.13.1');
   }
 });
 

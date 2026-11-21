@@ -1,3 +1,4 @@
+// @test-kind contract: Mirage's own verification witness API; no native behaviour is claimed.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -107,8 +108,8 @@ test('receipt comparison rejects incomplete/tampered hashes and row order is ord
 test('pending visitor session inspections protect role changes and closing just like portal requests', async () => {
   let finish;
   const fetchImpl = async (url) =>
-    new URL(url).pathname.endsWith('/state')
-      ? Response.json({ csrf: 'fixture-csrf', config: { mode: 'local', pageMode: 'local' } })
+    new URL(url).pathname.endsWith('/status')
+      ? Response.json({ csrf: 'fixture-csrf', mode: 'local', pageMode: 'local' })
       : new Promise((resolve) => {
           finish = () => resolve(Response.json({ contactId: 'fixture-visitor' }));
         });
@@ -138,7 +139,7 @@ async function fixture(t) {
     port: 0,
   });
   ownedFixture(t).add(() => app.close());
-  return { app, runtime: await connectRuntime({ origin: app.url }) };
+  return { app, runtime: await connectRuntime({ origin: app.url, timeoutMs: 0 }) };
 }
 
 test('real witness route binds cookie-isolated visitors, remains anonymous without cookie and does not run queries/plugins', async (t) => {

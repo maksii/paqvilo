@@ -220,10 +220,12 @@ function installUserSettings(api) {
 }
 
 function getUserSettings(c, id, org, rowOf) {
-  const row = rowOf() ?? {
+  // A PATCH stores only the properties it sent, so every property it did not send still reads its default.
+  const row = {
     uilanguageid: org.languagecode ?? null,
     localeid: org.localeid ?? null,
     timezonecode: UTC_CODE,
+    ...rowOf(),
   };
   return userSettingsJson(200, {
     '@odata.context': `${c.origin}/api/data/${c.version}/$metadata#usersettingscollection/$entity`,

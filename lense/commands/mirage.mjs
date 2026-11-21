@@ -6,26 +6,79 @@ import { adminServes, appsPath } from '../../mirage/lib/admin-origin.mjs';
 import { renderSettings } from '../../mirage/lib/render-settings.mjs';
 import fsSync from 'node:fs';
 import net from 'node:net';
-import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import YAML from 'yaml';
-import { loadCatalogue, loadConfig, loadDevTargets, mirageOnlySite } from '../config.mjs';
+import { catalogueNotFound, loadCatalogue, loadConfig, loadDevTargets, mirageOnlySite } from '../config.mjs';
 import { runtimePort } from '../../mirage/lib/runtime-port.mjs';
-import { readStartupPhases } from '../startup-progress.mjs';
+import { RUNTIME_KINDS } from '../../mirage/lib/runtime-config.mjs';
+import { RUNTIME_ALIVE, RUNTIME_READY, runtimeStartupEvent } from '../startup-progress.mjs';
+import { START_CHANNEL_ENV, openStartChannel } from '../start-channel.mjs';
 import { CODE_APP_STARTUP_CANCELLED } from '../code-app-dev-servers.mjs';
 import { readLocalFile } from '../local-file.mjs';
 import { mirageStopCommand, mirageCommandHint, listenerPort } from '../stop-command.mjs';
+import { paqviloCommand } from '../command-hint.mjs';
+import { LENSE_OPTIONS, MIRAGE_ACTION_OPTIONS } from '../cli-options.mjs';
 import { persistCommandPayload, pruneCommandPayloads } from '../command-payload.mjs';
 import { withMirageDebugOutput } from '../mirage-debug-output-scope.mjs';
 import { guardShutdownSignals } from '../signal-forwarding.mjs';
-// Startup keeps its heartbeat and cancellation responsive while Windows resolves process ownership: it reads
-// identities through the awaited processIdentityAsync.
-import { isAlive, processIdentity, processIdentityAsync } from '../process-identity.mjs';
+import { watchRuntimeGone } from '../runtime-liveness.mjs';
+// Every identity read of a recorded PID is awaited, so a start keeps its heartbeat and cancellation responsive.
+import {
+  endRecordedWindowsProcess,
+  isAlive,
+  lockHost,
+  newStartIdentity,
+  processIdentityAsync,
+  recordedIdentityNow,
+  START_TOKEN_OPTION,
+  startTokenOf,
+} from '../process-identity.mjs';
 
-export { isAlive, processIdentity, processIdentityAsync };
+export { isAlive, processIdentityAsync };
+export { processIdentity } from '../process-identity.mjs';
+
+/**
+ * The identity of the process that holds a recorded PID now, for comparison with the identity `recorded` for it
+ * (recordedIdentityNow): a start token costs a pipe listing, an operating-system start time a read of the process.
+ * The default `identityOf` of start, stop and status; a caller that injects its own reader gets the same arguments.
+ */
+const recordedIdentity = (pid, { signal, recorded } = {}) => recordedIdentityNow(pid, recorded, { signal });
+
+/**
+ * How the lifecycle commands reach the operating system's processes, as one object a caller may replace in part:
+ * `spawnRuntime` starts a runtime, `identityOf` reads the identity of the process that holds a recorded PID,
+ * `alive` says whether a PID is running, `kill` signals one, `openChannel` opens the endpoint a starting runtime
+ * announces itself on, `portAvailable` says whether a loopback port can be bound, `commandHint` formats the
+ * commands a report advertises, and `probeTimeout` replaces the limit a status gives each runtime to answer (`null`:
+ * none). The default export `mirage`
+ * takes it as its fourth argument and hands it to every start, stop and status it performs, so the selection, reuse
+ * and hint logic of a command runs unchanged against runtimes that are not operating-system processes.
+ */
+const hostOf = (host = {}) => {
+  const processes = Object.fromEntries(
+    ['identityOf', 'alive', 'kill'].filter((key) => host[key] !== undefined).map((key) => [key, host[key]]),
+  );
+  const launch = Object.fromEntries(
+    ['spawnRuntime', 'openChannel', 'portAvailable']
+      .filter((key) => host[key] !== undefined)
+      .map((key) => [key, host[key]]),
+  );
+  return {
+    alive: host.alive ?? isAlive,
+    commandHint: host.commandHint ?? mirageCommandHint,
+    start: (cfg, args, options) => start(cfg, args, { ...options, ...processes, ...launch }),
+    stop: (options) => stopOwnedSessions({ ...options, ...processes }),
+    status: (paths, options) => {
+      const { kill: ignoredKill, ...read } = processes; // NOSONAR: binding is excluded from the rest object
+      const probe = host.probeTimeout === undefined ? {} : { probeTimeout: host.probeTimeout };
+      return mirageStatus(paths, { ...probe, ...options, ...read });
+    },
+  };
+};
+const SYSTEM_HOST = hostOf();
 
 const TOOL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const MIRAGE_ROOT = path.join(TOOL_ROOT, 'mirage');
@@ -44,16 +97,102 @@ export function miragePaths(cfg = null, args = {}) {
   };
 }
 export const DEFAULT_PATHS = Object.freeze(miragePaths());
+
+/*
+ * Which runtimes a lifecycle selection names — ONE rule for `mirage status` and `mirage stop`:
+ * - The selection is --project F (with --portal P): the runtimes started for F (and P). Otherwise it is the catalogue
+ *   site that --config/--site select (default: the working directory's paqvilo.config.yml and its defaultSite, every
+ *   site with portals: all): the runtimes started for that site and, when the site maps a project (mirage.project),
+ *   the runtimes started for that project. A project runtime started without a catalogue site belongs to F alone.
+ *   A standalone runtime started with --runtime for a catalogue site belongs to that site; one started with --runtime
+ *   without a catalogue site or project belongs to the selection without selectors (siteStandalonePids).
+ * - Records are read from the selection's ownership folder (.paqvilo beside the --config or --project file, else the
+ *   working directory), from the working directory's, from the selected project file's, and from every folder a start
+ *   in the working directory recorded there (rememberRecordFolder).
+ * - stop stops exactly the toolkit-owned runtimes status lists for the same selectors. Both report every other
+ *   toolkit-owned runtime found in those records as outside the selection, with the selectors that name it.
+ */
+const RECORD_FOLDERS = 'record-folders.json';
+const ownershipFolder = (paths) => path.dirname(path.dirname(paths.ownershipFile));
+
+/** A folder as samePath compares it: its real path, letter case ignored on Windows. */
+const canonicalPath = (value) => {
+  const real = realpath(value);
+  return process.platform === 'win32' ? real.toLowerCase() : real;
+};
+/** The folders of `list` without repeats (by canonical path), first spelling kept. */
+const uniqueFolders = (list) => {
+  const seen = new Set();
+  return list.filter((folder) => {
+    const key = canonicalPath(folder);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+};
+
+/** Every folder a note records, as written. */
+async function notedFolders(stateDir) {
+  let value;
+  try {
+    value = JSON.parse(await fs.readFile(path.join(stateDir, 'mirage', RECORD_FOLDERS), 'utf8'));
+  } catch {
+    return [];
+  }
+  return Array.isArray(value) ? value.filter((item) => typeof item === 'string' && path.isAbsolute(item)) : [];
+}
+
+/**
+ * The noted folders that exist now, each once: a missing folder (removed, or on a drive not mounted now) holds no
+ * record to read. It is skipped on one cheap check and stays in the note for a later read.
+ */
+async function readRecordFolders(stateDir) {
+  return uniqueFolders((await notedFolders(stateDir)).filter((item) => isDirectory(item)));
+}
+
+/**
+ * Records, in the working directory's ownership folder, another folder a start there recorded its runtime in, so
+ * status and stop run from this folder find it. Only a project folder (one with .paqvilo, a catalogue or a package)
+ * gets the note; elsewhere nothing is written.
+ */
+async function rememberRecordFolder(paths, cwd = process.cwd()) {
+  const local = path.join(cwd, '.paqvilo');
+  const folder = ownershipFolder(paths);
+  if (samePath(folder, local)) return;
+  if (!['.paqvilo', 'paqvilo.config.yml', 'package.json'].some((name) => fsSync.existsSync(path.join(cwd, name))))
+    return;
+  // Every noted folder is kept, also one missing now: it may be on a drive that is mounted again later.
+  const known = uniqueFolders(await notedFolders(local));
+  if (known.some((item) => samePath(item, folder))) return;
+  await fs.mkdir(path.join(local, 'mirage'), { recursive: true });
+  // ponytail: last writer wins when two starts race; a lost note only hides a runtime from this folder's bare status.
+  await fs.writeFile(path.join(local, 'mirage', RECORD_FOLDERS), `${JSON.stringify([...known, folder], null, 2)}\n`);
+}
+
+/** The ownership folders the selection rule above reads, the selection's own first. */
+export async function recordFolders(paths, projectFile = null) {
+  const folders = [ownershipFolder(paths), path.join(process.cwd(), '.paqvilo')];
+  if (projectFile) folders.push(path.join(path.dirname(path.resolve(projectFile)), '.paqvilo'));
+  const noted = [];
+  for (const folder of folders) noted.push(...(await readRecordFolders(folder)));
+  folders.push(...noted);
+  return [
+    paths,
+    ...uniqueFolders(folders)
+      .slice(1)
+      .map((stateDir) => miragePaths({ stateDir })),
+  ];
+}
 export const DEFAULT_PORT = 8787;
 const DEFAULT_STARTUP_TIMEOUT = 120_000;
 // Start-up progress extends the silence bound, but never past this absolute cap.
-const STARTUP_ABSOLUTE_CAP = 600_000;
+export const STARTUP_ABSOLUTE_CAP = 600_000;
 const STOP_DEADLINE = 5000;
 const ACTIONS = ['init', 'start', 'dev', 'status', 'inspect', 'stop'];
 export function validateMirageAction(action) {
   if (!ACTIONS.includes(action))
     throw new Error(
-      `Unknown mirage action "${action}"; use ${ACTIONS.slice(0, -1).join(', ')} or ${ACTIONS.at(-1)}. Run paqvilo lense --help for options.`,
+      `Unknown mirage action "${action}"; use ${ACTIONS.slice(0, -1).join(', ')} or ${ACTIONS.at(-1)}. Run ${paqviloCommand(['mirage', '--help'])} for options.`,
     );
 }
 const PROJECT_ID = /^[a-z0-9][a-z0-9._-]*$/i;
@@ -108,7 +247,8 @@ const realpath = (target) => {
   }
 };
 /** Shared with Solution discovery, so repeated orderings reuse parsed Solution files. */
-const SOLUTION_ORDER_CACHE = path.join(process.cwd(), '.paqvilo', 'simulator', 'cache', 'solution-discovery.json');
+// Resolved at each use from the working directory of that command, as the other `.paqvilo` paths are.
+const solutionOrderCache = () => path.join(process.cwd(), '.paqvilo', 'simulator', 'cache', 'solution-discovery.json');
 const solutionOrderOf = (cfg) => (cfg?.mirageConfig?.solutionOrder === 'explicit' ? 'explicit' : 'derived');
 const sameOrder = (a, b) => a.length === b.length && a.every((item, index) => samePath(item, b[index]));
 const rootNames = (roots) => roots.map((root) => path.basename(root)).join(' → ');
@@ -118,7 +258,7 @@ const rootNames = (roots) => roots.map((root) => path.basename(root)).join(' →
  * data scaffold apply: a root exporting a table's full definition precedes roots that only
  * extend it; independent roots keep name order. Cycles are added to `diagnostics`.
  */
-export async function derivedSolutionOrder(roots, { diagnostics = [], cacheFile = SOLUTION_ORDER_CACHE } = {}) {
+export async function derivedSolutionOrder(roots, { diagnostics = [], cacheFile = solutionOrderCache() } = {}) {
   const resolved = [...new Set(roots.map((root) => path.resolve(root)))];
   if (resolved.length < 2 || resolved.some((root) => !isDirectory(root))) return resolved;
   const { scanSolutionSources } = await import('../../mirage/lib/solution-schema.mjs');
@@ -178,49 +318,6 @@ const loopbackUrl = (url) => {
     return false;
   }
 };
-
-/**
- * processIdentity() for several PIDs. On Windows one PowerShell start (about half a second) reads
- * them all instead of one start per PID; a PID it does not answer falls back to processIdentity().
- * @returns {Map<number, string|null>}
- */
-export function processIdentities(pids) {
-  const unique = [...new Set(pids)].filter((pid) => Number.isInteger(pid) && pid > 0);
-  const identities = new Map();
-  if (process.platform === 'win32' && unique.length > 1) readWindowsProcessIdentities(unique, identities);
-  for (const pid of unique) if (!identities.has(pid)) identities.set(pid, processIdentity(pid));
-  return identities;
-}
-
-function readWindowsProcessIdentities(unique, identities) {
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const result = spawnSync(
-      'powershell.exe', // NOSONAR: fixed tool name resolved through PATH by developer tooling
-      [
-        '-NoProfile',
-        '-NonInteractive',
-        '-Command',
-        // Each PID is read on its own: a missing or inaccessible process yields an empty identity.
-        `$ErrorActionPreference = 'Stop'; foreach ($id in ${unique.join(',')}) { try { "$id=$((Get-Process -Id $id).StartTime.ToUniversalTime().Ticks)" } catch { "$id=" } }`,
-      ],
-      { encoding: 'utf8', windowsHide: true, timeout: 15_000 },
-    );
-    if (result.error || result.signal != null) {
-      // Three timed-out reads leave every identity unread, as processIdentity() does.
-      if (attempt === 2) for (const pid of unique) identities.set(pid, null);
-      continue;
-    }
-    storeWindowsProcessIdentities(result.stdout, unique, identities);
-    break;
-  }
-}
-
-function storeWindowsProcessIdentities(stdout, unique, identities) {
-  for (const line of stdout.split(/\r?\n/)) {
-    const match = /^(\d+)=(\d*)$/.exec(line.trim());
-    if (match && unique.includes(Number(match[1]))) identities.set(Number(match[1]), match[2] || null);
-  }
-}
 
 const UNIX_EPOCH_TICKS = 621_355_968_000_000_000n; // .NET ticks (100 ns since 0001-01-01) at 1970-01-01
 // Candidate kernel clock tick rates (USER_HZ); the one used is confirmed against this process's own start time.
@@ -295,7 +392,7 @@ export async function ownedSessions(paths = DEFAULT_PATHS) {
   const sessionFolder = paths.discoveryRoot ? ' in ' + paths.discoveryRoot : '';
   const remedy = () =>
     ` Inspect or remove ${paths.ownershipFile} and run the command again. Without that file Paqvilo no longer` +
-    ` recognises the Mirages it listed, so "paqvilo mirage stop" cannot stop them; end them by` +
+    ` recognises the Mirages it listed, so "${paqviloCommand(['mirage', 'stop'])}" cannot stop them; end them by` +
     ` their process IDs, which the session-<pid>.json files${sessionFolder} name.`;
   let text;
   try {
@@ -383,8 +480,12 @@ async function saveOwnedSessions(paths, sessions, { signal } = {}) {
 const REUSED_AFTER_MS = 2000;
 
 const lockStamp = (platform) => (platform === 'linux' ? Date.now() : performance.timeOrigin + performance.now());
-/** Where this process takes its locks: its operating system and machine name. */
-const lockHost = () => `${process.platform}/${os.hostname()}`;
+/**
+ * Whether a runtime record (an ownership entry or a discovery file) was written on another host than `here`, as a
+ * lock is: its PID names a process in another process namespace (Windows and WSL, or several runners sharing one
+ * checkout), so it is never judged, pruned, removed or signalled here. A record without `host` counts as local.
+ */
+const foreignRecord = (record, here) => typeof record?.host === 'string' && record.host !== here;
 
 /** Field 22 of /proc/<pid>/stat (`self`: this process): the start in clock ticks since boot, or null when unread. */
 async function procStartTicks(pid) {
@@ -747,77 +848,186 @@ async function discoveryRecords(paths, { signal } = {}) {
   return records;
 }
 
-async function readRuntime(url, fallbackSite = null, { signal, timeout = 2500 } = {}) {
+/**
+ * What a status probe showed. 'answered': the runtime described itself. 'refused': it answered that it is not ready
+ * (an error status or an unreadable body). 'no-answer': nothing came back, within the probe's limit or at all — the
+ * runtime may be busy, so this says nothing about its state. 'not-probed': no loopback address to ask.
+ */
+const PROBE_ANSWERED = 'answered',
+  PROBE_REFUSED = 'refused',
+  PROBE_NO_ANSWER = 'no-answer',
+  PROBE_NOT_PROBED = 'not-probed';
+
+// timeout null leaves the wait to the caller's signal: for a caller that has observed the runtime ready.
+async function readRuntime(url, fallbackSite = null, options = {}) {
+  return (await probeRuntime(url, fallbackSite, options)).runtime;
+}
+
+/** The fields of an answered status document that a probe keeps; `data` is the parsed body of the status read. */
+function answeredRuntime(data, fallbackSite) {
+  const status = data?.status ?? data ?? {};
+  return {
+    site: status.site ?? fallbackSite,
+    pageCount: status.pageCount ?? 0,
+    sourceFingerprint: status.sourceFingerprint ?? null,
+    revision: status.revision ?? null,
+    // "disabled" unless the runtime was started with --allow-live-writes; then "off" or "enabled".
+    liveWrites: typeof status.liveWrites === 'string' ? status.liveWrites : null,
+    platformStyles: status.platformStyles ?? { mode: 'placeholder' },
+    startupPreset: status.startupPreset ?? null,
+    observed: status.observed ?? null,
+    runtime: status.runtime ?? { kind: 'power-pages' },
+    capabilities: status.capabilities ?? null,
+    links: status.links ?? null,
+    simulation: status.simulation ?? null,
+  };
+}
+
+/** The signal that ends the status reads of one probe: the caller's, and the probe's own limit unless `timeout` is null. */
+function probeSignal(signal, timeout) {
+  const limits = [signal, timeout == null ? null : AbortSignal.timeout(timeout)].filter(Boolean);
+  return limits.length ? AbortSignal.any(limits) : undefined;
+}
+
+async function probeRuntime(url, fallbackSite = null, { signal, timeout = 2500 } = {}) {
   signal?.throwIfAborted();
-  if (!url || !loopbackUrl(url)) return null;
+  const outcome = (probe, runtime = null) => ({ probe, runtime });
+  if (!url || !loopbackUrl(url)) return outcome(PROBE_NOT_PROBED);
+  const readSignal = probeSignal(signal, timeout);
   // The light status endpoint first; older runtimes answer 404 there and expose the state summary.
   for (const pathname of ['/_sim/api/status', '/_sim/api/state?summary=1', '/__sim/api/state?summary=1']) {
     let response;
     try {
-      response = await fetch(new URL(pathname, url), {
-        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout),
-      });
+      response = await fetch(new URL(pathname, url), { signal: readSignal });
     } catch {
       signal?.throwIfAborted();
-      return null;
+      return outcome(PROBE_NO_ANSWER);
     }
     if (response.status === 404) continue;
-    if (!response.ok) return null;
+    if (!response.ok) return outcome(PROBE_REFUSED);
     try {
-      const data = await response.json();
-      const status = data?.status ?? data ?? {};
-      return {
-        site: status.site ?? fallbackSite,
-        pageCount: status.pageCount ?? 0,
-        sourceFingerprint: status.sourceFingerprint ?? null,
-        revision: status.revision ?? null,
-        // "disabled" unless the runtime was started with --allow-live-writes; then "off" or "enabled".
-        liveWrites: typeof status.liveWrites === 'string' ? status.liveWrites : null,
-        platformStyles: status.platformStyles ?? { mode: 'placeholder' },
-        startupPreset: status.startupPreset ?? null,
-        observed: status.observed ?? null,
-        runtime: status.runtime ?? { kind: 'power-pages' },
-        capabilities: status.capabilities ?? null,
-        links: status.links ?? null,
-        simulation: status.simulation ?? null,
-      };
-    } catch {
+      return outcome(PROBE_ANSWERED, answeredRuntime(await response.json(), fallbackSite));
+    } catch (error) {
       signal?.throwIfAborted();
-      return null;
+      // A body that did not arrive in time is no answer; one that is not a status document is a refusal.
+      return outcome(error?.name === 'SyntaxError' ? PROBE_REFUSED : PROBE_NO_ANSWER);
     }
   }
-  return null;
+  return outcome(PROBE_REFUSED);
 }
 
-/** Discovered Mirage portals; `probe` asks each live process whether its runtime answers. */
-export async function discoveries(paths = DEFAULT_PATHS, { probe = true, signal } = {}) {
+const platformOf = (host) => String(host).split('/', 1)[0];
+const recordKey = (entry) => `${entry.pid} ${entry.processIdentity}`;
+
+/**
+ * Which ownership records are another host's: `(entry) => boolean`. A record stamped with this platform under another
+ * machine name is this machine's own, written before its name changed (macOS renames itself with the network), when
+ * its process is alive here with its full recorded identity: on Windows a start token (128 random bits, held by the
+ * live runtime and shown on its command line before any signal), on macOS its start time to the second. Linux records
+ * are never taken over: containers on one kernel share PID numbers and start ticks, so an identity there does not tell
+ * hosts apart. Every other record stamped with another host stays foreign.
+ */
+async function foreignJudge(entries, { hostName, alive = isAlive, identityOf = recordedIdentity, signal }) {
+  const here = platformOf(hostName);
+  const adopted = new Set();
+  for (const entry of entries) {
+    if (!foreignRecord(entry, hostName) || platformOf(entry.host) !== here || !entry.processIdentity) continue;
+    if (here !== 'darwin' && !startTokenOf(entry.processIdentity)) continue;
+    if (!alive(entry.pid)) continue;
+    if ((await identityOf(entry.pid, { signal, recorded: entry.processIdentity })) === entry.processIdentity)
+      adopted.add(recordKey(entry));
+  }
+  return (entry) => foreignRecord(entry, hostName) && !adopted.has(recordKey(entry));
+}
+
+/**
+ * Whether a discovery record belongs to another host than `hostName`. A runtime stamps its discovery file with its
+ * host, which decides, unless a record this machine took over under its earlier name (`isForeign`) names that file
+ * with that host. A file without a host (an older runtime's) is foreign when a foreign ownership record names it and
+ * no local record does. Unreadable ownership records name none: the commands that need them read and report them.
+ */
+async function foreignDiscoveries(paths, hostName, isForeign, alive = isAlive) {
+  const owned = paths.ownershipFile ? await ownedSessions(paths).catch(() => []) : [];
+  const foreign = isForeign ?? (await foreignJudge(owned, { hostName, alive }));
+  const named = (wanted) =>
+    new Set(
+      owned
+        .filter((entry) => entry.discovery && foreign(entry) === wanted)
+        .map((entry) => path.resolve(entry.discovery)),
+    );
+  // Hosts with one PID number name the same file: a local record of it keeps an unstamped file local.
+  const local = named(false),
+    elsewhere = named(true);
+  const renamed = new Map(
+    owned
+      .filter((entry) => entry.discovery && foreignRecord(entry, hostName) && !foreign(entry))
+      .map((entry) => [path.resolve(entry.discovery), entry.host]),
+  );
+  return (record, file) =>
+    typeof record?.host === 'string'
+      ? foreignRecord(record, hostName) && renamed.get(path.resolve(file)) !== record.host
+      : elsewhere.has(path.resolve(file)) && !local.has(path.resolve(file));
+}
+
+/**
+ * Discovered Mirage portals; `probe` asks each live process whether its runtime answers. `ready` is true for a runtime
+ * that answered; `probe` says what the question showed (see probeRuntime), so a caller can tell a runtime that gave
+ * no answer in time from one that is not ready.
+ */
+export async function discoveries(
+  paths = DEFAULT_PATHS,
+  { probe = true, signal, probeTimeout, alive = isAlive, hostName = lockHost(), isForeign } = {},
+) {
   const sessions = [];
+  const foreign = await foreignDiscoveries(paths, hostName, isForeign, alive);
   for (const { record, file } of await discoveryRecords(paths, { signal })) {
     signal?.throwIfAborted();
-    const processAlive = isAlive(record.pid);
-    if (!processAlive && !isAlive(record.pid)) {
+    // Another host's runtime: its PID says nothing here, so it is neither listed nor removed.
+    if (foreign(record, file)) continue;
+    const processAlive = alive(record.pid);
+    if (!processAlive) {
       await fs.rm(file, { force: true }).catch(() => {});
       continue;
     }
-    const { portals, ...base } = record;
+    // The machine name stays in the record: the sessions a status or start reports do not publish it.
+    const { portals, host: ignoredHost, ...base } = record; // NOSONAR: binding is excluded from the rest object
     const entries = Array.isArray(portals) ? portals.map((portal) => ({ ...base, ...portal, id: portal.id })) : [base];
     for (const entry of entries) {
       signal?.throwIfAborted();
-      const runtime = processAlive && probe ? await readRuntime(entry.url, entry.id ?? null, { signal }) : null;
-      sessions.push({ ...entry, discovery: file, processAlive, ready: Boolean(runtime), runtime });
+      const asked =
+        processAlive && probe
+          ? await probeRuntime(entry.url, entry.id ?? null, { signal, timeout: probeTimeout })
+          : { probe: PROBE_NOT_PROBED, runtime: null };
+      sessions.push({
+        ...entry,
+        discovery: file,
+        processAlive,
+        ready: Boolean(asked.runtime),
+        probe: asked.probe,
+        runtime: asked.runtime,
+      });
     }
   }
   return sessions.sort((a, b) => a.pid - b.pid);
 }
 
-async function requestShutdown(url) {
+const anySignal = (...signals) => {
+  const list = signals.filter(Boolean);
+  return list.length ? AbortSignal.any(list) : undefined;
+};
+
+/**
+ * Asks the runtime at `url` to shut down. There is no elapsed limit: a runtime that answers late under load still
+ * stops gracefully instead of being signalled, and the caller's `signal` or interrupt ends the wait.
+ */
+async function requestShutdown(url, { signal } = {}) {
   if (!loopbackUrl(url)) return false;
   try {
     let prefix = '/_sim/api';
-    let response = await fetch(new URL(`${prefix}/state?summary=1`, url), { signal: AbortSignal.timeout(5000) });
+    let response = await fetch(new URL(`${prefix}/state?summary=1`, url), { signal });
     if (response.status === 404) {
       prefix = '/__sim/api';
-      response = await fetch(new URL(`${prefix}/state?summary=1`, url), { signal: AbortSignal.timeout(5000) });
+      response = await fetch(new URL(`${prefix}/state?summary=1`, url), { signal });
     }
     if (!response.ok) return false;
     const state = await response.json();
@@ -825,7 +1035,7 @@ async function requestShutdown(url) {
     const stopped = await fetch(new URL(`${prefix}/shutdown`, url), {
       method: 'POST',
       headers: { 'x-sim-csrf': state.csrf },
-      signal: AbortSignal.timeout(2500),
+      signal,
     });
     return stopped.status === 202;
   } catch {
@@ -836,7 +1046,9 @@ async function requestShutdown(url) {
 /**
  * Stops toolkit-owned Mirage processes selected by portal source folder or PID. An entry is only
  * acted on while its PID still has the recorded start identity; entries of exited processes (or of a
- * reused PID) are pruned, and discovery files of exited processes are removed.
+ * reused PID) are pruned, and discovery files of exited processes are removed. An acknowledged shutdown is
+ * waited for until the runtime exits; `interrupt` (Ctrl+C) or `signal` ends the wait; after an interrupt a runtime
+ * still running gets the grace before it is ended.
  */
 /* NOSONAR: single-pass routine, splitting it would change shared state */ export async function stopOwnedSessions({
   paths = DEFAULT_PATHS,
@@ -844,64 +1056,111 @@ async function requestShutdown(url) {
   sourceDirs = null,
   pids = null,
   deadline = STOP_DEADLINE,
-  identityOf = processIdentity,
+  identityOf = recordedIdentity,
   alive = isAlive,
+  kill = process.kill,
+  signal,
+  interrupt,
+  hostName = lockHost(),
 } = {}) {
   const folders = sourceDirs ?? (sourceDir ? [sourceDir] : []);
   const owned = await ownedSessions(paths);
   const records = await discoveryRecords(paths);
+  const isForeign = await foreignJudge(owned, { hostName, alive, identityOf, signal });
+  const elsewhere = await foreignDiscoveries(paths, hostName, isForeign, alive);
   const stale = [],
     targets = [],
     unverified = [];
-  const known =
-    identityOf === processIdentity
-      ? processIdentities(owned.filter((entry) => alive(entry.pid)).map((entry) => entry.pid))
-      : null;
-  classifyOwnedTargets(owned, { alive, identityOf, known, folders, pids, stale, targets, unverified });
+  const current = (entry) => identityOf(entry.pid, { signal, recorded: entry.processIdentity });
+  await classifyOwnedTargets(owned, {
+    alive,
+    current,
+    folders,
+    pids,
+    stale,
+    targets,
+    unverified,
+    isForeign,
+    ownershipFile: paths.ownershipFile,
+  });
+  // A discovery file another host's runtime wrote under the same PID number is never removed or asked to shut down.
+  const foreignFile = async (file) => {
+    try {
+      return elsewhere(JSON.parse(await fs.readFile(file, 'utf8')), file);
+    } catch {
+      return false;
+    }
+  };
+  // A runtime that did not acknowledge its shutdown, or did not exit after it, is ended: only while its PID still has
+  // the recorded identity. Windows ends a process at once on either signal and reads it as exited before its listening
+  // port is released, so there one helper checks the identity, ends the process and waits for the observed exit
+  // (endRecordedWindowsProcess); a graceful runtime closes its listeners itself before it exits.
+  const ended = new Set(),
+    foreign = new Set();
+  const force = async (entry, name) => {
+    if (process.platform === 'win32' && identityOf === recordedIdentity) {
+      // Another program holds the PID: asking again would start the helper for the same answer.
+      if (foreign.has(entry)) return;
+      const answer = await endRecordedWindowsProcess(entry.pid, entry.processIdentity, { signal });
+      if (answer === 'ended' || answer === 'gone') ended.add(entry);
+      if (answer === 'other') foreign.add(entry);
+      return;
+    }
+    if ((await current(entry)) !== entry.processIdentity) return;
+    try {
+      kill(entry.pid, name);
+      if (name === 'SIGKILL') ended.add(entry);
+    } catch {
+      /* already stopped */
+    }
+  };
   const results = [];
   for (const entry of targets) {
-    const record = records.find((item) => item.record.pid === entry.pid)?.record;
+    const record = records.find((item) => item.record.pid === entry.pid && !elsewhere(item.record, item.file))?.record;
     // The recorded URL is ours; a discovery URL is only used while ours is not known yet (starting).
     const urls = [
       ...new Set(
         entry.url ? [entry.url] : [record?.url, ...(record?.portals ?? []).map((portal) => portal.url)].filter(Boolean),
       ),
     ];
-    let graceful = false;
-    for (const url of urls) if (!graceful) graceful = await requestShutdown(url);
-    if (!graceful && identityOf(entry.pid) === entry.processIdentity) {
-      try {
-        process.kill(entry.pid, 'SIGTERM');
-      } catch {
-        /* already stopped */
-      }
-    }
-    results.push({ entry, graceful });
+    let graceful = false,
+      answered = null;
+    for (const url of urls)
+      if (!graceful && (graceful = await requestShutdown(url, { signal: anySignal(signal, interrupt) })))
+        answered = url;
+    if (!graceful) await force(entry, 'SIGTERM');
+    // A runtime that answered its shutdown at its published URL was serving, as status reports it, even when its
+    // ownership record still holds the start-up placeholder (ready: false, no URL).
+    results.push({ entry, graceful, url: entry.url ?? answered, ready: entry.ready !== false || Boolean(answered) });
   }
-  const waitForExit = async (ms) => {
-    const end = Date.now() + ms;
-    while (Date.now() < end && targets.some((entry) => alive(entry.pid))) await sleep(100);
-  };
-  await waitForExit(deadline);
+  // A runtime that acknowledged its shutdown is waited for until it exits; one that did not gets `deadline` to exit
+  // by itself. After that the runtime is ended, never reported on elapsed time alone.
+  const acked = new Set(results.filter((item) => item.graceful).map((item) => item.entry));
+  let graceEnd = Date.now() + deadline;
+  // Ctrl+C ends the wait for an acknowledged shutdown; whatever still runs then gets `deadline` to exit before SIGKILL.
+  const extend = () => (graceEnd = Math.max(graceEnd, Date.now() + deadline));
+  interrupt?.addEventListener('abort', extend, { once: true });
+  const waiting = () =>
+    targets.some((entry) => alive(entry.pid) && ((acked.has(entry) && !interrupt?.aborted) || Date.now() < graceEnd));
+  try {
+    while (waiting() && !signal?.aborted) await sleep(100);
+  } finally {
+    interrupt?.removeEventListener('abort', extend);
+  }
+  // POSIX signals can be handled; force only the process that still has the recorded identity.
+  for (const entry of targets) if (alive(entry.pid)) await force(entry, 'SIGKILL');
+  // A process that was ended exits: the wait for it has no time limit and ends with the caller's signal. One that
+  // could not be ended (its identity unread, or the system refused) is not waited for and is reported as remaining.
+  while ([...ended].some((entry) => !hasExited(entry.pid, alive)) && !signal?.aborted) await sleep(100);
+  const remaining = [];
   for (const entry of targets) {
-    // POSIX signals can be handled; force only the process that still has the recorded identity.
-    if (alive(entry.pid) && identityOf(entry.pid) === entry.processIdentity) {
-      try {
-        process.kill(entry.pid, 'SIGKILL');
-      } catch {
-        /* already stopped */
-      }
-    }
+    if (hasExited(entry.pid, alive)) continue;
+    const now = await current(entry);
+    if (now == null || now === entry.processIdentity) remaining.push(entry);
   }
-  if (targets.some((entry) => alive(entry.pid))) await waitForExit(2000);
-  const remaining = targets.filter((entry) => {
-    if (!alive(entry.pid)) return false;
-    const current = identityOf(entry.pid);
-    return current == null || current === entry.processIdentity;
-  });
   const removedDiscoveries = [];
   for (const { record, file } of await discoveryRecords(paths)) {
-    if (alive(record.pid)) continue;
+    if (elsewhere(record, file) || alive(record.pid)) continue;
     await fs.rm(file, { force: true });
     removedDiscoveries.push(file);
   }
@@ -909,25 +1168,32 @@ async function requestShutdown(url) {
   for (const entry of forget) {
     if (!entry.discovery || removedDiscoveries.includes(entry.discovery) || alive(entry.pid)) continue;
     const relative = path.relative(paths.discoveryRoot, entry.discovery);
-    if (/^session-\d+\.json$/.test(relative) && fsSync.existsSync(entry.discovery)) {
+    if (
+      /^session-\d+\.json$/.test(relative) &&
+      fsSync.existsSync(entry.discovery) &&
+      !(await foreignFile(entry.discovery))
+    ) {
       await fs.rm(entry.discovery, { force: true });
       removedDiscoveries.push(entry.discovery);
     }
   }
-  await updateOwnedSessions(paths, (current) => {
-    const retained = current.filter(
-      (item) => !forget.some((entry) => entry.pid === item.pid && entry.processIdentity === item.processIdentity),
-    );
-    pruneCommandPayloads(
-      path.join(path.dirname(paths.ownershipFile), 'commands'),
-      current.filter((item) => !retained.includes(item)).flatMap((item) => item.hintFiles ?? []),
-      retained.flatMap((item) => item.hintFiles ?? []),
-    );
-    return retained;
-  });
+  // A folder that records no runtime is left without one: a stop there creates no state.
+  const recorded = fsSync.existsSync(paths.ownershipFile);
+  if (recorded)
+    await updateOwnedSessions(paths, (current) => {
+      const retained = current.filter(
+        (item) => !forget.some((entry) => entry.pid === item.pid && entry.processIdentity === item.processIdentity),
+      );
+      pruneCommandPayloads(
+        path.join(path.dirname(paths.ownershipFile), 'commands'),
+        current.filter((item) => !retained.includes(item)).flatMap((item) => item.hintFiles ?? []),
+        retained.flatMap((item) => item.hintFiles ?? []),
+      );
+      return retained;
+    });
   // A runtime that acknowledged its shutdown and was ready has no start-up diagnosis left to keep.
   const cleanLogs = results
-    .filter(({ entry, graceful }) => graceful && entry.ready !== false && !remaining.includes(entry))
+    .filter(({ entry, graceful, ready }) => graceful && ready && !remaining.includes(entry))
     .map(({ entry }) => entry.log)
     .filter((file) => file && isStartupLogIn(paths, file));
   for (const file of cleanLogs) await removeStartupLog(file);
@@ -942,20 +1208,48 @@ async function requestShutdown(url) {
   return {
     stopped: results
       .filter(({ entry }) => !remaining.includes(entry))
-      .map(({ entry, graceful }) => ({ ...describe(entry), graceful, wasReady: entry.ready !== false })),
+      .map(({ entry, graceful, url, ready }) => ({ ...describe(entry), url: url ?? null, graceful, wasReady: ready })),
     remaining: remaining.map(describe),
     pruned: stale.map(({ entry, reason }) => ({ ...describe(entry), reason })),
-    unverified: unverified.map(({ entry, reason }) => ({ ...describe(entry), reason })),
+    // `foreignHost`: kept because another host recorded it; it is never part of a selection (stopExitStatus).
+    unverified: unverified.map(({ entry, reason, foreignHost }) => ({
+      ...describe(entry),
+      reason,
+      ...(foreignHost ? { foreignHost } : {}),
+    })),
     removedDiscoveries,
-    writesFiles: [paths.ownershipFile],
+    writesFiles: recorded ? [paths.ownershipFile] : [],
   };
 }
 
-function classifyOwnedTargets(owned, { alive, identityOf, known, folders, pids, stale, targets, unverified }) {
+/**
+ * Whether a process that was signalled has exited. A Linux zombie (ended, not yet collected by its parent) has
+ * released everything it held and still answers signal 0, so its state is read; elsewhere liveness decides.
+ */
+function hasExited(pid, alive = isAlive) {
+  if (!alive(pid)) return true;
+  // A caller that supplies its own liveness answers for the process: the system's table is not asked about it.
+  if (process.platform !== 'linux' || alive !== isAlive) return false;
+  try {
+    const stat = fsSync.readFileSync(`/proc/${pid}/stat`, 'utf8');
+    return stat.slice(stat.lastIndexOf(')') + 2, stat.lastIndexOf(')') + 3) === 'Z';
+  } catch {
+    return true;
+  }
+}
+
+/** The failure of a stop that left a selected runtime running (`remaining`): it was not ended, whatever time passed. */
+const stillRunning = (report) =>
+  `Mirage process ${report.remaining.map((item) => item.pid).join(', ')} is still running: it could not be ended, or its start identity could not be read. Run the stop again, or end the process by its ID.`;
+
+async function classifyOwnedTargets(
+  owned,
+  { alive, current, folders, pids, stale, targets, unverified, isForeign, ownershipFile },
+) {
   for (const entry of owned) {
-    const status = inspectOwnedTarget(entry, { alive, identityOf, known });
+    const status = await inspectOwnedTarget(entry, { alive, current, isForeign, ownershipFile });
     if (status.kind === 'unverified') {
-      unverified.push({ entry, reason: status.reason });
+      unverified.push({ entry, reason: status.reason, foreignHost: status.foreignHost === true });
       continue;
     }
     if (status.kind === 'stale') {
@@ -966,13 +1260,17 @@ function classifyOwnedTargets(owned, { alive, identityOf, known, folders, pids, 
   }
 }
 
-function inspectOwnedTarget(entry, { alive, identityOf, known }) {
+/** Why stop leaves another host's record, and the way out when that host is gone. */
+const foreignStopReason = (entry, ownershipFile) =>
+  `it was started on ${entry.host}; stop it there. If it no longer runs on ${entry.host} (the host was renamed or removed), delete its entry from ${ownershipFile}`;
+
+async function inspectOwnedTarget(entry, { alive, current: read, isForeign, ownershipFile }) {
+  // Its PID names a process of another host: whether it runs can only be judged there, so its record stays.
+  if (isForeign(entry))
+    return { kind: 'unverified', foreignHost: true, reason: foreignStopReason(entry, ownershipFile) };
   const running = alive(entry.pid);
-  let current = null;
-  if (running) {
-    if (known?.has(entry.pid)) current = known.get(entry.pid);
-    else current = identityOf(entry.pid);
-  }
+  // A record without an identity is never read: nothing could be compared with it.
+  const current = running && entry.processIdentity ? await read(entry) : null;
   // A live process whose start identity was never recorded or cannot be read now is neither
   // proof of a reused process ID nor safe to signal: its record stays for a later stop.
   if (running && (!entry.processIdentity || current == null))
@@ -991,53 +1289,51 @@ function isSelectedOwnedTarget(entry, pids, folders) {
   return Boolean(pids?.includes(entry.pid)) || folders.some((folder) => samePath(entry.sourceDir, folder));
 }
 
-/** The batch reads the real identities, so an injected reader is asked for each PID instead. */
-function batchedIdentities(pids, identityOf) {
-  return identityOf === processIdentity ? processIdentities(pids) : new Map();
-}
-
 /** Sessions with ownership, project and portal information merged from both record kinds. */
-export async function mirageStatus(paths = DEFAULT_PATHS, { identityOf = processIdentity } = {}) {
-  const owned = await ownedSessions(paths);
-  const found = await discoveries(paths);
-  // Read every identity this status can compare in one batch, not one PowerShell start per PID.
-  const pids = [
-    ...found
-      .filter(
-        (session) =>
-          session.processAlive &&
-          owned.some(
-            (item) => item.pid === session.pid && item.discovery === session.discovery && item.processIdentity,
-          ),
-      )
-      .map((session) => session.pid),
-    ...owned
-      .filter((entry) => !found.some((session) => session.pid === entry.pid) && isAlive(entry.pid))
-      .map((entry) => entry.pid),
-  ];
-  const identities = batchedIdentities(pids, identityOf);
-  const identity = (pid) => {
-    if (!identities.has(pid)) identities.set(pid, identityOf(pid));
-    return identities.get(pid);
+export async function mirageStatus(
+  paths = DEFAULT_PATHS,
+  { identityOf = recordedIdentity, alive = isAlive, signal, probeTimeout, hostName = lockHost() } = {},
+) {
+  // Another host's records name processes this one cannot see: they are its status to list.
+  const recorded = await ownedSessions(paths);
+  const isForeign = await foreignJudge(recorded, { hostName, alive, identityOf, signal });
+  const owned = recorded.filter((entry) => !isForeign(entry));
+  const found = await discoveries(paths, { signal, probeTimeout, alive, hostName, isForeign });
+  // Each record's PID is read once, against the identity that record names.
+  const reads = new Map();
+  const ours = (entry) => {
+    const key = `${entry.pid} ${entry.processIdentity}`;
+    if (!reads.has(key))
+      reads.set(
+        key,
+        Promise.resolve(identityOf(entry.pid, { signal, recorded: entry.processIdentity })).then(
+          (current) => current === entry.processIdentity,
+        ),
+      );
+    return reads.get(key);
   };
-  const sessions = found.map((session) => {
+  const sessions = [];
+  for (const session of found) {
     const owner = owned.find((item) => item.pid === session.pid && item.discovery === session.discovery);
-    const isOwned = Boolean(
-      owner && session.processAlive && owner.processIdentity && owner.processIdentity === identity(session.pid),
-    );
-    return {
+    const isOwned = Boolean(owner && session.processAlive && owner.processIdentity && (await ours(owner)));
+    sessions.push({
       ...session,
+      // A runtime this toolkit recorded as ready, whose process still has the recorded identity, stays ready when a
+      // probe got no answer in time: a busy runtime answers late. Only an answer (or the process ending, which
+      // removes the session) changes what is known about it.
+      ready: session.ready || (session.probe === PROBE_NO_ANSWER && isOwned && owner.ready === true),
       adminUrl: session.adminUrl ?? (session.url ? adminUrlOf(session.url) : null),
       owned: isOwned,
       project: session.project ?? owner?.project ?? null,
       portal: session.id ?? owner?.portal ?? null,
-    };
-  });
+    });
+  }
   for (const entry of owned) {
     if (
       found.some((session) => session.pid === entry.pid) ||
-      !isAlive(entry.pid) ||
-      entry.processIdentity !== identity(entry.pid)
+      !alive(entry.pid) ||
+      !entry.processIdentity ||
+      !(await ours(entry))
     )
       continue;
     sessions.push({
@@ -1052,6 +1348,7 @@ export async function mirageStatus(paths = DEFAULT_PATHS, { identityOf = process
       discovery: entry.discovery ?? null,
       processAlive: true,
       ready: false,
+      probe: PROBE_NOT_PROBED,
       starting: true,
       owned: true,
       runtime: null,
@@ -1061,6 +1358,85 @@ export async function mirageStatus(paths = DEFAULT_PATHS, { identityOf = process
 }
 
 // ---- configuration
+/**
+ * The configuration `paqvilo mirage <action>` runs with for the options of its command line (lense/cli.mjs): a
+ * standalone runtime's own configuration, else the catalogue site's. Status selects as stop does, so it reads the same
+ * configuration without checking the source folder; without selectors, an unreadable working-directory catalogue
+ * gives none (status then lists every recorded runtime). `pick` may complete the site and environment selection in
+ * `values` before the catalogue site is loaded. A --project file that no longer exists is left to stop and status,
+ * which still find the runtimes recorded for it.
+ */
+export async function mirageCommandConfiguration(
+  values,
+  action = 'status',
+  { env = process.env, pick = null, checkSource = true } = {},
+) {
+  if (action === 'status') return statusConfiguration(values, env);
+  // A removed catalogue still names its ownership folder: stop selects there as status does (stopRemovedCatalogue).
+  if (action === 'stop' && values.config && !isFile(values.config)) return null;
+  if (values.project && action !== 'stop' && !isFile(values.project))
+    throw new Error(`--project file not found: ${path.resolve(values.project)}. Pass an existing file.`);
+  const standalone = await standaloneConfiguration(values, action);
+  if (standalone) return standalone;
+  const bare = await bareFolderConfiguration(values, action);
+  if (bare) return bare;
+  if (values.pick) await pick?.(values);
+  // stop selects the runtimes recorded for the selection, so the selected sources need not exist (as for status).
+  const cfg = await loadConfig(values, env, { checkSource: checkSource && !values.project && action !== 'stop' });
+  // A source given in a folder without a catalogue runs the sample site with this folder's state (loadCatalogue).
+  if (values.project && !values.config) {
+    cfg.configDir = path.dirname(path.resolve(values.project));
+    cfg.stateDir = path.join(cfg.configDir, '.paqvilo');
+    cfg.portals = 'selected';
+  }
+  return cfg;
+}
+
+/** The configuration status selects with: stop's, without the source check (mirageCommandConfiguration). */
+async function statusConfiguration(values, env) {
+  // A removed catalogue still names its ownership folder (miragePaths); every runtime recorded there is listed.
+  if (values.config && !isFile(values.config)) return null;
+  try {
+    return await mirageCommandConfiguration(values, 'stop', { env, checkSource: false });
+  } catch (error) {
+    if (values.config || values.site || values.project) throw error;
+    return null;
+  }
+}
+
+/**
+ * In a folder without a catalogue, and without --config, --project or a source, the toolkit's sample catalogue is not
+ * the selection: stop and status select this folder's runtimes started without a catalogue site (siteName null), and
+ * every other action is refused as a missing catalogue. Null when the selection names a catalogue or a source.
+ */
+async function bareFolderConfiguration(values, action) {
+  const local = path.resolve('paqvilo.config.yml');
+  if (values.config || values.project || values.source || isFile(local)) return null;
+  if (action !== 'stop' || values.site)
+    throw catalogueNotFound(local, { alternatives: '--config <catalogue>, --project <file> or --runtime <kind>' });
+  const { standaloneMirageConfiguration } = await import('../standalone-mirage.mjs');
+  return { ...standaloneMirageConfiguration(null, values), siteName: null };
+}
+
+/** A standalone runtime's own configuration when the selection names one, else null. */
+async function standaloneConfiguration(values, action) {
+  let standaloneProject = null;
+  if (values.project && !values.config && !values.site && (action !== 'stop' || isFile(values.project))) {
+    const { loadProjectConfig } = await import('../../mirage/lib/project-config.mjs');
+    const candidate = await loadProjectConfig(values.project);
+    if (candidate.runtime?.kind !== 'power-pages') standaloneProject = candidate;
+  }
+  if (!values.project && (values.config || values.site)) {
+    const catalogue = loadCatalogue(values),
+      name = values.site ?? catalogue.root.defaultSite;
+    if (catalogue.sites[name]?.mirage?.runtime?.kind && catalogue.sites[name].mirage.runtime.kind !== 'power-pages')
+      return (await import('../standalone-mirage.mjs')).standaloneCatalogueConfiguration(catalogue, name, values);
+  }
+  if (standaloneProject || (values.runtime && values.runtime !== 'power-pages'))
+    return (await import('../standalone-mirage.mjs')).standaloneMirageConfiguration(standaloneProject, values);
+  return null;
+}
+
 async function loadProject(file) {
   const { loadProjectConfig } = await import('../../mirage/lib/project-config.mjs');
   return loadProjectConfig(path.resolve(file));
@@ -1093,15 +1469,24 @@ export function codeAppInterrupt() {
  * Ends a dev session when the runtime it started exits on its own, however it exits. `exit` holds the exit once it happened
  * (null before). `ending` is set when the dev session starts its own teardown: the runtime's exit is then expected.
  */
-export function endSessionOnRuntimeExit(session, controller, runtimeEnded) {
-  const state = { exit: null, ending: false };
-  session.exited?.then((exit) => {
+export function endSessionOnRuntimeExit(session, controller, runtimeEnded, { watch = watchRuntimeGone } = {}) {
+  const state = { exit: null, ending: false, stopWatching: () => {} };
+  // A runtime this command reused is not its child and carries no exit: its end is observed at its listener. How it
+  // ended is then unknown, so the session reports that it no longer runs and ends as after a failed runtime.
+  let exited = session.exited;
+  if (!exited && session.started === false && session.pid && session.url) {
+    const watched = watch(session);
+    state.stopWatching = watched.stop;
+    exited = watched.gone.then(() => ({ code: null, signal: null, observed: false }));
+  }
+  exited?.then((exit) => {
     state.exit = exit;
     if (state.ending || controller.signal.aborted) return; // Ctrl+C, a failure or the teardown already ends the session.
-    const how = exit.code === 0 ? 'stopped' : `exited (${exit.signal ?? 'code ' + exit.code})`;
+    let how = exit.code === 0 ? 'stopped' : `exited (${exit.signal ?? 'code ' + exit.code})`;
+    if (exit.observed === false) how = 'is no longer running';
     console.log(`mirage   ${session.url} (pid ${session.pid}) ${how}; ending this development session`);
     if (exit.code !== 0) {
-      console.log(`mirage   see the runtime log: ${session.log}`);
+      if (session.log) console.log(`mirage   see the runtime log: ${session.log}`);
       process.exitCode ||= 1;
     }
     runtimeEnded();
@@ -1214,6 +1599,7 @@ function projectCliArgs(cli, cfg, action, args, project, common) {
   if (!powerPages && args.portal) throw new Error('A standalone runtime does not select a portal.');
   let portal = null;
   if (powerPages) portal = args.portal ?? (action === 'serve' ? project.defaultPortal : null);
+  const catalogueSite = projectCatalogueSite(cfg, args, project);
   return {
     cli,
     values: [
@@ -1221,13 +1607,47 @@ function projectCliArgs(cli, cfg, action, args, project, common) {
       '--project',
       project.configFile,
       ...(portal ? ['--portal', portal] : []),
-      ...(cfg?.mirageConfig?.deploymentProfiles && samePath(cfg.mirageConfig.project, project.configFile)
-        ? ['--site', cfg.catalogueSite ?? cfg.siteName, '--env', cfg.envName]
+      ...(catalogueSite
+        ? ['--site', catalogueSite.site, ...(catalogueSite.env ? ['--env', catalogueSite.env] : [])]
         : []),
-      ...((args.config || !args.project) && cfg?.configFile ? ['--config', cfg.configFile] : []),
+      ...((args.config || !args.project || catalogueSite) && cfg?.configFile ? ['--config', cfg.configFile] : []),
       ...common,
     ],
   };
+}
+
+/**
+ * The catalogue site whose catalogue-only settings (personaContexts, identityProvider, deployment profiles) a project
+ * runtime takes: the site an explicit --site selects, even when its mirage.project names another file (explicit options
+ * win, as in catalogueArgs); else the selected site when its mirage.project is this project file; else the one other
+ * site that maps it. --config alone selects no site.
+ */
+function projectCatalogueSite(cfg, args, project) {
+  if (!cfg?.configFile) return null;
+  const selected = { site: cfg.catalogueSite ?? cfg.siteName, env: cfg.envName };
+  if (args.site || samePath(cfg.mirageConfig?.project, project.configFile)) return selected;
+  // A catalogue that is not on disk (an in-memory configuration) maps no project.
+  if (!fsSync.existsSync(cfg.configFile)) return null;
+  const mapped = sitesMappingProject(
+    loadCatalogue({ config: cfg.configFile, repo: cfg.sourceRoot }),
+    project.configFile,
+  );
+  if (mapped.length > 1)
+    throw Object.assign(
+      new Error(`Sites ${mapped.join(', ')} all map the project ${project.configFile}; choose one with --site <id>.`),
+      { code: 'invalid_argument' },
+    );
+  return mapped.length ? { site: mapped[0], env: args.env } : null;
+}
+
+/** The catalogue sites whose mirage.project is the given project file. */
+function sitesMappingProject(catalogue, projectFile) {
+  return Object.entries(catalogue.sites)
+    .filter(
+      ([, site]) =>
+        site.mirage?.project && samePath(path.resolve(catalogue.configDir, site.mirage.project), projectFile),
+    )
+    .map(([name]) => name);
 }
 
 function standaloneCatalogueCliArgs(cli, cfg, action, args, common) {
@@ -1244,10 +1664,12 @@ function standaloneCatalogueCliArgs(cli, cfg, action, args, common) {
 }
 
 /** Whether create, update and delete requests can reach the live environment from this runtime. */
-function liveWritesText(value) {
+function liveWritesText(value, kind = 'power-pages') {
   if (value === 'enabled') return 'enabled: create, update and delete requests reach the live environment';
   if (value === 'off') return 'allowed by --allow-live-writes; off until switched on in _sim';
   if (value === 'disabled') return 'disabled (start with --allow-live-writes to allow them)';
+  // A standalone runtime (model-driven, dataverse-api) serves only simulated data: it has no live origin to write to.
+  if (kind && kind !== 'power-pages') return `do not apply (a ${kind} runtime has no live environment)`;
   return 'not reported by this Mirage';
 }
 
@@ -1280,12 +1702,54 @@ function selectedRootsMatch(entry, roots) {
   );
 }
 
+/**
+ * The ownership records of every folder, the first one's errors reported, another's unreadable records skipped
+ * (they belong to another selection, whose own command reports them).
+ */
+async function ownedSessionsIn(folders) {
+  const entries = [];
+  for (const [index, folder] of folders.entries()) {
+    try {
+      for (const entry of await ownedSessions(folder))
+        if (!entries.some((item) => item.pid === entry.pid && item.processIdentity === entry.processIdentity))
+          entries.push(entry);
+    } catch (error) {
+      if (index === 0) throw error;
+    }
+  }
+  return entries;
+}
+
+/** Stops the selected PIDs in the ownership folder that records each, as one report. */
+async function stopSelected(host, paths, pids, projectFile = null) {
+  const reports = [];
+  for (const [index, folder] of (await recordFolders(paths, projectFile)).entries()) {
+    const recorded = await ownedSessionsIn([folder]).catch(() => []);
+    const here = pids.filter((pid) => recorded.some((entry) => entry.pid === pid));
+    // The selection's own folder is always visited, so its stale records are pruned as before.
+    if (index > 0 && !here.length) continue;
+    reports.push(await guardShutdownSignals((interrupt) => host.stop({ paths: folder, pids: here, interrupt })));
+  }
+  const all = (key) => reports.flatMap((report) => report[key] ?? []);
+  return {
+    stopped: all('stopped'),
+    remaining: all('remaining'),
+    pruned: all('pruned'),
+    unverified: all('unverified'),
+    removedDiscoveries: all('removedDiscoveries'),
+    writesFiles: [...new Set(all('writesFiles'))],
+  };
+}
+
 /** Intersect ownership scope, source/project identity and explicitly supplied selectors. */
 async function selectedSessionPids(paths, cfg, kind, selectedProject = null, selection = {}, sourceDir = null) {
   const selectedCatalogue = catalogueIdentity(cfg);
   const scoped = Boolean(selectedCatalogue);
-  const candidates = (await ownedSessions(paths)).filter((entry) =>
-    matchesSessionCandidate(entry, { kind, selection, sourceDir, selectedProject }),
+  const recorded = await ownedSessionsIn(await recordFolders(paths, selectedProject?.configFile));
+  // As status lists them: another host's runtime is never part of a selection here.
+  const isForeign = await foreignJudge(recorded, { hostName: lockHost() });
+  const candidates = recorded.filter(
+    (entry) => !isForeign(entry) && matchesSessionCandidate(entry, { kind, selection, sourceDir, selectedProject }),
   );
   const siteName = selectedCatalogue?.siteName;
   const exactLegacyTarget =
@@ -1307,7 +1771,13 @@ async function selectedSessionPids(paths, cfg, kind, selectedProject = null, sel
     exactLegacyTarget,
     cfg,
   };
-  return candidates.filter((entry) => matchesCatalogueScope(entry, scopeContext)).map((entry) => entry.pid);
+  // A project runtime recorded without a catalogue scope (projectOnlyLaunch) belongs to its project file alone: a
+  // project selection owns it, a catalogue selection does not.
+  const owns = (entry) =>
+    entry.project && entry.identity?.scope === null
+      ? Boolean(selectedProject)
+      : matchesCatalogueScope(entry, scopeContext);
+  return candidates.filter(owns).map((entry) => entry.pid);
 }
 
 function matchesSessionCandidate(entry, { kind, selection, sourceDir, selectedProject }) {
@@ -1343,15 +1813,11 @@ function matchesCatalogueScope(entry, context) {
 }
 
 function legacyProjectScopeMatches(catalogue, scope, siteName, selectedProject) {
-  const mapped = Object.entries(catalogue.sites).filter(
-    ([, site]) =>
-      site.mirage?.project &&
-      samePath(path.resolve(catalogue.configDir, site.mirage.project), selectedProject.configFile),
-  );
+  const mapped = sitesMappingProject(catalogue, selectedProject.configFile);
   return (
     Object.keys(catalogue.sites).length === 1 &&
     mapped.length === 1 &&
-    mapped[0][0] === siteName &&
+    mapped[0] === siteName &&
     (!scope || !Object.hasOwn(catalogue.sites, scope.siteName) || scope.siteName === siteName)
   );
 }
@@ -1369,11 +1835,22 @@ function stopSummary(report, scope, none) {
 }
 
 /**
+ * What a stop without a project selected: the catalogue site, and, for a selection without selectors, the runtimes
+ * started in the folder without a catalogue site (siteStandalonePids); without a catalogue only those.
+ */
+function siteSelectionLabel(cfg, args) {
+  const site = cfg.siteName ?? '';
+  if (args.config || args.site || args.project) return site;
+  const unscoped = `the runtimes started in ${process.cwd()} without a catalogue site`;
+  return site ? `${site} and ${unscoped}` : unscoped;
+}
+
+/**
  * A selected session that could not be verified is still running, so the stop is not complete. The status is
  * returned rather than thrown: the report has already been printed, and a thrown error would append a second JSON document.
  */
-function stopExitStatus(report, pids) {
-  return report.unverified.some((item) => pids.includes(item.pid)) ? 2 : 0;
+export function stopExitStatus(report, pids) {
+  return report.unverified.some((item) => !item.foreignHost && pids.includes(item.pid)) ? 2 : 0;
 }
 
 /** A nested observation, such as headers: "page name=value; webFile name=value, name=value". */
@@ -1408,6 +1885,22 @@ async function launchSolutionRoots(sourceDir, args, projectInfo) {
   return (await import('../../mirage/lib/solution-roots.mjs')).discoverSolutionRoots(sourceDir);
 }
 
+/**
+ * A Power Pages project runtime started with neither --config nor --site, whose project no catalogue site maps: it
+ * is recorded without a catalogue scope and belongs to its project file alone, whichever catalogue the working
+ * directory holds.
+ */
+function projectOnlyLaunch(cfg, args, projectInfo) {
+  return Boolean(
+    projectInfo &&
+    (args.runtime ?? projectInfo.runtime?.kind ?? 'power-pages') === 'power-pages' &&
+    cfg.configFile &&
+    !args.config &&
+    !args.site &&
+    !projectCatalogueSite(cfg, args, projectInfo),
+  );
+}
+
 async function launchIdentity(cfg, args, projectInfo = null) {
   const runtime = args.runtime
     ? { kind: args.runtime }
@@ -1436,7 +1929,7 @@ async function launchIdentity(cfg, args, projectInfo = null) {
   // The startup preset the child applies (the child is launched with --site, so the catalogue site is in scope too).
   const startup = startupPresetChoice(args, { project: projectInfo, catalogue: cfg.mirageConfig });
   if (args.simulation) options.simulation = { level: args.simulation };
-  const scope = catalogueIdentity(cfg);
+  const scope = projectOnlyLaunch(cfg, args, projectInfo) ? null : catalogueIdentity(cfg);
   return {
     identity: {
       sourceDir: resolved(sourceDir),
@@ -1528,11 +2021,15 @@ export async function start(
     paths = miragePaths(cfg, args),
     command = 'mirage start',
     spawnRuntime = spawn,
-    identityOf = processIdentityAsync,
+    identityOf = recordedIdentity,
     sleep = (ms, options) => delay(ms, undefined, options),
     now = Date.now,
     alive = isAlive,
     kill = process.kill,
+    openChannel = openStartChannel,
+    portAvailable: available = portAvailable,
+    // The host this start records its runtime on (lockHost); another host's records are foreign to it.
+    hostName = lockHost(),
   } = {},
 ) {
   let interrupted = false,
@@ -1560,10 +2057,17 @@ export async function start(
       command,
       spawnRuntime,
       identityOf,
+      // The launcher names the identity of the runtime it starts (a start token) where reading it from the operating
+      // system is expensive. A caller that injects its own reader is asked for the identity instead.
+      startIdentity: identityOf === recordedIdentity ? newStartIdentity() : null,
       sleep,
       now,
       alive,
       kill,
+      openChannel,
+      available,
+      hostName,
+      ownershipFile: paths.ownershipFile,
       check,
       signal: controller.signal,
       cancelled: () => interrupted,
@@ -1632,52 +2136,85 @@ export async function start(
   startup.check();
   args.startup?.phase('existing runtime and ownership', cfg.siteName);
   const owned = await ownedSessions(paths);
+  // Another host's runtime is never reused: this host cannot reach or judge its process.
+  startup.isForeign = await foreignJudge(owned, {
+    hostName: startup.hostName,
+    alive: startup.alive,
+    identityOf: startup.identityOf,
+    signal: startup.signal,
+  });
+  const local = owned.filter((item) => !startup.isForeign(item));
   // Listing local records is cheap. Probe only runtimes eligible for this
   // launch; unrelated listeners can each consume the full probe timeout.
-  const candidates = (await discoveries(paths, { probe: false, signal: startup.signal })).filter((session) =>
-    isReusableRuntimeCandidate(session, owned, identity),
-  );
+  const candidates = (
+    await discoveries(paths, {
+      probe: false,
+      signal: startup.signal,
+      alive: startup.alive,
+      hostName: startup.hostName,
+      isForeign: startup.isForeign,
+    })
+  ).filter((session) => isReusableRuntimeCandidate(session, local, identity));
   startup.check();
   let existing;
   for (const session of candidates) {
-    const currentIdentity = await startup.identityOf(session.pid, { signal: startup.signal });
+    const owner = local.find(
+      (item) =>
+        item.pid === session.pid &&
+        item.discovery === session.discovery &&
+        item.processIdentity &&
+        identityMatches(item.identity, identity),
+    );
+    const currentIdentity =
+      owner && (await startup.identityOf(session.pid, { signal: startup.signal, recorded: owner.processIdentity }));
     startup.check();
-    const owner =
-      currentIdentity &&
-      owned.find(
-        (item) =>
-          item.pid === session.pid &&
-          item.discovery === session.discovery &&
-          item.processIdentity === currentIdentity &&
-          identityMatches(item.identity, identity),
-      );
-    if (owner) {
+    if (owner && currentIdentity === owner.processIdentity) {
       const runtime = await ownedRuntime(session, owner, { started, timeout, startup });
       if (runtime) {
-        existing = { ...session, log: owner.log, ready: true, runtime };
+        existing = { ...session, log: owner.log, ready: true, runtime, processIdentity: owner.processIdentity };
         break;
       }
     }
   }
-  if (existing) return { ...existing, owned: true, started: false, launch, writesFiles: [] };
+  if (existing) {
+    const { processIdentity, ...reused } = existing;
+    const result = {
+      ...reused,
+      ...(existing.runtime && !existing.runtime.simulation && identity.simulation
+        ? { runtime: { ...existing.runtime, simulation: identity.simulation } }
+        : {}),
+      owned: true,
+      started: false,
+      launch,
+      writesFiles: [],
+    };
+    // What a development session checks the reused process against; not part of the printed result.
+    Object.defineProperty(result, 'processIdentity', { value: processIdentity, enumerable: false });
+    return result;
+  }
   await refuseStateFileOwner(owned, identity, startup);
   if (startup.now() >= started + timeout)
     throw new Error(
       `Mirage startup exceeded ${timeout}ms during source discovery or ownership checks; no child was started.`,
     );
-  if (port !== '0' && !(await portAvailable(Number(port))))
+  if (port !== '0' && !(await startup.available(Number(port))))
     throw new Error(
       `Port ${port} is already in use by another process or Mirage session with different settings. Pass --port 0 (any free port) or another --port, or stop that session first.`,
     );
   const { cli, values } = cliArgs(cfg, 'serve', { ...args, port, state: identity.stateFile }, projectInfo);
+  // On the command line, so the operating system can show which process was started with it.
+  if (startup.startIdentity) values.push(START_TOKEN_OPTION, startTokenOf(startup.startIdentity));
   let child, exited;
   args.startup?.phase('process launch', identity.runtime?.kind ?? 'power-pages');
   await pruneStartupLogs(paths, await ownedSessions(paths));
-  await fs.mkdir(paths.logRoot, { recursive: true });
+  await createStateFolder(paths.logRoot);
   const log = path.join(paths.logRoot, `startup-${Date.now()}-${Math.random().toString(16).slice(2)}.log`); // NOSONAR: pseudo-random value for simulation, not a secret
   const logHandle = await fs.open(log, 'a');
+  // The runtime announces its start-up progress and its readiness to this command here (lense/start-channel.mjs).
+  let channel;
   try {
     startup.check();
+    channel = await startup.openChannel();
     // The /_setup/ page this child mounts names the command and catalogue site that started it (lense/setup/server.mjs).
     const setupRuntime = JSON.stringify({
       command: startup.command,
@@ -1688,30 +2225,49 @@ export async function start(
       detached: true,
       stdio: ['ignore', logHandle.fd, logHandle.fd],
       windowsHide: true,
-      env: { ...process.env, MIRAGE_SETUP_RUNTIME: setupRuntime },
+      env: { ...process.env, MIRAGE_SETUP_RUNTIME: setupRuntime, [START_CHANNEL_ENV]: channel.address },
     });
-    exited = new Promise((resolve) => child.once?.('exit', (code, signal) => resolve({ code, signal })));
+    // The exit of the runtime's process, as the event of this child; a handle that already shows its exit has it.
+    exited = new Promise((resolve) => {
+      if (child.exitCode != null || child.signalCode != null)
+        resolve({ code: child.exitCode ?? null, signal: child.signalCode ?? null });
+      else child.once?.('exit', (code, signal) => resolve({ code, signal }));
+    });
     startup.child(child);
   } catch (error) {
     await logHandle.close();
+    await channel?.close().catch(() => {});
     throw new Error(`Could not start Mirage: ${error.message}. Startup log: ${log}`, { cause: error });
   }
   await logHandle.close();
   child.unref();
   const discovery = path.join(paths.discoveryRoot, `session-${child.pid}.json`);
+  // The record of this child: another host's record may carry the same PID number.
+  const childRecord = (item) => item.pid === child.pid && !startup.isForeign(item);
+  // Removes the child's discovery file, unless another host's runtime with this PID number wrote that file.
+  const removeOwnDiscovery = async () => {
+    try {
+      if (foreignRecord(JSON.parse(await fs.readFile(discovery, 'utf8')), startup.hostName)) return;
+    } catch {
+      /* missing or incomplete: the child's own, or nothing */
+    }
+    await fs.rm(discovery, { force: true }).catch(() => {});
+  };
   let registered = false;
   startup.cleanup(async () => {
-    await fs.rm(discovery, { force: true }).catch(() => {});
+    await channel.close().catch(() => {});
+    await removeOwnDiscovery();
     // No ownership entry was published if cancellation interrupted its lock
     // acquisition. Published records get a bounded best-effort cleanup; a
     // contended foreign lock must not hold the cancelled command open.
     if (registered)
-      await updateOwnedSessions(paths, (sessions) => sessions.filter((item) => item.pid !== child.pid), {
+      await updateOwnedSessions(paths, (sessions) => sessions.filter((item) => !childRecord(item)), {
         signal: AbortSignal.timeout(1000),
       }).catch(() => {});
   });
   args.startup?.phase('process ownership', cfg.siteName);
-  const childIdentity = await startup.identityOf(child.pid, { signal: startup.signal });
+  const childIdentity =
+    startup.startIdentity ?? (await startup.identityOf(child.pid, { signal: startup.signal, recorded: null }));
   startup.check();
   if (!childIdentity) {
     const error = !startup.alive(child.pid)
@@ -1727,10 +2283,16 @@ export async function start(
   await updateOwnedSessions(
     paths,
     (sessions) => [
-      ...otherSessionsForStart(sessions, identity, child.pid, { alive: startup.alive, identities }),
+      ...otherSessionsForStart(sessions, identity, child.pid, {
+        alive: startup.alive,
+        identities,
+        isForeign: startup.isForeign,
+        ownershipFile: paths.ownershipFile,
+      }),
       {
         pid: child.pid,
         processIdentity: childIdentity,
+        host: startup.hostName,
         sourceDir: identity.sourceDir,
         project: identity.project,
         portal: identity.portal,
@@ -1749,10 +2311,21 @@ export async function start(
   startup.check();
   const abandon = async () => {
     startup.check();
-    if (
+    // This command holds the runtime as its own child: while that handle shows no exit, a signal through it reaches
+    // the runtime and nothing else. A PID would have to be shown to still be the runtime's first (an identity read,
+    // which a start token's pipe alone does not prove), so a PID is signalled only for a caller that supplies `kill`.
+    if (startup.kill === process.kill && typeof child.kill === 'function') {
+      if (child.exitCode == null && child.signalCode == null) {
+        try {
+          child.kill('SIGTERM');
+        } catch {
+          /* already exited */
+        }
+      }
+    } else if (
       childIdentity &&
       startup.alive(child.pid) &&
-      (await startup.identityOf(child.pid, { signal: startup.signal })) === childIdentity
+      (await startup.identityOf(child.pid, { signal: startup.signal, recorded: childIdentity })) === childIdentity
     ) {
       try {
         startup.kill(child.pid, 'SIGTERM');
@@ -1760,96 +2333,125 @@ export async function start(
         /* already exited */
       }
     }
-    await fs.rm(discovery, { force: true }).catch(() => {});
+    await removeOwnDiscovery();
     await updateOwnedSessions(
       paths,
-      (sessions) => sessions.filter((item) => !(item.pid === child.pid && item.processIdentity === childIdentity)),
+      (sessions) => sessions.filter((item) => !(childRecord(item) && item.processIdentity === childIdentity)),
       { signal: startup.signal },
     ).catch(() => {});
   };
   const capAt = started + STARTUP_ABSOLUTE_CAP;
   args.startup?.phase('import, state restore and presets', identity.runtime?.kind ?? 'power-pages');
-  let progressCursor,
-    lastProgress = startup.now(),
-    discovered = false;
-  try {
-    while (startup.now() < Math.min(lastProgress + timeout, capAt) && !startup.cancelled()) {
-      const progress = await readStartupPhases(log, progressCursor).catch(() => null);
-      if (progress) {
-        progressCursor = progress.cursor;
-        if (progress.events.length) lastProgress = startup.now();
-        for (const event of progress.events)
-          args.startup?.phase(
-            event.phase.replaceAll('-', ' '),
-            `${cfg.siteName}; ${event.elapsedMs}ms runtime elapsed`,
-          );
-      }
-      try {
-        const record = JSON.parse(await fs.readFile(discovery, 'utf8'));
-        if (!discovered) {
-          discovered = true;
-          lastProgress = startup.now();
-        }
-        const portal = Array.isArray(record.portals)
-          ? (record.portals.find((item) => item.id === (identity.portal ?? '')) ?? record.portals[0])
-          : null;
-        const { portals: ignoredPortals, ...base } = record; // NOSONAR: binding is excluded from the rest object or is a placeholder
-        const session = {
-          ...base,
-          ...portal,
-          id: portal?.id,
+  /**
+   * The session of the runtime once it has published its discovery record and answers its status; null until then.
+   * `limit` bounds the status question in milliseconds.
+   */
+  const readySession = async (limit) => {
+    let record;
+    try {
+      record = JSON.parse(await fs.readFile(discovery, 'utf8'));
+    } catch {
+      startup.check(); /* the runtime has not written its discovery file yet */
+      return null;
+    }
+    // Another host's runtime with this PID number wrote it: this child has not published its record yet.
+    if (foreignRecord(record, startup.hostName)) return null;
+    const portal = Array.isArray(record.portals)
+      ? (record.portals.find((item) => item.id === (identity.portal ?? '')) ?? record.portals[0])
+      : null;
+    // The machine name stays in the records: a start report does not publish it.
+    const { portals: ignoredPortals, host: ignoredHost, ...base } = record; // NOSONAR: binding is excluded from the rest object or is a placeholder
+    const session = { ...base, ...portal, id: portal?.id, discovery, processAlive: true, ready: false, runtime: null };
+    session.runtime = await readRuntime(session.url, session.id ?? cfg.siteName, {
+      signal: startup.signal,
+      timeout: limit,
+    });
+    startup.check();
+    session.ready = Boolean(session.runtime);
+    if (!session.ready) return null;
+    await updateOwnedSessions(
+      paths,
+      (sessions) => [
+        ...sessions.filter((item) => !(item.pid === session.pid && !startup.isForeign(item))),
+        {
+          pid: session.pid,
+          processIdentity: childIdentity,
+          host: startup.hostName,
+          sourceDir: session.sourceDir,
+          project: identity.project,
+          portal: session.id ?? identity.portal,
           discovery,
-          processAlive: true,
-          ready: false,
-          runtime: null,
-        };
-        session.runtime = await readRuntime(session.url, session.id ?? cfg.siteName, { signal: startup.signal });
-        session.ready = Boolean(session.runtime);
-        if (session.ready) {
-          await updateOwnedSessions(
-            paths,
-            (sessions) => [
-              ...sessions.filter((item) => item.pid !== session.pid),
-              {
-                pid: session.pid,
-                processIdentity: childIdentity,
-                sourceDir: session.sourceDir,
-                project: identity.project,
-                portal: session.id ?? identity.portal,
-                discovery,
-                url: session.url,
-                appsUrl: session.appsUrl,
-                stateFile: session.stateFile,
-                identity,
-                log,
-                ready: true,
-                startedAt: new Date(started).toISOString(),
-              },
-            ],
-            { signal: startup.signal },
-          );
-          startup.check();
-          const result = {
-            ...session,
-            owned: true,
-            started: true,
-            log,
-            launch,
-            writesFiles: [identity.stateFile, discovery, log, paths.ownershipFile].filter(
-              (file) => file && fsSync.existsSync(file),
-            ),
-          };
-          Object.defineProperty(result, 'exited', { value: exited, enumerable: false });
-          return result;
-        }
-      } catch {
-        startup.check(); /* server has not written its discovery file yet */
+          url: session.url,
+          appsUrl: session.appsUrl,
+          stateFile: session.stateFile,
+          identity,
+          log,
+          ready: true,
+          startedAt: new Date(started).toISOString(),
+        },
+      ],
+      { signal: startup.signal },
+    );
+    startup.check();
+    await channel.close().catch(() => {});
+    // A note only: a folder that cannot take it still has the runtime recorded in its own ownership folder.
+    await rememberRecordFolder(paths).catch(() => {});
+    const result = {
+      ...session,
+      // The simulation level the runtime was started with, on every start path, when the runtime does not report one.
+      ...(session.runtime && !session.runtime.simulation && identity.simulation
+        ? { runtime: { ...session.runtime, simulation: identity.simulation } }
+        : {}),
+      owned: true,
+      started: true,
+      log,
+      launch,
+      writesFiles: [identity.stateFile, discovery, log, paths.ownershipFile].filter(
+        (file) => file && fsSync.existsSync(file),
+      ),
+    };
+    Object.defineProperty(result, 'exited', { value: exited, enumerable: false });
+    return result;
+  };
+  // The start waits for what happens next, never for an interval: an announcement of the runtime (a phase, that its
+  // event loop turns, that it is ready), the exit of its process, the caller's interrupt, or the end of the start-up
+  // silence bound, which every announcement moves.
+  let lastProgress = startup.now();
+  const silenceEnd = () => Math.min(lastProgress + timeout, capAt);
+  const runtimeExit = exited.then(() => ({ exit: true }));
+  try {
+    while (!startup.cancelled()) {
+      const bound = silenceEnd() - startup.now();
+      if (bound <= 0) {
+        // An announcement can be lost (its channel is best effort); the record it would have announced is not.
+        const late = await readySession();
+        if (late) return late;
+        break;
       }
-      if (!startup.alive(child.pid)) {
+      const waiting = new AbortController();
+      const silent = () => ({ silent: true });
+      const event = await Promise.race([
+        channel.next(),
+        runtimeExit,
+        Promise.resolve(startup.sleep(bound, { signal: AbortSignal.any([startup.signal, waiting.signal]) })).then(
+          silent,
+          silent,
+        ),
+      ]);
+      waiting.abort();
+      startup.check();
+      if (event.exit) {
         await abandon();
         throw await exitedBeforeReady(log, paths.logRoot);
       }
-      await startup.sleep(150, { signal: startup.signal });
+      if (!event.phase) continue;
+      lastProgress = startup.now();
+      if (event.phase === RUNTIME_READY) {
+        // The CLI reports a fractional elapsed time; a fetch deadline is whole milliseconds.
+        const session = await readySession(Math.max(1, Math.ceil(silenceEnd() - lastProgress)));
+        if (session) return session;
+      } else if (event.phase !== RUNTIME_ALIVE)
+        args.startup?.phase(event.phase.replaceAll('-', ' '), `${cfg.siteName}; ${event.elapsedMs}ms runtime elapsed`);
     }
     await abandon();
     startup.check();
@@ -1867,9 +2469,56 @@ export async function start(
   }
 }
 
+const STATE_FOLDER_BLOCKED = new Set(['ENOTDIR', 'EEXIST']);
+const STATE_FOLDER_READ_ONLY = new Set(['EACCES', 'EPERM', 'EROFS']);
+
+/** The nearest existing path at or above `folder`: what blocks, or would hold, the folder that could not be made. */
+function nearestExisting(folder) {
+  for (let current = path.resolve(folder); ; current = path.dirname(current)) {
+    let stats = null;
+    try {
+      stats = fsSync.statSync(current, { throwIfNoEntry: false }) ?? null;
+    } catch {
+      /* below a file, or unreadable: look further up */
+    }
+    if (stats || path.dirname(current) === current) return { path: current, stats };
+  }
+}
+
+/**
+ * Creates a folder of the local state (.paqvilo). A file in its place, or a place that cannot be written, is reported
+ * with the folder, the cause and the next step; any other failure is passed on unchanged.
+ */
+export async function createStateFolder(folder, { mkdir = fs.mkdir } = {}) {
+  try {
+    await mkdir(folder, { recursive: true });
+  } catch (error) {
+    const blocked = STATE_FOLDER_BLOCKED.has(error?.code);
+    if (!blocked && !STATE_FOLDER_READ_ONLY.has(error?.code)) throw error;
+    const existing = nearestExisting(folder);
+    const at = existing.stats ? existing.path : (error.path ?? folder);
+    const reason = blocked
+      ? `${at} exists but is not a folder (${error.code}). Remove or rename it`
+      : `${at} is not writable (${error.code}). Allow writing there`;
+    throw Object.assign(
+      new Error(
+        `Cannot create the local state folder ${folder}: ${reason}, or run from a project folder you can write to.`,
+        { cause: error },
+      ),
+      { code: error.code },
+    );
+  }
+}
+
 async function exitedBeforeReady(log, logRoot) {
   const output = await readLocalFile(log, { root: logRoot, encoding: 'utf8' }).catch(() => '');
-  const details = output.trim() ? '\n' + output.trim().slice(-3000) : '';
+  // The runtime's start-up progress records stay in the log for progress consumers; the message keeps what it said.
+  const said = output
+    .split(/\r?\n/)
+    .filter((line) => !runtimeStartupEvent(line.trim()))
+    .join('\n')
+    .trim();
+  const details = said ? '\n' + said.slice(-3000) : '';
   return new Error(`Mirage exited before it became ready. See startup log: ${log}${details}`);
 }
 
@@ -1891,7 +2540,8 @@ async function ownedRuntime(session, owner, { started, timeout, startup }) {
     if (runtime) return runtime;
     if (
       !startup.alive(session.pid) ||
-      (await startup.identityOf(session.pid, { signal: startup.signal })) !== owner.processIdentity
+      (await startup.identityOf(session.pid, { signal: startup.signal, recorded: owner.processIdentity })) !==
+        owner.processIdentity
     )
       return null;
     startup.check();
@@ -1932,32 +2582,57 @@ function stateFileConflict(entry, identity) {
     ['--runtime', entry.identity?.runtime?.kind ?? identity.runtime.kind, '--state', identity.stateFile],
     { cli: TOOLKIT_CLI },
   );
+  // The same settings: a start that is still running, or one made at the same moment, recorded this runtime.
+  if (identityMatches(entry.identity, identity))
+    return new Error(
+      `Mirage pid ${entry.pid} is already starting (or running) for state file ${identity.stateFile} with the same settings; wait until it is ready and run the command again to reuse it, or stop it with ${stop}.`,
+    );
   return new Error(
     `Mirage pid ${entry.pid} already uses state file ${identity.stateFile} with different settings; stop it with ${stop} or pass --state <other file>.`,
   );
 }
 
-/** A live runtime with a verified start identity owns this state file with other settings: its saves would be overwritten. */
-async function refuseStateFileOwner(owned, identity, { signal, identityOf, alive = isAlive }) {
+/** A runtime recorded on another host on this state file: this host can neither judge nor stop its process. */
+function foreignStateFileOwner(entry, identity, ownershipFile) {
+  return new Error(
+    `Mirage pid ${entry.pid} on ${entry.host} is recorded for state file ${identity.stateFile}; this host cannot see or stop that process. Stop it on ${entry.host} (which also clears its record) or pass --state <other file>. If it no longer runs on ${entry.host} (the host was renamed or removed), delete its entry from ${ownershipFile}.`,
+  );
+}
+
+/**
+ * A live runtime with a verified start identity owns this state file with other settings: its saves would be
+ * overwritten. A runtime recorded on another host on this state file refuses any start here.
+ */
+async function refuseStateFileOwner(
+  owned,
+  identity,
+  { signal, identityOf, alive = isAlive, isForeign, ownershipFile },
+) {
   for (const entry of owned) {
+    if (isForeign(entry)) {
+      if (sharesStateFile(entry, identity.stateFile)) throw foreignStateFileOwner(entry, identity, ownershipFile);
+      continue;
+    }
     if (!entry.processIdentity || !alive(entry.pid) || !sharesStateFile(entry, identity.stateFile)) continue;
     if (identityMatches(entry.identity, identity)) continue;
-    if ((await identityOf(entry.pid, { signal })) === entry.processIdentity) throw stateFileConflict(entry, identity);
+    if ((await identityOf(entry.pid, { signal, recorded: entry.processIdentity })) === entry.processIdentity)
+      throw stateFileConflict(entry, identity);
   }
 }
 
 /**
- * Identities of the live records on this state file, read before the ownership lock: one read (PowerShell on
- * Windows) takes far longer than a read-modify-write, and other commands would wait on the lock meanwhile.
+ * Identities of the live records on this state file, read before the ownership lock: a read of the operating system
+ * can take far longer than a read-modify-write, and other commands would wait on the lock meanwhile.
  */
 async function rivalIdentities(paths, { childPid, identity, startup }) {
   const identities = new Map();
   for (const item of await ownedSessions(paths)) {
+    if (startup.isForeign(item)) continue;
     if (item.pid === childPid || !item.processIdentity || !startup.alive(item.pid)) continue;
     if (sharesStateFile(item, identity.stateFile))
       identities.set(item.pid, {
         recorded: item.processIdentity,
-        current: await startup.identityOf(item.pid, { signal: startup.signal }),
+        current: await startup.identityOf(item.pid, { signal: startup.signal, recorded: item.processIdentity }),
       });
   }
   return identities;
@@ -1965,14 +2640,29 @@ async function rivalIdentities(paths, { childPid, identity, startup }) {
 
 /**
  * Runs under the ownership lock, where a concurrent start's record is visible: a live rival on this state file
- * refuses the start, whose child the caller then stops. A record whose PID no longer carries its start identity
- * belongs to an exited runtime, so it is dropped instead. A record whose identity cannot be read is kept.
+ * refuses the start, whose child the caller then stops. A record whose process has exited, or whose PID no longer
+ * carries its start identity, belongs to an exited runtime, so it is dropped instead. A record of a live process whose
+ * identity cannot be read is kept. Another
+ * host's record is always kept, and refuses the start when it is on this state file.
  * The identities come from `identities`, read before the lock, so this stays synchronous.
  */
-function otherSessionsForStart(sessions, identity, startedPid, { alive = isAlive, identities = new Map() } = {}) {
+function otherSessionsForStart(
+  sessions,
+  identity,
+  startedPid,
+  { alive = isAlive, identities = new Map(), isForeign, ownershipFile } = {},
+) {
   const kept = [];
   for (const item of sessions) {
+    if (isForeign(item)) {
+      if (sharesStateFile(item, identity.stateFile)) throw foreignStateFileOwner(item, identity, ownershipFile);
+      kept.push(item);
+      continue;
+    }
     if (item.pid === startedPid) continue;
+    // A local record whose process has exited owns nothing any more. Without this, runtimes that were killed leave
+    // one record each until the next `mirage stop`.
+    if (!alive(item.pid)) continue;
     const state = rivalState(item, identity, { alive, identities });
     if (state === 'rival') throw stateFileConflict(item, identity);
     if (state !== 'stale') kept.push(item);
@@ -2106,9 +2796,12 @@ async function matchingPacks(cfg, dataPacks) {
   );
   validateInitFile(file, args);
   if (!PROJECT_ID.test(cfg.siteName)) throw new Error(`Site "${cfg.siteName}" cannot be used as a Mirage portal ID`);
-  const listed = configured.solutionRoots?.length
-    ? configured.solutionRoots
-    : await (await import('../../mirage/lib/solution-roots.mjs')).discoverSolutionRoots(cfg.sourceDir);
+  // --solution-root replaces the catalogued roots in the written project, as it does for start and dev.
+  let listed = args['solution-root']?.length
+    ? args['solution-root'].map((root) => path.resolve(root))
+    : configured.solutionRoots;
+  if (!listed?.length)
+    listed = await (await import('../../mirage/lib/solution-roots.mjs')).discoverSolutionRoots(cfg.sourceDir);
   const missing = listed.filter((root) => !isDirectory(root));
   validateInitSolutionRoots(missing);
   // The project records the order its solutions are layered in: the dependency order (written
@@ -2213,8 +2906,19 @@ async function matchingPacks(cfg, dataPacks) {
     packs,
     notes,
     catalogued,
-    next: mirageCommandHint([['mirage', 'dev', ...hintScope(cfg, args), '--project', file]], hintOptions(cfg)),
+    // A project file holds no runtime options: the dev command it prints carries them on, as for a standalone runtime.
+    next: mirageCommandHint(
+      [['mirage', 'dev', ...hintScope(cfg, args), '--project', file, ...runtimeNextArguments(args)]],
+      hintOptions(cfg),
+    ),
   };
+}
+
+/** The runtime options of an init command line (--state, --port, --preset, --preset-mode), for the dev it prints. */
+function runtimeNextArguments(args, keys = ['port', 'preset', 'preset-mode']) {
+  const parts = args.state ? ['--state', path.resolve(args.state)] : [];
+  for (const key of keys) if (args[key] !== undefined) parts.push('--' + key, String(args[key]));
+  return parts;
 }
 
 function validateInitFile(file, args) {
@@ -2270,7 +2974,7 @@ function makeInitDocument({ cfg, configured, base, origin, observed, roots, solu
         id: cfg.siteName,
         path: yamlPath(base, cfg.sourceDir),
         ...(origin ? { origin } : {}),
-        ...(observed ? { observed } : {}),
+        ...(observed ? { observed: portableObserved(observed, base, cfg.configDir) } : {}),
         ...(configured.dataModel ? { dataModel: configured.dataModel } : {}),
       },
     ],
@@ -2286,6 +2990,39 @@ function makeInitDocument({ cfg, configured, base, origin, observed, roots, solu
     ...deploymentProfilesDocument(configured.deploymentProfiles, base),
     ...dataPacksDocument(configured.dataPacks, base),
   };
+}
+
+/**
+ * Observed behaviour with each plug-in source root written as portablePluginRoot writes it, so the project keeps
+ * working when the folder moves or is shared.
+ */
+function portableObserved(observed, base, configDir) {
+  if (!observed.pluginSources || !configDir) return observed;
+  const portable = ({ root, ...source }) => {
+    const written = root ? portablePluginRoot(root, base, configDir) : undefined;
+    return written === undefined ? source : { ...source, root: written };
+  };
+  return {
+    ...observed,
+    pluginSources: Object.fromEntries(
+      Object.entries(observed.pluginSources).map(([name, source]) => [name, portable(source)]),
+    ),
+  };
+}
+
+/**
+ * The project-file value of a resolved (absolute) plug-in source root. The project file resolves a relative root
+ * against its own folder `base` (mirage/lib/project-config.mjs), so the value always resolves back to `root`:
+ * undefined when `root` is `base` (the reader's default), a `/`-separated path relative to `base` when `root` is
+ * inside the catalogue folder `configDir`, else `root` unchanged (outside the catalogue folder or on another drive).
+ * `paths` is the path module of the platform the paths belong to.
+ */
+export function portablePluginRoot(root, base, configDir, paths = path) {
+  const fromCatalogue = paths.relative(configDir, root);
+  if (paths.isAbsolute(fromCatalogue) || fromCatalogue.split(paths.sep)[0] === '..') return root;
+  const fromProject = paths.relative(base, root);
+  if (!fromProject) return undefined;
+  return paths.isAbsolute(fromProject) ? root : fromProject.split(paths.sep).join('/');
 }
 
 function deploymentProfilesDocument(deploymentProfiles, base) {
@@ -2676,14 +3413,14 @@ function projectStartPlans(cfg, effective, portals) {
 }
 
 /** Starts (or reuses) every planned Mirage at once; a portal that fails does not stop the others. */
-async function startPlans(plans, paths) {
+async function startPlans(plans, paths, host = SYSTEM_HOST) {
   const clashes = portClashes(plans.filter((plan) => !plan.error));
   if (clashes.length)
     throw new Error(
       `Each Mirage needs its own port (${clashes.join('; ')}). Set sites.<id>.mirage.port to distinct ports, or 0 for any free port.`,
     );
   const results = await Promise.allSettled(
-    plans.map((plan) => (plan.error ? Promise.reject(plan.error) : start(plan.cfg, plan.args, { paths }))),
+    plans.map((plan) => (plan.error ? Promise.reject(plan.error) : host.start(plan.cfg, plan.args, { paths }))),
   );
   return plans.map((plan, index) => ({
     ...plan,
@@ -2743,12 +3480,12 @@ export async function stopStarted(
   portals,
   paths,
   stop = stopOwnedSessions,
-  { source = process, alive = isAlive } = {},
+  { source = process, alive = isAlive, host = SYSTEM_HOST } = {},
 ) {
   await guardShutdownSignals(
-    async () => {
+    async (interrupt) => {
       for (const portal of portals.filter((item) => item.session?.started)) {
-        const report = await stop({ paths, pids: [portal.session.pid] }).catch((error) => ({
+        const report = await stop({ paths, pids: [portal.session.pid], interrupt }).catch((error) => ({
           stopped: [],
           error,
         }));
@@ -2759,7 +3496,7 @@ export async function stopStarted(
         } else {
           let retry;
           try {
-            retry = `run: ${await sessionStopHint([portal], paths, { cleanupOnError: false })}`;
+            retry = `run: ${await sessionStopHint([portal], paths, { cleanupOnError: false, host })}`;
           } catch (error) {
             retry = `a retry command could not be prepared: ${error.message}`;
           }
@@ -2775,10 +3512,10 @@ export async function stopStarted(
 }
 
 /** Starts the planned portals, then reports them (start) or opens them with the live targets (dev). */
-async function runPortals({ cfg, args, action, plans, paths, initialSite }) {
-  const portals = await startPlans(plans, paths);
+async function runPortals({ cfg, args, action, plans, paths, initialSite, host = SYSTEM_HOST, selection }) {
+  const portals = await startPlans(plans, paths, host);
   const running = portals.filter((portal) => portal.session);
-  const stop = await sessionStopHint(running, paths);
+  const stop = await sessionStopHint(running, paths, { host, selection });
   const summary = portals.map(portalStartSummary);
   if (action === 'start') {
     print({ action: 'start', portals: summary, stop }, args.json);
@@ -2796,7 +3533,7 @@ async function runPortals({ cfg, args, action, plans, paths, initialSite }) {
   try {
     if (!portalSessions.length)
       throw new Error(
-        'No Mirage portal could start; see the messages above. A Mirage-only site opens its own browser with "npx paqvilo mirage dev --site <id>".',
+        `No Mirage portal could start; see the messages above. A Mirage-only site opens its own browser with "${paqviloCommand(['mirage', 'dev'], { config: cfg.configFile, extra: ['--site', '<id>'] })}".`,
       );
     const { selection, live, note } = await portalSelection({ ...cfg, siteName: initialSite }, args, portalSessions);
     if (note) console.log(`live        not offered: ${note}`);
@@ -2810,7 +3547,7 @@ async function runPortals({ cfg, args, action, plans, paths, initialSite }) {
       () => runDev(selection.initial, { ...args, devSelection: selection }),
     );
   } finally {
-    await stopStarted(portals, paths);
+    await stopStarted(portals, paths, host.stop, { alive: host.alive, host });
   }
 }
 
@@ -2854,7 +3591,151 @@ export function printStandalonePortalSessions(running, portalSessions) {
     );
 }
 
-/* NOSONAR */ async function miragePortals(cfg, args, action, paths) {
+/** The runtimes `mirage stop` selects for every catalogue site (portals: all). */
+async function cataloguePortalPids(entries, paths) {
+  const pids = [];
+  for (const { cfg: site } of entries) {
+    if (!site) continue;
+    const effective = catalogueArgs(site, {}, { requireProject: false });
+    const project = effective.project ? await selectedProjectOf(effective.project, paths) : null;
+    pids.push(
+      ...(await selectedSessionPids(
+        paths,
+        site,
+        effective.runtime ?? project?.runtime?.kind ?? site.runtime?.kind ?? 'power-pages',
+        project,
+        {},
+        project ? null : site.sourceDir,
+      )),
+    );
+  }
+  return pids;
+}
+
+/** The runtimes `mirage stop` selects for a project with several Power Pages portals. */
+async function projectPortalPids(paths, cfg, project, args) {
+  const base = args.port === undefined ? undefined : runtimePort(args.port, DEFAULT_PORT);
+  // A broad project stop includes recorded portals that were renamed or
+  // removed since launch. A nonzero explicit base still selects the current
+  // project's consecutive per-portal ports, matching projectStartPlans.
+  if (base === undefined || base === 0) return selectedSessionPids(paths, cfg, 'power-pages', project, args);
+  const pids = [];
+  for (const [index, portal] of project.portals.entries())
+    pids.push(
+      ...(await selectedSessionPids(paths, cfg, 'power-pages', project, {
+        ...args,
+        portal: portal.id,
+        port: String(base + index),
+      })),
+    );
+  return pids;
+}
+
+/**
+ * A selected project file; one that no longer exists still selects the runtimes recorded for it (`missing`), with
+ * the runtime kind they were started with.
+ */
+async function selectedProjectOf(file, paths) {
+  const configFile = path.resolve(file);
+  if (isFile(configFile)) return loadProject(configFile);
+  const recorded = (await ownedSessionsIn(await recordFolders(paths, configFile))).find((entry) =>
+    samePath(entry.project, configFile),
+  );
+  return { configFile, portals: [], runtime: recorded?.identity?.runtime ?? { kind: 'power-pages' }, missing: true };
+}
+
+/**
+ * What `mirage stop` selects for these arguments under the selection rule above (miragePaths): the PIDs, the selected
+ * project and the runtime kind. status lists the same selection.
+ */
+async function stopSelection(cfg, args, paths) {
+  if (severalPortals(cfg, args, 'stop'))
+    return { pids: await cataloguePortalPids(await portalConfigs(cfg, args, 'stop'), paths), project: null };
+  const effective = catalogueArgs(cfg, args, { requireProject: false });
+  const project = effective.project ? await selectedProjectOf(effective.project, paths) : null;
+  if (project && !effective.portal && !project.missing && hasSeveralPowerPagesPortals(effective, project))
+    return { pids: await projectPortalPids(paths, cfg, project, args), project, kind: 'power-pages' };
+  const kind = effective.runtime ?? project?.runtime?.kind ?? cfg.runtime?.kind ?? 'power-pages';
+  const sourceDir = kind === 'power-pages' && !project ? cfg.sourceDir : null;
+  const pids = await selectedSessionPids(paths, cfg, kind, project, args, sourceDir);
+  if (!effective.runtime && !project) pids.push(...(await siteStandalonePids(paths, cfg, args, kind)));
+  return { pids: [...new Set(pids)], project, kind };
+}
+
+/**
+ * The standalone runtimes a catalogue site selection names besides those of its own kind: the ones started for that
+ * site with --runtime, and, for a selection without selectors, the ones started in the folder without a catalogue site
+ * or project (they belong to that folder).
+ */
+async function siteStandalonePids(paths, cfg, args, kind) {
+  const pids = [];
+  const unscoped = { ...cfg, configFile: null, catalogueScope: null };
+  const bare = !args.config && !args.site && !args.project;
+  for (const other of RUNTIME_KINDS.filter((item) => item !== 'power-pages')) {
+    if (other !== kind && catalogueIdentity(cfg))
+      pids.push(...(await selectedSessionPids(paths, cfg, other, null, args)));
+    if (bare) pids.push(...(await selectedSessionPids(paths, unscoped, other, null, args)));
+  }
+  return pids;
+}
+
+/** A brief of each toolkit-owned runtime that is outside the selection, with the status command that names it. */
+function outsideSelection(entries) {
+  return entries.map((entry) => {
+    const scope = entry.identity?.scope;
+    let selectors = [];
+    if (entry.project) selectors = ['--project', entry.project];
+    else if (scope?.configFile)
+      selectors = ['--config', scope.configFile, '--site', scope.catalogueSite ?? scope.siteName];
+    return {
+      pid: entry.pid,
+      url: entry.url ?? null,
+      project: entry.project ?? null,
+      site: scope ? (scope.catalogueSite ?? scope.siteName) : null,
+      status: paqviloCommand(['mirage', 'status'], { extra: selectors }),
+    };
+  });
+}
+
+/** The live toolkit-owned runtimes recorded in the folders the selection reads that it does not select. */
+async function othersOf(host, paths, selection) {
+  const folders = await recordFolders(paths, selection.project?.configFile);
+  const recorded = await ownedSessionsIn(folders);
+  const isForeign = await foreignJudge(recorded, { hostName: lockHost(), alive: host.alive });
+  const entries = recorded.filter(
+    (entry) => !isForeign(entry) && !selection.pids.includes(entry.pid) && host.alive(entry.pid),
+  );
+  return outsideSelection(entries);
+}
+
+const othersNote = (others) =>
+  others.length
+    ? ` ${others.length} other toolkit-owned Mirage session(s) outside this selection are running; list each with: ${others.map((item) => item.status).join(' | ')}`
+    : '';
+
+/**
+ * The runtimes status lists for the selection that no toolkit start owns, such as a foreground `mirage serve`: they
+ * have no recorded start identity, so stop never signals them (stopOwnedSessions) and names them instead.
+ */
+async function foregroundSessions(cfg, args, paths, host) {
+  try {
+    const { sessions } = await selectedStatus(cfg, args, paths, host);
+    return sessions
+      .filter((session) => !session.owned && session.processAlive)
+      .map(({ pid, url }) => ({ pid, url: url ?? null }));
+  } catch {
+    return [];
+  }
+}
+
+const foregroundNote = (foreground) => {
+  if (!foreground.length) return '';
+  const one = foreground.length === 1;
+  const names = foreground.map((item) => `${item.url ?? '(no URL yet)'} (pid ${item.pid})`).join(', ');
+  return ` ${foreground.length} foreground ${one ? 'runtime is' : 'runtimes are'} not stopped by stop: ${names}; press Ctrl+C in ${one ? 'its terminal' : 'their terminals'}.`;
+};
+
+/* NOSONAR */ async function miragePortals(cfg, args, action, paths, host = SYSTEM_HOST) {
   const entries = await portalConfigs(cfg, args, action);
   if (action === 'init') {
     const projects = [];
@@ -2873,34 +3754,16 @@ export function printStandalonePortalSessions(running, portalSessions) {
       {
         action: 'init',
         projects,
-        next: mirageCommandHint([['mirage', 'dev', ...hintScope(cfg, args, true)]], { cli: TOOLKIT_CLI }),
+        next: host.commandHint([['mirage', 'dev', ...hintScope(cfg, args, true)]], { cli: TOOLKIT_CLI }),
       },
       args.json,
     );
     return projects.some((project) => project.error) ? 1 : 0;
   }
   if (action === 'stop') {
-    const pids = [];
-    for (const { cfg: site } of entries) {
-      if (!site) continue;
-      const effective = catalogueArgs(site, {}, { requireProject: false });
-      const project = effective.project ? await loadProject(effective.project) : null;
-      pids.push(
-        ...(await selectedSessionPids(
-          paths,
-          site,
-          effective.runtime ?? project?.runtime.kind ?? site.runtime?.kind ?? 'power-pages',
-          project,
-          {},
-          project ? null : site.sourceDir,
-        )),
-      );
-    }
-    const report = await stopOwnedSessions({ paths, pids });
-    if (report.remaining.length)
-      throw new Error(
-        `Mirage process ${report.remaining.map((item) => item.pid).join(', ')} did not stop within ${(STOP_DEADLINE + 2000) / 1000} seconds`,
-      );
+    const pids = await cataloguePortalPids(entries, paths);
+    const report = await stopSelected(host, paths, pids);
+    if (report.remaining.length) throw new Error(stillRunning(report));
     print(
       {
         action: 'stop',
@@ -2918,33 +3781,21 @@ export function printStandalonePortalSessions(running, portalSessions) {
     plans: catalogueStartPlans(entries, args, cfg.siteName),
     paths,
     initialSite: cfg.siteName,
+    host,
+    // `stop --portals all` selects every catalogue site's runtimes (severalPortals, cataloguePortalPids).
+    selection: catalogueOwnedState(cfg) && {
+      args: () => hintScope(cfg, args, true),
+      pids: () => cataloguePortalPids(entries, paths),
+    },
   });
 }
 
 /** A project with several portals and no --portal: one runtime per portal of that project. */
-async function mirageProjectPortals(cfg, args, effective, action, project, paths) {
+async function mirageProjectPortals(cfg, args, effective, action, project, paths, host = SYSTEM_HOST) {
   if (action === 'stop') {
-    const pids = [];
-    const base = args.port === undefined ? undefined : runtimePort(args.port, DEFAULT_PORT);
-    // A broad project stop includes recorded portals that were renamed or
-    // removed since launch. A nonzero explicit base still selects the current
-    // project's consecutive per-portal ports, matching projectStartPlans.
-    if (base === undefined || base === 0)
-      pids.push(...(await selectedSessionPids(paths, cfg, 'power-pages', project, args)));
-    else
-      for (const [index, portal] of project.portals.entries())
-        pids.push(
-          ...(await selectedSessionPids(paths, cfg, 'power-pages', project, {
-            ...args,
-            portal: portal.id,
-            port: String(base + index),
-          })),
-        );
-    const report = await stopOwnedSessions({ paths, pids });
-    if (report.remaining.length)
-      throw new Error(
-        `Mirage process ${report.remaining.map((item) => item.pid).join(', ')} did not stop within ${(STOP_DEADLINE + 2000) / 1000} seconds`,
-      );
+    const pids = await projectPortalPids(paths, cfg, project, args);
+    const report = await stopSelected(host, paths, pids, project.configFile);
+    if (report.remaining.length) throw new Error(stillRunning(report));
     print(
       {
         action: 'stop',
@@ -2966,6 +3817,16 @@ async function mirageProjectPortals(cfg, args, effective, action, project, paths
     plans: projectStartPlans(cfg, effective, project.portals),
     paths,
     initialSite: project.defaultPortal,
+    host,
+    // Each runtime's stop command up to its project file, without --portal, selects every portal of the project.
+    selection: {
+      args: ([first]) => {
+        const parts = sessionStopArguments(first.cfg, first.args, first.session);
+        const at = parts.indexOf('--project');
+        return at < 0 ? null : parts.slice(0, at + 2);
+      },
+      pids: () => projectPortalPids(paths, cfg, project, { ...args, port: undefined, state: undefined }),
+    },
   });
 }
 
@@ -3005,16 +3866,17 @@ function hintOptions(cfg) {
 function standaloneNextArguments(cfg, args) {
   const parts = ['--runtime', cfg.runtime.kind];
   if (args.project) parts.push('--project', path.resolve(args.project));
-  if (args.state) parts.push('--state', path.resolve(args.state));
-  for (const key of ['port', 'simulation', 'preset', 'preset-mode'])
-    if (args[key] !== undefined) parts.push('--' + key, String(args[key]));
+  parts.push(...runtimeNextArguments(args, ['port', 'simulation', 'preset', 'preset-mode']));
   for (const root of args['solution-root'] ?? []) parts.push('--solution-root', path.resolve(root));
   return parts;
 }
 
 function sessionStopArguments(cfg, args, session) {
   const launch = session.launch;
-  const parts = hintScope(cfg, args);
+  // A project runtime recorded without a catalogue scope (projectOnlyLaunch) is selected by its project file alone.
+  const projectOnly =
+    launch.project && projectOnlyLaunch(cfg, args, { configFile: launch.project, runtime: launch.runtime });
+  const parts = projectOnly ? [...(args.repo ? ['--repo', path.resolve(args.repo)] : [])] : hintScope(cfg, args);
   if (launch.project) {
     parts.push('--project', launch.project);
     if (launch.portal) parts.push('--portal', launch.portal);
@@ -3030,11 +3892,17 @@ function sessionStopArguments(cfg, args, session) {
   return parts;
 }
 
-/* NOSONAR */ async function sessionStopHint(portals, paths, { cleanupOnError = true } = {}) {
-  const commands = stopCommands(portals);
-  if (!commands.length) return null;
-  const options = stopHintOptions(portals, commands);
-  const format = (storePayload) => formatStopHint(commands, options, storePayload);
+/* NOSONAR */ async function sessionStopHint(
+  portals,
+  paths,
+  { cleanupOnError = true, host = SYSTEM_HOST, selection } = {},
+) {
+  const own = stopCommands(portals);
+  if (!own.length) return null;
+  const options = { ...stopHintOptions(portals, own), lines: true };
+  const commands = (await sharedStopCommand(portals, selection)) ?? own;
+  // One command is the stop hint of its runtimes; several are one batch with each runtime's own selectors.
+  const format = (storePayload) => host.commandHint(commands, { ...options, storePayload });
   const externalPayload = new Error('Owned command payload storage is required.');
   const files = [];
   try {
@@ -3065,7 +3933,7 @@ function sessionStopArguments(cfg, args, session) {
     if (started.length) {
       let cleanup;
       try {
-        cleanup = await stopOwnedSessions({ paths, pids: started });
+        cleanup = await guardShutdownSignals((interrupt) => host.stop({ paths, pids: started, interrupt }));
       } catch (cleanupError) {
         throw new AggregateError(
           [error, cleanupError],
@@ -3107,6 +3975,19 @@ function attachHintFiles(entry, portals, files) {
     : entry;
 }
 
+/**
+ * The one stop selection that started runtimes share (`selection.args(portals)`), when the runtimes it selects
+ * (`selection.pids()`) are exactly the ones running: a readable hint instead of one command per runtime.
+ */
+async function sharedStopCommand(portals, selection) {
+  if (!selection || portals.length < 2) return null;
+  const args = selection.args(portals);
+  const selected = args && new Set(await selection.pids().catch(() => []));
+  if (!selected || selected.size !== portals.length || portals.some(({ session }) => !selected.has(session.pid)))
+    return null;
+  return [['mirage', 'stop', ...args]];
+}
+
 function stopCommands(portals) {
   return portals.map(({ cfg, args, session }) => ['mirage', 'stop', ...sessionStopArguments(cfg, args, session)]);
 }
@@ -3134,20 +4015,16 @@ function stopHintOptions(portals, commands) {
   return { cli: TOOLKIT_CLI, ...(cwd ? { cwd } : {}) };
 }
 
-function formatStopHint(commands, options, storePayload) {
-  return commands.length === 1
-    ? mirageStopCommand(commands[0].slice(2), { ...options, storePayload })
-    : mirageCommandHint(commands, { ...options, storePayload });
-}
-
 /** A diagnostic inspection can legitimately return a report with exit status 1. */
 export function inspectProcessResult(result) {
   if (result.error) throw result.error;
+  let report;
   const failed = () => {
     const exit = result.signal ? 'was terminated by ' + result.signal : 'exited with ' + result.status;
-    return new Error(String(result.stderr ?? '').trim() || `Mirage inspect ${exit}`);
+    // With --json the runtime CLI reports its own failure on stdout ({ ok: false, error: { message } }).
+    const reported = typeof report?.error?.message === 'string' ? report.error.message.trim() : '';
+    return new Error(String(result.stderr ?? '').trim() || reported || `Mirage inspect ${exit}`);
   };
-  let report;
   try {
     report = JSON.parse(result.stdout);
   } catch {
@@ -3181,13 +4058,26 @@ export function inspectProcessResult(result) {
   return { report, exitCode: result.status, errors };
 }
 
-function print(value, json) {
+/** The text of a status report: the selected sessions, then every other toolkit-owned one with how to list it. */
+function printStatus(value) {
+  if (value.projectMissing)
+    console.log(`The project file ${value.projectMissing} no longer exists; listing the runtimes recorded for it.`);
+  const others = value.others ?? [];
+  if (!value.sessions.length && others.length) console.log('No Mirage session in this selection.');
+  else printSessions(value.sessions);
+  if (!others.length) return;
+  console.log(`${others.length} other toolkit-owned Mirage session(s) outside this selection:`);
+  for (const other of others) console.log(`  ${other.pid} ${other.url ?? '(starting)'}  list it with: ${other.status}`);
+}
+
+/** Prints a lifecycle report: the JSON document with `json`, else its text form. */
+export function print(value, json) {
   if (json) {
     printJson(value);
     return;
   }
   if (value.sessions) {
-    printSessions(value.sessions);
+    printStatus(value);
     return;
   }
   if (value.action === 'init' && value.projects) {
@@ -3241,6 +4131,12 @@ function printJson(value) {
   );
 }
 
+/** A running runtime no toolkit start owns (foregroundSessions) is labelled foreground: stop does not stop it. */
+const foregroundLabel = (session) => {
+  if (session.owned) return ' · toolkit managed';
+  return session.processAlive ? ' · foreground' : '';
+};
+
 function printSessions(sessions) {
   if (!sessions.length) console.log('No Mirage sessions found.');
   for (const session of sessions) printSession(session);
@@ -3249,18 +4145,22 @@ function printSessions(sessions) {
 /* NOSONAR: single-pass routine, splitting it would change shared state */ function printSession(session) {
   let state;
   if (session.ready) state = 'ready';
-  else if (session.processAlive) state = 'starting';
+  // A runtime that was not known to be ready and gave no answer in time may be busy: that is not "starting".
+  else if (session.processAlive) state = session.probe === PROBE_NO_ANSWER ? 'no answer yet' : 'starting';
   else state = 'stopped';
   const site = session.site ? '  [' + session.site + ']' : '';
   const runtime = session.runtime?.site
     ? '  (' + session.runtime.site + ', ' + session.runtime.pageCount + ' pages)'
     : '';
   console.log(
-    `${state}${session.owned ? ' · toolkit managed' : ''}${site}  ${session.url ?? '(no URL yet)'}  ${session.sourceDir ?? ''}${runtime}`,
+    `${state}${foregroundLabel(session)}${site}  ${session.url ?? '(no URL yet)'}  ${session.sourceDir ?? ''}${runtime}`,
   );
   const details = [
     session.adminUrl && `admin ${session.adminUrl}`,
     session.identityProvider?.origin && `idp ${session.identityProvider.origin}`,
+    // The organization URL of the simulated Dataverse API (mirage/docs/dataverse-api.md) and its token authority.
+    session.runtime?.links?.dataverseApi && `dataverse api ${session.runtime.links.dataverseApi}`,
+    session.runtime?.links?.dataverseAuthority && `authority ${session.runtime.links.dataverseAuthority}`,
     session.runtime?.liveWrites && `live writes ${session.runtime.liveWrites}`,
     session.project && `project ${session.project}`,
     session.portal && `portal ${session.portal}`,
@@ -3268,6 +4168,11 @@ function printSessions(sessions) {
     `pid ${session.pid}`,
   ].filter(Boolean);
   console.log(`    ${details.join(' · ')}`);
+  // Ready on the evidence of its own record, without an answer now: what only the answer reports is unknown.
+  if (session.ready && session.probe === PROBE_NO_ANSWER)
+    console.log(
+      '    the runtime did not answer this status in time, so its site, pages and preset are not shown; run the status again',
+    );
   if (session.runtime?.startupPreset?.name)
     console.log(
       `    preset ${session.runtime.startupPreset.name}: ${session.runtime.startupPreset.applied ? 'applied at startup' : 'kept existing state'} (${session.runtime.startupPreset.mode})`,
@@ -3297,7 +4202,8 @@ function printInitProjects(value) {
 
 function printStartedPortals(value) {
   for (const portal of value.portals) console.log(startedPortalSummary(portal));
-  if (value.stop) console.log(`Stop:      ${value.stop}`);
+  // A hint of one readable command per runtime continues under the first.
+  if (value.stop) console.log(`Stop:      ${value.stop.replaceAll('\n', '\n           ')}`);
 }
 
 function startedPortalSummary(portal) {
@@ -3350,9 +4256,16 @@ function printStoppedSessions(value) {
 }
 
 function printStartedSession(value) {
-  console.log(
-    `Mirage: ${value.url}${value.started === false ? '  (already running)' : ''}\nAdmin:     ${value.adminUrl}\nState:     ${value.stateFile}\nSource:    ${value.sourceDir}\nLive writes: ${liveWritesText(value.runtime?.liveWrites)}`,
-  );
+  const state =
+    value.runtime?.simulation?.level === 'dry-run' ? 'not persisted (dry-run keeps state in memory)' : value.stateFile;
+  const kind = value.runtime?.runtime?.kind ?? value.launch?.runtime?.kind;
+  console.log(`Mirage: ${value.url}${value.started === false ? '  (already running)' : ''}`);
+  console.log(`Admin:     ${value.adminUrl}`);
+  console.log(`State:     ${state}`);
+  if (value.sourceDir) console.log(`Source:    ${value.sourceDir}`);
+  console.log(`Live writes: ${liveWritesText(value.runtime?.liveWrites, kind)}`);
+  // A standalone runtime has no portal source; its organization API is what it serves.
+  if (value.runtime?.links?.dataverseApi) console.log(`Dataverse API: ${value.runtime.links.dataverseApi}`);
   if (value.runtime?.startupPreset?.name)
     console.log(
       `Preset:    ${value.runtime.startupPreset.name} (${value.runtime.startupPreset.mode}; ${value.runtime.startupPreset.applied ? 'applied at startup' : 'kept existing state'})`,
@@ -3366,7 +4279,8 @@ function printStartedSession(value) {
 
 export function validateMirageArguments(args, action = 'status') {
   validateMirageAction(action);
-  if (['start', 'dev'].includes(action)) validateStartupArguments(args);
+  // These options keep their own explanation (an invalid_argument); any other option outside the action's table is
+  // refused below as unsupported_option.
   if (action === 'dev' && args.json)
     throw new Error(
       'mirage dev is interactive; use mirage start --json and agent commands for structured session access',
@@ -3375,25 +4289,22 @@ export function validateMirageArguments(args, action = 'status') {
     throw new Error('--out and --force apply only to mirage init');
   if (args['allow-live-writes'] && !['start', 'dev'].includes(action))
     throw new Error('--allow-live-writes applies only to mirage dev and start');
-  if (action === 'inspect')
-    validateAllowedOptions(args, action, [
-      'config',
-      'repo',
-      'site',
-      'env',
-      'source',
-      'project',
-      'portal',
-      'solution-root',
-      'runtime',
-      'simulation',
-      'json',
-    ]);
-  if (action === 'status') validateAllowedOptions(args, action, ['config', 'project', 'repo', 'json']);
+  validateAllowedOptions(args, action, MIRAGE_ACTION_OPTIONS[action]);
+  validateOptionValues(args);
 }
 
-function validateStartupArguments(args) {
-  runtimePort(args.port, DEFAULT_PORT);
+const VALUE_CHOICES = {
+  runtime: RUNTIME_KINDS,
+  simulation: ['dry-run', 'simulation', 'deep'],
+  'preset-mode': ['bootstrap', 'always'],
+};
+
+/** The values of every action's options, checked before an action reads or writes anything. */
+function validateOptionValues(args) {
+  if (args.port !== undefined) runtimePort(args.port, DEFAULT_PORT);
+  for (const [option, choices] of Object.entries(VALUE_CHOICES))
+    if (args[option] !== undefined && !choices.includes(args[option]))
+      throw new Error(`--${option} must be ${choices.slice(0, -1).join(', ')} or ${choices.at(-1)}`);
   if (args['startup-timeout'] === undefined) return;
   const timeout = Number(args['startup-timeout']);
   if (!/^\d+$/.test(args['startup-timeout']) || !Number.isSafeInteger(timeout) || timeout < 1000 || timeout > 600000)
@@ -3404,64 +4315,75 @@ function validateStartupArguments(args) {
 
 function validateAllowedOptions(args, action, allowedOptions) {
   const allowed = new Set(allowedOptions);
+  // Only command-line options are checked; a caller's own values (such as the startup progress) are not options.
   for (const option of Object.keys(args))
-    if (!allowed.has(option))
+    if (Object.hasOwn(LENSE_OPTIONS, option) && !allowed.has(option))
       throw Object.assign(new Error(`--${option} is not supported by mirage ${action}`), {
         code: 'unsupported_option',
       });
 }
 
-/* NOSONAR */ export default async function mirage(cfg, args, positionals = []) {
+/**
+ * `paqvilo mirage <action>`. `runtimeHost` replaces how the command reaches processes (see hostOf); the command line
+ * passes none.
+ */
+/* NOSONAR */ export default async function mirage(cfg, args, positionals = [], runtimeHost = undefined) {
   const action = positionals[0] ?? 'status';
   validateMirageArguments(args, action);
   const paths = miragePaths(cfg, args);
+  const host = runtimeHost ? hostOf(runtimeHost) : SYSTEM_HOST;
   if (action === 'status') {
-    const sessions = await mirageStatus(paths);
-    const sites = catalogueSiteFolders(args);
-    assignCatalogueSites(sessions, sites);
-    print({ action: 'status', sessions }, args.json);
+    const { sessions, others, project } = await selectedStatus(cfg, args, paths, host);
+    print(
+      {
+        action: 'status',
+        sessions,
+        ...(others.length ? { others } : {}),
+        ...(project?.missing ? { projectMissing: project.configFile } : {}),
+      },
+      args.json,
+    );
     return 0;
   }
-  if (severalPortals(cfg, args, action)) return miragePortals(cfg, args, action, paths);
+  if (action === 'stop' && !cfg) return stopRemovedCatalogue(args, paths, host);
+  if (severalPortals(cfg, args, action)) return miragePortals(cfg, args, action, paths, host);
   if (action === 'init') {
     print(await initProject(cfg, args), args.json);
     return 0;
   }
   const effective = catalogueArgs(cfg, args, { requireProject: action !== 'stop' });
   if (['start', 'dev', 'stop'].includes(action) && effective.project && !effective.portal) {
-    const project = await loadProject(effective.project);
-    if (hasSeveralPowerPagesPortals(effective, project))
-      return mirageProjectPortals(cfg, args, effective, action, project, paths);
+    const project =
+      action === 'stop' ? await selectedProjectOf(effective.project, paths) : await loadProject(effective.project);
+    if (!project.missing && hasSeveralPowerPagesPortals(effective, project))
+      return mirageProjectPortals(cfg, args, effective, action, project, paths, host);
   }
   if (action === 'stop') {
-    let sourceDir = cfg.sourceDir;
-    const selectedProject = effective.project ? await loadProject(effective.project) : null;
-    const runtimeKind = effective.runtime ?? selectedProject?.runtime?.kind ?? cfg.runtime?.kind;
-    if (runtimeKind && runtimeKind !== 'power-pages') {
-      const kind = runtimeKind;
-      const pids = await selectedSessionPids(paths, cfg, kind, selectedProject, args);
-      const report = await stopOwnedSessions({ paths, pids });
-      if (report.remaining.length) throw new Error('An owned standalone Mirage session did not stop.');
-      print(
-        {
-          action: 'stop',
-          message: stopSummary(report, selectedProject?.configFile ?? kind, selectedProject?.configFile ?? kind),
-          ...report,
-        },
-        args.json,
-      );
-      return stopExitStatus(report, pids);
-    }
     // Stop joins the recorded project/portal identity; current mappings can
     // legitimately point elsewhere or no longer contain the launched portal.
-    if (selectedProject) sourceDir = null;
-    const pids = await selectedSessionPids(paths, cfg, 'power-pages', selectedProject, args, sourceDir);
-    const report = await stopOwnedSessions({ paths, pids });
+    const selection = await stopSelection(cfg, args, paths);
+    const { pids, project, kind } = selection;
+    const others = await othersOf(host, paths, selection);
+    const report = await stopSelected(host, paths, pids, project?.configFile);
     if (report.remaining.length)
       throw new Error(
-        `Mirage process ${report.remaining.map((item) => item.pid).join(', ')} did not stop within ${(STOP_DEADLINE + 2000) / 1000} seconds`,
+        kind === 'power-pages' ? stillRunning(report) : 'An owned standalone Mirage session did not stop.',
       );
-    print({ action: 'stop', message: stopSummary(report, cfg.siteName, cfg.siteName), ...report }, args.json);
+    const label = kind === 'power-pages' && !project ? siteSelectionLabel(cfg, args) : (project?.configFile ?? kind);
+    const missing = project?.missing
+      ? ` The project file ${project.configFile} no longer exists; the runtimes recorded for it were selected.`
+      : '';
+    const foreground = await foregroundSessions(cfg, args, paths, host);
+    print(
+      {
+        action: 'stop',
+        message: stopSummary(report, label, label) + missing + othersNote(others) + foregroundNote(foreground),
+        ...report,
+        ...(others.length ? { others } : {}),
+        ...(foreground.length ? { foreground } : {}),
+      },
+      args.json,
+    );
     return stopExitStatus(report, pids);
   }
   if (action === 'inspect') {
@@ -3482,7 +4404,7 @@ function validateAllowedOptions(args, action, allowedOptions) {
     else process.stdout.write(result.stdout);
     return exitCode;
   }
-  const session = await start(cfg, effective, { paths, command: `mirage ${action}` });
+  const session = await host.start(cfg, effective, { paths, command: `mirage ${action}` });
   args.startup?.phase(
     'runtime listener',
     session.started ? 'listening; application readiness pending' : 'reused; application readiness pending',
@@ -3490,7 +4412,7 @@ function validateAllowedOptions(args, action, allowedOptions) {
   const { launch } = session;
   const adminUrl = session.adminUrl ?? adminUrlOf(session.url);
   const stateFile = session.stateFile ?? launch.stateFile;
-  const stop = await sessionStopHint([{ cfg, args: effective, session }], paths);
+  const stop = await sessionStopHint([{ cfg, args: effective, session }], paths, { host });
   if (action === 'dev') {
     if (launch.runtime?.kind && launch.runtime.kind !== 'power-pages') {
       const { controller, interrupt, runtimeEnded, interrupted } = codeAppInterrupt();
@@ -3517,8 +4439,13 @@ function validateAllowedOptions(args, action, allowedOptions) {
       } finally {
         process.off('SIGINT', interrupt);
         process.off('SIGTERM', interrupt);
-        await guardShutdownSignals(() =>
-          stopDevelopmentSession(servers, session, paths, stop, { runtime: codeAppRuntime }),
+        await guardShutdownSignals((interrupt) =>
+          stopDevelopmentSession(servers, session, paths, stop, {
+            runtime: codeAppRuntime,
+            stopSessions: host.stop,
+            alive: host.alive,
+            interrupt,
+          }),
         );
       }
     }
@@ -3535,7 +4462,7 @@ function validateAllowedOptions(args, action, allowedOptions) {
       process.off('SIGTERM', interrupt);
       runtime.ending = true;
       if (session.started && !runtime.exit)
-        await guardShutdownSignals(() => stopOwnedSessions({ paths, pids: [session.pid] }));
+        await guardShutdownSignals((interrupt) => host.stop({ paths, pids: [session.pid], interrupt }));
       if (codeAppStartupInterrupted(error)) return 0;
       throw error;
     }
@@ -3595,7 +4522,14 @@ function validateAllowedOptions(args, action, allowedOptions) {
     } finally {
       process.off('SIGINT', interrupt);
       process.off('SIGTERM', interrupt);
-      await guardShutdownSignals(() => stopDevelopmentSession(codeAppServers, session, paths, stop, { runtime }));
+      await guardShutdownSignals((interrupt) =>
+        stopDevelopmentSession(codeAppServers, session, paths, stop, {
+          runtime,
+          stopSessions: host.stop,
+          alive: host.alive,
+          interrupt,
+        }),
+      );
     }
   }
   print({ action: 'start', ...session, adminUrl, stateFile, stop }, args.json);
@@ -3612,15 +4546,16 @@ export async function stopDevelopmentSession(
   session,
   paths,
   stop,
-  { stopSessions = stopOwnedSessions, report = console.error, alive = isAlive, runtime } = {},
+  { stopSessions = stopOwnedSessions, report = console.error, alive = isAlive, runtime, interrupt } = {},
 ) {
   // The teardown starts here: the runtime's exit from now on is expected, so its listener stays silent.
   if (runtime) runtime.ending = true;
+  runtime?.stopWatching?.();
   try {
     await codeAppServers?.close();
   } finally {
     if (session.started) {
-      const outcome = await stopSessions({ paths, pids: [session.pid] }).catch((error) => ({
+      const outcome = await stopSessions({ paths, pids: [session.pid], interrupt }).catch((error) => ({
         stopped: [],
         remaining: [{ pid: session.pid }],
         error,
@@ -3637,9 +4572,100 @@ export async function stopDevelopmentSession(
   }
 }
 
-function assignCatalogueSites(sessions, sites) {
-  for (const session of sessions)
-    session.site = sites.find((item) => session.sourceDir && samePath(item.sourceDir, session.sourceDir))?.site ?? null;
+/**
+ * The sessions `mirage status` lists under the selection rule above (miragePaths): the runtimes stop would select for
+ * the same arguments, plus a runtime the toolkit does not own when it serves the selected project or site source
+ * (or no selector was given), and the other toolkit-owned runtimes found in the same records (`others`).
+ * Without a configuration (no selector and no readable catalogue) every recorded runtime is listed.
+ */
+/** The sessions of every ownership folder, once each; the first folder's errors are reported, another's skipped. */
+async function listedSessions(folders, host) {
+  const found = [];
+  for (const [index, folder] of folders.entries()) {
+    const listed = await host.status(folder).catch((error) => {
+      if (index === 0) throw error;
+      return [];
+    });
+    for (const session of listed) if (!found.some((item) => item.pid === session.pid)) found.push(session);
+  }
+  return found.sort((a, b) => a.pid - b.pid);
+}
+
+/**
+ * stop for a removed catalogue: the toolkit-owned runtimes status lists for it (selectedStatus without a
+ * configuration), narrowed by the --state and nonzero --port a printed stop command carries.
+ */
+async function stopRemovedCatalogue(args, paths, host) {
+  const { sessions } = await selectedStatus(null, args, paths, host);
+  const port = args.port !== undefined && String(args.port) !== '0' ? String(args.port) : null;
+  const pids = sessions
+    .filter(
+      (session) =>
+        session.owned &&
+        (!args.state || samePath(session.stateFile, path.resolve(args.state))) &&
+        (!port || listenerPort(session.url) === port),
+    )
+    .map((session) => session.pid);
+  const report = await stopSelected(host, paths, pids);
+  if (report.remaining.length) throw new Error(stillRunning(report));
+  const label = `the removed catalogue ${path.resolve(args.config)}`;
+  const foreground = await foregroundSessions(null, args, paths, host);
+  print(
+    {
+      action: 'stop',
+      message: stopSummary(report, label, label) + foregroundNote(foreground),
+      ...report,
+      ...(foreground.length ? { foreground } : {}),
+    },
+    args.json,
+  );
+  return stopExitStatus(report, pids);
+}
+
+async function selectedStatus(cfg, args, paths, host) {
+  let selection = null;
+  if (cfg)
+    try {
+      selection = await stopSelection(cfg, args, paths);
+    } catch (error) {
+      // Status takes no --state or --port, so it lists an ambiguous legacy record instead of refusing.
+      if (!String(error.message).startsWith('Legacy Mirage project ownership is ambiguous')) throw error;
+    }
+  const folders = await recordFolders(paths, selection?.project?.configFile);
+  const found = await listedSessions(folders, host);
+  const owned = await ownedSessionsIn(folders);
+  assignCatalogueSites(found, catalogueSiteFolders(args), owned);
+  const explicit = Boolean(args.config || args.site || args.project);
+  const serves = (session) =>
+    selection.project
+      ? samePath(session.project, selection.project.configFile)
+      : Boolean(cfg.sourceDir && !session.project && samePath(session.sourceDir, cfg.sourceDir));
+  const selected = (session) => {
+    if (!selection) return true;
+    if (session.owned) return selection.pids.includes(session.pid);
+    return !explicit || serves(session);
+  };
+  const outside = found.filter((session) => session.owned && !selected(session));
+  return {
+    sessions: found.filter(selected),
+    others: outsideSelection(owned.filter((entry) => outside.some((session) => session.pid === entry.pid))),
+    project: selection?.project ?? null,
+  };
+}
+
+/**
+ * The catalogue site of each session: the one recorded for a toolkit-owned runtime at its start (a current scope;
+ * an older record's may name a portal), else the first site of the catalogue that serves its source folder (several
+ * sites can share one folder).
+ */
+function assignCatalogueSites(sessions, sites, owned = []) {
+  for (const session of sessions) {
+    const scope = session.owned ? owned.find((entry) => entry.pid === session.pid)?.identity?.scope : null;
+    session.site =
+      (scope?.version === 1 ? scope.catalogueSite : null) ??
+      sites.find((item) => session.sourceDir && samePath(item.sourceDir, session.sourceDir))?.site ??
+      null;
+  }
 }
 
 function hasSeveralPowerPagesPortals(effective, project) {

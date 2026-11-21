@@ -1,78 +1,73 @@
 # Capabilities and preflight
 
-Mirage reports what each local module, provider, operation and source component can do, and what a run of your sources still requires. The capability registry holds the module levels. The preflight report lists the requirements and says whether any of them block.
+Mirage reports what each local module, provider, operation and source component can do (the capability registry), and
+what a run of your sources still needs (the preflight report).
 
 ## Fidelity levels
 
-Every capability record has one of four levels, from lowest to highest:
+| Level              | Meaning                                                                                                                     |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| `inventory`        | Listed from source. Nothing runs it locally, or it answers a placeholder or a documented `501`/diagnostic.                  |
+| `contract`         | Request and response shapes are honoured; the answer comes from a fixture, mock, declared-only adapter or reduced rule set. |
+| `behaviour`        | The local runtime executes the documented behaviour.                                                                        |
+| `native-qualified` | `behaviour` compared with a native environment in at least one named scenario.                                              |
 
-| Level              | Meaning                                                                                                                                              |
-| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `inventory`        | The component is listed from source. Nothing runs it locally, or it answers with a placeholder or a documented `501`/diagnostic.                     |
-| `contract`         | The request and response shapes are honoured and documented. The answer comes from a fixture, a mock, a declared-only adapter or a reduced rule set. |
-| `behaviour`        | The local runtime executes the documented behaviour.                                                                                                 |
-| `native-qualified` | `behaviour` that has been compared with a native environment in at least one named scenario.                                                         |
-
-A placeholder or a mock never counts as `behaviour`. `native-qualified` is attached only to records whose `evidence` names a compared scenario (`{ scenario: '<id>' }`). The registry refuses a `native-qualified` record or operation without one.
+A placeholder or mock never counts as `behaviour`, and a placeholder never reports success. The registry refuses a
+`native-qualified` record or operation whose `evidence` does not name a compared scenario (`{ scenario: '<id>' }`).
 
 ## Capability records
 
-`mirage/lib/capability-registry.mjs` holds the registry. A record has this shape:
+`mirage/lib/capability-registry.mjs` holds the registry. A record:
 
 ```js
 {
-  name: 'dataverse-rollup',           // unique; an EXTENSIONS entry uses its own name
-  version: '0.9.6',                   // defaults to the package version
+  name: 'x-invented-rollup',          // unique; an EXTENSIONS entry uses its own name
   kind: 'organization-module',        // organization-module | host-surface | operation | provider | identity | service | inventory
-  level: 'contract',                  // inventory | contract | behaviour | native-qualified
+  level: 'contract',
   operations: [{ name: 'Recalculate', level: 'behaviour' }, { name: 'MassRecalculation', level: 'contract' }],
   requires: ['metadata:FormulaDefinition', 'scheduler'],
   principal: 'platform', stateOwner: 'none', lifecycle: 'per-request',
-  evidence: [{ scenario: 'compared-scenario-id' }],   // optional; required for native-qualified
+  evidence: [{ scenario: 'compared-scenario-id' }],   // required for native-qualified
+  // version defaults to the package version
 }
 ```
 
-The registry is filled from these sources:
+Sources: `fromExtensions(list)` (each `EXTENSIONS` entry's `describe()`; none means `inventory`),
+`fromOperations(items)` (operation and plug-in catalogue modes: `placeholder`, `disabled` and `unsupported` →
+`inventory`; `mock` → `contract`; `exported`, `handler`, `clr`, `webhook` → `behaviour`), `fromProviders(descriptors)`
+(the descriptor's kind kept as `providerKind`), `fromInventory(records)` (`<component>:<name>`),
+`fromServices(registry)` and `add`/`addAll` (including a pack's `capabilities` export).
 
-- `fromExtensions(list)` reads `describe()` on each `EXTENSIONS` entry. An entry without `describe()` is recorded at `inventory`.
-- `fromOperations(items)` reads operation-catalogue and plug-in-catalogue items and maps each `mode` to a level. `placeholder` and `disabled` map to `inventory`. `mock` maps to `contract`. `exported`, `handler`, `clr` and `webhook` map to `behaviour`. An `unsupported` item stays at `inventory` and keeps its reason.
-- `fromProviders(descriptors)` reads storage, messaging, connector and local-service descriptors. The descriptor's own kind is kept as `providerKind`.
-- `fromInventory(records)` reads Solution inventory records as `<component>:<name>`.
-- `fromServices(registry)` reads service-fixture records.
-- `add(record)` and `addAll(records)` add records directly, including the records a data pack declares in its `capabilities` export.
-
-### Normalisation
-
-One normaliser, `normalizeCapabilityRecord`, accepts every shape a module declares:
-
-- `operations` may be strings or `{ name, level, reason? }` objects. A string operation takes the record's `level`.
-- `contractOperations: [names]` adds those operations at `contract`.
-- `operationLevels: { name: level }` sets the level of individual operations.
-- `seams` is kept as given.
-- Kind `dataverse-extension` is read as `organization-module`.
-- Levels `fixture` and `mock` are read as `contract`. Levels `disabled` and `placeholder` are read as `inventory`.
-
-A record's level is the lowest level among its operations. When a record states a level and no operation is below it, the stated level is kept. A record without operations must state its level. Fields outside the record shape (functions, fidelity notes, settings) are dropped. Duplicate names are refused with the kind of the record already registered.
+`normalizeCapabilityRecord` accepts every declared shape: string operations take the record level;
+`contractOperations: [names]` and `operationLevels: { name: level }` set operation levels; kind `dataverse-extension`
+reads as `organization-module`; levels `fixture`/`mock` read as `contract` and `disabled`/`placeholder` as `inventory`.
+A record's level is the lowest of its operations (a stated level is kept when no operation is lower); a record without
+operations must state one. Unknown fields are dropped and duplicate names refused.
 
 ### Registry API
 
-| Call                                 | Result                                                                                                                                                                                                                                                                                                                                                            |
-| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `get(name)`, `list({ kind, level })` | Records (copies).                                                                                                                                                                                                                                                                                                                                                 |
-| `summary()`                          | The legacy runtime capabilities: `runtimeCapabilities(runtime)` (`powerPages`, `modelDriven`, `organization`), plus one boolean per `host-surface` record, taken from its `enabled` flag (default `true`).                                                                                                                                                        |
-| `report({ scenario })`               | `{ modules, missing, unsupported }`. `missing` lists `requires` names without a `kind:` prefix that no record provides. Prefixed prerequisites such as `table:`, `metadata:` and `secret:` are resolved by preflight. `unsupported` lists records and operations below `behaviour`. When a scenario is given, only those matching `scenario.requires` are listed. |
-| `assertExecutable(patterns)`         | Returns `true` when every pattern matches a record or an operation (`<record>/<operation>`) at `behaviour` or above. Otherwise it throws `DataError` with code `CapabilityUnavailable` and `details.gaps`.                                                                                                                                                        |
+| Call                                 | Result                                                                                                                                                                                                                                                                                       |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `get(name)`, `list({ kind, level })` | Record copies.                                                                                                                                                                                                                                                                               |
+| `summary()`                          | The legacy runtime capabilities (`powerPages`, `modelDriven`, `organization`) plus one boolean per `host-surface` record (its `enabled`, default `true`).                                                                                                                                    |
+| `report({ scenario })`               | `{ modules, missing, unsupported }`. `missing` lists unprefixed `requires` that no record provides (prefixed ones such as `table:` or `secret:` are resolved by preflight); `unsupported` lists records and operations below `behaviour` (with a scenario, only those its `requires` match). |
+| `assertExecutable(patterns)`         | `true` when every pattern matches a record or `<record>/<operation>` at `behaviour` or above; otherwise throws `DataError` `CapabilityUnavailable` with `details.gaps`.                                                                                                                      |
 
-### Runtime status
+### Runtime registry
 
-Each host builds one registry (`organization-host.mjs`), rebuilt with its operation catalogues when the store revision, the sources or the operation overrides change. It holds:
+Each host builds one registry in `organization-host.mjs` and rebuilds it when the store revision, sources or operation
+overrides change. It holds the host surfaces (`dataverseApi`, `setup`, `records`, `staff`, `personas`, `liveBridge`,
+`portalRendering`, `canvas-apps`, `model-driven:offline`, `model-driven:custom-page` and `model-driven:dashboard`, plus
+`canvas` at `behaviour` for headless logic, `codeApps` and `serverLogic` at `contract`), the installed organization
+modules (`describe(api)` reports what this runtime wired), the shared facilities `store`, `scheduler`,
+`loopback-network` and `providers.messaging`, the operation catalogue with the modes saved in `/_sim/`, connector,
+storage (`provider:storage/<id>`), messaging, outbox, Power Fx and local-service providers, service fixtures, the flow
+run store, the Solution inventory and pack `capabilities` records. A name used twice keeps the first; an invalid record
+is skipped with `CAPABILITY_RECORD_INVALID`.
 
-- the host surfaces as `host-surface` records under their status keys: `dataverseApi`, `setup`, `records`, `staff`, `personas`, `liveBridge`, `portalRendering` (with `enabled`), and the app surfaces `canvas` (`behaviour` for headless logic, with rendering reported separately) and `codeApps` (`contract`);
-- the installed organization modules: `describe(api)` receives the runtime's api, so a module reports what this runtime wired (the hierarchy query operators and the rollup mass recalculation report `behaviour` once wired or scheduled);
-- the installed shared facilities as provider records: `store`, `scheduler`, `loopback-network` and `providers.messaging`. These names resolve module prerequisites against the actual host composition; they do not imply remote network access or external message delivery. A separately declared provider that has no implementation still reports its own missing requirement;
-- the operation catalogue (with the modes saved in `/_sim/`), the connector providers, the storage providers (`provider:storage/<id>`), the message bus, the outbox, the Power Fx seam, local services, service fixtures, the flow run store when present, the Solution inventory and the pack `capabilities` records. A name used twice is kept once, first wins; an invalid record is skipped with `CAPABILITY_RECORD_INVALID`.
-
-The status payload (`simulator.state()`, `GET /_sim/api/state`, standalone `status()`) carries `capabilities`, which is `summary()` with `canvas` and `codeApps` set to their record levels (the keys the administration page reads), and `capabilityReport`, which is `report()`.
+The runtime status (`GET /_sim/api/status`, `simulator.state()`, standalone `status()`) carries `capabilities`
+(`summary()` with `canvas` and `codeApps` set to their levels) and `capabilityReport` (`report()`). The preflight
+report's `runtime.capabilities` is `summary()` itself, so every entry there is a boolean.
 
 ## Preflight
 
@@ -81,17 +76,31 @@ paqvilo mirage preflight (--project FILE [--portal ID] | --config FILE --site ID
                          [--runtime power-pages|model-driven|dataverse-api] [--preset ID] [--scenario FILE] [--strict] [--json]
 ```
 
-The command resolves its inputs the same way as `serve`. It loads the sources once and starts no listeners. It then composes the host the way a running host of that configuration does, without listeners or files: `composeHostDescription()` in `organization-host.mjs` runs the shared host composition over an in-memory store (no backend, no listener) and installs the organization modules exactly as a running host does. The host surfaces, organization modules, operations, connectors, storage, messaging and outbox providers (pack factories included), service fixtures, inventory (with project `canvas.sources`) and storage readiness are therefore the records `GET /_sim/api/preflight` of a running host with the same configuration reports; the one difference is the operation modes (source defaults, no `/_sim/` overrides). The startup preset (`--preset`, else the catalogue site's `mirage.preset`) is applied to that store as a fresh host applies it, so rows it seeds, such as the service endpoints a bare step `EventHandler` names, resolve as on that host. It probes the declared `localServices` on loopback only. Each instantiated storage and messaging provider is `satisfied` only when its `preflight()` answers ready. The probe has no fixed bound: it ends at the provider's answer, or when 30 seconds pass without progress (the idle window, restarted by each completed protocol step the probe reports), and an expired window is `unknown` with reason `PROVIDER_PREFLIGHT_TIMEOUT` (the core Azurite provider sends an authorized List Containers; the core Service Bus emulator bus opens a SASL connection and attaches a link to each mapped entity); one without `preflight()` is declared (status `placeholder`, resolution `declared`), never satisfied; a declared provider that is not instantiated is missing. It binds the source graph with the active deployment profile. `preflight(options)` from `paqvilo/mirage` returns the same report without exiting the process. It takes the `createSimulator` option names (including `connections`, `secrets`, `canvas`, `dataverse` and `projectRoot`), plus `scenario`, `strict`, `env` and `preset`. `preflight({ packs })` takes pack module paths as `createSimulator` does; already discovered packs go in `loadedPacks`.
+The command resolves inputs like `serve`, loads the sources once and starts no listener. `composeHostDescription()`
+composes the host over an in-memory store exactly as a running host of that configuration does, so its records match
+`GET /_sim/api/preflight` of that host. Differences: operation modes are the source defaults (no `/_sim/` overrides).
+The startup preset (`--preset`, else the site's `mirage.preset`) is applied first, so rows it seeds resolve as on a
+fresh host. Declared `localServices` are probed on loopback; each instantiated storage and messaging provider is probed
+through its `preflight()` (see [storage providers](storage-providers.md#contract)); the source graph is bound with the
+active deployment profile.
 
-The CLI reports each operation's mode from the sources. Mode overrides saved in `/_sim/` state are not read. A host started over a source that fails to load still starts, and the same failure is listed in its status diagnostics and as the same `solution-source` row in `GET /_sim/api/preflight`.
+`preflight(options)` from `paqvilo/mirage` returns the same report without exiting. It takes the `createSimulator`
+options (including `connections`, `secrets`, `canvas`, `dataverse`, `projectRoot` and `packs`; already loaded packs go
+in `loadedPacks`) plus `scenario`, `strict`, `env` and `preset`, and needs `sourceDir` or a non-empty `solutionRoots`.
+Without either it throws `TypeError`: `preflight(options) requires sourceDir (the exported portal directory) or
+solutionRoots; got <the keys passed>.`
 
-A running simulator answers the same report at `GET /_sim/api/preflight` (`?requires=` repeatable, `?strict=true`) and through `simulator.preflight({ scenario, strict })` on both runtime handles. It uses the host's live registry and operation catalogue (with the saved modes), probes the declared `localServices`, reports each storage and messaging provider's readiness as `provider:storage/<id>` and `provider:messaging/<id>` (the same rows the offline report has), and rebuilds the source graph with the active deployment profile bindings. A provider with `preflight()` is probed until it answers or its 30-second idle window ends without progress; one without it is `placeholder` (see [storage providers](storage-providers.md#contract)).
-
-The `portalRendering` and `staff` host-surface records stay at `behaviour` and list no operations: what a surface detects but does not run is a requirement row carrying `surface` (see [Report shape](#report-shape)), and a scenario that names the surface is satisfied only when none of its rows is unsatisfied.
+A running simulator answers the same report at `GET /_sim/api/preflight` and through
+`simulator.preflight({ scenario, strict })`, using its live registry and saved operation modes. The route takes
+`?requires=` (repeatable; forms a scenario named by `?scenario=`, default `request`) and `?strict` (`true` or `1`;
+`false`, `0`, empty or absent is false; any other value answers 400 `InvalidQueryParameter` with `parameter: "strict"`).
+A host whose source fails to load still starts and lists the failure as a `solution-source` row.
 
 ### Strict acceptance
 
-`runAcceptance({ ..., requires, strict })` (`mirage/acceptance.mjs`; CLI `--requires <id>` repeatable and `--strict`) reads `GET /_sim/api/preflight` of the local simulator before any browser starts. With `strict` and `requires`, it rebuilds a registry from the report's `modules` (`addAll`) and calls `assertExecutable(requires)`: a required capability that is not registered, or that is below `behaviour`, fails the run with `CapabilityUnavailable` and its gaps.
+`runAcceptance({ ..., requires, strict })` (CLI `paqvilo mirage acceptance --requires <id> ... --strict`) reads
+`GET /_sim/api/preflight` before any browser starts and calls `assertExecutable(requires)` on the reported modules: a
+required capability that is missing or below `behaviour` fails the run with `CapabilityUnavailable`.
 
 ### Scenario file
 
@@ -99,11 +108,13 @@ The `portalRendering` and `staff` host-surface records stay at `behaviour` and l
 { "id": "approval-flow", "requires": ["cloud-flow:*", "table:x_item", "dataverse-rollup/Recalculate"] }
 ```
 
-Each entry is a requirement id or a pattern. `*` matches any run of characters, and matching ignores case. Ids are `<kind>:<key>`: source-graph ids (`table:x_item`, `environmentvariable:x_apibase`, `connectionreference:x_shared`, `webpage:<id>`) and operation keys (`cloud-flow:<guid>`, `server-logic:<id>`, `plugin-step:<guid>`). A pattern that matches no requirement is checked in this order:
-
-1. Against the source-graph components, where a component at `behaviour` is satisfied.
-2. Against the registry records and operations, where `behaviour` or above is satisfied and anything lower is `unsupported`.
-3. If nothing matches, it is reported `missing`.
+Entries are requirement ids or patterns (`*` matches any run of characters, case-insensitive). Ids are `<kind>:<key>`:
+source-graph ids (`table:x_item`, `environmentvariable:x_apibase`, `connectionreference:x_shared`, `webpage:<id>`) and
+operation keys (`cloud-flow:<guid>`, `server-logic:<id>`, `plugin-step:<guid>`). A pattern that matches no requirement
+is checked against source-graph components (satisfied at `behaviour`), then registry records and operations (satisfied
+at `behaviour` or above, else `unsupported`), else reported `missing`. A scenario may also name a host surface
+(`portalRendering`, `staff`, or `portalRendering/<row id>`): that brings all of the surface's rows into scope and adds a
+`host-surface` row that is satisfied only when none of them is unsatisfied.
 
 ### Report shape
 
@@ -113,13 +124,26 @@ Each entry is a requirement id or a pattern. `*` matches any run of characters, 
   "kind": "paqvilo.mirage.preflight",
   "runtime": {
     "kind": "power-pages",
-    "simulation": "dry-run",
+    "simulation": null, // the configured simulation level, or null
+    // summary(): the runtime kind's three flags, then one flag per host-surface record
     "capabilities": {
       "powerPages": true,
       "modelDriven": true,
       "organization": true,
-      "canvas": "behaviour",
-      "codeApps": "contract",
+      "dataverseApi": false,
+      "setup": true,
+      "records": true,
+      "staff": true,
+      "personas": true,
+      "liveBridge": true,
+      "portalRendering": true,
+      "canvas": true,
+      "codeApps": true,
+      "canvas-apps": true,
+      "model-driven:offline": true,
+      "model-driven:custom-page": true,
+      "model-driven:dashboard": true,
+      "serverLogic": true,
     },
   },
   "scope": {
@@ -132,7 +156,7 @@ Each entry is a requirement id or a pattern. `*` matches any run of characters, 
     "portal": { "sourceDir": "…", "layout": "standard-yaml", "dataModel": "standard" },
     "layers": [{ "index": 0, "solution": "InventedCore", "version": "1.0.0.0", "type": "xml", "input": "…" }],
   },
-  "modules": [/* registry.list() records */],
+  "modules": [/* registry.list() records; an inventory record takes its source-graph node's level and reason */],
   "requirements": [
     {
       "id": "cloud-flow:2222…",
@@ -160,34 +184,66 @@ Each entry is a requirement id or a pattern. `*` matches any run of characters, 
 }
 ```
 
-`status` is one of the following:
+A Solution component's `modules` entry and its requirement row agree: a dashboard an app hosts is `behaviour` when every
+component renders, else its entry `dashboard:<Name>` keeps `inventory` with `MD_DASHBOARD_COMPONENT_UNSUPPORTED`
+([model-driven apps](model-driven-apps.md#sitemap-pages-and-dashboards)).
 
-- `satisfied`
-- `missing`: an unbound connection reference, a required environment variable without a value (`isRequired` false makes it optional), a missing Solution dependency, an inventory dependency that resolves to nothing (`INVENTORY_DEPENDENCY_UNRESOLVED`, with `message` naming the dependent component), a root component whose source files are absent (`SOLUTION_COMPONENT_SOURCE_MISSING`), an unreachable local service or provider, or an unmatched scenario entry. A source that could not be loaded is a `solution-source:<hash>` row with the loader code as `reason`: `SOLUTION_ROOT_READ_FAILED` (missing or unreadable root), `SOLUTION_ROOT_UNSUPPORTED` (an input that is not a directory, XML file or ZIP), `SOLUTION_FOLDER_READ_FAILED`, `SOLUTION_XML_READ_FAILED`, `SOLUTION_XML_TOO_LARGE`, `SOLUTION_XML_INVALID` (including a corrupt ZIP), `SOLUTION_ENVVAR_INVALID`, `SOLUTION_INVENTORY_READ_FAILED`, `SOLUTION_YAML_INVALID`, `SOLUTION_YAML_EMPTY` (a YAML solution whose folders load nothing) and `SOLUTION_ROOT_EMPTY` (a directory without `Other/Solution.xml` or `solutions/*/solution.yml` that yields no metadata file, or holds only a ZIP that is not a Solution). The hash is of the path and code, never of file contents; the matching diagnostic is listed in `diagnostics`. A missing Solution dependency named only by component id (GUID) is satisfied when a selected layer provides a component with that id.
-- `placeholder`: a placeholder or mock operation, canvas rendering (`canvas:rendering`, `CANVAS_NOT_RENDERED`), or an instantiated provider without `preflight()` (`resolution: { by: 'declared' }`).
-- `unsupported`: an inventory-level component, an unsupported plug-in step, or an inventory record with an error diagnostic (the code is the `reason`). It also covers what a host detects but does not run, with `resolution.level`: `portal:modern-list` (`MODERN_LIST_RENDERED_CLASSIC`, a modern list include the local adapter cannot serve: map, calendar and code component lists render classic; `contract`), `portal:modern-list/<list>` (`MODERN_LIST_FEATURES_UNSERVED`, a served modern list that configures actions other than details, edit, create, delete and download; the local modern list is local markup over the classic grid engine with views, search, filters, sort and those actions; `contract`), `portal:sharepoint-documents` (`PORTAL_SHAREPOINT_DOCUMENTS_LOCAL`, a basic form or advanced form step whose Solution form has a Document Locations subgrid; `contract`), `model-driven:custom-page/<app>/<subarea>` (`MD_NAV_CUSTOM_PAGE`; `inventory`), `model-driven:pcf/<control>` (`PCF_VIRTUAL_UNSUPPORTED`, a virtual component whose platform libraries the project does not supply; `contract`), `portal:pcf/<control>` (the same refusal for a Solution code component under a portal source: the Power Pages host supplies no platform libraries), `model-driven:offline/<profile>` (`MD_OFFLINE_FILTER_UNSUPPORTED` naming the profile items whose filter the simulator cannot evaluate, `contract`; `MD_OFFLINE_PROFILE_MISSING` for an app that names a profile the sources do not hold, keyed by the app, `inventory`), a YAML component file the adapter cannot read (`SOLUTION_YAML_COMPONENT_NOT_IMPORTED`), a custom connector whose compilation has a blocking diagnostic (`connector:<name>`, that code as reason) and an unread Solution role or field security profile (`ROLE_NOT_IMPORTED`, `FIELD_SECURITY_NOT_IMPORTED`). The `model-driven:offline` capability is at `behaviour`, and `portal:enhanced-authorization` (`ENHANCED_AUTHORIZATION`, site states 1 Migration in progress, 2 Migration Failed and 3 Enabled) is `satisfied` at `behaviour`.
+| `status`      | Meaning                                                                                                                                                                                                                                                                                                                                                                     |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `satisfied`   | Resolved at `behaviour`.                                                                                                                                                                                                                                                                                                                                                    |
+| `missing`     | An unbound connection reference, a required environment variable without a value, a missing Solution dependency (`INVENTORY_DEPENDENCY_UNRESOLVED`), absent component source files (`SOLUTION_COMPONENT_SOURCE_MISSING`), an unreachable local service or provider, a declared provider that was not created, an unmatched scenario entry, or a source that failed to load. |
+| `placeholder` | A placeholder or mock operation, a canvas app listed at inventory level, a model-driven custom page (`CANVAS_NOT_RENDERED`), or a provider without `preflight()` (`resolution.by: 'declared'`).                                                                                                                                                                             |
+| `unsupported` | An inventory-level component, an unsupported plug-in step, an inventory record with an error diagnostic, a registry record or operation below `behaviour` that a scenario names, or something a host detects but does not run (table below).                                                                                                                                |
+| `disabled`    | An inactive workflow or a disabled operation.                                                                                                                                                                                                                                                                                                                               |
+| `secret`      | A Secret environment variable (`ENVIRONMENT_VARIABLE_SECRET`); the [secret resolver](deployment-profiles.md#environment-variable-types-effective-values-and-secrets) satisfies it at run time and preflight never reads its value.                                                                                                                                          |
+| `unknown`     | A provider probe ended by the idle guard (`PROVIDER_PREFLIGHT_TIMEOUT`).                                                                                                                                                                                                                                                                                                    |
 
-Every `portal:` row carries `surface: 'portalRendering'` and every `model-driven:` row `surface: 'staff'`. A scenario names gaps in either form: by row id or pattern (`portal:*`, `model-driven:offline/*`), or by host surface (`portalRendering`, `staff`, or `portalRendering/<row id>`). A surface pattern brings all of that surface's rows into scope and adds a `host-surface` row for the surface, which is `satisfied` only when none of those rows is unsatisfied; otherwise it is `unsupported` and its message lists them.
+A source that could not be loaded is a `solution-source:<hash>` row (hash of path and code, never of contents) whose
+`reason` is the loader code: `SOLUTION_ROOT_READ_FAILED`, `SOLUTION_ROOT_UNSUPPORTED`, `SOLUTION_FOLDER_READ_FAILED`,
+`SOLUTION_XML_READ_FAILED`, `SOLUTION_XML_TOO_LARGE`, `SOLUTION_XML_INVALID` (including a corrupt ZIP),
+`SOLUTION_ENVVAR_INVALID`, `SOLUTION_INVENTORY_READ_FAILED`, `SOLUTION_YAML_INVALID`, `SOLUTION_YAML_EMPTY` or
+`SOLUTION_ROOT_EMPTY`. A Solution dependency named only by component id is satisfied when a selected layer provides that
+id.
 
-- `disabled`: an inactive workflow or a disabled operation.
-- `secret`: a Secret environment variable (`ENVIRONMENT_VARIABLE_SECRET`); the secret resolver (`resolution.by`: `secret-resolver`) must satisfy it at run time, so preflight neither reads nor reports its value.
+Rows for what a host detects but does not run (`resolution.level` in brackets). Every `portal:` row carries
+`surface: 'portalRendering'` and every `model-driven:` row `surface: 'staff'`:
 
-A requirement is `blocking` only when all three of these hold:
+| Row                                        | Reason                                                                                                                                        |
+| ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `portal:modern-list`                       | `MODERN_LIST_RENDERED_CLASSIC`: a map, calendar or code component list renders classic (`contract`)                                           |
+| `portal:modern-list/<list>`                | `MODERN_LIST_FEATURES_UNSERVED`: actions other than details, edit, create, delete and download (`contract`)                                   |
+| `portal:sharepoint-documents`              | `PORTAL_SHAREPOINT_DOCUMENTS_LOCAL`: a form with a Document Locations subgrid (`contract`)                                                    |
+| `portal:pcf/<control>`                     | a Solution code component under a portal source; the Power Pages host supplies no platform libraries                                          |
+| `model-driven:pcf/<control>`               | `PCF_VIRTUAL_UNSUPPORTED`: a virtual component whose platform libraries the project does not supply (`contract`)                              |
+| `model-driven:custom-page/<app>/<subarea>` | `CANVAS_NOT_RENDERED` (`behaviour`, `placeholder`: the canvas app runs headless); `MD_NAV_CUSTOM_PAGE` (`inventory`) when it does not resolve |
+| `model-driven:offline/<profile>`           | `MD_OFFLINE_FILTER_UNSUPPORTED` (`contract`), or `MD_OFFLINE_PROFILE_MISSING` keyed by the app (`inventory`)                                  |
+| `connector:<name>`                         | a custom connector with a blocking compilation diagnostic (that code)                                                                         |
+| other                                      | `SOLUTION_YAML_COMPONENT_NOT_IMPORTED`, `ROLE_NOT_IMPORTED`, `FIELD_SECURITY_NOT_IMPORTED`                                                    |
 
-- It is in scope.
-- It is not satisfied.
-- A scenario or `--strict` asks for blocking.
+`portal:enhanced-authorization` (`ENHANCED_AUTHORIZATION`, site states 1, 2 and 3) is `satisfied` at `behaviour`. Each
+canvas app is a `canvas:app/<name>` row, `satisfied` at `behaviour` or `unsupported` (`CANVAS_CONTROL_UNSUPPORTED`, or
+the source diagnostic); `canvas:rendering` (`CANVAS_RENDERING_BASELINE`, level `contract`) is `satisfied` only when
+every app is readable and every control renders locally.
 
-Without a scenario every requirement is in scope. With a scenario, unused unsupported features do not block. The diagnostics include pack export diagnostics, `CAPABILITY_REQUIRES_UNREGISTERED`, deployment-profile diagnostics, the loader failures behind `solution-source` rows and the portal findings behind `portal:` rows.
+An unreachable local service declared `required: true` is `blocking` in every mode, even outside a scenario's scope.
+Any other requirement is `blocking` only when it is in scope, not satisfied, and a scenario or `--strict` asks for
+blocking. Without a scenario every requirement is in scope; with one, unused unsupported features do not block.
+`diagnostics` holds pack export diagnostics, `CAPABILITY_REQUIRES_UNREGISTERED`, deployment-profile diagnostics, the
+loader failures behind `solution-source` rows and the findings behind `portal:` rows.
 
-The report never contains configured values. Secrets, connection strings and connection ids are reported only as present or absent. A probe message names the environment variable or the loopback origin, never its value.
+The report never contains configured values: secrets, connection strings and connection ids appear only as present or
+absent, and a probe message names the variable or loopback origin, never its value.
 
 ### Exit codes
 
-| Code | Meaning                                                                                                                |
-| ---- | ---------------------------------------------------------------------------------------------------------------------- |
-| `0`  | No blocking requirement in scope.                                                                                      |
-| `1`  | At least one blocking requirement.                                                                                     |
-| `2`  | Invocation or configuration error, such as an unknown option, an unreadable or invalid scenario, or an invalid source. |
+| Code | Meaning                                                                                                  |
+| ---- | -------------------------------------------------------------------------------------------------------- |
+| `0`  | No blocking requirement in scope.                                                                        |
+| `1`  | At least one blocking requirement.                                                                       |
+| `2`  | Invocation or configuration error (unknown option, unreadable or invalid scenario, invalid source, ...). |
+
+An invalid scenario file is reported as `--scenario file <path> is not a valid scenario: <reason>.`, a file that is not
+JSON as `--scenario file <path> is not valid JSON (line <n>, column <n>).` and a missing one as
+`--scenario file not found: <path>. Pass an existing file.`
 
 `preflightExitCode(report)` from `mirage/lib/capability-report.mjs` returns the same codes.

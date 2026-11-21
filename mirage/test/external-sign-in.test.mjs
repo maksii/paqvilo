@@ -30,6 +30,7 @@ import {
   timeSpanMs,
 } from '../lib/external-login.mjs';
 import { startIdentityProvider } from '../lib/identity-provider.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 
 const TENANT = 'https://login.windows.net/0f0f0f0f-1111-4222-8333-444444444444/';
 const settingsOf = (entries) => Object.fromEntries(entries.map(([name, value]) => [name, value]));
@@ -484,137 +485,148 @@ const text = async (response) => response.text();
 const field = (html, id) => new RegExp(`id="${id}">([^<]*)<`).exec(html)?.[1] ?? null;
 const json = async (browser, target) => (await browser.request(target)).json();
 
-test("the portal's provider form runs the platform chain: ExternalLogin, the provider chooser, the form post to the site root, ExternalLoginCallback and the session", async (t) => {
-  const { app, idp } = await simulator(t);
-  assert.equal(idp.available, true);
-  assert.match(idp.origin, /^http:\/\/127\.0\.0\.1:\d+$/);
-  assert.notEqual(idp.origin, app.url, 'the identity provider is cross-origin to the portal');
-  assert.equal(idp.port, Number(new URL(idp.origin).port));
-  assert.deepEqual(
-    idp.providers.map(({ id, name, type, caption, callbackPath, default: isDefault, localAuthority, clientId }) => ({
-      id,
-      name,
-      type,
-      caption,
-      callbackPath,
-      default: isDefault,
-      localAuthority,
-      clientId,
-    })),
-    [
-      {
-        id: AUTHORITY,
-        name: 'Local',
-        type: 'openidconnect',
-        caption: 'Local IdP',
-        callbackPath: '/',
-        default: false,
-        localAuthority: `${idp.origin}/oidc-local/`,
-        clientId: 'local-client',
-      },
-    ],
-  );
-  const browser = client(app);
-  // GET /_sim/api/session and the admin status report the identity provider and its port.
-  const anonymous = await json(browser, '/_sim/api/session');
-  assert.deepEqual([anonymous.signedIn, anonymous.provider, anonymous.identityProvider.port], [false, null, idp.port]);
-  assert.equal((await json(browser, '/_sim/api/status')).identityProvider.origin, idp.origin);
+// Hang guard only: it drives a runtime, the CLI or child processes through this file's fixtures; on a loaded slow host that is slow, not hung.
+test(
+  "the portal's provider form runs the platform chain: ExternalLogin, the provider chooser, the form post to the site root, ExternalLoginCallback and the session",
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const { app, idp } = await simulator(t);
+    assert.equal(idp.available, true);
+    assert.match(idp.origin, /^http:\/\/127\.0\.0\.1:\d+$/);
+    assert.notEqual(idp.origin, app.url, 'the identity provider is cross-origin to the portal');
+    assert.equal(idp.port, Number(new URL(idp.origin).port));
+    assert.deepEqual(
+      idp.providers.map(({ id, name, type, caption, callbackPath, default: isDefault, localAuthority, clientId }) => ({
+        id,
+        name,
+        type,
+        caption,
+        callbackPath,
+        default: isDefault,
+        localAuthority,
+        clientId,
+      })),
+      [
+        {
+          id: AUTHORITY,
+          name: 'Local',
+          type: 'openidconnect',
+          caption: 'Local IdP',
+          callbackPath: '/',
+          default: false,
+          localAuthority: `${idp.origin}/oidc-local/`,
+          clientId: 'local-client',
+        },
+      ],
+    );
+    const browser = client(app);
+    // GET /_sim/api/session and the admin status report the identity provider and its port.
+    const anonymous = await json(browser, '/_sim/api/session');
+    assert.deepEqual(
+      [anonymous.signedIn, anonymous.provider, anonymous.identityProvider.port],
+      [false, null, idp.port],
+    );
+    assert.equal((await json(browser, '/_sim/api/status')).identityProvider.origin, idp.origin);
 
-  // The platform's sign-in page lists the provider form (LocalLoginEnabled is false: no personas).
-  const signInPage = await browser.request('/SignIn?returnUrl=%2Fmembers%2F');
-  const html = await text(signInPage);
-  assert.equal(signInPage.status, 200);
-  assert.match(
-    html,
-    new RegExp(
-      `<form action="/Account/Login/ExternalLogin\\?ReturnUrl=%2Fmembers%2F" method="post"><input name="__RequestVerificationToken" type="hidden" value="${app.portalToken}"><div class=""><h2 class="login-heading-section" id="external-login-heading">.*?<button name="provider" type="submit" class="btn btn-primary btn-line" id="https://idp.example.test/local/" title="Sign in with your Local IdP account." value="https://idp.example.test/local/">Local IdP</button></div></form>`,
-    ),
-  );
-  assert.doesNotMatch(html, /paqvilo-mirage-persona/);
-  const local = await browser.request('/SignIn', formBody({ contactId: 'alex', ReturnUrl: '/' }));
-  assert.equal(local.status, 400);
-  assert.match(await text(local), /Local sign-in is turned off for this site/);
+    // The platform's sign-in page lists the provider form (LocalLoginEnabled is false: no personas).
+    const signInPage = await browser.request('/SignIn?returnUrl=%2Fmembers%2F');
+    const html = await text(signInPage);
+    assert.equal(signInPage.status, 200);
+    assert.match(
+      html,
+      new RegExp(
+        `<form action="/Account/Login/ExternalLogin\\?ReturnUrl=%2Fmembers%2F" method="post"><input name="__RequestVerificationToken" type="hidden" value="${app.portalToken}"><div class=""><h2 class="login-heading-section" id="external-login-heading">.*?<button name="provider" type="submit" class="btn btn-primary btn-line" id="https://idp.example.test/local/" title="Sign in with your Local IdP account." value="https://idp.example.test/local/">Local IdP</button></div></form>`,
+      ),
+    );
+    assert.doesNotMatch(html, /paqvilo-mirage-persona/);
+    const local = await browser.request('/SignIn', formBody({ contactId: 'alex', ReturnUrl: '/' }));
+    assert.equal(local.status, 400);
+    assert.match(await text(local), /Local sign-in is turned off for this site/);
 
-  const challenge = await startSignIn(browser, { returnUrl: '/members/#top' });
-  assert.equal(challenge.headers.get('x-sim-route'), 'external-login');
-  const authorize = new URL(challenge.headers.get('location'));
-  assert.equal(authorize.origin + authorize.pathname, `${idp.origin}/oidc-local/oauth2/authorize`);
-  assert.deepEqual(
-    [...authorize.searchParams.keys()],
-    ['client_id', 'redirect_uri', 'response_type', 'scope', 'state', 'response_mode', 'nonce', 'ui_locales'],
-  );
-  const query = Object.fromEntries(authorize.searchParams);
-  assert.deepEqual(
-    [query.client_id, query.redirect_uri, query.response_type, query.scope, query.response_mode, query.ui_locales],
-    ['local-client', `${app.url}/`, 'code id_token', 'openid', 'form_post', 'en-US'],
-  );
-  assert.match(query.state, /^OpenIdConnect\.AuthenticationProperties=/);
-  assert.match(query.nonce, /^\d+\.[\w-]+$/);
-  const [nonceCookie] = challenge.headers.getSetCookie();
-  assert.match(nonceCookie, /^OpenIdConnect\.nonce\.[\w-]+=N; Path=\/; HttpOnly; SameSite=Lax; Max-Age=3600$/);
+    const challenge = await startSignIn(browser, { returnUrl: '/members/#top' });
+    assert.equal(challenge.headers.get('x-sim-route'), 'external-login');
+    const authorize = new URL(challenge.headers.get('location'));
+    assert.equal(authorize.origin + authorize.pathname, `${idp.origin}/oidc-local/oauth2/authorize`);
+    assert.deepEqual(
+      [...authorize.searchParams.keys()],
+      ['client_id', 'redirect_uri', 'response_type', 'scope', 'state', 'response_mode', 'nonce', 'ui_locales'],
+    );
+    const query = Object.fromEntries(authorize.searchParams);
+    assert.deepEqual(
+      [query.client_id, query.redirect_uri, query.response_type, query.scope, query.response_mode, query.ui_locales],
+      ['local-client', `${app.url}/`, 'code id_token', 'openid', 'form_post', 'en-US'],
+    );
+    assert.match(query.state, /^OpenIdConnect\.AuthenticationProperties=/);
+    assert.match(query.nonce, /^\d+\.[\w-]+$/);
+    const [nonceCookie] = challenge.headers.getSetCookie();
+    assert.match(nonceCookie, /^OpenIdConnect\.nonce\.[\w-]+=N; Path=\/; HttpOnly; SameSite=Lax; Max-Age=3600$/);
 
-  // The chooser lists active contacts only.
-  const chooser = await text(await browser.request(authorize.href));
-  assert.match(chooser, /data-contact-id="alex"/);
-  assert.match(chooser, /data-contact-id="casey"/);
-  assert.doesNotMatch(chooser, /data-contact-id="carol"/);
-  const answer = await choose(browser, authorize.href, { contactId: 'alex' });
-  // The form post to the site root: validated, then the ExternalLoginCallback hop.
-  const response = await postBack(browser, answer, idp.origin);
-  assert.equal(response.status, 302);
-  assert.equal(response.headers.get('location'), '/Account/Login/ExternalLoginCallback?ReturnUrl=%2Fmembers%2F%23top');
-  assert.ok(!browser.jar.has(nonceCookie.split('=')[0]), 'the nonce cookie is used once');
-  assert.ok(browser.jar.has(`paqvilo-mirage-external-${new URL(app.url).port}`));
-  const callback = await browser.request(response.headers.get('location'));
-  assert.equal(callback.status, 302);
-  assert.equal(callback.headers.get('location'), '/members/#top');
-  assert.equal(callback.headers.get('x-sim-route'), 'external-sign-in');
-  assert.ok(!browser.jar.has(`paqvilo-mirage-external-${new URL(app.url).port}`));
-  assert.equal(field(await text(await browser.request('/members/')), 'user'), 'Alex Local');
-  const session = await json(browser, '/_sim/api/session');
-  assert.deepEqual(
-    [session.signedIn, session.contactId, session.provider?.id, session.provider?.name],
-    [true, 'alex', AUTHORITY, 'Local'],
-  );
-  // The preset's identity was recorded at the provider (adx_externalidentity) and audited.
-  const { identities } = await json(browser, '/_sim/api/session/identities');
-  assert.equal(identities.length, 1);
-  assert.deepEqual(
-    [
-      identities[0].contactId,
-      identities[0].provider,
-      identities[0].providerName,
-      identities[0].origin,
-      identities[0].active,
-    ],
-    ['alex', AUTHORITY, 'Local', 'preset', true],
-  );
-  const sub = identities[0].username;
-  assert.equal(claimsOf(hiddenFields(answer).id_token).sub, sub);
-  const audit = await json(browser, '/_sim/api/audit?kind=external-identity');
-  assert.equal(audit.items.length, 1);
-  assert.deepEqual(
-    [
-      audit.items[0].entity,
-      audit.items[0].identity.contactId,
-      audit.items[0].query.origin,
-      audit.items[0].query.username,
-    ],
-    ['adx_externalidentity', 'alex', 'preset', sub],
-  );
-  // A second sign-in reuses the identity.
-  const again = await signInThrough(client(app), idp, { contactId: 'alex', returnUrl: '/' });
-  assert.equal(again.headers.get('location'), '/');
-  assert.equal((await json(browser, '/_sim/api/session/identities')).identities.length, 1);
-  // The site's own forms post a Microsoft authority for the built-in provider only; others are refused.
-  const token = /value="([^"]+)"/.exec(await text(await browser.request('/_layout/tokenhtml')))[1];
-  const unknown = await browser.request(
-    '/Account/Login/ExternalLogin?returnUrl=%2F',
-    formBody({ __RequestVerificationToken: token, provider: 'https://login.windows.net/tenant/' }),
-  );
-  assert.equal(unknown.status, 400);
-  assert.match(await text(unknown), /is not an identity provider of this site/);
-});
+    // The chooser lists active contacts only.
+    const chooser = await text(await browser.request(authorize.href));
+    assert.match(chooser, /data-contact-id="alex"/);
+    assert.match(chooser, /data-contact-id="casey"/);
+    assert.doesNotMatch(chooser, /data-contact-id="carol"/);
+    const answer = await choose(browser, authorize.href, { contactId: 'alex' });
+    // The form post to the site root: validated, then the ExternalLoginCallback hop.
+    const response = await postBack(browser, answer, idp.origin);
+    assert.equal(response.status, 302);
+    assert.equal(
+      response.headers.get('location'),
+      '/Account/Login/ExternalLoginCallback?ReturnUrl=%2Fmembers%2F%23top',
+    );
+    assert.ok(!browser.jar.has(nonceCookie.split('=')[0]), 'the nonce cookie is used once');
+    assert.ok(browser.jar.has(`paqvilo-mirage-external-${new URL(app.url).port}`));
+    const callback = await browser.request(response.headers.get('location'));
+    assert.equal(callback.status, 302);
+    assert.equal(callback.headers.get('location'), '/members/#top');
+    assert.equal(callback.headers.get('x-sim-route'), 'external-sign-in');
+    assert.ok(!browser.jar.has(`paqvilo-mirage-external-${new URL(app.url).port}`));
+    assert.equal(field(await text(await browser.request('/members/')), 'user'), 'Alex Local');
+    const session = await json(browser, '/_sim/api/session');
+    assert.deepEqual(
+      [session.signedIn, session.contactId, session.provider?.id, session.provider?.name],
+      [true, 'alex', AUTHORITY, 'Local'],
+    );
+    // The preset's identity was recorded at the provider (adx_externalidentity) and audited.
+    const { identities } = await json(browser, '/_sim/api/session/identities');
+    assert.equal(identities.length, 1);
+    assert.deepEqual(
+      [
+        identities[0].contactId,
+        identities[0].provider,
+        identities[0].providerName,
+        identities[0].origin,
+        identities[0].active,
+      ],
+      ['alex', AUTHORITY, 'Local', 'preset', true],
+    );
+    const sub = identities[0].username;
+    assert.equal(claimsOf(hiddenFields(answer).id_token).sub, sub);
+    const audit = await json(browser, '/_sim/api/audit?kind=external-identity');
+    assert.equal(audit.items.length, 1);
+    assert.deepEqual(
+      [
+        audit.items[0].entity,
+        audit.items[0].identity.contactId,
+        audit.items[0].query.origin,
+        audit.items[0].query.username,
+      ],
+      ['adx_externalidentity', 'alex', 'preset', sub],
+    );
+    // A second sign-in reuses the identity.
+    const again = await signInThrough(client(app), idp, { contactId: 'alex', returnUrl: '/' });
+    assert.equal(again.headers.get('location'), '/');
+    assert.equal((await json(browser, '/_sim/api/session/identities')).identities.length, 1);
+    // The site's own forms post a Microsoft authority for the built-in provider only; others are refused.
+    const token = /value="([^"]+)"/.exec(await text(await browser.request('/_layout/tokenhtml')))[1];
+    const unknown = await browser.request(
+      '/Account/Login/ExternalLogin?returnUrl=%2F',
+      formBody({ __RequestVerificationToken: token, provider: 'https://login.windows.net/tenant/' }),
+    );
+    assert.equal(unknown.status, 400);
+    assert.match(await text(unknown), /is not an identity provider of this site/);
+  },
+);
 
 test("the provider's response is validated: state, nonce cookie, signature, reply path and replay; other posts to a reply URL pass through", async (t) => {
   const settings = [

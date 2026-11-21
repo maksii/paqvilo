@@ -2,24 +2,27 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { MIRAGE_TOOLS, mirageToolHelp } from '../mirage/tool-registry.mjs';
+import { MIRAGE_TOOLS, MIRAGE_TOOL_USAGE_EXIT, mirageToolHelp } from '../mirage/tool-registry.mjs';
 import { parseToolArgs, parseToolHelp } from '../mirage/tool-options.mjs';
-import { withProcessSlot } from '../mirage/test/process-slots.mjs';
+import { boundedCommand, COMMAND_HANG_GUARD_MS } from './helpers/bounded-command.mjs';
+import { operationBudget, countOperations } from './helpers/operation-budget.mjs';
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import { tempDirSync } from './fixture.mjs';
 
 const bin = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 const guard = new URL('./cli-help-guard.mjs', import.meta.url).href;
-// Derive argument types independently from public help, rather than importing private parser tables.
-const documentedOptions = (name) => [
-  ...new Map(
-    [...MIRAGE_TOOLS[name].matchAll(/--([\w-]+)(?: ([^\s\]]+))?/g)].map((match) => [
-      match[1],
-      /^[\w/]/.test(match[2] ?? ''),
-    ]),
-  ).entries(),
-];
+// Derive argument types independently from public help, rather than importing private parser tables: [name, takes a
+// value, repeatable (help marks it `...`)].
+const documentedOptions = (name) =>
+  [
+    ...new Map(
+      [...MIRAGE_TOOLS[name].matchAll(/--([\w-]+)(?: ([^\s\]]+))?( \.\.\.|\]\.\.\.)?/g)].map((match) => [
+        match[1],
+        [/^[\w/]/.test(match[2] ?? ''), Boolean(match[3])],
+      ]),
+    ).entries(),
+  ].map(([key, [string, repeatable]]) => [key, string, repeatable]);
 const examples = {
   'bootstrap-report': ['--config', 'missing.yml', '--solution-root', 'one', '--solution-root', 'two', '--all-fields'],
   'render-sweep': ['--source', 'missing', '--solution-root', 'one', '--solution-root', 'two', '--strict'],
@@ -57,21 +60,42 @@ const examples = {
   trace: ['show', 'invented-id', '--config', 'missing.yml'],
 };
 
-async function fixture(t) {
+const helpFlags = (name, args) => [
+  ['--help'],
+  [...args, '--help'],
+  ['--help', ...args],
+  [...args, '-h'],
+  [...args, '--help', '--json'],
+  [
+    '--help',
+    // Every documented option: a repeatable one twice, a single-value one once (a repeat is refused).
+    ...documentedOptions(name).flatMap(([key, string, repeatable]) => {
+      if (!string) return ['--' + key];
+      return repeatable ? ['--' + key, 'missing-one', '--' + key, 'missing-two'] : ['--' + key, 'missing-one'];
+    }),
+  ],
+];
+const malformedFlags = (name) => {
+  const malformed = [
+    ['--invented-invalid-option', '--help'],
+    ['unexpected', '--help'],
+    ['--help', '--', '--help'],
+  ];
+  if (name !== 'verify-storage') {
+    const option = examples[name].find((arg) => arg.startsWith('--') && !['--json', '--allow-writes'].includes(arg));
+    malformed.push(['--help', option], [option, '--help']);
+  }
+  return malformed;
+};
+const helpCount = Object.entries(examples).reduce((count, [name, args]) => count + helpFlags(name, args).length, 0);
+const malformedCount = Object.keys(MIRAGE_TOOLS).reduce((count, name) => count + malformedFlags(name).length, 0);
+
+async function fixture(t, commands) {
   const cwd = tempDirSync('paqvilo-tool-help-');
-  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
-  const run = (name, args) =>
-    withProcessSlot(
-      () =>
-        new Promise((resolve) =>
-          execFile(
-            process.execPath,
-            ['--import', guard, bin, 'mirage', name, ...args],
-            { cwd, encoding: 'utf8', windowsHide: true },
-            (error, stdout, stderr) => resolve({ status: error?.code ?? 0, stdout, stderr }),
-          ),
-        ),
-    );
+  ownedFixture(t).remove(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const run = countOperations(t, commands, (name, args) =>
+    boundedCommand(t, process.execPath, ['--import', guard, bin, 'mirage', name, ...args], { cwd }),
+  );
   return { cwd, run };
 }
 
@@ -98,62 +122,61 @@ test('shared parsing preserves operational defaults, repeated values, empty-valu
   assert.equal(parseToolHelp('capture-shell', ['--config=--help', '--help']).values.config, '--help');
 });
 
-test('every standalone tool accepts configured help in either order, -h and JSON without side effects', async (t) => {
-  const { cwd, run } = await fixture(t);
-  assert.deepEqual(Object.keys(examples).sort(), Object.keys(MIRAGE_TOOLS).sort());
-  await completeAll(
-    Object.entries(examples).map(async ([name, args]) => {
-      for (const flags of [
-        ['--help'],
-        [...args, '--help'],
-        ['--help', ...args],
-        [...args, '-h'],
-        [...args, '--help', '--json'],
-        [
-          '--help',
-          ...documentedOptions(name).flatMap(([key, string]) =>
-            string ? ['--' + key, 'missing-one', '--' + key, 'missing-two'] : ['--' + key],
-          ),
-        ],
-      ]) {
-        const result = await run(name, flags);
-        assert.equal(result.status, 0, `${name} ${flags.join(' ')}: ${result.stderr}`);
-        assert.equal(result.stdout, mirageToolHelp(name) + '\n');
-        assert.equal(result.stderr, '');
-      }
-    }),
-  );
-  assert.deepEqual(fs.readdirSync(cwd), []);
-});
+// These finite batches retain every tool/flag case. The execution guard belongs
+// to each command, after it acquires a slot, rather than to the whole queue.
+test(
+  'every standalone tool accepts configured help in either order, -h and JSON without side effects',
+  { timeout: operationBudget(helpCount, COMMAND_HANG_GUARD_MS) },
+  async (t) => {
+    const { cwd, run } = await fixture(t, helpCount);
+    assert.deepEqual(Object.keys(examples).sort(), Object.keys(MIRAGE_TOOLS).sort());
+    await completeAll(
+      Object.entries(examples).map(async ([name, args]) => {
+        for (const flags of helpFlags(name, args)) {
+          const result = await run(name, flags);
+          assert.equal(result.status, 0, `${name} ${flags.join(' ')}: ${result.stderr}`);
+          assert.equal(result.stdout, mirageToolHelp(name) + '\n');
+          assert.equal(result.stderr, '');
+        }
+      }),
+    );
+    assert.deepEqual(fs.readdirSync(cwd), []);
+  },
+);
 
-test('standalone help rejects malformed arguments with clean JSON errors before side effects', async (t) => {
-  const { cwd, run } = await fixture(t);
-  await completeAll(
-    Object.keys(MIRAGE_TOOLS).map(async (name) => {
-      const malformed = [
-        ['--invented-invalid-option', '--help'],
-        ['unexpected', '--help'],
-        ['--help', '--', '--help'],
-      ];
-      if (name !== 'verify-storage') {
-        const option = examples[name].find(
-          (arg) => arg.startsWith('--') && !['--json', '--allow-writes'].includes(arg),
-        );
-        malformed.push(['--help', option], [option, '--help']);
-      }
-      for (const flags of malformed) {
-        const result = await run(name, ['--json', ...flags]);
-        assert.equal(result.status, 1, `${name} ${flags.join(' ')}: ${result.stdout} ${result.stderr}`);
-        const output = JSON.parse(result.stdout);
-        assert.equal(output.ok, false);
-        assert.equal(output.error.code, 'INVALID_ARGUMENT');
-        assert.match(output.error.message, /Unknown option|Unexpected|requires a value|argument .*missing|ambiguous/i);
-        assert.equal(result.stderr, '');
-      }
-    }),
-  );
-  assert.deepEqual(fs.readdirSync(cwd), []);
-});
+test(
+  'standalone help rejects malformed arguments with clean JSON errors before side effects',
+  { timeout: operationBudget(malformedCount, COMMAND_HANG_GUARD_MS) },
+  async (t) => {
+    const { cwd, run } = await fixture(t, malformedCount);
+    await completeAll(
+      Object.keys(MIRAGE_TOOLS).map(async (name) => {
+        for (const flags of malformedFlags(name)) {
+          const result = await run(name, ['--json', ...flags]);
+          // With --help as without it, the tool's own argument-error exit code.
+          assert.equal(
+            result.status,
+            MIRAGE_TOOL_USAGE_EXIT[name] ?? 1,
+            `${name} ${flags.join(' ')}: ${result.stdout} ${result.stderr}`,
+          );
+          const output = JSON.parse(result.stdout);
+          assert.equal(output.ok, false);
+          // An unknown option is unsupported_option in every command; other help-time refusals INVALID_ARGUMENT.
+          assert.equal(
+            output.error.code,
+            flags[0] === '--invented-invalid-option' ? 'unsupported_option' : 'INVALID_ARGUMENT',
+          );
+          assert.match(
+            output.error.message,
+            /Unknown option|Unexpected|requires a value|argument .*missing|ambiguous/i,
+          );
+          assert.equal(result.stderr, '');
+        }
+      }),
+    );
+    assert.deepEqual(fs.readdirSync(cwd), []);
+  },
+);
 
 // Built-ins that allow-listed modules import statically; the help guard refuses their side effects at run time.
 const GUARD_PERMITTED_BUILTINS = new Set(['node:child_process', 'node:fs', 'node:url', 'node:util']);

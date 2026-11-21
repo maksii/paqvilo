@@ -191,10 +191,10 @@ test('T7: the startup lines are two clicks away, the Log stream tab then Startup
   assert.deepEqual(errors, []);
 });
 
-// The admin-views D-M-11 table audit (N2b), per visible table: a search box in the table's bar (a page's main list:
+// The admin-views table audit (N2b), per visible table: a search box in the table's bar (a page's main list:
 // in the page toolbar row), Filters when more than one column sorts, and the bottom bar with the count, rows per page
-// and Previous/Next. Activity's tab lists are main lists, as Data records, Flows runs and Backend operations are there
-// (handoff-N2a.md G asks for the same list in admin-views); the Stats breakdown is not.
+// and Previous/Next. Activity's tab lists are main lists, as Data records, Flows runs and Backend operations are there;
+// the Stats breakdown is not.
 const MAIN_LISTS = [
   'records',
   'flow-runs',
@@ -236,7 +236,7 @@ function tableAudit(mainLists) {
     });
 }
 
-test('every Activity tab has its search beside Filters in the toolbar row and the full bottom bar (D-M-11 item 4)', async (t) => {
+test('every Activity tab has its search beside Filters in the toolbar row and the full bottom bar', async (t) => {
   const { sim } = run;
   const tables = {
     activities: 'activity-list',
@@ -586,7 +586,7 @@ const topOf = (selector) => {
   const node = document.querySelector(selector);
   return node ? Math.round(node.getBoundingClientRect().top + scrollY) : null;
 };
-/** The first row of each list-like tab (D-M-7: at most 180 px from the top at 1440 × 1000). */
+/** The first row of each list-like tab (at most 180 px from the top at 1440 × 1000). */
 const FIRST_ROW = {
   activities: 'table[data-table="activity-list"] tbody tr',
   log: 'table[data-table="activity-log"] tbody tr',
@@ -594,7 +594,7 @@ const FIRST_ROW = {
   pages: 'table[data-table="activity-pages"] tbody tr',
 };
 
-test('every tab and the open activity start with content, keep prose short and never scroll sideways (D-M-6, D-M-7)', async (t) => {
+test('every tab and the open activity start with content, keep prose short and never scroll sideways', async (t) => {
   const { sim } = run;
   const views = [
     ['activities', '#activity'],
@@ -658,7 +658,7 @@ test('every tab and the open activity start with content, keep prose short and n
   }
 });
 
-test('the Filters drawer opens from the toolbar, applies, closes, and its filters stay as chips (D-M-7)', async (t) => {
+test('the Filters drawer opens from the toolbar, applies, closes, and its filters stay as chips', async (t) => {
   const { sim } = run;
   const { page, errors } = await pageOf(t);
   await page.goto(`${sim.url}/_sim/#activity`);
@@ -710,7 +710,7 @@ test('the Filters drawer opens from the toolbar, applies, closes, and its filter
   assert.equal(await page.locator('.ui-chip').count(), 0);
   assert.equal(await page.evaluate(() => location.hash), '#activity');
   assert.equal((await toggle.innerText()).trim(), 'Filters');
-  // `/` focuses the toolbar's search (D-M-11); the drawer stays closed.
+  // `/` focuses the toolbar's search; the drawer stays closed.
   await page.locator('body').click({ position: { x: 5, y: 5 } });
   await page.keyboard.press('/');
   await page.waitForFunction(() => document.activeElement?.id === 'activity-q');
@@ -781,7 +781,7 @@ test('Errors & denied finds what failed in two clicks and toggles off; a Finding
   assert.deepEqual(errors, []);
 });
 
-test('at phone width a log line takes the row and its action sits under it (DV-N4c-7)', async (t) => {
+test('at phone width a log line takes the row and its action sits under it', async (t) => {
   const { sim } = run;
   const { page, errors } = await pageOf(t, { width: 390, height: 844 });
   await page.goto(`${sim.url}/_sim/#activity?tab=log`);

@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { MIRAGE_COMMANDS, MIRAGE_TOOLS } from '../mirage/tool-registry.mjs';
+import { LENSE_OPTIONS } from '../lense/cli-options.mjs';
 import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 import { tempDirSync } from './fixture.mjs';
 
@@ -46,12 +47,8 @@ test('public tool registry routes each tool-specific help and prints the package
 });
 
 test('lense --help names every option the lense parser accepts', async () => {
-  const source = fs.readFileSync(new URL('../lense/cli.mjs', import.meta.url), 'utf8');
-  const table = /^const options = \{\n([\s\S]*?)^\};/m.exec(source)?.[1];
-  assert.ok(table, 'the lense option table is found in lense/cli.mjs');
-  const accepted = [...table.matchAll(/^ {2}(?:'([^']+)'|([a-z][\w-]*)):/gm)].map(
-    ([, quoted, plain]) => quoted ?? plain,
-  );
+  // The table the lense CLI hands its parser (lense/cli.mjs imports it as its option table).
+  const accepted = Object.keys(LENSE_OPTIONS);
   assert.ok(accepted.length > 50, 'the option table is read in full');
   const help = await run(['lense', '--help']);
   assert.equal(help.status, 0, help.stderr);
@@ -112,4 +109,39 @@ test('mirage init --help prints its own usage with the options init accepts', as
     assert.ok(result.stdout.includes(option), option);
   }
   assert.doesNotMatch(result.stdout, /paqvilo lense - work on Power Pages/);
+});
+
+// @test-kind contract: help and argument errors answer from the option tables alone, without loading the catalogue schema and the Mirage runtime modules behind it
+test('help and argument errors never load the configuration schema or the Mirage runtime library', async (t) => {
+  const root = tempDirSync('paqvilo-help-modules-');
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  // Reports every module each CLI process resolves; NODE_OPTIONS carries it into the process the entry point starts.
+  const reporter = `import { registerHooks } from 'node:module';
+registerHooks({ resolve(specifier, context, next) {
+  const resolved = next(specifier, context);
+  if (resolved.url.includes('/mirage/lib/') || resolved.url.includes('/lense/config'))
+    process.stderr.write('LOADED ' + resolved.url + String.fromCharCode(10));
+  return resolved;
+} });`;
+  const traced = {
+    cwd: root,
+    env: { ...env, NODE_OPTIONS: `--import=data:text/javascript,${encodeURIComponent(reporter)}` },
+  };
+  const results = await Promise.all(
+    [
+      ['lense', '--help'],
+      ['lense', 'dev', '--help'],
+      ['lense', 'dev', '--no-such-option'],
+      ['mirage', 'start', '--help'],
+      ['init', '--help'],
+      ['init', '--no-such-option'],
+    ].map(async (args) => ({ args, ...(await run(args, traced)) })),
+  );
+  for (const { args, status, stderr } of results) {
+    assert.equal(status, args.at(-1) === '--help' ? 0 : 1, `${args.join(' ')}: ${stderr}`);
+    assert.doesNotMatch(stderr, /LOADED/, args.join(' '));
+  }
+  // The reporter does see those modules when a command needs them.
+  const listed = await run(['lense', 'list', '--json'], traced);
+  assert.match(listed.stderr, /LOADED .*lense\/config\.mjs/);
 });

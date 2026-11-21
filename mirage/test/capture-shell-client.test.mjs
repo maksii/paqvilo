@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own shell capture client and command; no native behaviour is claimed.
 import test from 'node:test';
 import { inventedProjectFixture } from './fixtures/source-site.mjs';
 import assert from 'node:assert/strict';
@@ -6,21 +7,76 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { createSimulator } from '../api.mjs';
 import { connectRuntime } from '../testing.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { redactFixtureText } from '../../test-browser/helpers/verify-evidence.mjs';
 import {
   captureCdpUrl,
   captureThroughRuntime,
   captureShell,
   captureSummary,
   captureExitCode,
+  runCaptureShellCommand,
 } from '../capture-shell.mjs';
 
 const bin = fileURLToPath(new URL('../../bin/paqvilo.mjs', import.meta.url));
 
 const project = (t) => inventedProjectFixture(t, 'paqvilo-capture-');
+
+// Preserve the command's outcome before its private fixture disappears; never emit its state or captured bodies.
+function captureDiagnostic(report) {
+  const knownCodes = new Set([
+    'SHELL_CAPTURE_FAILED',
+    'SHELL_CAPTURE_TIMEOUT',
+    'SHELL_RESOURCE_ORIGIN',
+    'SHELL_JQUERY_MISSING',
+    'ASSET_HTTP',
+    'NATIVE_ASSET_HTTP',
+    'RICHTEXT_SCHEMA_TRUNCATED',
+    'ECONNRESET',
+    'ECONNREFUSED',
+    'UND_ERR_SOCKET',
+    'UND_ERR_CLOSED',
+  ]);
+  const fingerprint = (value) =>
+    typeof value === 'string'
+      ? { bytes: Buffer.byteLength(value), sha256: createHash('sha256').update(value).digest('hex') }
+      : undefined;
+  const fields = (value, keys) =>
+    Object.fromEntries(
+      keys.flatMap((key) => {
+        const item = value?.[key];
+        return typeof item === 'string'
+          ? [[key, redactFixtureText(item)]]
+          : ['boolean', 'number'].includes(typeof item)
+            ? [[key, item]]
+            : [];
+      }),
+    );
+  return JSON.stringify({
+    synthetic: true,
+    kind: 'capture-shell-test',
+    complete: report.complete,
+    reports: report.reports.map((item) => ({
+      ...fields(item, ['site', 'env', 'applied', 'ready', 'complete', 'failed']),
+      failures: (item.failures ?? []).map((failure) => ({
+        ...fields(failure, ['blocking', 'status', 'disconnectFailed']),
+        code: knownCodes.has(failure.code) ? failure.code : 'UNCLASSIFIED_CAPTURE_FAILURE',
+        ...(knownCodes.has(failure.causeCode) ? { causeCode: failure.causeCode } : {}),
+        ...(!knownCodes.has(failure.code) ? { codeFingerprint: fingerprint(failure.code) } : {}),
+        ...(!knownCodes.has(failure.causeCode) ? { causeCodeFingerprint: fingerprint(failure.causeCode) } : {}),
+        messageFingerprint: fingerprint(failure.message),
+      })),
+    })),
+    skipped: report.skipped.map((item) => ({
+      ...fields(item, ['site', 'env']),
+      reasonFingerprint: fingerprint(item.reason),
+    })),
+  });
+}
 
 // A live bridge serving a page with one stylesheet and one jQuery script; `extraHead` adds markup to the page.
 function shellBridge(extraHead = '') {
@@ -75,6 +131,68 @@ function runCli(args) {
     child.once('error', reject);
   });
 }
+
+// The capture-shell entry function with its output captured: no process of its own.
+async function runEntry(args) {
+  const captured = { stdout: '', stderr: '' };
+  const stream = (name) => ({
+    write: (chunk) => {
+      captured[name] += String(chunk);
+      return true;
+    },
+  });
+  const code = await runCaptureShellCommand(args, { stdout: stream('stdout'), stderr: stream('stderr') });
+  return { code, stdout: captured.stdout, stderr: captured.stderr };
+}
+
+// @test-kind security: retained capture failure diagnostics exclude private payloads, profiles, headers and credential/query values.
+test('capture failure diagnostics preserve the cause while excluding private response fields', () => {
+  const privateMarker = 'invented-capture-diagnostic-private';
+  const opaqueMessage = 'opaque invented-private-message';
+  const opaqueCode = 'OPAQUE_INVENTED_PRIVATE_CODE';
+  const diagnostic = captureDiagnostic({
+    complete: false,
+    reports: [
+      {
+        site: 'invented',
+        env: 'dev',
+        failed: true,
+        body: privateMarker,
+        headers: privateMarker,
+        profile: privateMarker,
+        discovery: privateMarker,
+        failures: [
+          {
+            code: 'SHELL_CAPTURE_FAILED',
+            causeCode: 'SHELL_CAPTURE_TIMEOUT',
+            blocking: true,
+            message: `Bearer ${privateMarker} at http://127.0.0.1:12345/route?token=${privateMarker}`,
+            body: privateMarker,
+          },
+          { code: 'SHELL_CAPTURE_FAILED', message: opaqueMessage },
+          { code: opaqueCode, causeCode: opaqueCode, message: opaqueMessage },
+        ],
+      },
+    ],
+    skipped: [{ site: 'invented', env: 'production', reason: opaqueMessage }],
+  });
+  assert.equal(diagnostic.includes(privateMarker), false);
+  assert.equal(diagnostic.includes(opaqueMessage), false);
+  assert.equal(diagnostic.includes(opaqueCode), false);
+  const parsed = JSON.parse(diagnostic);
+  assert.equal(parsed.reports[0].failures[0].causeCode, 'SHELL_CAPTURE_TIMEOUT');
+  assert.equal('message' in parsed.reports[0].failures[0], false);
+  assert.equal(parsed.reports[0].failures[2].code, 'UNCLASSIFIED_CAPTURE_FAILURE');
+  assert.match(parsed.reports[0].failures[2].codeFingerprint.sha256, /^[a-f0-9]{64}$/);
+  assert.match(parsed.reports[0].failures[1].messageFingerprint.sha256, /^[a-f0-9]{64}$/);
+  assert.equal(parsed.reports[0].failures[1].messageFingerprint.bytes, Buffer.byteLength(opaqueMessage));
+  assert.equal('reason' in parsed.skipped[0], false);
+  assert.equal(parsed.reports[0].site, 'invented');
+  assert.equal('body' in parsed.reports[0], false);
+  assert.equal('headers' in parsed.reports[0], false);
+  assert.equal('profile' in parsed.reports[0], false);
+  assert.equal('discovery' in parsed.reports[0], false);
+});
 
 test('capture client preserves incomplete reports and other errors preserve the server message', async () => {
   const report = {
@@ -216,9 +334,12 @@ test('a running-runtime capture waits without a deadline, reports progress every
     }),
   );
   const realFetch = globalThis.fetch,
-    captureSignals = [];
+    captureSignals = [],
+    runtimeSignals = [];
   t.mock.method(globalThis, 'fetch', (url, options) => {
     if (String(url).endsWith('/assets/capture-shell')) captureSignals.push(options?.signal);
+    if (new URL(url).pathname.startsWith('/_sim/api/'))
+      runtimeSignals.push({ path: new URL(url).pathname, method: options?.method ?? 'GET', signal: options?.signal });
     return realFetch(url, options);
   });
   // Only the progress interval and its clock are virtual; HTTP keeps real timers.
@@ -240,6 +361,13 @@ test('a running-runtime capture waits without a deadline, reports progress every
     })),
   );
   assert.deepEqual(captureSignals, [undefined]);
+  assert.ok(runtimeSignals.some((request) => request.path.endsWith('/live/connect')));
+  assert.ok(runtimeSignals.some((request) => request.path.endsWith('/live/disconnect')));
+  assert.deepEqual(
+    runtimeSignals.filter((request) => request.signal !== undefined).map(({ path, method }) => ({ path, method })),
+    [],
+    'an unbounded capture also leaves status, state, connect and disconnect under its caller budget',
+  );
   assert.deepEqual(
     report.reports.map(({ site, env, applied, ready, complete }) => ({ site, env, applied, ready, complete })),
     [{ site: 'synthetic', env: 'dev', applied: true, ready: true, complete: true }],
@@ -257,7 +385,14 @@ test('capture all chooses one safe environment per configured site and reports c
     config,
     'sourceRoot: .\nsites:\n  first:\n    source: portal\n    mirage: { port: 0 }\n    environments:\n      dev: https://invented.example.test\n      production: { url: https://production.example.test, caution: true }\n  second:\n    source: portal\n    mirage: { port: 0 }\n    environments:\n      dev: https://invented.example.test\n      production: { url: https://production.example.test, caution: true }\n',
   );
-  const starts = [];
+  const starts = [],
+    runtimeSignals = [];
+  const realFetch = globalThis.fetch;
+  t.mock.method(globalThis, 'fetch', (url, options) => {
+    if (new URL(url).pathname.startsWith('/_sim/api/'))
+      runtimeSignals.push({ path: new URL(url).pathname, method: options?.method ?? 'GET', signal: options?.signal });
+    return realFetch(url, options);
+  });
   const report = await captureShell({
     config,
     all: true,
@@ -277,8 +412,10 @@ test('capture all chooses one safe environment per configured site and reports c
       });
     },
   });
+  const diagnostic = captureDiagnostic(report);
+  t.diagnostic(diagnostic);
   assert.equal(report.complete, false);
-  assert.equal(captureExitCode(report), 0);
+  assert.equal(captureExitCode(report), 0, diagnostic);
   assert.equal(captureExitCode(report, { strict: true }), 1);
   assert.equal(report.reports[0].applied, true);
   assert.equal(report.reports[0].shellProfile.platformStyles.mode, 'captured');
@@ -292,6 +429,13 @@ test('capture all chooses one safe environment per configured site and reports c
     ],
   );
   assert.equal(new Set(starts).size, 2);
+  assert.ok(runtimeSignals.some((request) => request.path.endsWith('/live/connect')));
+  assert.ok(runtimeSignals.some((request) => request.path.endsWith('/live/disconnect')));
+  assert.deepEqual(
+    runtimeSignals.filter((request) => request.signal !== undefined).map(({ path, method }) => ({ path, method })),
+    [],
+    'spawned runtimes use the capture command budget for every control request',
+  );
   assert.deepEqual(
     report.skipped.map((item) => [item.site, item.env]),
     [
@@ -373,9 +517,7 @@ test('installed CLI accepts applied partial shells and strict mode rejects their
   await fs.appendFile(config, `    mirage: { port: ${new URL(app.url).port} }\n`);
   // Sequential: one runtime accepts one live connection at a time.
   for (const strict of [false, true]) {
-    const { code, stdout, stderr } = await runCli([
-      'mirage',
-      'capture-shell',
+    const { code, stdout, stderr } = await runEntry([
       '--config',
       config,
       '--site',
@@ -431,9 +573,7 @@ test('capture CLI prints failed resources, exits one and disconnects the running
   ownedFixture(t).add(() => app.close());
   const config = path.join(root, 'paqvilo.config.yml');
   await fs.appendFile(config, `    mirage: { port: ${new URL(app.url).port} }\n`);
-  const { code, stdout, stderr } = await runCli([
-    'mirage',
-    'capture-shell',
+  const { code, stdout, stderr } = await runEntry([
     '--config',
     config,
     '--site',
@@ -453,6 +593,17 @@ test('capture CLI prints failed resources, exits one and disconnects the running
   assert.ok(report.reports[0].failures.some((item) => item.code === 'SHELL_JQUERY_MISSING' && item.blocking));
   assert.equal(bridge.connected, false);
   assert.match(captureSummary(report), /BLOCKING SHELL_JQUERY_MISSING[\s\S]*observed NATIVE_ASSET_HTTP/);
+});
+
+// @test-kind contract: the installed capture-shell command passes the entry function's output and exit code through unchanged
+test("the installed capture-shell command passes the entry function's output and exit code through unchanged", async (t) => {
+  const root = await project(t),
+    config = path.join(root, 'paqvilo.config.yml');
+  // Refused before any connection: the CDP URL is not loopback.
+  for (const json of [[], ['--json']]) {
+    const args = ['--config', config, '--site', 'invented', '--cdp', 'http://external.example.test:9222', ...json];
+    assert.deepEqual(await runCli(['mirage', 'capture-shell', ...args]), await runEntry(args));
+  }
 });
 
 test('capture rejects untrusted CDP URLs, caution environments and absolute paths before launching a browser', async (t) => {

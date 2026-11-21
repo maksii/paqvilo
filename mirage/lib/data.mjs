@@ -1,7 +1,7 @@
 import { parseDataverseDecimalString } from './dataverse-decimal-input.mjs';
-import { readFile, mkdir, rename, open, unlink, rm } from 'node:fs/promises';
+import { mkdir, rename, rm } from 'node:fs/promises';
 import { dirname, join, resolve, basename } from 'node:path';
-import { randomUUID, createHash } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { isDeepStrictEqual, types as utilTypes } from 'node:util';
 import { cloneStateData } from './state-clone.mjs';
@@ -14,7 +14,7 @@ import { privateRecordEqual } from './record-clone.mjs';
 import { collectRecordGarbage } from './record-file-lease.mjs';
 import { syncDirectory } from './record-page-file.mjs';
 import { encodeRecordReferences } from './record-state.mjs';
-import { systemClock, systemIds } from './runtime-clock.mjs';
+import { releaseStamps, stampMs, systemClock, systemIds } from './runtime-clock.mjs';
 import { currentRequest } from './request-context.mjs';
 import { takeNativeFormContactAssociation } from './native-form-association.mjs';
 import { builtinPresets, resolvePreset, compactBuiltinPresets, applyPresetSections } from './presets.mjs';
@@ -36,7 +36,21 @@ import { customerAddressColumns, relationshipsOf, standardTableDef } from './dat
 import { ownershipOf, traceDecision } from './dataverse-security.mjs';
 import { countWork, trackWork, workOf } from './work-counter.mjs';
 import { StateStorage } from './state-storage.mjs';
+import {
+  lockCompanion,
+  recoverWriterLock,
+  releaseWriterLock,
+  takeWriterLock,
+  writerLockBusyMessage,
+} from './transactional-files.mjs';
 import { RowTransaction, validateRowIndex, assignRowValues } from './row-transaction.mjs';
+import {
+  LazyBackup,
+  StateTracker,
+  restorePartInPlace,
+  stateTrackingChecks,
+  untrackedEntries,
+} from './state-tracking.mjs';
 import { jsonChunks, stateDigest } from './state-stream.mjs';
 import { initializationFingerprint, initializationDelta, initializationEntries } from './state-initialization.mjs';
 import { validatePersonaCatalog } from './persona-catalog.mjs';
@@ -129,6 +143,47 @@ const UNCHECKED_LOOKUPS = { sdkmessageprocessingstep: { impersonatinguserid: 'sy
 export const uncheckedLookup = (table, column, target) => UNCHECKED_LOOKUPS[table]?.[column] === target;
 const clone = cloneStateData;
 const cloneInternal = (value) => cloneStateData(value, { forkTables: true });
+/**
+ * The state a journaled transaction began on, once it was promoted (DataStore#promoteRowTransaction) while the store
+ * tracked its state: the lazy backup opened at the promotion, with the journal undone on it. Every table the journal
+ * wrote was handed out before the promotion (a row operation hands its table out), so that backup holds its own copy
+ * of it and the undo never reaches a table shared with the live state.
+ */
+class PromotedBackup {
+  constructor(backup, transaction, whole) {
+    this.backup = backup;
+    this.transaction = transaction;
+    this.whole = whole; // stateTrackingChecks: the whole-copy result this backup must equal
+  }
+  restore() {
+    const state = this.transaction.rollback(this.backup.restore());
+    // The journal hands its own section copies to the state it restores: detach them, so it can restore again.
+    for (const key of Object.keys(this.transaction.metadata))
+      if (Object.hasOwn(state, key)) state[key] = cloneInternal(state[key]);
+    if (this.whole && !privateRecordEqual(state, this.whole))
+      throw new Error('State tracking: a promoted backup differs from the whole copy');
+    return state;
+  }
+  view() {
+    return this.restore();
+  }
+  equals(state) {
+    return privateRecordEqual(state, this.restore());
+  }
+}
+// A rollback backup is a whole copy of the state, or a lazy one (state-tracking.mjs) that copied only what the
+// transaction reached.
+const lazyBackup = (backup) => backup instanceof LazyBackup || backup instanceof PromotedBackup;
+// Closes the lazy backup a replaced rollback point held (a promoted one closes the backup it wraps); a whole copy has nothing to close.
+const closeBackup = (backup) => {
+  const lazy = backup instanceof PromotedBackup ? backup.backup : backup;
+  if (lazy instanceof LazyBackup) lazy.close();
+};
+const restoreOf = (backup) => (lazyBackup(backup) ? backup.restore() : cloneInternal(backup));
+const backupState = (backup) => (lazyBackup(backup) ? backup.restore() : backup);
+const backupView = (backup) => (lazyBackup(backup) ? backup.view() : backup);
+const unchangedSince = (state, backup) =>
+  lazyBackup(backup) ? backup.equals(state) : privateRecordEqual(state, backup);
 // Per async context, the transaction frame of each DataStore (see DataStore#transact).
 const transactionFrames = new AsyncLocalStorage();
 const transactionFrameOf = (store, { closed = false } = {}) => {
@@ -753,6 +808,26 @@ const restoreInPlace = (current, saved) => {
   }
   return clone(saved);
 };
+// restoreInPlace from either kind of rollback backup. A LazyBackup restores the tables and mappings it copied; the
+// others were never handed out, so they are as the backup recorded them.
+const restoreBackupInPlace = (state, backup) => {
+  if (backup instanceof PromotedBackup) {
+    restoreBackupInPlace(state, backup.backup);
+    backup.transaction.rollback(state, restoreInPlace);
+    return state;
+  }
+  if (!(backup instanceof LazyBackup)) return restoreInPlace(state, backup);
+  for (const key of Object.keys(state)) if (!backup.order.includes(key)) delete state[key];
+  for (const key of backup.order) {
+    const part = backup.parts.get(key),
+      current = state[key];
+    if (!part) state[key] = restoreInPlace(current, backup.sections[key]);
+    else if (current && typeof current === 'object' && !Array.isArray(current))
+      restorePartInPlace(part, current, { fresh: cloneInternal, restoreMember: restoreInPlace });
+    else state[key] = backup.restore()[key];
+  }
+  return state;
+};
 /**
  * Key-set continuation for a paged query: the rows strictly after the cursor, in the same order sortRows
  * gives a public page (keys, then the primary-key tie breaker, then input position), keeping only the
@@ -1359,8 +1434,13 @@ export class DataStore {
     ids = systemIds,
     unpublished = false,
     ownedState = false,
+    // Receives a WRITER_LOCK_RECLAIMED diagnostic whenever the state file's lock, left by a writer that has ended, is
+    // reclaimed; each is also kept in lockRecoveries.
+    onLockRecovery = null,
   } = {}) {
     this.file = file;
+    this.onLockRecovery = onLockRecovery;
+    this.lockRecoveries = [];
     // The record pipeline's time and GUID source (runtime-clock.mjs); createOrganizationRuntime shares it with its API.
     this.clock = clock;
     this.ids = ids;
@@ -1454,6 +1534,8 @@ export class DataStore {
     }
     if (this.file) {
       this.ensureStorage();
+      // A lock left by a writer that has ended is reclaimed (and reported) at start; any other lock stays.
+      await recoverWriterLock(this.file, { onReclaim: (entry) => this.reportLockRecovery(entry) });
       try {
         if (restoredState !== undefined) {
           if (!(restoredStorage instanceof StateStorage) || restoredStorage.file !== this.file)
@@ -1783,29 +1865,18 @@ export class DataStore {
         return this.#saveState(selectedState);
       }
     }
-    const lockPath = `${this.file}.lock`,
-      lockToken = `${process.pid}:${randomUUID()}`,
-      temp = `${this.file}.${randomUUID()}.tmp`;
-    let lockHandle;
+    // The writer lock (transactional-files.mjs) names this process; a lock whose writer has ended is reclaimed first.
+    let lock, temp;
     let writeFailed = false;
     let writeFailure;
     let cleanupFailure;
     try {
       await (async () => {
-        try {
-          lockHandle = await open(lockPath, 'wx', 0o600);
-        } catch (error) {
-          if (error.code === 'EEXIST')
-            throw new DataError(
-              'Local state is being written by another process; retry after it finishes',
-              409,
-              'StateConflict',
-            );
-          throw error;
-        }
-        await lockHandle.writeFile(`${lockToken}\n`);
-        await lockHandle.close();
-        lockHandle = null;
+        const taken = await takeWriterLock(this.file, { onReclaim: (entry) => this.reportLockRecovery(entry) });
+        if (taken.busy) throw new DataError(writerLockBusyMessage(taken.busy), 409, 'StateConflict');
+        lock = taken;
+        // Named by the lock's owner, so a reclaim of this lock discards exactly this unpublished checkpoint.
+        temp = lockCompanion(this.file, lock.owner, 'tmp');
 
         await this.storage.assertUnchanged();
         const initialization = transactionFrameOf(this);
@@ -1843,15 +1914,14 @@ export class DataStore {
       writeFailed = true;
       writeFailure = error;
     } finally {
-      if (lockHandle) await lockHandle.close().catch(() => {});
-      await rm(temp, { force: true }).catch(() => {});
-      // Remove only the lock this save created. Never infer staleness or
-      // delete a lock owned by another process.
-      try {
-        if ((await readFile(lockPath, 'utf8')) === `${lockToken}\n`) await unlink(lockPath);
-      } catch (error) {
-        if (error.code !== 'ENOENT') cleanupFailure = error;
-      }
+      if (temp) await rm(temp, { force: true }).catch(() => {});
+      // Remove only the lock this save created; another process's lock is never removed here.
+      if (lock)
+        try {
+          await releaseWriterLock(this.file, lock);
+        } catch (error) {
+          cleanupFailure = error;
+        }
     }
     if (writeFailed && cleanupFailure) {
       throw new AggregateError([writeFailure, cleanupFailure], 'Local state save and lock cleanup failed', {
@@ -1860,6 +1930,14 @@ export class DataStore {
     }
     if (writeFailed) throw writeFailure;
     if (cleanupFailure) throw cleanupFailure;
+  }
+  reportLockRecovery(entry) {
+    this.lockRecoveries.push(entry);
+    try {
+      this.onLockRecovery?.(entry);
+    } catch {
+      /* observer only */
+    }
   }
   recordSave(durationMs, mode) {
     this.lastSave = { durationMs: Math.round(durationMs * 100) / 100, mode };
@@ -1951,14 +2029,35 @@ export class DataStore {
     const frame = transactionFrameOf(this);
     return frame?.store === this && !frame.closed;
   }
+  /** A whole copy of the state (the current one by default), counted in the store's work (stateCopies). */
+  copyState(state = this.state) {
+    countWork(this, 'stateCopies', 1);
+    return cloneInternal(state);
+  }
+  /** A rollback backup of the state as it is now: lazy while this transaction tracks the state, else a whole copy. */
+  backupState() {
+    const tracker = this.stateTracker;
+    return (tracker?.covers(this.state) ? tracker.backup() : null) ?? this.copyState();
+  }
+  countBackupCopy(kind, value) {
+    countWork(this, 'backupMembers', 1);
+    if (kind === 'tables' && Array.isArray(value)) countWork(this, 'backupRows', value.length);
+  }
   ensureReadSnapshot() {
     this.promoteRowTransaction();
     this.pluginRollbackBoundary?.ensureSnapshot?.();
   }
   promoteRowTransaction() {
     if (!this.rowTransaction) return;
-    const transaction = this.rowTransaction;
-    this.pluginRollbackBoundary.backup = transaction.rollback(cloneInternal(this.state));
+    const transaction = this.rowTransaction,
+      tracker = this.stateTracker,
+      lazy = tracker?.covers(this.state) && transaction.state === this.state ? tracker.backup() : null;
+    // While the store tracks its state the promotion copies what the transaction reached so far, and from then on
+    // what it reaches; otherwise the whole state, with the journal undone on that copy.
+    if (lazy) {
+      const whole = stateTrackingChecks.verify ? cloneInternal(transaction.rollback(cloneInternal(this.state))) : null;
+      this.pluginRollbackBoundary.backup = new PromotedBackup(lazy, transaction, whole);
+    } else this.pluginRollbackBoundary.backup = transaction.rollback(this.copyState());
     this.pluginRollbackBoundary.persistenceBackup ??= this.pluginRollbackBoundary.backup;
     transaction.promoted = true;
     this.rowTransaction = null;
@@ -1972,6 +2071,11 @@ export class DataStore {
    * `pluginVisible: false` keeps an isolated boundary out of the plug-in pipeline's IsInTransaction: a single request
    * that runs atomically for itself (a top-level custom API or SOAP message) still starts outside the transaction at
    * PreValidation, as natively; a $batch changeset stays visible.
+   * `tracked: true` is for a caller whose callback reaches the state only through this store while the transaction
+   * runs (the job runners; a trusted handler is fenced to its invocation the same way): its rollback backup then copies
+   * only the tables and mappings the transaction reaches (state-tracking.mjs) instead of the whole state. A reference to
+   * a row, table or mapping kept from before the transaction is outside that backup, so a callback that may use one
+   * must not ask for it. Without it a plain transaction copies the whole state first, as it always did.
    */
   transact(
     fn,
@@ -1984,6 +2088,7 @@ export class DataStore {
       isolated = false,
       privateInitialization = false,
       pluginVisible = true,
+      tracked = false,
     } = {},
   ) {
     // ponytail: a nested throw that the caller catches keeps that call's partial writes;
@@ -2033,7 +2138,20 @@ export class DataStore {
           // and publishes it at commit. It is O(state) per changeset, a write that bypasses
           // transact is lost at commit, and an independent plugin commit inside it persists
           // the working copy. Use a change overlay before batch relies on any of these.
-          if (isolated) frame.working = privateInitialization ? this._state : cloneInternal(this._state);
+          if (isolated) frame.working = privateInitialization ? this._state : this.copyState(this._state);
+          // A tracked or journaled transaction on the committed state records what it hands out (state-tracking.mjs):
+          // a tracked one backs up only the tables and mappings it reached, a journaled one only the mappings (its rows
+          // are journaled). Every other transaction copies as before.
+          const previousTracker = this.stateTracker,
+            tracker =
+              isolated || privateInitialization || lazyReadSnapshot || !(tracked || incremental)
+                ? null
+                : StateTracker.install(this._state, {
+                    clone: cloneInternal,
+                    equal: privateRecordEqual,
+                    count: (kind, value) => this.countBackupCopy(kind, value),
+                  });
+          this.stateTracker = tracker;
           // Arbitrary extension callbacks retain the established full rollback
           // boundary. Core CRUD/declarative handlers use the bounded undo journal.
           const rowTransaction = incremental ? new RowTransaction(this, { reuse: !isolated }) : null;
@@ -2043,7 +2161,7 @@ export class DataStore {
           // working graph. A second whole-state clone cannot improve isolation.
           let backup = null;
           if (!privateInitialization && isolated) backup = this._state;
-          else if (!privateInitialization && !lazyReadSnapshot && !rowTransaction) backup = cloneInternal(this.state);
+          else if (!privateInitialization && !lazyReadSnapshot && !rowTransaction) backup = this.backupState();
           const boundary = {
             backup,
             independentCommit: false,
@@ -2053,7 +2171,7 @@ export class DataStore {
           if (lazyReadSnapshot)
             boundary.ensureSnapshot = () => {
               if (boundary.backup !== null) return;
-              boundary.backup = cloneInternal(this.state);
+              boundary.backup = this.copyState();
               boundary.persistenceBackup = boundary.backup;
             };
           const previousBoundary = this.pluginRollbackBoundary,
@@ -2069,6 +2187,8 @@ export class DataStore {
             if (boundary.transactionFailure) throw boundary.transactionFailure;
             this.restorePluginTraceLogs(boundary);
             const staged = this.stageOnCommit(this.committedEventCandidates);
+            // The callback and the commit stagers have written everything: the containers are plain data for the save.
+            tracker?.release();
             const journalInitialization = initializationDigest && typeof initializationDigest === 'object';
             if (journalInitialization) {
               const delta = await initializationDelta(initializationDigest, this.state);
@@ -2084,7 +2204,7 @@ export class DataStore {
                   (journalInitialization
                     ? frame.initializationDelta.length > 0
                     : stateDigest(this.state, { sortKeys: true }) !== initializationDigest))) ||
-              (boundary.backup !== null && !privateRecordEqual(this.state, boundary.backup))
+              (boundary.backup !== null && !unchangedSince(this.state, boundary.backup))
             ) {
               frame.committing = true;
               const commit = this.traceCommit();
@@ -2101,9 +2221,12 @@ export class DataStore {
                   saveMode: this.lastSave?.mode ?? null,
                 },
               });
-              this.committed(
-                rowTransaction && !rowTransaction.promoted && !isolated ? rowTransaction.touchedTables() : null,
-              );
+              // A journaled commit names the tables it wrote; a tracked one the tables that differ from its backup.
+              let changed = null;
+              if (rowTransaction && !rowTransaction.promoted && !isolated) changed = rowTransaction.touchedTables();
+              else if (!rowTransaction && boundary.persistenceBackup instanceof LazyBackup)
+                changed = boundary.persistenceBackup.changedTables(this.state);
+              this.committed(changed);
               // Section copies the journal commit proved unchanged seed the next row transaction (RowTransaction reuse).
               const reusable = rowTransaction && !isolated ? rowTransaction.reusableSections() : null;
               if (reusable) this.sectionSnapshot = { ...reusable, revision: this.revision };
@@ -2128,9 +2251,10 @@ export class DataStore {
             return cloneResult ? clone(result) : result;
           } catch (error) {
             if (!rowTransaction?.promoted) rowTransaction?.rollback();
+            tracker?.release();
             this.rowIndexes = null;
             const rollback = error.persistenceFailure ? boundary.persistenceBackup : boundary.backup;
-            if (!privateInitialization && rollback !== null) this.state = cloneInternal(rollback);
+            if (!privateInitialization && rollback !== null) this.state = restoreOf(rollback);
             for (const note of boundary.rollbackNotes ?? [])
               try {
                 note(error);
@@ -2175,7 +2299,7 @@ export class DataStore {
                 this.dispatchCommittedEvents(events);
                 this.afterStagedCommit(staged);
               } catch (saveError) {
-                this.state = boundary.persistenceBackup ?? traceRetentionBackup ?? retentionBackup;
+                this.state = backupState(boundary.persistenceBackup ?? traceRetentionBackup ?? retentionBackup);
                 this.rowIndexes = null;
                 if (traceRetentionBackup) throw traceRetentionError(error, saveError);
                 throw saveError;
@@ -2193,7 +2317,7 @@ export class DataStore {
                 this.dispatchCommittedEvents(events);
                 this.afterStagedCommit(staged);
               } catch (saveError) {
-                if (boundary.persistenceBackup !== null) this.state = boundary.persistenceBackup;
+                if (boundary.persistenceBackup !== null) this.state = backupState(boundary.persistenceBackup);
                 else if (traceRetentionBackup) this.state = traceRetentionBackup;
                 this.rowIndexes = null;
                 if (traceRetentionBackup) throw traceRetentionError(error, saveError);
@@ -2204,6 +2328,8 @@ export class DataStore {
           } finally {
             if (rowTransaction?.promoted || (!rowTransaction && (!skipSaveIfUnchanged || boundary.backup !== null)))
               this.rowIndexes = null;
+            tracker?.release();
+            this.stateTracker = previousTracker;
             this.rowTransaction = previousRows;
             this.pluginRollbackBoundary = previousBoundary;
             this.pluginInTransaction = previousTransaction;
@@ -2298,20 +2424,12 @@ export class DataStore {
       this.recordGarbageCollection = { skipped: 'directory-identity' };
       return this.recordGarbageCollection;
     }
-    const lockPath = this.file ? this.file + '.lock' : null,
-      token = `${process.pid}:${randomUUID()}\n`;
     let lock;
     try {
-      if (lockPath) {
-        try {
-          lock = await open(lockPath, 'wx', 0o600);
-        } catch (error) {
-          if (error.code === 'EEXIST') return { skipped: 'active-writer' };
-          throw error;
-        }
-        await lock.writeFile(token);
-        await lock.close();
-        lock = null;
+      if (this.file) {
+        const taken = await takeWriterLock(this.file, { onReclaim: (entry) => this.reportLockRecovery(entry) });
+        if (taken.busy) return { skipped: 'active-writer' };
+        lock = taken;
         await this.storage.assertUnchanged();
       }
       const encoded = encodeRecordReferences({ op: 'section', key: 'state', value: this.state });
@@ -2326,12 +2444,11 @@ export class DataStore {
       this.recordCleanupError = error;
       return { skipped: 'collection-failed', code: error.code ?? 'RecordCleanup' };
     } finally {
-      await lock?.close().catch(() => {});
-      if (lockPath)
+      if (lock)
         try {
-          if ((await readFile(lockPath, 'utf8')) === token) await unlink(lockPath);
+          await releaseWriterLock(this.file, lock);
         } catch (error) {
-          if (error.code !== 'ENOENT') this.recordCleanupError = error;
+          this.recordCleanupError = error;
         }
     }
   }
@@ -2344,6 +2461,7 @@ export class DataStore {
   // row index of that array (rowIndexes: rows -> Map<name, RowKeyIndex>) current.
   writeRow(table, rows, index, row) {
     validateRowIndex(rows, index);
+    this.stateTracker?.reach('tables', table);
     const indexes = this.rowIndexes?.get(rows),
       previous = indexes?.size ? rows[index] : undefined;
     if (this.rowTransaction) this.rowTransaction.set(table, rows, index, row);
@@ -2354,6 +2472,9 @@ export class DataStore {
   mutateRow(table, rows, index, values) {
     assertPluginExecutionActive(this);
     validateRowIndex(rows, index);
+    // A row operation hands its table out first: an open backup copies it before the write, also when the caller
+    // holds `rows` from before the transaction.
+    this.stateTracker?.reach('tables', table);
     const indexes = this.rowIndexes?.get(rows),
       keys = indexes?.size ? [...indexes].map(([name, entry]) => [name, entry, entry.keyOf(rows[index])]) : null;
     if (this.rowTransaction) this.rowTransaction.mutate(table, rows, index, values);
@@ -2363,6 +2484,7 @@ export class DataStore {
   }
   insertRow(table, rows, row) {
     assertPluginExecutionActive(this);
+    this.stateTracker?.reach('tables', table);
     if (this.rowTransaction) this.rowTransaction.insert(table, rows, rows.length, row);
     else rows.push(row);
     const indexes = this.rowIndexes?.get(rows);
@@ -2397,6 +2519,7 @@ export class DataStore {
   removeRow(table, rows, index) {
     assertPluginExecutionActive(this);
     validateRowIndex(rows, index);
+    this.stateTracker?.reach('tables', table);
     const indexes = this.rowIndexes?.get(rows),
       removed = rows[index];
     if (this.rowTransaction) this.rowTransaction.remove(table, rows, index);
@@ -2566,7 +2689,7 @@ export class DataStore {
   openReadLane() {
     if (this.pluginReadOnly !== true || this.pluginRollbackBoundary || this.pluginReadLane) return;
     const base = this._state,
-      frame = { store: this, working: cloneInternal(base), initializing: false, parent: transactionFrames.getStore() },
+      frame = { store: this, working: this.copyState(base), initializing: false, parent: transactionFrames.getStore() },
       boundary = { backup: null, independentCommit: false, eventCount: 0, parent: null };
     const lane = {
       base,
@@ -2594,7 +2717,7 @@ export class DataStore {
     if (!lane || lane === previous || lane.closed) return;
     lane.closed = true;
     const { boundary, frame } = lane,
-      committed = boundary.independentCommit ? boundary.backup : null,
+      committed = boundary.independentCommit ? backupView(boundary.backup) : null,
       events = failure
         ? (this.committedEventCandidates ?? []).slice(0, boundary.eventCount)
         : [...(this.committedEventCandidates ?? [])],
@@ -2674,12 +2797,18 @@ export class DataStore {
     };
     this.pluginRollbackBoundary = boundary;
     this.rowTransaction = savepoint;
+    // The rollback point moves past this call. The backup it replaces is closed unless commit still uses it (persistenceBackup).
+    const advance = () => {
+      const replaced = previousBoundary.backup;
+      previousBoundary.backup = this.backupState();
+      if (replaced !== previousBoundary.persistenceBackup) closeBackup(replaced);
+    };
     return {
       commit: () => {
         this.assertPluginTransactionActive();
         this.rowTransaction = previousRows;
         if (!joined && previousBoundary) {
-          previousBoundary.backup = cloneInternal(this.state);
+          advance();
           previousBoundary.independentCommit = true;
           previousBoundary.eventCount = this.committedEventCandidates?.length ?? 0;
         }
@@ -2688,7 +2817,7 @@ export class DataStore {
         this.rowTransaction = previousRows;
         // Keep table/row references held by an enclosing synchronous pipeline
         // intact while removing every failed request's transactional write.
-        if (boundary.backup !== null) restoreInPlace(this.state, boundary.backup);
+        if (boundary.backup !== null) restoreBackupInPlace(this.state, boundary.backup);
         else savepoint.rollback(this.state, restoreInPlace);
         this.rowIndexes = null;
         this.restorePluginTraceLogs(boundary);
@@ -2701,12 +2830,13 @@ export class DataStore {
           else parent.transactionFailure = failure;
         }
         if (!joined && boundary.independentCommit && previousBoundary) {
-          previousBoundary.backup = cloneInternal(this.state);
+          advance();
           previousBoundary.independentCommit = true;
           previousBoundary.eventCount = boundary.eventCount;
         }
       },
       close: () => {
+        savepoint.close();
         this.pluginRollbackBoundary = previousBoundary;
         this.rowTransaction = previousRows;
       },
@@ -2823,6 +2953,11 @@ export class DataStore {
     this.deleteGuards ??= new Set();
     this.deleteGuards.add(fn);
     return () => this.deleteGuards.delete(fn);
+  }
+  /** The record stamp (createdon, modifiedon) now, in whole seconds, held across a small backward step of the wall clock
+   * (runtime-clock.mjs stampMs) so a later write never looks older. */
+  recordStamp() {
+    return isoUtc(stampMs(this, this.clock));
   }
   /** When and in which order an operation's PostOperation began: native creates its asynchronous jobs then, so a nested
    * operation's job is created after its caller's (corpus depth.json: job createdon and ids rise with Depth). */
@@ -2950,6 +3085,8 @@ export class DataStore {
           boundary.persistenceBackup ??= this.state;
         }
         this.state = next;
+        // A replaced state (preset apply, import, reset) is stamped from the clock again, not held at the old state's stamps.
+        releaseStamps(this);
         return returnSnapshot ? this.state : undefined;
       },
       { cloneResult: returnSnapshot, lazyReadSnapshot: true, skipSaveIfUnchanged },
@@ -3241,7 +3378,7 @@ export class DataStore {
       );
   }
   /**
-   * The lowercase names a table filter value stands for (DV-N4-2): the logical name and the entity set name of the mapped
+   * The lowercase names a table filter value stands for: the logical name and the entity set name of the mapped
    * table it names either way (any case), else the value itself.
    */
   entityNames(name) {
@@ -3263,7 +3400,9 @@ export class DataStore {
     let logical = entity;
     let m = own(this.state.mappings, entity) ? this.state.mappings[entity] : undefined;
     if (!m) {
-      const hit = Object.entries(this.state.mappings).find(([, value]) => value.entitySet === entity);
+      // The scan reads every mapping; only the one it finds is handed out (state-tracking.mjs).
+      const found = untrackedEntries(this.state.mappings).find(([, value]) => value.entitySet === entity);
+      const hit = found && [found[0], this.state.mappings[found[0]]];
       if (hit) {
         logical = hit[0];
         m = hit[1];
@@ -5136,8 +5275,8 @@ export class DataStore {
       case 'sequence': {
         return this.evaluateSequence(args);
       }
-      case 'now':
-        return new Date(this.clock.now()).toISOString();
+      case 'now': // a value a plug-in writes to a row: held as record stamps are (runtime-clock.mjs stampMs)
+        return new Date(stampMs(this, this.clock)).toISOString();
       case 'split':
         return String(args[0] ?? '')
           .split(args[1] ?? ',')
@@ -5313,7 +5452,7 @@ export class DataStore {
       record: row,
       previous: previous ?? {},
       identity,
-      now: new Date(this.clock.now()).toISOString(),
+      now: new Date(stampMs(this, this.clock)).toISOString(),
     };
     const secondary = [];
     for (const p of this.state.plugins.filter(
@@ -5879,7 +6018,7 @@ export class DataStore {
       !this.rules(m.logicalName, 'create', identity).length
     )
       this.assertAllowed(m.logicalName, 'create', row, identity);
-    row.createdon ??= isoUtc(this.clock.now());
+    row.createdon ??= this.recordStamp();
     row.modifiedon ??= row.createdon;
     const derivedTargetColumns = new Set(
       [
@@ -6166,7 +6305,7 @@ export class DataStore {
    * stored version have a content-derived ETag, which changes with the row anyway).
    */
   touchRow(previous, row, systemColumns = null) {
-    row.modifiedon = isoUtc(this.clock.now());
+    row.modifiedon = this.recordStamp();
     if (systemColumns) Object.assign(row, systemColumns);
     // A caller that takes the row version itself (Dataverse's org-wide counter) keeps its value.
     if (systemColumns && 'versionnumber' in systemColumns) return row;
@@ -6456,8 +6595,8 @@ export class DataStore {
       throw new DataError('The partitionid value of an elastic table row cannot be changed.', 400, 'InvalidRequest');
     if (options.coerce) this.coerceRecord(mapping, row, options);
     assertElasticRecord(row);
-    row.createdon = previous?.createdon ?? isoUtc(this.clock.now());
-    row.modifiedon = isoUtc(this.clock.now());
+    row.modifiedon = this.recordStamp();
+    row.createdon = previous?.createdon ?? row.modifiedon;
     if (previous?.createdby) row.createdby = clone(previous.createdby);
     Object.assign(row, this.systemColumnsFor(options.systemColumns, mapping, row));
     const target = clone(row),
@@ -6859,18 +6998,27 @@ export class DataStore {
       ...(options.omitConcurrencyBehavior ? { omitConcurrencyBehavior: true } : {}),
     });
   }
-  async applyPreset(name, { generatedPresets = this.presetLibrary, returnSnapshot = true } = {}) {
+  /** startup: the tables a declared pack DATA file owns keep the file's rows (pack DATA is authoritative at startup). */
+  async applyPreset(name, { generatedPresets = this.presetLibrary, returnSnapshot = true, startup = false } = {}) {
     const preset = resolvePreset(this.state, name, generatedPresets, this.recordContext());
     if (!preset) throw new DataError(`Unknown preset ${name}`, 404);
     if (preset.personaCatalog !== undefined) validatePersonaCatalog(preset.personaCatalog, `Preset ${name}`);
-    return this.transact(
-      () => {
-        applyPresetSections(this.state, preset, { owned: true });
-        this.state = normalizeState(this.state, this.presetLibrary, this.platformConfig, true);
-        return returnSnapshot ? this.state : undefined;
-      },
-      { cloneResult: returnSnapshot },
-    );
+    const owned = startup ? this.storageAdapter?.dataOwned : null;
+    const transaction = () =>
+      this.transact(
+        () => {
+          const fileRows = owned ? Object.entries(this.state.tables ?? {}).filter(([table]) => owned(table)) : [];
+          applyPresetSections(this.state, preset, { owned: true });
+          if (fileRows.length) this.state.tables ??= {};
+          for (const [table, rows] of fileRows) this.state.tables[table] = rows;
+          this.state = normalizeState(this.state, this.presetLibrary, this.platformConfig, true);
+          releaseStamps(this); // as replaceState: the applied preset is stamped from the clock again
+          return returnSnapshot ? this.state : undefined;
+        },
+        { cloneResult: returnSnapshot },
+      );
+    // A preset's table mappings are declared schema, accepted at every simulation level (simulation-persistence.mjs).
+    return this.storageAdapter ? this.storageAdapter.presetApplication(transaction) : transaction();
   }
   /**
    * Evaluate FetchXML for an identity. options.profile "webapi" applies the
@@ -7299,7 +7447,7 @@ export class DataStore {
 
 function boundedInt(value, name) {
   const n = Number(value);
-  if (!Number.isSafeInteger(n) || n < 0) throw new DataError(`${name} must be a nonnegative integer`);
+  if (!Number.isSafeInteger(n) || n < 0) throw new DataError(`${name} must be a non-negative integer`);
   return n;
 }
 function project(row, select) {

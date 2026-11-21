@@ -1,3 +1,4 @@
+import { requiredArgument } from './required-argument.mjs';
 import { observeDocumentCommits } from './document-commits.mjs';
 import { simulatorBackgroundRequest } from './simulator-background-requests.mjs';
 
@@ -20,7 +21,10 @@ const safeUrl = (value) => {
 /** Observe a project-owned Chromium page without intercepting or altering requests.
  * Attach before navigation. Cancellation is classified only from lifecycle evidence
  * already observed when the failure occurs; later navigation never repairs a failure. */
-export async function observePageLifecycle(page, { origin, maxRecords = 10000, clock = defaultClock } = {}) {
+export async function observePageLifecycle(
+  page = requiredArgument('observePageLifecycle(page, { origin })', 'a Playwright page'),
+  { origin, maxRecords = 10000, clock = defaultClock } = {},
+) {
   if (!origin || !['http:', 'https:'].includes(new URL(origin).protocol))
     throw new Error('A valid HTTP origin is required.');
   if (!Number.isSafeInteger(maxRecords) || maxRecords < 1) throw new Error('maxRecords must be a positive integer.');
@@ -155,7 +159,7 @@ export async function observePageLifecycle(page, { origin, maxRecords = 10000, c
   };
   const settle = async ({ timeout = 5000, quietMs = 100, pollMs = 25 } = {}) => {
     if (![timeout, quietMs, pollMs].every(Number.isFinite) || timeout < 0 || quietMs < 0 || pollMs <= 0)
-      throw new Error('Settling requires nonnegative finite timeout/quietMs and positive pollMs.');
+      throw new Error('Settling requires non-negative finite timeout/quietMs and positive pollMs.');
     const started = clock.now(),
       deadline = started + timeout;
     for (;;) {
@@ -173,7 +177,10 @@ export async function observePageLifecycle(page, { origin, maxRecords = 10000, c
 
 /** Observe existing and future pages in a project-owned Chromium context.
  * Await ready() after creating a page and before navigating it. */
-export async function observeContextLifecycle(context, options = {}) {
+export async function observeContextLifecycle(
+  context = requiredArgument('observeContextLifecycle(context)', 'a Playwright browser context'),
+  options = {},
+) {
   const clock = options.clock ?? defaultClock;
   const pages = new Map(),
     observers = new Map(),
@@ -219,7 +226,7 @@ export async function observeContextLifecycle(context, options = {}) {
     ready,
     /* NOSONAR */ async settle({ timeout = 5000, quietMs = 100, pollMs = 25 } = {}) {
       if (![timeout, quietMs, pollMs].every(Number.isFinite) || timeout < 0 || quietMs < 0 || pollMs <= 0)
-        throw new Error('Settling requires nonnegative finite timeout/quietMs and positive pollMs.');
+        throw new Error('Settling requires non-negative finite timeout/quietMs and positive pollMs.');
       const started = clock.now(),
         deadline = started + timeout;
       const incomplete = () => incompleteContextSettle(observers, attaching, started, clock, quietMs, pollMs);

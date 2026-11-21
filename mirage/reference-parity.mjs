@@ -1,3 +1,4 @@
+import { requiredArgument } from './lib/required-argument.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -7,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { LiveBridge, validateLivePath } from './lib/live.mjs';
 import { createPortalSession } from './testing/sessions.mjs';
 import { fetchLocalState } from './lib/local-state-fetch.mjs';
+import { readJsonOption } from './lib/path-options.mjs';
 
 const hash = (value) =>
   createHash('sha256')
@@ -94,7 +96,7 @@ function validateOneContract(contract, ids) {
   )
     throw new Error('Expected HTTP status is invalid.');
   if (contract.expectedCount !== undefined && (!Number.isInteger(contract.expectedCount) || contract.expectedCount < 0))
-    throw new Error('Expected count must be a nonnegative integer.');
+    throw new Error('Expected count must be a non-negative integer.');
   if (contract.statusOnly && (contract.fields || contract.collection || contract.expectedCount !== undefined))
     throw new Error('Status-only contracts cannot assert response data.');
   if (contract.prefer !== undefined && !/^odata\.maxpagesize=[1-9]\d{0,5}$/i.test(contract.prefer))
@@ -166,16 +168,21 @@ export function normalizeContract(body, contract) {
 }
 
 /** Compare only explicit GET contracts using the browser's existing identity. */
-/* NOSONAR: preserve supplied bridge and visitor callback await ordering */ export async function compareReferenceContracts({
-  localUrl,
-  origin,
-  cdpUrl,
-  contracts,
-  outputDir,
-  bridge: suppliedBridge,
-  localSession,
-  localVisitor,
-}) {
+/* NOSONAR: preserve supplied bridge and visitor callback await ordering */ export async function compareReferenceContracts(
+  {
+    localUrl,
+    origin,
+    cdpUrl,
+    contracts,
+    outputDir,
+    bridge: suppliedBridge,
+    localSession,
+    localVisitor,
+  } = requiredArgument(
+    'compareReferenceContracts(options)',
+    'an options object with localUrl, origin, cdpUrl, contracts and outputDir',
+  ),
+) {
   const { local, reference } = validateComparisonOrigins(localUrl, origin);
   validateContractPlan(contracts);
   if (!outputDir) throw new Error('Supply an ignored evidence output directory.');
@@ -332,7 +339,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       localUrl: values.local,
       origin: values.origin,
       cdpUrl: values.cdp,
-      contracts: JSON.parse(await fs.readFile(values.plan, 'utf8')),
+      contracts: await readJsonOption('plan', values.plan),
       outputDir: values.output,
       localVisitor,
     });

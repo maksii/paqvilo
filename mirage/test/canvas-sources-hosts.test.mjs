@@ -9,6 +9,7 @@ import path from 'node:path';
 import { createSimulator } from '../api.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { writeSolutionAssetEntries } from '../lib/dataverse-solution-assets.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 
 const APP = 'inv_inventedapp_1a2b3';
 const PACKED = 'inv_packedapp_9a8b7';
@@ -140,14 +141,23 @@ async function assertFolderIsSourceAndWatched(sim, root) {
   assert.doesNotMatch(JSON.stringify(reloaded), /Invented packed/);
 }
 
-test('the standalone host lists a configured Canvas folder once, watches it and revisions its edits', async (t) => {
-  const root = await fixture(t, { portal: false });
-  const sim = await startStandalone(t, root);
-  await assertFolderIsSourceAndWatched(sim, root);
-});
+// Hang guard only: a host start and a new revision that follows a file-watcher event, on each host.
+test(
+  'the standalone host lists a configured Canvas folder once, watches it and revisions its edits',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const root = await fixture(t, { portal: false });
+    const sim = await startStandalone(t, root);
+    await assertFolderIsSourceAndWatched(sim, root);
+  },
+);
 
-test('the Power Pages host lists a configured Canvas folder once, watches it and revisions its edits', async (t) => {
-  const root = await fixture(t, { portal: true });
-  const sim = await startPortal(t, root);
-  await assertFolderIsSourceAndWatched(sim, root);
-});
+test(
+  'the Power Pages host lists a configured Canvas folder once, watches it and revisions its edits',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const root = await fixture(t, { portal: true });
+    const sim = await startPortal(t, root);
+    await assertFolderIsSourceAndWatched(sim, root);
+  },
+);

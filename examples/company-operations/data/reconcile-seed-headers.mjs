@@ -2,6 +2,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readCatalogue, loadConnection, connectedClient } from '../../../lense/dataverse/index.mjs';
 import { privateJson } from '../../../lense/dataverse/connection.mjs';
+import { cli, isMain, UsageError } from '../cli.mjs';
 const project = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 // The seed headers are explicitly unexecuted placeholders, never observations.
 export async function reconcileSeedHeaders(connection) {
@@ -66,9 +67,16 @@ export async function reconcileSeedHeaders(connection) {
   await privateJson(file, journal);
   return { updated: journal.entries.length, journal: file };
 }
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const args = process.argv.slice(2),
-    connection = args[args.indexOf('--connection') + 1];
-  if (!args.includes('--connection') || !connection) throw new Error('--connection required');
-  console.log(JSON.stringify(await reconcileSeedHeaders(connection)));
+if (isMain(import.meta)) {
+  const { values } = cli(
+    `Usage: node data/reconcile-seed-headers.mjs --connection FILE   (npm run data:reconcile-seed)
+
+Run from examples/company-operations. Rewrites schema hashes on untouched seed placeholders in the live environment
+using ETags (writes).
+
+  --connection FILE  connection file; a relative path resolves from the working directory`,
+    { connection: { type: 'string' } },
+  );
+  if (!values.connection) throw new UsageError('--connection FILE is required.');
+  console.log(JSON.stringify(await reconcileSeedHeaders(values.connection)));
 }

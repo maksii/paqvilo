@@ -4088,7 +4088,8 @@ function prepopulateValue(row, identity, now) {
   let createRelatedLink = null;
   let defaultButton = '';
   const renderedActions = [];
-  // The step facts the $pages multistep form reads (pages-client-api.js formOf: hasNextStep, hasPreviousStep).
+  // The step's position in the form configuration: a next step after this one, a previous step before it ($pages reads
+  // the rendered Next and Previous buttons instead, as the platform does).
   let clientStep = null;
   if (kind === 'webform') {
     const step = schema.metadata ?? {};

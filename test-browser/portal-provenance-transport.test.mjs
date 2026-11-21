@@ -11,6 +11,7 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 import { interceptOrigin } from '../lense/intercept.mjs';
 import { createPortalProvenanceTransport } from '../lense/portal-provenance-transport.mjs';
+import { isRegistryCall } from './helpers/script-provenance-page.mjs';
 import { createPortalRenderer } from '../mirage/lib/liquid.mjs';
 import { xrayUi } from '../lense/xray-ui.mjs';
 
@@ -25,7 +26,7 @@ const scope = {
   uiEpoch: 1,
   sourceRevision: 'invented-current',
 };
-async function fixture(t, { mirage = false, delayDescriptor = false, holdRepair = false } = {}) {
+async function fixture(t, { mirage = false, delayDescriptor = false, holdRepair = false, holdClaim = false } = {}) {
   const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-proof-ui-'));
   const metadataFile = path.join(directory, 'Main.webtemplate.yml');
   await fs.writeFile(metadataFile, 'adx_webtemplateid: invented-main\nadx_name: Main');
@@ -98,7 +99,63 @@ async function fixture(t, { mirage = false, delayDescriptor = false, holdRepair 
   const context = await browser.newContext();
   const page = await context.newPage();
   await context.addCookies([{ name: 'invented', value: 'one', url: origin }]);
+  // Every sideband read of the transport with the status of its final answer: a read that followed a redirect would
+  // report the status of the redirect target.
+  const sidebandAnswers = [];
+  let sidebandAnswered = () => {};
+  const readSideband = context.request.get.bind(context.request);
+  context.request.get = async (url, options) => {
+    const answer = await readSideband(url, options);
+    sidebandAnswers.push({ proof: new URL(url).searchParams.get('proof'), status: answer.status() });
+    sidebandAnswered();
+    return answer;
+  };
+  // Resolves with the status the transport received for its sideband read of `proof`.
+  const sidebandAnswer = async (proof) => {
+    while (!sidebandAnswers.some((item) => item.proof === proof))
+      await new Promise((resolve) => (sidebandAnswered = resolve));
+    return sidebandAnswers.find((item) => item.proof === proof).status;
+  };
   const transport = createPortalProvenanceTransport(context, [{ origin, mirage }]);
+  // With holdClaim: the answer of the next registry claim is kept from the transport until the test releases it.
+  const claimAnswered = Promise.withResolvers(),
+    claimGate = Promise.withResolvers();
+  let claimHoldArmed = false;
+  // The attachment's DevTools session, the default contexts it reported, every command the transport sent (in order)
+  // and the registry secret read from its claim, for replaying a session re-attach.
+  const session = { cdp: null, contexts: [], scripts: [], sent: [], secret: null, claims: [] };
+  const onAttach = (options) => {
+    session.cdp = options.cdp;
+    options.cdp.on('Runtime.executionContextCreated', ({ context: execution }) => {
+      if (execution.auxData?.isDefault && execution.origin === origin) session.contexts.push(execution);
+    });
+    options.cdp.on('Debugger.scriptParsed', (event) => session.scripts.push(event));
+    const send = options.cdp.send.bind(options.cdp);
+    options.cdp.send = async (method, params) => {
+      const entry = { method, params, answered: Promise.withResolvers() };
+      const index = session.sent.push(entry) - 1;
+      // The transport sends its secret only as the argument of the verified claim.
+      const claim = isRegistryCall(method, params, transport.slot);
+      if (claim) session.secret = params.arguments[0].value;
+      const answer = await send(method, params);
+      entry.answered.resolve(answer);
+      if (claim) {
+        if (holdClaim && claimHoldArmed) {
+          // The browser has run the claim; only its answer is withheld.
+          claimHoldArmed = false;
+          claimAnswered.resolve();
+          await claimGate.promise;
+        }
+        // A waiter receives the answer of the first claim sent after it was registered.
+        for (const waiter of session.claims.filter((waiter) => index >= waiter.after)) {
+          session.claims.splice(session.claims.indexOf(waiter), 1);
+          waiter.resolve(answer);
+        }
+      }
+      return answer;
+    };
+    return transport.onAttach(options);
+  };
   const acknowledgments = [];
   let acknowledge = () => {};
   // Resolves with the fulfillment result of `pathname` once interception has it.
@@ -133,6 +190,7 @@ async function fixture(t, { mirage = false, delayDescriptor = false, holdRepair 
     releaseDescriptors();
     releaseSlow();
     releaseRepair();
+    claimGate.resolve();
     await detached?.();
     await context.close();
     server.closeAllConnections();
@@ -179,7 +237,7 @@ async function fixture(t, { mirage = false, delayDescriptor = false, holdRepair 
           acknowledge();
         }
       },
-      { onAttach: transport.onAttach },
+      { onAttach },
     );
   };
   const query = (target = page, id = 'original') =>
@@ -212,6 +270,13 @@ async function fixture(t, { mirage = false, delayDescriptor = false, holdRepair 
     acknowledgments,
     acknowledgment,
     sideband,
+    sidebandAnswer,
+    holdNextClaim: () => {
+      claimHoldArmed = true;
+    },
+    claimHeld: claimAnswered.promise,
+    releaseClaim: () => claimGate.resolve(),
+    session,
     slowEntered,
     releaseSlow,
     repairEntered,
@@ -246,6 +311,62 @@ test('successful fulfillment publishes private original-node proof before author
   assert.equal((await fx.query()).facts.length, 0);
 });
 
+test('a proof waiting for its document is published after the unchanged document is re-reported with a cleared context', async (t) => {
+  const fx = await fixture(t, { holdClaim: true });
+  await fx.attach();
+  fx.holdNextClaim();
+  await fx.page.goto(fx.origin + '/accepted');
+  // The browser has run the registry claim of the document; its answer has not reached the transport.
+  await fx.claimHeld;
+  // The acknowledged proof waits for that claim.
+  assert.equal((await fx.acknowledgment('/accepted')).acknowledged, true);
+  const unchanged = fx.session.contexts.at(-1);
+  assert.ok(unchanged, 'the document reported its default context');
+  // The sequence Chromium sends when it re-attaches the tab's DevTools session on the unchanged document, cleared twice
+  // before the context returns.
+  const reclaimed = new Promise((resolve) => fx.session.claims.push({ after: fx.session.sent.length, resolve }));
+  fx.session.cdp.emit('Runtime.executionContextsCleared', {});
+  fx.session.cdp.emit('Runtime.executionContextsCleared', {});
+  fx.session.cdp.emit('Runtime.executionContextCreated', { context: unchanged });
+  // Chromium then reports the context's scripts again, with their earlier script ids.
+  for (const event of fx.session.scripts.filter(({ executionContextId }) => executionContextId === unchanged.id))
+    fx.session.cdp.emit('Debugger.scriptParsed', event);
+  const sentBefore = fx.session.sent.length;
+  fx.releaseClaim();
+  assert.ok((await reclaimed)?.result?.objectId, 'the transport claims the unchanged document again');
+  // After its claim the transport reads the frame tree once, then flushes: only a document that still has a waiting
+  // proof reads it again before publishing. Every microtask of each step has run before the next macrotask.
+  await new Promise((resolve) => setImmediate(resolve));
+  const frameTree = fx.session.sent.slice(sentBefore).find((entry) => entry.method === 'Page.getFrameTree');
+  await frameTree.answered.promise;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(
+    fx.session.sent.slice(sentBefore).filter((entry) => entry.method === 'Page.getFrameTree').length,
+    2,
+    'the proof that waited for the document is still waiting for it',
+  );
+  await fx.proved();
+  assert.equal((await fx.query()).facts[0].kind, 'lense-applied-literal');
+  assert.equal(await fx.page.evaluate((slot) => window[slot].claim('invented-wrong-secret'), fx.slot), null);
+});
+
+// @test-kind security: a registry retired by interception stop never hands its writer out again, even for its secret
+test('a released registry refuses the claim secret', async (t) => {
+  const fx = await fixture(t);
+  await fx.attach();
+  await fx.page.goto(fx.origin + '/accepted');
+  await fx.proved();
+  assert.match(fx.session.secret, /^[a-f0-9]{64}$/);
+  await fx.detach();
+  assert.equal(
+    await fx.page.evaluate(({ slot, secret }) => window[slot].claim(secret), {
+      slot: fx.slot,
+      secret: fx.session.secret,
+    }),
+    null,
+  );
+});
+
 test('Xray consumes actual acknowledged source proof independently of ownership and a cloned node cannot inherit it', async (t) => {
   const fx = await fixture(t);
   await fx.attach();
@@ -272,7 +393,13 @@ test('Xray consumes actual acknowledged source proof independently of ownership 
   assert.equal(identity.evidence.source.status, 'exact');
   assert.equal(identity.evidence.owner.status, 'unavailable');
   const card = fx.page.locator('#paqvilo-xray');
-  assert.equal(await card.getByRole('button', { name: 'Open source', exact: true }).isEnabled(), true);
+  assert.equal(
+    await card
+      .locator('[data-evidence-source]')
+      .getByRole('button', { name: /^Open .+ in the editor$/ })
+      .isEnabled(),
+    true,
+  );
   const source = identity.evidence.source.refs.find((ref) => ref.status === 'exact');
   assert.ok(
     source.region.start > 0 && source.region.end > source.region.start,
@@ -283,7 +410,10 @@ test('Xray consumes actual acknowledged source proof independently of ownership 
       if (event.detail.action === 'open') window.sourceOpen = event.detail;
     }),
   );
-  await card.getByRole('button', { name: 'Open source', exact: true }).click();
+  await card
+    .locator('[data-evidence-source]')
+    .getByRole('button', { name: /^Open .+ in the editor$/ })
+    .click();
   const action = await fx.page.evaluate(() => window.sourceOpen);
   assert.deepEqual(action.region, source.region);
   assert.deepEqual(action.scope, identity.evidence.scope);
@@ -302,7 +432,13 @@ test('Xray consumes actual acknowledged source proof independently of ownership 
     (await fx.page.evaluate(() => document.getElementById('paqvilo-xray').__px.selection())).evidence.source.status,
     'stale',
   );
-  assert.equal(await card.getByRole('button', { name: 'Open source', exact: true }).isDisabled(), true);
+  assert.equal(
+    await card
+      .locator('[data-evidence-source]')
+      .getByRole('button', { name: /^Open .+ in the editor$/ })
+      .isDisabled(),
+    true,
+  );
   await fx.page.locator('#original').evaluate((node) => node.replaceWith(node.cloneNode(true)));
   await fx.page.waitForFunction(() => document.getElementById('paqvilo-xray').__px.selection() === null);
   await fx.page.evaluate(() =>
@@ -348,13 +484,36 @@ test('Mirage observes one native document response and reads only its same-cooki
   );
   await fx.page.goto(fx.origin + '/redirect');
   await fx.sideband('redirect-proof');
-  // A followed redirect would request its location as soon as the 302 arrives; nothing marks one that never comes.
-  await new Promise((resolve) => setTimeout(resolve, 100));
+  // The transport's own read has its final answer: a followed redirect would have requested its location before that
+  // answer, and the answer would carry the status of the location instead of the redirect.
+  assert.equal(await fx.sidebandAnswer('redirect-proof'), 302);
   assert.equal((await fx.query()).facts.length, 0);
   assert.equal(
     fx.requests.some(({ path }) => path === '/must-not-follow'),
     false,
   );
+});
+
+test('disposal retires the markup registry of a document whose claim has not been answered yet', async (t) => {
+  const fx = await fixture(t, { holdClaim: true });
+  await fx.attach();
+  await fx.page.goto(fx.origin + '/accepted');
+  await fx.proved();
+  const instrumented = () =>
+    fx.page.evaluate(
+      () =>
+        !Function.prototype.toString
+          .call(Object.getOwnPropertyDescriptor(HTMLTemplateElement.prototype, 'content').get)
+          .includes('[native code]'),
+    );
+  fx.holdNextClaim();
+  await fx.page.goto(fx.origin + '/next');
+  // The browser has run the claim of the new document; its answer has not reached the transport.
+  await fx.claimHeld;
+  assert.equal(await instrumented(), true, 'the bootstrap instrumented the new document');
+  await fx.detach();
+  fx.releaseClaim();
+  assert.equal(await instrumented(), false, 'the document has its native template content getter back');
 });
 
 // @test-kind security: An authored registry cannot be claimed and canceled responses cannot publish across documents.

@@ -43,6 +43,8 @@ export function mountPersonaPicker(root, report, { filters = {}, onSelect, onFil
     frame;
   const groupNodes = [...root.querySelectorAll('[data-persona-group], [data-persona-subgroup]')];
   const openGroups = new Map(groupNodes.map((node) => [node, node.open]));
+  // Whether the last update opened the groups for a filter rather than as the user left them.
+  let filteredShown = false;
   const query = root.querySelector('[data-persona-query]');
   const defaultSection = root.querySelector('[data-persona-default]');
   if (defaultSection) root.insertBefore(defaultSection, root.querySelector('[data-persona-shortcuts="pinned"]'));
@@ -72,7 +74,14 @@ export function mountPersonaPicker(root, report, { filters = {}, onSelect, onFil
     }
     collectRows();
   };
+  // The browser queues a group's toggle event, so a group the user folded or opened since an unfiltered update is
+  // read from the group itself before the next update sets it again.
+  const rememberGroups = () => {
+    if (!filteredShown) for (const node of groupNodes) openGroups.set(node, node.open);
+    filteredShown = active();
+  };
   const update = (started = performance.now()) => {
+    rememberGroups();
     const matches = filterPersonaIndex(index, state),
       keys = new Set(matches.map((entry) => entry.key));
     const counts = new Map(),
@@ -244,36 +253,12 @@ export function mountPersonaPicker(root, report, { filters = {}, onSelect, onFil
     if (button.dataset.personaChoose) choosePersona(button.dataset.personaChoose);
   });
   const form = root.closest('form');
+  // The choice is remembered as the form is sent: the page that answers the sign-in is not the sign-in page.
   form?.addEventListener('submit', (event) => {
     if (mode !== 'signin') return;
-    let key = null;
-    if (event.submitter?.name === 'personaKey') key = event.submitter.value;
-    else if (event.submitter?.name === 'contactId') key = `@contact:${event.submitter.value}`;
-    if (key)
-      try {
-        sessionStorage.setItem(
-          'paqvilo:pending-persona',
-          JSON.stringify({ key, contactId: byKey.get(key)?.contactId, at: Date.now() }),
-        );
-      } catch {
-        /* optional preference */
-      }
+    if (event.submitter?.name === 'personaKey') rememberPersona(report, event.submitter.value);
+    else if (event.submitter?.name === 'contactId') rememberPersona(report, '@contact:' + event.submitter.value);
   });
-  try {
-    const pending = JSON.parse(sessionStorage.getItem('paqvilo:pending-persona') ?? 'null');
-    if (
-      pending &&
-      Date.now() - pending.at < 300000 &&
-      report.session?.signedIn &&
-      report.session.contactId === pending.contactId
-    ) {
-      rememberPersona(report, pending.key);
-      preferences.recent = read(storageKey(report)).recent;
-      sessionStorage.removeItem('paqvilo:pending-persona');
-    }
-  } catch {
-    /* optional preference */
-  }
   shortcuts();
   syncControls();
   update();

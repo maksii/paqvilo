@@ -2,8 +2,9 @@
 
 // Power Pages Liquid compatibility. Expected values follow DotLiquid (master sources at
 // SyntaxCompatibility.DotLiquid20), the Adxstudio Liquid layer (MIT ADX sources: Web/Mvc/Liquid,
-// Cms/*DataAdapter.cs) and the documented examples; mirage/docs/liquid-parity.md lists the
-// source of each behaviour and the items that still need a live observation.
+// Cms/*DataAdapter.cs) and the documented examples; mirage/docs/liquid-parity.md states which behaviour is
+// proven (the liquid-render replay cases) and which is a model, and the observed site settings that select a
+// deployment's differing behaviour.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

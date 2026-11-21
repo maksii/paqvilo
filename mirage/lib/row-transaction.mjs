@@ -7,6 +7,17 @@ import {
   restoreRecordRow,
 } from './record-tables.mjs';
 import { privateRecordEqual, privateRecordEqualAsync } from './record-clone.mjs';
+import {
+  partContainer,
+  partEquals,
+  restorePartInPlace,
+  restorePartOnto,
+  untracked,
+  untrackedEntries,
+} from './state-tracking.mjs';
+
+const cloneSection = (value) => cloneStateData(value, { forkTables: true });
+const sectionEqual = (left, right) => privateRecordEqual(left, right, { symbolFreeRight: true });
 
 export function validateRowIndex(rows, index, insertion = false) {
   if (
@@ -34,8 +45,11 @@ function tableRows(target, table) {
 }
 
 function restoreTransactionSections(transaction, target, restoreSection) {
+  const part = transaction.mappingsPart;
   for (const key of Object.keys(target))
-    if (key !== 'tables' && !Object.hasOwn(transaction.metadata, key)) delete target[key];
+    if (key !== 'tables' && !(part && key === 'mappings') && !Object.hasOwn(transaction.metadata, key))
+      delete target[key];
+  if (part) restoreMappings(transaction, part, target, restoreSection);
   for (const [key, value] of Object.entries(transaction.metadata)) {
     if (restoreSection && Object.hasOwn(target, key)) {
       if (!privateRecordEqual(target[key], value, { symbolFreeRight: true }))
@@ -46,6 +60,19 @@ function restoreTransactionSections(transaction, target, restoreSection) {
   }
 }
 
+// The mappings a transaction recorded lazily (RowTransaction#mappingsPart): only the mappings it reached are restored.
+function restoreMappings(transaction, part, target, restoreSection) {
+  const current = Object.getOwnPropertyDescriptor(target, 'mappings')?.value,
+    container = current && typeof current === 'object' && !Array.isArray(current);
+  let restored;
+  if (target !== transaction.state) restored = restorePartOnto(part, container ? current : null, cloneSection);
+  else if (container) {
+    restorePartInPlace(part, current, { fresh: cloneSection, restoreMember: restoreSection });
+    return;
+  } else restored = partContainer(part, cloneSection);
+  Object.defineProperty(target, 'mappings', { value: restored, enumerable: true, configurable: true, writable: true });
+}
+
 /** Undo entries retain only replaced rows. Metadata is small and captured
  * separately; table arrays and unchanged row bodies are never cloned.
  *
@@ -54,7 +81,10 @@ function restoreTransactionSections(transaction, target, restoreSection) {
  * of cloned again, while the store has committed nothing since and the section object is the same.
  * Mappings are nearly all of the section bytes, so ordinary row writes stop copying them per write.
  * The copy is single-use: a failed or promoted transaction leaves nothing to reuse. Like the journal,
- * this relies on sections changing only inside store transactions. */
+ * this relies on sections changing only inside store transactions.
+ *
+ * While the store tracks its state for the running transaction (state-tracking.mjs), `mappings`, nearly all of
+ * the section bytes, is not copied at all: `mappingsPart` copies a mapping when it is first handed out. */
 export class RowTransaction {
   constructor(store, { reuse = false } = {}) {
     this.store = store;
@@ -66,8 +96,10 @@ export class RowTransaction {
     const valid = cached?.state === store.state && cached.revision === store.revision;
     const reused = {},
       fresh = {};
+    const tracker = store.stateTracker;
+    this.mappingsPart = tracker?.covers(store.state) ? tracker.part('mappings') : null;
     for (const [key, value] of Object.entries(store.state)) {
-      if (key === 'tables') continue;
+      if (key === 'tables' || (key === 'mappings' && this.mappingsPart)) continue;
       const hit = valid ? cached.sections.get(key) : undefined;
       if (hit && hit.value === value) reused[key] = hit.copy;
       else fresh[key] = value;
@@ -76,13 +108,13 @@ export class RowTransaction {
     // Keep the state's section order (rollback re-adds removed sections in this order).
     this.metadata = Object.fromEntries(
       Object.keys(store.state)
-        .filter((key) => key !== 'tables')
+        .filter((key) => key !== 'tables' && !(key === 'mappings' && this.mappingsPart))
         .map((key) => [key, Object.hasOwn(reused, key) ? reused[key] : copies[key]]),
     );
     this.unchanged = new Set();
     this.compared = false;
     this.tables = new Set(Object.keys(store.state.tables));
-    this.lengths = new Map(Object.entries(store.state.tables).map(([table, rows]) => [table, rows?.length]));
+    this.lengths = new Map(untrackedEntries(store.state.tables).map(([table, rows]) => [table, rows?.length]));
     this.snapshots = new Map();
     this.comparison = { visited: 0, pauses: 0 };
   }
@@ -159,10 +191,11 @@ export class RowTransaction {
    * defensively, any table whose row count changed outside the row operations.
    */
   touchedTables() {
-    const tables = new Set(this.entries.map((entry) => entry.table));
-    for (const [table, length] of this.lengths) if (this.state.tables[table]?.length !== length) tables.add(table);
-    for (const table of Object.keys(this.state.tables)) if (!this.tables.has(table)) tables.add(table);
-    for (const table of this.tables) if (!Object.hasOwn(this.state.tables, table)) tables.add(table);
+    const tables = new Set(this.entries.map((entry) => entry.table)),
+      current = untracked(this.state.tables);
+    for (const [table, length] of this.lengths) if (current[table]?.length !== length) tables.add(table);
+    for (const table of Object.keys(current)) if (!this.tables.has(table)) tables.add(table);
+    for (const table of this.tables) if (!Object.hasOwn(current, table)) tables.add(table);
     return tables;
   }
   /** Journal entries, then changed sections. Section comparison yields to the
@@ -174,8 +207,18 @@ export class RowTransaction {
     for (const entry of this.entries) yield entry;
     for (const key of Object.keys(this.metadata))
       if (!Object.hasOwn(this.state, key)) yield { op: 'remove-section', key };
+    if (this.mappingsPart && !Object.hasOwn(this.state, 'mappings')) yield { op: 'remove-section', key: 'mappings' };
+    yield* this.sectionChanges(quantum);
+    this.compared = true;
+  }
+  /** The sections that differ from their copies, in state order; a section proven equal is remembered as unchanged. */
+  async *sectionChanges(quantum) {
     for (const [key, value] of Object.entries(this.state)) {
       if (key === 'tables') continue;
+      if (key === 'mappings' && this.mappingsPart) {
+        if (!partEquals(this.mappingsPart, value, sectionEqual)) yield { op: 'section', key, value };
+        continue;
+      }
       // Section copies come from cloneStateData, which never defines symbol keys.
       const equal = await privateRecordEqualAsync(value, this.metadata[key], {
         quantum,
@@ -185,7 +228,10 @@ export class RowTransaction {
       if (!equal) yield { op: 'section', key, value };
       else this.unchanged.add(key);
     }
-    this.compared = true;
+  }
+  /** A finished savepoint is never rolled back again: its lazily recorded mappings stop collecting copies. */
+  close() {
+    this.mappingsPart?.tracked.parts.delete(this.mappingsPart);
   }
   /** After a fully compared commit: the section copies proven equal to the committed sections. */
   reusableSections() {

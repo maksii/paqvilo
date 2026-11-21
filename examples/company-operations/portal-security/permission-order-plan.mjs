@@ -10,10 +10,18 @@ import {
 } from './permission-order.mjs';
 import { replayStore } from '../portal-harness/replay.mjs';
 import { capturedQueries } from '../portal-harness/parity.mjs';
+import { cli } from '../cli.mjs';
 
-const jobFile = process.argv[2];
-if (!jobFile || process.argv.length !== 3)
-  throw new Error('Usage: node portal-security/permission-order-plan.mjs <private-job.json>');
+const {
+  positionals: [jobFile],
+} = cli(
+  `Usage: node examples/company-operations/portal-security/permission-order-plan.mjs <private-job.json>
+
+Plans permission-order probes offline from private captures; the job's output must stay under an ignored .paqvilo.
+Relative paths resolve from the working directory.`,
+  {},
+  { positionals: 1 },
+);
 const read = async (file) => JSON.parse(await readFile(file, 'utf8'));
 const job = await read(jobFile);
 if (

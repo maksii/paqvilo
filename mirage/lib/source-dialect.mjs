@@ -30,7 +30,7 @@ const LABELS = {
     '.powerpages-site short-key YAML (keys such as id:, isroot and parentpageid, written by code sites and current pac pages download)',
   'code-site-project': 'a code-site project folder whose .powerpages-site/ folder holds short-key YAML',
   'solution-without-site': 'an unpacked Solution without Power Pages site components (no powerpagecomponents/)',
-  unknown: 'no recognised portal layout (no website.yml, web-pages/, web-files/ or powerpagecomponents/)',
+  unknown: 'no recognized portal layout (no website.yml, web-pages/, web-files/ or powerpagecomponents/)',
 };
 
 const isDirectory = (file) => {
@@ -152,7 +152,7 @@ export function unrecognisedSourceMessage(sourceDir, dialect, { pageRecords = 0 
   else
     advice =
       'Point it at the folder that contains website.yml (a PAC YAML or .powerpages-site export), or at an unpacked Solution with powerpagecomponents/.';
-  return `No portal pages were recognised in ${sourceDir}. Detected layout: ${dialect.label}. ${advice}`;
+  return `No portal pages were recognized in ${sourceDir}. Detected layout: ${dialect.label}. ${advice}`;
 }
 
 /**

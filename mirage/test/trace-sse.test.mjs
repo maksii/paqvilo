@@ -221,7 +221,7 @@ test('the trace channel delivers every frame of a burst to connectRuntime().trac
     }
     if (url.pathname === '/_sim/api/status') {
       res.writeHead(200, { 'content-type': 'application/json' });
-      return res.end(JSON.stringify({ sourceDir: null }));
+      return res.end(JSON.stringify({ sourceDir: null, csrf: CSRF }));
     }
     if (url.pathname === '/_sim/events') {
       res.writeHead(200, { 'content-type': 'text/event-stream' });
@@ -332,7 +332,10 @@ test('connectRuntime names a connection the runtime dropped apart from a runtime
   await assert.rejects(connectRuntime({ origin: `http://127.0.0.1:${port}` }), (error) => {
     assert.deepEqual(
       [error.code, error.message],
-      ['RuntimeUnreachable', `No Mirage runtime answers at http://127.0.0.1:${port}; start one or pass --origin.`],
+      [
+        'RuntimeUnreachable',
+        `No Mirage runtime answers at http://127.0.0.1:${port}, the given origin; start the runtime there or give the origin of a running one.`,
+      ],
     );
     assert.ok(error.cause instanceof TypeError);
     return true;

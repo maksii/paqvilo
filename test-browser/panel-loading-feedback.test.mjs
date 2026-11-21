@@ -94,7 +94,10 @@ test('X-ray immediately shows its scan, survives exit during loading, and expose
     window.__catalogRequests = 0;
     window.__openRequests = 0;
     window.fetch = async (...args) => {
-      if (String(args[0]).includes('/__paqvilo/api/open')) window.__openRequests++;
+      if (String(args[0]).includes('/__paqvilo/api/open')) {
+        window.__openRequests++;
+        if (window.__holdDeadline) window.__expireOpenDeadline = window.__expireDeadline;
+      }
       if (String(args[0]).includes('/__paqvilo/api/inspect')) {
         await window.__inspectionStartGate;
         window.__inspectionRequests++;
@@ -121,6 +124,7 @@ test('X-ray immediately shows its scan, survives exit during loading, and expose
         if (mode === 'delay')
           await new Promise((resolve) => {
             window.__releaseCatalogue = resolve;
+            window.__catalogArrived?.();
           });
       }
       return original(...args);
@@ -161,11 +165,22 @@ test('X-ray immediately shows its scan, survives exit during loading, and expose
   assert.equal(await page.evaluate(() => document.getElementById('paqvilo-xray').__px.enabled), false);
   assert.equal(await page.evaluate(() => window.__inspectionRequests), 1);
   const response = page.waitForResponse((res) => res.url().includes('/__paqvilo/api/inspect'));
+  // The panel reads the inspection answer with Response.json() and accepts or rejects it in the promise reactions of
+  // that read, so its handling has ended once the read has settled and the page has run another task.
   await page.evaluate(() => {
+    const json = Response.prototype.json;
+    window.__inspectionAnswersRead = 0;
+    Response.prototype.json = function (...args) {
+      const read = json.apply(this, args);
+      if (this.url.includes('/__paqvilo/api/inspect'))
+        read.finally(() => window.__inspectionAnswersRead++).catch(() => {});
+      return read;
+    };
     window.__inspectionMode = 'pass';
     window.__releaseInspection();
   });
   await response;
+  await page.waitForFunction(() => window.__inspectionAnswersRead === 1);
   assert.equal(
     await page.evaluate(() => document.getElementById('paqvilo-xray').__px.enabled),
     false,
@@ -179,7 +194,17 @@ test('X-ray immediately shows its scan, survives exit during loading, and expose
   await xray.locator('.scan-state').getByText('Details: Invented source unavailable', { exact: true }).waitFor();
   assert.equal(await xray.locator('.ui').getAttribute('aria-busy'), 'false');
   await evidence('portal-xray-inspection-error');
-  await page.evaluate(() => (window.__inspectionMode = 'delay'));
+  await page.evaluate(() => {
+    window.__inspectionMode = 'delay';
+    // Deliberately keep fetch admission behind the painted loading state. The
+    // previous request's release callback must not release this new request.
+    window.__inspectionStartGate = new Promise((resolve) => {
+      window.__releaseInspectionStart = resolve;
+    });
+    window.__inspectionStarted = new Promise((resolve) => {
+      window.__inspectionArrived = resolve;
+    });
+  });
   await xray.getByRole('button', { name: 'Retry', exact: true }).click();
   await xray.locator('.scan-orbit').waitFor();
   assert.equal(await xray.getByRole('button', { name: 'Refresh source inspection' }).isDisabled(), true);
@@ -196,12 +221,18 @@ test('X-ray immediately shows its scan, survives exit during loading, and expose
     'refresh is coalesced during an active inspection',
   );
   await page.evaluate(() => {
+    window.__releaseInspectionStart();
+    return window.__inspectionStarted;
+  });
+  assert.equal(await page.evaluate(() => window.__inspectionRequests), count + 1, 'only the admitted retry starts');
+  await page.evaluate(() => {
     window.__inspectionMode = 'pass';
     window.__releaseInspection();
   });
   await xray.locator('.scan-state').waitFor({ state: 'hidden' });
   await xray.getByRole('button', { name: 'Turn off X-ray' }).click();
-  await scope.locator('.pill').click();
+  // X-ray took the open panel's place, so turning it off brings the panel back.
+  await scope.locator('.wrap.open').waitFor({ state: 'attached' });
   await scope.getByRole('tab', { name: 'Explore' }).click();
   await scope.getByText('Source catalogue unavailable', { exact: true }).waitFor();
   assert.equal(
@@ -209,15 +240,22 @@ test('X-ray immediately shows its scan, survives exit during loading, and expose
     0,
     'failed catalogue is never presented as an empty successful result',
   );
-  await page.evaluate(() => (window.__catalogMode = 'delay'));
+  await page.evaluate(() => {
+    window.__catalogMode = 'delay';
+    window.__catalogStarted = new Promise((resolve) => {
+      window.__catalogArrived = resolve;
+    });
+  });
   await scope.getByRole('button', { name: 'Retry', exact: true }).click();
   await scope.getByText('Reading the source catalogue…', { exact: true }).waitFor();
   await evidence('portal-panel-catalogue-loading');
+  await page.evaluate(() => window.__catalogStarted);
   await page.evaluate(() => {
     window.__catalogMode = 'pass';
     window.__releaseCatalogue();
   });
   await scope.locator('.loading-state').waitFor({ state: 'hidden' });
+  const firstOpen = new Promise((resolve) => (openArrived = resolve));
   await scope.locator('[data-act="open"]').first().click();
   await scope.locator('.working').getByText('Opening the source editor…', { exact: true }).waitFor();
   assert.equal(await scope.locator('[data-act="open"]').first().isDisabled(), true);
@@ -229,6 +267,8 @@ test('X-ray immediately shows its scan, survives exit during loading, and expose
   assert.equal(await page.evaluate(() => window.__openRequests), 1, 'duplicate source opening is coalesced');
   await scope.getByRole('tab', { name: 'Activity' }).click();
   await scope.locator('.working').waitFor();
+  // The dev loop assigns the release when the request reaches it, which the click does not wait for.
+  await firstOpen;
   releaseOpen();
   await scope.locator('.working').waitFor({ state: 'hidden' });
   await scope
@@ -242,7 +282,14 @@ test('X-ray immediately shows its scan, survives exit during loading, and expose
   await scope.locator('[data-act="open"]').first().click();
   // The request reaches the dev loop before its deadline expires.
   await arrived;
-  await page.evaluate(() => window.__expireDeadline());
+  await page.evaluate(() => {
+    // A concurrent API may install another deadline after open has reached the
+    // server. Expire the open request's captured timer, never the latest timer.
+    window.__unrelatedDeadlineExpired = false;
+    setTimeout(() => (window.__unrelatedDeadlineExpired = true), 120000);
+    window.__expireOpenDeadline();
+  });
+  assert.equal(await page.evaluate(() => window.__unrelatedDeadlineExpired), false);
   await scope
     .locator('.toast')
     .getByText('The request timed out. Check the dev loop and retry.', { exact: true })

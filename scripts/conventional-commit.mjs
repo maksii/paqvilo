@@ -12,11 +12,37 @@ export function validateCommitMessage(message) {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const flag = process.argv[2];
+  if (flag === '--help' || flag === '-h') {
+    console.log(`Usage: node scripts/conventional-commit.mjs --file <commit-message-file> | --title
+  --file <path>   check the commit message in <path> (the commit-msg hook)
+  --title         check the pull request title in the PR_TITLE environment variable
+  --help          print this help`);
+    process.exit(0);
+  }
   try {
-    const flag = process.argv[2];
-    const message = flag === '--file' ? fs.readFileSync(process.argv[3], 'utf8') : process.env.PR_TITLE;
     if (flag !== '--file' && flag !== '--title')
-      throw new Error('Use --file <commit-message-file> or --title with PR_TITLE.');
+      throw new Error(
+        (flag ? `Unknown option ${flag}; use` : 'Use') +
+          ' --file <commit-message-file> or --title with PR_TITLE (see --help).',
+      );
+    if (flag === '--file' && !process.argv[3]) throw new Error('--file needs the path of a commit message file.');
+    const extra = process.argv[flag === '--file' ? 4 : 3];
+    if (extra !== undefined)
+      throw new Error(
+        `Unexpected argument ${extra}; ${flag} takes ${flag === '--file' ? 'one path' : 'no value'} (see --help).`,
+      );
+    if (flag === '--title' && !process.env.PR_TITLE)
+      throw new Error('--title checks the PR_TITLE environment variable, which is not set.');
+    let message = process.env.PR_TITLE;
+    if (flag === '--file') {
+      try {
+        message = fs.readFileSync(process.argv[3], 'utf8');
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+        throw new Error(`--file ${process.argv[3]}: file not found.`, { cause: error });
+      }
+    }
     validateCommitMessage(message ?? '');
   } catch (error) {
     console.error(`Commit message rejected: ${error.message}`);

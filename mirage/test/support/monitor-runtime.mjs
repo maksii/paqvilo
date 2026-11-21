@@ -49,5 +49,5 @@ export async function startMonitorRuntime(closers, { prefix, files, state, ...op
     ...options,
   });
   closers.unshift(() => sim.close());
-  return { sim, root, client: await connectRuntime({ origin: sim.url }) };
+  return { sim, root, client: await connectRuntime({ origin: sim.url, timeoutMs: 0 }) };
 }

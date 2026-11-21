@@ -9,10 +9,12 @@ import { user, storeFixture } from './fixtures/plugin-widget-store.mjs';
 import { prepareClrRuntime } from '../lib/plugin-clr.mjs';
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 
+// Hang guard only: it compiles and runs an original CLR plug-in through the .NET host; on a loaded slow host that is slow, not hung.
 test(
   'Original SDK serializable values retain typed SharedVariables across plugin stages',
-  { skip: CLR_SKIP },
+  { skip: CLR_SKIP, timeout: SCENARIO_HANG_GUARD_MS },
   async (t) => {
     const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-sdk-values-'));
     t.after(() => fs.rm(dir, { recursive: true, force: true, maxRetries: 5 }));

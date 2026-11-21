@@ -139,6 +139,7 @@ test('the real Mirage verify lane executes volume and toolkit files once on shar
     'lense/process-identity.mjs',
     'lense/code-app-dev-stop.mjs',
     'lense/signal-forwarding.mjs',
+    'lense/cli-options.mjs',
   ]) {
     fs.mkdirSync(path.dirname(path.join(fixtureRoot, file)), { recursive: true });
     fs.copyFileSync(path.join(root, file), path.join(fixtureRoot, file));
@@ -176,7 +177,7 @@ test(label, () => appendFileSync(process.env.MARKER, label + '\n'));
 import { syncBuiltinESMExports } from 'node:module';
 const originalSpawnSync = childProcess.spawnSync;
 childProcess.spawnSync = (command, args, options) => command === 'dotnet' && args?.[0] === '--version'
-  ? { status: 0, stdout: '10.0.114\\n', stderr: '', pid: process.pid }
+  ? { status: 0, stdout: '11.0.100\\n', stderr: '', pid: process.pid }
   : originalSpawnSync(command, args, options);
 syncBuiltinESMExports();
 Object.defineProperty(process, 'platform', { value: 'linux' });

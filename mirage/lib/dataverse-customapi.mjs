@@ -24,6 +24,7 @@ import { dataverseScalarCause } from './dataverse-scalar-reader.mjs';
 import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DataError } from './data-error.mjs';
+import { stampMs } from './runtime-clock.mjs';
 import { isExactNumeric } from './exact-numeric.mjs';
 import { cloneStateData } from './state-clone.mjs';
 import { collectPackExport } from './pack-exports.mjs';
@@ -50,7 +51,7 @@ import { uploadedAssemblyOfType, uploadedClrRuntime } from './plugin-uploaded.mj
 import { pluginStepBypassed, pluginBypassOwnership } from './plugin-bypass.mjs';
 import { denied } from './dataverse-fls.mjs';
 import { changedColumns, dataverseHost } from './power-fx-dataverse.mjs';
-import { privilegeDeniedError, uuidV5 } from './dataverse-security.mjs';
+import { uuidV5 } from './dataverse-security.mjs';
 import { authorizeGrant, validateServiceProfile } from './local-organization-service.mjs';
 import { child, childText, parseSolutionXml } from './solution-xml.mjs';
 
@@ -521,7 +522,7 @@ async function runHandler(api, handler, ctx, plugin, timeoutMs, contextOf) {
   api.store.ensureReadSnapshot();
   const depth = mainPluginDepth(api.store);
   const started = performance.now(),
-    startedAt = new Date(api.store.clock.now()).toISOString();
+    startedAt = new Date(stampMs(api.store, api.store.clock)).toISOString();
   let failure;
   const atomic = api.runAtomic ?? ((fn) => api.store.transact(fn));
   const bounded = () => {
@@ -662,7 +663,7 @@ function runHandlerSync(api, handler, ctx, plugin, contextOf) {
   const depth = mainPluginDepth(api.store);
   const execution = pluginExecutionLifetime(api.store, depth, contextOf ? () => contextOf(depth) : undefined);
   const started = performance.now(),
-    startedAt = new Date(api.store.clock.now()).toISOString();
+    startedAt = new Date(stampMs(api.store, api.store.clock)).toISOString();
   let failure;
   try {
     const answer = execution.run(() => handler(mainInvocationContext(execution, api, ctx)));
@@ -777,7 +778,7 @@ function resolveApiInvocation(api, name, c, options, handlers, pluginTypes) {
       innerCode: '',
     });
   if (row.executeprivilegename && !api.principals.privileges(c.user).has(row.executeprivilegename))
-    throw privilegeDeniedError(c.user, row.executeprivilegename, row.boundentitylogicalname ?? row.uniquename);
+    throw api.principals.deniedError(c.user, row.executeprivilegename, row.boundentitylogicalname ?? row.uniquename);
   const inputs = checkParameters(store, row, c);
   const properties = propertiesOf(store, row);
   if (!properties.length && row.isfunction) throw notFound(name);
@@ -1205,7 +1206,7 @@ function* invokeSteps(api, name, c, options, synchronous = false, span = null) {
       };
       const depth = mainPluginDepth(store),
         started = performance.now(),
-        startedAt = new Date(store.clock.now()).toISOString();
+        startedAt = new Date(stampMs(store, store.clock)).toISOString();
       const answer = executeClrMainOperation({
         runtime,
         store,

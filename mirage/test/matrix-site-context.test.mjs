@@ -1,3 +1,4 @@
+// @test-kind contract: matrix runtimes and site contexts keep the site-bound configuration Paqvilo's catalogue design selects
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -7,8 +8,15 @@ import { pathToFileURL } from 'node:url';
 import { resolveTargets } from '../portal-matrix.mjs';
 import { createMirageContext } from '../api.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 
-test('matrix runtimes retain site-bound platform, observations, profiles and explicit packs with independent state', async (t) => {
+test(
+  'matrix runtimes retain site-bound platform, observations, profiles and explicit packs with independent state',
+  // Hang guard only: one scenario of six runtime starts; the first site's runtimes stay open while the second is checked.
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  siteBoundMatrixRuntimes,
+);
+async function siteBoundMatrixRuntimes(t) {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-matrix-context-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const write = async (name, value) => {
@@ -144,7 +152,7 @@ test('matrix runtimes retain site-bound platform, observations, profiles and exp
     assert.equal((await inspect(restarted)).joins, expected);
     await inspectScript(restarted, site, Boolean(index));
   }
-});
+}
 
 test('matrix and public site contexts retain the explicitly selected environment and its runtime origin', async (t) => {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-matrix-env-'));

@@ -79,7 +79,7 @@ test('a host whose trace settings are refused closes the providers its compositi
       trace: { level: 'bogus' },
       sources: { plugins: () => undefined, workflows: () => new Map(), layers: () => [] },
     }),
-    { message: 'mirage.trace.level must be off, summary or full' },
+    { message: 'mirage.trace.level must be off, summary or full (got "bogus")' },
   );
   assert.deepEqual(
     calls.toSorted((a, b) => a.localeCompare(b)),

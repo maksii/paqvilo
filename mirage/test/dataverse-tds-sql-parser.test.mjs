@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of the Dataverse SQL (TDS) endpoint parser: supported subset, refusals and their texts; no native capture replayed
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { TdsSqlError } from '../lib/dataverse-tds-sql-lexer.mjs';
@@ -595,6 +596,16 @@ test('syntax errors are non-unsupported 102 errors at their line', () => {
       },
     );
   }
+});
+
+test('a derived table without an alias names the missing alias', () => {
+  assert.throws(() => parseBatch('SELECT a FROM (SELECT 1 AS a)'), {
+    message:
+      'A derived table needs an alias: write (SELECT ...) AS name. Incorrect syntax near the end of the statement.',
+  });
+  assert.throws(() => parseBatch('SELECT a FROM (SELECT 1 AS a) WHERE 1 = 1'), {
+    message: /^A derived table needs an alias: write \(SELECT \.\.\.\) AS name\. Incorrect syntax near 'WHERE'\.$/,
+  });
 });
 
 test('errors carry absolute line numbers across GO batches', () => {

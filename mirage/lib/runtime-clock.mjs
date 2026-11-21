@@ -39,6 +39,31 @@ export function sequentialIds(namespace = '6ba7b810-9dad-11d1-80b4-00c04fd430c8'
 /** The clock as a function of epoch milliseconds, from a function or a { now() } object. */
 export const clockFunction = (clock) => (typeof clock === 'function' ? clock : () => clock.now());
 
+// The fault a stored stamp is held across: a wall clock stepped back by an NTP or WSL time resync (lab night medium-20261119
+// saw 0.9 to 1.3 s steps on its WSL runners). A larger backward move is a deliberate clock set (fixedClock.set, a reset to an
+// earlier time) and is honoured.
+const CLOCK_STEP_HOLD_MS = 5000;
+const heldStamps = new WeakMap(); // holder -> the last stamp in epoch ms
+
+/** The time in epoch ms for a stored row's stamp: the clock's time, or the holder's last stamp while the clock reads at most
+ * CLOCK_STEP_HOLD_MS behind it, so a small backward step never stamps a later row older. One hold per holder, whatever clock
+ * object a writer reads (a store's clock, an organization's clock function): rows of two writers never invert, and a clock
+ * that reads a different time (an override, a fixed clock) is more than the bound away and stamps at its own time. A reading
+ * that is not a finite number is returned as it is and never held. */
+export function stampMs(holder, clock = systemClock) {
+  const now = Number(clockFunction(clock)());
+  if (!Number.isFinite(now) || holder === null || typeof holder !== 'object') return now;
+  const last = heldStamps.get(holder);
+  const at = last > now && last - now <= CLOCK_STEP_HOLD_MS ? last : now;
+  heldStamps.set(holder, at);
+  return at;
+}
+
+/** Forgets the holder's held stamps: a replaced state starts from the clock again. */
+export function releaseStamps(holder) {
+  heldStamps.delete(holder);
+}
+
 // The manual-scheduler task whose code is running, so schedule() knows which task queued a continuation.
 const currentTask = new AsyncLocalStorage();
 // libuv requests (file system, socket writes, connects, DNS) in flight: a task waiting on one is still making progress.

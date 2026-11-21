@@ -548,8 +548,8 @@ export const view = {
         async () => {
           const result = await ctx.request(`/messages/${encodeURIComponent(entity)}`, { method: 'DELETE' });
           if (d.peek?.entity === entity) d.peek = null;
-          ctx.notify(`Purged ${result.purged ?? 0} messages from ${entity}.`);
           await ctx.refresh();
+          ctx.notify(`Purged ${result.purged ?? 0} messages from ${entity}.`);
         },
         'Purge',
       );

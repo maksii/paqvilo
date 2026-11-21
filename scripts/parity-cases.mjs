@@ -1,7 +1,7 @@
 // Parity case CLI: build case files from raw oracle captures, check every case file, report coverage.
 //   node scripts/parity-cases.mjs build --surface <s> --suite <n> --oracle-kind <k> --oracle-name <n>
 //     --oracle-version <v> --oracle-scope <text> --capture <file> --capture <file> [...] [--out <file>]
-//     [--revise-change <text> --revise-evidence <text>]
+//     [--revise-change <text> --revise-evidence <text> [--revise-drop-volatile <case-id>#<pointer> ...]]
 //   node scripts/parity-cases.mjs check [<dir>]
 //   node scripts/parity-cases.mjs report [<dir>] [--json]
 import fs from 'node:fs';
@@ -24,12 +24,15 @@ const VALUE_OPTIONS = new Set([
   'out',
   'revise-change',
   'revise-evidence',
+  'revise-drop-volatile',
 ]);
+// Value options that may be repeated; each collects its values in an array.
+const LIST_OPTIONS = new Set(['capture', 'revise-drop-volatile']);
 const FLAG_OPTIONS = new Set(['json']);
 const USAGE = `usage:
   parity-cases build --surface <s> --suite <n> --oracle-kind <k> --oracle-name <n> --oracle-version <v>
       --oracle-scope <text> --capture <file> --capture <file> [...] [--out <file>]
-      [--revise-change <text> --revise-evidence <text>]
+      [--revise-change <text> --revise-evidence <text> [--revise-drop-volatile <case-id>#<pointer> ...]]
   parity-cases check [<dir>]
   parity-cases report [<dir>] [--json]
 `;
@@ -46,7 +49,7 @@ function compareCodeUnits(left, right) {
 }
 
 function parseArgs(argv) {
-  const options = { capture: [] };
+  const options = { capture: [], 'revise-drop-volatile': [] };
   const positional = [];
   let index = 0;
   while (index < argv.length) {
@@ -69,7 +72,8 @@ function readValueOption(argv, index, options) {
   if (!VALUE_OPTIONS.has(name)) throw new Error(`unknown option ${argv[index]}`);
   const value = argv[index + 1];
   if (value === undefined || value.startsWith('--')) throw new Error(`${argv[index]} needs a value`);
-  if (name === 'capture') options.capture.push(value);
+  if (LIST_OPTIONS.has(name)) options[name].push(value);
+  else if (Object.hasOwn(options, name)) throw new Error(`${argv[index]} may be given only once`);
   else options[name] = value;
   return index + 1;
 }
@@ -120,16 +124,45 @@ function oracleFromOptions(options, fallback) {
 function reviseFromOptions(options) {
   const change = options['revise-change'];
   const evidence = options['revise-evidence'];
-  if (change === undefined && evidence === undefined) return undefined;
+  const dropVolatile = options['revise-drop-volatile'];
+  if (change === undefined && evidence === undefined) {
+    if (dropVolatile.length > 0) throw new Error('--revise-drop-volatile needs --revise-change and --revise-evidence');
+    return undefined;
+  }
   if (change === undefined || evidence === undefined) {
     throw new Error('--revise-change and --revise-evidence must be given together');
   }
-  return { date: new Date().toISOString().slice(0, 10), change, evidence };
+  return { date: new Date().toISOString().slice(0, 10), change, evidence, dropVolatile };
+}
+
+// Rewords the library's remedies, which name its API fields, with the CLI flags.
+function buildCases(input) {
+  try {
+    return buildParityCases(input);
+  } catch (error) {
+    if (error.code === 'PARITY_REVISION_REQUIRED') {
+      throw new Error(
+        `${error.changes.join(', ')} would change; pass --revise-change <text> and --revise-evidence <text> to record it`,
+        { cause: error },
+      );
+    }
+    if (error.code === 'PARITY_VOLATILE_UNRESOLVED') {
+      throw new Error(`${error.reason}; drop it with --revise-drop-volatile "${error.drop}"`, { cause: error });
+    }
+    throw error;
+  }
 }
 
 // The capture's own sha256 (the raw record it was extracted from) wins; otherwise the file bytes are hashed.
 function readCapture(file, cwd) {
-  const bytes = fs.readFileSync(path.resolve(cwd, file));
+  let bytes;
+  try {
+    bytes = fs.readFileSync(path.resolve(cwd, file));
+  } catch (error) {
+    if (error.code !== 'ENOENT' && error.code !== 'EISDIR') throw error;
+    const problem = error.code === 'ENOENT' ? 'file not found' : 'is a directory, not a capture file';
+    throw new Error(`--capture ${file}: ${problem} (${path.resolve(cwd, file)})`, { cause: error });
+  }
   let raw;
   try {
     raw = JSON.parse(bytes.toString('utf8'));
@@ -171,7 +204,7 @@ async function runBuild(options, cwd, stdout) {
   const outPath = path.resolve(cwd, options.out ?? path.join(DEFAULT_CASES, surface, `${suite}.json`));
   const existing = readExisting(outPath);
   if (options.capture.length < 2) throw new Error('build needs at least two --capture files');
-  const built = buildParityCases({
+  const built = buildCases({
     surface,
     suite,
     oracle: oracleFromOptions(options, existing?.oracle),
@@ -354,7 +387,7 @@ function runReport(dirArg, json, cwd, stdout) {
  */
 export async function main(argv, { stdout = process.stdout, stderr = process.stderr, cwd = process.cwd() } = {}) {
   try {
-    if (argv.includes('--help')) {
+    if (argv.includes('--help') || argv.includes('-h')) {
       stdout.write(USAGE);
       return 0;
     }

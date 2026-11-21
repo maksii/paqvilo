@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo data pack design: pack exports are validated at load and refused in one line (mirage/docs/data-packs.md)
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -243,4 +244,12 @@ test('flowIdentities keeps the earlier collector: any key, brace-stripped and lo
     () => validatePackExports(pack('fx-bad', { flowIdentities: { Invented_Flow: 'text' } })),
     /flowIdentities must map/,
   );
+});
+
+// @test-kind contract: a refused pack names "Data pack" once, then the module or id it came from when there is one
+test('a pack refusal says "Data pack" once', () => {
+  assert.throws(() => validatePack(42), { message: 'Data pack: must default-export an object' });
+  assert.throws(() => validatePack(42, '/invented/pack.mjs'), {
+    message: 'Data pack /invented/pack.mjs: must default-export an object',
+  });
 });

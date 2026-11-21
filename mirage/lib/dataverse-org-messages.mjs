@@ -8,14 +8,7 @@ import { organizationRecord } from './organization-context.mjs';
 // Not registered here: Validate (no documented contract).
 import { DataError } from './data-error.mjs';
 import { standardTableDef } from './dataverse-standard.mjs';
-import {
-  ACCESS_MODE,
-  isInteractiveUser,
-  ownerColumns,
-  privilegeDeniedError,
-  privilegeName,
-  uuidV5,
-} from './dataverse-security.mjs';
+import { ACCESS_MODE, isInteractiveUser, ownerColumns, privilegeName, uuidV5 } from './dataverse-security.mjs';
 import { contextUrl } from './dataverse-odata.mjs';
 import { parseEntityReference } from './data.mjs';
 import { registerInternalMessage } from './dataverse-addon-common.mjs';
@@ -287,7 +280,9 @@ function operations(api) {
   // The privilege the caller needs on a table (Read or Write), refused as the platform refuses it.
   const need = (c, logical, right) => {
     const privilege = privilegeName(right, api.principals.privilegeNoun(logical));
-    if (!(api.principals.privileges(c.user).get(privilege) > 0)) throw privilegeDeniedError(c.user, privilege, logical); // NOSONAR: operand can be NaN or undefined, the negated test differs
+    // A missing privilege reads undefined: only a positive depth grants it.
+    const granted = api.principals.privileges(c.user).get(privilege) > 0;
+    if (!granted) throw api.principals.deniedError(c.user, privilege, logical);
   };
   const respond = (c, name, payload) => ({
     status: 200,
@@ -476,11 +471,15 @@ function operations(api) {
       if (source !== null && Number(p.source) !== source) return false;
       return !pattern || pattern.test(p.text ?? '');
     });
+    // Equal createdon (whole seconds) follows the table's insertion order: the earlier inserted first ascending, the later
+    // inserted first otherwise.
+    if (!ascending) kept.reverse();
     kept.sort((a, b) => (TIME(a.createdon) - TIME(b.createdon)) * (ascending ? 1 : -1));
     const value = kept.slice((page - 1) * size, page * size).map((p) => ({
       ...p,
       Post_Comments: tableOf(store, 'postcomment')
         .filter((cm) => sameId(refId(cm.postid), p.postid))
+        .reverse() // equal createdon: the later inserted comment first
         .sort((a, b) => TIME(b.createdon) - TIME(a.createdon))
         .slice(0, comments),
     }));
@@ -1084,4 +1083,54 @@ export function install(api) {
   });
 }
 
-export const EXTENSION = { name: 'dataverse-org-messages', install };
+// The messages answered from the fixed stand-ins above (no instance type, license, sku, storage or offline filter model).
+const STAND_INS = [
+  'IsDataEncryptionActive',
+  'ResetUserFilters',
+  'RetrieveOrganizationInfo',
+  'RetrieveOrganizationResources',
+  'RetrieveDeploymentLicenseType',
+  'RetrieveLicenseInfo',
+  'RetrieveUserLicenseInfo',
+  'RetrieveUserApplicationLicenseAccess',
+  'RetrieveDataEncryptionKey',
+  'InstallSampleData',
+  'UninstallSampleData',
+];
+
+/**
+ * Capability record; dataverse-extensions.mjs adds the operations install registered. ExecuteFxExpression and
+ * RetrieveEnvironmentVariableSecretValue answer 501 without a Power Fx evaluator or a secrets configuration.
+ */
+function describe(api = null) {
+  const fx = typeof api?.fxEvaluator === 'function' || typeof api?.providers?.powerFx?.evaluateSync === 'function';
+  return {
+    name: 'dataverse-org-messages',
+    version: 1,
+    kind: 'dataverse-extension',
+    level: 'behaviour',
+    operations: [
+      ...STAND_INS.map((name) => ({ name, level: 'contract', reason: 'Answers a fixed stand-in.' })),
+      fx
+        ? { name: 'ExecuteFxExpression', level: 'behaviour' }
+        : {
+            name: 'ExecuteFxExpression',
+            level: 'inventory',
+            reason: 'No Power Fx evaluator is installed: answers 501.',
+          },
+      api?.secrets
+        ? { name: 'RetrieveEnvironmentVariableSecretValue', level: 'behaviour' }
+        : {
+            name: 'RetrieveEnvironmentVariableSecretValue',
+            level: 'inventory',
+            reason: 'No secrets configuration: answers 501.',
+          },
+    ],
+    requires: [],
+    principal: 'caller',
+    stateOwner: 'store',
+    lifecycle: 'per-request',
+  };
+}
+
+export const EXTENSION = { name: 'dataverse-org-messages', install, describe };

@@ -21,14 +21,20 @@ export async function selectionEvidenceCurrent(page, expected, { timeout = 2500 
             const identity = observed?.evidence ? { evidence: observed.evidence } : current?.identity;
             if (sourceKey !== undefined) {
               const source = identity?.evidence?.source;
+              // Source rows and the definition files of enclosing components offer the same open action.
+              const refs = [
+                ...(['exact', 'candidate'].includes(source?.status)
+                  ? (source.refs ?? []).map((ref) => ({ ...ref, status: ref.status ?? source.status }))
+                  : []),
+                ...(identity?.evidence?.enclosing ?? []).flatMap((row) => row?.refs ?? []),
+              ];
               if (
-                !['exact', 'candidate'].includes(source?.status) ||
-                !source.refs?.some(
+                !refs.some(
                   (ref) =>
                     [ref.sourceKey, ref.key, ref.id].includes(sourceKey) &&
                     ref.sourceRevision === sourceRevision &&
                     ref.contentRevision === contentRevision &&
-                    ['exact', 'candidate'].includes(ref.status ?? source.status) &&
+                    ['exact', 'candidate'].includes(ref.status) &&
                     (region === undefined || (ref.region?.start === region.start && ref.region?.end === region.end)),
                 )
               )

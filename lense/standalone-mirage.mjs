@@ -1,10 +1,12 @@
 import path from 'node:path';
 import { existsSync } from 'node:fs';
 import { browserSettings, readEnvSettings, resolveMirageConfig, loadCatalogue } from './config.mjs';
-import { openBrowser } from './browser.mjs';
 import { runtimeSettings } from '../mirage/lib/runtime-config.mjs';
 import { startupProgress, startupWaitOptions, waitForStartupPage } from './startup-progress.mjs';
 import { guardShutdownSignals } from './signal-forwarding.mjs';
+import { logBrowserProfile } from './commands/dev.mjs';
+
+const standaloneBase = Object.freeze({ sourceDir: null, envName: 'local', portals: 'selected', origin: null });
 
 export function standaloneMirageConfiguration(project, args = {}) {
   const configDir = project ? path.dirname(project.configFile) : process.cwd();
@@ -18,21 +20,22 @@ export function standaloneMirageConfiguration(project, args = {}) {
     (args.site && !catalogue?.sites[args.site])
   )
     throw new Error(`Unknown Mirage configuration '${selectedSite}'.`);
+  // A catalogue site selected without a project is the runtime's site, whatever its own runtime kind: the runtime takes
+  // the site's Mirage settings (Solution roots, data packs, port) and is recorded for that site.
+  if (!project && !args.project && (args.config || args.site) && catalogue?.sites[selectedSite])
+    return standaloneCatalogueConfiguration(catalogue, selectedSite, args);
   return {
     configDir,
     configFile: null,
-    // Runtime ownership stays in configDir; an explicitly selected catalogue
+    // A project's runtime ownership stays in configDir; an explicitly selected catalogue
     // identity still scopes records and stop selection independently of it.
     catalogueScope:
       (args.config || args.site) && catalogue?.sites[selectedSite]
         ? { configFile: catalogue.configFile, siteName: selectedSite }
         : null,
     stateDir: path.join(configDir, '.paqvilo'),
-    sourceDir: null,
+    ...standaloneBase,
     siteName: project ? path.basename(project.configFile, path.extname(project.configFile)) : 'organization',
-    envName: 'local',
-    portals: 'selected',
-    origin: null,
     runtime: runtimeSettings(args.runtime ? { kind: args.runtime } : project?.runtime),
     mirageConfig: {},
     browser: browserSettings({
@@ -52,9 +55,9 @@ export function standaloneCatalogueConfiguration(catalogue, name, args = {}) {
     configDir: catalogue.configDir,
     sourceRoot: catalogue.sourceRoot,
   });
-  const cfg = standaloneMirageConfiguration(null, { ...args, runtime: args.runtime ?? mirageConfig.runtime?.kind });
   return {
-    ...cfg,
+    ...standaloneBase,
+    catalogueScope: { configFile: catalogue.configFile, siteName: name },
     configDir: catalogue.configDir,
     configFile: catalogue.configFile,
     sourceRoot: catalogue.sourceRoot,
@@ -72,15 +75,20 @@ export function standaloneCatalogueConfiguration(catalogue, name, args = {}) {
   };
 }
 
+// The browser automation library loads with the first browser this module opens: the configuration functions above
+// serve start, stop and status, which open none.
+const openBrowser = async (...args) => (await import('./browser.mjs')).openBrowser(...args);
+
 /** Open the local application directly. No portal overlay or source model is created. */
 export async function developStandalone(cfg, args, session, { open = openBrowser, signal, source = process } = {}) {
   if (signal?.aborted) throw signal.reason;
   const progress = args.startup ?? startupProgress();
   progress.phase('browser setup');
-  const { context, close, attached } = await open(
+  const { context, close, attached, profile } = await open(
     { ...cfg, origin: session.url },
     { debugPort: cfg.browser.debugPort },
   );
+  if (profile) logBrowserProfile(attached, cfg, profile);
   let stop, page;
   const errors = [];
   const stopped = new Promise((resolve) => {

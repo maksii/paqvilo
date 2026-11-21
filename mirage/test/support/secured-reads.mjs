@@ -72,8 +72,8 @@ function restoreEnvironment(previous) {
 
 // Starts the API for the given applications (name to { appId, role }); each secret comes from `${envPrefix}_<NAME>_SECRET`.
 // `call(who, method, route, value)` answers the Web API and `soap(who, body)` the Organization service.
-// `close()` stops both services and restores the secret variables.
-export async function startSecuredOrganization({ envPrefix, apps, tls }) {
+// `close()` stops both services and restores the secret variables. `mappings` adds invented tables before the store starts.
+export async function startSecuredOrganization({ envPrefix, apps, tls, mappings = {} }) {
   const previous = new Map();
   const applications = Object.entries(apps).map(([name, app]) => {
     const secretEnvironmentVariable = `${envPrefix}_${name.toUpperCase()}_SECRET`;
@@ -81,7 +81,9 @@ export async function startSecuredOrganization({ envPrefix, apps, tls }) {
     process.env[secretEnvironmentVariable] = `invented-${name}-secret`;
     return { appId: app.appId, displayName: `Invented ${name}`, secretEnvironmentVariable, roles: [app.role] };
   });
-  const store = await new DataStore({ state: emptyState() }).init();
+  const state = emptyState();
+  Object.assign(state.mappings, structuredClone(mappings));
+  const store = await new DataStore({ state }).init();
   const organization = await createOrganizationRuntime({
     store,
     extensions: await sourceOrganizationExtensions({}),

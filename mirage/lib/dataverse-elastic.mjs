@@ -345,3 +345,26 @@ export function install(api) {
   timer.unref?.();
   lifecycles.set(api, { timer, filter, previous });
 }
+
+/** Capability record for the capability registry; dataverse-extensions.mjs adds the operations install registered. */
+export function describe() {
+  return {
+    name: 'dataverse-elastic',
+    version: 1,
+    kind: 'dataverse-extension',
+    level: 'behaviour',
+    reason: 'Elastic table rules and TTL expiry run locally.',
+    operations: [
+      {
+        name: 'ExecuteCosmosSqlQuery',
+        level: 'contract',
+        reason:
+          'A read-only Cosmos SQL subset (dataverse-cosmos-query.mjs); joins, subqueries, functions and aggregates answer 501.',
+      },
+    ],
+    requires: [],
+    principal: 'caller',
+    stateOwner: 'store',
+    lifecycle: 'per-request',
+  };
+}

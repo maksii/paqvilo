@@ -1,5 +1,5 @@
 // @test-kind contract+security: Paqvilo's tracing and activity design (docs/design/tracing.md); redaction keeps secrets, tokens and keys out of traces
-// Canvas app tracing (docs/design/tracing.md, DV-B1-4/-5, DV-A-2/-3/-13/-14): the /_apps/api/canvas root names the
+// Canvas app tracing (docs/design/tracing.md): the /_apps/api/canvas root names the
 // canvas host, the app and the staff user it runs as; every driver action is one `canvas` span (start, select
 // <control>.<property>, run <formula>) with the formula text at level full, its error outcome and the Dataverse and
 // connector work it caused below it, all as that user; error answers name their code on the root; the player page names

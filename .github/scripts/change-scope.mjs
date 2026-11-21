@@ -135,7 +135,9 @@ function expandChange(file, scope, reverse) {
 function setInitialChangeFlags(files, scope) {
   scope.package = files.some((file) => !/^(?:site\/|\.github\/|SECURITY\.md$|CODE_OF_CONDUCT\.md$)/.test(file));
   scope.dependencies = files.some((file) =>
-    /(?:^|\/)(?:package(?:-lock)?\.json|npm-shrinkwrap\.json|packages\.lock\.json|[^/]+\.csproj)$/.test(file),
+    /(?:^|\/)(?:package(?:-lock)?\.json|(?:npm-shrinkwrap|paqvilo-lock)\.json|packages\.lock\.json|[^/]+\.(?:cs|fs|vb|pcf|cds)proj)$/.test(
+      file,
+    ),
   );
   scope.site = files.some((file) =>
     /^(?:site\/|docs\/assets\/|scripts\/build-site\.mjs$|\.github\/workflows\/pages\.yml$)/.test(file),
@@ -218,7 +220,7 @@ export function ciLanes(kind, suites) {
 
 export function browserLanes(suites) {
   return ciLanes('browser', suites).flatMap((lane) => [
-    { ...lane, os: 'ubuntu-24.04', channel: 'chromium' },
+    { ...lane, os: 'ubuntu-26.04', channel: 'chromium' },
     { ...lane, os: 'windows-2025', channel: 'chromium' },
     { ...lane, os: 'windows-2025', channel: 'msedge' },
   ]);
@@ -267,7 +269,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     suites: JSON.stringify(suites.length ? suites : ['none']),
     units: JSON.stringify(suites.length ? ciLanes('unit', suites) : [{ suite: 'none' }]),
     browsers: JSON.stringify(
-      suites.length ? browserLanes(suites) : [{ suite: 'none', os: 'ubuntu-24.04', channel: 'chromium' }],
+      suites.length ? browserLanes(suites) : [{ suite: 'none', os: 'ubuntu-26.04', channel: 'chromium' }],
     ),
   };
   fs.appendFileSync(

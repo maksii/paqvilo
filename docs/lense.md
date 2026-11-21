@@ -2,253 +2,446 @@
 
 ![Lense: local source changes previewed in a live portal browser.](assets/lense-visual.png)
 
-Lense provides Power Pages-aware resource overrides for pro-code development. Preview local JavaScript, CSS, images and supported literal HTML edits on a live site; the online backend continues to run Liquid and Dataverse.
+Lense lays local JavaScript, CSS, images and supported literal HTML edits from a Power Pages export over a live site in
+a dedicated browser. The online backend still runs Liquid and Dataverse; Lense does not deploy, upload or run PAC.
+Browser actions use the live site and can affect live data.
 
-For model-driven apps, use the explicit [Solution resource overlay mode](../mirage/docs/model-driven-customizations.md#preview-the-same-code-with-lense). It maps exported JavaScript, PCF bundles and styles to the selected environment's observed resource paths, with applied-response evidence, reload on save and the same Lense panel, X-ray picker and bounded agent/debugger workflow. Its [Actions tab](model-driven-actions.md) adds native inspection, navigation, form workflows, diagnostics, request identity and custom commands. Power Pages keeps the source and Liquid inspection described below.
-
-If you use Fiddler AutoResponder or browser DevTools Local Overrides, Lense adds export-based mappings, record and field identity, Git baseline comparisons and live reload. See the [workflow comparison](../README.md#beyond-fiddler-and-devtools-overrides).
-
-For installation and a first catalogue, follow [getting started](getting-started.md). The examples here run from your portal project with Paqvilo already installed.
+For model-driven apps, the
+[Solution resource overlay mode](../mirage/docs/model-driven-customizations.md#preview-the-same-code-with-lense) maps
+exported JavaScript, PCF bundles and styles to the environment's observed resource paths with the same panel, X-ray,
+reload and agent/debugger workflow; its [Actions tab](model-driven-actions.md) adds native inspection and form tools.
+Installation and a first catalogue are in [getting started](getting-started.md); settings are in
+[configuration](configuration.md).
 
 ## Your edit-preview loop
 
 ```sh
-# Check the selected target and source mapping offline:
 npx --no-install paqvilo lense doctor --config ./paqvilo.config.yml --site portal --env dev
-
-# Open the configured online environment with local overlays:
 npx --no-install paqvilo lense dev --config ./paqvilo.config.yml --site portal --env dev
 ```
 
-1. Sign in through the portal's own sign-in action with your intended account.
+1. On the first run, sign in through the portal's own sign-in action with the intended account. The dedicated profile
+   keeps that sign-in for later runs ([which browser profile](#which-browser-profile)).
 2. Open the panel with **Alt+Shift+P** and check the selected site and environment.
-3. Save a supported local change. Relevant pages refresh; CSS can hot-swap.
-4. Inspect applied resources, diagnostics and failed requests, then switch **Online / Local** to compare responses.
+3. Save a supported local change. Affected pages reload; CSS can hot-swap.
+4. Check applied resources, **Issues** and failed requests; switch **Online / Local** to compare.
 
-Close the dedicated browser or use Ctrl+C to end the dev session. Browser interactions use the online backend and can affect live data; use authorized environments and actions.
+Close the dedicated browser or press Ctrl+C to end the session.
 
-The dedicated profile keeps the portal's session cookies in `<profile>.session.<hash>.json`, next to the profile folder, with one file for each set of portal hosts; only cookies whose domain belongs to those hosts are kept, so identity providers on other hosts are not stored. The session file never keeps Mirage staff-selection cookies, because they belong to one runtime process. The tool never deletes a session file of another portal scope, so removing a profile means deleting its folder and its `.session.*.json` files.
+| Change                                                    | What to expect                                                        |
+| --------------------------------------------------------- | --------------------------------------------------------------------- |
+| JavaScript, CSS or an image                               | Response overlays from discovered source mappings                     |
+| Supported literal HTML or inline fields                   | Baseline patches where the match is unambiguous                       |
+| Liquid logic, server-side settings or Dataverse behaviour | Still evaluated by the online portal; deploy through your own process |
+| Server-side rendering with local data                     | Use [Mirage](../mirage/README.md)                                     |
 
-A newly opened tab can load before interception finishes attaching. Lense repairs a clean initial document with
-one GET so local sources apply, without replaying a form submission. Edited controls or observed rich-text edits
-keep that document open and produce a reload-needed warning; reload manually when the draft is safe to discard.
-An older repair cannot replace a newer navigation, including navigation to the same address.
+**Issues** lists changes that need deployment, including a changed source whose inline or markup preview is disabled. A
+reload alone does not mean an edit was applied.
 
-Startup reports configuration, source discovery, process ownership/import, browser/interception setup, document navigation and initial resource/data requests, with a five-second heartbeat and separate command-total and phase elapsed times. Mirage model-driven development also waits for catalogue, staff identity and the initial view before reporting the application usable. Native model-driven overlays finish startup at document load; their workers and background requests can continue, and native app readiness remains unverified. A listening runtime or loaded live-overlay document alone does not establish application readiness; page scripts, sign-in and later application requests can still be pending. Startup failures identify their phase. `mirage start --json` prints its final result on stdout and structured startup events on stderr; `--startup-timeout` is the longest silence, in milliseconds, without start-up progress: each runtime progress record and the runtime's discovery file restart the timer, and an absolute cap of 600000 ms ends start-up regardless. Source discovery and ownership checks run before the runtime process starts and report no progress, so the same value bounds them as a total. Ctrl+C interrupts pending startup work and stops the owned runtime.
+### Session behaviour
 
-Model-driven Lense has its own [startup deadline and paired local panel workflow](../mirage/docs/model-driven-customizations.md#pair-the-panel-with-a-standalone-local-app). In a multi-tab Power Pages session, failure to install interception on a newly opened target closes only that failed owned tab. An attached-browser target shows an explicit local failure page. Healthy tabs, drafts, source watchers and agent endpoints remain active; open a fresh tab to retry. A lost shared browser connection still ends the session. A failed target is never reported as a working local preview.
+- The dedicated profile keeps the portal's cookies in `<profile>.session.<hash>.json` beside the profile folder, one
+  file per set of portal hosts. Only cookies of those hosts are kept (identity providers on other hosts are not), and
+  Mirage staff-selection cookies never are. Removing a profile means deleting its folder and its `.session.*.json`
+  files.
+- A new tab can load before interception attaches. Lense then repairs a clean initial document with one GET, never
+  replaying a form submission. Edited controls or rich-text edits keep the document and raise a reload-needed warning.
+  An older repair never replaces a newer navigation.
+- Startup reports configuration, source discovery, process ownership, browser/interception setup, document navigation
+  and initial requests, with a five-second heartbeat and command-total and per-phase times. A failure names its phase. A
+  listening runtime or loaded document does not prove the application is ready: page scripts, sign-in and later requests
+  can still be pending. Native model-driven overlays finish startup at document load; Mirage model-driven dev also waits
+  for the catalogue, staff identity and initial view.
+- `--startup-timeout` (mirage start/dev, model-driven dev; default 120000 ms) is the longest silence without startup
+  progress; each progress record and the runtime's discovery file restart it, and 600000 ms is an absolute cap. Source
+  discovery and ownership checks run before the runtime starts and count against the same value as a total.
+  `mirage start --json` prints its result on stdout and startup events on stderr. Ctrl+C stops pending startup and the
+  owned runtime.
+- If interception cannot be installed on a newly opened tab, only that owned tab closes (an attached browser shows a
+  local failure page). Other tabs, drafts, watchers and agent endpoints keep working; open a fresh tab to retry. Losing
+  the shared browser connection ends the session.
+- Interactive dev leaves `alert`, `confirm`, `prompt` and before-unload dialogs to the user. Owned headless dev
+  dismisses alerts, confirms and prompts and accepts before-unload so navigation completes. Each dialog's type, redacted
+  message and disposition appear in Activity and agent events. Attached browsers keep control of their dialogs.
+- The **Portal / environment** row appears only when there is another target; **Go** is enabled once a different one
+  is selected. Target selection in the panel commits only on Go or Enter. Leaving a local runtime for a live target, or
+  opening a `caution` environment, needs an in-panel confirmation; Cancel or a failed switch restores the current
+  target. UI state is per browser profile (in memory for a CDP attachment without a known profile). Automated headless
+  sessions start collapsed.
 
-In a toolkit source checkout,
-`node --test --import=./test/browser-bootstrap.mjs test-browser/dev-session-close-errors.test.mjs` exercises this
-isolation with a disposable owned browser profile on loopback. An independent proxy withholds the browser's answers
-to interception setup for a new tab, a popup and a tab closed before setup finished. Only those tabs close; two
-healthy tabs keep their unsaved drafts, the agent endpoints keep answering, the watcher applies a later source save
-in a retried tab, and losing the shared browser connection stops the session.
+### Which browser profile
 
-## What can I preview?
+`dev`, `verify --signed-in` and `model-driven dev` choose the browser the same way (catalogue keys in
+[configuration](configuration.md)). `lense list --site <site> --env <env>` prints the choice for that selection as
+`browser profile:` and `user-data root`; `dev` repeats it on its `browser` line.
 
-| Change                                                   | What to expect                                                                          |
-| -------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| JavaScript, CSS or an image                              | Browser response overlays from discovered source mappings                               |
-| Supported literal HTML or inline fields                  | Baseline patches where the match is unambiguous                                         |
-| Liquid logic, server-side settings or Dataverse behavior | Still evaluated by the online portal; use your separate deployment process where needed |
-| Exported server-side rendering with local data           | Use [Mirage](../mirage/README.md) to explore supported local simulation                 |
+| Option                                                 | Browser                                                                                 |
+| ------------------------------------------------------ | --------------------------------------------------------------------------------------- |
+| none                                                   | The target's toolkit profile, `<profiles>/<site>-<env>`, isolated from your own browser |
+| `--profile <name>`                                     | A named toolkit profile, `<profiles>/named/<channel>/<name>`                            |
+| `--user-data-dir <root>` + `--profile-directory <dir>` | An existing profile; `<root>` is the parent of the Profile Path in `edge://version`     |
+| `--cdp-url <endpoint>`                                 | A browser you started with a debugging endpoint; Lense attaches to it                   |
 
-After a save, check **Issues** for changes that require deployment. A changed source whose inline or markup preview is disabled is reported there, even if the page reloads. Reloading alone does not mean an edit was applied.
+`<profiles>` is `browser.profileDir`, by default `.paqvilo/profiles` beside the catalogue (Chrome and Chromium use a
+`default/<channel>/` subfolder).
 
-## Commands at a glance
+- Toolkit and named profiles are persistent. A new one starts anonymous: sign in once in the headed Lense window through
+  the portal's own sign-in. Lense keeps the portal's cookies in the session file beside the profile folder, so every
+  later `dev` or `verify --signed-in` that resolves to the same profile starts signed in, headless runs included. Only
+  one browser can use a profile at a time: stop the running session (Ctrl+C or `agent stop`) before another run.
+- The profile folder is resolved from the catalogue's location. A catalogue in another folder, such as a scratch copy
+  pointing at other sources, gets a new anonymous profile; to reuse a signed-in one, set `browser.profileDir` to the
+  folder that holds it and keep the same site and environment names.
+- An existing profile is left entirely to the browser: Lense neither restores nor saves a portal session file for it.
+  Pointing `--user-data-dir` at a toolkit profile folder therefore does not carry its portal sign-in, even when the
+  identity provider still signs the browser in to a private site.
+- With an existing profile Lense launches the browser itself, so nothing else may be running on that user-data root;
+  otherwise it stops with "the browser profile ... is in use or could not start". Edge's normal user-data directory is
+  refused before anything starts ("Edge cannot be automated through launch flags in its normal user-data directory"),
+  so an everyday Edge profile can only be used by attaching. A missing root fails with "Existing browser user-data
+  directory not found", a missing child with "Existing browser profile directory not found" (`--profile-directory`
+  defaults to `Default`). `lense doctor` does not check these values.
+- `--cdp-url` accepts an `http`, `https`, `ws` or `wss` endpoint; one that does not answer fails with "Cannot attach to
+  the --cdp-url browser debugging endpoint". An attached browser stays yours: when Lense stops it detaches and leaves
+  the browser and its debugging endpoint running. `--debug-port` cannot be combined with `--cdp-url`; attach your
+  debugger to the browser's own endpoint.
 
-Run `npx --no-install paqvilo lense --help` for the full command/options reference.
-`paqvilo lense doctor --all --mirage --json` gates on Lense, Sources and Mirage readiness.
-Duplicate exported YAML keys fail the Sources check without changing the Lense verdict.
-Without `--mirage` its exit status covers Lense; source diagnostics remain warnings, and each site line names all three states.
-Deployment profile lines list each file relative to the catalogue and its parse readiness.
-Add `--lint-profiles` to scan every exported `deployment-profiles` directory for JSON/YAML syntax errors, including unbound files. `profileDiagnostics` contains the source-relative file, parser code, line, column and bound flag. These findings are warnings; selected profile validation still controls Mirage readiness.
+## Commands
 
-| Command                | Purpose                                                                           |
-| ---------------------- | --------------------------------------------------------------------------------- |
-| `list`, `use`          | Inspect available targets and remember a personal site/environment                |
-| `doctor`               | Check configuration, source mapping, Solution inputs and baseline offline         |
-| `map`, `resources`     | Discover online-to-local mappings and editable source descriptors                 |
-| `audit --all --strict` | Independently inventory exports and expose blocked or unaccounted code            |
-| `dev`                  | Open a dedicated browser, apply local overlays and watch saves                    |
-| `status`               | Compare local resources with authenticated online responses                       |
-| `verify`               | Edit a disposable copy and check the browser applies supported changes            |
-| `agent`                | Inspect and control a running owned browser through the bounded authenticated API |
+Run `npx --no-install paqvilo lense --help` for every option; [command-line usage](cli.md) covers output streams and
+exit status.
 
-Three options that the table does not show:
+| Command                | Purpose                                                                                    |
+| ---------------------- | ------------------------------------------------------------------------------------------ |
+| `list`, `use`          | Show targets and settings in effect; remember a site/environment in `.env`                 |
+| `doctor`               | Check configuration, source mapping, Solution inputs and baseline offline                  |
+| `map`, `resources`     | Online-to-local mappings; editable source descriptors and metadata relationships (offline) |
+| `audit --all --strict` | Inventory export code independently and expose blocked or unaccounted resources            |
+| `analyze`              | [Offline source analysis](static-analysis.md)                                              |
+| `dev`                  | Dedicated browser with local overlays, watching saves                                      |
+| `status`               | Compare local web files with what the environment serves to an anonymous request           |
+| `verify`               | Edit a disposable copy and check the browser applies supported changes                     |
+| `agent`                | Inspect and control a running owned browser ([reference](#agent-api-reference))            |
+| `model-driven`         | `inspect` or `dev` (default) of exported Solution web resources and mapped PCF bundles     |
+| `mirage`               | `init`, `start`, `dev`, `status`, `inspect`, `stop` of local [Mirage](../mirage/README.md) |
 
-- `--no-overrides` (dev): shows the environment as it is served, with no local sources laid over it; use it for reference captures.
-- `--runtime <kind>` (mirage): runs `power-pages`, `model-driven` or `dataverse-api`, overriding the project's or catalogue's runtime.
-- `--simulation <level>` (mirage): `dry-run` keeps records in memory, `simulation` saves them as pack data, and `deep` also allows schema changes.
+- `doctor --all --mirage --json` gates on Lense, Sources and Mirage readiness. Without `--mirage` the exit status covers
+  Lense only and source diagnostics stay warnings; each site line names all three states. Duplicate exported YAML keys
+  fail Sources. `--lint-profiles` also scans every exported `deployment-profiles` directory for JSON/YAML syntax errors
+  (`profileDiagnostics`: file, parser code, line, column, bound flag); these are warnings.
+- `dev --no-overrides` shows the environment as served, for reference captures. `--scope changed` overlays only files
+  that differ from the baseline.
+- `map --check` and `status` request every mapped web file anonymously, without the dev profile's sign-in (even when
+  that profile is signed in) and without following redirects. A private site redirects each one to sign-in
+  (`redirect (HTTP 302)`); both commands then report the check as incomplete and exit 1. For a private site, check
+  signed-in application in a `dev` session (agent `state` and `events`) or with `verify --signed-in`.
+- `map --no-write --json` returns the mapping without writing reports. `resources` distinguishes `exists`, `empty` and
+  `renders` for optional enhanced fields; duplicate active page URLs and overwritten YAML records are diagnosed.
+  Resource IDs from `resources` differ from agent page IDs.
+- `audit` coverage is source classification, not proof of navigation or browser application.
+- `verify --signed-in` reuses the dev profile and its sign-in: close that dev session first. When the profile is already
+  signed in it also runs headless; add `--headed` when a sign-in may still be needed and bound it with
+  `--sign-in-timeout` (1–900000 ms, default 900000). Each check reports `ok` `true`, `false` or `null` (skipped, with
+  the reason in `detail`, such as a page without an image web file); a run with skips passes with coverage `partial`.
+  The report also names `inlineBaseline`, diagnostics before and after the edits, and `cleanup`
+  (`temporarySourceRemoved`). A sign-in page is never counted as target coverage: an anonymous
+  run on a private page fails with `<path> needs a sign-in (ended on <sign-in URL>)` and prints the rerun command with
+  `--headed --signed-in`, and a missed deadline fails with `Sign-in did not complete within the configured deadline`.
+  Both report `errorCode` `VERIFY_FAILED`, coverage `incomplete` and exit status 1 after removing the temporary copy.
+  An interrupt (Ctrl+C, SIGINT, SIGTERM) ends the run with `errorCode` `VERIFY_INTERRUPTED` and exit status 1 after
+  closing the panel, interception, watcher and browser and removing the temporary copy (kept when `PAQVILO_KEEP_TEMP`
+  is set). A second signal is absorbed; a third writes `Forced exit: cleanup did not finish.` and exits 130 (SIGINT) or
+  143 (SIGTERM).
+- `mirage start` refuses settings that differ from a live runtime owning the same state file, naming its pid and file;
+  stop it or pass `--state <other file>`. A runtime recorded on another host (Windows and WSL, or runners sharing a
+  checkout) is never listed, selected, pruned or signalled here, and a start on its state file is refused; when that
+  host no longer runs it, delete its entry from the ownership file the message names. `mirage stop` exits 2 only for a
+  selected runtime of this host it could not verify. `mirage status` and `mirage stop` select runtimes by the
+  [scoping rule](../mirage/docs/toolkit-integration.md#which-runtimes-status-and-stop-select). If `mirage dev` is
+  killed instead of closed, its browser closes but the runtimes it started keep running: `mirage status` lists them and
+  `mirage stop` stops them. Each `mirage` action accepts only the options its `--help` lists; another fails with
+  `--<option> is not supported by mirage <action>`. Interactive `mirage dev` rejects `--json`; use `start` plus the
+  agent API for automation.
+
+### JSON envelope
+
+Lense `--json` output is `{ schemaVersion, command, ok, offline, writesFiles, errors }`, where `writesFiles` lists files
+actually written and `errors` holds `{ code, message }` objects; a failure also carries its primary error as `error`.
+Generic codes are `invalid_argument`, `unsupported_option`, `unknown_command`, `configuration_error`, `command_failed`
+and `check_failed`; strict inventory failures use `strict_failed` with blocked/gap counts. `status` and Mirage
+`status`/`start`/`stop` set `offline: false`; `status --json` fails when a comparison is incomplete. `verify --json`
+reports its result after cleanup. `mirage init` names its project file, writes `--solution-root` as its Solution roots
+and carries `--state`, `--port`, `--preset` and `--preset-mode` into the `dev` command it prints; `start` names state,
+discovery, ownership and startup log files; `stop` names the updated ownership file and reports removed discoveries
+separately. `lense mirage inspect` is offline and writes nothing.
 
 ## Source mapping and comparison scope
 
-JavaScript, CSS, images and supported inline fields map from discovered export metadata. Literal markup uses baseline patches and rejects ambiguous matches. Lense does not evaluate Liquid locally or apply server-side portal settings. Enhanced XML and code-bearing YAML fields are edited using their discovered field/JSON descriptors; `source-edit.mjs` preserves sibling values and rejects stale identity or paths outside the source extract.
+JavaScript, CSS, images and inline fields map from discovered export metadata; literal markup uses baseline patches and
+rejects ambiguous matches. Enhanced XML and code-bearing YAML fields are edited through their discovered field/JSON
+descriptors: [`lense/source-edit.mjs`](../lense/source-edit.mjs) preserves sibling values and rejects stale identity or
+paths outside the export.
 
-The default scope overlays every local source. `--scope changed` limits overlays to changes since the captured baseline. HEAD is pinned when a target activates; committing later does not erase the baseline. Explicit deployment refs remain explicit. The panel reports Git drift and can pin a fresh HEAD. Shared sources refresh the affected portal's tabs; page sources affect that page; CSS can hot-swap. Pausing reload preserves an unsaved form while saves accumulate.
+HEAD is pinned as the baseline when a target activates, so a later commit does not erase it; an explicit `--baseline`
+ref stays explicit. The panel reports Git drift and can pin a fresh HEAD. Create the initial source commit before
+previewing literal markup; this local baseline does not identify the deployed commit. Without a baseline (sources
+outside Git, a repository without commits, or a `--baseline` ref that is not a commit) the panel header shows **No Git
+baseline** and **Issues** lists **Comparison unavailable** with the reason and what to change; its copy button copies
+Git's own message. Shared sources reload the affected portal's tabs, page sources that page. Pausing reload preserves
+an unsaved form while saves accumulate.
 
-Create the initial source commit before previewing literal markup. The [setup instructions](getting-started.md#4-preview-live-with-lense) cover a new export; this local baseline does not identify a deployed commit.
+Panel keys: **Alt+Shift+P** panel, **Alt+Shift+L** hide/show, **Alt+Shift+O** Online/Local, **Alt+Shift+X** X-ray;
+**Esc** closes a comparison, then clears the filter, then collapses the panel. When the environment is the site's own
+local Mirage (a loopback origin on the port in `sites.<id>.mirage.port`, or on Mirage's default port 8787 when the site
+sets none; `mirage dev`; or a model-driven `--local-simulation`), the panel has no **Local**/**Online** switch and
+Alt+Shift+O does nothing: Mirage already serves your local sources. Started with `--no-overrides` there, the banner's
+**Back to local** still turns the overrides on. X-ray turned on from the open panel takes its place; turning X-ray off brings the panel back on the
+same tab. **Inspect** works for live and Mirage
+sessions; **Tweaks** changes local Mirage identity and scenarios; **Mirage** (under `mirage dev`) shows the runtime,
+its diagnostics and content policy, and opens the Mirage admin pages for the current page. Targets stay isolated by origin,
+environment and source selection.
 
-The panel's **Online / Local** switch compares the browser's responses. **Alt+Shift+P** opens the panel. **Alt+Shift+L** hides or shows it; **Alt+Shift+O** switches Online / Local in Lense. **Inspect** is available for live and Mirage sessions. **Tweaks** changes local Mirage identity and scenarios. Independent targets stay isolated by origin, environment and source selection.
+The panel, X-ray and the model-driven panel follow the operating system's light or dark colour scheme, whatever the
+page's own theme.
 
-In **Inspect**, start with **Page & templates** to explore page copy, JavaScript, CSS and template dependencies. **Forms & controls** connects exported forms, lists, views and fields with rendered controls. **Select an element** picks a node without activating its portal action and opens its evidence in the panel. The selected summary stays available when you switch panel tabs.
+In **Tweaks**, the first line says who this browser is; its tooltip says how the portal signs in. Each persona row
+signs this browser in through the portal's own sign-in (other browsers keep their sessions); its star makes it a
+favorite, listed first under **Favorites** in this browser. The persona this browser is signed in as is marked
+**signed in**, and **Activity** logs each sign-in and sign-out when it starts and when it finished or failed. **/**
+focuses the persona search and **Esc** clears it. The filter button beside the persona search opens web role, tag,
+account and group chips, each facet with the same **any** chip (personas with any value of it); the next button opens
+the full picker in Mirage admin.
+
+In **Overrides**, **Local files: all | changed vs Git** chooses which local files override the site (the same choice as
+`dev --scope`; switching reloads the page). A row says **differs from deployed** or **same as deployed** when Lense
+compared it with the version **Online** shows (in front of a local Mirage: **differs from served version** or
+**unchanged**), and **N requests** when the page requested it more than once. A source-map comment
+(`/*# sourceMappingURL=... */`, `//# sourceMappingURL=...`) that only the served copy has is no difference, in the
+row and in the comparison (**local vs deployed**, or **local vs served**). The filters and the scope switch sit under
+the search box. While the page uses no local file they are hidden, unless **changed vs Git** is on; a filter with
+nothing to show is hidden, and without a Git baseline **Edited** and **changed vs Git** are not offered. The footer
+counts what is laid over the site, so a paused override leaves it. Every file row, on every tab, opens its file with a
+click on the row and copies its path with the copy button; a page or address row navigates with the arrow button.
+The first column names a row's kind in words (Template, Snippet, Script, Style, Table, ...), with the full name in the
+tooltip, unless the row's own name already says it. A Solution file named by an ID shows `{…}` in its place
+(`FormXml/main/{…}.xml`); the full path is its tooltip and what Copy copies.
+
+In **Inspect**, the icon buttons beside the filter refresh the inspection, select an element and expand or collapse
+every group; the section chips sit on one line under the filter. **Page & templates** covers page copy, scripts,
+styles and template dependencies; **Forms & controls** joins exported forms, lists, views and fields to rendered
+controls. Selecting an element picks a node without activating it; its details open under the section chips, headed
+by its kind and name as in X-ray, and scroll with the tab; on the other tabs they stay folded under that header. The
+locate button of a field or control finds it on the page; the Mirage button opens its record or setting in Mirage
+admin. A content snippet of markup reads as a summary (**HTML · 1 line · link**); its value is the tooltip and has
+its own copy button.
+**Tables & access** shows the table permissions, scopes, relationships and web roles of your sources, each operation
+as a word (**read**, **no create**, **update, scoped**) and each reason once; an exported grant does not prove the
+signed-in user can use it, and on a live portal Inspect says that web-role membership is not known.
+Components are named, never shown by ID; rendered controls without a source match are one count line.
+
+With only a portal export, Inspect resolves portal components, snippets, web files and access rules. Add
+`mirage.solutionRoots` or `mirage.project` to resolve Solution FormXml, views, table fields, PCF manifests/resources and
+literal dataset bindings (live Lense reads them without starting Mirage). Table rows also show exported plug-in
+registrations (message, stage, rank, filtering columns, type, assembly) and open their XML or
+[mapped C# source](../mirage/docs/dataverse-plugins.md); they do not establish which assembly is deployed. Refreshing
+the inspection rereads the sources.
 
 ### Selection evidence
 
-The same evidence summary appears in the panel and X-ray. **Owner** describes the component established for the selected node; **Local source** describes the admitted source reference. These have separate **Exact**, **Candidate**, **Conflicting**, **Unavailable** or **Stale** states. An exact rendered owner can have an unavailable or stale source. Local matching does not establish the deployed revision.
+The panel and X-ray show one evidence summary. **Component** is the component identified for the selected node, with
+its own file; **Source file** lists the other files that define or render it. **Contained in** lists the form, table,
+basic form and web page around it; each one with a local definition opens it in the editor or copies its path, like the
+component and source rows (a web page opens its `.webpage.yml` record). Each row has its own state: **Exact**,
+**Likely**, **Conflict**, **Not found** or **Outdated**; hover the badge to see what it means for that row. An exact
+component can have an outdated or missing source, and local matching never establishes the deployed revision.
+**Other possible matches**, **Context** and **Search limits** appear only when they have something to show. A declared
+dependency, matching selector or top-ranked match does not prove ownership; for an asset the row says what was seen on
+the page: **Loaded by this page**, **Ran on this page** or **Mounted on this page**. In the panel, each row shows the
+component's name, kind and certainty; the X-ray card names the selected component in its header (display name ·
+logical name) with its badge. The relation (for example "The view shown here") is the row's tooltip; screen readers
+announce each badge's meaning.
 
-**Enclosing components** describes containment, **Context** adds observed facts, **Alternatives** keeps other possible matches visible, and **Limits & freshness** reports incomplete searches and evidence gaps. A declared dependency, matching selector or first ranked candidate does not prove element ownership. Asset details distinguish **Served** from **Execution observed** and **Mount observed**; serving a script does not prove that it ran or mounted the selected control.
+Rules that decide attribution:
 
-For a Power Pages field, read the available hierarchy in order: **column → Solution form (FormXml) → table → basic form → host webpage**. Enclosing components opens before Local source so you can see the field's form and table before choosing a file. The selected field and its rendered form receive separate outlines. Each component keeps its own evidence state; a host webpage supplies context without becoming the field's owner. Missing definitions remain unavailable rather than being filled from another form or table with the same field name.
+- **Power Pages fields** read **column → Solution form (FormXml) → table → basic form → host webpage**; each level keeps
+  its own state, the host page is context only, and a missing definition stays unavailable rather than borrowed from
+  another form or table with the same field name.
+- **Native list/subgrid modals** with an all-zero layout form ID resolve through the same-origin `data-page` frame,
+  modal action class, an independently identified opener (a rendered list or subgrid ID, or a referenced list whose view
+  matches the grid) and its exported action form. Only a unique consistent join sets the form; otherwise the rendered
+  table and the declared action forms on it stay candidates. An all-zero form ID never identifies a form by itself; a
+  unique verified basic-form wrapper can.
+- **Script-created elements** link to local code through an observed callsite, labelled **Created by this script**,
+  **Copied by this script** or **Inserted by this script**, only when the acknowledged response bytes and the parsed
+  script version agree. Anonymous evaluation, custom stack formatting and ambiguous versions stay unavailable.
+- **Custom grids** declare bindings with `data-paqvilo-table="logical_table"` on the table and
+  `data-paqvilo-column="logical_column"` on cells or headers; DataTables column `name` (`sName`) is read without running
+  renderers. A scroll-head clone can point at its grid with `data-paqvilo-grid="original-table-id"` and
+  `data-dt-column`. A unique declared pair joined to an exported column gives its **definition** source, not the
+  renderer or record. Nothing is inferred from API requests, cell contents, neighbouring grids or the containing form.
+- **Frames**: accessible same-origin frames (nested, inserted or navigated later) and modal iframes are inspected with
+  their own form and table context. Native quick-view iframes join a verified parent form and that control's QuickForms
+  target. Rich-text editor frames inherit a field binding from attribute-scoped hosts (`<logical_column>_ControlView`,
+  `<logical_column>_Container`) joined to a verified form, up to 16 frame levels or 256 ancestors. Cross-origin and
+  sandboxed frames and closed shadow roots are boundaries; URL parameters are context, never proof.
+- **Code components** link FormXml properties and bound columns to manifests and portal settings, distinguish the
+  desktop control from other form factors, and report portal enablement separately. Constructor and mount details appear
+  only when observed.
+- Field identifiers are checked against the selected export and table context; ambiguous matches stay candidates.
+  Matching uses static IDs, classes and component attributes, not positional DOM paths. Classes are weighted by rarity,
+  so common framework classes stay candidates. Static Liquid matching cannot prove which branch rendered.
 
-A generic native list/subgrid modal with an all-zero layout form ID can resolve through its same-origin `data-page`
-frame, platform modal action class, independently identified opener component, exported action form and layout table.
-The opener is a rendered list or subgrid ID, or a list this page references whose view matches the rendered grid; an
-exported list that only shares the rendered view is candidate context. Only a unique consistent join establishes the
-current form; URL hints only reject conflicts. Missing or ambiguous joins retain the rendered table and, as candidates,
-the declared action forms of the modal's action kinds (every kind when the modal names none) on that table, without
-promoting unrelated markup to a field source.
+The open button of a row (its accessible name is "Open <row> in editor") rechecks the selected node, source identity and
+revisions before opening; outdated, conflicting and missing files cannot open, and the button's tooltip says why.
+Saving the file while the browser check is pending makes the action outdated: refresh inspection and select again. The
+copy button copies the displayed reference; **Markup matches** and its **Open in editor** buttons are suggestions, not
+attribution. The inspector never reads input values or page text, and
+notifications use opaque document, frame and anchor identifiers.
 
-For script-created elements, an observed JavaScript callsite can link the actual node to verified local implementation bytes. The evidence labels **creation**, **clone** and **attachment** separately. Attachment identifies the code that moved or inserted a node; it does not replace that node's original creation source. The link requires the acknowledged response bytes and the browser's actual parsed script version to agree. Serving or parsing code alone does not establish that it executed, and one observed DOM operation does not prove every branch, handler or component mount ran. Anonymous evaluation, custom stack formatting and ambiguous script versions remain unavailable rather than borrowing an older caller's source.
+The picker keeps the selected node while X-ray is hidden; if the node is replaced, its frame navigates or its shadow
+host disappears, the selection clears instead of moving to another element. **Clear selection** removes it explicitly.
 
-**Open source** uses the admitted semantic source identity and revisions. **Open candidate** explicitly opens a candidate under the same validation. The selected node, source identity and current revisions are checked again before opening. Stale, conflicting and unavailable source actions are disabled. If the source changed, refresh inspection and select again rather than relying on an old line or record. **Copy reference** copies the displayed source reference when an absolute path is unavailable. **Search export markup** offers static suggestions separately; **Browse file** opens their container without asserting an exact rendered source or line.
+#### X-ray
 
-The final source check runs after the browser confirms the selection. Saving the local file while that browser check
-is pending makes the action stale; refresh inspection and select again before opening it.
+Toggle X-ray with the target button in the panel header or **Alt+Shift+X** (also from inside an accessible same-origin
+frame). Green outlines mark controls, blue form/view containers, amber source markup; colors identify layers, not
+certainty. While Inspect mode is on, keyboard and pointer activation is intercepted in the page, accessible same-origin
+frames and open shadow roots. **Tap Ctrl** (alone) or click **Inspect** to switch to Interact and back; holding Ctrl
+no longer interacts. When focus moves into a cross-origin or sandboxed frame, X-ray reclaims it one task later, so one
+keystroke can reach that frame.
 
-The one-shot picker retains the actual selected node while X-ray is hidden. If that node is replaced, its frame navigates or its shadow host disappears, the summary clears. Select the new node explicitly; a replacement with the same ID is a new selection. Source refreshes update the retained node's evidence without reopening the panel or moving keyboard focus. **Clear selection** removes the retained selection explicitly.
+A hover summary appears beside the element, left of it when there is room, else right, below or above; it hides over
+the selected element while its card is open, and wherever it would cover the card. An element with no matching
+component says so; picking it opens **Parent elements**. In a narrow window the card is 45% of the window wide, but at
+least 340 pixels, and as tall as the room beside the element allows; it scrolls inside when a section grows. Outlines
+leave the Lense pill and panel uncovered, and the legend hides while either is under it. **Details** shows the card; off
+leaves hover summaries only.
 
-The inspector does not read input values or page text to build these identities. Selection notifications use opaque document/frame/anchor identifiers; unknown row/user IDs and CSS tokens are excluded.
+The details card opens beside the picked element (right of it, else left, below or above), inside the window and
+above the legend, and follows it on scroll and resize; it covers the element only when no side has room. The **Move
+details to the other side** button or dragging its header keeps it where you put it until the next pick. Card controls:
+**Parent** and **Child** (also the Up and Down arrow keys), **[ / ]** to cycle overlapping elements, **Reveal**,
+**Details**, **Tab / Shift+Tab**; **Esc** clears the selection, then turns off X-ray. Context and
+permission lists page eight entries at a time. X-ray is removed when the session detaches.
 
-Use **◎ Lense X-ray** in Inspect, the panel header, or **Alt+Shift+X** to inspect Power Pages sources in place. Hover shows available owner and source evidence; click keeps its details open. Green outlines mark controls, blue marks form/view containers, and amber marks source markup. Colors identify layers, not certainty; read the evidence states for attribution. The layer menu can limit highlights to forms/data, templates/content or the selection. Hold **Ctrl**, or switch to **Interact**, to use the portal; **Inspect** intercepts pointer activation, including over iframe boundaries. The inspector uses the existing Lense panel theme and does not modify portal styles or submit selected controls.
-
-Inspect is modal: while it is on, keyboard (Enter, Space) and pointer activation is intercepted in the page, in every accessible same-origin frame (including frames added or navigated later) and in open shadow roots, so inspecting never activates a portal control. Hold **Ctrl** or switch to **Interact** to use the portal. Cross-origin and sandboxed frames are a boundary: they get no in-frame guards, and when focus moves into one, X-ray reclaims it one task later, so a keystroke in that interval reaches the frame.
-
-**Alt+Shift+X** also activates X-ray while focus is inside an accessible same-origin frame, including nested frames and frames loaded after attachment. Normal typing remains available while inspection is off. Inaccessible frames cannot forward the shortcut; focus the parent document to activate it there.
-
-X-ray opens immediately with a scanning status while local metadata and rendered-element matches load. Its decorative sweep respects reduced-motion preferences; the toolbar stays available to exit or interact with the page. Source identities appear when inspection completes. A failed inspection offers a retry and clears outdated attribution. Cold inspection can take longer on large exports; subsequent inspections reuse the bounded source caches. Panel reads and actions also show pending feedback, and repeated mutation clicks are blocked while the action is running.
-
-The movable card starts with the selected evidence summary, followed by source and page context. **Web API context**, **Page dependencies**, **Page code components** and **Element & ancestry** remain secondary disclosures. Context lists have eight entries per page, with Previous/Next controls; permission and source lists have their own pages. Use **↑ Parent / ↓ Child**, or cycle overlapping elements under the pointer with **[ / ]**. **Reveal** scrolls a selection into view; **Details** hides the card when it covers a target. **Tab / Shift+Tab** visits the inspector's visible controls, including disclosure summaries. Disclosure choices, focus and scroll survive evidence redraws. **Escape** releases a selection, then exits X-ray. Refresh rereads sources and newly rendered component bindings. X-ray is temporary to the current document and is removed when the session detaches.
-
-**Exported code component bindings** includes the declared schema, manifest properties, parameters, native column bindings, portal enablement, resources and datasets. **Exported native controls** and **Exported form / view definitions** keep their configuration relationships visible separately from selected ownership. When no rendered host identifies the component, its exported page references remain under **Page code components**. **Web API context** shows literal or observed entity sets, their exported tables and permission rules; long entry and permission-rule lists page eight at a time. API-derived columns can match custom form identifiers, but remain candidates when the table context is missing. Neither a page reference nor an observed request proves which element owns a request or what access the live user has.
-
-PCF constructor and mount details appear when the runtime actually observes them. A manifest, configured binding, namespace or served bundle does not by itself establish that a particular constructor mounted the selected control. Local definitions and observed local mounts remain separate from the deployed revision, which is unverified without independent evidence.
-
-Field identifiers are checked against the selected export and explicit table context; ambiguous matches stay visible as candidates. Source matching uses static IDs, classes and component attributes without relying on positional DOM paths, so moved regions can keep their source identity. Multiple templates and conditional branches can share markup; matching candidates do not establish a deployed source revision. Related script references and page dependencies remain secondary to the selected element's sources. Accessible same-origin frames support individual control selection with frame-scoped form context and translated, clipped outlines; nested and dynamically inserted or navigated frames are supported. Cross-origin and sandboxed documents remain frame boundaries; open the inner document in its own tab when direct inspection is unavailable. Native dialogs, nested overlays, open shadow roots, scrolling and source-driven DOM replacements are handled without silently transferring a removed selection to another element.
-
-Custom grids can declare their own binding with `data-paqvilo-table="logical_table"` on the table and `data-paqvilo-column="logical_column"` on its cells or headers. For DataTables, X-ray reads declared column `name` metadata (`sName`) and its cell/header indices without invoking renderers or row-data getters. A table declaration supplies its table context; a column name alone retains all matching table candidates. A scroll-head clone can declare `data-paqvilo-grid="original-table-id"` and `data-dt-column` on its headers to use that original grid's declarations. No table ownership is inferred from API requests, cell contents, sibling grids or wrapper proximity. Unknown declared columns remain labelled as declarations whose source definition is unavailable.
-
-A unique declared table/column pair joined to its exported column can establish the selected grid's column identity
-and local **definition** source. This identifies its declaration; it does not prove which custom renderer ran or
-which record supplied the cell. A grid without its own table declaration cannot borrow the containing form's table.
-Duplicate clone-target IDs and contradictory rendered table declarations do not resolve to the first match.
-Rendered table declarations load their exported definitions on demand, without requiring a Web API request.
-Selecting a grid beyond the bounded page scan requests a source refresh that prioritizes that grid.
-
-Select the field inside an accessible same-origin modal iframe to inspect that document's current form and table, even when the opener's include graph omits the form. Closing, reopening or navigating the modal does not transfer the old selection to a new control. A repeated field name in a different table must resolve against its current rendered component. URL parameters and configured defaults remain context; they do not independently prove ownership. Conflicting rendered form/table declarations remain unresolved, and cross-origin or sandboxed frames remain inspection boundaries.
-
-A native layout can report an all-zero form ID. That placeholder supplies no identity; an independently verified,
-unique native basic-form wrapper can still identify its exported definition. A generic wrapper cannot.
-
-Native quick-view iframes can declare their control, lookup, form name and document path. X-ray joins those
-declarations to a verified parent form and that control's exported QuickForms target. The target FormXml and
-selected column must both exist. A changed document path, conflicting URL hints, missing target, conflicting
-placements or unverified parent prevents inheritance; URL parameters alone remain candidates.
-
-Attribute-scoped native hosts such as `<logical_column>_ControlView` and `<logical_column>_Container` can carry a known field/form binding through nested same-origin rich-text editor frames. Shared internal editor IDs do not replace that host binding. Record IDs, credentials and editor contents are not needed for this inspection.
-
-Exact editor attribution requires the host to join a verified rendered form and exported column. A generic form
-wrapper or frame URL alone remains candidate context. An independently identified inner form, unknown nearest
-attribute host or conflicting explicit column prevents inheritance from a more distant host. Editor-host traversal
-stops at sixteen frame levels or 256 ancestors and reports an ancestor-limit boundary when reached.
-
-X-ray work is bounded so large pages stay responsive. It skips an individual markup source above 1,048,576 UTF-16 code units and reports the omission; discovery and drawing stop at 800 candidate elements and 250 background outlines; details show up to 60 source matches. **Limits & freshness** shows that a search was limited and its omission count before you expand it; its source paths describe index omissions, not sources attributed to the selection. Large pages can therefore show partial background coverage, but selection still inspects the element under the pointer. Closed shadow roots and inaccessible frames are boundaries, and static Liquid matching cannot prove which branch rendered. Missing exports and failed refreshes clear previous identities instead of presenting them as current. Inspection reports are cached and reused until the sources change; the agent API reports omitted sources in `elementSourceLimits`.
-
-Native grids trace their selected views, relationships, action settings and modal forms. Quick views link to their FormXml. Observed Web API requests identify entity sets without collecting record IDs or query values; Solution metadata resolves their table bindings. Exported language routes select the corresponding page and snippet sources. Relative asset references follow their browser URL.
-
-Native code components connect FormXml properties and bound columns to their manifests and portal attribute settings. Inspect distinguishes the selected desktop control from other form factors and reports explicit portal enablement separately from a model-driven default.
-
-Table rows also expose exported Dataverse plugin registrations: message, stage, rank, filtering columns, type and assembly. Open their registration XML or explicitly mapped C# source. Lense uses the online plugin execution; exported registrations do not establish which assembly is currently deployed. See [plugin source mappings](../mirage/docs/dataverse-plugins.md).
-
-With only a portal export, Inspect resolves portal components, snippets, web files and exported access rules. Add `mirage.solutionRoots` or `mirage.project` to the catalogue to resolve Solution FormXml, views, table fields, PCF manifests/resources and literal dataset bindings. Code components resolve by exported schema name or an explicit observed ID mapping. These shared source settings also work in live Lense without starting Mirage. **Refresh inspection** rereads the selected sources, including Solution changes.
-
-**Tables & access** shows exported permissions, scopes, relationships and web roles. Static references can include conditional branches. Rendered controls and assets are labelled separately. Live role membership and effective record access remain unknown; an exported grant is not proof that the signed-in user can use it.
+Limits: a markup source above 1,048,576 UTF-16 code units is skipped and reported; discovery and drawing stop at 800
+candidate elements and 250 background outlines; details show up to 60 source matches. Selection still inspects the
+element under the pointer. **Search limits** reports omissions, and the agent API reports them in
+`elementSourceLimits`. Inspection reports are cached until sources change; a refresh rescans source stamps and reimports
+a changed export, so its time grows with export size.
 
 ## Automation and evidence
 
-Projects with a [persona catalogue](../mirage/docs/persona-catalog.md) can search and filter
-named personas and scenarios in the panel. In live Lense, selection uses the portal's own
-sign-in flow; it does not issue native identity tokens for a synthetic contact. In Mirage,
-scenarios can open isolated local setups with their own profile, variables and overrides.
-**Apply scenario** reveals a confirmation in the panel; review it before confirming the change.
-Keep live identity mappings and scenario tests in the project.
+Projects with a [persona catalogue](../mirage/docs/persona-catalog.md) can search personas and scenarios in the panel.
+Live Lense selection uses the portal's own sign-in flow; it never issues native tokens for a synthetic contact. In
+Mirage, scenarios open isolated local setups. **Apply scenario** asks for confirmation in the panel. Keep live identity
+mappings and scenario tests in the project.
 
-Agent discovery files contain bearer tokens and stay under ignored `.paqvilo/agents`. Use `agent sessions` to locate a session; `status`, `pages`, `events`, `state`, `snapshot` and `screenshot` inspect it. Page IDs are different from offline resource IDs. Agent control is origin-confined and has no arbitrary evaluation or proxy endpoint. Consume `nextSequence` and report dropped events.
+Agent discovery files contain bearer tokens and stay under ignored `.paqvilo/agents`; never print or share them. A
+session removes its file when it stops or its process ends on SIGINT, SIGTERM or SIGHUP. A file left by a killed process
+names its owner process: agent commands reject it as `session_stale` without contacting its endpoint, `agent sessions`
+lists it as unreachable, and the next session start in that state folder removes it.
 
-Inspect applied resources, unmatched markup patches, deployment requirements, errors and failed requests after refresh. Audit coverage reports source classification, not successful navigation or browser application. A sign-in page is not successful target coverage. `verify --signed-in` requires closing the matching dev identity first; headed sign-in can be bounded with `--sign-in-timeout`.
-
-An interrupt (Ctrl+C, SIGINT or SIGTERM) aborts the wait a `verify` run is in and ends the run. The run writes its report with `errorCode` `VERIFY_INTERRUPTED`, closes the dev panel, interception, watcher and browser, and removes the temporary copy unless `PAQVILO_KEEP_TEMP` is set. The command exits with status 1. A second signal is absorbed while cleanup runs. A third signal during cleanup writes `Forced exit: cleanup did not finish.` to stderr and ends the process with status 130 for SIGINT or 143 for SIGTERM.
-
-Continue with [configuration](configuration.md), [project extensions](project-extensions.md) or the [documentation index](index.md).
+After a refresh, inspect applied resources, unmatched markup patches, deployment requirements, errors and failed
+requests. Contributors can measure X-ray latency on synthetic exports with
+`node scripts/benchmark-xray.mjs --samples 3 --strict --json` in a toolkit checkout.
 
 ## Agent API reference
 
-Use `paqvilo lense agent <action> --json`. Every page action requires `--session <ignored discovery file> --page-id <numeric ID>`; never print or share discovery contents. The API is confined to its configured portal origin. Attached browsers remain user-owned; stopping an owned target stops its shared owned browser. There is no evaluation, form-action or arbitrary proxy endpoint.
+`paqvilo lense agent <action> --json` (the action defaults to `sessions`; output is always JSON). Every action except
+`sessions` needs `--session <discovery file>`; `state`, `snapshot`, `screenshot`, `viewport`, `navigate` and `reload`
+also need `--page-id` from `agent pages`. The API is confined to the session's portal origin and has no evaluation,
+form-action or proxy endpoint. Agent envelopes add `action` to the [JSON envelope](#json-envelope).
 
-Responses use schemaVersion, command, ok, offline, writesFiles and errors (objects with code/message). Browser inspection has offline=false. Read failures distinguish missing discovery files from invalid JSON. HTTP failures carry stable codes: invalid_argument, invalid_selector, unauthorized, page_not_found, page_busy, session_busy, foreign_origin, origin_changed, unsafe_reload, image_too_large, response_too_large and action_timeout. Messages omit browser stacks, ANSI controls and call logs. The browser navigation deadline is shorter than the CLI HTTP deadline; timed-out navigation is stopped. Snapshot, screenshot and viewport accept `timeoutMs` (default 60000 ms, at most 120000 ms, a hang guard only); the CLI sends its `--timeout` minus 1000 ms.
+`--timeout` (2000–120000 ms, default 35000) is the action deadline sent to the server; the client waits 30000 ms longer
+before reporting `request_timeout`. The server bounds snapshot, screenshot and viewport by the same value (default 60000
+ms when absent, at most 120000 ms) and navigate and reload at most 60000 ms (default 30000 ms); a timed-out navigation
+is stopped.
 
 ### agent sessions
 
-No session is required. Optional --config selects its state folder. Optional --timeout (2000–120000 ms, default 35000) is the probe budget for each session file. Returns sessions with id, site, environment, discoveryFile, reachable, plus invalidFiles and truncated. Does not return bearer tokens. At most 64 files are probed.
+Optional `--config` selects the state folder (`.paqvilo` beside the catalogue, else `.paqvilo` in the working directory)
+and lists its `agents/` discovery files. Probes at most 64 discovery files, four at a time, each within `--timeout`.
+Returns `sessions` (`id`, `pid`, `site`, `environment`, `startedAt`, `portalOrigin`, `sourceDir`, `discoveryFile`,
+`reachable`, `error`), `invalidFiles` and `truncated`; never tokens.
 
 ### agent status
 
-Returns id, session (without token), readiness, browserScope, access counts, debugger port, baseline, git, overlay, pages and truncation flags. A stopped session's missing discovery file is reported explicitly.
+Returns the session (without token), readiness, browser scope, access counts, debugger port, baseline, Git state,
+overlay, pages and truncation flags. While the tab is away from the portal origin (for example on the sign-in page)
+`pages` is empty, `access.externalTabCount` counts the tab and page routes for it answer `404 page_not_found`. A
+[model-driven](model-driven-actions.md#targets-and-agent-sessions) session instead reports `inspection.suspended: true`
+and answers `409 session_suspended`. A model-driven status has no access counts, baseline or Git state; it reports
+`kind`, `browserScope`, `overlay` (revision, applied counts and resources) and `inspection`.
 
 ### agent pages
 
-Returns pages with numeric id, document id, sanitized URL, viewport, reload permission and document method. Closed or foreign-origin pages are excluded from actionable pages.
+Returns pages with `id` (a numeric string, passed as `--page-id`), `documentId`, sanitized URL, viewport,
+`reloadAllowed` and `documentMethod`. Closed and foreign-origin pages are excluded.
 
 ### agent events
 
-Options --after (sequence, default 0) and --limit (1–500, default 100). Returns sessionId, events, oldestSequence, latestSequence, nextSequence, dropped, hasMore and cursorAhead. Advance with nextSequence and inspect dropped/hasMore. A cursor ahead of latestSequence sets cursorAhead=true and resets nextSequence to latestSequence; compare sessionId when reusing a cursor. Retention is 500 events or 1 MiB, whichever is reached first.
+`--after` (sequence, default 0) and `--limit` (1–500, default 100). Returns `sessionId`, `events`, `oldestSequence`,
+`latestSequence`, `nextSequence`, `dropped`, `hasMore` and `cursorAhead`. Continue from `nextSequence` and check
+`dropped`/`hasMore`; a cursor ahead of `latestSequence` sets `cursorAhead` and resets `nextSequence`. Compare
+`sessionId` before reusing a cursor. The server keeps 500 events or 1 MiB, whichever is reached first.
 
 ### agent state
 
-Returns page, overlay, resources, diagnostics, runtime and limits for the current document. Lists are bounded to 200 items; inspect truncation flags. Page IDs differ from offline resource IDs.
+Returns page, overlay, resources, diagnostics, runtime (the document's last 100 page errors, console messages and failed
+requests, with event retention) and limits for the current document. Lists stop at 200 items with truncation flags. A
+model-driven session returns the overlay revision, applied counts, resources, diagnostics, problems, the exported form
+catalogue, native context and runtime instead of the `overlay` and `limits` objects.
 
 ### agent snapshot
 
-Options --selector (CSS, at most 1,000 characters), --limit (1–200, default 100), --styles (up to 20 CSS properties). Returns sanitized URL, title, total, truncated and elements with tag, bounded attributes/text, visibility, rect and style. Does not copy field values. Invalid selectors return invalid_selector (400).
+`--selector` (CSS, at most 1,000 characters), `--limit` (1–200, default 100), `--styles` (comma list, at most 20
+computed properties). Returns sanitized URL, title, total, truncated and elements with tag, bounded attributes/text,
+visibility, rect and style. Field values are never copied. An invalid selector returns `invalid_selector` (400).
 
 ### agent screenshot
 
-Requires --output <new.png>; optional --full-page and --include-panel. Returns path and bytes; writesFiles names the created PNG. Both fields use forward-slash paths relative to the catalogue directory (or working directory without --config). Outside that directory, paths retain `../` segments; on another volume, only the filename is reported. Existing files are never overwritten: an existing output returns `invalid_argument` using the same display rule. Choose a new output filename. PNG output is limited to 8 megapixels, 8,192 pixels per side and 8 MiB.
+`--output <new.png>` (required), `--full-page`, `--include-panel`. Returns `path` and `bytes`; `writesFiles` names the
+PNG. Paths are forward-slash and relative to the catalogue directory (or working directory without `--config`), keeping
+`../` segments outside it and only the file name on another volume. An existing file is never overwritten
+(`invalid_argument`). Images are limited to 8 megapixels, 8,192 pixels per side and 8 MiB (`image_too_large`).
 
 ### agent viewport
 
-Options --width (320–4096, default 1440), --height (240–4096, default 900). Returns page and viewport. Invalid dimensions return invalid_argument.
+`--width` (320–4096, default 1440), `--height` (240–4096, default 900). Returns page and viewport.
 
 ### agent navigate
 
-Requires --path <portal-path>. Optional --timeout (2000–120000 ms) bounds the client request. Navigate and reload leave a fixed 1000 ms response margin above the browser deadline (whose maximum is 60000 ms). Performs an explicit GET confined to the portal origin and returns page and HTTP status. Foreign origins are rejected; redirects leaving the origin return origin_changed. A browser timeout returns action_timeout (504); transport expiry returns request_timeout.
+`--path <portal path>` (required). Performs a GET on the portal origin and returns page and HTTP status. Other origins
+return `foreign_origin`; a redirect off the origin returns `origin_changed`; a browser timeout returns `action_timeout`
+(504).
 
 ### agent reload
 
-Optional --timeout. Returns page and status. Only an observed GET document with no pending navigation can reload; unknown, restored-history and POST documents return unsafe_reload (409). Navigation uses an explicit GET to avoid repeating a form post.
+Returns page and status. Only an observed GET document with no pending navigation can reload; unknown, restored-history
+and POST documents return `unsafe_reload` (409). Reload issues an explicit GET so a form post is never repeated.
 
 ### agent stop
 
-Returns stopping=true. For targets sharing one toolkit-owned browser, stopping any target closes that browser and removes every associated discovery file. Independently running sessions and attached user-owned browsers remain intact.
+Returns `stopping: true`. Targets that share one toolkit-owned browser stop together: the browser closes and every
+associated discovery file is removed. Other sessions and attached user-owned browsers are not touched.
 
-JSON envelopes carry `schemaVersion`, `command`, `ok`, `offline`, `writesFiles` (an array), and `errors` (objects with `code` and `message`). Agent envelopes also carry `action`. Generic CLI errors use `invalid_argument`, `unsupported_option`, `unknown_command`, `configuration_error`, `command_failed`, or `check_failed`; strict inventory failures use `strict_failed` with blocked/gap counts. Domain diagnostics retain their documented runtime codes.
+### Agent error codes
 
-Agent client errors additionally use `session_not_found` (missing discovery file), `invalid_session`, `session_unavailable`, `request_timeout`, `invalid_response`, and `response_too_large`. Server action codes include `invalid_argument`, `invalid_selector`, `action_timeout`, `action_failed`, `page_busy`, `session_busy`, `page_not_found`, `unsafe_reload`, `foreign_origin`, `origin_changed`, `not_found`, `method_not_allowed`, `content_type`, `invalid_json`, `body_too_large`, `image_too_large`, `response_too_large`, `browser_request`, `unauthorized`, `invalid_url`, and `stopping`. HTTP failures retain their status in the error object.
+Client: `session_not_found` (no discovery file), `session_stale` (owner process gone), `invalid_session`,
+`session_unavailable`, `request_timeout`, `invalid_response`, `response_too_large`, plus the generic CLI codes. Server:
+`invalid_argument`, `invalid_selector`, `invalid_json`, `invalid_url`, `body_too_large`, `content_type`, `unauthorized`,
+`browser_request`, `foreign_origin`, `origin_changed`, `not_found`, `page_not_found`, `method_not_allowed`, `page_busy`,
+`session_busy`, `session_suspended`, `unsafe_reload`, `image_too_large`, `response_too_large`, `action_timeout`,
+`action_failed` and `stopping`. HTTP failures keep their status in the error object; messages omit browser stacks, ANSI
+controls and call logs.
 
 ## Local source debugging
 
-By default, Mirage appends file-backed source maps to served JavaScript/CSS assets, including extensionless payloads with those MIME types and model-driven Solution client resources. Page, template, list and form custom JavaScript carries its export sourceURL and line-offset source map. Individual inline blocks use stable `?inline=N` debugger URLs, while maps still point to the original export file. In VS Code, attach to the free port reported by `paqvilo mirage dev --debug-port 9222`:
+Mirage appends file-backed source maps to served JavaScript and CSS (including extensionless payloads of those types and
+model-driven Solution client resources). Page, template, list and form custom JavaScript carries its export `sourceURL`
+and a line-offset map; inline blocks get stable `?inline=N` URLs whose maps point at the export file. Attach VS Code to
+the port of `paqvilo mirage dev --debug-port 9222`:
 
 ```json
 {
@@ -260,20 +453,11 @@ By default, Mirage appends file-backed source maps to served JavaScript/CSS asse
 }
 ```
 
-The maps contain absolute file URLs, so exported files served below parent routes need no project-specific pathMapping. Set breakpoints in exported source files. Sidecar files and YAML literal blocks retain their source lines; folded/escaped fields and enhanced XML/JSON receive a sourceURL only because their encodings do not preserve JavaScript lines. Liquid expansions that change line counts can shift subsequent locations; the debugger describes rendered JavaScript, not local Liquid execution.
+The maps contain absolute file URLs, so no `pathMapping` is needed; set breakpoints in the export files. Sidecar files
+and YAML literal blocks keep their lines; folded or escaped fields and enhanced XML/JSON get a `sourceURL` only. Liquid
+that changes line counts shifts later locations: the debugger shows rendered JavaScript, not Liquid execution.
 
-For byte-for-byte asset comparisons, set `mirage.sourceMaps: false` on the catalogue site, or `sourceMaps: false` in a Mirage project, and restart. This disables Mirage's generated debugger trailers. The catalogue's top-level `sourceMaps` and `PAQVILO_SOURCE_MAPS` control Lense overlays separately. See [model-driven debugging](../mirage/docs/model-driven-customizations.md#pair-the-panel-with-a-standalone-local-app) for a panel attached to a standalone local app.
-
-Target selection commits only with Go or Enter. Nonempty local, remote and caution groups are shown; leaving a local runtime for a live target or opening caution requires an in-panel confirmation. Cancel or a failed switch restores the current target. `portals: all` excludes caution targets unless explicitly selected or `includeCaution: true` is set in the catalogue. UI state is scoped to the browser profile, shared across its target switches; a CDP attachment without a known profile keeps UI state in memory. Automated headless sessions start collapsed.
-
-Interactive dev leaves portal `alert`, `confirm`, `prompt` and before-unload dialogs for the browser user to answer. Owned headless dev dismisses alerts, confirms and prompts, and preserves Playwright's automatic acceptance of before-unload dialogs so navigation can complete. Their type, redacted message and disposition appear in Activity and agent events. Attached browsers retain control of their dialogs. This policy also applies when the panel is disabled. Panel controls use their own confirmation UI.
-
-`map --no-write --json` returns the mapping without writing reports. Otherwise writesFiles reports both mapping paths. Resources distinguish exists, empty and renders for optional enhanced fields. Duplicate active page URLs and every overwritten YAML record are diagnosed offline.
-
-Lense JSON commands return a common envelope with schemaVersion, command, ok, offline, writesFiles (an array) and errors (objects with code/message). `status --json` returns comparisons in results, sets offline=false and fails when a comparison is incomplete. `verify --json` reports its final pass/fail after cleanup and names the evidence files it actually wrote. Resource presence and rendering flags describe indexed export relationships; they do not establish browser coverage.
-
-Lense Mirage management uses the same envelope: init names its generated project file; start names state, discovery, ownership and startup log files; stop names its updated ownership file and reports removed discoveries separately. Started runtimes can continue writing state and derived caches. Status/start/stop use offline=false; `lense mirage inspect` is offline and writes no report. Interactive `mirage dev` rejects --json; use start plus the agent API for structured automation. A start whose settings differ from a live runtime that already owns the same state file is refused, naming that runtime's pid and state file; stop that runtime first, or pass `--state <other file>`.
-
-X-ray matches classes by rarity across the imported export, so common framework classes stay possible matches rather than proof. Static references are labelled separately from rendered provenance. Refresh rescans source stamps and reimports a changed export, so refresh time grows with export size even when one file changed.
-
-Contributors can measure X-ray latency on synthetic exports with `node scripts/benchmark-xray.mjs --samples 3 --strict --json` (run serially). Strict targets: first toggle at most 1,000 ms, revisit below 200 ms, element identification below 5 ms. Results depend on the machine and do not predict every export.
+For byte-for-byte asset comparisons set `mirage.sourceMaps: false` (or `sourceMaps: false` in a Mirage project) and
+restart. The top-level `sourceMaps` and `PAQVILO_SOURCE_MAPS` control Lense overlays separately. For a panel attached to
+a standalone local app see
+[model-driven debugging](../mirage/docs/model-driven-customizations.md#pair-the-panel-with-a-standalone-local-app).

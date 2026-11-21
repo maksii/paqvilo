@@ -4,6 +4,7 @@
 // their presets against a field index derived from solution XML
 // (schemaFieldIndex); `data generate` checks generated rows against the
 // bootstrapped state's mapping metadata (fieldIndexFromMappings).
+import { requiredArgument } from './required-argument.mjs';
 import { tableFields } from './solution-schema.mjs';
 
 const OPTION_TYPES = new Set(['picklist', 'multiselectpicklist', 'state', 'status']);
@@ -67,7 +68,11 @@ const optionValues = (value) => {
  * { table, column, kind: "unknown-column" | "option-value" | "option-label",
  *   value?, label?, expected?, rows, sample }.
  */
-export function schemaViolations(tables, index, { idColumn = (table) => `${table}id` } = {}) {
+export function schemaViolations(
+  tables = requiredArgument('schemaViolations(tables, index)', 'the state tables'),
+  index = requiredArgument('schemaViolations(tables, index)', 'a schema field index'),
+  { idColumn = (table) => `${table}id` } = {},
+) {
   const found = new Map();
   const add = (table, column, kind, row, extra = {}) => {
     const key = [table, column, kind, extra.value ?? '', extra.label ?? ''].join('\u0000');
@@ -106,7 +111,9 @@ function inspectOptions(table, row, column, value, options, add) {
 }
 
 /** One line per violation, grouped by table/column. */
-export function formatViolations(violations) {
+export function formatViolations(
+  violations = requiredArgument('formatViolations(violations)', 'the schemaViolations result'),
+) {
   return violations.map((v) => {
     if (v.kind === 'unknown-column') return `${v.table}.${v.column}: unknown column (${v.rows} rows, e.g. ${v.sample})`;
     if (v.kind === 'option-value')

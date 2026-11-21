@@ -1,11 +1,11 @@
 // Authenticated, loopback-only control of the browser owned by `paqvilo dev`.
 // This deliberately exposes bounded inspections, never arbitrary JavaScript or form actions.
-import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { refreshUrl } from './navigation.mjs';
 import { consoleLocation } from './console-location.mjs';
+import { discoveryOwner, sweepStaleDiscovery, writeOwnedDiscovery } from './agent-discovery.mjs';
 
 const MAX_EVENTS = 500;
 const MAX_BODY = 32 * 1024;
@@ -218,7 +218,7 @@ export async function startAgentServer({
   let stopped = false;
   let operations = 0;
   // Playwright calls with their own deadline (page.screenshot, page.goto) that have started and not settled. close()
-  // waits for these after the HTTP server stops. Calls without a deadline of their own (page reads and viewport
+  // removes the discovery file first and waits for these after the HTTP server stops. Calls without a deadline of their own (page reads and viewport
   // resizes) are not tracked: they end with the page, which the session owns, so close() never waits on a page that
   // does not answer.
   const operationsRunning = new Set();
@@ -229,6 +229,8 @@ export async function startAgentServer({
   };
   let closing;
   let discovery;
+  // Removes the discovery file and gives up its ownership; a no-op until the file is written.
+  let releaseDiscovery = () => {};
   const on = (target, name, handler, local) => {
     target.on(name, handler);
     const remove = () => {
@@ -550,7 +552,9 @@ export async function startAgentServer({
     id,
     session: { ...discovery, token: undefined },
     readiness: { browser: true, watcher: Boolean(runtime.watching), stopping: stopped },
-    debugger: { port: runtime.debugPort ?? null, attached: false },
+    // CDP lists no clients, and target `attached` flags include Paqvilo's own connection, so an external
+    // debugger's presence cannot be reported truthfully: report only the port.
+    debugger: { port: runtime.debugPort ?? null },
   });
   const tabAccess = () => ({
     portalPageCount: pageList().length,
@@ -993,6 +997,15 @@ export async function startAgentServer({
   const close = () =>
     (closing ??= (async () => {
       stopped = true;
+      // The discovery file holds the bearer token. It is removed before anything is awaited, so a process that is
+      // ended while close waits for its server or for a page operation leaves no token behind. A removal failure is
+      // reported once the rest of the close has run.
+      let removalFailure;
+      try {
+        releaseDiscovery();
+      } catch (error) {
+        removalFailure = error;
+      }
       for (const remove of removers) remove();
       pages.clear();
       events.length = 0;
@@ -1008,7 +1021,7 @@ export async function startAgentServer({
         server.closeIdleConnections();
       });
       await Promise.allSettled(operationsRunning);
-      fs.rmSync(discoveryFile, { force: true });
+      if (removalFailure) throw removalFailure;
     })());
   try {
     await new Promise((resolve, reject) => {
@@ -1018,7 +1031,8 @@ export async function startAgentServer({
     discovery = {
       schemaVersion: 1,
       id,
-      pid: process.pid,
+      // The owner of this file: a reader rejects it once that process is gone (agent-discovery.mjs).
+      ...discoveryOwner(),
       startedAt,
       site: cfg.siteName,
       environment: cfg.envName,
@@ -1039,8 +1053,9 @@ export async function startAgentServer({
         formActions: false,
       },
     };
-    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
-    fs.writeFileSync(discoveryFile, JSON.stringify(discovery, null, 2), { flag: 'wx', mode: 0o600 });
+    // A process that was ended without notice could not remove its file: the next start in the state folder does.
+    sweepStaleDiscovery(directory);
+    releaseDiscovery = writeOwnedDiscovery(discoveryFile, discovery);
     on(context, 'close', () => {
       close().catch(() => {});
     });

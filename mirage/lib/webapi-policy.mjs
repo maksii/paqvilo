@@ -204,7 +204,8 @@ function addWebApiLookupAliases(fields, portal, mapping, columnType) {
 }
 
 function webApiPermissionProfiles(portal, store, mapping) {
-  const identity = portal.webApiIdentity ?? store.snapshot().simulator?.identity ?? {},
+  // The simulator section alone: a whole snapshot copied every table to read one identity.
+  const identity = portal.webApiIdentity ?? store.snapshot({ sections: ['simulator'] }).simulator?.identity ?? {},
     roleIds = new Set((identity.roleIds ?? []).map((value) => String(value).replace(/[{}]/g, '').toLowerCase()));
   if (identity.roleSource !== 'memberships')
     for (const role of portal.records ?? [])
@@ -396,6 +397,19 @@ export function webApiPolicy(portal, store, entity) {
   // Every column a query reads must be enabled, including navigation paths,
   // lambda bodies, Dataverse query function PropertyName values and $apply.
   const query = (params, inheritedAliases) => {
+    // The portal Web API documents no predefined queries (Power Pages read operations); the Dataverse savedQuery and
+    // userQuery parameters are refused as an unsupported query option rather than ignored. The platform's answer is not
+    // captured.
+    for (const name of ['savedQuery', 'userQuery'])
+      if (params.has(name))
+        throw new DataError(
+          `The ${name} query option is not supported by the portal Web API.`,
+          400,
+          'UnsupportedQuery',
+          {
+            option: name,
+          },
+        );
     const aliases =
       inheritedAliases ?? Object.fromEntries([...params.entries()].filter(([key]) => key.startsWith('@')));
     for (const field of (params.get('$select') ?? '')
@@ -623,7 +637,11 @@ export function webApiFetchPolicy(portal, store, xml, rootEntity, { structuralJo
   const root = parseFetchXml(xml),
     // Aliases follow the evaluator: explicit alias, else {name}{N} where N is
     // the link's position among all link-entity elements in document order.
-    plan = planFetch(root, { profile: 'webapi', limits: store.querySettings().fetchLimits }),
+    plan = planFetch(root, {
+      profile: 'webapi',
+      limits: store.querySettings().fetchLimits,
+      linkBudgetError: store.observed?.fetchLinkBudgetError,
+    }),
     aliases = new Map(),
     attributeAliases = new Set(),
     nodePolicies = new Map(),

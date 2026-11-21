@@ -12,6 +12,7 @@ import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { createSimulator } from '../server.mjs';
 import { uuidV5 } from '../lib/dataverse-security.mjs';
 import { ownedFixture, makeTemporaryDirectorySync } from '../testing/owned-fixture.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 
 const ORIGIN = 'https://127.0.0.1:9443';
 const TENANT = '7e1a2b3c-4d5e-4f60-8a71-92b3c4d5e6f7';
@@ -241,43 +242,48 @@ const startWithIdentities = async (identities) => {
   return { store, router, endpoints };
 };
 
-test('a settings managed identity is an application user with a managedidentity row; its App Service token reaches WhoAmI and $metadata lists the set', async () => {
-  const { store, router, endpoints } = await startWithIdentities([
-    { clientId: APP_CLIENT, principalId: APP_PRINCIPAL, displayName: 'first', roles: ['System Administrator'] },
-  ]);
-  try {
-    const token = endpoints.handle({
-      method: 'GET',
-      pathname: '/msi/token',
-      searchParams: query({ resource: router.origin, client_id: APP_CLIENT, 'api-version': '2019-08-01' }),
-      headers: { 'x-identity-header': endpoints.env().IDENTITY_HEADER },
-    }).body.access_token;
-    const who = await fetch(`${router.origin}/api/data/v9.2/WhoAmI`, {
-      headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
-    });
-    assert.equal(who.status, 200);
-    assert.equal((await who.json()).UserId, uuidV5(router.organizationId, `systemuser:app:${APP_CLIENT}`));
+// Hang guard only: it drives a runtime, the CLI or child processes through this file's fixtures; on a loaded slow host that is slow, not hung.
+test(
+  'a settings managed identity is an application user with a managedidentity row; its App Service token reaches WhoAmI and $metadata lists the set',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async () => {
+    const { store, router, endpoints } = await startWithIdentities([
+      { clientId: APP_CLIENT, principalId: APP_PRINCIPAL, displayName: 'first', roles: ['System Administrator'] },
+    ]);
+    try {
+      const token = endpoints.handle({
+        method: 'GET',
+        pathname: '/msi/token',
+        searchParams: query({ resource: router.origin, client_id: APP_CLIENT, 'api-version': '2019-08-01' }),
+        headers: { 'x-identity-header': endpoints.env().IDENTITY_HEADER },
+      }).body.access_token;
+      const who = await fetch(`${router.origin}/api/data/v9.2/WhoAmI`, {
+        headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
+      });
+      assert.equal(who.status, 200);
+      assert.equal((await who.json()).UserId, uuidV5(router.organizationId, `systemuser:app:${APP_CLIENT}`));
 
-    const mapping = store.state.mappings.managedidentity;
-    assert.equal(mapping.entitySet, 'managedidentities');
-    assert.equal(mapping.idColumn, 'managedidentityid');
-    assert.equal(mapping.dataverseOnly, true);
-    const [row] = store.state.tables.managedidentity;
-    assert.equal(row.managedidentityid, uuidV5(router.tenantId, `managedidentity:${APP_CLIENT}`));
-    assert.equal(row.applicationid, APP_CLIENT);
-    assert.equal(row.name, 'first');
-    assert.equal(row.tenantid, router.tenantId);
-    assert.equal(row.statecode, 0);
+      const mapping = store.state.mappings.managedidentity;
+      assert.equal(mapping.entitySet, 'managedidentities');
+      assert.equal(mapping.idColumn, 'managedidentityid');
+      assert.equal(mapping.dataverseOnly, true);
+      const [row] = store.state.tables.managedidentity;
+      assert.equal(row.managedidentityid, uuidV5(router.tenantId, `managedidentity:${APP_CLIENT}`));
+      assert.equal(row.applicationid, APP_CLIENT);
+      assert.equal(row.name, 'first');
+      assert.equal(row.tenantid, router.tenantId);
+      assert.equal(row.statecode, 0);
 
-    const metadata = await fetch(`${router.origin}/api/data/v9.2/$metadata`, {
-      headers: { authorization: `Bearer ${token}` },
-    });
-    assert.equal(metadata.status, 200);
-    assert.match(await metadata.text(), /EntitySet Name="managedidentities"/);
-  } finally {
-    await router.close();
-  }
-});
+      const metadata = await fetch(`${router.origin}/api/data/v9.2/$metadata`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      assert.equal(metadata.status, 200);
+      assert.match(await metadata.text(), /EntitySet Name="managedidentities"/);
+    } finally {
+      await router.close();
+    }
+  },
+);
 
 test('seedManagedIdentityRows upserts by clientId and drops rows of identities no longer configured', async () => {
   const store = await new DataStore({ state: emptyState() }).init();

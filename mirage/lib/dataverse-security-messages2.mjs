@@ -20,7 +20,6 @@ import {
   ownerColumns,
   ownershipOf,
   parseAccessMask,
-  privilegeDeniedError,
   revokeAccess,
   teamsOfUser,
   uuidV5,
@@ -184,7 +183,9 @@ export function install(api) {
   const { store } = api;
   const write = (fn) => api.change(() => store.transact(fn, { isolated: true }));
   const need = (c, privilege, entity) => {
-    if (!(api.principals.privileges(c.user).get(privilege) > 0)) throw privilegeDeniedError(c.user, privilege, entity); // NOSONAR: operand can be NaN or undefined, the negated test differs
+    // A missing privilege reads undefined: only a positive depth grants it.
+    const granted = api.principals.privileges(c.user).get(privilege) > 0;
+    if (!granted) throw api.principals.deniedError(c.user, privilege, entity);
   };
   const respond = (c, name, payload) => ({
     status: 200,
@@ -210,7 +211,7 @@ export function install(api) {
   // The System Administrator role check of dataverse-fls.mjs; the privilege name in the refusal is a guess.
   const needSystemAdministrator = (c) => {
     if (!api.principals.roles(c.user).some((r) => r.name === ADMIN_ROLE))
-      throw privilegeDeniedError(c.user, 'prvSystemAdministrator', 'organization');
+      throw api.principals.deniedError(c.user, 'prvSystemAdministrator', 'organization');
   };
   // The System Administrator or System Customizer role gates ResetInheritedAccess. The refusal sentence is a guess.
   const needAdministratorOrCustomizer = (c) => {
@@ -946,4 +947,35 @@ export function install(api) {
       }),
     });
   }
+}
+
+/** Capability record for the capability registry; dataverse-extensions.mjs adds the operations install registered. */
+export function describe() {
+  return {
+    name: 'dataverse-security-messages2',
+    version: 1,
+    kind: 'dataverse-extension',
+    level: 'behaviour',
+    operations: [
+      {
+        name: 'RetrieveAppsWithDelegatedAccessPermissions',
+        level: 'contract',
+        reason: 'No app registry is modelled, so the answer is always empty.',
+      },
+      {
+        name: 'GetConsentLink',
+        level: 'contract',
+        reason: 'The link shape and property values are guesses; no request leaves the simulator.',
+      },
+      {
+        name: 'ConfirmConsentCode',
+        level: 'contract',
+        reason: 'The status value is a guess; the code is never stored.',
+      },
+    ],
+    requires: [],
+    principal: 'caller',
+    stateOwner: 'store',
+    lifecycle: 'per-request',
+  };
 }

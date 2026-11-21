@@ -8,6 +8,12 @@
     <SignAssembly>true</SignAssembly>
     <AssemblyOriginatorKeyFile>PublicDemo.snk</AssemblyOriginatorKeyFile>
     <Deterministic>true</Deterministic>
+    <!-- Reproducible with respect to the commit: no commit hash in the version or PDB, so a new commit alone does not
+         change the assembly bytes that deployment compares. -->
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <EnableSourceControlManagerQueries>false</EnableSourceControlManagerQueries>
+    <!-- Reproducible with respect to the checkout folder: the PDB path the DLL names is mapped to a fixed root. -->
+    <PathMap>$(MSBuildProjectDirectory)=/_/</PathMap>
     <LangVersion>latest</LangVersion>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
   </PropertyGroup>

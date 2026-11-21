@@ -18,15 +18,28 @@ async function stateUnavailable(response) {
   return new Error(`Local runtime state is unavailable (${detail}).`);
 }
 
+/**
+ * The one line every reference tool prints when its --local origin does not answer (a refused connection, or nothing
+ * within `timeout` ms when the request timed out) instead of fetch's "fetch failed". The network error under a fetch
+ * TypeError is the cause, else the fetch error.
+ */
+export function localUnreachable(origin, error, timeout) {
+  const limit = timeout ? timeout + ' ms' : 'the time limit';
+  const within = error?.name === 'TimeoutError' ? ' within ' + limit : '';
+  const verb = within ? 'answered' : 'answers';
+  return new Error(
+    `Nothing ${verb} at the --local origin ${new URL(origin).origin}${within}; start Mirage there or pass the origin it prints.`,
+    { cause: error.cause ?? error },
+  );
+}
+
 /** fetch() for a local state endpoint. Pass the same init as fetch(); a non-OK response throws a status-only error. */
 export async function fetchLocalState(url, init) {
   let response;
   try {
     response = await fetch(url, init);
   } catch (error) {
-    // The network error under a fetch TypeError (refused connection, refused redirect) is the cause, else the fetch error.
-    // eslint-disable-next-line preserve-caught-error -- the cause is the network error that fetch wraps, and callers read it.
-    throw new Error(`Local runtime state request to ${new URL(url).origin} failed.`, { cause: error.cause ?? error });
+    throw localUnreachable(url, error);
   }
   if (!response.ok) throw await stateUnavailable(response);
   return response;

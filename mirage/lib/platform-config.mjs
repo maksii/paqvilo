@@ -1,4 +1,4 @@
-import { validatePlatformOverrides } from './platform-settings.mjs';
+import { validatePlatformOverrides } from './platform-setting-definitions.mjs';
 
 /** Project-supplied organization settings require evidence, unlike local experiments. */
 export function platformConfig(value, label = 'mirage.platform') {

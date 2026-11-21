@@ -549,6 +549,43 @@ test('RetrieveDuplicates formats rows as a normal read: lookups as _x_value, sec
   assert.equal(row.secret ?? null, null);
 });
 
+// @test-kind contract: Paqvilo a standalone organization holds standard tables (account) without a declared mapping; the create check and RetrieveDuplicates must still find them
+test('a standard table held without a mapping is checked on create and answered by RetrieveDuplicates', async () => {
+  const t = await setup();
+  t.store.state.tables.account = [
+    { accountid: ID(10), name: 'Dupe Corp', ownerid: { id: ID(99), logical_name: 'systemuser', name: '' } },
+  ];
+  assert.equal(t.store.state.mappings.account, undefined);
+  t.api.metadataFields = (logical) => (logical === 'account' ? { ownerid: { dataverseType: 'owner' } } : undefined);
+  const id = addRule(t, { conditions: [{ base: 'name' }] });
+  Object.assign(
+    t.rules().find((r) => r.duplicateruleid === id),
+    {
+      baseentityname: 'account',
+      matchingentityname: 'account',
+    },
+  );
+  const account = t.store.resolveMapping('account');
+  const error = errorOf(() =>
+    t.hooks.afterPreValidation({ headers: GATE }, account, { operation: 'create', data: { name: 'Dupe Corp' } }),
+  );
+  assert.ok(isDuplicate(error), `expected the 412 duplicate refusal, got ${error}`);
+  const result = await t.op('RetrieveDuplicates').handle({
+    user: ADMIN,
+    params: {
+      BusinessEntity: { '@odata.type': 'Microsoft.Dynamics.CRM.account', name: 'Dupe Corp' },
+      MatchingEntityName: 'account',
+    },
+    origin: ORIGIN,
+    version: VERSION,
+  });
+  assert.equal(result.status, 200);
+  assert.deepEqual(
+    result.body.value.map((r) => [r.accountid, r._ownerid_value]),
+    [[ID(10), ID(99)]],
+  );
+});
+
 test('same date, same date and time, and the two pick list operators match as documented', async () => {
   const stamp = { dataverseType: 'datetime' };
   const color = {

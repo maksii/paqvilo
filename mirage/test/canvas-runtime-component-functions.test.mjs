@@ -472,3 +472,12 @@ test('nested component function calls share one row-scope budget per top-level e
     (error) => error.code === 'PowerFxLimitExceeded',
   );
 });
+
+test('an unknown canvas action is refused with every action act() answers', async () => {
+  const runtime = componentRuntime();
+  await runtime.start();
+  await assert.rejects(runtime.act({ action: 'tap' }), {
+    message:
+      'Unknown canvas action tap; use select, input, text, add-media, codecomponent-event, codecomponent, media, tick, search, gallery-window, navigate, back, run, evaluate, resize or refresh.',
+  });
+});

@@ -692,7 +692,7 @@ export const PLATFORM_BUNDLES = Object.freeze(
       local: ['platform-chrome-utilities.css'],
       partial: true,
       reason:
-        'Offline-notification visibility is preserved locally; full progressive web app behavior requires captured platform assets and is unqualified.',
+        'Offline-notification visibility is preserved locally; full progressive web app behaviour requires captured platform assets and is unqualified.',
     },
     {
       id: 'pcf-style',

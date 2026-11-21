@@ -1,10 +1,11 @@
 import { isDeepStrictEqual, types } from 'node:util';
 import { pagedRecordsOf, rawRecordOf, recordTablesCreated } from './record-tables.mjs';
+import { untracked } from './state-tracking.mjs';
 const recordVersion = Symbol('record version');
 
 export function hasRecordGraph(value) {
   if (!recordTablesCreated) return false;
-  const pending = [value],
+  const pending = [untracked(value)],
     seen = new WeakSet();
   while (pending.length) {
     const item = pending.pop();
@@ -410,7 +411,7 @@ function enqueueComparisonChildren(item, pending) {
 /** isDeepStrictEqual, except that paged tables compare by their immutable
  * content fingerprint and record facades by their raw JSON value. */
 export function privateRecordEqual(left, right, options) {
-  return new Comparison(left, right, options).run(Infinity);
+  return new Comparison(untracked(left), untracked(right), options).run(Infinity);
 }
 
 /** The same comparison, yielding to the event loop after each `quantum` visited
@@ -421,7 +422,7 @@ export async function privateRecordEqualAsync(
   { quantum = 8192, pause = () => new Promise((resolve) => setImmediate(resolve)), stats, ...options } = {},
 ) {
   if (!Number.isSafeInteger(quantum) || quantum < 1) throw TypeError('Invalid comparison quantum');
-  const comparison = new Comparison(left, right, options);
+  const comparison = new Comparison(untracked(left), untracked(right), options);
   try {
     for (;;) {
       const result = comparison.run(quantum);

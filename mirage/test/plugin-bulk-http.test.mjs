@@ -14,6 +14,7 @@ import { pooledClrLifecycle } from './fixtures/pooled-clr-lifecycle.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 
 const user = '10000000-0000-0000-0000-000000000001';
 const id = '20000000-0000-0000-0000-000000000001';
@@ -1072,9 +1073,10 @@ test('provided-ID implicit CreateMultiple preserves authored identity and shares
   }
 });
 
+// Hang guard only: it compiles and runs an original CLR plug-in through the .NET host; on a loaded slow host that is slow, not hung.
 test(
   'original CLR implicit multiple messages follow actual scalar rank order, phase boundaries and current typed Target identity',
-  { skip: CLR_SKIP },
+  { skip: CLR_SKIP, timeout: SCENARIO_HANG_GUARD_MS },
   async (t) => {
     // The Observer runs on the single message's own frame (native recorder corpus crud/depth), so a parent binding is
     // checked only when no scalar step re-pointed Target.Id (that parent view is the single Update's own).
@@ -1147,7 +1149,7 @@ test(
         scenario.mutate ? 'mutate' : 'stable',
         scenario.seedReplacement ? 'replacement-seed' : 'no-replacement-seed',
       ].join(' ');
-      await t.test(caseId, async (child) => {
+      await t.test(caseId, { timeout: SCENARIO_HANG_GUARD_MS }, async (child) => {
         const { supplied } = scenario;
         const message = scenario.message;
         const registrations = [10, 20, 40].flatMap((stage, index) => [

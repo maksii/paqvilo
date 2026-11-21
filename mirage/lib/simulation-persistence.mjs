@@ -134,6 +134,12 @@ const schemaOf = (state) => ({
   ...Object.fromEntries(metadataKeys.map((key) => [key, state.dataverse?.[key] ?? null])),
   schemaRecords: Object.fromEntries(schemaTables.map((table) => [table, state.tables?.[table] ?? []])),
 });
+// The schema's table mappings and the rest of it hashed apart: a preset's mappings are declared schema, every other
+// schema difference keeps the level's rule.
+const schemaHashes = (state) => {
+  const { mappings, ...rest } = schemaOf(state);
+  return { mappings: hash(mappings), rest: hash(rest) };
+};
 const rowHashes = (state) => new Map(Object.entries(state.tables ?? {}).map(([table, rows]) => [table, hash(rows)]));
 // The table hashes after a transaction that names its written tables (DataStore passes the row
 // transaction's touched tables): unchanged tables keep their baseline hash instead of being rehashed.
@@ -308,7 +314,14 @@ function changedRows(active, sourcePublication, baselineRows, rows) {
 /** Explicit storage adapter used by DataStore before any surface is composed.
  * Its schema policy becomes active once source and platform bootstrap finishes.
  * Direct pack writes and the ignored runtime checkpoint share one transaction. */
-/* NOSONAR */ export async function createSimulationPersistence({ settings, packs = [], stateFile, io = fs } = {}) {
+/* NOSONAR */ export async function createSimulationPersistence({
+  settings,
+  packs = [],
+  stateFile,
+  io = fs,
+  // Receives a WRITER_LOCK_RECLAIMED diagnostic for each lock of an ended writer that is reclaimed.
+  diagnostic,
+} = {}) {
   settings = simulationSettings(settings);
   if (!settings) return null;
   const memory = settings.level === 'dry-run';
@@ -354,6 +367,11 @@ function changedRows(active, sourcePublication, baselineRows, rows) {
     runtimeDigest = null,
     reportCache;
   const sourcePublications = new AsyncLocalStorage();
+  // A data preset applied as a whole (at startup or through /_sim/): its table mappings are declared schema, like a
+  // source's, so they are accepted at every level; any other schema it changes (custom API definitions, metadata) keeps
+  // the level's rule, and its rows are still written to the DATA owners of the tables they change. The store is
+  // { active } and turned off when the application ends, so work it scheduled saves under the normal check.
+  const presetApplications = new AsyncLocalStorage();
   const initialRecords = new Map();
   const authoritativeSchemaRecords = new Set();
   const verifyFiles = async () => {
@@ -368,7 +386,7 @@ function changedRows(active, sourcePublication, baselineRows, rows) {
         );
     }
   };
-  const capture = (state, rows = rowHashes(state), schema = hash(schemaOf(state))) => {
+  const capture = (state, rows = rowHashes(state), schema = schemaHashes(state)) => {
     schemaHash = schema;
     baselineRows = rows;
     reportCache = null;
@@ -395,6 +413,19 @@ function changedRows(active, sourcePublication, baselineRows, rows) {
   };
   return {
     schemaRecordsAuthoritative: (table) => authoritativeSchemaRecords.has(table),
+    /** Whether a declared pack DATA file owns this table: its rows are authoritative at startup, at every level. */
+    dataOwned: (table) => owners.has(table),
+    /** Runs fn (a preset application) with the preset's table mappings accepted as declared schema. */
+    presetApplication: (fn) => {
+      const application = { active: true };
+      return presetApplications.run(application, async () => {
+        try {
+          return await fn();
+        } finally {
+          application.active = false;
+        }
+      });
+    },
     /** Whether a pack DATA file persists this table (simulation/deep): dataverse-storage-routing keeps its small bodies inline. */
     packOwned: (table) => !memory && Boolean(ownerFor(table)),
     recordCapabilities(table) {
@@ -423,7 +454,7 @@ function changedRows(active, sourcePublication, baselineRows, rows) {
       let state = initial;
       if (!memory) {
         await io.mkdir(path.dirname(runtimeFile), { recursive: true });
-        await recoverTransactionalFiles({ journalFile, files: allFiles, io });
+        await recoverTransactionalFiles({ journalFile, files: allFiles, io, onReclaim: diagnostic });
         try {
           state = await readStateFile(runtimeFile);
           runtimeDigest = bytesHash(await io.readFile(runtimeFile));
@@ -477,10 +508,16 @@ function changedRows(active, sourcePublication, baselineRows, rows) {
     async save(state, { tables } = {}) {
       if (blocked) throw fail(blocked, 'PersistenceRecoveryRequired', 500);
       const sourcePublication = sourcePublications.getStore()?.active === true;
-      const currentSchema = hash(schemaOf(state)),
-        schemaChanged = active && !sourcePublication && currentSchema !== schemaHash;
-      assertSchemaWritable(schemaChanged, settings.level, schemaOwner);
+      const presetSchema = presetApplications.getStore()?.active === true;
+      const currentSchema = schemaHashes(state),
+        checked = active && !sourcePublication,
+        restChanged = checked && currentSchema.rest !== schemaHash.rest,
+        schemaDiffers = restChanged || (checked && currentSchema.mappings !== schemaHash.mappings);
+      // A preset's mappings pass at every level; whatever schema differs is written to the schema owner in deep.
+      assertSchemaWritable(presetSchema ? restChanged : schemaDiffers, settings.level, schemaOwner);
+      const schemaChanged = schemaDiffers && settings.level === 'deep' && Boolean(schemaOwner);
       if (memory) {
+        schemaHash = currentSchema;
         reportCache = null;
         return;
       }
@@ -519,6 +556,7 @@ function changedRows(active, sourcePublication, baselineRows, rows) {
           io,
           verify: verifyFiles,
           allowedFiles: allFiles,
+          onReclaim: diagnostic,
         });
         runtimeDigest = updatePublishedFiles(published, runtimeFile, runtimeDigest, descriptors, documents);
         capture(state, rows, currentSchema);

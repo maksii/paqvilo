@@ -1,5 +1,11 @@
+import { requiredArgument } from './required-argument.mjs';
 /** Bounded acceptance collector. Never treats a partial or repeated page as complete. */
-export async function collectFetchXmlPages({ readPage, idColumn, pageSize = 5000, maxPages = 100 }) {
+export async function collectFetchXmlPages(
+  { readPage, idColumn, pageSize = 5000, maxPages = 100 } = requiredArgument(
+    'collectFetchXmlPages(options)',
+    'an options object with readPage and idColumn',
+  ),
+) {
   const records = [],
     pages = [],
     ids = new Set(),

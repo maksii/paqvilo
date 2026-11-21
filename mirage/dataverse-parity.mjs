@@ -4,6 +4,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { parseArgs, isDeepStrictEqual } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { parseFailureMessage } from '../lense/cli-options.mjs';
 
 const credentialHeader =
   /^(authorization|proxy-authorization|cookie|set-cookie|x-ms-token-.*|__requestverificationtoken)$/i;
@@ -23,6 +24,7 @@ const escapePointer = (text) => text.replaceAll('~', '~0').replaceAll('/', '~1')
 const bodyBytes = (response) => Buffer.from(response.bodyBase64 ?? '', 'base64');
 const credentialError = (message) => Object.assign(new Error(message), { code: 'PARITY_CREDENTIAL' });
 const usageError = (message) => Object.assign(new Error(message), { code: 'USAGE' });
+const planError = (message) => Object.assign(new Error(message), { code: 'PLAN' });
 // Errors whose message the operator needs: usage, plan validation, and missing or existing files and folders.
 const SHOWN_ERROR_CODES = new Set(['USAGE', 'PLAN', 'ENOENT', 'EEXIST']);
 
@@ -333,9 +335,9 @@ function parseBatchHttpPart(headers, body, parseHeaders) {
 }
 
 // No implicit retry: an interrupted write has an unknown outcome until reconciled.
-function assertWritesAllowed(plan, allowWrites) {
+function assertWritesAllowed(plan, allowWrites, option = 'allowWrites') {
   if (!allowWrites && plan.cases.some((entry) => !['GET', 'HEAD', 'OPTIONS'].includes(entry.request.method)))
-    throw Object.assign(new Error('Plan contains writes; explicit allowWrites required'), { code: 'PLAN' });
+    throw planError(`Plan contains writes; explicit ${option} required`);
 }
 export async function runSuite(
   input,
@@ -670,7 +672,7 @@ function validateReviewedRules(rules) {
       rule.reference === undefined ||
       rule.actual === undefined
     )
-      throw new Error('Reviewed deltas require caseId, exact path, reference/actual values and reason');
+      throw planError('Reviewed deltas require caseId, exact path, reference/actual values and reason');
 }
 function createDeltaEmitter(report, rules, maxDeltas) {
   return (id, location, expected, got) => {
@@ -858,7 +860,7 @@ export function coverageReport(plan, run, catalogue, requiredFamilies = []) {
     families,
     metadata: { discovered: inventory.length, observed: inventory.length - unrecorded.length, unrecorded },
     limits: [
-      'Finite recorded cases do not establish every possible input, identity, schema, plug-in, concurrency interleaving or future platform behavior.',
+      'Finite recorded cases do not establish every possible input, identity, schema, plug-in, concurrency interleaving or future platform behaviour.',
     ],
   };
 }
@@ -866,6 +868,8 @@ export function coverageReport(plan, run, catalogue, requiredFamilies = []) {
 // Documentation and SDK expectations are a separate oracle from native captures.
 // Only explicit, executable assertions are evaluated; prose is never inferred.
 export function evaluateAssertions(run, checks) {
+  if (!Array.isArray(run?.results)) throw planError('The actual run must be a recorded run.json with a results array');
+  if (!Array.isArray(checks)) throw planError('Assertion checks must be a JSON array');
   const results = [],
     byId = new Map(run.results.map((item) => [item.id, item]));
   const ids = new Set();
@@ -903,7 +907,9 @@ function validateAssertionCheck(check, ids) {
     !['documentation', 'sdk-fixture', 'native'].includes(check.source?.kind) ||
     !check.source.url
   )
-    throw new Error('Assertion checks require unique ids, provenance and executable assertions');
+    throw planError(
+      `Assertion check ${idPattern.test(check.id ?? '') ? check.id : '#' + (ids.size + 1)}: checks require unique ids, a caseId, non-empty assertions and source.kind (documentation, sdk-fixture or native) with source.url`,
+    );
 }
 function canEvaluateAssertions(run, check, entry) {
   return (
@@ -930,7 +936,7 @@ function evaluateOneAssertion(item, entry, run) {
       typeof value === 'string'
         ? value.includes(expected)
         : Array.isArray(value) && value.some((child) => isDeepStrictEqual(child, expected));
-  else throw new Error('Unknown assertion operator');
+  else throw planError('Unknown assertion operator; use exists, absent, equals, type or includes');
   return {
     path: item.path,
     op: item.op,
@@ -963,7 +969,8 @@ function assertionTypeMatches(value, expected) {
 }
 
 const USAGE =
-  'Use catalogue --metadata FILE --out FILE; record/replay --plan FILE --base URL --out DIRECTORY [--reference RUN]; diff --reference RUN --actual RUN --out FILE [--rules FILE] [--plan FILE]; assert --actual FILE --checks FILE --out FILE';
+  'Use catalogue --metadata FILE --out FILE; record/replay --plan FILE --base URL --out DIRECTORY [--reference RUN]; diff --reference RUN --actual RUN --out FILE [--rules FILE] [--plan FILE]; assert --actual FILE --checks FILE --out FILE\n' +
+  'record/replay options: --token-env NAME (bearer token from that environment variable), --allow-remote (an HTTPS --base off loopback), --allow-writes (a plan with writes)';
 
 async function main() {
   const { values, positionals } = parseArgs({
@@ -995,7 +1002,13 @@ async function main() {
   throw usageError(USAGE);
 }
 const readJson = async (file) => JSON.parse(await fs.readFile(file, 'utf8'));
+function requireOptions(values, command, names) {
+  const missing = names.filter((name) => !values[name]);
+  if (missing.length)
+    throw usageError(`${command} requires ${missing.map((name) => '--' + name).join(', ')}. ${USAGE}`);
+}
 async function catalogueCommand(values) {
+  requireOptions(values, 'catalogue', ['metadata', 'out']);
   const catalogue = inspectCsdl(await fs.readFile(values.metadata, 'utf8'));
   await fs.writeFile(values.out, JSON.stringify(catalogue, null, 2), { flag: 'wx' });
   console.log(JSON.stringify({ operations: catalogue.operations.length, entitySets: catalogue.entitySets.length }));
@@ -1009,18 +1022,29 @@ function checkedPlan(input) {
     throw error;
   }
 }
-async function recordCommand(values) {
-  if (!values.plan || !values.base || !values.out)
-    throw usageError('record and replay require --plan, --base and --out');
-  const plan = checkedPlan(await readJson(values.plan));
+// The Web API transport of --base, signed with the token --token-env names; a refused base URL is a usage error.
+function recordTransport(values) {
   const secret = values['token-env'] ? process.env[values['token-env']] : undefined;
-  if (values['token-env'] && !secret) throw new Error('Requested token environment variable is unavailable');
-  const transport = createFetchTransport({
-    baseUrl: values.base,
-    token: secret ? async () => secret : undefined,
-    allowRemote: values['allow-remote'],
-  });
-  assertWritesAllowed(plan, values['allow-writes']);
+  if (values['token-env'] && !secret) throw usageError('--token-env names an environment variable that is not set');
+  try {
+    return createFetchTransport({
+      baseUrl: values.base,
+      token: secret ? async () => secret : undefined,
+      allowRemote: values['allow-remote'],
+    });
+  } catch (error) {
+    throw usageError(
+      error.message.includes('allowRemote')
+        ? '--base must be a loopback URL, or an HTTPS URL together with --allow-remote, without credentials, query or fragment'
+        : '--base must be an absolute URL ending with /api/data/v9.x/',
+    );
+  }
+}
+async function recordCommand(values) {
+  requireOptions(values, 'record and replay', ['plan', 'base', 'out']);
+  const plan = checkedPlan(await readJson(values.plan));
+  const transport = recordTransport(values);
+  assertWritesAllowed(plan, values['allow-writes'], '--allow-writes');
   // The evidence folder is created only once the plan and the write permission are accepted.
   const writer = await createRunWriter(values.out);
   let run;
@@ -1053,12 +1077,14 @@ async function recordCommand(values) {
   }
 }
 async function assertCommand(values) {
+  requireOptions(values, 'assert', ['actual', 'checks', 'out']);
   const report = evaluateAssertions(await readJson(values.actual), await readJson(values.checks));
   await fs.writeFile(values.out, JSON.stringify(report, null, 2), { flag: 'wx' });
   console.log(JSON.stringify({ passed: report.passed, failed: report.failed, unrecorded: report.unrecorded }));
   if (report.failed || report.unrecorded) process.exitCode = 1;
 }
 async function diffCommand(values) {
+  requireOptions(values, 'diff', ['reference', 'actual', 'out']);
   const comparison = compareRuns(await readJson(values.reference), await readJson(values.actual), {
     rules: values.rules ? await readJson(values.rules) : [],
     ...(values.plan ? { plan: await readJson(values.plan) } : {}),
@@ -1073,12 +1099,15 @@ async function diffCommand(values) {
   );
   if (!comparison.exactMatch) process.exitCode = 1;
 }
+function operatorMessage(error) {
+  if (error.code === 'EEXIST')
+    return `${error.path} already exists; evidence is never overwritten, so choose a new --out path or remove the old one.`;
+  if (SHOWN_ERROR_CODES.has(error.code)) return error.message;
+  if (error.code?.startsWith('ERR_PARSE_ARGS_')) return parseFailureMessage(error);
+  return 'Dataverse parity command failed; inspect private journal and arguments. No automatic retry was attempted.';
+}
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))
   /* NOSONAR: module-level promise chain must not block evaluation */ main().catch((error) => {
-    console.error(
-      SHOWN_ERROR_CODES.has(error.code)
-        ? error.message
-        : 'Dataverse parity command failed; inspect private journal and arguments. No automatic retry was attempted.',
-    );
+    console.error(operatorMessage(error));
     process.exitCode = 1;
   });

@@ -17,7 +17,8 @@ import fs from 'node:fs/promises';
 import { platformSettingEntries } from './lib/platform-settings.mjs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseToolArgs } from './tool-options.mjs';
+import { assertToolPaths, parseToolArgs } from './tool-options.mjs';
+import { mirageToolHelp } from './tool-registry.mjs';
 import { importPortal, portalField as field } from './lib/importer.mjs';
 import { initialState } from './lib/bootstrap.mjs';
 import { scanSolutionSources, buildSolutionSchema, tableFields } from './lib/solution-schema.mjs';
@@ -288,11 +289,12 @@ export async function resolveReportInputs(args) {
     siteName = cfg.siteName;
     configFile = cfg.configFile;
   } else if (args.site) {
-    // --source with a catalogued --site: the site's mirage settings still apply.
+    // --source with a catalogued --site: the site's mirage settings still apply; --source replaces only its source.
     const { loadConfig } = await import('../lense/config.mjs');
     const cfg = await loadConfig({
       site: args.site,
       env: args.env,
+      source: args.source,
       ...(args.repo ? { repo: args.repo } : {}),
       ...(args.config ? { config: args.config } : {}),
     });
@@ -606,13 +608,12 @@ if (isMain) {
   try {
     const args = parseToolArgs('bootstrap-report', process.argv.slice(2));
     if (args.help) {
-      console.log(
-        'node mirage/bootstrap-report.mjs (--site S --env E [--config FILE] [--repo DIR] | --source PATH | --project FILE [--portal ID]) [--solution-root PATH ...] [--solution-order derived|explicit] [--json] [--output FILE] [--no-cache] [--all-fields]',
-      );
+      console.log(mirageToolHelp('bootstrap-report').trimEnd());
       process.exit(0);
     }
     if (args.project && (args.source || args['solution-root']?.length))
       throw new Error('--project supplies the portal source and solution roots.');
+    assertToolPaths('bootstrap-report', args);
     const inputs = await resolveReportInputs(args);
     if (args.output)
       await assertReportOutput(args.output, {

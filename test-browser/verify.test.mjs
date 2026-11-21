@@ -12,10 +12,12 @@ import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 import verify, { diagnosticSnapshot } from '../lense/commands/verify.mjs';
+import { OverlaySession } from '../lense/session.mjs';
 import { editSource } from '../lense/source-edit.mjs';
 import { createFixture, HOME_ID, SITE } from '../test/fixture.mjs';
 import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
 import { syntheticEvidencePath } from '../scripts/collect-evidence.mjs';
+import { finalizeVerifyFixtureEvidence } from './helpers/verify-evidence.mjs';
 
 const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
 const PAGE_JS = 'window.fixturePage = "original";\n';
@@ -36,6 +38,7 @@ const CSS_URL = '/theme space.css';
 const IMAGE_URL = '/Badge mark.svg';
 const CONFIGURATION_SNIPPET = 'a11b2222-c333-4444-5555-666666666666';
 const JS_URL = '/scripts/app.js';
+const HELD_JS_URL = '/scripts/held.js';
 const escapeXml = (value) => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 function write(dir, rel, content) {
@@ -55,7 +58,17 @@ function component(dir, id, type, name, content, attachment) {
   if (attachment) write(dir, `powerpagecomponents/${id}/filecontent/${attachment.name}`, attachment.text);
 }
 
-async function fixture(t, layout, uncommittedInline = false, startHeadMarkup = '') {
+// heldScript, when given, adds a parser-blocking script in front of the page's failing script. It is called for each
+// request of that script and the answer waits for the promise it returns, so the document stays in parsing until then.
+// documentGate, when given, is called with each request of the start page and its answer waits for the same.
+async function fixture(
+  t,
+  layout,
+  uncommittedInline = false,
+  startHeadMarkup = '',
+  heldScript = null,
+  documentGate = null,
+) {
   const work = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-verify-acceptance-'));
   const classic = layout === 'classic' ? createFixture() : null;
   const sourceDir = classic?.dir ?? path.join(work, 'enhanced-source');
@@ -186,7 +199,7 @@ ${TEMPLATE}<p class="fixture-page fixture-web">Temporary content only</p>
 </div>
 <img src="${encodeURI(IMAGE_URL)}" alt="Fixture badge">
 <script>${FORM_JS}</script>${classic ? `<script>${ADVANCED_JS}</script><script>${LIST_JS}</script>\n` : ''}<footer>${SNIPPET}</footer>
-<script>throw new Error("fixture-existing-runtime-error");</script>
+${heldScript ? `<script src="${HELD_JS_URL}"></script>` : ''}<script>throw new Error("fixture-existing-runtime-error");</script>
 </body></html>`;
   const requests = [];
   const server = http.createServer((request, response) => {
@@ -201,8 +214,19 @@ ${TEMPLATE}<p class="fixture-page fixture-web">Temporary content only</p>
       [CSS_URL]: ['text/css', WEB_CSS],
       [IMAGE_URL]: ['image/svg+xml', IMAGE],
     };
+    if (heldScript && pathname === HELD_JS_URL) {
+      void Promise.resolve(heldScript()).then(() =>
+        response.writeHead(200, { 'content-type': 'application/javascript', 'cache-control': 'no-store' }).end(''),
+      );
+      return;
+    }
     const content = assets[pathname] ?? (pathname === '/' ? ['text/html; charset=utf-8', html] : null);
-    if (content) response.writeHead(200, { 'content-type': content[0], 'cache-control': 'no-store' }).end(content[1]);
+    if (content && pathname === '/' && documentGate) {
+      void Promise.resolve(documentGate(request)).then(() =>
+        response.writeHead(200, { 'content-type': content[0], 'cache-control': 'no-store' }).end(content[1]),
+      );
+    } else if (content)
+      response.writeHead(200, { 'content-type': content[0], 'cache-control': 'no-store' }).end(content[1]);
     else response.writeHead(404).end('fixture only');
   });
   server.on('connect', (_request, socket) => {
@@ -213,13 +237,26 @@ ${TEMPLATE}<p class="fixture-page fixture-web">Temporary content only</p>
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   ownedFixture(t).add(async () => {
-    server.closeAllConnections();
-    await new Promise((resolve) => server.close(resolve));
-    if (classic) {
-      fs.unlinkSync(path.join(sourceDir, 'linked-outside'));
-      classic.cleanup();
+    // Fixture teardown also runs after a failed test, before the lab can inspect its temporary directory.
+    let published = false;
+    try {
+      const evidence = finalizeVerifyFixtureEvidence(
+        {
+          fixtureRoot: work,
+          outputRoot: fileURLToPath(new URL('../.paqvilo/', import.meta.url)),
+        },
+        t.signal,
+      );
+      published = evidence.canRemove;
+    } finally {
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+      if (classic) {
+        fs.unlinkSync(path.join(sourceDir, 'linked-outside'));
+        classic.cleanup();
+      }
+      if (published) fs.rmSync(work, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES });
     }
-    fs.rmSync(work, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES });
   });
   return {
     work,
@@ -417,13 +454,24 @@ for (const layout of ['classic', 'enhanced'])
 
 test('verify reads the displayed document when the start page reloads itself after its first document', async (t) => {
   const reloadOnce = `<script>addEventListener('load', () => { if (!sessionStorage.getItem('reloaded')) { sessionStorage.setItem('reloaded', '1'); location.reload(); } });</script>`;
-  const fx = await fixture(t, 'classic', false, reloadOnce);
+  const secondRequested = Promise.withResolvers();
+  const secondResponse = Promise.withResolvers();
+  let documentRequests = 0;
+  let replacementReleased = false;
+  let replacementWaits = 0;
+  const fx = await fixture(t, 'classic', false, reloadOnce, null, () => {
+    documentRequests++;
+    if (documentRequests === 2) {
+      secondRequested.resolve();
+      return secondResponse.promise;
+    }
+  });
   fx.cfg.sourceDir = path.join(fx.work, 'source-root-junction');
   fs.symlinkSync(fx.sourceDir, fx.cfg.sourceDir, process.platform === 'win32' ? 'junction' : 'dir');
   const launch = chromium.launchPersistentContext;
   chromium.launchPersistentContext = async function (profileDir, options) {
     assertCopyIsolation(path.dirname(profileDir));
-    return launch.call(this, profileDir, {
+    const context = await launch.call(this, profileDir, {
       ...options,
       proxy: { server: fx.cfg.origin, bypass: '127.0.0.1,localhost' },
       args: [
@@ -435,6 +483,25 @@ test('verify reads the displayed document when the start page reloads itself aft
         '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost',
       ],
     });
+    const page = context.pages()[0];
+    const goto = page.goto.bind(page);
+    const load = page.waitForLoadState.bind(page);
+    let initialGoto = true;
+    let initialLoad = true;
+    page.goto = (...args) => {
+      if (!initialGoto && !replacementReleased) throw new Error('verify replaced a pending observed navigation');
+      initialGoto = false;
+      return goto(...args);
+    };
+    page.waitForLoadState = async (...args) => {
+      if (initialLoad && args[0] === 'load') {
+        initialLoad = false;
+        await secondRequested.promise;
+        return;
+      }
+      return load(...args);
+    };
+    return context;
   };
   const output = [];
   const log = console.log;
@@ -443,13 +510,27 @@ test('verify reads the displayed document when the start page reloads itself aft
   console.error = (...values) => output.push(values.join(' '));
   let result;
   try {
-    result = await verify(fx.cfg, { strict: true });
+    result = await verify(
+      fx.cfg,
+      { strict: true },
+      {
+        onPhase: (phase) => {
+          if (phase === 'start-page-document-wait') {
+            replacementWaits++;
+            replacementReleased = true;
+            secondResponse.resolve();
+          }
+        },
+      },
+    );
   } finally {
+    secondResponse.resolve();
     chromium.launchPersistentContext = launch;
     console.log = log;
     console.error = logError;
   }
   const { report } = reportFor(fx.cfg);
+  assert.equal(replacementWaits, 1, 'verification waits for the already requested replacement document');
   assert.doesNotMatch(output.join('\n'), /Response body is not available/);
   assert.doesNotMatch(String(report.error ?? ''), /Response body is not available/);
   assert.ok(
@@ -608,4 +689,275 @@ test('verify writes failure evidence and removes a partial copy when copying sou
   assert.match(reportFor(fx.cfg).report.error, /deliberate copy failure/);
   assert.equal(fs.existsSync(temporaryWork), false);
   assert.equal(fx.requests.length, 0);
+});
+
+test('verify reads the after-edit diagnostics once the document reloaded for the last edit has loaded', async (t) => {
+  let temporaryWork, release;
+  const loadAwaited = new Promise((resolve) => {
+    release = resolve;
+  });
+  // The last edit verify saves is the second marker in the web file script. A document requested after it stays in
+  // parsing, in front of its failing script, until verify reports that it waits for the document to load.
+  const lastEditSaved = () =>
+    Boolean(temporaryWork) &&
+    fs.readFileSync(path.join(temporaryWork, 'source/web-files/app.js'), 'utf8').split('__paqviloVerifyJs=').length ===
+      3;
+  const fx = await fixture(t, 'classic', false, '', () => (lastEditSaved() ? loadAwaited : null));
+  ownedFixture(t).add(async () => {
+    release();
+  });
+  fx.cfg.sourceDir = path.join(fx.work, 'source-root-junction');
+  fs.symlinkSync(fx.sourceDir, fx.cfg.sourceDir, process.platform === 'win32' ? 'junction' : 'dir');
+  const launch = chromium.launchPersistentContext;
+  chromium.launchPersistentContext = async function (profileDir, options) {
+    temporaryWork = path.dirname(profileDir);
+    return launch.call(this, profileDir, {
+      ...options,
+      proxy: { server: fx.cfg.origin, bypass: '127.0.0.1,localhost' },
+      args: [
+        ...options.args,
+        '--disable-background-networking',
+        '--disable-component-update',
+        '--disable-sync',
+        '--disable-domain-reliability',
+        '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost',
+      ],
+    });
+  };
+  const phases = [];
+  const log = console.log;
+  console.log = () => {};
+  try {
+    await verify(
+      fx.cfg,
+      {},
+      {
+        onPhase: (phase) => {
+          phases.push(phase);
+          if (phase === 'after-edits-load') release();
+        },
+      },
+    );
+  } finally {
+    chromium.launchPersistentContext = launch;
+    console.log = log;
+  }
+  const { report } = reportFor(fx.cfg);
+  assert.deepEqual(phases, ['inline-script-edits', 'edits-saved', 'after-edits-load']);
+  assert.equal(
+    fx.requests.filter((request) => request.pathname === HELD_JS_URL).length >= 2,
+    true,
+    'the page was reloaded for the edits',
+  );
+  assert.equal(report.checks.find((check) => check.name === 'second JS edit reloads the page and runs')?.ok, true);
+  assert.ok(
+    report.diagnostics.afterEdits.problems.some(
+      (problem) => problem.type === 'error' && problem.text === 'fixture-existing-runtime-error',
+    ),
+    'the error of the reloaded document is in the after-edit diagnostics',
+  );
+});
+
+test('verify waits for the recorded inline replacement when the edited script already ran from disk', async (t) => {
+  // With source maps an unchanged inline script is served from the file on disk. The watcher's reload for the first
+  // edits is held until the inline script edits are saved, so it runs the edited scripts before their sources were
+  // refreshed. Every later reload is held until the run has read the page custom JS marker once, so the reload that
+  // records the replacements cannot start before that read.
+  const firstReload = Promise.withResolvers();
+  const editsSaved = Promise.withResolvers();
+  const markerRead = Promise.withResolvers();
+  let markerBeforeReplacement = null;
+  let armed = false;
+  let reloads = 0;
+  ownedFixture(t).add(async () => {
+    firstReload.resolve();
+    editsSaved.resolve();
+    markerRead.resolve();
+  });
+  const fx = await fixture(t, 'classic');
+  const launch = chromium.launchPersistentContext;
+  chromium.launchPersistentContext = async function (profileDir, options) {
+    const context = await launch.call(this, profileDir, {
+      ...options,
+      proxy: { server: fx.cfg.origin, bypass: '127.0.0.1,localhost' },
+      args: [
+        ...options.args,
+        '--disable-background-networking',
+        '--disable-component-update',
+        '--disable-sync',
+        '--disable-domain-reliability',
+        '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost',
+      ],
+    });
+    const page = context.pages()[0];
+    const goto = page.goto.bind(page);
+    const evaluate = page.evaluate.bind(page);
+    // the watcher reloads with waitUntil 'commit'; verify's own start page navigation waits for the DOM
+    page.goto = async (url, options) => {
+      if (armed && options?.waitUntil === 'commit') {
+        reloads++;
+        if (reloads === 1) {
+          firstReload.resolve();
+          await editsSaved.promise;
+        } else await markerRead.promise;
+      }
+      return goto(url, options);
+    };
+    page.evaluate = async (fn, ...rest) => {
+      const result = await evaluate(fn, ...rest);
+      if (markerBeforeReplacement === null && String(fn).includes('__paqviloVerifyInlineJs')) {
+        markerBeforeReplacement = result;
+        markerRead.resolve();
+      }
+      return result;
+    };
+    return context;
+  };
+  const log = console.log;
+  console.log = () => {};
+  try {
+    await verify(
+      fx.cfg,
+      {},
+      {
+        onPhase: (phase) => {
+          if (phase === 'edits-saved') editsSaved.resolve();
+          if (phase !== 'inline-script-edits') return undefined;
+          armed = true;
+          return firstReload.promise;
+        },
+      },
+    );
+  } finally {
+    chromium.launchPersistentContext = launch;
+    console.log = log;
+  }
+  const { report } = reportFor(fx.cfg);
+  assert.equal(markerBeforeReplacement, true, 'the edited page script ran before its replacement was recorded');
+  assert.ok(reloads >= 2, 'the inline script edits were applied by a later reload');
+  for (const prefix of ['page custom JS', 'basic-form-js', 'advanced-form-step-js', 'list-js']) {
+    const check = report.checks.find((entry) => entry.name.startsWith(prefix));
+    assert.ok(check, `missing coverage: ${prefix}`);
+    assert.deepEqual({ ok: check.ok, detail: check.detail }, { ok: true, detail: 'replaced inline block' }, prefix);
+  }
+});
+
+// @test-kind contract: verify reads the online page only after the watcher has applied every save it made.
+test('verify asks whether the page is still online only after the refresh for its later saves has reloaded it', async (t) => {
+  // An enhanced component XML save reloads the whole model from disk. The watcher's first refresh is held until every
+  // edit is saved, so its reload shows all of them. The later saves then wait in a second refresh, which is held until
+  // the content snippet check, the last edit check, has passed. The online check's request of the page is answered
+  // only once the reload of that second refresh has committed, so a run that sends it earlier loses its page.
+  const homeRefresh = Promise.withResolvers();
+  const editsSaved = Promise.withResolvers();
+  const snippetChecked = Promise.withResolvers();
+  const laterReloadCommitted = Promise.withResolvers();
+  const stage = { armed: false, first: 'waiting', second: 'waiting' };
+  let laterReloads = 0;
+  let onlineRequests = 0;
+  let onlineRequestsBeforeCommit = 0;
+  ownedFixture(t).add(async () => {
+    homeRefresh.resolve();
+    editsSaved.resolve();
+    snippetChecked.resolve();
+    laterReloadCommitted.resolve();
+  });
+  const fx = await fixture(t, 'enhanced', false, '', null, (request) => {
+    // a document navigation accepts HTML first; the online check's fetch from the page accepts anything
+    if (/^text\/html/.test(request.headers.accept ?? '') || stage.second === 'waiting') return null;
+    onlineRequests++;
+    if (stage.committed !== true) onlineRequestsBeforeCommit++;
+    return laterReloadCommitted.promise;
+  });
+  const refreshAsync = OverlaySession.prototype.refreshAsync;
+  const homeXml = path.join('powerpagecomponents', 'home', 'powerpagecomponent.xml');
+  OverlaySession.prototype.refreshAsync = async function (files, options) {
+    if (stage.armed && stage.first === 'waiting' && files.some((file) => path.resolve(file).endsWith(homeXml))) {
+      stage.first = 'held';
+      homeRefresh.resolve();
+      await editsSaved.promise;
+      try {
+        return await refreshAsync.call(this, files, options);
+      } finally {
+        stage.first = 'applied';
+      }
+    }
+    if (stage.first === 'applied' && stage.second === 'waiting') {
+      stage.second = 'held';
+      await snippetChecked.promise;
+      stage.second = 'released';
+    }
+    return refreshAsync.call(this, files, options);
+  };
+  const launch = chromium.launchPersistentContext;
+  chromium.launchPersistentContext = async function (profileDir, options) {
+    const context = await launch.call(this, profileDir, {
+      ...options,
+      proxy: { server: fx.cfg.origin, bypass: '127.0.0.1,localhost' },
+      args: [
+        ...options.args,
+        '--disable-background-networking',
+        '--disable-component-update',
+        '--disable-sync',
+        '--disable-domain-reliability',
+        '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost',
+      ],
+    });
+    const page = context.pages()[0];
+    const goto = page.goto.bind(page);
+    // the watcher reloads with waitUntil 'commit' and returns once the new document has committed
+    page.goto = async (url, options) => {
+      const later = options?.waitUntil === 'commit' && stage.second === 'released';
+      const response = await goto(url, options);
+      if (later) {
+        laterReloads++;
+        stage.committed = true;
+        laterReloadCommitted.resolve();
+      }
+      return response;
+    };
+    return context;
+  };
+  const output = [];
+  const log = console.log;
+  const logError = console.error;
+  const capture = (...values) => {
+    const line = values.join(' ');
+    output.push(line);
+    if (/^\s*PASS\s+content snippet\b/.test(line)) snippetChecked.resolve();
+  };
+  console.log = capture;
+  console.error = capture;
+  let result;
+  try {
+    result = await verify(
+      fx.cfg,
+      {},
+      {
+        onPhase: (phase) => {
+          if (phase === 'edits-saved') editsSaved.resolve();
+          if (phase !== 'inline-script-edits') return undefined;
+          stage.armed = true;
+          return homeRefresh.promise;
+        },
+      },
+    );
+  } finally {
+    OverlaySession.prototype.refreshAsync = refreshAsync;
+    chromium.launchPersistentContext = launch;
+    console.log = log;
+    console.error = logError;
+  }
+  const { report } = reportFor(fx.cfg);
+  assert.equal(stage.first, 'applied', 'the first refresh read the component sources after every edit was saved');
+  assert.equal(stage.second, 'released', 'the later saves waited in a second refresh until the last edit check');
+  assert.ok(laterReloads >= 1, 'the second refresh reloaded the page');
+  assert.equal(onlineRequests, 1, 'the online check asked for the page once');
+  assert.equal(onlineRequestsBeforeCommit, 0, 'the online check asked for the page after the later reload committed');
+  assert.equal(report.error, undefined);
+  assert.equal(result, 0);
+  assert.equal(
+    report.checks.find((check) => check.name === 'the rest of the page still comes from the online site')?.ok,
+    true,
+  );
 });

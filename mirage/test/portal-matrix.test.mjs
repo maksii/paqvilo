@@ -19,6 +19,8 @@ import {
   portalMatrix,
 } from '../portal-matrix.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { renderSweep } from '../render-sweep.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 
 async function tree(t, files) {
   const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'portal-matrix-'));
@@ -518,7 +520,9 @@ test('problems and Markdown name unexplained imports, failed requests and failed
       import: { ...portal.import, website: { name: 'path\\|<img>[link](x)`' } },
     })),
   });
-  assert.ok(unsafe.includes('path&#92;&#124;&#60;img&#62;&#91;link&#93;(x)&#96;'));
+  // Markdown backslash escapes, readable in the terminal, not HTML entities.
+  assert.ok(unsafe.includes(String.raw`path\\\|\<img\>\[link\](x)` + '\\`'), unsafe);
+  assert.doesNotMatch(unsafe, /&#\d+;/);
 });
 
 /** Minimal unpacked solution: complete account and contact definitions, so the scaffold can create persona contacts. */
@@ -555,7 +559,8 @@ function solutionTree() {
   };
 }
 
-test('matrix runs every stage for a two-portal project and checks multi-portal isolation', async (t) => {
+/** The two-portal project the matrix tests run: a standard and an enhanced export over one Solution. */
+async function matrixProject(t) {
   const root = await tree(t, {
     ...Object.fromEntries(
       Object.entries(standardExport).map(([name, content]) => [`portals/standard/${name}`, content]),
@@ -578,38 +583,163 @@ test('matrix runs every stage for a two-portal project and checks multi-portal i
       '',
     ].join('\n'),
   });
-  const out = path.join(root, 'matrix');
-  const matrix = await portalMatrix({ project: path.join(root, 'mirage.project.yml'), out, log: () => {} });
+  return { project: path.join(root, 'mirage.project.yml'), out: path.join(root, 'matrix') };
+}
+
+const assertFiles = async (out, files) => {
+  for (const file of files) assert.ok((await fs.stat(path.join(out, file))).isFile(), file);
+};
+
+/** Every portal stage of one portal. Each portal runs in a test of its own: the stages start a dozen runtimes. */
+async function portalStages(t, id) {
+  const { project, out } = await matrixProject(t);
+  const matrix = await portalMatrix({ project, out, portals: [id], skip: ['serve'], log: () => {} });
   assert.deepEqual(
     matrix.portals.map((portal) => portal.id),
-    ['std', 'enh'],
+    [id],
   );
-  assert.deepEqual(matrix.stages, ['import', 'bootstrap', 'liquid', 'webapi', 'sweep', 'scaffold', 'runtime', 'serve']);
+  assert.deepEqual(matrix.stages, ['import', 'bootstrap', 'liquid', 'webapi', 'sweep', 'scaffold', 'runtime']);
   assert.deepEqual(
     [matrix.personas, matrix.scaffoldPersonas, matrix.scaffoldProfile],
     [['anonymous'], ['anonymous', 'all-roles'], 'smoke'],
   );
+  assert.equal(matrix.serve, undefined);
+  const [portal] = matrix.portals;
+  assert.deepEqual(portal.errors, [], `${portal.id}: ${JSON.stringify(portal.errors)}`);
+  assert.equal(portal.origin, 'https://reference.example.test');
+  assert.ok(portal.import.comparison.rows.length > 20);
+  assert.equal(portal.bootstrap.layers, 1);
+  assert.deepEqual(
+    portal.sweep.runs.map((run) => run.persona),
+    ['anonymous'],
+  );
+  assert.deepEqual(
+    portal.scaffold.runs.map((run) => run.persona),
+    ['scaffold anonymous', 'scaffold all-roles'],
+  );
+  assert.ok(portal.scaffold.personas >= 1, JSON.stringify(portal.scaffold));
+  assert.deepEqual(portal.scaffold.coverage.roles, ['Authenticated Users']);
+  assert.ok(portal.scaffold.startMs > 0);
+  assert.ok(portal.runtime.coldStartMs > 0 && portal.runtime.warmStartMs > 0);
+  assert.ok(portal.runtime.stateBytesAfterStart > 0);
+  assert.equal(portal.runtime.admin, 200);
+  assert.equal(portal.runtime.webApiProbe.tables, 1);
+  assert.equal(portal.runtime.webApiProbeAllRoles, undefined);
+  await assertFiles(out, ['matrix.json', 'matrix.md', `${id}/sweep.json`, `${id}/scaffold.json`, `${id}/runtime.json`]);
+  assert.match(await fs.readFile(path.join(out, 'matrix.md'), 'utf8'), /## Scaffold data/);
+  return { portal, out };
+}
+
+// Hang guard only: it drives a runtime, the CLI or child processes through this file's fixtures; on a loaded slow host that is slow, not hung.
+test(
+  'matrix runs every portal stage for the standard portal of a two-portal project',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const { portal: standard, out } = await portalStages(t, 'std');
+    assert.equal(standard.import.format, 'standard');
+    // Contact read is granted to Authenticated Users only: anonymous 403, the signed-in coverage contact 200.
+    assert.equal(standard.runtime.webApiProbe.results[0].status, 403);
+    assert.equal(standard.scaffold.webApiProbe.results[0].status, 403);
+    assert.equal(standard.scaffold.webApiProbeCoverage.results[0].status, 200);
+    // The restricted page sends anonymous visitors to sign-in and renders for the signed-in coverage contact.
+    const fresh = JSON.parse(await fs.readFile(path.join(out, 'std', 'sweep.json'), 'utf8')).runs;
+    assert.equal(fresh[0].results.find((result) => result.url === '/work/').status, 302);
+    const scaffolded = JSON.parse(await fs.readFile(path.join(out, 'std', 'scaffold.json'), 'utf8')).runs;
+    const work = (persona) =>
+      scaffolded.find((run) => run.persona === persona).results.find((result) => result.url === '/work/').status;
+    assert.equal(work('scaffold anonymous'), 302);
+    assert.equal(work('scaffold all-roles'), 200);
+    assert.equal(standard.scaffold.runs[1].identity.authenticated, true);
+  },
+);
+
+/** A catalogue site over the standard export whose startup preset (empty-local) has the given presetMode. */
+async function presetSite(t, presetMode) {
+  const root = await tree(t, {
+    ...Object.fromEntries(Object.entries(standardExport).map(([name, content]) => [`portal/${name}`, content])),
+    ...solutionTree(),
+    'paqvilo.config.yml': [
+      'sourceRoot: .',
+      'defaultSite: site',
+      'sites:',
+      '  site:',
+      '    source: portal',
+      '    defaultEnv: local',
+      '    environments: { local: http://127.0.0.1:8787 }',
+      `    mirage: { solutionRoots: [./solutions/core], preset: empty-local, presetMode: ${presetMode} }`,
+      '',
+    ].join('\n'),
+  });
+  return { config: path.join(root, 'paqvilo.config.yml'), out: path.join(root, 'matrix') };
+}
+
+// @test-kind contract: the default scaffold personas must sign in on a site whose startup preset keeps an existing state
+test('scaffold all-roles signs in the coverage contact on a site with a bootstrap startup preset', async (t) => {
+  const { config, out } = await presetSite(t, 'bootstrap');
+  const matrix = await portalMatrix({ config, sites: ['site'], out, only: ['scaffold'], log: () => {} });
+  assert.deepEqual(matrix.problems, []);
+  const [portal] = matrix.portals;
+  assert.deepEqual(
+    portal.scaffold.runs.map((run) => run.persona),
+    ['scaffold anonymous', 'scaffold all-roles'],
+  );
+  assert.equal(portal.scaffold.runs[1].identity.authenticated, true);
+  assert.deepEqual(portal.scaffold.runs[1].identity.roles, ['Authenticated Users']);
+});
+
+// @test-kind contract: a scaffold persona that cannot sign in names the persona, the reason and how to choose another
+test('a scaffold persona whose contact a startup preset removes names the persona, the cause and the way out', async (t) => {
+  const { config, out } = await presetSite(t, 'always');
+  const matrix = await portalMatrix({ config, sites: ['site'], out, only: ['scaffold'], log: () => {} });
+  const [problem] = matrix.problems;
+  assert.equal(problem?.stage, 'scaffold', JSON.stringify(matrix.problems));
+  assert.match(
+    problem.problem,
+    /^stage failed: scaffold persona 'all-roles' cannot sign in: coverage contact [0-9a-f-]{36} is not an active local contact/,
+  );
+  assert.match(problem.problem, /presetMode always replaces the scaffolded rows\)\./);
+  assert.match(problem.problem, /Set the site's presetMode to bootstrap, or pass --scaffold-personas anonymous\.$/);
+});
+
+// @test-kind contract: render-sweep's configured persona names the contact that cannot sign in and the alternatives
+test('render-sweep configured persona with an unknown contact names it and the personas to use instead', async (t) => {
+  const { config } = await presetSite(t, 'bootstrap');
+  const state = path.join(path.dirname(config), 'state.json');
+  const contactId = '0f1a2b3c-0000-4000-8000-0000000000ff';
+  await fs.writeFile(
+    state,
+    JSON.stringify({ simulator: { identity: { id: contactId, contactId, roleSource: 'memberships', roles: [] } } }),
+  );
+  await assert.rejects(
+    renderSweep({ config, site: 'site', solutionRoots: [], persona: 'configured', state, limit: 1 }),
+    (error) =>
+      error.code === 'PERSONA_CONTACT_UNAVAILABLE' &&
+      error.message ===
+        `Persona 'configured' cannot sign in: the state's configured contact ${contactId} is not an active local ` +
+          'contact. Select an active contact as the default persona in /_sim/ (Personas), or use --persona ' +
+          'authenticated or all-roles.',
+  );
+});
+
+test('matrix runs every portal stage for the enhanced portal of a two-portal project', async (t) => {
+  const { portal: enhanced } = await portalStages(t, 'enh');
+  assert.equal(enhanced.import.format, 'enhanced');
+});
+
+test('matrix serves a two-portal project after its source stages and checks multi-portal isolation', async (t) => {
+  const { project, out } = await matrixProject(t);
+  const matrix = await portalMatrix({ project, out, skip: ['sweep', 'scaffold', 'runtime'], log: () => {} });
+  assert.deepEqual(
+    matrix.portals.map((portal) => portal.id),
+    ['std', 'enh'],
+  );
+  assert.deepEqual(matrix.stages, ['import', 'bootstrap', 'liquid', 'webapi', 'serve']);
+  assert.deepEqual(matrix.personas, ['anonymous']);
   for (const portal of matrix.portals) {
     assert.deepEqual(portal.errors, [], `${portal.id}: ${JSON.stringify(portal.errors)}`);
     assert.equal(portal.origin, 'https://reference.example.test');
     assert.ok(portal.import.comparison.rows.length > 20);
     assert.equal(portal.bootstrap.layers, 1);
-    assert.deepEqual(
-      portal.sweep.runs.map((run) => run.persona),
-      ['anonymous'],
-    );
-    assert.deepEqual(
-      portal.scaffold.runs.map((run) => run.persona),
-      ['scaffold anonymous', 'scaffold all-roles'],
-    );
-    assert.ok(portal.scaffold.personas >= 1, JSON.stringify(portal.scaffold));
-    assert.deepEqual(portal.scaffold.coverage.roles, ['Authenticated Users']);
-    assert.ok(portal.scaffold.startMs > 0);
-    assert.ok(portal.runtime.coldStartMs > 0 && portal.runtime.warmStartMs > 0);
-    assert.ok(portal.runtime.stateBytesAfterStart > 0);
-    assert.equal(portal.runtime.admin, 200);
-    assert.equal(portal.runtime.webApiProbe.tables, 1);
-    assert.equal(portal.runtime.webApiProbeAllRoles, undefined);
   }
   const [standard, enhanced] = matrix.portals;
   assert.equal(standard.import.format, 'standard');
@@ -618,19 +748,6 @@ test('matrix runs every stage for a two-portal project and checks multi-portal i
     ['Absent Template', 'absent-from-export'],
     ['Old', 'inactive-in-export'],
   ]);
-  // Contact read is granted to Authenticated Users only: anonymous 403, the signed-in coverage contact 200.
-  assert.equal(standard.runtime.webApiProbe.results[0].status, 403);
-  assert.equal(standard.scaffold.webApiProbe.results[0].status, 403);
-  assert.equal(standard.scaffold.webApiProbeCoverage.results[0].status, 200);
-  // The restricted page sends anonymous visitors to sign-in and renders for the signed-in coverage contact.
-  const fresh = JSON.parse(await fs.readFile(path.join(out, 'std', 'sweep.json'), 'utf8')).runs;
-  assert.equal(fresh[0].results.find((result) => result.url === '/work/').status, 302);
-  const scaffolded = JSON.parse(await fs.readFile(path.join(out, 'std', 'scaffold.json'), 'utf8')).runs;
-  const work = (persona) =>
-    scaffolded.find((run) => run.persona === persona).results.find((result) => result.url === '/work/').status;
-  assert.equal(work('scaffold anonymous'), 302);
-  assert.equal(work('scaffold all-roles'), 200);
-  assert.equal(standard.scaffold.runs[1].identity.authenticated, true);
   assert.deepEqual(
     matrix.serve.checks.filter((item) => !item.passed),
     [],
@@ -640,17 +757,8 @@ test('matrix runs every stage for a two-portal project and checks multi-portal i
     ['std', 'enh'],
   );
   assert.ok(matrix.serve.stop.graceful);
-  for (const file of [
-    'matrix.json',
-    'matrix.md',
-    'std/import.json',
-    'std/sweep.json',
-    'std/scaffold.json',
-    'enh/runtime.json',
-  ])
-    assert.ok((await fs.stat(path.join(out, file))).isFile(), file);
+  await assertFiles(out, ['matrix.json', 'matrix.md', 'std/import.json', 'enh/import.json']);
   const markdown = await fs.readFile(path.join(out, 'matrix.md'), 'utf8');
-  assert.match(markdown, /## Scaffold data/);
   assert.match(markdown, /## Multi-portal serve/);
   assert.match(markdown, /\| std \| enh \|/);
 });

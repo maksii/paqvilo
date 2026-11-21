@@ -1,9 +1,11 @@
 // Contributor bootstrap prepares the exact metadata needed by the offline tarball smoke test.
 import fs from 'node:fs';
+import { packedPackage } from './npm-pack.mjs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { CHILD_HANG_GUARD_MS } from './smoke-process.mjs';
+import { answerHelp } from './script-help.mjs';
 
 export function cacheSpecs(lock, example) {
   return [
@@ -34,7 +36,7 @@ function removePreparation(directory) {
 function main() {
   const npmCli = process.env.npm_execpath;
   if (!npmCli) throw new Error('Run npm run setup:repo or npm run cache:package.');
-  const lock = JSON.parse(fs.readFileSync('npm-shrinkwrap.json', 'utf8'));
+  const lock = JSON.parse(fs.readFileSync('paqvilo-lock.json', 'utf8'));
   const example = JSON.parse(fs.readFileSync('examples/project/package.json', 'utf8'));
   const specs = cacheSpecs(lock, example);
   for (const spec of specs) {
@@ -74,9 +76,9 @@ function prepareConsumerCache(preparation, npmCli) {
       throw new Error(result.error?.message ?? `Cannot prepare consumer cache: ${result.stderr}`);
     return result.stdout;
   };
-  const packed = JSON.parse(
+  const packed = packedPackage(
     run(['pack', '--json', '--ignore-scripts', '--pack-destination', preparation], process.cwd()),
-  )[0];
+  );
   fs.writeFileSync(
     path.join(preparation, 'package.json'),
     JSON.stringify({
@@ -94,10 +96,19 @@ function prepareConsumerCache(preparation, npmCli) {
         .map((entry) => entry.resolved),
     ),
   ];
-  for (const archive of archives) run(['cache', 'add', archive], preparation);
+  for (const archive of archives) run(['cache', 'add', archive, '--allow-remote=root'], preparation);
   console.log(
     `Consumer package cache prepared for ${archives.length} resolved archives; subsequent smoke installs remain offline.`,
   );
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  answerHelp(process.argv.slice(2), {
+    name: 'prime-package-cache',
+    usage: `Usage: npm run cache:package   (node scripts/prime-package-cache.mjs under npm)
+Adds the locked packages and the archives a fresh consumer install resolves to the npm cache, so npm run release:smoke
+installs offline. Contacts the npm registry; writes the npm cache and a temporary .paqvilo/distribution/cache-*
+directory (PAQVILO_KEEP_WORK=1 keeps it). Takes no options; --help prints this help.`,
+  });
+  main();
+}

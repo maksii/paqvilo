@@ -542,7 +542,7 @@ test('compareScenario verdicts, allowlist classification, second-live variance a
     [['frame /inner', 'presence', 'present', '(absent)']],
   );
   const missing = await compareScenario({ scenario, liveDir: dir('live'), mirageDir: dir('nope'), allowlist: none });
-  assert.equal(missing.verdict, 'error');
+  assert.equal(missing.verdict, 'ERROR');
   assert.match(missing.reason, /mirage capture missing/);
   const unusable = await compareScenario({ scenario, liveDir: dir('live'), mirageDir: dir('broken'), allowlist: none });
   assert.match(unusable.reason, /not usable/);
@@ -572,6 +572,10 @@ test('compareScenario verdicts, allowlist classification, second-live variance a
   };
   Object.assign(report, summarize(report));
   assert.deepEqual(report.totals, { pass: 1, allowed: 1, fail: 1, error: 1 });
+  assert.equal(unusable.verdict, 'ERROR', 'every verdict is uppercase');
+  // An older diff.json wrote the error verdict in lowercase; it still counts as ERROR.
+  const older = { scenarios: [{ ...unusable, verdict: 'error', id: 'old' }] };
+  assert.deepEqual(summarize(older).totals, { pass: 0, allowed: 0, fail: 0, error: 1 });
   assert.equal(report.bySignature[0].allowed, false);
   const md = summaryMarkdown(report);
   assert.match(md, /PASS 1 · ALLOWED 1 · FAIL 1 · ERROR 1/);
@@ -909,4 +913,41 @@ test('the capture redacts server state fields in multipart bodies as in urlencod
   assert.match(out, /name="__VIEWSTATE"\r\n\r\n\{token\}/);
   assert.match(out, /name="title"\r\n\r\nkept/);
   assert.doesNotMatch(out, /secretstate/);
+});
+
+// @test-kind contract: markup and headers only the local runtime adds (render-provenance.mjs) are not portal deltas.
+test('toolkit provenance attributes, injected elements and runtime headers are not compared', () => {
+  const live = parseFragment('<body><header id="h"><a href="/">Home</a></header><footer>F</footer></body>');
+  const mirage = parseFragment(
+    '<body><header id="h" data-paqvilo-source="p:1"><a href="/" data-paqvilo-source="p:2" data-sim-local-only="1">' +
+      'Home</a></header><img hidden data-paqvilo-frame-ready src="/r"><footer data-paqvilo-source="p:3">F</footer>' +
+      '<script type="application/json" data-paqvilo-mirage-form-config>{}</script></body>',
+  );
+  assert.deepEqual(diffDom(live, mirage, []), []);
+  const el = (selector, attributes) => ({ selector, tag: 'a', classes: [], attributes, visible: true });
+  assert.deepEqual(
+    compareElements(
+      [el('body>header>a', { href: '/' })],
+      [el('body>header>a', { href: '/', 'data-paqvilo-source': 'p:2' }), el('img', { 'data-paqvilo-frame-ready': '' })],
+    ),
+    [],
+  );
+  const exchange = (headers) => [
+    { seq: 1, method: 'GET', url: '/a', resourceType: 'document', headers: {}, response: { status: 200, headers } },
+  ];
+  const runtime = {
+    'x-paqvilo-provenance': 'proof',
+    'x-paqvilo-provenance-access': 'access',
+    'x-paqvilo-script-proof': 'script',
+    'x-trace-id': '601b2aeb-d3a3-4e3a-9957-6dab4740d7c3',
+    'x-sim-span-id': 'span',
+  };
+  assert.deepEqual(compareRequests(exchange({}), exchange(runtime)), []);
+  // A portal element keeps its other attribute differences.
+  assert.deepEqual(
+    diffDom(parseFragment('<p title="a">x</p>'), parseFragment('<p title="b" data-paqvilo-source="p">x</p>'), []).map(
+      (d) => d.field,
+    ),
+    ['attr.title'],
+  );
 });

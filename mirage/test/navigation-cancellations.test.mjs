@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's acceptance runner rules for requests a document replacement ends, on invented records
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { cancelNavigationRequests } from '../lib/navigation-cancellations.mjs';
@@ -21,6 +22,21 @@ test('detached document requests without terminal events leave pending and retai
   assert.equal(cancelled[0].at, new Date(185).toISOString());
   assert.equal(records.get(requests[0]).durationMs, 85);
   assert.equal(cancelNavigationRequests(requests, pending, records, { reason: 'frame-detached' }).length, 0);
+});
+
+test('a wall clock step between the request and its cancellation does not change its duration', () => {
+  const request = { failure: () => null };
+  const record = { order: 1, method: 'GET', url: 'http://127.0.0.1:8787/synthetic', started: 100 };
+  Object.defineProperty(record, 'startedTicks', { value: 5000 });
+  const records = new Map([[request, record]]);
+  // Cancelled 85 ms later on the runner's monotonic clock, after the wall clock stepped back 1.2 s.
+  cancelNavigationRequests([request], new Map(records), records, { reason: 'frame-detached', at: -1015, ticks: 5085 });
+  assert.equal(record.durationMs, 85);
+  assert.equal(
+    record.navigationCancellation.at,
+    new Date(-1015).toISOString(),
+    'the reported time stays the wall time',
+  );
 });
 
 test('document replacement never disguises completed HTTP errors or unrelated network failures', () => {

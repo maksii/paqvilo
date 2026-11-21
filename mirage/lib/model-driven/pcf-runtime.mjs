@@ -345,7 +345,10 @@ function pcfLifecycleState(destroyed, failed, element) {
     if (candidates.length > 1) throw new Error('The declared PCF resources expose ambiguous constructor exports.');
     Constructor = candidates[0];
   }
-  if (typeof Constructor !== 'function') throw new Error(`The local bundle did not register ${constructorName}.`);
+  if (typeof Constructor !== 'function')
+    throw new Error(
+      `The local bundle did not register ${constructorName}. A development build that loads its modules with eval is refused by the page's script policy: build the control in production mode.`,
+    );
   return { Constructor, constructorName };
 }
 

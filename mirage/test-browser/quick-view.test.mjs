@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { openPortalPage } from './shared-browser.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -101,7 +102,7 @@ test('lookup changes reload quick views, clearing blanks them, and quick documen
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
   ownedFixture(t).add(() => browser.close());
   const page = await browser.newPage();
-  await page.goto(app.url);
+  await openPortalPage(page, app.url);
   assert.equal(await page.locator('#ParentDetails').getAttribute('src'), 'about:blank');
   assert.equal(await page.locator('#email[type=email]').count(), 1);
   assert.equal(await page.locator('[data-mirage-component=codecomponent]').count(), 0);

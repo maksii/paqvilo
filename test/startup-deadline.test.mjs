@@ -5,7 +5,7 @@ import { EventEmitter } from 'node:events';
 import { setImmediate } from 'node:timers/promises';
 import { startupDeadline } from '../lense/startup-deadline.mjs';
 import { STARTUP_PAGE_CAP_MS } from '../lense/startup-progress.mjs';
-import { trackArmedTimers } from './helpers/startup-page.mjs';
+import { manualClock, trackArmedTimers } from './helpers/startup-page.mjs';
 
 test('startup deadline names the blocked phase and disposes late browser ownership exactly once', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
@@ -317,4 +317,44 @@ test('late work after startup cancellation stays owned until its disposal settle
   finishDisposal();
   await settled;
   assert.equal(drained, true);
+});
+
+test('a deadline on an injected clock arms no real timer and expires only when that clock is moved', async (t) => {
+  const timers = trackArmedTimers();
+  try {
+    const clock = manualClock();
+    const deadline = startupDeadline(1000, { clock });
+    t.after(() => deadline.close());
+    deadline.phase('browser setup');
+    assert.equal(timers.armed.size, 0, 'the guard is armed on the injected clock, not on a real timer');
+    assert.equal(clock.armed, 1);
+    const wait = deadline.wait(new Promise(() => {}));
+    let failure = null;
+    wait.catch((error) => {
+      failure = error;
+    });
+    // Real time passing means nothing to this deadline: a turn of the event loop later it is still waiting.
+    await setImmediate();
+    assert.equal(failure, null);
+    clock.expire(999);
+    await setImmediate();
+    assert.equal(failure, null, 'the silence limit is not reached yet');
+    deadline.progress();
+    clock.expire(999);
+    await setImmediate();
+    assert.equal(failure, null, 'progress restarts the silence limit on the injected clock');
+    clock.expire(1);
+    await assert.rejects(wait, { code: 'startup_timeout', guard: 'silence', phase: 'browser setup' });
+    assert.equal(clock.armed, 0);
+    assert.equal(timers.armed.size, 0);
+    const capped = startupDeadline(600000, { clock });
+    t.after(() => capped.close());
+    const capWait = capped.wait(new Promise(() => {}));
+    capWait.catch(() => {});
+    clock.expire(STARTUP_PAGE_CAP_MS);
+    await assert.rejects(capWait, { code: 'startup_timeout' });
+    assert.equal(clock.armed, 0);
+  } finally {
+    timers.restore();
+  }
 });

@@ -1,10 +1,11 @@
+// @test-kind contract: the local Xrm.WebApi.execute translation onto the organization Web API, as this project defines it.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
-import { createWebApiExecute } from '../lib/model-driven/client-runtime.mjs';
+import { createFormClientRuntime, createWebApiExecute } from '../lib/model-driven/client-runtime.mjs';
 import { createModelDrivenWebApi } from '../lib/dataverse-model-driven.mjs';
 import { createModelDrivenHandler } from '../lib/model-driven/http.mjs';
 import { uuidV5 } from '../lib/dataverse-security.mjs';
@@ -44,7 +45,7 @@ async function organizationFixture(t) {
     tables: { x_item: { entity: 'x_item', entitySet: 'x_items', idColumn: 'x_itemid' } },
     webApi: (request) => webApi({ ...request, principal, host: '127.0.0.1' }),
   };
-  return { sim, xrm: createWebApiExecute(host), rows: () => sim.store.tableRows('x_item') };
+  return { sim, host, xrm: createWebApiExecute(host), rows: () => sim.store.tableRows('x_item') };
 }
 
 const request = (metadata, values = {}) => Object.assign(Object.create({ getMetadata: () => metadata }), values);
@@ -271,6 +272,7 @@ test('the app address answers Web API reads as the staff user and refuses writes
   const write = await call('POST', '/api/data/v9.2/x_items');
   assert.equal(write.status, 405);
   assert.equal(write.body.error.code, 'AppAddressReadOnly');
+  assert.match(write.body.error.message, /accepts GET and HEAD only/);
   assert.equal(seen.length, 1, 'a write never reaches the Web API');
   // A portal page (or a request without the app page as its referrer) is not answered: the shared address stays a portal address.
   for (const referer of ['http://127.0.0.1:1/contact', undefined, 'http://other.example.test/main.aspx']) {
@@ -303,4 +305,72 @@ test('the app address answers Web API reads as the staff user and refuses writes
     ),
     false,
   );
+});
+
+// @test-kind contract: a form script changes its own usersettings row through Xrm.WebApi.execute without the private table being imported.
+test('Xrm.WebApi.execute retrieves and updates the caller usersettings row without an imported table', async (t) => {
+  const { sim, xrm } = await organizationFixture(t);
+  const system = uuidV5(sim.organization.organizationId, 'systemuser:SYSTEM');
+  const crud = (operationName, values) =>
+    xrm.execute(request({ boundParameter: null, parameterTypes: {}, operationType: 2, operationName }, values));
+  const updated = await crud('Update', { etn: 'usersettings', id: `{${system}}`, payload: { localeid: 1031 } });
+  assert.equal(updated.status, 204);
+  const read = await crud('Retrieve', {
+    entityReference: { entityType: 'usersettings', id: system },
+    columns: ['localeid'],
+  });
+  assert.equal(read.status, 200);
+  assert.equal((await read.json()).localeid, 1031);
+});
+
+// @test-kind contract: the record methods reach only the caller's own usersettings row, through the same bridge as execute.
+test('Xrm.WebApi.retrieveRecord and updateRecord reach the caller usersettings row and nothing else unimported', async (t) => {
+  const { sim, host } = await organizationFixture(t);
+  const system = uuidV5(sim.organization.organizationId, 'systemuser:SYSTEM');
+  const record = { x_itemid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', x_name: 'Copper' };
+  const requests = [];
+  const { Xrm } = createFormClientRuntime({
+    ...host,
+    record,
+    table: { entity: 'x_item', idColumn: 'x_itemid', nameColumn: 'x_name', fields: {} },
+    form: { clientEvents: [] },
+    extensions: { trusted: false },
+    read: (name) => record[name],
+    write: () => {},
+    isDirty: () => false,
+    controlNames: () => [],
+    controlField: (name) => name,
+    controlState: () => undefined,
+    notification: () => {},
+    // The shell's table API (model-driven/app.mjs) serves imported tables only.
+    request: async (entity) => {
+      requests.push(entity);
+      throw new Error(`Table ${entity} is not imported.`);
+    },
+    environment: { location: { origin: 'http://127.0.0.1:1234', href: 'http://127.0.0.1:1234/main.aspx' } },
+  });
+  assert.deepEqual(await Xrm.WebApi.updateRecord('usersettings', `{${system.toUpperCase()}}`, { localeid: 1031 }), {
+    id: `{${system.toUpperCase()}}`,
+    entityType: 'usersettings',
+  });
+  const own = await Xrm.WebApi.online.retrieveRecord('usersettings', system, '?$select=localeid');
+  assert.equal(own.localeid, 1031);
+  await assert.rejects(
+    Xrm.WebApi.retrieveRecord('usersettings', '77777777-7777-4777-8777-777777777777'),
+    (error) => error.status === 403,
+  );
+  await assert.rejects(
+    Xrm.WebApi.updateRecord('usersettings', '77777777-7777-4777-8777-777777777777', { localeid: 1033 }),
+    (error) => error.status === 403,
+  );
+  await assert.rejects(
+    Xrm.WebApi.updateRecord('usersettings', system, { secretvalue: 'x' }),
+    (error) => error.status === 400,
+  );
+  await assert.rejects(Xrm.WebApi.updateRecord('usersettings', 'x)/systemusers(1', { localeid: 1033 }), /systemuserid/);
+  assert.deepEqual(requests, []);
+  // Other organization-served tables stay with the table API, which refuses them.
+  await assert.rejects(Xrm.WebApi.updateRecord('systemuser', system, { firstname: 'x' }), /not imported/);
+  await assert.rejects(Xrm.WebApi.retrieveRecord('systemuser', system), /not imported/);
+  assert.deepEqual(requests, ['systemuser', 'systemuser']);
 });

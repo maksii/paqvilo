@@ -54,6 +54,16 @@ test('configuration recovery is bounded and other errors and uncertain mutation 
 });
 
 test('a retained real runtime client resumes a lost snippet assignment by reading its committed identity after preset replacement', async (t) => {
+  const note = (phase, detail = {}) =>
+    t.diagnostic(
+      JSON.stringify({
+        synthetic: true,
+        kind: 'runtime-configuration-recovery',
+        phase,
+        ...detail,
+      }),
+    );
+  note('simulator-start');
   const sim = await simulatorFixture(t, {
     prefix: 'paq-config-recovery-',
     watch: false,
@@ -79,25 +89,45 @@ test('a retained real runtime client resumes a lost snippet assignment by readin
       },
     ],
   });
+  note('simulator-ready');
   let dropped = false,
-    creates = 0;
+    creates = 0,
+    requests = 0;
+  note('client-connect');
   const client = await connectRuntime({
     origin: sim.url,
     fetchImpl: async (url, init) => {
-      const response = await fetch(url, init);
+      const request = ++requests;
+      note('request-start', { request, method: init.method, path: new URL(url).pathname });
+      let response;
+      try {
+        response = await fetch(url, init);
+      } catch (error) {
+        note('request-failed', {
+          request,
+          name: ['Error', 'TypeError', 'AbortError', 'TimeoutError'].includes(error?.name) ? error.name : 'Error',
+          aborted: Boolean(init.signal?.aborted),
+        });
+        throw error;
+      }
+      note('request-response', { request, status: response.status });
       if (url.endsWith('/portal-snippets') && init.method === 'POST') {
         creates++;
         if (!dropped) {
           dropped = true;
           await response.text();
+          note('committed-response-reset', { request });
           throw reset();
         }
       }
       return response;
     },
   });
+  note('preset-start');
   await sim.applyPreset('invented-large');
+  note('preset-applied');
   await client.setSnippet('Invented assignment', '<p>Committed value</p>');
+  note('snippet-recovered');
   assert.equal(creates, 1, 'the recovery reads and updates the committed snippet instead of creating it again');
   assert.equal(sim.store.tableRows('x_item').length, 4000);
   const state = await client.state({ summary: true });

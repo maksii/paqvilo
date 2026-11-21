@@ -1,15 +1,17 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
+import { createHash } from 'node:crypto';
 import chokidar from 'chokidar';
 import { loadProjectConfig } from '../../mirage/lib/project-config.mjs';
 import { solutionWatchFilter } from '../../mirage/lib/solution-roots.mjs';
 import { standaloneMirageConfiguration } from '../standalone-mirage.mjs';
 import { startAgentServer } from '../agent-server.mjs';
-import { openBrowser } from '../browser.mjs';
+import { openBrowser, refreshDocument } from '../browser.mjs';
+import { logBrowserProfile } from './dev.mjs';
+import { devDialogs } from '../dev-dialogs.mjs';
 import { interceptOrigins } from '../intercept.mjs';
 import { createInspectionProvenanceTransport } from '../inspection-provenance-transport.mjs';
-import { refreshUrl } from '../navigation.mjs';
 import { startModelDrivenInspector } from '../model-driven-inspector.mjs';
 import { createModelDrivenOverlay, importModelDrivenProject } from '../model-driven.mjs';
 import { modelDrivenTargets, readTargetMappings, modelDrivenTargetSessions } from '../model-driven-targets.mjs';
@@ -57,14 +59,79 @@ export function modelDrivenReloadQueue(task) {
   };
 }
 
-export async function refreshModelDrivenPage(page, origin) {
-  if (!page.isClosed() && new URL(page.url()).origin === origin) {
-    // A native app can reach its current document through POST. Never replay it
-    // as a side effect of saving a local file.
-    await page.goto(refreshUrl(page.url()), { waitUntil: 'domcontentloaded', timeout: 15000 });
-    return true;
-  }
-  return false;
+/**
+ * The contents of saved source files as the last applied reload read them. `touch(file)` counts a save of a file.
+ * `take(files)` notes each file's count, then reads the files now (sha256; 'absent' for a missing file; null for a
+ * directory or an unreadable file) and says whether every one equals what was applied. `commit()` records that read as
+ * applied, but only for a file that no save touched since `take` began: a save seen during the import is never
+ * committed, even when the file returns to the bytes that were read, so the next save reloads it.
+ */
+export function savedContentGate() {
+  const applied = new Map();
+  const touched = new Map();
+  const read = async (file) => {
+    let handle;
+    try {
+      handle = await fs.open(file, 'r');
+      if (!(await handle.stat()).isFile()) return null;
+      return createHash('sha256')
+        .update(await handle.readFile())
+        .digest('hex');
+    } catch (error) {
+      return error.code === 'ENOENT' ? 'absent' : null;
+    } finally {
+      await handle?.close();
+    }
+  };
+  return {
+    touch(file) {
+      touched.set(file, (touched.get(file) ?? 0) + 1);
+    },
+    async take(files) {
+      const seen = new Map(files.map((file) => [file, touched.get(file) ?? 0]));
+      const now = new Map();
+      for (const file of files) now.set(file, await read(file));
+      const unchanged = now.size > 0 && [...now].every(([file, hash]) => hash !== null && applied.get(file) === hash);
+      return {
+        unchanged,
+        commit() {
+          for (const [file, hash] of now) {
+            const settled = hash !== null && (touched.get(file) ?? 0) === seen.get(file);
+            if (settled) applied.set(file, hash);
+            else applied.delete(file);
+          }
+        },
+      };
+    },
+  };
+}
+
+/**
+ * The queued reload task for saved files. The files leave `saved` before the reload and return to it when the reload
+ * throws, so a failed reload is retried by the next save. `reload()` resolves to true only when it reloaded the app
+ * tab; the read is committed only then, so a save that did not reach the tab is reloaded again later.
+ */
+export function gatedReload({ saved, gate, reload }) {
+  return async () => {
+    const files = [...saved];
+    saved.clear();
+    const read = await gate.take(files);
+    if (read.unchanged) return;
+    try {
+      if ((await reload()) === true) read.commit();
+    } catch (error) {
+      for (const file of files) saved.add(file);
+      throw error;
+    }
+  };
+}
+
+// Reloads the app tab through an explicit GET (a native app can reach its current document through POST, which a
+// local save must never replay) and returns once the new document arrives. A slow document is waited for up to the
+// reload hang guard of the browser module; the signal ends the wait when the session stops.
+export async function refreshModelDrivenPage(page, origin, signal) {
+  if (page.isClosed() || new URL(page.url()).origin !== origin) return false;
+  return refreshDocument(page, signal);
 }
 
 export function publishModelDrivenReload(overlay, next, mappings) {
@@ -123,9 +190,14 @@ function validateRunTimeout(args) {
 }
 
 export function validateModelDrivenArguments(args, action = 'dev') {
-  if (!['inspect', 'dev'].includes(action)) throw new Error('model-driven accepts inspect or dev.');
+  if (!['inspect', 'dev'].includes(action))
+    throw new Error(`Unknown model-driven action "${action}"; use inspect or dev.`);
   if (action === 'inspect') validateInspectOptions(args);
-  if (!args.project) throw new Error('model-driven requires --project with selected Solution sources.');
+  // The CLI runs dev when no action is named, so the message names the action it checked and the valid ones.
+  if (!args.project)
+    throw new Error(
+      `model-driven ${action} requires --project <file> with the selected Solution sources; actions: inspect, dev (default: dev).`,
+    );
   if (args.env && args.url) throw new Error('Choose --env or --url, not both.');
   if (action === 'dev') validateStartupTimeout(args);
   if (action === 'dev') validateRunTimeout(args);
@@ -155,6 +227,29 @@ export function modelDrivenEventPage(imported, args = {}) {
     ...page,
     ...(page.nextCursor ? { nextCursorToken: Buffer.from(JSON.stringify(page.nextCursor)).toString('base64url') } : {}),
   };
+}
+
+/** The text report of `model-driven inspect`: counts, the target and what needs attention; `--json` prints the rest. */
+export function modelDrivenInspectText(report) {
+  const events = report.clientEvents ?? {},
+    registrations = events.registrations?.length ?? 0;
+  const lines = [
+    `${report.resources.length} declared Solution resources; ${report.unbound.length} require exact native resource mappings.`,
+    `Target: ${report.selectedTarget} ${report.origin} (${report.targets.length} declared)${report.localSimulation ? ' · local simulation' : ''}`,
+    `Client event registrations: ${registrations}${events.complete === false ? ' (incomplete)' : ''}${events.truncated ? ' (more with --event-cursor)' : ''}`,
+  ];
+  if (report.unbound.length)
+    lines.push(
+      'Need a resource mapping (--resource-map):',
+      ...report.unbound.map((name) => `  ${typeof name === 'string' ? name : name.name}`),
+    );
+  const diagnostics = [...(report.diagnostics ?? []), ...(events.diagnostics ?? [])];
+  if (diagnostics.length)
+    lines.push('Diagnostics:', ...diagnostics.map((item) => `  ${item.code}: ${item.message ?? ''}`.trimEnd()));
+  if (!report.trustedExtensions)
+    lines.push('model-driven dev needs modelDriven.trustedExtensions: true in the project to run these sources.');
+  lines.push('Use --json for the full report.');
+  return lines.join('\n');
 }
 
 // The terminal names the one departure from a target origin (a sign-in or redirect) and its return, so a person
@@ -192,10 +287,10 @@ export async function closeStartup(deadline, progress) {
   progress?.close();
 }
 
-export default async function run(_cfg, args, [action = 'dev'] = []) {
+export default async function run(_cfg, args, [action = 'dev'] = [], { open = openBrowser } = {}) {
   validateModelDrivenArguments(args, action);
   const originalProgress = action === 'dev' ? (args.startup ?? startupProgress()) : null;
-  const deadline = action === 'dev' ? startupDeadline(args['startup-timeout']) : null;
+  const deadline = action === 'dev' ? startupDeadline(args['startup-timeout'], { clock: args.startupClock }) : null;
   const progress = originalProgress && {
     phase(name, detail) {
       deadline.phase(name);
@@ -212,7 +307,7 @@ export default async function run(_cfg, args, [action = 'dev'] = []) {
     },
   };
   try {
-    return await runModelDriven(args, action, progress, deadline);
+    return await runModelDriven(args, action, progress, deadline, open);
   } catch (error) {
     progress?.fail(cleanError(error));
     throw error;
@@ -274,9 +369,9 @@ export async function closeModelDrivenResources(steps, onError) {
   return failures;
 }
 
-/* NOSONAR */ async function runModelDriven(args, action, progress, deadline) {
+/* NOSONAR */ async function runModelDriven(args, action, progress, deadline, open) {
   const startupWait = (work, disposeLate) => (deadline ? deadline.wait(work, disposeLate) : work);
-  progress?.phase('configuration');
+  // Start-up progress and its deadline both begin in the configuration phase; announcing it again printed it twice.
   const project = await startupWait(loadProjectConfig(args.project));
   const selection = modelDrivenTargets(project, args),
     selected = selection.selected;
@@ -289,12 +384,6 @@ export async function closeModelDrivenResources(steps, onError) {
   }
   progress?.phase('source discovery and Solution resources');
   let imported = await startupWait(importModelDrivenProject(project));
-  if (args['local-simulation'])
-    imported.diagnostics.push({
-      code: 'MODEL_LOCAL_SIMULATION',
-      message:
-        'Local Mirage simulation. Actions use this loopback runtime; native-only APIs remain unavailable when the runtime does not expose them.',
-    });
   progress?.phase('resource mappings');
   const mappings = await startupWait(readTargetMappings(targets, imported));
   const origin = selected.origin;
@@ -314,11 +403,7 @@ export async function closeModelDrivenResources(steps, onError) {
       localSimulation: Boolean(args['local-simulation']),
       clientEvents: modelDrivenEventPage(imported, args),
     };
-    if (args.json) console.log(JSON.stringify(report));
-    else
-      console.log(
-        `${report.resources.length} declared Solution resources; ${report.unbound.length} require exact native resource mappings.\n${JSON.stringify(report, null, 2)}`,
-      );
+    console.log(args.json ? JSON.stringify(report) : modelDrivenInspectText(report));
     return 0;
   }
   if (!project.modelDriven?.trustedExtensions)
@@ -331,16 +416,26 @@ export async function closeModelDrivenResources(steps, onError) {
     throw new Error('--timeout must be 1..3600000 milliseconds.');
   const cfg = { ...standaloneMirageConfiguration(project, args), origin };
   progress?.phase('browser setup');
-  const { context, close, attached, debugPort } = await startupWait(
-    openBrowser(cfg, { debugPort: cfg.browser.debugPort }),
+  const { context, close, attached, debugPort, profile } = await startupWait(
+    open(cfg, { debugPort: cfg.browser.debugPort }),
     (opened) => opened.close(),
   );
+  logBrowserProfile(attached, cfg, profile);
   const provenance = createInspectionProvenanceTransport(
     context,
     targets.map((target) => ({ origin: target.origin, mirage: Boolean(args['local-simulation']) })),
   );
   cfg.provenanceSlot = provenance.slot;
   cfg.domProvenanceSlot = provenance.domSlot;
+  // The person answers a native confirm or before-unload prompt in the headed browser, as in portal dev; without a
+  // dialog listener Playwright would dismiss every one of them at once. Each target's agent records the dialog.
+  const agentSessions = new Map();
+  const stopDialogs = devDialogs(context, {
+    configs: new Map(targets.map((target) => [target.origin, cfg])),
+    attached,
+    headless: cfg.browser.headless === true,
+    sessionFor: (targetOrigin) => agentSessions.get(targetOrigin),
+  });
   let release,
     watcher,
     timer,
@@ -349,6 +444,8 @@ export async function closeModelDrivenResources(steps, onError) {
     stopping = false,
     stop,
     primaryFailure;
+  // Ends a reload that is still waiting for its document when the session stops.
+  const reloadStopped = new AbortController();
   const stopped = new Promise((resolve) => {
     stop = resolve;
   });
@@ -391,6 +488,7 @@ export async function closeModelDrivenResources(steps, onError) {
         cfg: { ...cfg, origin: target.origin, siteName: target.siteName, envName: target.envName },
         rel: String,
       });
+      agentSessions.set(target.origin, agentSession);
       const agent = await startAgentServer({
         session: agentSession,
         context,
@@ -517,43 +615,48 @@ export async function closeModelDrivenResources(steps, onError) {
       });
       watcher.on('error', onError);
       await startupWait(waitForWatcherReady(watcher));
+      const saved = new Set(),
+        gate = savedContentGate();
       reloads = modelDrivenReloadQueue(async () => {
         if (stopping) return;
         try {
-          const next = await importModelDrivenProject(project),
-            maps = await readTargetMappings(targets, next);
-          if (args['local-simulation'])
-            next.diagnostics.push({
-              code: 'MODEL_LOCAL_SIMULATION',
-              message:
-                'Local Mirage simulation. Actions use this loopback runtime; native-only APIs remain unavailable when the runtime does not expose them.',
-            });
-          // Preserve the same importer failure admission as the one-target runner.
-          publishModelDrivenReload({ replace() {} }, next, []);
-          await targetSessions.replace(next, maps);
-          imported = next;
-          ignoredSource = watchFilter();
-          const nextLayers = new Set(
-            imported.layers.filter((layer) => layer.type === 'directory').map((layer) => layer.dir),
-          );
-          const addedLayers = [...nextLayers].filter((dir) => !watchedLayers.has(dir));
-          if (addedLayers.length) watcher.add(addedLayers);
-          watchedLayers = nextLayers;
-          // Only this session's own app tab reloads. Login pages and attached
-          // user tabs remain under their existing owner's control.
-          const active = targetSessions.current();
-          if (
-            !stopping &&
-            active?.inspector &&
-            active.live &&
-            (await refreshModelDrivenPage(page, active.target.origin))
-          )
-            console.log('Reloaded model-driven app with local Solution resources.');
+          await gatedReload({
+            saved,
+            gate,
+            reload: async () => {
+              const next = await importModelDrivenProject(project),
+                maps = await readTargetMappings(targets, next);
+              // Preserve the same importer failure admission as the one-target runner.
+              publishModelDrivenReload({ replace() {} }, next, []);
+              await targetSessions.replace(next, maps);
+              imported = next;
+              ignoredSource = watchFilter();
+              const nextLayers = new Set(
+                imported.layers.filter((layer) => layer.type === 'directory').map((layer) => layer.dir),
+              );
+              const addedLayers = [...nextLayers].filter((dir) => !watchedLayers.has(dir));
+              if (addedLayers.length) watcher.add(addedLayers);
+              watchedLayers = nextLayers;
+              // Only this session's own app tab reloads. Login pages and attached
+              // user tabs remain under their existing owner's control.
+              const active = targetSessions.current();
+              const refreshed =
+                !stopping &&
+                active?.inspector &&
+                active.live &&
+                (await refreshModelDrivenPage(page, active.target.origin, reloadStopped.signal));
+              if (refreshed) console.log('Reloaded model-driven app with local Solution resources.');
+              return refreshed === true;
+            },
+          })();
         } catch (error) {
           onError(error);
         }
       });
-      watcher.on('all', () => {
+      watcher.on('all', (_event, f) => {
+        const file = path.resolve(f);
+        saved.add(file);
+        gate.touch(file);
         clearTimeout(reloadTimer);
         reloadTimer = setTimeout(() => {
           reloads.request().catch(onError);
@@ -593,7 +696,11 @@ export async function closeModelDrivenResources(steps, onError) {
     if (timeout) timer = setTimeout(stop, timeout);
     if (loaded)
       console.log(
-        'Model-driven overlay installed; document loaded. Sign-in and native application readiness remain unverified. Edit a declared Solution webresource or mapped PCF resource to reload.',
+        `Model-driven overlay installed; document loaded. Sign-in and native application readiness remain unverified. ${
+          args['no-reload']
+            ? 'Live reload is paused (--no-reload): a saved declared Solution webresource or mapped PCF resource is read again but the app tab is not reloaded; reload the tab yourself or turn on live reload in the panel.'
+            : 'Edit a declared Solution webresource or mapped PCF resource to reload.'
+        }`,
       );
     else if (page.isClosed()) {
       // A closed page ends the session, whatever the browser still shows; the finally block then closes the browser.
@@ -608,6 +715,7 @@ export async function closeModelDrivenResources(steps, onError) {
   } finally {
     stop();
     stopping = true;
+    reloadStopped.abort();
     clearTimeout(timer);
     clearTimeout(reloadTimer);
     process.off('SIGINT', stop);
@@ -616,6 +724,7 @@ export async function closeModelDrivenResources(steps, onError) {
     browser?.off('disconnected', stop);
     page?.off('close', stop);
     page?.off('framenavigated', onNavigation);
+    stopDialogs();
     const cleanupFailures = await cleanupModelDrivenSession(
       {
         startupTimedOut: ['startup_timeout', 'startup_cancelled'].includes(primaryFailure?.code),

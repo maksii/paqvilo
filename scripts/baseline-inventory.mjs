@@ -7,6 +7,7 @@
 //
 //   node examples/project/baseline/plugins.mjs --connection <private connection.json> --verify
 //   node scripts/baseline-inventory.mjs
+//   node scripts/baseline-inventory.mjs --check   (exit 1 when the committed inventories differ; writes nothing)
 //
 // Inputs: examples/project/baseline/{generate.mjs, dataverse/*.json, plugins.json, plugins-readback.json,
 // site-manifest.json, solution/**}. Outputs: mirage/docs/baseline/dataverse-inventory.md,
@@ -14,6 +15,8 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import * as prettier from 'prettier';
+import { parseOptions } from '../lense/cli-options.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const FIXTURE = 'examples/project/baseline';
@@ -27,6 +30,10 @@ const docs = path.join(root, 'mirage/docs/baseline');
 const abs = (relative) => path.join(root, relative);
 const read = async (relative) => JSON.parse(await fs.readFile(abs(relative), 'utf8'));
 const text = (relative) => fs.readFile(abs(relative), 'utf8');
+const USAGE = `Usage: node scripts/baseline-inventory.mjs [--check]
+Regenerates mirage/docs/baseline/dataverse-inventory.md and power-pages-inventory.md.
+  --check  compare the committed inventories with the generator output; exit 1 when they differ, write nothing
+  --help   show this help`;
 const list = async (relative, filter = () => true) =>
   (await fs.readdir(abs(relative)).catch(() => [])).filter(filter).sort();
 
@@ -372,14 +379,15 @@ const unique = (values) => [...new Set(values)];
 
 // ---- column type of an exported attribute
 function stringColumnItem(a) {
-  if (a.source === '1') return 'dv.column.calculated';
-  if (a.source === '2') return 'dv.column.rollup';
-  if (a.source === '3') return 'dv.column.formula';
   if (a.autoNumber) return 'dv.column.string.autonumber';
   return `dv.column.string.${a.format}`;
 }
 
+// SourceType decides the behaviour column whatever the data type: a rollup is typically a whole number.
+const SOURCE_ITEMS = { 1: 'dv.column.calculated', 2: 'dv.column.rollup', 3: 'dv.column.formula' };
+
 function customColumnItem(a) {
+  if (SOURCE_ITEMS[a.source]) return SOURCE_ITEMS[a.source];
   switch (a.type) {
     case 'nvarchar':
       return stringColumnItem(a);
@@ -2150,6 +2158,41 @@ function powerPagesInventoryLines(powerPages, rows, notExpressed, caveats) {
 }
 
 async function main() {
+  let values;
+  try {
+    ({ values } = parseOptions({
+      args: process.argv.slice(2),
+      options: { check: { type: 'boolean' }, help: { type: 'boolean', short: 'h' } },
+      strict: true,
+      allowPositionals: false,
+    }));
+  } catch (error) {
+    console.error(error.message);
+    process.exitCode = 1;
+    return;
+  }
+  if (values.help) return console.log(USAGE);
+  const generated = await generate();
+  if (!generated) return;
+  // The committed inventories are Prettier-formatted (padded tables); emit exactly that so a rerun leaves no diff.
+  const outputs = [];
+  for (const [file, content] of generated)
+    outputs.push([file, await prettier.format(content, { ...(await prettier.resolveConfig(file)), filepath: file })]);
+  if (values.check) {
+    const stale = [];
+    for (const [file, content] of outputs)
+      if ((await fs.readFile(file, 'utf8').catch(() => null)) !== content) stale.push(path.relative(root, file));
+    if (stale.length) {
+      console.error(`Out of date: ${stale.join(', ')}. Run node scripts/baseline-inventory.mjs to regenerate.`);
+      process.exitCode = 1;
+    }
+    return;
+  }
+  for (const [file, content] of outputs) await fs.writeFile(file, content);
+}
+
+/** The two inventories as [file, content] pairs, or null when the fixture has problems (printed, exit code 1). */
+async function generate() {
   const data = await loadFixture();
   const dataverse = await read('mirage/docs/baseline/catalog/dataverse.json');
   const powerPages = await read('mirage/docs/baseline/catalog/power-pages.json');
@@ -2164,7 +2207,7 @@ async function main() {
   if (problems.length) {
     console.error(problems.join('\n'));
     process.exitCode = 1;
-    return;
+    return null;
   }
   const { exported } = data;
   const fixtureViews = exported.views.length;
@@ -2194,13 +2237,13 @@ async function main() {
   const manual = [
     '## Manual steps (maker portal only)',
     '',
-    'Dataverse rejects scripted rollup definitions ("FormulaDefinition is not valid Xaml") and Learn states formulas are defined only in the maker portal, so these two steps are documented procedures; the provisioning script verifies their result and the rows above stay "pending" until then.',
+    'Dataverse rejects scripted rollup definitions ("FormulaDefinition is not valid Xaml") and Learn states formulas are defined only in the maker portal, so these two columns are made by hand in a new environment; the provisioning script verifies them and never creates them, and a row above stays "pending" while its definition is missing from the export.',
     '',
-    '1. Rollup column `pqvd_baselineparent.pqvd_rollup`: make.powerapps.com → Tables → Baseline Parent → Columns → New column, display name `Rollup`, data type Whole number, behaviour Rollup → related table Baseline Item (relationship Parent), aggregate COUNT → Save. Expected: `node examples/project/baseline/provision.mjs --connection <file>` reports the column as `exists`; after `--export` the column appears in `examples/project/baseline/solution/Entities/pqvd_baselineparent/Entity.xml`; then re-add it to the Baseline Parent form and the Active Baseline Parents view in generate.mjs.',
+    '1. Rollup column `pqvd_baselineparent.pqvd_rollup`: make.powerapps.com → Tables → Baseline Parent → Columns → New column, display name `Rollup`, data type Whole number, behaviour Rollup → related table Baseline Item (relationship Parent), aggregate COUNT → Save. Expected: `node examples/project/baseline/provision.mjs --connection <file>` reports the column as `exists` (`manual-step-pending` while it is missing, `manual-step-mismatch` when its stored definition does not count Baseline Item rows through `pqvd_parentid`); after `--export` the column appears in `examples/project/baseline/solution/Entities/pqvd_baselineparent/Entity.xml` and its definition in `Formulas/pqvd_baselineparent-pqvd_rollup.xaml`. No fixture form or view shows the column.',
     '2. Calculated column `pqvd_baselineitem.pqvd_calculated`: open the column → Calculation → action Set `Calculated` to `Concat(pqvd_code, " ", pqvd_text)` → Save and activate. Expected: `Entity.xml` shows a FormulaDefinition for the column and the item edit page renders the computed value read-only.',
     '',
   ];
-  await fs.writeFile(path.join(docs, 'dataverse-inventory.md'), [...header, ...lines, ...manual].join('\n'));
+  const outputs = [[path.join(docs, 'dataverse-inventory.md'), [...header, ...lines, ...manual].join('\n')]];
 
   const ppRows = powerPagesRows(data);
   const notExpressed = new Map();
@@ -2218,7 +2261,7 @@ async function main() {
     '',
   ];
   pp.push(...powerPagesInventoryLines(powerPages, ppRows, notExpressed, caveats));
-  await fs.writeFile(path.join(docs, 'power-pages-inventory.md'), pp.join('\n'));
+  outputs.push([path.join(docs, 'power-pages-inventory.md'), pp.join('\n')]);
   console.log(
     JSON.stringify({
       dataverse: {
@@ -2234,9 +2277,10 @@ async function main() {
       powerPages: { items: powerPages.items.length, exercised: ppRows.size },
     }),
   );
+  return outputs;
 }
 
 /* NOSONAR: module-level promise chain must not block evaluation */ main().catch((error) => {
-  console.error(error.stack);
+  console.error(error.message);
   process.exitCode = 1;
 });

@@ -12,7 +12,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseArgs } from 'node:util';
+import { cli, isMain, UsageError } from '../cli.mjs';
 import {
   loadConnection,
   connectedClient,
@@ -55,14 +55,12 @@ const retiredResourceAction = (rows, apply) => {
   if (rows.length) return apply ? 'delete' : 'pending';
   return 'absent';
 };
-const platformColumnAction = (meta, apply) => {
-  if (meta) return apply ? 'include' : 'pending';
-  return 'missing-or-mismatched';
+const membershipAction = (member, apply) => {
+  if (member) return 'exists';
+  return apply ? 'include' : 'pending';
 };
-const tableRootAction = (meta, apply) => {
-  if (meta) return apply ? 'include-all' : 'pending';
-  return 'missing';
-};
+// Plan entries that need no write: everything else is a pending change.
+const STEADY = new Set(['exists', 'active', 'absent', 'platform-default-retained']);
 
 async function attribute(client, table, name) {
   const rows = await client
@@ -172,12 +170,23 @@ function rollupXaml(column) {
   return `<RollupDefinition xmlns="http://schemas.microsoft.com/crm/2014/rollup"><SourceEntity Name="${column.table}"/><Aggregate Function="COUNT"><Attribute Name="${column.related}id" Entity="${column.related}" Path="${column.lookup}"/></Aggregate></RollupDefinition>`;
 }
 
-async function ensureExtraColumn(client, column, { apply, solution, journal }) {
+// A rollup must COUNT the related rows through the declared lookup (the maker portal stores it as workflow XAML).
+async function manualColumnState(client, column) {
+  if (column.kind !== 'rollup') return 'exists';
+  const { FormulaDefinition: xaml } = await client.get(
+    `EntityDefinitions(LogicalName='${column.table}')/Attributes(LogicalName='${column.name}')/Microsoft.Dynamics.CRM.IntegerAttributeMetadata?$select=FormulaDefinition`,
+  );
+  return [column.related, column.lookup, 'Count'].every((part) => (xaml ?? '').includes(part))
+    ? 'exists'
+    : 'manual-step-mismatch';
+}
+
+export async function ensureExtraColumn(client, column, { apply, solution, journal }) {
   const existing = await attribute(client, column.table, column.name);
   const entry = { kind: 'column', table: column.table, name: column.name, extra: column.kind ?? 'flags' };
   if (column.manual) {
     // Maker-portal-only definitions: verified, never created here (see the inventory's manual steps).
-    entry.action = existing ? 'exists' : 'manual-step-pending';
+    entry.action = existing ? await manualColumnState(client, column) : 'manual-step-pending';
     journal.push(entry);
     log(entry);
     return;
@@ -196,7 +205,7 @@ async function ensureExtraColumn(client, column, { apply, solution, journal }) {
   // Every extra column must be a member of the fixture solution (an earlier run may have created it outside).
   if (apply) {
     const meta = existing ?? (await attribute(client, column.table, column.name));
-    if (meta?.MetadataId) await includeComponent(client, meta.MetadataId, 2, solution);
+    if (meta?.MetadataId) await includeComponent(client, meta.MetadataId, 2, solution, column.table);
   }
   // Flags on existing or manifest-created columns: secured, default value, rich text format.
   if (column.secured || column.defaultValue !== undefined || column.default !== undefined || column.richText) {
@@ -363,14 +372,22 @@ async function ensureStatusReasons(client, table, reasons, { apply, solution, jo
   }
 }
 
-async function includeComponent(client, id, type, solution) {
+/** Whether the solution lists the component, or a whole root of its table (the manifest's includeAllSubcomponents). */
+async function memberOf(client, id, type, solution, table) {
   const solutions = await client.list(`solutions?$select=solutionid&$filter=uniquename eq '${solution}'`);
   const solutionId = solutions[0]?.solutionid;
   if (!solutionId) throw new Error(`Solution ${solution} is missing.`);
-  const found = await client.list(
-    `solutioncomponents?$select=objectid&$filter=_solutionid_value eq ${solutionId} and componenttype eq ${type} and objectid eq ${id}`,
-  );
-  if (!found.length)
+  const listed = async (objectId, componentType) =>
+    client.list(
+      `solutioncomponents?$select=objectid,rootcomponentbehavior&$filter=_solutionid_value eq ${solutionId} and componenttype eq ${componentType} and objectid eq ${objectId}`,
+    );
+  const owner = table && (await client.optional(`EntityDefinitions(LogicalName='${table}')?$select=MetadataId`));
+  if (owner && (await listed(owner.MetadataId, 1)).some((row) => row.rootcomponentbehavior === 0)) return true;
+  return (await listed(id, type)).length > 0;
+}
+
+async function includeComponent(client, id, type, solution, table) {
+  if (!(await memberOf(client, id, type, solution, table)))
     await client.request('AddSolutionComponent', {
       method: 'POST',
       body: { ComponentId: id, ComponentType: type, SolutionUniqueName: solution, AddRequiredComponents: false },
@@ -422,7 +439,7 @@ async function includeComponent(client, id, type, solution) {
           solution,
         });
       }
-      await includeComponent(client, view.id, 26, solution);
+      await includeComponent(client, view.id, 26, solution, view.table);
     }
     journal.push(entry);
     log(entry);
@@ -461,7 +478,7 @@ async function ensureConfiguredForms(client, extrasSpec, { apply, solution, jour
           body: { name: form.name, formxml },
           solution,
         });
-      await includeComponent(client, form.id, 60, solution);
+      await includeComponent(client, form.id, 60, solution, form.table);
     }
     journal.push(entry);
     log(entry);
@@ -576,7 +593,7 @@ async function applyPlatformViewAdjustment(client, adjustment, found, options) {
       await client.request(`savedqueries(${view.savedqueryid})`, { method: 'PATCH', body: { layoutxml }, solution });
     }
   }
-  if (apply) await includeComponent(client, view.savedqueryid, 26, solution);
+  if (apply) await includeComponent(client, view.savedqueryid, 26, solution, adjustment.table);
   // Retire the fixture's own earlier copy of this view type once no form references it.
   const retired = await client.optional(`savedqueries(${adjustment.retiredFixtureViewId})?$select=savedqueryid`);
   if (retired) {
@@ -890,9 +907,11 @@ async function ensurePlatformColumn(client, component, { apply, solution, journa
     table: component.table,
     name: component.name,
     id: meta?.MetadataId ?? null,
-    action: platformColumnAction(meta, apply),
+    action: meta
+      ? membershipAction(await memberOf(client, meta.MetadataId, 2, solution), apply)
+      : 'missing-or-mismatched',
   };
-  if (meta && apply) await includeComponent(client, meta.MetadataId, 2, solution);
+  if (entry.action === 'include') await includeComponent(client, meta.MetadataId, 2, solution);
   journal.push(entry);
   log(entry);
 }
@@ -915,8 +934,8 @@ async function ensurePlatformRecord(client, component, { apply, solution, journa
   };
   if (!row || row.name !== component.name || row.table !== component.table) entry.action = 'missing-or-mismatched';
   else {
-    entry.action = apply ? 'include' : 'pending';
-    if (apply) await includeComponent(client, component.id, component.type, solution);
+    entry.action = membershipAction(await memberOf(client, component.id, component.type, solution), apply);
+    if (entry.action === 'include') await includeComponent(client, component.id, component.type, solution);
   }
   journal.push(entry);
   log(entry);
@@ -929,32 +948,13 @@ async function ensurePlatformComponents(client, components, options) {
   }
 }
 
-/** Fixture tables are exported with all subcomponents (root component behaviour 0): self-contained solution. */
-async function ensureTableRoots(client, tables, { apply, solution, journal }) {
-  for (const table of tables) {
-    const meta = await client.optional(`EntityDefinitions(LogicalName='${table}')?$select=MetadataId`);
-    const entry = { kind: 'table-root', table, action: tableRootAction(meta, apply) };
-    if (meta && apply)
-      await client.request('AddSolutionComponent', {
-        method: 'POST',
-        body: {
-          ComponentId: meta.MetadataId,
-          ComponentType: 1,
-          SolutionUniqueName: solution,
-          AddRequiredComponents: false,
-          DoNotIncludeSubcomponents: false,
-        },
-      });
-    journal.push(entry);
-    log(entry);
-  }
-}
-
-function installFetchDiagnostics(client, privateDir) {
+export function installFetchDiagnostics(client, privateDir) {
   const nativeFetch = client.fetch;
   client.fetch = async (...params) => {
     const response = await nativeFetch(...params);
-    if (!response.ok) {
+    // A read answered 404 is an absence probe (client.optional); a caller that needs the row still throws.
+    const absent = response.status === 404 && (params[1]?.method ?? 'GET') === 'GET';
+    if (!response.ok && !absent) {
       const text = await response
         .clone()
         .text()
@@ -1065,7 +1065,7 @@ async function processManifest(apply, manifest, client, privateDir, info, stamp)
       expectedOrganisationId: info.organisationId,
       onProgress: (entry) => log({ manifest: entry.key ?? entry.kind, status: entry.status ?? entry.state }),
     });
-    log({ manifest: 'applied', summary: result.summary ?? null });
+    log({ manifest: 'applied', state: result.state, changedRoots: result.solutionRoots.changedRoots });
   } else {
     const plan = await planManifest(manifest, { client });
     log({ manifest: 'plan', summary: plan.summary });
@@ -1090,15 +1090,24 @@ async function exportAndValidateSolution(client, privateDir, solution, stamp) {
 }
 
 async function main() {
-  const { values } = parseArgs({
-    options: {
+  const { values } = cli(
+    `Usage: node examples/project/baseline/provision.mjs --connection FILE [--apply] [--export] [--skip-manifest]
+
+Provisions the baseline fixture tables in the live environment named by --connection; without --apply it prints the
+plan and writes nothing to Dataverse.
+
+  --connection FILE  private application connection; a relative path resolves from the working directory
+  --apply            write the manifest and extras
+  --export           export the unmanaged fixture solution next to this script
+  --skip-manifest    apply only the extras the manifest does not model`,
+    {
       connection: { type: 'string' },
       apply: { type: 'boolean' },
       export: { type: 'boolean' },
       'skip-manifest': { type: 'boolean' },
     },
-  });
-  if (!values.connection) throw new Error('--connection <private connection.json> is required.');
+  );
+  if (!values.connection) throw new UsageError('--connection <private connection.json> is required.');
   const apply = Boolean(values.apply);
   const info = await loadConnection(values.connection);
   const client = connectedClient(info);
@@ -1131,7 +1140,6 @@ async function main() {
   await ensureBusinessRules(client, extrasSpec.businessRules, options);
   await ensureColumnSecurity(client, extrasSpec.columnSecurityProfile, options);
   if (extrasSpec.platformComponents) await ensurePlatformComponents(client, extrasSpec.platformComponents, options);
-  if (extrasSpec.includeAllSubcomponents) await ensureTableRoots(client, extrasSpec.includeAllSubcomponents, options);
   if (apply) {
     log(await publishManifest(manifest, client));
     log(await checkKeys(manifest, client));
@@ -1147,12 +1155,8 @@ async function main() {
     done: true,
     apply,
     entries: journal.length,
-    changes: journal.filter((e) => !['exists', 'active'].includes(e.action)).length,
+    changes: journal.filter((e) => !STEADY.has(e.action)).length,
   });
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))
-  /* NOSONAR: module-level promise chain must not block evaluation */ main().catch((error) => {
-    console.error(error.message);
-    process.exitCode = 1;
-  });
+if (isMain(import.meta)) await main();

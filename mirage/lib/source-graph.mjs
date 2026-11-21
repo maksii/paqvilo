@@ -192,13 +192,15 @@ function requirementRow(node) {
       status: 'missing',
       reason: 'SOLUTION_COMPONENT_SOURCE_MISSING',
     };
-  if (node.diagnostics?.some((item) => item.severity === 'error'))
+  const error = node.diagnostics?.find((item) => item.severity === 'error');
+  if (error)
     return {
       id: node.id,
       kind: node.kind,
       source: node.source,
       status: 'unsupported',
-      reason: node.diagnostics.find((item) => item.severity === 'error').code,
+      reason: error.code,
+      message: error.message ?? null,
     };
   if (node.level === 'inventory' && node.kind !== 'mobileofflineprofile') return inventoryRequirementRow(node);
   return null;
@@ -379,6 +381,8 @@ export function buildSourceGraph({
         source: item.source ?? null,
         status: item.status ?? 'missing',
         reason: item.code,
+        // The loader's own text (the same diagnostic the report lists), so a printed row says what failed.
+        message: item.message ?? null,
       }));
       for (const node of nodes.values()) {
         // A host-surface gap row names its surface (capability-report.mjs scopes it with a scenario naming the surface).

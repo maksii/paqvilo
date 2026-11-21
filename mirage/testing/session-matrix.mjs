@@ -1,4 +1,5 @@
 import { performance } from 'node:perf_hooks';
+import { requiredArgument } from '../lib/required-argument.mjs';
 
 const integer = (value, min, max) => Number.isInteger(value) && value >= min && value <= max;
 async function runMatrixCell(plan, session, { signal, index, failFast, controller }) {
@@ -24,15 +25,12 @@ async function runMatrixCell(plan, session, { signal, index, failFast, controlle
  * The runtime/store is shared; isolate fixtures for concurrent writes. Calls
  * execute once. Cancellation drains started work and reports unstarted cells.
  * onResult is serialized for durable append-only recording by the caller. */
-export async function runSessionMatrix({
-  sessions,
-  cases,
-  concurrency = 10,
-  signal,
-  onResult,
-  failFast = false,
-  maxCells = 1000000,
-} = {}) {
+export async function runSessionMatrix(
+  { sessions, cases, concurrency = 10, signal, onResult, failFast = false, maxCells = 1000000 } = requiredArgument(
+    'runSessionMatrix({ sessions, cases })',
+    'an options object with sessions and cases',
+  ),
+) {
   if (
     !Array.isArray(sessions) ||
     !sessions.length ||

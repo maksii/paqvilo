@@ -1,14 +1,100 @@
+// @test-kind contract: Paqvilo's reference-parity tool against invented loopback fixtures; no native behaviour is claimed.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
 import fs from 'node:fs/promises';
+import { channel } from 'node:diagnostics_channel';
 import os from 'node:os';
 import path from 'node:path';
-import { normalizeContract, compareReferenceContracts } from '../reference-parity.mjs';
+import { fileURLToPath } from 'node:url';
+import {
+  registerFixtureDiagnostics,
+  finalizeFixtureDiagnostics,
+} from '../../test-browser/helpers/fixture-diagnostics.mjs';
+import { normalizeContract, compareReferenceContracts as compareReferenceContractsImpl } from '../reference-parity.mjs';
 import { createSimulator } from '../server.mjs';
 import { createPortalSession } from '../testing/sessions.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
+
+const compareReferenceContracts = compareReferenceContractsImpl;
+const referenceFixtures = new WeakMap();
+function ownReferenceFixture(t, directory) {
+  const fixture = { directory, registration: null, comparisons: 0, completedReports: 0, phases: [] };
+  referenceFixtures.set(t, fixture);
+  const began = performance.now(),
+    nativeFetch = globalThis.fetch;
+  let currentRequest;
+  const rounded = (value) => Math.round(value * 1000) / 1000;
+  const metadata = channel('paqvilo.metadata-walk');
+  const observeMetadata = (event) => {
+    if (!currentRequest) return;
+    if (event.stage === 'started') {
+      currentRequest.metadataRequested = event.count;
+      currentRequest.metadataBeganMs = rounded(event.at - began);
+    } else {
+      currentRequest.metadataChecked = event.checked;
+      currentRequest.metadataEndedMs = rounded(event.at - began);
+      currentRequest.metadataFailed = event.stage === 'failed';
+    }
+  };
+  metadata.subscribe(observeMetadata);
+  globalThis.fetch = async (...args) => {
+    const pathname = new URL(args[0] instanceof Request ? args[0].url : args[0]).pathname;
+    const phase = pathname.endsWith('/state')
+      ? 'state'
+      : pathname.endsWith('/status')
+        ? 'status'
+        : pathname.includes('/session')
+          ? 'session'
+          : 'contract';
+    const row = { phase, startMs: rounded(performance.now() - began), completed: false };
+    fixture.phases.push(row);
+    currentRequest = row;
+    try {
+      return await nativeFetch(...args);
+    } finally {
+      row.elapsedMs = rounded(performance.now() - began - row.startMs);
+      row.completed = true;
+      currentRequest = null;
+    }
+  };
+  t.after(() => {
+    globalThis.fetch = nativeFetch;
+    metadata.unsubscribe(observeMetadata);
+    // Fixed labels and numbers only: never paths, arguments, headers, response bodies or errors.
+    t.diagnostic(
+      JSON.stringify({
+        kind: 'reference-numeric-phases',
+        elapsedMs: rounded(performance.now() - began),
+        phases: fixture.phases,
+      }),
+    );
+  });
+  ownedFixture(t).remove(async () => {
+    const published = fixture.registration && finalizeFixtureDiagnostics(fixture.registration, t.signal);
+    if (published && !published.canRemove) return;
+    if (published)
+      assert.equal(published.reports, fixture.completedReports, 'every completed reference report survives teardown');
+    await fs.rm(directory, { recursive: true, force: true });
+  });
+}
+async function compareFixture(t, options) {
+  const fixture = referenceFixtures.get(t);
+  assert.ok(fixture, 'reference evidence has an owner before the producer starts');
+  fixture.registration ??= registerFixtureDiagnostics({
+    fixtureRoot: fixture.directory,
+    kind: 'reference',
+    reportRoots: ['reference-evidence'],
+    origin: options.localUrl,
+    outputRoot: fileURLToPath(new URL('../../.paqvilo/', import.meta.url)),
+  });
+  const outputDir = path.join(fixture.directory, 'reference-evidence', String(++fixture.comparisons).padStart(4, '0'));
+  const report = await compareReferenceContractsImpl({ ...options, outputDir });
+  fixture.completedReports++;
+  return report;
+}
 
 test('reference projections preserve nulls, missing-field errors, ordering and explicit status-only checks', () => {
   const plan = { collection: 'value', fields: ['id', 'name'], unordered: true };
@@ -71,9 +157,16 @@ test('malformed reference options fail before local or reference reads instead o
   assert.equal(requests, 0);
 });
 
-test('reference parity uses explicit local visitors, membership and override roles without changing runtime identity', async (t) => {
+test(
+  'reference parity uses explicit local visitors, membership and override roles without changing runtime identity',
+  // Hang guard only: one scenario of many comparisons against one runtime, whose identity state changes between them.
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  explicitLocalVisitors,
+);
+async function explicitLocalVisitors(t) {
   const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'reference-visitor-'));
-  ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
+  ownReferenceFixture(t, directory);
+  const compareReferenceContracts = (options) => compareFixture(t, options);
   const files = {
     'website.yml': 'adx_name: Parity fixture\nadx_websiteid: site',
     'webrole.yml':
@@ -160,7 +253,7 @@ test('reference parity uses explicit local visitors, membership and override rol
     'compatibility scope does not grant the default parity visitor access',
   );
   delete app.store.state.simulator.identityScope;
-  const session = await createPortalSession({ origin: app.url, contactId: 'reader' });
+  const session = await createPortalSession({ origin: app.url, contactId: 'reader', timeoutMs: 0 });
   assert.equal((await compareReferenceContracts({ ...options, localSession: session })).passed, true);
   assert.equal((await session.session()).signedIn, true, 'caller-owned session stays open');
   const changed = await compareReferenceContracts({
@@ -195,15 +288,19 @@ test('reference parity uses explicit local visitors, membership and override rol
   // Public anonymous reads retain normal exported-role permission checks.
   app.store.state.permissions[0].roles = ['Public'];
   assert.equal((await compareReferenceContracts(options)).passed, true);
-});
+}
 
 test('reference runner detects JSON/status/state mismatches, rejects writes and redacts query values', async (t) => {
   const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'reference-contract-'));
+  ownReferenceFixture(t, directory);
+  const compareReferenceContracts = (options) => compareFixture(t, options);
   let revision = 1,
     localReads = 0;
   const anonymousCookie = 'fixture-visitor=private-anonymous-session';
   const server = http.createServer((req, res) => {
     res.setHeader('content-type', 'application/json');
+    if (req.url === '/_sim/api/status')
+      return res.end(JSON.stringify({ csrf: 'fixture-session-control', mode: 'local', pageMode: 'local' }));
     if (req.url.startsWith('/__sim/api/state') || req.url.startsWith('/_sim/api/state'))
       return res.end(
         JSON.stringify({
@@ -236,7 +333,6 @@ test('reference runner detects JSON/status/state mismatches, rejects writes and 
   ownedFixture(t).add(async () => {
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
-    await fs.rm(directory, { recursive: true, force: true });
   });
   const options = {
     localUrl: `http://127.0.0.1:${server.address().port}`,
@@ -304,6 +400,8 @@ test('reference runner detects JSON/status/state mismatches, rejects writes and 
 
 test('anonymous parity requires session controls and refuses runtime-state redirects before reference access', async (t) => {
   const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'reference-session-guard-'));
+  ownReferenceFixture(t, directory);
+  const compareReferenceContracts = (options) => compareFixture(t, options);
   let forwardedRequests = 0,
     referenceRequests = 0,
     redirect = true;
@@ -328,7 +426,6 @@ test('anonymous parity requires session controls and refuses runtime-state redir
       current.closeAllConnections();
       await new Promise((resolve) => current.close(resolve));
     }
-    await fs.rm(directory, { recursive: true, force: true });
   });
   const options = {
     localUrl: `http://127.0.0.1:${server.address().port}`,

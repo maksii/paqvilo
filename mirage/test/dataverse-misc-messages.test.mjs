@@ -16,6 +16,7 @@ import { uuidV5 } from '../lib/dataverse-security.mjs';
 import { createAsyncPluginRunner } from '../lib/plugin-async.mjs';
 import { pluginCatalogue } from '../lib/exported-plugins.mjs';
 import { bearerCall, signedInRequester } from './support/web-api.mjs';
+import { fixedClock } from '../lib/runtime-clock.mjs';
 
 const APP_ID = '22222222-2222-2222-2222-222222222222';
 const PUBLIC_APP_ID = '44444444-4444-4444-4444-444444444444';
@@ -116,6 +117,7 @@ function fixtureState() {
   return state;
 }
 
+const clock = fixedClock(Date.parse('2026-10-20T10:03:04.567Z'));
 let api;
 let store;
 let origin;
@@ -125,7 +127,7 @@ let metadata;
 
 before(async () => {
   process.env[SECRET_VAR] = 'misc-messages-secret';
-  store = await new DataStore({ state: fixtureState() }).init();
+  store = await new DataStore({ state: fixtureState(), clock }).init();
   const settings = dataverseSettings({
     enabled: true,
     tenantId: TENANT,
@@ -140,7 +142,7 @@ before(async () => {
     ],
     users: [{ domainname: 'none@example.test', fullname: 'None', objectId: NONE_OID, roles: [] }],
   });
-  api = await startDataverseApi({ store, settings, log: () => {}, extensions: EXTENSIONS });
+  api = await startDataverseApi({ store, settings, clock: clock.now, log: () => {}, extensions: EXTENSIONS });
   origin = api.origin;
   const organizationId = api.organizationId;
   await store.transact(() => {
@@ -400,13 +402,14 @@ describe('query conversion, validation, timestamp and knowledge searches', () =>
   });
 
   it('RetrieveTimestamp returns the current server time as an ISO timestamp', async () => {
-    // The organization runs on wall time here, so the answer lies between the moments the call started and ended.
-    const started = Date.now();
+    // Sample the configured organization clock: host clock corrections cannot reverse this call bracket.
+    const started = clock.now();
     const body = await (await call(webApi('RetrieveTimestamp'))).json();
-    const ended = Date.now();
+    const ended = clock.now();
     assert.match(body.Timestamp, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
     const answered = Date.parse(body.Timestamp);
     assert.ok(answered >= started && answered <= ended, `${body.Timestamp} outside the call`);
+    assert.equal(body.Timestamp, new Date(started).toISOString());
   });
 
   it('FullTextSearchKnowledgeArticle finds articles by text, filters by state and drops older versions on request', async () => {
@@ -739,6 +742,35 @@ describe('knowledge versions, rollup, virtual events, composite data sources, ce
     );
     const unknown = await call(webApi(`RetrieveActivePath(ProcessInstanceId=${WIDGET_TWO})`));
     assert.match((await errorOf(unknown, 404)).text, /0x80060370/);
+  });
+
+  // A wall clock stepped back between two writes (lab night medium-20261119 saw ~1 s steps on WSL) never stamps the later
+  // instance older, and equal whole-second modifiedon lists the later inserted instance first.
+  it('RetrieveProcessInstances lists the later inserted instance first across a wall clock stepped back', async () => {
+    const instance = (new_samplebpfid, activestageid) =>
+      store.create(
+        'new_samplebpf',
+        { new_samplebpfid, bpf_contoso_widgetid: WIDGET_TWO, activestageid },
+        { admin: true },
+      );
+    // The collection read returns its rows in primary key order. The first pair is inserted in that order, the second in
+    // the reverse order, so neither the key order nor its reversal gives the insertion order the tie rule needs.
+    const first = await instance('94000000-0000-4000-8000-000000000001', STAGE_ONE);
+    clock.advance(-1000);
+    try {
+      const second = await instance('94000000-0000-4000-8000-000000000002', STAGE_TWO);
+      const third = await instance('94000000-0000-4000-8000-000000000004', STAGE_ONE);
+      const fourth = await instance('94000000-0000-4000-8000-000000000003', STAGE_TWO);
+      const instances = await (
+        await call(webApi(`RetrieveProcessInstances(EntityId=${WIDGET_TWO},EntityLogicalName='contoso_widget')`))
+      ).json();
+      assert.deepEqual(
+        instances.value.map((row) => row.new_samplebpfid),
+        [fourth, third, second, first].map((row) => row.new_samplebpfid),
+      );
+    } finally {
+      clock.advance(1000);
+    }
   });
 
   it('SetProcess is in $metadata and answers 501 0x80040216 by default; the new messages are declared in $metadata', async () => {

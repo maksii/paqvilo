@@ -9,7 +9,7 @@
   };
   $('#nav-toggle')?.addEventListener('click', () => setNavOpen(!$('.sidebar')?.classList.contains('is-open')));
   globalThis.addEventListener('hashchange', () => setNavOpen(false));
-  // Below 760 px the top bar's apps and actions are one menu (DV-N4b-9); a choice or a click elsewhere closes it.
+  // Below 760 px the top bar's apps and actions are one menu; a choice or a click elsewhere closes it.
   const setTopMenu = (open) => {
     $('.topbar')?.classList.toggle('is-open', open);
     $('#top-more')?.setAttribute('aria-expanded', String(open));

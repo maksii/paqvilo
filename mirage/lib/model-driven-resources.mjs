@@ -223,10 +223,21 @@ async function layerEntries(layer, budget) {
     try {
       layers = await Promise.all(
         clientSources.map(async (source) => {
-          const dir = await fs.realpath(source),
+          const entry = `modelDriven.clientSources entry ${shown(source)}`;
+          let dir, stat;
+          try {
+            dir = await fs.realpath(source);
             stat = await fs.stat(dir);
+          } catch (error) {
+            throw new Error(
+              error.code === 'ENOENT'
+                ? `${entry} does not exist; name an existing local directory or Solution ZIP file.`
+                : `${entry} cannot be read (${error.code ?? error.message}).`,
+              { cause: error },
+            );
+          }
           if (!stat.isDirectory() && !(stat.isFile() && /\.zip$/i.test(dir)))
-            throw new Error('Client sources must be local directories or Solution ZIP files.');
+            throw new Error(`${entry} is not a local directory or Solution ZIP file.`);
           return { type: stat.isDirectory() ? 'directory' : 'zip', dir };
         }),
       );

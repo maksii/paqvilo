@@ -18,6 +18,7 @@ import { buildAssembly, fakePublicKey, certificateInspectionFixture } from './cl
 import { createSelfSignedCertificate } from '../lib/dataverse-tls.mjs';
 import { zipOf } from '../lib/dataverse-solutions.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { compileCached, compileCacheKey } from '../lib/compile-cache.mjs';
 
 const IPLUGIN = 'Microsoft.Xrm.Sdk.IPlugin';
 const ACTIVITY = 'System.Activities.CodeActivity';
@@ -214,8 +215,30 @@ describe('CLR assembly reader', () => {
 });
 
 // A real compiled plug-in: a local Microsoft.Xrm.Sdk.IPlugin and System.Activities.CodeActivity stand in for the SDK, so no
-// package is needed. Skipped when dotnet is not installed.
-const dotnet = spawnSync('dotnet', ['--version'], { encoding: 'utf8' });
+// package is needed. Skipped when dotnet is not installed. The SDK's own C# compiler (Roslyn) is started directly: no
+// project evaluation, package restore or build server stands between the source and the assembly.
+const dotnetAnswer = (...args) => spawnSync('dotnet', args, { encoding: 'utf8', windowsHide: true });
+const dotnet = dotnetAnswer('--version');
+// The compiler of the selected SDK and the core libraries of the newest installed runtime of the same major version.
+function roslyn() {
+  const version = dotnet.stdout.trim(),
+    listed = (answer, pattern) =>
+      answer.stdout
+        .split(/\r?\n/)
+        .map((line) => pattern.exec(line))
+        .filter(Boolean);
+  const sdk = listed(dotnetAnswer('--list-sdks'), /^(\S+) \[(.+)\]$/).find((match) => match[1] === version);
+  const runtime = listed(dotnetAnswer('--list-runtimes'), /^Microsoft\.NETCore\.App (\S+) \[(.+)\]$/)
+    .filter((match) => match[1].split('.')[0] === version.split('.')[0])
+    .at(-1);
+  assert.ok(sdk && runtime, `dotnet ${version} lists its SDK folder and a runtime of the same major version`);
+  const libraries = path.join(runtime[2], runtime[1]);
+  return {
+    identity: `${version}+${runtime[1]}`,
+    compiler: path.join(sdk[2], sdk[1], 'Roslyn', 'bincore', 'csc.dll'),
+    references: ['System.Private.CoreLib.dll', 'System.ComponentModel.dll'].map((name) => path.join(libraries, name)),
+  };
+}
 const SOURCE = `namespace Microsoft.Xrm.Sdk
 {
     public interface IPlugin { void Execute(System.IServiceProvider serviceProvider); }
@@ -236,40 +259,41 @@ namespace Contoso.Plugins
 
 describe('CLR assembly reader against a compiled assembly (dotnet)', () => {
   it('reads a real compiled plug-in assembly', { skip: dotnet.status !== 0 && 'dotnet is not installed' }, async () => {
-    const tfm = `net${dotnet.stdout.trim().split('.')[0]}.0`; // the SDK's own target, so no package download is needed
+    const { identity, compiler, references } = roslyn(),
+      name = 'Contoso.Plugins.WidgetCheck.dll';
     const dir = await makeTemporaryDirectory(path.join(tmpdir(), 'paqvilo-clr-'));
     try {
-      await writeFile(
-        path.join(dir, 'Contoso.Plugins.WidgetCheck.csproj'),
-        `<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>${tfm}</TargetFramework><AssemblyName>Contoso.Plugins.WidgetCheck</AssemblyName><ImplicitUsings>disable</ImplicitUsings><Nullable>disable</Nullable><GenerateAssemblyInfo>false</GenerateAssemblyInfo></PropertyGroup></Project>`,
-      );
       await writeFile(path.join(dir, 'Types.cs'), SOURCE);
-      // The temporary build directory is outside the checkout's global.json ancestry.
-      await writeFile(
-        path.join(dir, 'global.json'),
-        JSON.stringify({ sdk: { version: dotnet.stdout.trim(), rollForward: 'disable', allowPrerelease: false } }),
-      );
-      const build = spawnSync(
-        'dotnet',
-        [
-          'build',
-          '-o',
-          path.join(dir, 'out'),
-          '--nologo',
-          '-v',
-          'q',
-          '-nodeReuse:false',
-          '-p:UseSharedCompilation=false',
-        ],
-        {
-          cwd: dir,
-          encoding: 'utf8',
-          timeout: 170_000, // hang guard only, the same bound as the lane's CLI hang guard in fixtures/clr-sdk.mjs
-          env: { ...process.env, DOTNET_CLI_TELEMETRY_OPTOUT: '1', DOTNET_NOLOGO: '1' },
+      // One compile per SDK, runtime and source serves every later run (lib/compile-cache.mjs).
+      compileCached({
+        key: compileCacheKey(['clr-reader-fixture/1', identity, name, SOURCE]),
+        files: [name],
+        into: dir,
+        build(folder) {
+          const build = spawnSync(
+            'dotnet',
+            [
+              compiler,
+              '-nologo',
+              '-target:library',
+              '-nostdlib',
+              '-out:' + path.join(folder, name),
+              ...references.map((reference) => '-r:' + reference),
+              path.join(dir, 'Types.cs'),
+            ],
+            {
+              encoding: 'utf8',
+              windowsHide: true,
+              timeout: 170_000, // hang guard only, the same bound as the lane's CLI hang guard in fixtures/clr-sdk.mjs
+              env: { ...process.env, DOTNET_CLI_TELEMETRY_OPTOUT: '1', DOTNET_NOLOGO: '1' },
+            },
+          );
+          // A compiler the guard stopped can still report exit status 0: only a run without an error counts.
+          assert.equal(build.error, undefined, `${build.error?.message}: ${build.stdout}${build.stderr}`);
+          assert.equal(build.status, 0, `${build.stdout}${build.stderr}`);
         },
-      );
-      assert.equal(build.status, 0, `${build.stdout}${build.stderr}`);
-      const facts = inspectAssembly(await readFile(path.join(dir, 'out', 'Contoso.Plugins.WidgetCheck.dll')));
+      });
+      const facts = inspectAssembly(await readFile(path.join(dir, name)));
       assert.equal(facts.name, 'Contoso.Plugins.WidgetCheck');
       assert.equal(facts.culture, 'neutral');
       assert.equal(facts.strongNamed, false);

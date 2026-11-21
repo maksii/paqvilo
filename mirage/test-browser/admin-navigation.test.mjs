@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
-import { serveAdminFile } from './shared-browser.mjs';
+import { refreshWorkspace, serveAdminFile } from './shared-browser.mjs';
 
 test('admin paginates large tables, lazily inspects details and never requests the audit', async (t) => {
   const mappings = Array.from({ length: 85 }, (_, i) => ({
@@ -111,7 +111,7 @@ test('admin paginates large tables, lazily inspects details and never requests t
       status: 'eligible',
     },
   ];
-  await page.locator('#refresh').click();
+  await refreshWorkspace(page);
   // Baselines are collapsed sections; open the rich-text one.
   await page.locator('[data-disclosure="rich-text-baselines"] > summary').click();
   await page.getByRole('heading', { name: 'Versioned rich-text JSON baselines' }).waitFor();

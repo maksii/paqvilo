@@ -7,6 +7,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { parse, defaultTreeAdapter as adapter } from 'parse5';
+import { readJsonOption } from './lib/path-options.mjs';
+import { isToolkitAttribute, isToolkitElement, isToolkitHeader } from './lib/render-provenance.mjs';
 
 const sha = (value) => createHash('sha256').update(String(value)).digest('hex').slice(0, 12);
 const readJson = async (file, fallback = null) => {
@@ -21,7 +23,7 @@ const readJson = async (file, fallback = null) => {
 /** Allowlist entries: { id, scope: request|response|dom|element|console, pattern, field, reason, proof, evidence, value? }.
  * `value` (optional regex) narrows the entry to deltas whose live or Mirage value matches it. */
 export async function loadAllowlist(file) {
-  const data = JSON.parse(await fs.readFile(file, 'utf8'));
+  const data = await readJsonOption('allowlist', file);
   if (data.version !== 1 || !Array.isArray(data.entries))
     throw new Error('Allowlist version 1 with entries is required.');
   for (const entry of data.entries) validateAllowlistEntry(entry);
@@ -206,7 +208,7 @@ function requestKey(request) {
 const withoutDiagnostics = (headers) =>
   Object.fromEntries(
     Object.entries(headers ?? {})
-      .filter(([name]) => !/^x-sim-/i.test(name))
+      .filter(([name]) => !isToolkitHeader(name))
       .map(([name, value]) => [
         name,
         /^content-type$/i.test(name)
@@ -274,7 +276,7 @@ function compareRequestPair(a, b, key, out) {
 
 function compareResponsePair(location, ra, rb, out) {
   if (ra.status !== rb.status) out.push(delta('response', location, 'status', ra.status ?? null, rb.status ?? null));
-  // A local runtime's own diagnostic headers (x-sim-*) are instrumentation, not rendered behaviour.
+  // A local runtime's own headers (diagnostics, provenance, script proof, trace id) are instrumentation, not behaviour.
   diffValue('response', location, 'headers', withoutDiagnostics(ra.headers), withoutDiagnostics(rb.headers), out);
   const typeA = ra.headers?.['content-type'] ?? '';
   if (ra.body !== undefined || rb.body !== undefined) compareResponseBodies(location, ra, rb, typeA, out);
@@ -320,9 +322,11 @@ function childElements(node) {
   );
 }
 const isJsonScript = (node) => node.attrs?.some((a) => a.name === 'type' && /json/i.test(a.value));
+// The dev panel and elements the toolkit injected; provenance annotations keep their portal element.
 const isPanel = (node) =>
   adapter.isElementNode(node) &&
-  node.attrs?.some((a) => (a.name === 'id' && a.value === 'paqvilo-panel') || a.name.startsWith('data-paqvilo'));
+  (node.attrs?.some((a) => a.name === 'id' && a.value === 'paqvilo-panel') ||
+    isToolkitElement((node.attrs ?? []).map((a) => a.name)));
 const textOf = (node) =>
   adapter.isTextNode(node)
     ? node.value.replace(/\s+/g, ' ').trim()
@@ -353,13 +357,10 @@ export function diffDom(a, b, out, root = 'dom') {
   return out;
 }
 
+const comparedAttribute = (a) => a.name !== 'nonce' && a.name !== 'style' && !isToolkitAttribute(a.name);
 function diffDomAttributes(x, y, here, out) {
-  const attrsA = Object.fromEntries(
-    (x.attrs ?? []).filter((a) => a.name !== 'nonce' && a.name !== 'style').map((a) => [a.name, a.value]),
-  );
-  const attrsB = Object.fromEntries(
-    (y.attrs ?? []).filter((a) => a.name !== 'nonce' && a.name !== 'style').map((a) => [a.name, a.value]),
-  );
+  const attrsA = Object.fromEntries((x.attrs ?? []).filter(comparedAttribute).map((a) => [a.name, a.value]));
+  const attrsB = Object.fromEntries((y.attrs ?? []).filter(comparedAttribute).map((a) => [a.name, a.value]));
   for (const name of new Set([...Object.keys(attrsA), ...Object.keys(attrsB)])) {
     if (name === 'class') {
       const ca = (attrsA.class ?? '').split(/\s+/).filter(Boolean).join(' ');
@@ -441,9 +442,15 @@ function byElementKey(items) {
   );
 }
 
+const portalAttributes = (attributes = {}) =>
+  Object.fromEntries(Object.entries(attributes).filter(([name]) => !isToolkitAttribute(name)));
+const portalElements = (items) =>
+  items
+    .filter((item) => !isToolkitElement(Object.keys(item.attributes ?? {})))
+    .map((item) => (item.attributes ? { ...item, attributes: portalAttributes(item.attributes) } : item));
 export function compareElements(live = [], mirage = [], out = []) {
-  const A = byElementKey(live);
-  const B = byElementKey(mirage);
+  const A = byElementKey(portalElements(live));
+  const B = byElementKey(portalElements(mirage));
   for (const [selector, a] of A) {
     const b = B.get(selector);
     if (!b) {
@@ -560,7 +567,7 @@ export async function compareScenario({
   const mirage = normalizedCapture(await loadCapture(mirageDir), origins);
   const result = {
     id: scenario.id,
-    verdict: 'error',
+    verdict: 'ERROR',
     counts: { total: 0, allowed: 0, unexplained: 0 },
     deltas: [],
     variance: null,
@@ -709,7 +716,7 @@ const matchesChange = (item, change) =>
 /** Evidence changes: { version: 1, changes: [{ id, since, staleBefore?, affects, signatures: [{ scope, field, location, live?, mirage? }], proof: [scenario ids], reason }] }.
  * A change records a live change made after some live captures were taken: older captures show its known effect. */
 export async function loadEvidenceChanges(file) {
-  const data = JSON.parse(await fs.readFile(file, 'utf8'));
+  const data = await readJsonOption('evidence-changes', file);
   if (data.version !== 1 || !Array.isArray(data.changes))
     throw new Error('Evidence changes version 1 with changes is required.');
   for (const change of data.changes) validateEvidenceChange(change);
@@ -772,7 +779,8 @@ function evidenceProof(change, byId) {
     if (!result) return { id, state: 'missing' };
     if (!Number.isFinite(result.liveCapturedAt) || result.liveCapturedAt < change.sinceTime)
       return { id, state: 'older than since' };
-    if (result.verdict === 'error') return { id, state: 'not comparable' };
+    // Older diff.json files hold the error verdict in lowercase.
+    if (String(result.verdict).toUpperCase() === 'ERROR') return { id, state: 'not comparable' };
     return result.deltas.some((d) => !d.allowlist && matchesChange(d, change))
       ? { id, state: 'still shows the signature' }
       : { id, state: 'ok' };

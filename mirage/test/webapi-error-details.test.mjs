@@ -840,3 +840,30 @@ test('observed reader contract requires an explicit valid mode and site evidence
     /webApiErrorDetails/,
   );
 });
+
+// @test-kind contract: the module's own envelope rules: every portal Web API error carries a non-empty code and the status
+// its classifier chose; the native answer to these local conditions is not recorded.
+test('server-side portal Web API errors keep their classified status and a non-empty code', () => {
+  const unqualified = webApiErrorResponse(
+    new DataError(
+      'Multiple OData grants require their own observed source order.',
+      501,
+      'PermissionGrantOrderUnqualified',
+    ),
+  );
+  assert.equal(unqualified.status, 501);
+  assert.equal(unqualified.body.error.code, 'NotImplemented');
+  assert.equal(unqualified.headers['X-Sim-Error-Code'], 'PermissionGrantOrderUnqualified');
+  const generic = webApiErrorResponse(new Error('boom'));
+  assert.equal(generic.status, 500);
+  assert.equal(generic.body.error.code, '9004010A');
+  const unavailable = webApiErrorResponse(new DataError('Busy.', 503, 'Unavailable'));
+  assert.equal(unavailable.status, 503);
+  assert.equal(unavailable.body.error.code, '9004010A');
+  const large = webApiErrorResponse(
+    new DataError('Request message length is too large.', 413, 'PayloadTooLarge', { innerCode: '0x8004418a' }),
+  );
+  assert.deepEqual([large.status, large.body.error.code], [413, '0x8004418a']);
+  const conflict = webApiErrorResponse(new DataError('Changed.', 409, 'StateConflict'));
+  assert.deepEqual([conflict.status, conflict.body.error.code], [409, 'StateConflict']);
+});

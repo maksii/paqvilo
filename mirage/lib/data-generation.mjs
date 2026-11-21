@@ -3,6 +3,7 @@
 // merges them additively (by primary key) into an explicit local state file
 // through the runtime's lock, digest and atomic-replace protocol. It never
 // contacts a portal or PAC.
+import { requiredArgument } from './required-argument.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { DataStore } from './data.mjs';
@@ -207,7 +208,10 @@ function materializeDatasetMemberships(result, fragment, basePreset, portal) {
 }
 
 /** Every `{ id, logical_name }` lookup in the listed tables resolves to a row. */
-export function findDanglingLookups(state, tables = Object.keys(state.tables ?? {})) {
+export function findDanglingLookups(
+  state = requiredArgument('findDanglingLookups(state)', 'a runtime state'),
+  tables = Object.keys(state.tables ?? {}),
+) {
   const indexes = new Map();
   const has = (table, id) => {
     if (!indexes.has(table)) indexes.set(table, existingKeys(own(state.tables, table) ?? [], idColumnOf(state, table)));
@@ -301,7 +305,11 @@ function mergeDatasetState(
   return { state: result, report: { ...report, addedPermissions, addedMemberships, schemaViolations: 0 } };
 }
 
-export function mergeDataset(state, fragment, options) {
+export function mergeDataset(
+  state = requiredArgument('mergeDataset(state, fragment, options)', 'a Mirage state object'),
+  fragment = requiredArgument('mergeDataset(state, fragment, options)', 'a dataset fragment'),
+  options,
+) {
   return mergeDatasetState(state, fragment, options);
 }
 
@@ -354,7 +362,7 @@ async function writeOfflineState(ownResource, source, outputPath, state) {
 
 const parseCount = (value, option) => {
   if (value === undefined) return undefined;
-  if (!/^\d+$/.test(String(value))) throw new Error(`--${option} must be a nonnegative integer`);
+  if (!/^\d+$/.test(String(value))) throw new Error(`--${option} must be a non-negative integer`);
   const count = Number(value);
   if (!Number.isSafeInteger(count)) throw new Error(`--${option} is too large`);
   return count;
@@ -374,10 +382,10 @@ const parseCounts = (entries = []) => {
 
 /** Validate data actions without resolving sources or opening state. */
 export function validateDataCommand(subcommands, args) {
-  if (subcommands.length !== 1)
-    throw new Error(
-      'Data commands require exactly one action: generate or scaffold; unexpected positional arguments are not accepted.',
-    );
+  const help = 'Run paqvilo mirage data --help for options.';
+  if (!subcommands.length) throw new Error(`Missing data action; use generate or scaffold. ${help}`);
+  if (subcommands.length > 1)
+    throw new Error(`Unexpected argument "${subcommands[1]}"; data takes one action: generate or scaffold. ${help}`);
   const [action] = subcommands;
   if (action === 'scaffold')
     for (const name of ['pack', 'pack-module', 'count', 'materialize-persona-memberships'])
@@ -385,16 +393,13 @@ export function validateDataCommand(subcommands, args) {
   if (action === 'generate' && args.rows !== undefined)
     throw new Error('--rows is supported only by data scaffold; use --count NAME=N for pack-defined generation counts');
   if (action !== 'generate' && action !== 'scaffold')
-    throw new Error(
-      'Usage: node mirage/cli.mjs data generate --pack ID --profile NAME --state FILE [--out FILE] [--seed S]\n' +
-        '       node mirage/cli.mjs data scaffold --source PORTAL_DIR --profile smoke|dev --state FILE [--solution-root DIR ...] [--rows N] [--out FILE] [--seed S]',
-    );
+    throw new Error(`Unknown data action "${action}"; use generate or scaffold. ${help}`);
   if (action === 'scaffold') parseCount(args.rows, 'rows');
   else parseCounts(args.count);
   return action;
 }
 
-/** CLI adapter: `node mirage/cli.mjs data generate --pack ID ...` (parsed args). */
+/** CLI adapter: `paqvilo mirage data generate --pack ID ...` (parsed args). */
 export async function runDataCommand(subcommands, args) {
   const action = validateDataCommand(subcommands, args);
   if (action === 'scaffold')
@@ -426,7 +431,11 @@ export async function runDataCommand(subcommands, args) {
     materializePersonaMemberships: args['materialize-persona-memberships'] ?? false,
     source: args.source,
     dataModel: args.dataModel ?? args['data-model'],
-    packModules: (args['pack-module'] ?? []).map((module) => ({ module: path.resolve(module) })),
+    // A catalogue site's dataPacks (already absolute) come first, then --pack-module, as serve registers them.
+    packModules: [
+      ...(args.catalogueDataPacks ?? []),
+      ...(args['pack-module'] ?? []).map((module) => ({ module: path.resolve(module) })),
+    ],
   });
 }
 
@@ -459,8 +468,8 @@ async function generateDataCommand({
     if (typeof pack.dataset !== 'function') throw new Error(`Data pack '${packId}' does not provide dataset()`);
     if (pack.profiles && !Object.hasOwn(pack.profiles, profile))
       throw new Error(`Data pack '${packId}' has no profile '${profile}' (${Object.keys(pack.profiles).join(', ')})`);
-    await assertOfflineState(outputPath);
-    if (outputPath !== inputPath) await assertOfflineState(inputPath);
+    await assertOfflineState(outputPath, { operation: 'generating data' });
+    if (outputPath !== inputPath) await assertOfflineState(inputPath, { operation: 'generating data' });
     const started = performance.now();
     const source = await ownResource(new DataStore({ file: inputPath })).init();
     // The command owns this input. The merge makes one private copy, sharing
@@ -489,8 +498,8 @@ async function generateDataCommand({
     );
     const generatedMs = performance.now() - started;
     // Re-check immediately before writing; the store applies its own lock and
-    // digest checks (docs/state-write-integrity.md).
-    await assertOfflineState(outputPath);
+    // digest checks (mirage/docs/state-storage.md#write-integrity).
+    await assertOfflineState(outputPath, { operation: 'generating data' });
     await writeOfflineState(ownResource, source, outputPath, output);
     return {
       written: outputPath,
@@ -587,8 +596,8 @@ export async function scaffoldDataCommand({
     ]);
     const inputPath = path.resolve(statePath);
     const outputPath = path.resolve(out ?? statePath);
-    await assertOfflineState(outputPath);
-    if (outputPath !== inputPath) await assertOfflineState(inputPath);
+    await assertOfflineState(outputPath, { operation: 'scaffolding data' });
+    if (outputPath !== inputPath) await assertOfflineState(inputPath, { operation: 'scaffolding data' });
     const started = performance.now();
     const sourceDir = path.resolve(source);
     const portal = await importPortal(sourceDir, { dataModel });
@@ -623,7 +632,7 @@ export async function scaffoldDataCommand({
     const rows = mergeScaffoldTables(output, scaffold, metadata);
     const addedMemberships = mergeScaffoldMemberships(output, scaffold);
     output.provenance = { ...output.provenance, scaffold: { ...scaffold.report, source: sourceDir } };
-    await assertOfflineState(outputPath);
+    await assertOfflineState(outputPath, { operation: 'scaffolding data' });
     await writeOfflineState(ownResource, sourceStore, outputPath, output);
     return {
       written: outputPath,

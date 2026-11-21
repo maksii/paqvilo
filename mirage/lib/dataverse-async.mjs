@@ -13,10 +13,10 @@
 // span and end in one `rows` event, never one span per row.
 import { DataError } from './data-error.mjs';
 import { fromBulkDeleteJson, toFetchXml } from './dataverse-soap-query.mjs';
-import { dataverseIdentity, ownerColumns, privilegeDeniedError } from './dataverse-security.mjs';
+import { dataverseIdentity, ownerColumns } from './dataverse-security.mjs';
 import { dataverseError, parseDataverseRoute, parsePrefer } from './dataverse-odata.mjs';
 import { isLoopbackUrl, loopbackFetch } from './dataverse-webhooks.mjs';
-import { createScheduler, systemIds } from './runtime-clock.mjs';
+import { createScheduler, stampMs, systemIds } from './runtime-clock.mjs';
 import { detached, jobOrigin } from './committed-work.mjs';
 import { tracedFetch } from './trace-hosts.mjs';
 
@@ -637,7 +637,8 @@ export async function install(
 ) {
   const { store } = api;
   seedMappings(store);
-  const stamp = () => new Date(api.clock()).toISOString();
+  // A stored date, held across a small backward step of the wall clock (runtime-clock.mjs stampMs).
+  const stamp = () => new Date(stampMs(store, api.clock)).toISOString();
   const uuid = () => (api.ids ?? systemIds).uuid();
   // Every write of the module settles the waiters of the jobs it completes, once the write has committed.
   const write = async (fn) => {
@@ -1070,7 +1071,7 @@ export async function install(
     async handle(ctx) {
       // prvBulkDelete is held only by System Administrator (dataverse-security.mjs), so it is checked before anything else.
       /* NOSONAR */ if (!(api.principals.privileges(ctx.user).get('prvBulkDelete') > 0))
-        throw privilegeDeniedError(ctx.user, 'prvBulkDelete', 'asyncoperation');
+        throw api.principals.deniedError(ctx.user, 'prvBulkDelete', 'asyncoperation');
       const body = ctx.body;
       if (!body || typeof body !== 'object' || !Array.isArray(body.QuerySet) || body.QuerySet.length === 0) {
         throw invalid('QuerySet is required and must list at least one query.');
@@ -1096,7 +1097,9 @@ export async function install(
           name,
           postponeuntil,
           recurrencepattern: recurrence ? body.RecurrencePattern : null,
-          recurrencestarttime: recurrence ? (postponeuntil ?? new Date(api.clock()).toISOString()) : null,
+          recurrencestarttime: recurrence
+            ? (postponeuntil ?? new Date(stampMs(api.store, api.clock)).toISOString())
+            : null,
         },
       );
       return { status: 200, body: { JobId: jobId } };
@@ -1423,3 +1426,36 @@ export async function install(
 
 /** Router hook: resolves to the 202 for a respond-async call to a custom API, or null when the operation runs as usual. */
 export const runInBackground = (api, call, op) => api.backgroundOperations?.submit(call, op) ?? null;
+
+/** Capability record for the capability registry; dataverse-extensions.mjs adds the operations install registered. */
+export function describe() {
+  return {
+    name: 'dataverse-async',
+    version: 1,
+    kind: 'dataverse-extension',
+    level: 'behaviour',
+    reason:
+      'BulkDelete system jobs and background operations run on the local scheduler; only FREQ HOURLY, DAILY, WEEKLY or MONTHLY recurrences are simulated.',
+    operations: [
+      {
+        name: 'RetrieveCascadeAssignAsyncJobId',
+        level: 'contract',
+        reason: 'Cascades run synchronously here, so the answer is the empty id.',
+      },
+      {
+        name: 'RetrieveCascadeDeleteAsyncJobId',
+        level: 'contract',
+        reason: 'Cascades run synchronously here, so the answer is the empty id.',
+      },
+      {
+        name: 'OnBackgroundOperationComplete',
+        level: 'contract',
+        reason: 'Parameters are checked and the call changes nothing; no event is delivered.',
+      },
+    ],
+    requires: [],
+    principal: 'caller',
+    stateOwner: 'store',
+    lifecycle: 'per-request',
+  };
+}

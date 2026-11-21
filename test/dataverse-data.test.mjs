@@ -1,3 +1,4 @@
+// @test-kind contract: data catalogue planning, apply and comparison against an invented loopback Dataverse fixture
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataverseClient } from '../lense/dataverse/client.mjs';
@@ -262,10 +263,14 @@ test('data plan is read only; loader resolves external IDs, cycles and navigatio
   assert.equal(s.rows.get(ids.company).tst_multi, '5,7');
   assert.equal(s.links.size, 2);
   const writes = s.requests.filter((r) => r.method !== 'GET').length;
-  await applyData(s.catalogue, { client: s.client });
+  const rerun = await applyData(s.catalogue, { client: s.client });
+  assert.equal(rerun.state, 'Unchanged', 'a rerun that created nothing does not report Created');
   assert.equal(s.requests.filter((r) => r.method !== 'GET').length, writes);
   assert.equal((await compareData(s.catalogue, { client: s.client })).passed, true);
   assert.equal(s.rows.get(ids.foreign).tst_name, 'Untouched');
+  s.links.clear();
+  assert.equal((await applyData(s.catalogue, { client: s.client })).state, 'Linked', 'only associations were written');
+  assert.equal(s.links.size, 2);
 });
 test('comparison detects scalar/relationship drift and loading blocks writes rather than repairing foreign data', async (t) => {
   const s = await serverFixture(t);
@@ -335,4 +340,21 @@ test('retrieval diffs preserve missing and unexpected duplicate occurrences', as
   const missing = (await runDataQueries(c, { client: s.client })).results[0];
   assert.equal(missing.missing.length, 1);
   assert.equal(missing.unexpected.length, 0);
+});
+
+test('responses keep an integer beyond 2^53 as its exact digits', async (t) => {
+  const client = new DataverseClient({
+    environmentUrl: await loopbackServer(t, async (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"big":9007199254740993,"small":42,"ratio":1.5,"text":"9007199254740993"}');
+    }),
+    allowLoopback: true,
+    token: async () => 'invented-token',
+  });
+  assert.deepEqual(await client.get('rows'), {
+    big: '9007199254740993',
+    small: 42,
+    ratio: 1.5,
+    text: '9007199254740993',
+  });
 });

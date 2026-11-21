@@ -6,7 +6,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { validateMatrix, scenarioDir, captureMatrix } from '../baseline-suite.mjs';
+import { chromium } from 'playwright-core';
+import { validateMatrix, scenarioDir, captureMatrix, __testing as baselineSuite } from '../baseline-suite.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 // The CLI refuses within about a second; this bound only stops a hung child (a stopped child fails on its signal).
@@ -131,4 +132,156 @@ test('CLI label rejection precedes browser/runtime setup and any evidence write'
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /capture label/);
   assert.deepEqual(await fs.readdir(root), ['matrix.json']);
+});
+
+// @test-kind contract: a mirage capture without --source or --site is refused up front with the flags it accepts
+test('a mirage capture without a portal source names --source or --config --site and writes nothing', async (t) => {
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-baseline-source-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const file = path.join(root, 'matrix.json');
+  await fs.writeFile(file, JSON.stringify(matrix('valid')));
+  const result = spawnSync(
+    process.execPath,
+    [
+      fileURLToPath(new URL('../baseline-suite.mjs', import.meta.url)),
+      'capture',
+      '--matrix',
+      file,
+      '--out',
+      path.join(root, 'out'),
+      '--side',
+      'mirage',
+    ],
+    { encoding: 'utf8', timeout: CLI_HANG_MS, windowsHide: true },
+  );
+  assert.equal(result.signal, null);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /^A mirage capture needs the portal source: --source DIR or --config FILE --site ID\./);
+  assert.doesNotMatch(result.stderr, /paths\[0\]|TypeError/);
+  assert.deepEqual(await fs.readdir(root), ['matrix.json']);
+});
+
+// @test-kind contract: a missing --state is refused in one line naming the option and the path, before any runtime starts
+test('a mirage capture with a missing --state names --state and the path, not a raw copyfile error', async (t) => {
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-baseline-state-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const file = path.join(root, 'matrix.json');
+  await fs.writeFile(file, JSON.stringify(matrix('valid')));
+  await fs.mkdir(path.join(root, 'source'));
+  const missing = path.join(root, 'missing-state.json');
+  const result = spawnSync(
+    process.execPath,
+    [
+      fileURLToPath(new URL('../baseline-suite.mjs', import.meta.url)),
+      'capture',
+      '--matrix',
+      file,
+      '--out',
+      path.join(root, 'out'),
+      '--side',
+      'mirage',
+      '--source',
+      path.join(root, 'source'),
+      '--work-dir',
+      path.join(root, 'work'),
+      '--state',
+      missing,
+    ],
+    { encoding: 'utf8', timeout: CLI_HANG_MS, windowsHide: true },
+  );
+  assert.equal(result.signal, null);
+  assert.equal(result.status, 1);
+  assert.equal(result.stderr, `--state file not found: ${missing}. Pass an existing file.\n`);
+  assert.deepEqual((await fs.readdir(root)).sort(), ['matrix.json', 'source']);
+});
+
+// @test-kind contract: everything a Mirage-side capture writes goes under --work-dir; the catalogue folder gains no file
+test('a catalogue Mirage side keeps its solution cache and state under --work-dir', async (t) => {
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-baseline-workdir-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const catalogue = path.join(root, 'catalogue');
+  // An invented catalogue whose portal repository has two sibling Solution roots, so root discovery scans and caches.
+  const files = {
+    'paqvilo.config.yml':
+      'sourceRoot: .\ndefaultSite: lab\nsites:\n  lab:\n    source: repo/portal\n    environments:\n      dev: { url: "https://lab.example.invalid" }\n    mirage: {}\n',
+    'repo/.git/HEAD': 'ref: refs/heads/main\n',
+    'repo/portal/website.yml': 'adx_websiteid: invented\nadx_name: Invented fixture\n',
+    'repo/portal/web-pages/.keep': '',
+    ...Object.fromEntries(
+      ['one', 'two'].map((name) => [
+        `${name}/Other/Solution.xml`,
+        `<ImportExportXml><SolutionManifest><UniqueName>${name}</UniqueName></SolutionManifest></ImportExportXml>`,
+      ]),
+    ),
+  };
+  for (const [name, text] of Object.entries(files)) {
+    await fs.mkdir(path.dirname(path.join(catalogue, name)), { recursive: true });
+    await fs.writeFile(path.join(catalogue, name), text);
+  }
+  const before = (await fs.readdir(catalogue, { recursive: true })).sort();
+  t.mock.method(chromium, 'launch', async () => ({ newContext: async () => ({}), close: async () => {} }));
+  const workDir = path.join(root, 'work');
+  const side = await baselineSuite.mirageSide({
+    matrix: { version: 1, scenarios: [] },
+    config: path.join(catalogue, 'paqvilo.config.yml'),
+    site: 'lab',
+    workDir,
+  });
+  await side.close();
+  assert.deepEqual((await fs.readdir(catalogue, { recursive: true })).sort(), before);
+  await fs.access(path.join(workDir, 'cache', 'solution-sources.json'));
+});
+
+// @test-kind contract: unresolvable record aliases are refused in one line before any mutating hook or browser work
+test('a live capture with an undefined record alias is refused before its persona and reset hooks run', async (t) => {
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-baseline-alias-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const marker = path.join(root, 'hook-ran');
+  const hook = `node -e "require('fs').writeFileSync(process.argv[1], 'x')" ${JSON.stringify(marker)}`;
+  const file = path.join(root, 'matrix.json');
+  await fs.writeFile(
+    file,
+    JSON.stringify({
+      version: 1,
+      origin: 'https://portal.invalid',
+      hooks: { livePersona: hook, liveReset: hook },
+      personas: { anonymous: { anonymous: true } },
+      scenarios: [{ id: 'form/edit', persona: 'anonymous', steps: [{ goto: '/edit/?id={id:item1}' }] }],
+    }),
+  );
+  const ids = path.join(root, 'ids.json');
+  await fs.writeFile(ids, JSON.stringify({ item2: 'b' }));
+  const run = (...extra) =>
+    spawnSync(
+      process.execPath,
+      [
+        fileURLToPath(new URL('../baseline-suite.mjs', import.meta.url)),
+        'capture',
+        '--matrix',
+        file,
+        '--out',
+        path.join(root, 'out'),
+        '--side',
+        'live',
+        '--allow-writes',
+        '--only',
+        'form/edit',
+        ...extra,
+      ],
+      { encoding: 'utf8', timeout: CLI_HANG_MS, windowsHide: true },
+    );
+  let result = run();
+  assert.equal(result.signal, null);
+  assert.equal(result.status, 1);
+  assert.equal(
+    result.stderr,
+    'The scenario form/edit uses record alias {id:item1}, which needs --ids FILE with the fixture record ids.\n',
+  );
+  result = run('--ids', ids);
+  assert.equal(result.status, 1);
+  assert.equal(
+    result.stderr,
+    `The scenario form/edit uses record alias {id:item1}, which --ids ${ids} does not define.\n`,
+  );
+  assert.deepEqual((await fs.readdir(root)).sort(), ['ids.json', 'matrix.json']);
 });

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { sourceFixture } from './fixtures/source-site.mjs';
 import { createSimulator, readStateFile } from '../api.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedClose } from '../testing/owned-fixture.mjs';
 import { signInHeaders } from '../testing.mjs';
 
 async function fixture(t, { enhanced = false } = {}) {
@@ -131,8 +131,7 @@ async function fixture(t, { enhanced = false } = {}) {
       settings: { permissionMode: 'enforce' },
     },
   };
-  let sim = await createSimulator(options);
-  ownedFixture(t).add(() => sim.close());
+  let sim = ownedClose(t, await createSimulator(options));
   const headers = () => ({
     ...signInHeaders(sim, 'visitor', { roles: ['Writer'] }),
     'content-type': 'application/json',
@@ -153,7 +152,7 @@ async function fixture(t, { enhanced = false } = {}) {
     escaped: () => escaped,
     restart: async () => {
       await sim.close();
-      sim = await createSimulator(options);
+      sim = ownedClose(t, await createSimulator(options));
     },
     persisted: () => readStateFile(options.stateFile),
   };

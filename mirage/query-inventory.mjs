@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { reportCliError } from './cli-output.mjs';
 import { parseToolArgs } from './tool-options.mjs';
+import { assertToolOptions } from './tool-registry.mjs';
 import { createHash } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
 import path from 'node:path';
@@ -115,8 +116,9 @@ export async function inventoryPortalQueries(portalRoot) {
 }
 
 async function main(args) {
-  const { portal, json } = parseToolArgs('query-inventory', args);
-  if (!portal) throw new Error('Usage: node mirage/query-inventory.mjs --portal <portal-source-dir> [--json]');
+  const values = parseToolArgs('query-inventory', args);
+  assertToolOptions('query-inventory', values);
+  const { portal, json } = values;
   const result = await inventoryPortalQueries(portal);
   if (json) console.log(JSON.stringify(result, null, 2));
   else {

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { openPortalPage } from './shared-browser.mjs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -119,7 +120,7 @@ test('compatibility HTML survives repeated edit/postback/reopen cycles with auth
   const { app, page, errors } = await fixture(t, { compatibility: true, mode: 100000001 });
   const url = app.url + '/?id=11111111-1111-4111-8111-111111111111';
   const ready = async () => {
-    await page.goto(url, { waitUntil: 'domcontentloaded' });
+    await openPortalPage(page, url, { waitUntil: 'domcontentloaded' });
     await page.locator('[data-sim-richtext-editor][data-mounted=ready]').waitFor();
   };
   await ready();
@@ -295,7 +296,7 @@ test('authored jQuery consumers read the compatibility source textarea and bound
   const { app, page, errors } = await fixture(t, { compatibility: true, mode: 100000001, script });
   const url = app.url + '/?id=11111111-1111-4111-8111-111111111111';
   const reopen = async () => {
-    await page.goto(url, { waitUntil: 'domcontentloaded' });
+    await openPortalPage(page, url, { waitUntil: 'domcontentloaded' });
     await page.locator('[data-sim-richtext-editor][data-mounted=ready]').waitFor();
   };
   let previous = '';

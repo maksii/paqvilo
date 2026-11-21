@@ -161,7 +161,7 @@ test('a runtime template and a missing include are named by their include name, 
   assert.ok(names.includes('builtin breadcrumbs'), names.join(', '));
   assert.ok(names.includes('missing No such template'), names.join(', '));
   assert.equal(names.includes('template'), false, names.join(', '));
-  // DV-N4-11: an exported snippet names its source and resolves to its file; a template without an exported source
+  // an exported snippet names its source and resolves to its file; a template without an exported source
   // says why (sourceOrigin built-in or missing), so the Rendered tab never shows a bare dash.
   const spans = tree.spans.filter((span) => span.kind === 'render-template');
   const snippet = spans.find((span) => /Greeting/.test(span.name));

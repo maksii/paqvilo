@@ -236,7 +236,7 @@ test('settle waits for durable jobs on the real scheduler', async (t) => {
 
 // The default per-chain run limit of the flow trigger runner (maxChainRuns, flow-triggers.mjs) and the backlog report size of
 // both runners (maxPending). The plug-in runner has no per-chain run budget. One row more than the flow limit is the first to
-// cross the backlog report; more rows only add runs (each transaction clones the state, so the cost grows fast).
+// cross the backlog report; more rows only add runs.
 const DEFAULT_CHAIN_RUNS = 100;
 const BULK_ROWS = DEFAULT_CHAIN_RUNS + 1;
 
@@ -267,6 +267,50 @@ test('one commit of more rows than a chain may run still yields one durable run 
   assert.ok(!notes.some((note) => /_LIMIT$/.test(note.code)));
   assert.equal(notes.filter((note) => note.code === 'PLUGIN_ASYNC_BACKLOG').length, 1);
   assert.equal(notes.filter((note) => note.code === 'FLOW_TRIGGER_BACKLOG').length, 1);
+});
+
+const widgetEvents = (count, first = 0) =>
+  Array.from({ length: count }, (_, n) => ({
+    entity: 'x_widget',
+    operation: 'create',
+    row: { x_widgetid: `31000000-0000-4000-8000-${String(first + n).padStart(12, '0')}`, x_name: 'Row ' + (first + n) },
+    target: { x_name: 'Row ' + (first + n) },
+    submittedAttributes: ['x_name'],
+  }));
+const commitEvents = (store, events) =>
+  store.transact(() => {
+    for (const e of events)
+      store.recordCommittedEvent(e.entity, e.operation, e.row, e.submittedAttributes, { target: e.target });
+  });
+
+// Counts, not time: the work a chain of jobs does must not grow with the size of the state, and the chain must not hold
+// the event loop. An in-memory store saves without I/O, so nothing but the runner itself lets the loop turn.
+test('a chain of durable jobs copies no whole state, far fewer rows than the state holds, and lets the event loop turn between jobs', async (t) => {
+  const { store, backend, log } = await runtime(t, { file: null, fresh: true });
+  // The first jobs build the derived indexes (security, rollups) once; the measured chain starts from that state.
+  await commitEvents(store, widgetEvents(1));
+  await backend.settle();
+  const JOBS = 10,
+    stateRows = Object.values(store.snapshot().tables).reduce((sum, rows) => sum + rows.length, 0);
+  await commitEvents(store, widgetEvents(JOBS, 1));
+  let turns = 0,
+    counting = true;
+  const turn = () => {
+    turns += 1;
+    if (counting) setImmediate(turn);
+  };
+  setImmediate(turn);
+  const before = store.work;
+  await backend.settle();
+  counting = false;
+  const after = store.work;
+  assert.equal(log.length, JOBS + 1);
+  assert.equal(store.tableRows('x_audit').length, JOBS + 1);
+  // Each row ran one flow job and one plug-in job, each in transactions of its own (claim, run, SDK savepoint).
+  assert.equal(after.stateCopies - before.stateCopies, 0, 'no job transaction copies the whole state');
+  const copied = after.backupRows - before.backupRows;
+  assert.ok(copied < stateRows, `${2 * JOBS} jobs copied ${copied} rows; one copy of the state is ${stateRows} rows`);
+  assert.ok(turns >= 2 * JOBS, `the event loop turned ${turns} times while ${2 * JOBS} jobs ran`);
 });
 
 test('a Ready job cancelled before the scheduler runs it does not run', async (t) => {

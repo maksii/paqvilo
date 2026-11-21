@@ -59,7 +59,8 @@ const ADMIN_SHEETS = {
 const FEATURES = Object.freeze({
   context: 'local staff identity and app settings',
   data: 'organization CRUD, queries, metadata, files and images',
-  actions: 'registered unbound actions and functions, plus WhoAmI',
+  actions:
+    'registered unbound actions and functions and the Web API built-in functions by name; bound actions and functions through dataverse/<path>',
   connectors: 'explicit local providers',
   nativeHost: false,
   onlineConnections: false,

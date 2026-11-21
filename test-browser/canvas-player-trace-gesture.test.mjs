@@ -21,13 +21,17 @@ test('each action a click starts is a new trace linked to the page load; the pag
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   const app = 'invented';
-  const definition = page.waitForResponse(
-    (response) => response.url().endsWith(`/_apps/canvas/api/${app}`) && response.request().method() === 'GET',
+  // The player makes two calls while it loads, the app definition and the running state, and both join the page
+  // load's trace. Both listeners are registered before the navigation.
+  const loadCalls = [`/_apps/canvas/api/${app}`, `/_apps/api/canvas/${app}`].map((address) =>
+    page.waitForResponse((response) => response.url().endsWith(address) && response.request().method() === 'GET'),
   );
   // goto answers with the final response, after the sign-in redirect to the apps origin.
   const loaded = await page.goto(`${sim.url}/_apps/canvas/${app}`);
   assert.equal(loaded.status(), 200);
-  await definition;
+  // The page load's spans are counted once both calls have answered in full: a call that has not reached the
+  // simulator yet has no span, and would be counted as a span the clicks added.
+  for (const call of loadCalls) await (await call).finished();
   const pageTrace = loaded.headers()['x-trace-id'],
     pageSpan = loaded.headers()['x-sim-span-id'];
   assert.ok(pageTrace && pageSpan, 'the player page names its root');

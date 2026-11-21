@@ -76,7 +76,7 @@ test('standalone source root resolves all portals in an independent worktree wit
 
 test('source root keeps absolute and named personal source paths independent and reports missing checkouts', async () => {
   write('paqvilo.config.local.yml', 'sourceRoot: not-present\n');
-  await assert.rejects(load(), /not-present.*does not look like a portal extract/);
+  await assert.rejects(load(), /not-present.*does not exist: create or clone the portal export there/);
   const personal = await load({}, { PAQVILO_ALPHA_SOURCE: 'portals/alpha' });
   assert.equal(personal.sourceDir, path.join(dir, 'portals', 'alpha'));
   write(
@@ -234,9 +234,23 @@ test('mistakes are explained', async () => {
   await assert.rejects(load({}, { PAQVILO_LIVE_RELOAD: 'maybe' }), /PAQVILO_LIVE_RELOAD must be true or false/);
   await assert.rejects(load({}, { PAQVILO_SCOPEE: 'all' }), /Unknown setting PAQVILO_SCOPEE/);
   fs.rmSync(path.join(dir, 'portals', 'alpha'), { recursive: true });
+  await assert.rejects(load(), /does not exist: create or clone the portal export there/);
+  fs.mkdirSync(path.join(dir, 'portals', 'alpha'));
   await assert.rejects(load(), /does not look like a portal extract/);
   write('paqvilo.config.yml', 'sites: [unclosed');
   await assert.rejects(load(), /paqvilo\.config\.yml is not valid YAML/);
+});
+
+test('a catalogue that is not valid YAML is named with the parser code and position, without its content', async () => {
+  write('paqvilo.config.yml', 'defaultSite: alpha\nsites:\n: invented-secret-value: [\n');
+  await assert.rejects(load(), (error) => {
+    assert.match(
+      error.message,
+      /^paqvilo\.config\.yml is not valid YAML \([A-Z_]+ at line 3, column \d+\)\. Fix the file\.$/,
+    );
+    assert.doesNotMatch(error.message, /invented-secret-value|:$/);
+    return true;
+  });
 });
 
 test('diagnostic switches in the shell are not taken for settings', async () => {
@@ -516,10 +530,7 @@ test('all portal mode rejects duplicate origins but defers unvisited source vali
     3,
     'unused extracts do not prevent the working-day session',
   );
-  await assert.rejects(
-    targets({ portals: 'all', site: 'beta' }),
-    /source of site "beta".*does not look like a portal extract/,
-  );
+  await assert.rejects(targets({ portals: 'all', site: 'beta' }), /source of site "beta".*does not exist/);
   write('paqvilo.config.local.yml', 'sites:\n  empty:\n    source: portals/gamma\n');
   await assert.rejects(targets({ portals: 'all' }), /Site "empty" has no environments/);
 });

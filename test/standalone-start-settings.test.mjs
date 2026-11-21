@@ -8,11 +8,14 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { tempDir } from './fixture.mjs';
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+import { SCENARIO_HANG_GUARD_MS } from './helpers/bounded-command.mjs';
 
 const execute = promisify(execFile),
   cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 
 // Each test starts at most three runtimes, so the per-test limit covers a bounded amount of work.
+// Hang guard only: up to three real runtime starts and the status reads of them.
+const START_GUARD = { timeout: SCENARIO_HANG_GUARD_MS };
 async function standalone(t) {
   const root = await tempDir('paq-start-settings-');
   const project = path.join(root, 'project.json');
@@ -73,7 +76,7 @@ async function standalone(t) {
   return { run, refusedFor, otherState, write, status, startOwned };
 }
 
-test('standalone reuse with unchanged effective settings returns the running runtime', async (t) => {
+test('standalone reuse with unchanged effective settings returns the running runtime', START_GUARD, async (t) => {
   const { write, startOwned } = await standalone(t);
   await write(1, 'imds');
   const first = await startOwned(),
@@ -83,7 +86,7 @@ test('standalone reuse with unchanged effective settings returns the running run
   assert.equal(reused.pid, first.pid);
 });
 
-test('a changed platform setting is part of the launch identity', async (t) => {
+test('a changed platform setting is part of the launch identity', START_GUARD, async (t) => {
   const { write, startOwned, refusedFor, otherState, status } = await standalone(t);
   await write(1, 'imds');
   const first = await startOwned();
@@ -99,7 +102,7 @@ test('a changed platform setting is part of the launch identity', async (t) => {
   assert.equal((await status(first)).platformSettings.find((item) => item.key === 'QueryLinkEntityLimit').value, 1);
 });
 
-test('a changed managed-identity setting is part of the launch identity', async (t) => {
+test('a changed managed-identity setting is part of the launch identity', START_GUARD, async (t) => {
   const { write, startOwned, refusedFor, otherState, status } = await standalone(t);
   await write(50, 'imds');
   const first = await startOwned();

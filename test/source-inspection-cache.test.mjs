@@ -11,6 +11,7 @@ import { createSourceInspector } from '../lense/source-inspection.mjs';
 import { elementSourceHintCacheStats } from '../lense/element-provenance.mjs';
 import { inspectionFixture } from './source-inspection-fixture.mjs';
 import { settleFileTimes } from '../mirage/test/support/file-times.mjs';
+import { SCENARIO_HANG_GUARD_MS } from './helpers/bounded-command.mjs';
 
 // @test-kind contract: X-ray report size follows page candidates, revisits reuse reports, and refresh parses only changed markup
 test('X-ray report size follows page candidates, revisits reuse reports, and refresh parses only changed markup', async (t) => {
@@ -238,49 +239,54 @@ test('shared header/footer hints reuse parsing across pages and refresh, with wh
 });
 
 // @test-kind contract: 600 source reports survive A/B/A and unchanged refresh without reparsing markup
-test('600 source reports survive A/B/A and unchanged refresh without reparsing markup', async (t) => {
-  // The reuse assertions concern files written moments ago; stamps inside their time tick are never trusted.
-  settleFileTimes(t);
-  const fx = inspectionFixture();
-  t.after(fx.cleanup);
-  for (let i = 0; i < 600; i++) {
-    fs.writeFileSync(
-      path.join(fx.portal, `web-templates/S${i}.webtemplate.yml`),
-      `adx_webtemplateid: s${i}\nadx_name: S${i}`,
+// Hang guard only: it drives a runtime, the CLI or child processes through this file's fixtures; on a loaded slow host that is slow, not hung.
+test(
+  '600 source reports survive A/B/A and unchanged refresh without reparsing markup',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    // The reuse assertions concern files written moments ago; stamps inside their time tick are never trusted.
+    settleFileTimes(t);
+    const fx = inspectionFixture();
+    t.after(fx.cleanup);
+    for (let i = 0; i < 600; i++) {
+      fs.writeFileSync(
+        path.join(fx.portal, `web-templates/S${i}.webtemplate.yml`),
+        `adx_webtemplateid: s${i}\nadx_name: S${i}`,
+      );
+      fs.writeFileSync(
+        path.join(fx.portal, `web-templates/S${i}.webtemplate.source.html`),
+        `<aside class="s${i}">Invented</aside>`,
+      );
+    }
+    fs.appendFileSync(
+      path.join(fx.portal, 'web-pages/home/Home.webpage.copy.html'),
+      Array.from({ length: 600 }, (_, i) => `{% include 'S${i}' %}`).join('\n'),
     );
-    fs.writeFileSync(
-      path.join(fx.portal, `web-templates/S${i}.webtemplate.source.html`),
-      `<aside class="s${i}">Invented</aside>`,
-    );
-  }
-  fs.appendFileSync(
-    path.join(fx.portal, 'web-pages/home/Home.webpage.copy.html'),
-    Array.from({ length: 600 }, (_, i) => `{% include 'S${i}' %}`).join('\n'),
-  );
-  const inspector = createSourceInspector({ sourceDir: fx.portal });
-  const first = await inspector.inspect('/'),
-    parses = elementSourceHintCacheStats().parses;
-  await inspector.inspect('/other/');
-  first.report.pageSources.length = 0;
-  const again = await inspector.inspect('/');
-  assert.ok(again.report.pageSources.length > 0, 'cached reports are independent');
-  assert.equal(elementSourceHintCacheStats().parses, parses);
-  inspector.invalidate();
-  await inspector.inspect('/');
-  assert.equal(elementSourceHintCacheStats().parses, parses);
-  const beforeRefresh = inspector.stats();
-  inspector.invalidate();
-  await inspector.inspect('/');
-  // Work counters, not wall time: an unchanged refresh reloads and rereads nothing.
-  assert.equal(inspector.stats().reloads, beforeRefresh.reloads, 'unchanged refresh reuses the imported export');
-  assert.equal(inspector.stats().sourceFiles.misses, beforeRefresh.sourceFiles.misses);
-  assert.equal(elementSourceHintCacheStats().parses, parses);
-  fs.appendFileSync(path.join(fx.portal, 'web-templates/S590.webtemplate.source.html'), '<b id="changed590"></b>');
-  inspector.invalidate();
-  const changed = await inspector.inspect('/');
-  assert.equal(elementSourceHintCacheStats().parses, parses + 1);
-  assert.ok(changed.report.elementSources.some((item) => item.selector === '#changed590'));
-});
+    const inspector = createSourceInspector({ sourceDir: fx.portal });
+    const first = await inspector.inspect('/'),
+      parses = elementSourceHintCacheStats().parses;
+    await inspector.inspect('/other/');
+    first.report.pageSources.length = 0;
+    const again = await inspector.inspect('/');
+    assert.ok(again.report.pageSources.length > 0, 'cached reports are independent');
+    assert.equal(elementSourceHintCacheStats().parses, parses);
+    inspector.invalidate();
+    await inspector.inspect('/');
+    assert.equal(elementSourceHintCacheStats().parses, parses);
+    const beforeRefresh = inspector.stats();
+    inspector.invalidate();
+    await inspector.inspect('/');
+    // Work counters, not wall time: an unchanged refresh reloads and rereads nothing.
+    assert.equal(inspector.stats().reloads, beforeRefresh.reloads, 'unchanged refresh reuses the imported export');
+    assert.equal(inspector.stats().sourceFiles.misses, beforeRefresh.sourceFiles.misses);
+    assert.equal(elementSourceHintCacheStats().parses, parses);
+    fs.appendFileSync(path.join(fx.portal, 'web-templates/S590.webtemplate.source.html'), '<b id="changed590"></b>');
+    inspector.invalidate();
+    const changed = await inspector.inspect('/');
+    assert.equal(elementSourceHintCacheStats().parses, parses + 1);
+    assert.ok(changed.report.elementSources.some((item) => item.selector === '#changed590'));
+  },
+);
 
 test('whole-export form inventory preserves dynamic FormXml and native quick-view identity through source refresh', async (t) => {
   const fx = inspectionFixture();

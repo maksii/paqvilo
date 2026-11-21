@@ -362,8 +362,8 @@ export function mountPersonaAdministration(
         method: 'PUT',
         body: JSON.stringify({ catalog, expectedDigest: report.catalogDigest }),
       });
-      notify('Local catalogue saved.');
       await refresh();
+      notify('Local catalogue saved.');
     };
     const renderList = () => {
       const rows = (report.catalog[type] ?? []).filter((row) =>

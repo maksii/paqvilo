@@ -135,18 +135,22 @@ test('state actions post the page back without the editable values and re-render
     page.waitForResponse(
       (item) => item.url().includes('/_services/action-' + name + '/') && item.request().method() === 'POST',
     );
+  // The page reloads after the action's answer. The reloaded document is awaited by its own load event, registered
+  // before the click: the load state of the page is already reached by the document that is about to be replaced.
   let response = action('deactivate');
+  let reloaded = page.waitForEvent('load');
   await page.locator('button.deactivate-link').click();
   assert.equal((await response).status(), 204);
-  await page.waitForLoadState('load');
+  await reloaded;
   await page.locator('button.activate-link:not(.hidden)').waitFor();
   let record = await app.store.get('sample', ID, { roles: ['Editor'] });
   assert.deepEqual([record.title, record.statecode, record.statuscode], ['Original', 1, 2]);
   assert.equal(posts.length, 0, 'state actions never post the page back');
   response = action('activate');
+  reloaded = page.waitForEvent('load');
   await page.locator('button.activate-link').click();
   assert.equal((await response).status(), 204);
-  await page.waitForLoadState('load');
+  await reloaded;
   await page.locator('button.deactivate-link:not(.hidden)').waitFor();
   record = await app.store.get('sample', ID, { roles: ['Editor'] });
   assert.deepEqual([record.statecode, record.statuscode], [0, 1]);

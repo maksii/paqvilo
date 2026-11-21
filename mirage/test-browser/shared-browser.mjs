@@ -6,11 +6,18 @@ import path from 'node:path';
 import { once } from 'node:events';
 import { before, after } from 'node:test';
 import { chromium } from 'playwright-core';
-import ts from 'typescript';
+import { syntaxNodes } from '../../test/estree.mjs';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
 import { signInContext } from '../testing/session.mjs';
 import { ownedFixture, drainFixture } from '../testing/owned-fixture.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
+
+/**
+ * Hang guard only: runAcceptance's `timeout` for a run whose test asserts no deadline. The runner's 15 s default is a
+ * product budget, and a loaded host can spend it on one navigation; a test that asserts a deadline passes its own.
+ */
+export const ACCEPTANCE_HANG_GUARD_MS = 120_000;
 
 /**
  * Launches one browser for the calling test file; `page(t)` opens a fresh context that closes with the test, among the
@@ -18,10 +25,15 @@ import { ownedFixture, drainFixture } from '../testing/owned-fixture.mjs';
  */
 export function sharedBrowser(launchOptions) {
   let browser;
-  before(async () => {
-    browser = await chromium.launch(browserLaunchOptions(launchOptions));
-  });
-  after(() => browser?.close());
+  // Hang guard only: a hook without its own timeout gets the lane's, which a browser start or close on a loaded slow
+  // host overran while still progressing.
+  before(
+    async () => {
+      browser = await chromium.launch(browserLaunchOptions(launchOptions));
+    },
+    { timeout: SCENARIO_HANG_GUARD_MS },
+  );
+  after(() => browser?.close(), { timeout: SCENARIO_HANG_GUARD_MS });
   return {
     get browser() {
       return browser;
@@ -49,12 +61,24 @@ export function appOrigins(sim, origin) {
 
 const MODULE_BASE = 'http://served.invalid';
 
+const MODULE_REFERENCES = new Set([
+  'ImportDeclaration',
+  'ExportNamedDeclaration',
+  'ExportAllDeclaration',
+  'ImportExpression',
+]);
+// The specifier text of a module reference: a string literal, or a template literal without substitutions.
+const specifierOf = ({ source }) =>
+  source?.type === 'TemplateLiteral' && !source.expressions.length ? source.quasis[0].value.cooked : source?.value;
+
 // Every relative module specifier a source file imports: static, side-effect, re-export and literal dynamic imports.
+// Text that is not a JavaScript module (JSON, a stylesheet) has no module references.
 const relativeImports = (source) =>
-  ts
-    .preProcessFile(source, true, true)
-    .importedFiles.map((file) => file.fileName)
-    .filter((specifier) => /^\.\.?\//.test(specifier));
+  syntaxNodes(source)
+    .filter((node) => MODULE_REFERENCES.has(node.type))
+    .map(specifierOf)
+    .filter((specifier) => typeof specifier === 'string' && /^\.\.?\//.test(specifier))
+    .toArray();
 
 /**
  * The modules an entry module imports, transitively, keyed by the path each is served at: the entry at `servedPath`,
@@ -124,6 +148,48 @@ export async function warmState(app) {
   await response.arrayBuffer();
 }
 
+/**
+ * Clicks the administration's Refresh and waits until that refresh has finished. The button is disabled from the click
+ * until the refreshed view is on screen, so what the test reads or opens next belongs to the refreshed view, not to
+ * the one the refresh is about to replace.
+ */
+export async function refreshWorkspace(page) {
+  await page.locator('#refresh').click();
+  await page.locator('#refresh:not([disabled])').waitFor();
+}
+
+/**
+ * Waits until the administration has nothing outstanding: the open view is rendered with the data it asked for. The
+ * workspace marks its content busy from the start of a refresh or a view load until its last answer is rendered, so
+ * elements a test keeps (or measures) after this are not replaced by a render that was still on its way.
+ */
+export async function workspaceSettled(page) {
+  await page.locator('#content[aria-busy="false"]').waitFor();
+}
+
+/**
+ * Opens `url` and waits until the ready handlers its scripts registered have run. jQuery 3 runs ready handlers from a
+ * timer of its own, after the document is parsed and possibly after `load`, so the controls a script binds in a ready
+ * handler (grids, lookups, form actions) answer a click only from then on. The handler registered here runs after the
+ * ones registered before it; a page without jQuery has none to wait for.
+ */
+export async function openPortalPage(page, url, options) {
+  const response = await page.goto(url, options);
+  await readyHandlersRan(page);
+  return response;
+}
+
+/** Waits until the ready handlers the page's scripts have registered so far have run (see `openPortalPage`). */
+export async function readyHandlersRan(page) {
+  await page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        if (typeof globalThis.jQuery === 'function') globalThis.jQuery(() => resolve());
+        else resolve();
+      }),
+  );
+}
+
 /** A page in a fresh context on a warmed simulator; the context, the simulator and its directory close with the test. */
 export async function adminPage(t, browser, app, directory) {
   let context;
@@ -189,7 +255,8 @@ export function eventLog(t, { message = 'The expected event did not arrive' } = 
 /** A test-context stand-in whose cleanups run in the file's after hook, for fixtures shared by read-only tests. */
 export function fileScope() {
   const cleanups = [];
-  after(() => drainFixture(cleanups.toReversed()));
+  // Hang guard only: the file's shared fixtures close here, which on a loaded slow host is slow, not hung.
+  after(() => drainFixture(cleanups.toReversed()), { timeout: SCENARIO_HANG_GUARD_MS });
   return {
     after: (cleanup) => {
       cleanups.push(cleanup);

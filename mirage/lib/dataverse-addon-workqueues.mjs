@@ -7,7 +7,8 @@ import { randomUUID } from 'node:crypto';
 import { DataError } from './data-error.mjs';
 import { argsOf, callerColumns, registerAddon } from './dataverse-addon-common.mjs';
 import { parseDataverseRoute, parsePrefer } from './dataverse-odata.mjs';
-import { privilegeDeniedError, privilegeName } from './dataverse-security.mjs';
+import { privilegeName } from './dataverse-security.mjs';
+import { stampMs } from './runtime-clock.mjs';
 import { parseXmlDocument, planFetch } from './fetchxml-engine.mjs';
 
 const STATE_QUEUED = 0;
@@ -65,7 +66,9 @@ function operations(api) {
   const write = (fn) => api.change(() => store.transact(fn, { isolated: true }));
   const need = (c, logical, right) => {
     const privilege = privilegeName(right, api.principals.privilegeNoun(logical));
-    if (!(api.principals.privileges(c.user).get(privilege) > 0)) throw privilegeDeniedError(c.user, privilege, logical); // NOSONAR: operand can be NaN or undefined, the negated test differs
+    // A missing privilege reads undefined: only a positive depth grants it.
+    const granted = api.principals.privileges(c.user).get(privilege) > 0;
+    if (!granted) throw api.principals.deniedError(c.user, privilege, logical);
   };
   // Queued and not delayed or expired at `at`.
   const eligible = (row, at) =>
@@ -138,7 +141,10 @@ function operations(api) {
             throw invalid('Input is not valid JSON.');
           }
         }
-        const at = api.clock();
+        // Held across a small backward step of the wall clock (runtime-clock.mjs stampMs): Dequeue serves equal priorities
+        // oldest createdon first and equal createdon in enqueue order, so a later item is never served first. The expiry and
+        // SLA dates derive from the same reading.
+        const at = stampMs(store, api.clock);
         const ttl = Number(queue.defaultitemtimetoliveinminutes) || 0;
         const slaPercent = Number(queue.slathresholdinpercentage) || 0;
         const row = {
@@ -244,7 +250,7 @@ function operations(api) {
           Object.assign(pick, {
             statecode: STATE_PROCESSING,
             statuscode: 1,
-            processingstarttime: iso(at),
+            processingstarttime: iso(stampMs(store, api.clock)),
             processinguser: user ? { id: user, logical_name: 'systemuser' } : null,
           });
           selected = { ...pick };
@@ -303,7 +309,6 @@ function operations(api) {
         need(c, 'workqueueitem', 'Write');
         const itemId = c.target.id;
         const entry = argsOf(c).item ?? {};
-        const at = api.clock();
         await write(() => {
           const row = rowIn('workqueueitem', 'workqueueitemid', itemId);
           let history = [];
@@ -313,7 +318,7 @@ function operations(api) {
           } catch {
             history = [];
           }
-          row.executioncontext = JSON.stringify([...history, { ...entry, createdon: iso(at) }]);
+          row.executioncontext = JSON.stringify([...history, { ...entry, createdon: iso(stampMs(store, api.clock)) }]);
         });
         return undefined;
       },
@@ -325,4 +330,19 @@ function install(api) {
   for (const op of operations(api)) registerAddon(api, op);
 }
 
-export const EXTENSION = { name: 'dataverse-addon-workqueues', install };
+/** Capability record for the capability registry; dataverse-extensions.mjs adds the operations install registered. */
+function describe() {
+  return {
+    name: 'dataverse-addon-workqueues',
+    version: 1,
+    kind: 'dataverse-extension',
+    level: 'behaviour',
+    reason: 'Store-backed work queue messages over workqueue and workqueueitem; ClearWorkQueue is always synchronous.',
+    requires: [],
+    principal: 'caller',
+    stateOwner: 'store',
+    lifecycle: 'per-request',
+  };
+}
+
+export const EXTENSION = { name: 'dataverse-addon-workqueues', install, describe };

@@ -1,6 +1,17 @@
-import fs from 'node:fs/promises';
-
+/**
+ * A runtime that is starting says every few seconds that its event loop turns. It counts as progress for the
+ * launcher's start-up silence bound, which then measures a runtime that stopped rather than a phase that takes long
+ * on a loaded host; it is not a phase and is not shown.
+ */
+export const RUNTIME_ALIVE = 'alive';
+/**
+ * A runtime says once that it has published its discovery record and listens: the launcher then reads the record and
+ * asks the runtime's status (lense/start-channel.mjs). It is not a phase and is not shown.
+ */
+export const RUNTIME_READY = 'ready';
 const runtimePhases = new Set([
+  RUNTIME_ALIVE,
+  RUNTIME_READY,
   'runtime-module-load',
   'runtime-module-ready',
   'context-configuration',
@@ -20,39 +31,19 @@ const runtimePhases = new Set([
   'listener-ready',
 ]);
 
-/** Read only bounded, explicitly typed progress records; never forward arbitrary child log content. */
-export async function readStartupPhases(file, cursor) {
-  if (cursor === undefined) cursor = { offset: 0, remainder: '' };
-  const handle = await fs.open(file, 'r');
+/** The progress record one line carries ({ phase, elapsedMs }), or null: other content is not a progress contract. */
+export function runtimeStartupEvent(line) {
+  if (line.length > 1024 || !line.startsWith('{')) return null;
   try {
-    const { size } = await handle.stat();
-    const start = Math.max(cursor.offset, size - 32768);
-    const buffer = Buffer.alloc(Math.max(0, Math.min(32768, size - start)));
-    const { bytesRead } = await handle.read(buffer, 0, buffer.length, start);
-    const lines = (
-      (start === cursor.offset ? cursor.remainder : '') + buffer.subarray(0, bytesRead).toString('utf8')
-    ).split('\n');
-    const remainder = lines.pop().slice(-2048);
-    if (start > cursor.offset) lines.shift();
-    const events = [];
-    for (const line of lines) {
-      if (line.length > 1024 || !line.startsWith('{')) continue;
-      try {
-        const value = JSON.parse(line);
-        if (
-          value.type === 'runtime-startup' &&
-          runtimePhases.has(value.phase) &&
-          Number.isSafeInteger(value.elapsedMs) &&
-          value.elapsedMs >= 0
-        )
-          events.push({ phase: value.phase, elapsedMs: value.elapsedMs });
-      } catch {
-        /* other log data is not a progress contract */
-      }
-    }
-    return { events, cursor: { offset: start + bytesRead, remainder } };
-  } finally {
-    await handle.close();
+    const value = JSON.parse(line);
+    return value.type === 'runtime-startup' &&
+      runtimePhases.has(value.phase) &&
+      Number.isSafeInteger(value.elapsedMs) &&
+      value.elapsedMs >= 0
+      ? { phase: value.phase, elapsedMs: value.elapsedMs }
+      : null;
+  } catch {
+    return null;
   }
 }
 

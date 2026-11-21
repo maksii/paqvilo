@@ -9,7 +9,7 @@ import { localOrganizationService } from '../lib/local-organization-service.mjs'
 import { pluginInvocationParent } from '../lib/plugin-execution-lifetime.mjs';
 import { contractModuleFixture } from './contract-module-fixture.mjs';
 import { attachClrSteps } from './fixtures/plugin-pipeline.mjs';
-import { prepareClrRuntime } from '../lib/plugin-clr.mjs';
+import { closeClrHostPool, prepareClrRuntime } from '../lib/plugin-clr.mjs';
 import { handleSoap } from '../lib/dataverse-soap.mjs';
 import { NS } from '../lib/dataverse-soap-xml.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
@@ -56,7 +56,11 @@ for (const original of [false, true])
       let descriptor, root, store;
       if (original) {
         root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-optional-input-'));
-        t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
+        // This file wires the custom API module itself, so it owns the hosts of the runtimes that module prepared.
+        t.after(async () => {
+          assert.equal(closeClrHostPool().allAbsenceVerified, true, 'every pooled host of this test has exited');
+          await fs.rm(root, { recursive: true, force: true, maxRetries: 5 });
+        });
         const sdk = clrSdk(),
           source = path.join(root, 'Optional.cs'),
           assembly = path.join(root, 'OriginalMain.dll');
@@ -74,6 +78,8 @@ public sealed class Caller:IPlugin{public void Execute(IServiceProvider p){var c
           sdkRoot: path.dirname(sdk),
           sdkAssembly: path.basename(sdk),
           cacheRoot: path.join(root, 'cache'),
+          // One host serves every call, as the simulator's own runtimes do: a fresh process per call is not the subject.
+          persistentHost: true,
           serviceProfile: { userId: id, evidence: 'Invented optional parameter observer', grants: [] },
           context: {
             executionUserId: id,

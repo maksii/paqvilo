@@ -3,12 +3,13 @@
     "jsx": "react",
     "target": "es6",
     "module": "es2020",
-    "moduleResolution": "node",
+    "moduleResolution": "bundler",
     "lib": ["ES2020", "DOM"],
     "strict": true,
     "strictPropertyInitialization": false,
     "noEmit": true,
-    "typeRoots": ["../node_modules/@types"]
+    "typeRoots": ["../node_modules/@types"],
+    "types": ["powerapps-component-framework"]
   },
   "include": ["../examples/project/components/**/*.ts"],
   "exclude": ["../**/node_modules/**", "../**/out/**", "../**/obj/**"]

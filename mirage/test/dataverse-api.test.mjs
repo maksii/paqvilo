@@ -1241,6 +1241,22 @@ describe('dataverse API batch, metadata and sign-in', () => {
     assert.ok(store.state.mappings.widget.fields.new_note, 'the custom column is reapplied after reseed');
   });
 
+  // @test-kind contract: The local listener leaves closing an idle connection to its client and to close(); a timed close resets the request a client writes on that pooled connection after a busy stretch. No native behaviour is claimed.
+  it('arms no idle timeout on a kept-alive connection and advertises none', async () => {
+    // Node arms the keep-alive timeout in its own finish listener, registered before this one.
+    const answered = new Promise((resolve) => {
+      api.servers[0].once('request', (req, res) => res.once('finish', () => resolve(req.socket)));
+    });
+    const response = await send(apiPath('WhoAmI'), { headers: bearer(token) });
+    assert.equal(response.status, 200);
+    await response.arrayBuffer();
+    assert.equal(response.headers.get('connection'), 'keep-alive');
+    assert.equal(response.headers.get('keep-alive'), null);
+    const socket = await answered;
+    assert.ok(!socket.timeout, `the idle connection is closed after ${socket.timeout} ms`);
+    assert.equal(socket.destroyed, false);
+  });
+
   it('re-creates the audit, saved query, duplicate rule, async operation and field security tables on reseed', async () => {
     // A fresh store has none of these: drop their mappings and tables, then reseed as the /_sim/ reset path does.
     const logicals = ['audit', 'savedquery', 'duplicaterule', 'asyncoperation', 'fieldsecurityprofile'];
@@ -1467,5 +1483,41 @@ describe('dataverse API change tracking and shares inside batches', () => {
     const expired = await read(`${url.pathname}${url.search}`, TRACK);
     assert.equal(expired.status, 400);
     assert.equal((await expired.json()).error.code, '0x80044352');
+  });
+});
+
+// @test-kind contract: a runtime host supplies its organization; the listener reports refusals to that organization's log
+describe('Dataverse API on a supplied organization', () => {
+  it('logs an unknown application token request to the organization log', async () => {
+    const { createOrganizationRuntime } = await import('../lib/dataverse-organization.mjs');
+    const store = await new DataStore({ state: emptyState() }).init();
+    const lines = [];
+    const settings = dataverseSettings({ enabled: true, port: 0, tds: { enabled: false } });
+    const organization = await createOrganizationRuntime({
+      store,
+      settings,
+      log: (message, details) => lines.push({ message, details }),
+    });
+    const api = await startDataverseApi({ organization, host: '127.0.0.1' });
+    try {
+      const response = await fetch(`${api.origin}/${api.tenantId}/oauth2/v2.0/token`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          grant_type: 'client_credentials',
+          client_id: '99999999-0000-4000-8000-000000000001',
+          client_secret: 'invented',
+          scope: `${api.origin}/.default`,
+        }),
+      });
+      assert.equal(response.status, 400);
+      const refused = lines.find((line) => line.message === 'dataverse token refused: unknown application');
+      assert.ok(refused, 'the refusal reaches the organization log');
+      assert.equal(refused.details.clientId, '99999999-0000-4000-8000-000000000001');
+      assert.equal(JSON.stringify(lines).includes('invented'), false);
+    } finally {
+      await api.close();
+      await organization.close();
+    }
   });
 });

@@ -1,4 +1,4 @@
-// @test-kind contract: Lense panel refresh, mode, scope and override controls re-read state through GET after a POST
+// @test-kind contract: Lense panel refresh, pending-files Reload, mode, scope and override controls re-read state through GET after a POST
 import { makeTemporaryDirectorySync, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 
 // Panel refresh controls must never repeat a form POST, including URLs with fragments.
@@ -14,7 +14,7 @@ import { attachSession } from '../lense/browser.mjs';
 import { enablePanel } from '../lense/panel.mjs';
 import { createFixture, SITE } from '../test/fixture.mjs';
 
-test('panel reload, mode, scope and override toggles refresh through GET after a POST', async (t) => {
+test('panel pending-files Reload, mode, scope and override toggles refresh through GET after a POST', async (t) => {
   const fx = createFixture();
   const work = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-panel-reload-'));
   let panel;
@@ -70,11 +70,12 @@ test('panel reload, mode, scope and override toggles refresh through GET after a
   page.on('pageerror', (error) => errors.push(error.message));
   await page.goto(origin, { waitUntil: 'load' });
   const controls = [
-    ['reload', '[data-act="reload"]', ''],
-    ['reload with fragment', '[data-act="reload"]', '#result'],
-    ['reload with empty fragment', '[data-act="reload"]', '#'],
-    ['pause source', '[data-act="toggle"]', '#result'],
-    ['resume source', '[data-act="toggle"]', '#result'],
+    // The header has no Reload of its own (F5 does that); the controls below reload through the same navigation, so
+    // they cover a URL without a fragment, with an empty one and with a named one.
+    // A saved file that this page has not picked up yet raises a banner with its own Reload.
+    ['pending files Reload', '.banner [data-act="reload"]', '#result'],
+    ['pause source', '[data-act="toggle"]', ''],
+    ['resume source', '[data-act="toggle"]', '#'],
     ['scope', '[data-act="scope"][data-v="changed"]', '#result'],
     ['online mode', '[data-act="mode"][data-v="online"]', '#result'],
     ['local mode', '[data-act="mode"][data-v="local"]', '#result'],
@@ -96,6 +97,16 @@ test('panel reload, mode, scope and override toggles refresh through GET after a
     // Decide on a drawn state (collapsed pill or open panel), not on a panel still being drawn.
     await page.locator('#paqvilo-panel').locator('.pill:visible, .wrap.open').first().waitFor();
     if (await page.locator('#paqvilo-panel .pill').isVisible()) await page.locator('#paqvilo-panel .pill').click();
+    if (selector.startsWith('.banner')) {
+      const file = fx.file('web-files/app.js');
+      // A change the page did not apply ("none"): the page keeps its document and the panel asks for a reload.
+      session.emit('refreshed', {
+        files: [file],
+        how: 'none',
+        pageResults: new Map([[page, { how: 'none', files: [file] }]]),
+      });
+      await page.locator('#paqvilo-panel .banner').filter({ hasText: 'app.js' }).waitFor();
+    }
     if (selector === '[data-act="toggle"]')
       await page.locator('#paqvilo-panel .row[data-rel="web-files/app.js"]').hover();
     const getsBefore = requests.filter(

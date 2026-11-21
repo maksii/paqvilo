@@ -64,6 +64,11 @@ async function renameBetweenReloads(t, portal) {
   await fs.rename(`${solution}-moved`, solution);
   await sim.reload();
   assert.deepEqual(apis(sim), ['x_Echo']);
+  // The accepted reload keeps the re-registration finding beside SOURCES_RELOADED (bootstrap-and-sources.md).
+  assert.ok(
+    sim.state().diagnostics.some((entry) => entry.code === 'SOURCE_EXTENSIONS_REFRESHED'),
+    'the accepted reload reports SOURCE_EXTENSIONS_REFRESHED',
+  );
 }
 
 test('a deployment profile change with a renamed Solution root is rejected and keeps the definitions (Power Pages host)', async (t) => {

@@ -14,4 +14,5 @@ copy restricted to authenticated users), two site languages whose codes come onl
 know), a page template with header and footer web templates, a content snippet in both
 languages, two web files, three web roles, a contact table permission, a site marker, a web link
 set, a bot consumer, a cloud flow consumer, a server logic record with its code, and a code-site
-source file record. Its data model is not recorded, as in every `.powerpages-site` export.
+source file record, plus the code-site project files `powerpages.config.json` and `src/main.js`. Its data model is
+not recorded, as in every `.powerpages-site` export.

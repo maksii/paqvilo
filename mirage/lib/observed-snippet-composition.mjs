@@ -48,15 +48,21 @@ function childSource(markup) {
   visit(node);
   return node;
 }
+function exportedSources(snippets, parentName, childName) {
+  const parent = snippets?.[parentName],
+    child = snippets?.[childName];
+  for (const [name, value] of [
+    [parentName, parent],
+    [childName, child],
+  ])
+    if (typeof value !== 'string') throw failure(`Exported snippet ${name} is not in the local sources.`);
+  if (/\{%|\{\{/.test(parent + child)) throw failure('Observed composition requires static exported snippets.');
+  return { parent, child, sourceParent: root(parent), sourceChild: childSource(child) };
+}
 /** Record only a verified composition of two existing local snippets, never native HTML. */
 export function observedSnippetComposition({ snippets, parentName, childName, observedMarkup, origin, pagePath }) {
-  const parent = snippets[parentName],
-    child = snippets[childName];
-  if (typeof parent !== 'string' || typeof child !== 'string' || /\{%|\{\{/.test(parent + child))
-    throw failure('Observed composition requires static exported snippets.');
-  const sourceParent = root(parent),
-    sourceChild = childSource(child),
-    observed = root(observedMarkup),
+  const { parent, child, sourceParent, sourceChild } = exportedSources(snippets, parentName, childName);
+  const observed = root(observedMarkup),
     parts = significant(observed),
     last = parts.at(-1);
   const observedStyle = last?.attrs?.find((a) => a.name === 'style')?.value;
@@ -179,16 +185,29 @@ async function observeDynamically(live, path, portal, parent, parentName, childN
           }),
           route.abort()),
     );
-    await page.goto(live.origin + path, {
-      waitUntil: 'domcontentloaded',
-      timeout: 30000,
+    // Browser automation errors carry raw Playwright text; report what was not observed instead.
+    await page.goto(live.origin + path, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {
+      throw failure('The connected browser could not load the composition page within 30 seconds.');
     });
-    await page.locator(selector).waitFor({ state: 'attached', timeout: 10000 });
+    await page
+      .locator(selector)
+      .waitFor({ state: 'attached', timeout: 10000 })
+      .catch(() => {
+        throw failure(
+          'The page did not render the parent snippet with the exported action within 10 seconds; confirm the page ' +
+            'path shows both snippets.',
+        );
+      });
     const final = new URL(page.url()),
       expected = new URL(path, live.origin);
     if (final.origin !== live.origin || final.pathname !== expected.pathname)
       throw failure('Native composition page redirected away from the requested portal page.');
-    const markup = await page.locator(selector).evaluate((node) => node.parentElement.outerHTML);
+    const markup = await page
+      .locator(selector)
+      .evaluate((node) => node.parentElement.outerHTML)
+      .catch(() => {
+        throw failure('The connected browser could not read the rendered composition.');
+      });
     const profile = observedSnippetComposition({
       snippets: portal.snippets,
       parentName,
@@ -208,24 +227,31 @@ export async function captureObservedSnippetComposition(live, { portal, path, pa
   validateLivePath(path);
   if (!live?.context || !live.origin) throw failure('A connected intended portal browser is required.');
   if (/^\/(?:_api|__sim)(?:\/|$)/i.test(path)) throw failure('Composition observation requires a portal page.');
+  // Page-independent preconditions fail before any request or browser work.
+  const { sourceParent: parent } = exportedSources(portal?.snippets, parentName, childName);
   const response = await live.request(path, { method: 'GET' });
   if (response.status !== 200 || !/^text\/html(?:;|$)/i.test(response.headers?.['content-type'] ?? ''))
     throw failure('Composition observation requires an HTTP 200 HTML page.');
+  if (/\/(?:account\/login|signin)(?:[/?]|$)/i.test(new URL(response.url ?? path, live.origin).pathname))
+    throw failure('Composition observation reached the portal sign-in page; choose the page that shows both snippets.');
   const html = Buffer.from(response.body, response.bodyEncoding === 'base64' ? 'base64' : 'utf8').toString('utf8');
-  if (html.length > 5 * 1024 * 1024 || /\/(?:account\/login|signin)(?:[/?]|$)/i.test(response.url ?? ''))
-    throw failure('Composition observation is too large or redirected to sign-in.');
+  if (html.length > 5 * 1024 * 1024) throw failure('Composition observation page exceeds 5 MiB.');
   const candidates = [];
   function visit(n) {
     if (n.tagName) candidates.push(n);
     for (const child of n.childNodes ?? []) visit(child);
   }
   visit(parse(html));
-  const parent = root(portal.snippets[parentName] ?? ''),
-    reasons = new Set(),
+  const reasons = new Set(),
     observed = matchingCompositions({ candidates, parent, portal, parentName, childName, live, path, reasons });
   let observation = { provider: 'native-page-html', blockedRequests: [] };
   if (observed.length === 0 && typeof live.context.newPage === 'function') {
-    const dynamic = await observeDynamically(live, path, portal, parent, parentName, childName);
+    // Keep the served-HTML reasons; never forward raw browser automation text.
+    const dynamic = await observeDynamically(live, path, portal, parent, parentName, childName).catch((error) => {
+      const message =
+        error.code === 'SNIPPET_COMPOSITION_INVALID' ? error.message : 'The connected browser observation failed.';
+      throw failure([message, ...reasons].join(' '));
+    });
     observed.push(dynamic.profile);
     observation = dynamic.observation;
   }

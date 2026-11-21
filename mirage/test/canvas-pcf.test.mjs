@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own canvas PCF admission rules, exercised with invented manifests and controls.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { canvasPcfApps } from '../lib/canvas-pcf.mjs';
@@ -61,6 +62,15 @@ test('Canvas PCF needs explicit trust, exact exported identity and supported man
     canvasCodeComponent(control, catalog({ ...definition, events: [{ name: 'constructor' }] }), { enabled: true }).code,
     'CANVAS_PCF_EVENT_UNSUPPORTED',
   );
+});
+
+// @test-kind contract: mirage/docs/canvas-apps.md: a trusted control without a declared local code resource is refused
+test('Canvas PCF refuses a control whose code resource is missing or not a local exported resource', () => {
+  for (const resources of [[], [{ kind: 'code', url: 'https://cdn.invalid/bundle.js' }]])
+    assert.equal(
+      canvasCodeComponent(control, catalog({ ...definition, resources }), { enabled: true }).code,
+      'CANVAS_PCF_RESOURCE_UNAVAILABLE',
+    );
 });
 
 test('Canvas PCF only admits virtual controls with exact local platform libraries', () => {

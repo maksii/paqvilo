@@ -1,9 +1,8 @@
 // @test-kind contract: start-up page waits are Paqvilo CLI runtime behaviour, with hang guards and observed progress.
-import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import { EventEmitter } from 'node:events';
 import assert from 'node:assert/strict';
-import { startupProgress, waitForStartupPage, readStartupPhases } from '../lense/startup-progress.mjs';
+import { runtimeStartupEvent, startupProgress, waitForStartupPage } from '../lense/startup-progress.mjs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -32,44 +31,13 @@ test('native model-driven dev emits startup before project configuration fails',
       { windowsHide: true },
     ),
     (error) => {
-      assert.match(error.stderr.split(/\r?\n/)[0], /^startup\s+configuration.*0\.0s total/);
+      // The figure is this process's real clock, so its value is not asserted: the first line is the configuration
+      // phase with an elapsed total, printed before the failure.
+      assert.match(error.stderr.split(/\r?\n/)[0], /^startup\s+configuration.*\d+\.\ds total/);
       assert.match(error.stderr, /paqvilo:/);
       return true;
     },
   );
-});
-
-test('runtime log progress is incremental and bounded without forwarding arbitrary log fields', async (t) => {
-  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-startup-progress-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
-  const file = path.join(root, 'startup.log');
-  await fs.writeFile(
-    file,
-    'x'.repeat(40000) +
-      '\n' +
-      JSON.stringify({ type: 'runtime-startup', phase: 'state-restore', elapsedMs: 20, secret: 'never-forward' }) +
-      '\n' +
-      '{"type":"runtime-startup",',
-  );
-  const first = await readStartupPhases(file);
-  assert.deepEqual(first.events, [{ phase: 'state-restore', elapsedMs: 20 }]);
-  await fs.appendFile(
-    file,
-    '"phase":"organization","elapsedMs":30}\n' +
-      JSON.stringify({ type: 'runtime-startup', phase: 'runtime-module-load', elapsedMs: 0, secret: 'never-forward' }) +
-      '\n' +
-      JSON.stringify({ type: 'runtime-startup', phase: 'runtime-module-ready', elapsedMs: 31 }) +
-      '\n' +
-      JSON.stringify({ type: 'runtime-startup', phase: 'untrusted', elapsedMs: 40 }) +
-      '\n',
-  );
-  const second = await readStartupPhases(file, first.cursor);
-  assert.deepEqual(second.events, [
-    { phase: 'organization', elapsedMs: 30 },
-    { phase: 'runtime-module-load', elapsedMs: 0 },
-    { phase: 'runtime-module-ready', elapsedMs: 31 },
-  ]);
-  assert.deepEqual((await readStartupPhases(file, second.cursor)).events, []);
 });
 
 test('cancelled process ownership checks do not launch Windows subprocess probes', async () => {
@@ -691,4 +659,16 @@ test('a load wait that times out reports the cap guard and names the load step',
     assert.doesNotMatch(error.message, /exceeded/);
     return true;
   });
+});
+
+test('runtime start-up announcements forward only known phases and their elapsed time', () => {
+  const line = (value) => JSON.stringify({ type: 'runtime-startup', ...value });
+  assert.deepEqual(runtimeStartupEvent(line({ phase: 'state-restore', elapsedMs: 20, secret: 'never-forward' })), {
+    phase: 'state-restore',
+    elapsedMs: 20,
+  });
+  assert.equal(runtimeStartupEvent(line({ phase: 'untrusted', elapsedMs: 40 })), null);
+  assert.equal(runtimeStartupEvent(line({ phase: 'organization', elapsedMs: -1 })), null);
+  assert.equal(runtimeStartupEvent('{"type":"runtime-startup",'), null);
+  assert.equal(runtimeStartupEvent(line({ phase: 'organization', elapsedMs: 30, pad: 'x'.repeat(1100) })), null);
 });

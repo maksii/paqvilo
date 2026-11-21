@@ -321,7 +321,7 @@ const HELP = {
   'packs.registered': {
     intro:
       'One row per registered pack: whether it matched this portal and what it adds. Details lists its exports, presets, persona catalogue counts, DATA files and PACK_EXPORT_* diagnostics.',
-    doc: `${PACKS}#recognised-exports`,
+    doc: `${PACKS}#recognized-exports`,
   },
   'packs.presets': {
     intro:
@@ -341,8 +341,8 @@ const HELP = {
   },
   'packs.diagnostics': {
     intro:
-      'Problems found in this pack’s exports. PACK_EXPORT_UNKNOWN flags an unrecognised export name (often a typo); the pack still loads. PACK_EXPORT_PENDING flags an export whose owning module has not loaded, so only its shape was checked.',
-    doc: `${PACKS}#recognised-exports`,
+      'Problems found in this pack’s exports. PACK_EXPORT_UNKNOWN flags an unrecognized export name (often a typo); the pack still loads. PACK_EXPORT_PENDING flags an export whose owning module has not loaded, so only its shape was checked.',
+    doc: `${PACKS}#recognized-exports`,
   },
 
   plugins: {
@@ -570,7 +570,7 @@ const HELP = {
     intro:
       'The server-side logic of your sources and how this runtime answers each one: exported server logic, cloud flows, Solution workflows and plug-in steps. A local choice changes this runtime only; it never deploys the source or switches on an online flow. Use source default removes your local choice.',
     fields: OPERATION_MODES,
-    doc: `${OPS}#choose-local-behavior`,
+    doc: `${OPS}#choose-local-behaviour`,
   },
   'operations.list': {
     intro:
@@ -580,7 +580,7 @@ const HELP = {
   'operations.mode': {
     intro: 'Choose how this operation answers locally.',
     fields: OPERATION_MODES,
-    doc: `${OPS}#choose-local-behavior`,
+    doc: `${OPS}#choose-local-behaviour`,
   },
   'operations.mode.mock': {
     intro: 'Set the response status and body.',

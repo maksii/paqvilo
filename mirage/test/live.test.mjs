@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own live bridge request guards and record normalisation over fake browser contexts
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile, writeFile, rm } from 'node:fs/promises';
@@ -141,6 +142,12 @@ test('authorized raw URL-encoded forms replace local antiforgery and retain repe
     'content-type': 'application/octet-stream',
     'content-disposition': 'attachment; filename="example.bin"',
   });
+});
+
+// @test-kind contract: callers recognise a served sign-in page by the answered same-origin URL.
+test('live requests report the answered same-origin URL', async () => {
+  const { bridge } = bridgeWith((url) => response({ headers: { 'content-type': 'text/html' }, body: '<html/>', url }));
+  assert.equal((await bridge.request('/SignIn')).url, origin + '/SignIn');
 });
 
 test('multipart uploads preserve file bytes and replace or add real session antiforgery fields', async () => {

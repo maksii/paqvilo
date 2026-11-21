@@ -1,0 +1,476 @@
+{
+  "description": "One read-only live capture of a Power Platform developer environment with the baseline fixture solution imported: the rollup column pqvd_baselineparent.pqvd_rollup, its platform companions and a baseline parent row without $select. The environment host and every GUID that is not a baseline fixture id are redacted.",
+  "rawSha256": "4d3c3d04486a88677c487897d726a52966d3fc581573a20843aa1a5f43aa4934",
+  "capturedAtUtc": "2026-11-18T20:00:31.812Z",
+  "pqvd_rollup": {
+    "request": "GET /api/data/v9.2/EntityDefinitions(LogicalName='pqvd_baselineparent')/Attributes(LogicalName='pqvd_rollup')",
+    "status": 200,
+    "body": {
+      "@odata.context": "https://<environment>/api/data/v9.2/$metadata#EntityDefinitions('pqvd_baselineparent')/Attributes/Microsoft.Dynamics.CRM.IntegerAttributeMetadata/$entity",
+      "@odata.type": "#Microsoft.Dynamics.CRM.IntegerAttributeMetadata",
+      "MetadataId": "<id-1>",
+      "HasChanged": null,
+      "AttributeOf": null,
+      "AttributeType": "Integer",
+      "ColumnNumber": 32,
+      "DeprecatedVersion": null,
+      "IntroducedVersion": "1.0.0.0",
+      "EntityLogicalName": "pqvd_baselineparent",
+      "IsCustomAttribute": true,
+      "IsPrimaryId": false,
+      "IsValidODataAttribute": true,
+      "IsPrimaryName": false,
+      "IsValidForCreate": false,
+      "IsValidForRead": true,
+      "IsValidForUpdate": false,
+      "CanBeSecuredForRead": true,
+      "CanBeSecuredForCreate": true,
+      "CanBeSecuredForUpdate": true,
+      "IsSecured": false,
+      "IsRetrievable": false,
+      "IsFilterable": false,
+      "IsSearchable": false,
+      "IsManaged": false,
+      "LinkedAttributeId": null,
+      "LogicalName": "pqvd_rollup",
+      "IsValidForForm": true,
+      "IsRequiredForForm": false,
+      "IsValidForGrid": true,
+      "SchemaName": "pqvd_Rollup",
+      "ExternalName": null,
+      "IsLogical": false,
+      "IsDataSourceSecret": false,
+      "InheritsFrom": null,
+      "CreatedOn": "2026-11-18T18:49:57Z",
+      "ModifiedOn": "2026-11-18T19:03:31Z",
+      "SourceType": 2,
+      "AutoNumberFormat": null,
+      "Format": "None",
+      "MaxValue": 2147483647,
+      "MinValue": -2147483648,
+      "FormulaDefinition": "<?xml version=\"1.0\" encoding=\"utf-16\"?><Activity x:Class=\"XrmWorkflow00000000000000000000000000000000\" xmlns=\"http://schemas.microsoft.com/netfx/2009/xaml/activities\" xmlns:mcwc=\"clr-namespace:Microsoft.Crm.Workflow.ClientActivities;assembly=Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mva=\"clr-namespace:Microsoft.VisualBasic.Activities;assembly=System.Activities, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxs=\"clr-namespace:Microsoft.Xrm.Sdk;assembly=Microsoft.Xrm.Sdk, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxswa=\"clr-namespace:Microsoft.Xrm.Sdk.Workflow.Activities;assembly=Microsoft.Xrm.Sdk.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:s=\"clr-namespace:System;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:scg=\"clr-namespace:System.Collections.Generic;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:srs=\"clr-namespace:System.Runtime.Serialization;assembly=System.Runtime.Serialization, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:this=\"clr-namespace:\" xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\"><x:Members><x:Property Name=\"InputEntities\" Type=\"InArgument(scg:IDictionary(x:String, mxs:Entity))\" /><x:Property Name=\"CreatedEntities\" Type=\"InArgument(scg:IDictionary(x:String, mxs:Entity))\" /></x:Members><this:XrmWorkflow00000000000000000000000000000000.InputEntities><InArgument x:TypeArguments=\"scg:IDictionary(x:String, mxs:Entity)\" /></this:XrmWorkflow00000000000000000000000000000000.InputEntities><this:XrmWorkflow00000000000000000000000000000000.CreatedEntities><InArgument x:TypeArguments=\"scg:IDictionary(x:String, mxs:Entity)\" /></this:XrmWorkflow00000000000000000000000000000000.CreatedEntities><mva:VisualBasic.Settings>Assembly references and imported namespaces for internal implementation</mva:VisualBasic.Settings><mxswa:Workflow><Sequence DisplayName=\"RollupRuleStep1\"><Sequence DisplayName=\"Source\"><Sequence.Variables><Variable x:TypeArguments=\"x:String\" Default=\"[Nothing]\" Name=\"HierarchicalRelationshipName\" /></Sequence.Variables></Sequence><Sequence DisplayName=\"Target\"><mcwc:SetAttributeValue DisplayName=\"pqvd_baselineitem.pqvd_parentid.pqvd_baselineparent_baselineitem\" Entity=\"[CreatedEntities(&quot;relatedlinked_pqvd_baselineparent_baselineitem#pqvd_parentid#pqvd_baselineitem#Temp&quot;)]\" EntityName=\"pqvd_baselineitem\" /></Sequence><Sequence DisplayName=\"Aggregate\"><Sequence.Variables><Variable x:TypeArguments=\"x:Object\" Name=\"RollupRuleStep1_1\" /><Variable x:TypeArguments=\"x:Object\" Name=\"RollupRuleStep1_2\" /></Sequence.Variables><mxswa:GetEntityProperty Attribute=\"pqvd_baselineitemid\" Entity=\"[InputEntities(&quot;primaryEntity&quot;)]\" EntityName=\"pqvd_baselineitem\" Value=\"[RollupRuleStep1_2]\"><mxswa:GetEntityProperty.TargetType><InArgument x:TypeArguments=\"s:Type\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\"><x:Null /></mxswa:ReferenceLiteral></InArgument></mxswa:GetEntityProperty.TargetType></mxswa:GetEntityProperty><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">Count</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { RollupRuleStep1_2 }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\"><x:Null /></mxswa:ReferenceLiteral></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[RollupRuleStep1_1]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference></Sequence></Sequence></mxswa:Workflow></Activity>",
+      "SourceTypeMask": 0,
+      "AttributeTypeName": {
+        "Value": "IntegerType"
+      },
+      "Description": {
+        "LocalizedLabels": [
+          {
+            "Label": "",
+            "LanguageCode": 1033,
+            "IsManaged": false,
+            "MetadataId": "<id-2>",
+            "HasChanged": null
+          }
+        ],
+        "UserLocalizedLabel": {
+          "Label": "",
+          "LanguageCode": 1033,
+          "IsManaged": false,
+          "MetadataId": "<id-2>",
+          "HasChanged": null
+        }
+      },
+      "DisplayName": {
+        "LocalizedLabels": [
+          {
+            "Label": "Rollup",
+            "LanguageCode": 1033,
+            "IsManaged": false,
+            "MetadataId": "<id-3>",
+            "HasChanged": null
+          }
+        ],
+        "UserLocalizedLabel": {
+          "Label": "Rollup",
+          "LanguageCode": 1033,
+          "IsManaged": false,
+          "MetadataId": "<id-3>",
+          "HasChanged": null
+        }
+      },
+      "IsAuditEnabled": {
+        "Value": false,
+        "CanBeChanged": true,
+        "ManagedPropertyLogicalName": "canmodifyauditsettings"
+      },
+      "IsGlobalFilterEnabled": {
+        "Value": false,
+        "CanBeChanged": true,
+        "ManagedPropertyLogicalName": "canmodifyglobalfiltersettings"
+      },
+      "IsSortableEnabled": {
+        "Value": false,
+        "CanBeChanged": true,
+        "ManagedPropertyLogicalName": "canmodifyissortablesettings"
+      },
+      "IsCustomizable": {
+        "Value": true,
+        "CanBeChanged": true,
+        "ManagedPropertyLogicalName": "iscustomizable"
+      },
+      "IsRenameable": {
+        "Value": true,
+        "CanBeChanged": true,
+        "ManagedPropertyLogicalName": "isrenameable"
+      },
+      "IsValidForAdvancedFind": {
+        "Value": true,
+        "CanBeChanged": true,
+        "ManagedPropertyLogicalName": "canmodifysearchsettings"
+      },
+      "RequiredLevel": {
+        "Value": "None",
+        "CanBeChanged": true,
+        "ManagedPropertyLogicalName": "canmodifyrequirementlevelsettings"
+      },
+      "CanModifyAdditionalSettings": {
+        "Value": true,
+        "CanBeChanged": true,
+        "ManagedPropertyLogicalName": "canmodifyadditionalsettings"
+      },
+      "Settings": []
+    }
+  },
+  "pqvd_rollup_date": {
+    "request": "GET /api/data/v9.2/EntityDefinitions(LogicalName='pqvd_baselineparent')/Attributes(LogicalName='pqvd_rollup_date')",
+    "status": 200,
+    "body": {
+      "@odata.context": "https://<environment>/api/data/v9.2/$metadata#EntityDefinitions('pqvd_baselineparent')/Attributes/Microsoft.Dynamics.CRM.DateTimeAttributeMetadata/$entity",
+      "@odata.type": "#Microsoft.Dynamics.CRM.DateTimeAttributeMetadata",
+      "MetadataId": "<id-4>",
+      "HasChanged": null,
+      "AttributeOf": null,
+      "AttributeType": "DateTime",
+      "ColumnNumber": 33,
+      "DeprecatedVersion": null,
+      "IntroducedVersion": "1.0.0.0",
+      "EntityLogicalName": "pqvd_baselineparent",
+      "IsCustomAttribute": true,
+      "IsPrimaryId": false,
+      "IsValidODataAttribute": true,
+      "IsPrimaryName": false,
+      "IsValidForCreate": false,
+      "IsValidForRead": true,
+      "IsValidForUpdate": false,
+      "CanBeSecuredForRead": false,
+      "CanBeSecuredForCreate": false,
+      "CanBeSecuredForUpdate": false,
+      "IsSecured": false,
+      "IsRetrievable": false,
+      "IsFilterable": false,
+      "IsSearchable": false,
+      "IsManaged": false,
+      "LinkedAttributeId": null,
+      "LogicalName": "pqvd_rollup_date",
+      "IsValidForForm": true,
+      "IsRequiredForForm": false,
+      "IsValidForGrid": false,
+      "SchemaName": "pqvd_Rollup_Date",
+      "ExternalName": null,
+      "IsLogical": false,
+      "IsDataSourceSecret": false,
+      "InheritsFrom": null,
+      "CreatedOn": "2026-11-18T18:49:58Z",
+      "ModifiedOn": "2026-11-18T19:03:31Z",
+      "SourceType": 0,
+      "AutoNumberFormat": null,
+      "MinSupportedValue": "1753-01-01T00:00:00Z",
+      "MaxSupportedValue": "9999-12-30T23:59:59Z",
+      "Format": "DateAndTime",
+      "ImeMode": "Inactive",
+      "SourceTypeMask": 0,
+      "FormulaDefinition": null,
+      "AttributeTypeName": {
+        "Value": "DateTimeType"
+      },
+      "Description": {
+        "LocalizedLabels": [
+          {
+            "Label": "Last Updated time of rollup field Rollup.",
+            "LanguageCode": 1033,
+            "IsManaged": false,
+            "MetadataId": "<id-5>",
+            "HasChanged": null
+          }
+        ],
+        "UserLocalizedLabel": {
+          "Label": "Last Updated time of rollup field Rollup.",
+          "LanguageCode": 1033,
+          "IsManaged": false,
+          "MetadataId": "<id-5>",
+          "HasChanged": null
+        }
+      },
+      "DisplayName": {
+        "LocalizedLabels": [
+          {
+            "Label": "Rollup (Last Updated On)",
+            "LanguageCode": 1033,
+            "IsManaged": false,
+            "MetadataId": "<id-6>",
+            "HasChanged": null
+          }
+        ],
+        "UserLocalizedLabel": {
+          "Label": "Rollup (Last Updated On)",
+          "LanguageCode": 1033,
+          "IsManaged": false,
+          "MetadataId": "<id-6>",
+          "HasChanged": null
+        }
+      },
+      "IsAuditEnabled": {
+        "Value": false,
+        "CanBeChanged": true,
+        "ManagedPropertyLogicalName": "canmodifyauditsettings"
+      },
+      "IsGlobalFilterEnabled": {
+        "Value": false,
+        "CanBeChanged": true,
+        "ManagedPropertyLogicalName": "canmodifyglobalfiltersettings"
+      },
+      "IsSortableEnabled": {
+        "Value": false,
+        "CanBeChanged": true,
+        "ManagedPropertyLogicalName": "canmodifyissortablesettings"
+      },
+      "IsCustomizable": {
+        "Value": true,
+        "CanBeChanged": true,
+        "ManagedPropertyLogicalName": "iscustomizable"
+      },
+      "IsRenameable": {
+        "Value": true,
+        "CanBeChanged": true,
+        "ManagedPropertyLogicalName": "isrenameable"
+      },
+      "IsValidForAdvancedFind": {
+        "Value": false,
+        "CanBeChanged": true,
+        "ManagedPropertyLogicalName": "canmodifysearchsettings"
+      },
+      "RequiredLevel": {
+        "Value": "None",
+        "CanBeChanged": true,
+        "ManagedPropertyLogicalName": "canmodifyrequirementlevelsettings"
+      },
+      "CanModifyAdditionalSettings": {
+        "Value": true,
+        "CanBeChanged": true,
+        "ManagedPropertyLogicalName": "canmodifyadditionalsettings"
+      },
+      "Settings": [],
+      "DateTimeBehavior": {
+        "Value": "UserLocal"
+      },
+      "CanChangeDateTimeBehavior": {
+        "Value": true,
+        "CanBeChanged": true,
+        "ManagedPropertyLogicalName": "canmodifybehavior"
+      }
+    }
+  },
+  "pqvd_rollup_state": {
+    "request": "GET /api/data/v9.2/EntityDefinitions(LogicalName='pqvd_baselineparent')/Attributes(LogicalName='pqvd_rollup_state')",
+    "status": 200,
+    "body": {
+      "@odata.context": "https://<environment>/api/data/v9.2/$metadata#EntityDefinitions('pqvd_baselineparent')/Attributes/Microsoft.Dynamics.CRM.IntegerAttributeMetadata/$entity",
+      "@odata.type": "#Microsoft.Dynamics.CRM.IntegerAttributeMetadata",
+      "MetadataId": "<id-7>",
+      "HasChanged": null,
+      "AttributeOf": null,
+      "AttributeType": "Integer",
+      "ColumnNumber": 34,
+      "DeprecatedVersion": null,
+      "IntroducedVersion": "1.0.0.0",
+      "EntityLogicalName": "pqvd_baselineparent",
+      "IsCustomAttribute": true,
+      "IsPrimaryId": false,
+      "IsValidODataAttribute": true,
+      "IsPrimaryName": false,
+      "IsValidForCreate": false,
+      "IsValidForRead": true,
+      "IsValidForUpdate": false,
+      "CanBeSecuredForRead": false,
+      "CanBeSecuredForCreate": false,
+      "CanBeSecuredForUpdate": false,
+      "IsSecured": false,
+      "IsRetrievable": false,
+      "IsFilterable": false,
+      "IsSearchable": false,
+      "IsManaged": false,
+      "LinkedAttributeId": null,
+      "LogicalName": "pqvd_rollup_state",
+      "IsValidForForm": true,
+      "IsRequiredForForm": false,
+      "IsValidForGrid": false,
+      "SchemaName": "pqvd_Rollup_State",
+      "ExternalName": null,
+      "IsLogical": false,
+      "IsDataSourceSecret": false,
+      "InheritsFrom": null,
+      "CreatedOn": "2026-11-18T18:49:58Z",
+      "ModifiedOn": "2026-11-18T19:03:31Z",
+      "SourceType": 0,
+      "AutoNumberFormat": null,
+      "Format": "None",
+      "MaxValue": 2147483647,
+      "MinValue": -2147483648,
+      "FormulaDefinition": null,
+      "SourceTypeMask": 0,
+      "AttributeTypeName": {
+        "Value": "IntegerType"
+      },
+      "Description": {
+        "LocalizedLabels": [
+          {
+            "Label": "State of rollup field Rollup.",
+            "LanguageCode": 1033,
+            "IsManaged": false,
+            "MetadataId": "<id-8>",
+            "HasChanged": null
+          }
+        ],
+        "UserLocalizedLabel": {
+          "Label": "State of rollup field Rollup.",
+          "LanguageCode": 1033,
+          "IsManaged": false,
+          "MetadataId": "<id-8>",
+          "HasChanged": null
+        }
+      },
+      "DisplayName": {
+        "LocalizedLabels": [
+          {
+            "Label": "Rollup (State)",
+            "LanguageCode": 1033,
+            "IsManaged": false,
+            "MetadataId": "<id-9>",
+            "HasChanged": null
+          }
+        ],
+        "UserLocalizedLabel": {
+          "Label": "Rollup (State)",
+          "LanguageCode": 1033,
+          "IsManaged": false,
+          "MetadataId": "<id-9>",
+          "HasChanged": null
+        }
+      },
+      "IsAuditEnabled": {
+        "Value": false,
+        "CanBeChanged": true,
+        "ManagedPropertyLogicalName": "canmodifyauditsettings"
+      },
+      "IsGlobalFilterEnabled": {
+        "Value": false,
+        "CanBeChanged": true,
+        "ManagedPropertyLogicalName": "canmodifyglobalfiltersettings"
+      },
+      "IsSortableEnabled": {
+        "Value": false,
+        "CanBeChanged": true,
+        "ManagedPropertyLogicalName": "canmodifyissortablesettings"
+      },
+      "IsCustomizable": {
+        "Value": true,
+        "CanBeChanged": true,
+        "ManagedPropertyLogicalName": "iscustomizable"
+      },
+      "IsRenameable": {
+        "Value": true,
+        "CanBeChanged": true,
+        "ManagedPropertyLogicalName": "isrenameable"
+      },
+      "IsValidForAdvancedFind": {
+        "Value": false,
+        "CanBeChanged": true,
+        "ManagedPropertyLogicalName": "canmodifysearchsettings"
+      },
+      "RequiredLevel": {
+        "Value": "None",
+        "CanBeChanged": true,
+        "ManagedPropertyLogicalName": "canmodifyrequirementlevelsettings"
+      },
+      "CanModifyAdditionalSettings": {
+        "Value": true,
+        "CanBeChanged": true,
+        "ManagedPropertyLogicalName": "canmodifyadditionalsettings"
+      },
+      "Settings": []
+    }
+  },
+  "pqvd_rollup_typed": {
+    "request": "GET /api/data/v9.2/EntityDefinitions(LogicalName='pqvd_baselineparent')/Attributes(LogicalName='pqvd_rollup')/Microsoft.Dynamics.CRM.IntegerAttributeMetadata?$select=FormulaDefinition,Format,SourceType,SourceTypeMask",
+    "status": 200,
+    "body": {
+      "@odata.context": "https://<environment>/api/data/v9.2/$metadata#EntityDefinitions('pqvd_baselineparent')/Attributes/Microsoft.Dynamics.CRM.IntegerAttributeMetadata(FormulaDefinition,Format,SourceType,SourceTypeMask)/$entity",
+      "MetadataId": "<id-1>",
+      "SourceType": 2,
+      "Format": "None",
+      "FormulaDefinition": "<?xml version=\"1.0\" encoding=\"utf-16\"?><Activity x:Class=\"XrmWorkflow00000000000000000000000000000000\" xmlns=\"http://schemas.microsoft.com/netfx/2009/xaml/activities\" xmlns:mcwc=\"clr-namespace:Microsoft.Crm.Workflow.ClientActivities;assembly=Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mva=\"clr-namespace:Microsoft.VisualBasic.Activities;assembly=System.Activities, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxs=\"clr-namespace:Microsoft.Xrm.Sdk;assembly=Microsoft.Xrm.Sdk, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxswa=\"clr-namespace:Microsoft.Xrm.Sdk.Workflow.Activities;assembly=Microsoft.Xrm.Sdk.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:s=\"clr-namespace:System;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:scg=\"clr-namespace:System.Collections.Generic;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:srs=\"clr-namespace:System.Runtime.Serialization;assembly=System.Runtime.Serialization, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:this=\"clr-namespace:\" xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\"><x:Members><x:Property Name=\"InputEntities\" Type=\"InArgument(scg:IDictionary(x:String, mxs:Entity))\" /><x:Property Name=\"CreatedEntities\" Type=\"InArgument(scg:IDictionary(x:String, mxs:Entity))\" /></x:Members><this:XrmWorkflow00000000000000000000000000000000.InputEntities><InArgument x:TypeArguments=\"scg:IDictionary(x:String, mxs:Entity)\" /></this:XrmWorkflow00000000000000000000000000000000.InputEntities><this:XrmWorkflow00000000000000000000000000000000.CreatedEntities><InArgument x:TypeArguments=\"scg:IDictionary(x:String, mxs:Entity)\" /></this:XrmWorkflow00000000000000000000000000000000.CreatedEntities><mva:VisualBasic.Settings>Assembly references and imported namespaces for internal implementation</mva:VisualBasic.Settings><mxswa:Workflow><Sequence DisplayName=\"RollupRuleStep1\"><Sequence DisplayName=\"Source\"><Sequence.Variables><Variable x:TypeArguments=\"x:String\" Default=\"[Nothing]\" Name=\"HierarchicalRelationshipName\" /></Sequence.Variables></Sequence><Sequence DisplayName=\"Target\"><mcwc:SetAttributeValue DisplayName=\"pqvd_baselineitem.pqvd_parentid.pqvd_baselineparent_baselineitem\" Entity=\"[CreatedEntities(&quot;relatedlinked_pqvd_baselineparent_baselineitem#pqvd_parentid#pqvd_baselineitem#Temp&quot;)]\" EntityName=\"pqvd_baselineitem\" /></Sequence><Sequence DisplayName=\"Aggregate\"><Sequence.Variables><Variable x:TypeArguments=\"x:Object\" Name=\"RollupRuleStep1_1\" /><Variable x:TypeArguments=\"x:Object\" Name=\"RollupRuleStep1_2\" /></Sequence.Variables><mxswa:GetEntityProperty Attribute=\"pqvd_baselineitemid\" Entity=\"[InputEntities(&quot;primaryEntity&quot;)]\" EntityName=\"pqvd_baselineitem\" Value=\"[RollupRuleStep1_2]\"><mxswa:GetEntityProperty.TargetType><InArgument x:TypeArguments=\"s:Type\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\"><x:Null /></mxswa:ReferenceLiteral></InArgument></mxswa:GetEntityProperty.TargetType></mxswa:GetEntityProperty><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">Count</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { RollupRuleStep1_2 }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\"><x:Null /></mxswa:ReferenceLiteral></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[RollupRuleStep1_1]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference></Sequence></Sequence></mxswa:Workflow></Activity>",
+      "SourceTypeMask": 0
+    }
+  },
+  "attributeList": {
+    "request": "GET /api/data/v9.2/EntityDefinitions(LogicalName='pqvd_baselineparent')/Attributes?$select=LogicalName,AttributeType,SourceType,AttributeOf,IsValidForCreate,IsValidForUpdate,IsValidForRead&$filter=startswith(LogicalName,'pqvd_rollup')",
+    "status": 501
+  },
+  "row": {
+    "request": "GET /api/data/v9.2/pqvd_baselineparents(215035b3-5028-4100-82a6-0fac42941979)",
+    "status": 200,
+    "body": {
+      "@odata.context": "https://<environment>/api/data/v9.2/$metadata#pqvd_baselineparents/$entity",
+      "@odata.etag": "W/\"4700969\"",
+      "overriddencreatedon": null,
+      "utcconversiontimezonecode": null,
+      "statuscode": 1,
+      "statecode": 0,
+      "pqvd_code": "P-002",
+      "pqvd_rollup_date": null,
+      "pqvd_rollup_state": null,
+      "importsequencenumber": null,
+      "_createdonbehalfby_value": null,
+      "_modifiedonbehalfby_value": null,
+      "_modifiedby_value": "<id-10>",
+      "timezoneruleversionnumber": null,
+      "pqvd_baselineparentid": "215035b3-5028-4100-82a6-0fac42941979",
+      "_organizationid_value": "<id-11>",
+      "pqvd_description": "Second invented parent.",
+      "pqvd_name": "Baseline Parent Two",
+      "modifiedon": "2026-10-15T19:38:05Z",
+      "_createdby_value": "<id-10>",
+      "versionnumber": 4700969,
+      "createdon": "2026-10-14T21:01:25Z",
+      "pqvd_rollup": null,
+      "pqvd_rank": 2,
+      "pqvd_summary": "Parent two summary"
+    }
+  },
+  "relatedItems": {
+    "request": "GET /api/data/v9.2/pqvd_baselineitems?$select=pqvd_baselineitemid&$filter=_pqvd_parentid_value eq 215035b3-5028-4100-82a6-0fac42941979",
+    "status": 200,
+    "body": {
+      "@odata.context": "https://<environment>/api/data/v9.2/$metadata#pqvd_baselineitems(pqvd_baselineitemid)",
+      "value": [
+        {
+          "@odata.etag": "W/\"4653413\"",
+          "pqvd_baselineitemid": "<id-12>"
+        },
+        {
+          "@odata.etag": "W/\"4652166\"",
+          "pqvd_baselineitemid": "<id-13>"
+        },
+        {
+          "@odata.etag": "W/\"4652156\"",
+          "pqvd_baselineitemid": "<id-14>"
+        },
+        {
+          "@odata.etag": "W/\"4652160\"",
+          "pqvd_baselineitemid": "<id-15>"
+        }
+      ]
+    }
+  }
+}

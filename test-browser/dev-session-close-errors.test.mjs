@@ -24,19 +24,57 @@ import { childOutput } from './helpers/child-output.mjs';
 import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
 import { startOnFreePort } from './helpers/debug-port.mjs';
 
-/** A clock for the interception guards: an armed guard fires only when the test fires it. */
+/**
+ * A clock for the interception and provenance guards: an armed guard fires only when the test fires it. `until(select)`
+ * resolves with the guard `select` picks from the armed ones, checked now and after every change.
+ */
 function ownedClock() {
-  const guards = new Set();
+  const guards = new Set(),
+    waiters = new Set();
+  const check = () => {
+    for (const waiter of waiters) {
+      const guard = waiter.select([...guards]);
+      if (!guard) continue;
+      waiters.delete(waiter);
+      waiter.resolve(guard);
+    }
+  };
   const clock = {
     setTimeout: (fire, ms, ...args) => {
       const guard = { fire: () => fire(...args), ms };
       guards.add(guard);
+      check();
       return guard;
     },
-    clearTimeout: (guard) => guards.delete(guard),
+    clearTimeout: (guard) => {
+      guards.delete(guard);
+      check();
+    },
   };
-  return { guards, clock };
+  const until = (select) =>
+    new Promise((resolve) => {
+      waiters.add({ select, resolve });
+      check();
+    });
+  return { guards, clock, until };
 }
+
+/**
+ * The one 30 s guard armed since `before` once no other is: the guard of a command that is never answered stays armed,
+ * while the provenance reads of healthy tabs arm theirs on the same clock and clear them when answered.
+ */
+const onlyHangGuardSince = (before) => (armed) => {
+  const waiting = armed.filter((guard) => !before.has(guard) && guard.ms === 30_000);
+  return waiting.length === 1 ? waiting[0] : undefined;
+};
+
+/** Adds a frame of the page's origin at `path`. */
+const addFrame = (page, path) =>
+  page.evaluate((path) => {
+    const frame = document.createElement('iframe');
+    frame.src = path;
+    document.body.append(frame);
+  }, path);
 
 async function fixture(t) {
   const owner = ownedFixture(t);
@@ -129,9 +167,9 @@ test('owned browser isolates real wire timeouts in tabs and popups, cancellation
   const context = browser.contexts()[0],
     logs = [];
   const stopped = Promise.withResolvers();
-  // The setup hang guards run on this clock, so the test fires a guard when the proxy has dropped its command
-  // instead of waiting the real 30 s; healthy tabs are never ended by it.
-  const { guards, clock } = ownedClock();
+  // The setup hang guards and the provenance command guards run on this clock, so the test fires a guard when the proxy
+  // has dropped its command instead of waiting the real 30 s; healthy tabs are never ended by it.
+  const { guards, clock, until } = ownedClock();
   const runtime = await startDevSessions(context, selection, {
     attached: owned.attached,
     debugPort,
@@ -179,15 +217,26 @@ test('owned browser isolates real wire timeouts in tabs and popups, cancellation
       const opening = healthy[0].waitForEvent('popup');
       await healthy[0].evaluate((origin) => window.open(origin + '/popup'), origin);
       failed = await opening;
-    } else failed = await context.newPage();
+    } else {
+      // A healthy tab's own provenance read can be in flight when a fault is armed: here a new frame announces its
+      // context. That read is not the setup command the fault is for, and it is answered.
+      const reading = proxy.nextRequest('Page.getFrameTree');
+      await addFrame(healthy[1], '/frame');
+      const read = await reading;
+      assert.equal(read.fresh, false);
+      assert.equal(await Promise.race([read.answered.then(() => 'answered'), fault.then(() => 'dropped')]), 'answered');
+      failed = await context.newPage();
+    }
     const dropped = await fault;
     assert.equal(dropped.method, 'Page.getFrameTree');
-    // The guard is armed before its command is sent, so the dropped command's guard is the setup guard (30 s) armed
-    // since the fault. The cancelled tab's release can still arm and clear its own 5 s guards meanwhile, and nothing
-    // reports when that release ends, so the setup guard is selected by its duration.
-    const waiting = [...guards].filter((guard) => !armedBefore.has(guard) && guard.ms === 30_000);
-    assert.equal(waiting.length, 1, 'exactly one setup guard waits for the dropped command');
-    waiting[0].fire();
+    // The guard is armed before its command is sent, so the dropped command's guard is a 30 s guard armed since the
+    // fault. The cancelled tab's release can still arm and clear its own 5 s guards meanwhile, and nothing reports when
+    // that release ends, so the setup guard is selected by its duration.
+    assert.ok(
+      [...guards].some((guard) => !armedBefore.has(guard) && guard.ms === 30_000),
+      'a setup guard waits for the dropped command',
+    );
+    (await until(onlyHangGuardSince(armedBefore))).fire();
     if (!failed.isClosed()) await failed.waitForEvent('close');
     assert.equal(runtime.failure, undefined);
     assert.equal(runtime.active.size, 1);
@@ -204,6 +253,32 @@ test('owned browser isolates real wire timeouts in tabs and popups, cancellation
   }
   assert.equal(proxy.dropped.length, 3, 'one actual unanswered command per cancelled/tab/popup initializer');
   assert.equal(logs.filter((line) => line.includes('Page.getFrameTree did not answer within 30000 ms')).length, 2);
+  // A provenance read of a healthy tab that is never answered: the transport's own guard reports the tab's provenance as
+  // incomplete, and the tab keeps its draft and the local overlay. The first read a new frame's context causes is the
+  // portal transport's loader read, which it sends synchronously in the context notification.
+  const readsBefore = new Set(guards);
+  const unanswered = proxy.arm({ existing: true });
+  await addFrame(healthy[0], '/frame');
+  assert.equal((await unanswered).method, 'Page.getFrameTree');
+  // The read's guard is armed before it is sent, on the clock the development session passes down.
+  assert.ok(
+    [...guards].some((guard) => !readsBefore.has(guard) && guard.ms === 30_000),
+    'a provenance guard waits for the dropped read',
+  );
+  (await until(onlyHangGuardSince(readsBefore))).fire();
+  assert.deepEqual(
+    logs.filter((line) => line.startsWith('WARN        Local provenance')),
+    [
+      'WARN        Local provenance for this tab is incomplete: Page.getFrameTree did not answer within 30000 ms. Reload this tab to deliver it again.',
+    ],
+  );
+  assert.equal(runtime.failure, undefined);
+  assert.equal(runtime.active.size, 1);
+  for (const [index, page] of healthy.entries()) {
+    assert.equal(page.isClosed(), false);
+    assert.equal(await page.locator('#draft').inputValue(), 'unsaved-' + index);
+    assert.match(await page.evaluate(() => fetch('/scripts/app.js').then((r) => r.text())), /console\.log\("app"\)/);
+  }
   // Live JS saves intentionally reload pages. Turn that user option off before
   // testing watcher/retry continuity with unsaved drafts still present.
   record.session.liveReload = false;
@@ -314,7 +389,8 @@ for (const attached of [false, true]) {
     else {
       await disabling.promise;
       // The guard is armed before its command is sent, so the unanswered Fetch.disable's guard is the one armed since.
-      const waiting = [...guards].filter((guard) => !armedBefore.has(guard));
+      // The provenance reads of the healthy tabs arm 30 s guards on this clock too.
+      const waiting = [...guards].filter((guard) => !armedBefore.has(guard) && guard.ms !== 30_000);
       assert.deepEqual(
         waiting.map(({ ms }) => ms),
         [5_000],
@@ -546,9 +622,12 @@ test('actual development CLI exits nonzero after agent filesystem cleanup failur
   const ownedPage = remoteContext.pages()[0];
   await ownedPage.waitForFunction((expected) => location.origin === expected, origin);
   const protocol = await remoteBrowser.newBrowserCDPSession();
+  // The child's exit and this connection's loss reach this process on separate channels, in either order.
+  const disconnected = once(remoteBrowser, 'disconnected');
   await protocol.send('Browser.close');
   assert.equal(await closed, 1, 'actual CLI must report unsuccessful shutdown');
   assert.equal(output.text.includes(discovery.token), false, 'discovery credentials must not enter diagnostics');
   assert.match(output.text, /EISDIR|EPERM|directory/);
+  await disconnected;
   assert.equal(remoteBrowser.isConnected(), false, 'the exact owned browser disconnected');
 });

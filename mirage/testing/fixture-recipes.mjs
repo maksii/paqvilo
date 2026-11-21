@@ -2,6 +2,7 @@
 // runtime's arbitrary provider closures, timer callbacks or identity counter.
 import { fixedClock, sequentialIds, createScheduler } from '../lib/runtime-clock.mjs';
 import { inspectionBudget } from '../lib/inspection-budget.mjs';
+import { requiredArgument } from '../lib/required-argument.mjs';
 
 function isolatedState(state) {
   let cloned;
@@ -41,7 +42,9 @@ const validName = (value) =>
   !['constructor', 'prototype'].includes(value);
 
 /** Capture immutable project-owned recipe definitions; create(name) always returns a fresh, idle fixture. */
-export function createFixtureRecipes(definitions) {
+export function createFixtureRecipes(
+  definitions = requiredArgument('createFixtureRecipes(definitions)', 'an object of named recipe definitions'),
+) {
   if (!plain(definitions) || Object.keys(definitions).length > 100)
     throw new TypeError('Fixture recipes require a named object with at most 100 definitions.');
   const recipes = new Map();

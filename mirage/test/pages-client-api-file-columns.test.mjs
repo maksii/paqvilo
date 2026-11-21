@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../server.mjs';
 import { signInHeaders } from '../testing/session.mjs';
-import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, ownedClose, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const SITE = '77777777-7777-4777-8777-777777777771';
 const ITEM = '77777777-7777-4777-8777-777777777772';
@@ -17,13 +17,9 @@ const CONTACT = '77777777-7777-4777-8777-777777777774';
 async function simulator(t, { images = false, applicationUser } = {}) {
   const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'portal-file-columns-'));
   let app;
-  // One owner hook: Node stops subsequent after hooks when an earlier one throws.
-  // Drain the current runtime (including a restarted instance and its blob flush)
-  // before touching its state directory. Preserve that directory if close fails.
-  ownedFixture(t).add(async () => {
-    await app?.close();
-    await fs.rm(dir, { recursive: true, force: true });
-  });
+  // Every runtime this helper starts is closed by its own registration (ownedClose), before the state directory is
+  // removed. The directory is preserved if a close fails.
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const files = {
     'website.yml': `adx_websiteid: ${SITE}\nadx_name: Example`,
     'Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\nadx_isroot: true',
@@ -110,7 +106,7 @@ async function simulator(t, { images = false, applicationUser } = {}) {
         }
       : {}),
   };
-  app = await createSimulator(options);
+  app = ownedClose(t, await createSimulator(options));
   let cookie, token;
   const signIn = async () => {
     cookie = signInHeaders(app, CONTACT, { roles: ['Member'] }).cookie;
@@ -132,7 +128,7 @@ async function simulator(t, { images = false, applicationUser } = {}) {
     });
   const restart = async () => {
     await app.close();
-    app = await createSimulator(options);
+    app = ownedClose(t, await createSimulator(options));
     await signIn();
     return app;
   };

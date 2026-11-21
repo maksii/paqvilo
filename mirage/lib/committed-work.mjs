@@ -1,5 +1,5 @@
 import v8 from 'node:v8';
-import { clockFunction, storeScheduler, systemClock, systemIds } from './runtime-clock.mjs';
+import { clockFunction, stampMs, storeScheduler, systemClock, systemIds } from './runtime-clock.mjs';
 import { runWithRequest } from './request-context.mjs';
 
 /** Drain all post-commit consumers to a common quiescent point. A consumer may
@@ -26,6 +26,8 @@ export async function settleCommittedWork(store, runners, { close = false } = {}
 const SYSTEM_EVENT = 1,
   WORKFLOW = 10;
 
+// The runner's own bookkeeping transactions find their rows by id inside the transaction (DataStore#transact `tracked`).
+const TRACKED = { tracked: true };
 const READY = 0,
   LOCKED = 2;
 // ponytail: a job whose transaction rolls back is tried 3 times, then finished Failed; a per-kind retry policy can replace the constant.
@@ -77,6 +79,12 @@ function startQueuedCommittedJob(job, kinds, running, execute) {
   void run.finally(() => running.delete(run));
   return null;
 }
+
+// One turn of the event loop. A job over an in-memory store settles through promises alone, so a chain of jobs would
+// otherwise run to its end before any timer, socket or shutdown request is served. The function is captured here:
+// a test that replaces the global timers still gets a real turn.
+const immediate = setImmediate;
+const loopTurn = () => new Promise((resolve) => immediate(resolve));
 
 const shouldWaitForAutomaticTick = (ticking, manual) => ticking && !manual();
 const hasImmediateCommittedJobs = (autoRuns, nextWait) => autoRuns() && nextWait() === 0;
@@ -130,7 +138,8 @@ export function committedJobs(store) {
     closed = false;
   const scheduler = () => storeScheduler(store);
   const nowMs = () => clockFunction(store.clock ?? systemClock)();
-  const now = () => new Date(nowMs()).toISOString();
+  // A stored date, held across a small backward step of the wall clock (runtime-clock.mjs stampMs).
+  const now = () => new Date(stampMs(store, store.clock ?? systemClock)).toISOString();
   // A Ready row waits until its start time: the job's internal start latency (data startAfter, plugin-async.mjs; its
   // postponeuntil stays null as natively) or a postponeuntil; 0 when it is due.
   const waitOf = (row) => {
@@ -222,7 +231,7 @@ export function committedJobs(store) {
       row.data = JSON.stringify({ ...payload, attempts });
       if (attempts >= MAX_ATTEMPTS)
         Object.assign(row, { statecode: 3, statuscode: 31, completedon: now(), message, friendlymessage: message });
-    });
+    }, TRACKED);
     if (attempts >= MAX_ATTEMPTS)
       report({ code: 'COMMITTED_JOB_POISONED', asyncoperationid: id, kind, attempts, message });
     else if (attempts) retry.add(id);
@@ -258,7 +267,7 @@ export function committedJobs(store) {
   // createdon is a Dataverse date-time: whole seconds. An entry may carry the time its operation created the job.
   const readyRows = (entries) => {
     const ids = store.ids ?? systemIds,
-      stamp = wholeSecond(clockFunction(store.clock ?? systemClock)());
+      stamp = wholeSecond(stampMs(store, store.clock ?? systemClock));
     return entries.map(({ id, kind, columns = {}, event, staging, ...rest }) => ({
       asyncoperationid: id ?? ids.uuid(),
       operationtype: SYSTEM_EVENT,
@@ -289,7 +298,10 @@ export function committedJobs(store) {
           for (const job of jobs) {
             seen.add(job.id);
             const run = startQueuedCommittedJob(job, kinds, running, execute);
-            if (run) await run;
+            if (!run) continue;
+            await run;
+            // The next job starts on a later turn of the event loop (FIFO order is kept: nothing else starts a job).
+            await loopTurn();
           }
         }
       } finally {
@@ -373,7 +385,7 @@ export function committedJobs(store) {
                 count++;
               }
               return count;
-            })
+            }, TRACKED)
             .then((count) => {
               if (!count) return;
               for (const id of locked) queued.add(id);

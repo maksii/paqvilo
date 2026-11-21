@@ -1,3 +1,4 @@
+// @test-kind contract: the preflight report and its exit code are Paqvilo's own CLI and configuration design
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -267,4 +268,70 @@ test('configured values never appear in the report', async (t) => {
   // The offline report uses the running host's composition: an Azurite store without a usable connection string is at contract.
   assert.ok(result.modules.some((module) => module.name === 'provider:storage/blob' && module.level === 'contract'));
   assert.equal(preflightExitCode(result), 1);
+});
+
+test('preflight refuses the observed settings serve refuses, with the same message, before reading sources', async () => {
+  await assert.rejects(
+    preflight({
+      runtime: { kind: 'dataverse-api' },
+      solutionRoots: [path.join(os.tmpdir(), 'paqvilo-no-such-root')],
+      packs: [],
+      observed: { liquidFetchRights: 'native-classic', evidence: 'Invented observation' },
+    }),
+    /^Error: observed\.liquidFetchRights native-classic requires tablePermissionQueryPipeline native-classic; set both or neither$/,
+  );
+});
+
+// @test-kind contract: Paqvilo's own preflight blocking rule for project localServices entries marked required
+test('an unreachable required local service blocks with and without strict; an optional one blocks only with strict', () => {
+  const services = [
+    { id: 'functions', kind: 'http', required: true, reachable: false, message: 'not reachable' },
+    { id: 'optional', kind: 'http', required: false, reachable: false, message: 'not reachable' },
+    { id: 'up', kind: 'http', required: true, reachable: true },
+  ];
+  for (const strict of [false, true]) {
+    const result = report({ localServices: services, strict });
+    assert.equal(row(result, 'local-service:functions').blocking, true, `strict ${strict}`);
+    assert.equal(row(result, 'local-service:optional').blocking, strict, `strict ${strict}`);
+    assert.equal(row(result, 'local-service:up').blocking, false, `strict ${strict}`);
+  }
+});
+
+// @test-kind contract: the preflight modules list reports what the host serves: an inventory record takes the level and
+// reason the source graph gave its node (a hosted dashboard), and keeps its own when the graph has no such node
+test('preflight inventory modules follow the level and reason of their source-graph node', () => {
+  const registry = createCapabilityRegistry({ runtime: { kind: 'model-driven' } });
+  for (const name of ['Rendered', 'Gaps', 'Elsewhere'])
+    registry.add({
+      name: `dashboard:${name}`,
+      kind: 'inventory',
+      component: 'dashboard',
+      level: 'inventory',
+      reason: 'DASHBOARD_NOT_RENDERED',
+    });
+  const graph = fakeGraph();
+  graph.nodes.set('dashboard:rendered', {
+    kind: 'dashboard',
+    id: 'dashboard:rendered',
+    level: 'behaviour',
+    reason: null,
+  });
+  graph.nodes.set('dashboard:gaps', {
+    kind: 'dashboard',
+    id: 'dashboard:gaps',
+    level: 'inventory',
+    reason: 'MD_DASHBOARD_COMPONENT_UNSUPPORTED',
+  });
+  const modules = Object.fromEntries(
+    buildPreflightReport({ runtime: { kind: 'model-driven' }, registry, graph }).modules.map((m) => [m.name, m]),
+  );
+  assert.deepEqual(
+    [modules['dashboard:Rendered'].level, modules['dashboard:Rendered'].reason],
+    ['behaviour', undefined],
+  );
+  assert.deepEqual(
+    [modules['dashboard:Gaps'].level, modules['dashboard:Gaps'].reason],
+    ['inventory', 'MD_DASHBOARD_COMPONENT_UNSUPPORTED'],
+  );
+  assert.equal(modules['dashboard:Elsewhere'].reason, 'DASHBOARD_NOT_RENDERED');
 });

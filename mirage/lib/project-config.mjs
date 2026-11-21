@@ -16,6 +16,7 @@ import { isTenantAuthority } from './external-login.mjs';
 import { resolveDeploymentProfiles, loadDeploymentProfiles } from './deployment-profiles.mjs';
 import { loadOrganizationSources } from './solution-runtime-source.mjs';
 import { parseSetting, projectKeys } from './config-keys.mjs';
+import { jsonErrorPosition, withoutContent } from './path-options.mjs';
 import './provider-modules.mjs';
 
 const VERSIONS = [1, 2];
@@ -294,10 +295,13 @@ function normalizeObservedPluginSource(name, source, label) {
     typeof source.evidence !== 'string' ||
     !source.evidence.trim() ||
     source.evidence.length > 2000 ||
-    (source.root !== undefined && (typeof source.root !== 'string' || !path.isAbsolute(source.root)))
+    // A relative root is resolved against the folder of the file that declares it.
+    (source.root !== undefined &&
+      // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
+      (typeof source.root !== 'string' || !source.root.trim() || /[\x00-\x1f]/.test(source.root)))
   )
     throw new Error(
-      `${label}.pluginSources requires exact type names, relative .cs paths, evidence and an optional absolute trusted root`,
+      `${label}.pluginSources requires exact type names, relative .cs paths, evidence and an optional trusted root`,
     );
   return {
     path: relative,
@@ -468,14 +472,17 @@ function applyObservedUserSettings(value, label, observed) {
   }
 }
 
+const OBSERVED_HEADER_KINDS = ['page', 'webFile', 'webApi'];
+const OBSERVED_HEADER_KIND_TEXT = `${OBSERVED_HEADER_KINDS.slice(0, -1).join(', ')} or ${OBSERVED_HEADER_KINDS.at(-1)}`;
+
 function applyObservedHeaders(value, label, observed) {
   if (value.headers == null) return;
   if (typeof value.headers !== 'object' || Array.isArray(value.headers))
-    throw new Error(`${label}.headers must map page and webFile to headers`);
+    throw new Error(`${label}.headers must map ${OBSERVED_HEADER_KIND_TEXT} to headers`);
   const headers = {};
   for (const [kind, entries] of Object.entries(value.headers)) {
-    if (!['page', 'webFile', 'webApi'].includes(kind))
-      throw new Error(`${label}.headers.${kind} must be page, webFile or webApi`);
+    if (!OBSERVED_HEADER_KINDS.includes(kind))
+      throw new Error(`${label}.headers.${kind} must be ${OBSERVED_HEADER_KIND_TEXT}`);
     if (!entries || typeof entries !== 'object' || Array.isArray(entries))
       throw new Error(`${label}.headers.${kind} must map header names to values`);
     headers[kind] = {};
@@ -604,6 +611,12 @@ export function observedConfig(value, label = 'observed') {
   const evidence = typeof value.evidence === 'string' ? value.evidence.trim() : '';
   if (!evidence)
     throw new Error(`${label}.evidence must name the observation behind ${Object.keys(observed).join(', ')}`);
+  // A denied native Liquid right answers an empty result only in the native table-permission pipeline, so the
+  // observation is refused without it (as webApiTwoDigitYearMax is without month-first parsing).
+  if (observed.liquidFetchRights === 'native-classic' && observed.tablePermissionQueryPipeline !== 'native-classic')
+    throw new Error(
+      `${label}.liquidFetchRights native-classic requires tablePermissionQueryPipeline native-classic; set both or neither`,
+    );
   return { ...observed, evidence };
 }
 function normalizePortal(entry, index) {
@@ -693,7 +706,21 @@ function normalizeDataPack(entry, index) {
 export async function loadProjectConfig(configFile) {
   const absoluteConfig = path.resolve(configFile);
   const source = await fs.readFile(absoluteConfig, 'utf8');
-  const raw = /\.json$/i.test(absoluteConfig) ? JSON.parse(source) : YAML.parse(source);
+  const json = /\.json$/i.test(absoluteConfig);
+  let raw;
+  try {
+    raw = json ? JSON.parse(source) : YAML.parse(source);
+  } catch (error) {
+    // Parser messages quote file contents (a value may be a token): only the reason code and position are shown, in
+    // the message and in the cause.
+    const yamlAt = error.linePos?.[0];
+    const yamlWhere = [error.code ?? 'YAMLParseError', yamlAt && `at line ${yamlAt.line}, column ${yamlAt.col}`];
+    const where = json ? jsonErrorPosition(source, error) : yamlWhere.filter(Boolean).join(' ');
+    withoutContent(error, where);
+    throw new Error(`Project file ${absoluteConfig} is not valid ${json ? 'JSON' : 'YAML'} (${where}). Fix the file.`, {
+      cause: error,
+    });
+  }
   return resolveProjectConfig(raw, absoluteConfig);
 }
 
@@ -769,7 +796,7 @@ async function resolveProjectPortal({
     portal.observed.pluginSources = Object.fromEntries(
       Object.entries(portal.observed.pluginSources).map(([name, source]) => [
         name,
-        { ...source, root: source.root ?? base },
+        { ...source, root: source.root ? path.resolve(base, source.root) : base },
       ]),
     );
   // Standalone profiles retain portal selections for later use, without
@@ -975,6 +1002,8 @@ export function projectSummary(project, portalId = null) {
     defaultReference: project.defaultReference?.id ?? null,
     dataPacks: project.dataPacks,
     environmentVariables: Object.keys(project.environmentVariables ?? {}),
+    // Findings of the project file itself (PROJECT_CONFIG_KEY_UNKNOWN for a version-1 project's unknown key).
+    diagnostics: project.diagnostics ?? [],
   };
 }
 

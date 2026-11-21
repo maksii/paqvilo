@@ -24,7 +24,18 @@ export const requiredNativeWitnesses = [
 
 /** This is a finite campaign over one fixed exported permission graph, not a
  * statement about every possible permission graph or future Power Pages build. */
+/** Throws unless `manifest` is the compiled harness manifest (it has cases), naming where that manifest comes from. */
+export function assertHarnessManifest(manifest) {
+  if (!Array.isArray(manifest?.cases))
+    throw new Error(
+      'Expected a harness manifest (with cases), not ' +
+        (manifest?.tables ? 'the Dataverse schema manifest' : 'this file') +
+        ": use the manifest.json that portal-harness/compile.mjs writes to the example's .paqvilo/portal-harness/generated.",
+    );
+}
+
 export function buildQualificationDomain({ blueprint, schema, catalogue, manifest, witnesses = {} }) {
+  assertHarnessManifest(manifest);
   const businessRoles = blueprint.roles.filter((role) => role.code !== 'TESTRUNNER');
   if (businessRoles.length !== 12 || new Set(businessRoles.map((role) => role.id)).size !== 12)
     throw new Error('The source-role campaign requires the twelve distinct authored business roles.');

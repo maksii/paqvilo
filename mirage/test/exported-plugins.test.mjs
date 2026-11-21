@@ -22,6 +22,7 @@ import { observedConfig } from '../lib/project-config.mjs';
 import { resolveMirageConfig } from '../../lense/config.mjs';
 import { loadProjectConfig } from '../lib/project-config.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 
 // @test-kind security: path confinement: explicit C# plug-in sources stay within trusted roots
 test('explicit C# sources stay confined to trusted roots and survive generated-project root normalization', async (t) => {
@@ -379,54 +380,62 @@ test('synchronous trusted plugin phases sort rank, filter submitted columns, rej
 });
 
 // @test-kind contract+security: Paqvilo admin plug-in inventory and editable mocks; admin writes are CSRF protected
-test('automatic plugin placeholders and editable mocks are inventoried, CSRF protected, and prevent bad CRUD writes', async (t) => {
-  const { app } = await pluginFixture(t);
-  const csrf = app.csrf;
-  const admin = (route, method = 'GET', value) =>
-    fetch(app.url + '/__sim/api' + route, {
-      method,
-      headers: { 'content-type': 'application/json', 'x-sim-csrf': csrf },
-      body: value === undefined ? undefined : JSON.stringify(value),
-    });
-  const write = (method, route, value, token = csrf) =>
-    fetch(app.url + '/_api/' + route, {
-      method,
-      headers: { 'content-type': 'application/json', __RequestVerificationToken: token },
-      body: value === undefined ? undefined : JSON.stringify(value),
-    });
-  const items = (await (await admin('/operations')).json()).items;
-  assert.equal(items.length, 9);
-  assert.equal(items[0].kind, 'plugin-step');
-  assert.equal(items[0].mode, 'placeholder');
-  assert.equal((await write('POST', 'fx_widgets', { fx_title: 'Missing token' }, '')).status, 401);
-  const created = await write('POST', 'fx_widgets', { fx_title: 'Placeholder allowed' });
-  assert.equal(created.status, 204, await created.text());
-  assert.ok(app.state().diagnostics.some((item) => item.code === 'PLUGIN_STEP_PLACEHOLDER'));
-  const row = app.store.snapshot().tables.fx_widget[0];
-  const route = '/operations/' + encodeURIComponent(`plugin-step:${pluginId(7)}`);
-  assert.equal(
-    (await admin(route, 'PATCH', { mode: 'mock', body: { error: { message: 'Local rejection' } } })).status,
-    200,
-  );
-  const before = app.store.snapshot();
-  const denied = await write('PATCH', `fx_widgets(${row.fx_widgetid})`, { fx_title: 'Rejected' });
-  assert.equal(denied.status, 400);
-  assert.equal((await denied.json()).error.code, '9004010D');
-  assert.ok(
-    app.state().diagnostics.some((item) => item.code === 'PLUGIN_STEP_REJECTED' && item.message === 'Local rejection'),
-  );
-  assert.deepEqual(app.store.snapshot(), before);
-  assert.equal(
-    (await admin(route, 'PATCH', { mode: 'mock', body: { target: { fx_title: 'Configured title' } } })).status,
-    200,
-  );
-  assert.equal((await write('PATCH', `fx_widgets(${row.fx_widgetid})`, { fx_title: 'Input' })).status, 204);
-  assert.equal(app.store.snapshot().tables.fx_widget[0].fx_title, 'Configured title');
-  assert.equal(
-    (await admin('/operations/' + encodeURIComponent(`plugin-step:${pluginId(9)}`), 'PATCH', { mode: 'mock' })).status,
-    200,
-  );
-});
+// Hang guard only: it starts a simulator and drives it through its reloads; on a loaded slow host that is slow, not hung.
+test(
+  'automatic plugin placeholders and editable mocks are inventoried, CSRF protected, and prevent bad CRUD writes',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const { app } = await pluginFixture(t);
+    const csrf = app.csrf;
+    const admin = (route, method = 'GET', value) =>
+      fetch(app.url + '/__sim/api' + route, {
+        method,
+        headers: { 'content-type': 'application/json', 'x-sim-csrf': csrf },
+        body: value === undefined ? undefined : JSON.stringify(value),
+      });
+    const write = (method, route, value, token = csrf) =>
+      fetch(app.url + '/_api/' + route, {
+        method,
+        headers: { 'content-type': 'application/json', __RequestVerificationToken: token },
+        body: value === undefined ? undefined : JSON.stringify(value),
+      });
+    const items = (await (await admin('/operations')).json()).items;
+    assert.equal(items.length, 9);
+    assert.equal(items[0].kind, 'plugin-step');
+    assert.equal(items[0].mode, 'placeholder');
+    assert.equal((await write('POST', 'fx_widgets', { fx_title: 'Missing token' }, '')).status, 401);
+    const created = await write('POST', 'fx_widgets', { fx_title: 'Placeholder allowed' });
+    assert.equal(created.status, 204, await created.text());
+    assert.ok(app.state().diagnostics.some((item) => item.code === 'PLUGIN_STEP_PLACEHOLDER'));
+    const row = app.store.snapshot().tables.fx_widget[0];
+    const route = '/operations/' + encodeURIComponent(`plugin-step:${pluginId(7)}`);
+    assert.equal(
+      (await admin(route, 'PATCH', { mode: 'mock', body: { error: { message: 'Local rejection' } } })).status,
+      200,
+    );
+    const before = app.store.snapshot();
+    const denied = await write('PATCH', `fx_widgets(${row.fx_widgetid})`, { fx_title: 'Rejected' });
+    assert.equal(denied.status, 400);
+    assert.equal((await denied.json()).error.code, '9004010D');
+    assert.ok(
+      app
+        .state()
+        .diagnostics.some((item) => item.code === 'PLUGIN_STEP_REJECTED' && item.message === 'Local rejection'),
+    );
+    assert.deepEqual(app.store.snapshot(), before);
+    assert.equal(
+      (await admin(route, 'PATCH', { mode: 'mock', body: { target: { fx_title: 'Configured title' } } })).status,
+      200,
+    );
+    assert.equal((await write('PATCH', `fx_widgets(${row.fx_widgetid})`, { fx_title: 'Input' })).status, 204);
+    assert.equal(app.store.snapshot().tables.fx_widget[0].fx_title, 'Configured title');
+    assert.equal(
+      (await admin('/operations/' + encodeURIComponent(`plugin-step:${pluginId(9)}`), 'PATCH', { mode: 'mock' }))
+        .status,
+      200,
+    );
+  },
+);
 
 // @test-kind compatibility: platform well-known SDK message ids resolve messages without a project observation
 test('well-known SDK message ids resolve without a project observation', () => {

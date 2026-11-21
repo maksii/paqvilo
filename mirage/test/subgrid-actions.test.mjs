@@ -1,3 +1,4 @@
+// @test-kind unproven: a local model of the platform's native grid services, actions and filters; no capture is linked to these assertions
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore } from '../lib/data.mjs';
@@ -6,6 +7,7 @@ import { deletePortalSubgridRecord, subgridActionUrl } from '../lib/subgrid-acti
 import { subgridModel, gridData, formCells } from '../lib/native-services.mjs';
 import { model, simulatorFixture, parentId, pendingId, acceptedId, foreignId } from './fixtures/subgrid.mjs';
 import { signInHeaders } from '../testing/session.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 
 const layoutsOf = (html) => {
   const start = html.indexOf('class="entity-grid subgrid');
@@ -211,81 +213,86 @@ test('native grid deletes reject unrelated rows, immutable action-filter failure
   assert.equal(store.snapshot().tables.child.length, 2);
 });
 
-test('HTTP native grid services enforce CSRF, declared actions and relationship scope independent of Web API settings', async (t) => {
-  const app = await simulatorFixture(t);
-  // Portal requests are signed in explicitly as the fixture's Editor persona.
-  const session = signInHeaders(app, 'editor', { roles: ['Editor'] });
-  const page = await (await fetch(app.url + '/?id=' + parentId, { headers: session })).text();
-  const secure = layoutsOf(page)[0].Base64SecureConfiguration;
-  const call = (action, body, headers = { __RequestVerificationToken: app.csrf }) =>
-    fetch(app.url + '/_services/' + action + '/site', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...session, ...headers },
-      body: JSON.stringify(body),
+// Hang guard only: it drives a runtime, the CLI or child processes through this file's fixtures; on a loaded slow host that is slow, not hung.
+test(
+  'HTTP native grid services enforce CSRF, declared actions and relationship scope independent of Web API settings',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const app = await simulatorFixture(t);
+    // Portal requests are signed in explicitly as the fixture's Editor persona.
+    const session = signInHeaders(app, 'editor', { roles: ['Editor'] });
+    const page = await (await fetch(app.url + '/?id=' + parentId, { headers: session })).text();
+    const secure = layoutsOf(page)[0].Base64SecureConfiguration;
+    const call = (action, body, headers = { __RequestVerificationToken: app.csrf }) =>
+      fetch(app.url + '/_services/' + action + '/site', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...session, ...headers },
+        body: JSON.stringify(body),
+      });
+    assert.equal((await fetch(app.url + '/_api/children')).status, 404);
+    const request = {
+      base64SecureConfiguration: secure,
+      sortExpression: '',
+      search: '',
+      page: 1,
+      pageSize: 10,
+      pagingCookie: '',
+      filter: null,
+      metaFilter: null,
+      nlSearchFilter: '',
+      timezoneOffset: 0,
+      customParameters: [],
+    };
+    assert.equal((await call('entity-subgrid-data.json', request, {})).status, 403);
+    let response = await call('entity-subgrid-data.json', request);
+    assert.equal(response.status, 200);
+    const data = await response.json();
+    assert.deepEqual(Object.keys(data), [
+      'MoreRecords',
+      'Records',
+      'ItemCount',
+      'PageCount',
+      'PageNumber',
+      'PageSize',
+      'NextPagePagingCookie',
+      'ViewConfiguration',
+      'CompleteViewLayout',
+      'CreateActionMetadata',
+      'DisabledItemActionLinks',
+    ]);
+    assert.deepEqual(
+      [data.ItemCount, data.PageCount, data.PageNumber, data.PageSize, data.MoreRecords],
+      [2, 1, 1, 10, false],
+    );
+    // Without read on the subgrid table the service answers AccessDenied with the page no-cache policy (live subgrid service; list grids answer private).
+    const before = app.store.snapshot();
+    const revoked = structuredClone(before);
+    revoked.permissions = revoked.permissions.filter((rule) => rule.entity !== 'child');
+    await app.store.replaceState(revoked);
+    const denied = await call('entity-subgrid-data.json', request);
+    assert.deepEqual(
+      [denied.status, denied.headers.get('cache-control'), denied.headers.get('pragma'), denied.headers.get('expires')],
+      [200, 'no-cache, no-store, must-revalidate', 'no-cache', '-1'],
+    );
+    assert.deepEqual(await denied.json(), { AccessDenied: true });
+    await app.store.replaceState(before);
+    // The configuration is opaque and signed; a tampered blob or another endpoint kind is refused.
+    response = await call('entity-subgrid-data.json', {
+      ...request,
+      base64SecureConfiguration: Buffer.from('{"t":"subgrid","w":"site"}.forged').toString('base64'),
     });
-  assert.equal((await fetch(app.url + '/_api/children')).status, 404);
-  const request = {
-    base64SecureConfiguration: secure,
-    sortExpression: '',
-    search: '',
-    page: 1,
-    pageSize: 10,
-    pagingCookie: '',
-    filter: null,
-    metaFilter: null,
-    nlSearchFilter: '',
-    timezoneOffset: 0,
-    customParameters: [],
-  };
-  assert.equal((await call('entity-subgrid-data.json', request, {})).status, 403);
-  let response = await call('entity-subgrid-data.json', request);
-  assert.equal(response.status, 200);
-  const data = await response.json();
-  assert.deepEqual(Object.keys(data), [
-    'MoreRecords',
-    'Records',
-    'ItemCount',
-    'PageCount',
-    'PageNumber',
-    'PageSize',
-    'NextPagePagingCookie',
-    'ViewConfiguration',
-    'CompleteViewLayout',
-    'CreateActionMetadata',
-    'DisabledItemActionLinks',
-  ]);
-  assert.deepEqual(
-    [data.ItemCount, data.PageCount, data.PageNumber, data.PageSize, data.MoreRecords],
-    [2, 1, 1, 10, false],
-  );
-  // Without read on the subgrid table the service answers AccessDenied with the page no-cache policy (live subgrid service; list grids answer private).
-  const before = app.store.snapshot();
-  const revoked = structuredClone(before);
-  revoked.permissions = revoked.permissions.filter((rule) => rule.entity !== 'child');
-  await app.store.replaceState(revoked);
-  const denied = await call('entity-subgrid-data.json', request);
-  assert.deepEqual(
-    [denied.status, denied.headers.get('cache-control'), denied.headers.get('pragma'), denied.headers.get('expires')],
-    [200, 'no-cache, no-store, must-revalidate', 'no-cache', '-1'],
-  );
-  assert.deepEqual(await denied.json(), { AccessDenied: true });
-  await app.store.replaceState(before);
-  // The configuration is opaque and signed; a tampered blob or another endpoint kind is refused.
-  response = await call('entity-subgrid-data.json', {
-    ...request,
-    base64SecureConfiguration: Buffer.from('{"t":"subgrid","w":"site"}.forged').toString('base64'),
-  });
-  assert.equal(response.status, 403);
-  response = await call('entity-grid-data.json', request);
-  assert.equal(response.status, 403);
-  const remove = (id, headers) =>
-    call('entity-grid-delete', { LogicalName: 'child', Id: id, base64SecureConfiguration: secure }, headers);
-  assert.equal((await remove(pendingId, {})).status, 403);
-  assert.equal((await remove(foreignId)).status, 403);
-  assert.equal((await remove(acceptedId)).status, 403);
-  assert.equal((await remove(pendingId)).status, 204);
-  assert.equal(app.store.snapshot().tables.child.length, 2);
-});
+    assert.equal(response.status, 403);
+    response = await call('entity-grid-data.json', request);
+    assert.equal(response.status, 403);
+    const remove = (id, headers) =>
+      call('entity-grid-delete', { LogicalName: 'child', Id: id, base64SecureConfiguration: secure }, headers);
+    assert.equal((await remove(pendingId, {})).status, 403);
+    assert.equal((await remove(foreignId)).status, 403);
+    assert.equal((await remove(acceptedId)).status, 403);
+    assert.equal((await remove(pendingId)).status, 204);
+    assert.equal(app.store.snapshot().tables.child.length, 2);
+  },
+);
 
 test('advanced grid actions bind the selected exported step and live deletes use upstream reads without local mutations', async () => {
   const { portal, schemas, state } = model(),

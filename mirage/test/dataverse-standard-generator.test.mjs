@@ -1,3 +1,4 @@
+// @test-kind tooling: generator for the checked-in Dataverse standard-table file, run on a local fixture
 // Generator for mirage/lib/dataverse-standard-tables.json: page parser, file builder and page
 // loader, run on a fixture in the Learn page layout. Nothing here fetches from the network: the
 // loader gets a fake fetch and a temporary cache.
@@ -13,6 +14,7 @@ import {
   TABLES,
   buildStandardFile,
   loadPages,
+  main,
   parseEntityPage,
 } from '../../scripts/dataverse-standard-tables.mjs';
 import { makeTemporaryDirectorySync } from '../testing/owned-fixture.mjs';
@@ -209,4 +211,21 @@ test('a relationship through a dropped column is dropped', () => {
   const page = fixture.replaceAll('fx_parentid', 'msdyn_parentid');
   const { file } = buildStandardFile({ fx_widget: page }, { commit: COMMIT, prefixedTables: ['msdyn_sample'] });
   assert.deepEqual(Object.keys(file.relationships), []);
+});
+
+test('main rejects unknown arguments and a missing value before any fetch', async () => {
+  await assert.rejects(main(['--bogus', '--commit', 'x']), {
+    message: 'Unknown argument --bogus. Run with --help to see supported options.',
+  });
+  await assert.rejects(main(['--commit']), { message: '--commit requires a value.' });
+  await assert.rejects(main(['--allow', 'a,,b', '--commit', 'x']), { message: '--commit must be a full commit SHA.' });
+});
+
+test('main --help prints the usage and returns 0 before any fetch or write', async (t) => {
+  const logged = [];
+  t.mock.method(console, 'log', (line) => logged.push(line));
+  t.mock.method(globalThis, 'fetch', () => assert.fail('--help must not fetch'));
+  for (const flag of ['--help', '-h']) assert.equal(await main([flag, '--out', 'never-written.json']), 0);
+  assert.match(logged[0], /^Usage: node scripts\/dataverse-standard-tables\.mjs /);
+  assert.equal(fs.existsSync('never-written.json'), false);
 });

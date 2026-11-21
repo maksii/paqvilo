@@ -4,10 +4,12 @@ import { organizationRecord } from './organization-context.mjs';
 // other modules call: writeAudit (shares, role privileges and role assignments) and recordUserAccess.
 // Writes come from the store's committed events (portal and /_sim/ writes too) and from the
 // afterWrite hook for N:N association.
-import { systemIds } from './runtime-clock.mjs';
+import { stampMs, systemIds } from './runtime-clock.mjs';
 import { DataError } from './data-error.mjs';
+import { parseEntityReference } from './data.mjs';
 import { contextUrl } from './dataverse-odata.mjs';
-import { privilegeDeniedError, uuidV5 } from './dataverse-security.mjs';
+import { uuidV5 } from './dataverse-security.mjs';
+import { columnsOf } from './dataverse-files.mjs';
 
 // Enums from the Auditing (Audit) table reference: Operation 1-5 and the Action option set (0-125).
 const OPERATION = { create: 1, update: 2, delete: 3, access: 4 };
@@ -87,17 +89,17 @@ function tableAudited(api, mapping) {
 }
 // The flag comes from dataverseMetadata, columnMetadata or the field itself; absent everywhere means audited.
 function columnAudited(mapping, column) {
-  const field = mapping.fields[column];
+  const field = columnsOf(mapping)[column];
   const declared =
     field.dataverseMetadata?.IsAuditEnabled ?? field.columnMetadata?.isAuditEnabled ?? field.IsAuditEnabled;
   return declared === undefined ? true : flag(declared);
 }
 const auditable = (api, mapping) =>
   mapping.logicalName !== 'audit' && auditingOn(api.store) && tableAudited(api, mapping);
-const auditedColumns = (mapping) => Object.keys(mapping.fields).filter((column) => columnAudited(mapping, column));
+const auditedColumns = (mapping) => Object.keys(columnsOf(mapping)).filter((column) => columnAudited(mapping, column));
 // ColumnNumber is not in the exports; the field's position in the mapping stands in for it.
-const columnNumber = (mapping, column) => Object.keys(mapping.fields).indexOf(column) + 1;
-const isLookup = (mapping, column) => mapping.fields[column]?.dataverseType === 'lookup';
+const columnNumber = (mapping, column) => Object.keys(columnsOf(mapping)).indexOf(column) + 1;
+const isLookup = (mapping, column) => columnsOf(mapping)[column]?.dataverseType === 'lookup';
 const pick = (values, columns) => Object.fromEntries(columns.map((column) => [column, values?.[column] ?? null]));
 
 // Audit rows carry the calling user only when impersonation is used (identity.dataverse.callerId differs).
@@ -144,7 +146,7 @@ function auditRow(api, { entity, id, operation, action, mask = null, identity, t
     objecttypecode: entity,
     attributemask: mask,
     ...actorFields(api.store, identity),
-    createdon: new Date(api.clock()).toISOString(),
+    createdon: new Date(stampMs(api.store, api.clock)).toISOString(),
     transactionid: transactionId ?? (api.ids ?? systemIds).uuid(),
   };
 }
@@ -194,10 +196,40 @@ function onCommitted(api, events) {
   if (entries.length) void appendLater(api, entries);
 }
 
+// Security role change events (the Audit table's Action options 53 to 56): a role associated with or removed from a user or
+// team, from either side of the relationship, is recorded on the user or team while organization auditing is on.
+// Assumption: no table flag gates them (the reference does not say which one would).
+const ROLE_LINKS = {
+  systemuserroles_association: {
+    entity: 'systemuser',
+    associate: ACTION.assignRoleToUser,
+    disassociate: ACTION.removeRoleFromUser,
+  },
+  teamroles_association: {
+    entity: 'team',
+    associate: ACTION.assignRoleToTeam,
+    disassociate: ACTION.removeRoleFromTeam,
+  },
+};
+async function roleAssignment(api, c, mapping, { operation, id, relationship, relatedId }) {
+  const link = ROLE_LINKS[relationship];
+  if (!link[operation] || !auditingOn(api.store)) return;
+  const row = auditRow(api, {
+    entity: link.entity,
+    id: mapping.logicalName === link.entity ? id : relatedId,
+    operation: OPERATION.update,
+    action: link[operation],
+    identity: c.identity,
+  });
+  await writeEntries(api.store, [{ row, detail: null }], { nested: true });
+}
+
 // N:N association writes are not committed events, so the record hook writes them inside the write's transaction.
 // A failure is logged, never thrown: auditing must not break the write.
-async function afterWrite(api, c, mapping, { operation, id, relationship }) {
+async function afterWrite(api, c, mapping, info) {
+  const { operation, id, relationship } = info;
   try {
+    if (Object.hasOwn(ROLE_LINKS, relationship ?? '')) return await roleAssignment(api, c, mapping, info);
     let action = null;
     if (operation === 'associate') action = ACTION.associate;
     else if (operation === 'disassociate') action = ACTION.disassociate;
@@ -328,22 +360,41 @@ function detailOf(api, user, row) {
   return attributeDetail(api, user, mapping, stored, plain(row.objectid));
 }
 
-// Target is an entity reference: { '@odata.id': 'widgets(<guid>)' } or the same string.
-// Both forms are accepted because the router's delivery of Target (alias object or string) is not pinned down.
+// Target is an entity reference: { '@odata.id': 'widgets(<guid>)' }, the same string (the router's alias delivery), or the
+// typed form { '@odata.type': 'Microsoft.Dynamics.CRM.<table>', <primary id>: '<guid>' }.
 function targetOf(store, value) {
+  const notReference = () => new DataError('Target must be an entity reference.', 400, 'InvalidRequest');
+  const resolve = (name) => {
+    try {
+      return store.resolveMapping(name);
+    } catch {
+      throw notReference();
+    }
+  };
+  const type = value && typeof value === 'object' ? value['@odata.type'] : undefined;
+  if (type !== undefined && value['@odata.id'] === undefined) {
+    const mapping = resolve(String(type).replace(/^#?Microsoft\.Dynamics\.CRM\./, ''));
+    const id = value[mapping.idColumn];
+    if (typeof id !== 'string' || !id) throw notReference();
+    return { mapping, id };
+  }
   const text = typeof value === 'string' ? value : value?.['@odata.id'];
-  const match = /^([^(]+)\((.+)\)$/.exec(String(text ?? ''));
-  const mapping = match && Object.values(store.state.mappings).find((m) => m.entitySet === match[1]);
-  if (!mapping) throw new DataError('Target must be an entity reference.', 400, 'InvalidRequest');
-  return { mapping, id: match[2] };
+  const parsed = parseEntityReference(
+    String(text ?? '')
+      .trim()
+      .replace(/^https?:\/\/[^/]+/i, '')
+      .replace(/^\/?api\/data\/v\d+\.\d+\//i, ''),
+  );
+  if (!parsed?.id) throw notReference();
+  return { mapping: resolve(parsed.set), id: parsed.id };
 }
 
-// Assumption: the history collection is ordered newest first.
+// Assumption: the history collection is ordered newest first. Rows are only appended (writeEntries), so newest first is the
+// table order reversed: a wall clock stepped back (an NTP or WSL time resync) between two writes cannot reorder them.
 const historyOf = (store, entity, id) =>
   rowsOf(store)
     .filter((row) => row.objecttypecode === entity && lower(plain(row.objectid)) === lower(id))
-    .reverse()
-    .sort((a, b) => b.createdon.localeCompare(a.createdon)); // newest first; ties keep the newer insertion first
+    .reverse();
 
 // Record-level read on the target row, as the platform checks it. A row that no longer exists leaves only the
 // entity-level privilege check, since its history stays readable.
@@ -382,7 +433,7 @@ function pageOf(params, rows, render) {
 function requirePrivileges(api, user, names, entity) {
   const grants = api.principals.privileges(user);
   const missing = names.find((name) => !(grants.get(name) > 0)); // NOSONAR: operand can be NaN or undefined, the negated test differs
-  if (missing) throw privilegeDeniedError(user, missing, entity);
+  if (missing) throw api.principals.deniedError(user, missing, entity);
 }
 
 // CSDL. The shared complex types are emitted once, by the first fragment that needs them (RetrieveRecordChangeHistory).
@@ -529,7 +580,7 @@ function operations(api) {
           attribute = c.params?.AttributeLogicalName;
         requirePrivileges(api, c.user, READ_PRIVILEGES, entity);
         authorizeTarget(api, c.user, target);
-        if (!target.mapping.fields[attribute])
+        if (!Object.hasOwn(columnsOf(target.mapping), attribute))
           throw new DataError(`${attribute} is not a valid attribute of ${entity}.`, 400, 'InvalidRequest');
         const number = String(columnNumber(target.mapping, attribute));
         const rows = historyOf(store, entity, target.id).filter((row) =>
@@ -690,4 +741,30 @@ export function install(api) {
   api.recordHooks.add('beforeWrite', beforeWrite);
   api.recordHooks.add('afterWrite', (c, mapping, info) => afterWrite(api, c, mapping, info));
   for (const op of operations(api)) api.registry.register(op);
+}
+
+/** Capability record for the capability registry; dataverse-extensions.mjs adds the operations install registered. */
+export function describe() {
+  return {
+    name: 'dataverse-audit',
+    version: 1,
+    kind: 'dataverse-extension',
+    level: 'behaviour',
+    operations: [
+      {
+        name: 'GetAuditStorageDetails',
+        level: 'contract',
+        reason: 'Synthetic sizes (JSON length per audited table) with ObjectTypeCode 0.',
+      },
+      {
+        name: 'RetrieveAuditPartitionList',
+        level: 'inventory',
+        reason: 'Answers one placeholder partition.',
+      },
+    ],
+    requires: [],
+    principal: 'caller',
+    stateOwner: 'store',
+    lifecycle: 'per-request',
+  };
 }

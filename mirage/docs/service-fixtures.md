@@ -1,38 +1,52 @@
 # Service fixtures
 
-Service fixtures are the generic mechanism for services that Paqvilo never executes: Power BI, AI Builder, Copilot and Dynamics apps. Each service operation answers in one of two ways: a trusted pack supplies a fixture, or the registry answers a disabled error. Paqvilo does not render, infer or orchestrate anything for these services.
+Paqvilo never executes Power BI, AI Builder, Copilot or Dynamics app services. Each operation of such a service answers
+a trusted pack's fixture, else a disabled answer (for Power BI in Liquid, a placeholder). Nothing is rendered, inferred
+or orchestrated.
 
 ## Disabled-by-default services
 
-Module: `mirage/lib/service-fixtures.mjs`, created with `createServiceFixtureRegistry({ packs, diagnostic })`. Each service has a capability record `service:<name>` with kind `provider`, principal `none`, state owner `none` and lifecycle `in-process`. The service's level is the lowest level among its operations. Built-in operations are level `disabled`.
+Each host resolves a service and operation to one answer, in this order:
 
-**Behaviour.** The registry resolves a service and operation pair to one answer. Resolution order matches `registerAddon`: a trusted pack's `serviceFixtures[service][operation]` (level `fixture`, source `pack:<id>`) wins; else a registered handler (level `behaviour`, source `core`); else the default fallback (level `disabled`, source `core`). Operations never registered resolve to the default fallback. Packs and the host call `resolve(service, operation).run(ctx)`. Paqvilo executes nothing for a disabled service.
+| Level       | Source                                                 | Answer                                                               |
+| ----------- | ------------------------------------------------------ | -------------------------------------------------------------------- |
+| `fixture`   | a trusted pack's `serviceFixtures[service][operation]` | whatever the fixture returns (for example `{ html }` or `{ error }`) |
+| `behaviour` | a handler registered in code (packs cannot)            | the handler's answer                                                 |
+| `disabled`  | the default fallback                                   | `{ error: { code: 'ServiceDisabled', service, operation } }`         |
 
-| Level       | Meaning                                                                                                               |
-| ----------- | --------------------------------------------------------------------------------------------------------------------- |
-| `disabled`  | Not executed. The default answer is `{ error: { code: "ServiceDisabled", service, operation } }`.                     |
-| `fixture`   | A trusted pack supplies the answer. The fixture decides its own result shape (for example `{ html }` or `{ error }`). |
-| `behaviour` | A registered deterministic handler answers. Only registered by code, not by packs.                                    |
+Built-in operations are `powerBi.embed`, `aiBuilder.predict` and `copilot.ask`, each with the fallback only; `dynamics`
+and any other service exist only through packs. The first fallback answer for an operation reports
+`SERVICE_FIXTURE_DISABLED` (warning) once. Only `{% powerbi %}` resolves an operation today, and without a fixture it
+renders its placeholder instead of the fallback; `aiBuilder.predict` and `copilot.ask` are listed but no host calls
+them. `ServiceDisabled` and the diagnostic codes are local names, not Power Platform codes.
 
-**Built-in services.** The built-in catalogue holds three operations, each with the default fallback only. Every other service is added by packs.
+The Dataverse AI Builder, AI function and Copilot messages (`Predict` and others) are separate Web API messages. Unless
+a trusted pack's `dataverseMessages` handler replaces them ([data packs](data-packs.md)), a call answers 403
+`0x80048d06` (the documented `Predict` error, assumed for the others), capability probes such as `IsPaiEnabled` answer
+fixed "not enabled" values, and `AIModelPublish` answers 501 `0x80040216` as internal only.
 
-| Service     | Built-in operations              | Answer without a pack fixture |
-| ----------- | -------------------------------- | ----------------------------- |
-| `powerBi`   | `embed`                          | `ServiceDisabled`             |
-| `aiBuilder` | `predict`                        | `ServiceDisabled`             |
-| `copilot`   | `ask`                            | `ServiceDisabled`             |
-| `dynamics`  | none; a pack adds its operations | `ServiceDisabled`             |
+Each service is a capability record `service:<name>` (kind `service`; level `inventory` while it has only the fallback),
+so it appears in the [capability registry and preflight](capabilities-and-preflight.md).
 
-**Out of scope.** Power BI and Fabric rendering, AI Builder model inference and Copilot orchestration are not implemented. The registry answers them with a pack fixture or the disabled error only.
+## Pack fixtures
 
-**Pack override.** Export name `serviceFixtures`, shape `{ <service>: { <operation>: (ctx) => result } }`. Validated by `validateServiceFixtures(map)`: a non-object or an array throws a `TypeError`; each service must be an object; each operation must be a synchronous function (an `async` function is refused). Unknown service names are allowed. Two packs that register the same `service.operation` fail with `Ambiguous serviceFixtures registration for <service>.<operation> in packs <a> and <b>`. A pack entry that fails validation throws `Data pack <id>: ...`.
+Export `serviceFixtures` as `{ <service>: { <operation>: (ctx) => result } }`. Mirage requires objects and synchronous
+functions (an `async` function is refused); unknown service names are allowed. Two packs that register the same
+`service.operation` fail with `Ambiguous serviceFixtures registration for <service>.<operation> in packs <a> and <b>`.
+See [data packs](data-packs.md) for the export contract and trust rules.
 
-**Diagnostics.** `SERVICE_FIXTURE_DISABLED` (warning, with `service` and `operation`), emitted once per service and operation, the first time the default fallback answers.
+## Power BI in Liquid
 
-**Power BI Liquid host.** `{% powerbi %}` resolves `powerBi.embed` and passes `{ args, context, portal }`. `args` contains the evaluated tag inputs. A synchronous `{ html: string }` answer supplies trusted local fixture markup, including an intentionally empty string; the host performs no remote request. Register packs through the normal trusted `dataPacks` or embedded `packs` boundary. Fixture HTML is executable authored content under that trust contract. A missing HTML answer reports `LIQUID_POWERBI_FIXTURE_UNAVAILABLE` and uses the fallback; invalid HTML types and promises fail explicitly. Without a fixture, the fallback is a labelled placeholder and `LIQUID_POWERBI_PLACEHOLDER`. A site with captured empty native output can configure `observed: { powerBiOutput: "empty", evidence: "path to capture" }`; it returns empty output and `LIQUID_POWERBI_OBSERVED_EMPTY`. This records output, not the native integration's administrative enablement. A trusted fixture takes precedence over that observation.
+`{% powerbi %}` resolves `powerBi.embed` with `{ args, context, portal }`, where `args` holds the evaluated tag inputs.
+No remote report request is made.
 
-**Capability report.** Each service record is read into the capability registry (`fromServices`), so every service and its level appear in the preflight report. See [capabilities and preflight](capabilities-and-preflight.md).
-
-The error code `ServiceDisabled` and the diagnostic codes are local names, not Power Platform codes.
-
-Related guides: [data packs](data-packs.md) for the pack export contract and trust rules.
+- A synchronous `{ html: string }` answer (an empty string included) is trusted local markup; fixture HTML is
+  executable authored content under the pack trust contract. An answer without `html` reports
+  `LIQUID_POWERBI_FIXTURE_UNAVAILABLE` and falls back to the observation below or the placeholder; a non-string `html`
+  or a promise renders the Liquid error "powerBi.embed must synchronously return { html: string } or { error }." in
+  place of the tag.
+- Without a fixture the tag renders a labelled placeholder (its inputs as `data-powerbi-*` attributes, URL query values
+  redacted) and reports `LIQUID_POWERBI_PLACEHOLDER`.
+- A site whose native output was captured empty can set
+  `observed: { powerBiOutput: empty, evidence: <path to capture> }` to render nothing
+  (`LIQUID_POWERBI_OBSERVED_EMPTY`). A trusted fixture that answers `html` takes precedence over the observation.

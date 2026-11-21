@@ -1,5 +1,6 @@
 // Audit the distributable file list without creating an archive or contacting a registry.
 import fs from 'node:fs';
+import { packedPackage } from './npm-pack.mjs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -206,6 +207,8 @@ export const REQUIRED_RELEASE_FILES = [
   'mirage/lib/simulation-settings.mjs',
   'mirage/lib/simulation-persistence.mjs',
   'mirage/lib/transactional-files.mjs',
+  'mirage/lib/file-stamps.mjs',
+  'mirage/lib/file-stamps-worker.mjs',
   'mirage/lib/pack-data-files.mjs',
   'mirage/docs/standalone-organization.md',
   'mirage/docs/simulation-levels.md',
@@ -273,9 +276,10 @@ export const REQUIRED_RELEASE_FILES = [
   'AGENTS.md',
   '.env.example',
   'paqvilo.config.yml',
-  'npm-shrinkwrap.json',
+  'paqvilo-lock.json',
   'bin/paqvilo.mjs',
   'lense/cli.mjs',
+  'lense/cli-help.mjs',
   'lense/commands/demo.mjs',
   'scripts/ensure-dependencies.mjs',
   'LICENSE',
@@ -445,7 +449,9 @@ export function validateReleaseFiles(files) {
     /^examples\/company-operations\/portal-harness\/(?:README\.md|(?:browser|parity)\.test\.mjs)$/,
     /^examples\/company-operations\/portal-harness\/(?:compile|core|deploy|runtime|test|browser-test|live-test|readiness|parity|compare-parity|replay|replay-parity)\.mjs$/,
     /^examples\/company-operations\/plugins\/(?:README\.md|LabPublicSigning\.snk|(?:registrations|secure-provisioning)\.json)$/,
-    /^examples\/company-operations\/plugins\/test\/(?:collector|registration)\.test\.mjs$/,
+    /^examples\/company-operations\/plugins\/test\/(?:collector|registration|deploy-plan|plugin-build)\.test\.mjs$/,
+    /^examples\/company-operations\/(?:cli|paths)\.mjs$/,
+    /^examples\/company-operations\/test\/(?:cli|format-json|forms-membership|generated-files)\.test\.mjs$/,
     /^examples\/company-operations\/plugins\/(?:deploy|registration|inspect-metadata|inspect-trace|verify-live|upload-assemblies|prepare-registration|provision-owner-team|inspect-operation-errors|update-guard-config|audit-evidence|audit-installation)\.mjs$/,
     /^examples\/company-operations\/plugins\/(?:PipelineTests|QueryObservation|Tests)\/(?:[A-Za-z]+\.(?:cs|csproj)|packages\.lock\.json)$/,
     /^examples\/company-operations\/plugins\/Shared\/(?:Lab|Recording)\.cs$/,
@@ -479,13 +485,13 @@ export function validateReleaseFiles(files) {
   const demoPluginAssembly =
     /^examples\/project\/solution\/PluginAssemblies\/[A-Za-z0-9_.{} /-]*PaqviloDemoPlugins\.dll$/;
   const allowed = [
-    /^(?:package\.json|npm-shrinkwrap\.json|README\.md|CONTRIBUTING\.md|AGENTS\.md|LICENSE|NOTICE|\.env\.example|paqvilo\.config\.yml|bin\/paqvilo\.mjs|scripts\/ensure-dependencies\.mjs)$/,
+    /^(?:package\.json|paqvilo-lock\.json|README\.md|CONTRIBUTING\.md|AGENTS\.md|LICENSE|NOTICE|\.env\.example|paqvilo\.config\.yml|bin\/paqvilo\.mjs|scripts\/ensure-dependencies\.mjs)$/,
     /^licenses\/[a-z0-9-]+(?:\.\d+)?\.txt$/,
     /^lense\/[a-z0-9/-]+\.mjs$/,
     /^lense\/setup\/[a-z0-9-]+\.(?:html|css)$/,
     /^docs\/[a-z0-9-]+\.md$/,
     /^docs\/baseline\/[a-z0-9-]+\.md$/,
-    /^examples\/project\/(?:README\.md|package\.json|paqvilo\.config\.yml|gitignore\.template)$/,
+    /^examples\/project\/(?:README\.md|package\.json|paqvilo\.config\.yml|gitignore\.template|cli\.mjs)$/,
     /^examples\/project\/(?:pack|test)\/[a-z0-9.-]+\.mjs$/,
     /^examples\/project\/portal\/[a-zA-Z0-9./_-]+\.(?:yml|html|css|js)$/,
     /^examples\/project\/baseline\/[a-z0-9-]+\.(?:mjs|json)$/,
@@ -676,11 +682,22 @@ export function checkPackageMetadata(pkg) {
 
 function checkLockConsistency(root) {
   const packageLock = fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8');
-  const shrinkwrap = fs.readFileSync(path.join(root, 'npm-shrinkwrap.json'), 'utf8');
-  if (packageLock !== shrinkwrap) throw new Error('npm-shrinkwrap.json must match package-lock.json');
+  const shrinkwrap = fs.readFileSync(path.join(root, 'paqvilo-lock.json'), 'utf8');
+  if (packageLock !== shrinkwrap) throw new Error('paqvilo-lock.json must match package-lock.json');
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const [arg] = process.argv.slice(2);
+  if (arg === '--help' || arg === '-h') {
+    console.log(`Usage: npm run release:check   (node scripts/release-check.mjs under npm)
+Checks lockfile consistency, package metadata, editor tasks, the npm pack --dry-run file allowlist and the shipped
+documentation links. Takes no options; --help prints this help.`);
+    process.exit(0);
+  }
+  if (arg) {
+    console.error(`Release check failed: unknown option ${arg}; it takes no options (see --help).`);
+    process.exit(1);
+  }
   try {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
     checkLockConsistency(root);
@@ -697,7 +714,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       timeout: CHILD_HANG_GUARD_MS,
     });
     if (packed.status !== 0) throw new Error(packed.error?.message ?? packed.stderr.trim());
-    const report = JSON.parse(packed.stdout)[0];
+    const report = packedPackage(packed.stdout);
     checkDocumentation(
       root,
       report.files.map((file) => file.path),

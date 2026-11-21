@@ -8,6 +8,7 @@ import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { auditQuery, auditText, idMatches } from './audit-log.mjs';
 import { currentRequest } from './request-context.mjs';
+import { requiredArgument } from './required-argument.mjs';
 import { mergeTraceSettings, traceSettings } from './trace-settings.mjs';
 
 const REDACTED = '[redacted]';
@@ -46,6 +47,21 @@ export const SPAN_KINDS = Object.freeze([
   'form',
   'canvas',
   'internal',
+]);
+/** The hosts a root span's origin names; the `host` filter refuses any other value. */
+export const TRACE_HOSTS = Object.freeze([
+  'power-pages',
+  'standalone',
+  'model-driven',
+  'canvas',
+  'code-app',
+  'dataverse-api',
+  'tds',
+  'soap',
+  'job',
+  'sim',
+  'identity-provider',
+  'sharepoint',
 ]);
 const STATUSES = new Set(SPAN_STATUSES.filter((status) => status !== 'running'));
 const SORTS = ['start', 'duration', 'spans', 'errors'];
@@ -541,6 +557,8 @@ class Span {
   }
 }
 
+/** The most traces one export writes (`limit`, 1 to this). */
+export const TRACE_EXPORT_MAX = 2000;
 // A refused filter: RangeError { status: 400, code: 'InvalidTraceFilter', parameter }, the message starting with the
 // filter name; an unknown enum value adds the value it got.
 const invalid = (key, rule, got) => {
@@ -556,7 +574,7 @@ const oneOf = (key, value, allowed) => {
   return value;
 };
 
-// The id prefix rule (DV-N4-3) is the audit log's, so traces and audit entries filter alike.
+// The id prefix rule is the audit log's, so traces and audit entries filter alike.
 export { idMatches };
 
 // entityNames(name) -> the lowercase table names a table filter stands for (a logical name and its entity set name).
@@ -584,13 +602,19 @@ function parseFilters(filters = {}, { entityNames = null } = {}) {
     if (!Number.isFinite(ms)) throw invalid(key, 'must be an ISO date-time or epoch milliseconds');
     return ms;
   };
+  // limit shapes an export (sim-trace-routes.mjs takes it off before filtering); anywhere else it is still checked, so
+  // a bad value is refused rather than ignored.
+  integer('limit', 1, TRACE_EXPORT_MAX);
+  const traceId = text('traceId');
+  if (traceId !== null && !/^[0-9a-f][0-9a-f-]{7,}$/.test(traceId))
+    throw invalid('traceId', 'must be a full id or a prefix of at least 8 hexadecimal characters', traceId);
   const minDuration = get('minDurationMs');
   if (minDuration !== null && !(/^\d+(?:\.\d+)?$/.test(String(minDuration)) && Number.isFinite(Number(minDuration))))
-    throw invalid('minDurationMs', 'must be a nonnegative number');
+    throw invalid('minDurationMs', 'must be a non-negative number');
   const flag = get('hasErrors');
   if (flag !== null && ![true, false, 'true', 'false', '1', '0'].includes(flag))
     throw invalid('hasErrors', 'must be true or false');
-  // result (D-M-2): a comma list of trace results; a trace matches when its activity result (summary.result: running
+  // result: a comma list of trace results; a trace matches when its activity result (summary.result: running
   // while a span runs, else error or denied when the root or a step failed, else the root's status) is one of them.
   const resultList = text('result')
     ?.split(',')
@@ -603,11 +627,11 @@ function parseFilters(filters = {}, { entityNames = null } = {}) {
     kind: oneOf('kind', text('kind'), SPAN_KINDS),
     module: text('module'),
     operation: text('operation'),
-    // entity (or its D-M-2 name table): a logical or entity set name, matched as every name of that table.
+    // entity (or its Activity filter name table): a logical or entity set name, matched as every name of that table.
     entity: tableNames(text('entity') ?? text('table'), entityNames),
     recordId: get('recordId') === null ? null : actorKey(get('recordId')).trim() || null,
     status: oneOf('status', text('status'), SPAN_STATUSES),
-    host: text('host'),
+    host: oneOf('host', text('host'), TRACE_HOSTS),
     actorKind: text('actorKind'),
     actorId: get('actorId') === null ? null : actorKey(get('actorId')).trim() || null,
     sessionKey: exact('sessionKey'),
@@ -621,7 +645,7 @@ function parseFilters(filters = {}, { entityNames = null } = {}) {
     spanFiltered: Object.values(span).some((value) => value !== null),
     from: time('from'),
     to: time('to'),
-    traceId: text('traceId'),
+    traceId,
     result: resultList?.length ? new Set(resultList) : null,
     minDurationMs: minDuration === null ? null : Number(minDuration),
     hasErrors: flag === null ? null : [true, 'true', '1'].includes(flag),
@@ -1506,7 +1530,8 @@ export function createTraceStore({
      * listener takes.
      */
     subscribe(listener, { payloads = true, flush = null, events = null, traceId = null } = {}) {
-      if (typeof listener !== 'function') throw new TypeError('Trace listeners must be functions.');
+      if (typeof listener !== 'function')
+        requiredArgument('simulator.trace.subscribe(listener, options)', 'a listener function');
       if (flush !== null && typeof flush !== 'function') throw new TypeError('A listener flush must be a function.');
       const types = events === null ? null : [].concat(events); /* NOSONAR: preserve concat spreadability semantics */
       if (types && (!types.length || types.some((type) => !TRACE_EVENTS.includes(type))))

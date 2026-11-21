@@ -13,10 +13,6 @@ import { calledFrom } from '../mirage/test/support/timer-origin.mjs';
 
 const DEV_MODULE = new URL('../lense/commands/dev.mjs', import.meta.url).href;
 
-// OS file-system events and watcher readiness have no latency bound on a loaded machine. This only reports a hung
-// watcher; ordering and counts are asserted from the events themselves.
-const WATCH_HANG_GUARD_MS = 60_000;
-
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 test('a pinned session baseline avoids idle Git polling while source saves still refresh', async (t) => {
@@ -31,7 +27,7 @@ test('a pinned session baseline avoids idle Git polling while source saves still
   let baselineChecks = 0,
     headChecks = 0;
   const repository = new EventEmitter();
-  const polled = once(repository, 'polled', { signal: AbortSignal.timeout(WATCH_HANG_GUARD_MS) });
+  const polled = once(repository, 'polled');
   const session = Object.assign(new EventEmitter(), {
     cfg: { sourceDir: dir, origin: 'https://portal.example.com', site: {} },
     baseline: {
@@ -61,7 +57,7 @@ test('a pinned session baseline avoids idle Git polling while source saves still
   // starts only once the previous one finished: a second HEAD refresh follows a complete check.
   await polled;
   assert.equal(baselineChecks, 0, 'immutable baselines need no idle ref checks');
-  const refreshed = once(session, 'refreshed', { signal: AbortSignal.timeout(WATCH_HANG_GUARD_MS) });
+  const refreshed = once(session, 'refreshed');
   fs.writeFileSync(file, '// next save\n');
   const [event] = await refreshed;
   assert.deepEqual(event.files, [file]);
@@ -87,11 +83,11 @@ test('an explicitly selected extract under .paqvilo is watched while its generat
   const watcher = watchSources(session, { pages: () => [] }, { log: () => {} });
   try {
     await watcher.ready;
-    const refreshed = once(session, 'refreshed', { signal: AbortSignal.timeout(WATCH_HANG_GUARD_MS) });
+    const refreshed = once(session, 'refreshed');
     fs.writeFileSync(file, '// saved\n');
     await refreshed;
     // A later real save proves the watcher already processed the ignored write before it.
-    const next = once(session, 'refreshed', { signal: AbortSignal.timeout(WATCH_HANG_GUARD_MS) });
+    const next = once(session, 'refreshed');
     fs.writeFileSync(ignoredFile, '{"saved":true}');
     fs.writeFileSync(file, '// saved again\n');
     await next;
@@ -106,7 +102,6 @@ test('saves during a reload are shown by one following reload, never an overlapp
   const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-watch-')));
   const file = path.join(dir, 'script.js');
   fs.writeFileSync(file, '// 0\n');
-  const signal = () => ({ signal: AbortSignal.timeout(WATCH_HANG_GUARD_MS) });
   let running = 0,
     overlapped = false;
   const gotos = new EventEmitter(),
@@ -143,7 +138,7 @@ test('saves during a reload are shown by one following reload, never an overlapp
     fs.rmSync(dir, { recursive: true, force: true });
   });
   await watcher.ready;
-  const first = once(gotos, 'goto', signal());
+  const first = once(gotos, 'goto');
   fs.writeFileSync(file, '// 1\n');
   await first;
   // Two saves arrive during the first reload. Their debounce runs on the mock clock, so it fires
@@ -156,11 +151,11 @@ test('saves during a reload are shown by one following reload, never an overlapp
   // A reload starts by preparing the session synchronously, so a second one would show here at once.
   assert.equal(prepared, 1, 'the save debounce must not start a reload while one is in flight');
   assert.equal(releases.length, 1);
-  const second = once(gotos, 'goto', signal());
+  const second = once(gotos, 'goto');
   releases[0]();
   await second;
   releases[1]();
-  await watcher.whenIdle(WATCH_HANG_GUARD_MS);
+  await watcher.whenIdle();
   assert.equal(overlapped, false, 'two reloads ran at the same time');
   assert.equal(releases.length, 2, 'both saves made during the first reload share the next one');
   assert.deepEqual(seen, [[file], [file]]);

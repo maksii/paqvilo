@@ -93,3 +93,16 @@ export function preserveOrganizationPresetSections(previous, preset, next) {
   preserveSystemOrganizationRows(previous, next);
   return next;
 }
+
+/**
+ * Pack DATA is authoritative at startup (docs: simulation levels): a startup preset never replaces the rows of a table
+ * that a declared pack DATA file owns. `owned(table)` names those tables; their loaded rows stay in `next`.
+ */
+export function preserveDataOwnedTables(previous, next, owned) {
+  for (const name of Object.keys(previous.tables ?? {})) {
+    if (!owned(name)) continue;
+    next.tables ??= {};
+    next.tables[name] = copyPlainGraph(previous.tables[name]);
+  }
+  return next;
+}

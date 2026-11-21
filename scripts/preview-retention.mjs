@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { answerHelp } from './script-help.mjs';
 
 const registry = 'https://registry.npmjs.org/';
 const core = String.raw`(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)`;
@@ -150,6 +151,13 @@ export async function prunePreviews({
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  answerHelp(process.argv.slice(2), {
+    name: 'preview-retention',
+    options: ['--keep', '--apply'],
+    usage: `Usage: npm run preview:cleanup -- [--keep 3] [--apply]
+Lists the published npm preview versions beyond the newest --keep (default 3); --apply unpublishes them with npm.
+Contacts the npm registry; read-only without --apply. Writes no local files.`,
+  });
   try {
     let keep = 3,
       apply = false;

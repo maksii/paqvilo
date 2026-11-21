@@ -17,6 +17,7 @@ import { interceptOrigin } from '../lense/intercept.mjs';
 import { refreshModelDrivenPage } from '../lense/commands/model-driven.mjs';
 import { readDiscovery } from '../lense/commands/agent.mjs';
 import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
+import { registerFixtureDiagnostics, finalizeFixtureDiagnostics } from './helpers/fixture-diagnostics.mjs';
 
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 
@@ -200,10 +201,13 @@ test('model-driven overlay refresh bypasses an existing worker only in its owned
     1,
     'initial repair applied the local resource before explicit refresh',
   );
+  // The refresh returns when the new document arrives; its script has run once the value is there.
   await refreshModelDrivenPage(page, origin);
+  await page.waitForFunction(() => window.cachedAsset === 'local first');
   assert.equal(await page.evaluate(() => window.cachedAsset), 'local first');
   overlay.replace(imported('local changed'));
   await refreshModelDrivenPage(page, origin);
+  await page.waitForFunction(() => window.cachedAsset === 'local changed');
   assert.equal(await page.evaluate(() => window.cachedAsset), 'local changed');
   assert.equal(overlay.report().currentRevisionApplied, 1);
   await sibling.goto(origin + '/main.aspx?unowned');
@@ -275,7 +279,28 @@ test('model-driven local scripts publish file debugger maps and hit an executabl
 
 test('public model-driven Lense overlays native scripts and reloads on source save without native writes', async (t) => {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'lense-app-'));
-  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES }));
+  let diagnosticRegistration, expectedReport;
+  ownedFixture(t).remove(async () => {
+    const published = diagnosticRegistration && finalizeFixtureDiagnostics(diagnosticRegistration, t.signal);
+    if (published && !published.canRemove) return;
+    await fs.rm(root, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES });
+    if (published) {
+      assert.ok(published.files.length > 0, 'typed model-driven diagnostics are retained before fixture removal');
+      for (const file of published.files)
+        assert.ok((await fs.stat(file)).isFile(), 'published diagnostics survive removal of the private CLI fixture');
+      if (expectedReport) {
+        const file = published.files.find((file) => file.endsWith('-diagnostic.json'));
+        assert.ok(file, 'the actual CLI report is retained as a typed diagnostic');
+        const diagnostic = JSON.parse(await fs.readFile(file, 'utf8'));
+        assert.equal(diagnostic.complete, true);
+        assert.equal(diagnostic.reportWritten, true);
+        assert.equal(diagnostic.producer, 'model-driven');
+        assert.equal(diagnostic.report.applied, expectedReport.applied);
+        assert.equal(diagnostic.report.revision, expectedReport.revision);
+        assert.equal(JSON.stringify(diagnostic).includes('never-log-this'), false);
+      }
+    }
+  });
   const solution = path.join(root, 'solution'),
     resourceDir = path.join(solution, 'WebResources');
   await fs.mkdir(path.join(solution, 'Other'), { recursive: true });
@@ -358,6 +383,13 @@ test('public model-driven Lense overlays native scripts and reloads on source sa
   });
   const origin = `http://127.0.0.1:${server.address().port}`,
     reportFile = path.join(root, 'report.json');
+  diagnosticRegistration = registerFixtureDiagnostics({
+    fixtureRoot: root,
+    kind: 'model-driven',
+    origin,
+    reportRoots: ['report.json'],
+    outputRoot: fileURLToPath(new URL('../.paqvilo/', import.meta.url)),
+  });
   const child = spawn(
     process.execPath,
     [
@@ -443,6 +475,7 @@ test('public model-driven Lense overlays native scripts and reloads on source sa
   assert.match(output, /(?:Sign-in and native application readiness remain|application readiness is) unverified/);
   assert.doesNotMatch(output, /Model-driven overlay ready\.|application and initial view usable/);
   const report = JSON.parse(await fs.readFile(reportFile, 'utf8'));
+  expectedReport = report;
   assert.ok(report.applied >= 3);
   assert.equal(report.revision >= 3, true);
   assert.equal(report.resources[0].name, 'x_script.js');

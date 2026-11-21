@@ -195,7 +195,7 @@ test('the dashboard lands first, renders every node, opens a node drawer, runs p
   );
 
   await page.getByRole('button', { name: 'Refresh now', exact: true }).click();
-  // D-M-9: banner, compact tiles, then the map as a collapsible card that is open by default.
+  // banner, compact tiles, then the map as a collapsible card that is open by default.
   await page.locator('.dm-hero').waitFor();
   await page.locator('.dm-kpi').first().waitFor();
   assert.equal(await page.locator('[data-ui-section="health:map"]').evaluate((node) => node.open), true);

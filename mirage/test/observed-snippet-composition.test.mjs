@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own snippet composition capture and resolution over invented snippets and fake pages
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -167,5 +168,89 @@ test('dynamic native composition observation blocks every mutation and closes on
       },
     ),
     /service worker/,
+  );
+});
+
+const ansiTimeout = () =>
+  Object.assign(new Error('\u001b[2mlocator.waitFor: Timeout 10000ms exceeded.\u001b[22m'), { name: 'TimeoutError' });
+const servedPage = (body, url) => ({
+  context: {},
+  origin: 'https://portal.example',
+  request: async () => ({ status: 200, headers: { 'content-type': 'text/html' }, body, url }),
+});
+// @test-kind contract: page-independent snippet preconditions fail with their reason before any portal request.
+test('Liquid snippets are refused with the composition reason before any request or browser work', async () => {
+  let reads = 0,
+    pages = 0;
+  const live = {
+    origin: 'https://portal.example',
+    context: { serviceWorkers: () => [], newPage: async () => (pages++, assert.fail('browser used')) },
+    request: async () => (reads++, { status: 200, headers: { 'content-type': 'text/html' }, body: '<html/>' }),
+  };
+  await assert.rejects(
+    captureObservedSnippetComposition(live, {
+      portal: { snippets: { ...snippets, empty: '<div class="empty">{{ user.fullname }}</div>' } },
+      path: '/owned/',
+      parentName: 'empty',
+      childName: 'action',
+    }),
+    (error) => error.code === 'SNIPPET_COMPOSITION_INVALID' && /static exported snippets/.test(error.message),
+  );
+  assert.deepEqual([reads, pages], [0, 0]);
+});
+// @test-kind contract: a browser timeout keeps the served-HTML reasons and never forwards raw Playwright text.
+test('a dynamic observation timeout reports the collected reasons without raw browser text', async () => {
+  let closed = false;
+  const page = {
+    route: async () => {},
+    goto: async () => {},
+    locator: () => ({ waitFor: async () => Promise.reject(ansiTimeout()), evaluate: async () => '' }),
+    url: () => 'https://portal.example/owned/',
+    close: async () => (closed = true),
+  };
+  const body = '<html><body><div class="empty"><p>Other text</p>' + snippets.action + '</div></body></html>';
+  const live = {
+    ...servedPage(body),
+    context: { serviceWorkers: () => [], newPage: async () => page },
+  };
+  await assert.rejects(
+    captureObservedSnippetComposition(live, {
+      portal: { snippets },
+      path: '/owned/',
+      parentName: 'empty',
+      childName: 'action',
+    }),
+    (error) =>
+      error.code === 'SNIPPET_COMPOSITION_INVALID' &&
+      /did not render the parent snippet/.test(error.message) &&
+      /differs beyond the existing exported action/.test(error.message) &&
+      !error.message.includes(String.fromCodePoint(27)) &&
+      !/Timeout 10000ms|locator\./.test(error.message),
+  );
+  assert.equal(closed, true);
+});
+// @test-kind contract: a 200 HTML sign-in page is not observed as portal content.
+test('a served sign-in page is refused as the composition page', async () => {
+  await assert.rejects(
+    captureObservedSnippetComposition(servedPage('<html><body></body></html>', 'https://portal.example/SignIn'), {
+      portal: { snippets },
+      path: '/SignIn',
+      parentName: 'empty',
+      childName: 'action',
+    }),
+    (error) => error.code === 'SNIPPET_COMPOSITION_INVALID' && /sign-in page/.test(error.message),
+  );
+});
+// @test-kind contract: a snippet name missing from the local sources is named, not reported as a Liquid snippet.
+test('a missing exported snippet is named before any request', async () => {
+  await assert.rejects(
+    captureObservedSnippetComposition(servedPage('<html/>'), {
+      portal: { snippets },
+      path: '/owned/',
+      parentName: 'empty',
+      childName: 'Absent/Child',
+    }),
+    (error) =>
+      error.code === 'SNIPPET_COMPOSITION_INVALID' && /Absent\/Child is not in the local sources/.test(error.message),
   );
 });

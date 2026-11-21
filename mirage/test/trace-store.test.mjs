@@ -652,6 +652,17 @@ test('subscribe delivers frozen copies of span-start, span-end and trace-end eve
   assert.throws(() => traces.subscribe('nope'), TypeError);
 });
 
+// @test-kind contract: the public rule names the refused call and argument (docs/public-api.md, required-argument.mjs).
+test('subscribe without a listener names the call and the argument it requires', () => {
+  const { traces } = store();
+  const refusal = {
+    name: 'TypeError',
+    message: 'simulator.trace.subscribe(listener, options) requires a listener function.',
+  };
+  assert.throws(() => traces.subscribe(), refusal);
+  assert.throws(() => traces.subscribe('nope'), refusal);
+});
+
 test('headers and fromHeaders carry a trace across loopback HTTP', () => {
   const { traces } = store();
   const sender = traces.start({ kind: 'http-out', name: 'Invented webhook' });
@@ -832,7 +843,7 @@ test('id filters take an 8+ hex prefix (an ambiguous one matches every candidate
   assert.equal(names({ recordId: 'bead000' }), '');
   assert.equal(names({ sessionKey: 'visitor:' }), '', 'a bare kind is no prefix');
   assert.equal(names({ entity: 'X_ITEMS' }), 'a,b', 'the entity set name finds the logical name');
-  assert.equal(names({ table: 'x_items' }), 'a,b', 'table is the D-M-2 name of entity');
+  assert.equal(names({ table: 'x_items' }), 'a,b', 'table is the Activity filter name of entity');
   assert.equal(names({ entity: 'x_other' }), '');
   assert.deepEqual(
     [...new Set(traces.spans({ entity: 'x_items' }).items.map((span) => span.entity))],
@@ -1882,7 +1893,7 @@ test("the activity result takes the root's own failure first, then error before 
   }
 });
 
-// @test-kind contract: a traceId filter takes an 8-character prefix as the id filters do, and a shorter one matches nothing
+// @test-kind contract: a traceId filter takes an 8-character prefix as the id filters do, and a shorter one is refused (InvalidTraceFilter, parameter traceId)
 test('a traceId filter takes an 8-character prefix, ignores case and spaces, and refuses a shorter prefix', () => {
   const { traces } = store();
   const root = traces.start({ kind: 'http', name: 'GET /prefixed' });
@@ -1891,7 +1902,7 @@ test('a traceId filter takes an 8-character prefix, ignores case and spaces, and
   const names = (filters) => traces.query(filters).items.map((item) => item.root.name);
   assert.deepEqual(names({ traceId: id.slice(0, 8) }), ['GET /prefixed']);
   assert.deepEqual(names({ traceId: `  ${id.toUpperCase()}  ` }), ['GET /prefixed']);
-  assert.deepEqual(names({ traceId: id.slice(0, 7) }), []);
+  assert.throws(() => names({ traceId: id.slice(0, 7) }), { code: 'InvalidTraceFilter', parameter: 'traceId' });
   assert.deepEqual(
     traces.spans({ traceId: id.slice(0, 8) }).items.map((span) => span.name),
     ['GET /prefixed'],

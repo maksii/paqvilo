@@ -5,6 +5,7 @@ import { loadConnection, connectedClient, readManifest } from '../../../lense/da
 import { privateJson } from '../../../lense/dataverse/connection.mjs';
 import { compileForms } from './catalogue.mjs';
 import { metadataXml } from '../../../lense/dataverse/provision.mjs';
+import { cli, isMain, UsageError } from '../cli.mjs';
 const project = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const saveStatus = (differs, before) => {
   if (!differs) return 'exists';
@@ -19,6 +20,26 @@ export async function inspectFormMetadata(client, schema) {
     );
   }
   return metadata;
+}
+/**
+ * The solution-membership step shared by audit and apply: lists each component a solution lacks in `additions` and,
+ * with `apply`, adds it, so an audit names exactly the memberships apply writes.
+ */
+export function membershipStep(client, solutions, { apply, additions }) {
+  return async (id, type, solution) => {
+    const sid = solutions.find((s) => s.uniquename === solution)?.solutionid;
+    if (!sid) throw new Error('Missing form solution ' + solution);
+    const found = await client.list(
+      `solutioncomponents?$select=objectid&$filter=_solutionid_value eq ${sid} and componenttype eq ${type} and objectid eq ${id}`,
+    );
+    if (found.length) return;
+    additions.push({ id, componentType: type, solution });
+    if (apply)
+      await client.request('AddSolutionComponent', {
+        method: 'POST',
+        body: { ComponentId: id, ComponentType: type, SolutionUniqueName: solution, AddRequiredComponents: false },
+      });
+  };
 }
 export async function deployForms({ connection, apply = false }) {
   const info = await loadConnection(connection),
@@ -46,23 +67,12 @@ export async function deployForms({ connection, apply = false }) {
   const folder = path.join(project, '.paqvilo/forms');
   await fs.mkdir(folder, { recursive: true });
   await privateJson(path.join(folder, 'catalogue.json'), catalogue);
-  const journal = { startedAt: new Date().toISOString(), apply, entries: [], checked: 0 };
+  const journal = { startedAt: new Date().toISOString(), apply, entries: [], membership: [], checked: 0 };
   const file = path.join(folder, `${apply ? 'apply' : 'audit'}-${Date.now()}.json`);
   const solutions = await client.list(
     "solutions?$select=solutionid,uniquename&$filter=startswith(uniquename,'Paqvilo')",
   );
-  const include = async (id, type, solution) => {
-    const sid = solutions.find((s) => s.uniquename === solution)?.solutionid;
-    if (!sid) throw new Error('Missing form solution ' + solution);
-    const found = await client.list(
-      `solutioncomponents?$select=objectid&$filter=_solutionid_value eq ${sid} and componenttype eq ${type} and objectid eq ${id}`,
-    );
-    if (!found.length)
-      await client.request('AddSolutionComponent', {
-        method: 'POST',
-        body: { ComponentId: id, ComponentType: type, SolutionUniqueName: solution, AddRequiredComponents: false },
-      });
-  };
+  const include = membershipStep(client, solutions, { apply, additions: journal.membership });
   const compare = (actual, body) =>
     Object.entries(body).every(([k, v]) =>
       ['formxml', 'fetchxml', 'layoutxml'].includes(k)
@@ -102,10 +112,8 @@ export async function deployForms({ connection, apply = false }) {
       desired: body,
     });
     await privateJson(file, journal);
-    if (apply) {
-      if (differs) await applySavedForm(route, id, body, solution, before);
-      await include(id, type, solution);
-    }
+    if (apply && differs) await applySavedForm(route, id, body, solution, before);
+    await include(id, type, solution);
   };
   const saveCatalogueItems = async () => {
     for (const v of catalogue.views)
@@ -140,7 +148,7 @@ export async function deployForms({ connection, apply = false }) {
     };
     if (v.queryType === 4) {
       if (!compare(rows[0], body)) journal.quickFindImport.push({ ...v, id: rows[0].savedqueryid, before: rows[0] });
-      if (apply) await include(rows[0].savedqueryid, 26, v.solution);
+      await include(rows[0].savedqueryid, 26, v.solution);
       return;
     }
     await save('savedqueries', rows[0].savedqueryid, body, v.solution, 26);
@@ -200,13 +208,22 @@ export async function deployForms({ connection, apply = false }) {
     adjustments: catalogue.adjustments.length,
     quickFindImport: journal.quickFindImport.length,
     changed: journal.entries.filter((e) => e.status !== 'exists').length,
+    membershipAdd: journal.membership.length,
     checked: journal.checked,
     journal: file,
   };
 }
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const args = process.argv.slice(2),
-    connection = args[args.indexOf('--connection') + 1];
-  if (!connection || !args.includes('--connection')) throw new Error('--connection required');
-  console.log(JSON.stringify(await deployForms({ connection, apply: args.includes('--apply') })));
+if (isMain(import.meta)) {
+  const { values } = cli(
+    `Usage: node forms/deploy.mjs --connection FILE [--apply]   (npm run forms:audit / forms:apply)
+
+Run from examples/company-operations. Plans the example's forms, views and Quick Find settings against the live
+environment; --apply writes them.
+
+  --connection FILE  connection file; a relative path resolves from the working directory
+  --apply            write; otherwise save a read-only plan`,
+    { connection: { type: 'string' }, apply: { type: 'boolean' } },
+  );
+  if (!values.connection) throw new UsageError('--connection FILE is required.');
+  console.log(JSON.stringify(await deployForms({ connection: values.connection, apply: values.apply === true })));
 }

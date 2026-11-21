@@ -38,16 +38,16 @@
       "reason": "Generated standalone jQuery watcher; one authored fragment is enforced by generate-compat-watchers --check."
     },
     {
-      "key": "runtime:clone:mirage/lib/dataverse-app-messages.mjs|mirage/lib/dataverse-calendar-messages.mjs:2993269f84b1be975288ad24822512642096d4ed5eb4ec521529af30417446a9",
+      "key": "runtime:clone:mirage/lib/dataverse-app-messages.mjs|mirage/lib/dataverse-calendar-messages.mjs:9d762064264c8a56fe81a19ce5e1203ca85e97ab4e38bf2a32bf8d7a92cae378",
       "files": ["mirage/lib/dataverse-app-messages.mjs", "mirage/lib/dataverse-calendar-messages.mjs"],
-      "lines": 12,
+      "lines": 14,
       "type": "clone",
       "reason": "Local write/transaction wrappers retain operation-specific response and privilege policy; pure context/read mechanics are shared."
     },
     {
-      "key": "runtime:clone:mirage/lib/dataverse-app-messages.mjs|mirage/lib/dataverse-org-messages.mjs:a4e588b9aa64e49be695baeb5522d55d6740f6d773e4549a887caba42b6adebf",
+      "key": "runtime:clone:mirage/lib/dataverse-app-messages.mjs|mirage/lib/dataverse-org-messages.mjs:52a114b8881dfef9104c87c396d88042a98d25d8ad1f8d8807c1be331cff2208",
       "files": ["mirage/lib/dataverse-app-messages.mjs", "mirage/lib/dataverse-org-messages.mjs"],
-      "lines": 14,
+      "lines": 16,
       "type": "clone",
       "reason": "Local write/transaction wrappers retain operation-specific response and privilege policy; pure context/read mechanics are shared."
     },
@@ -99,6 +99,13 @@
       "lines": 15,
       "type": "clone",
       "reason": "Separate operation/type schema identities; matching parameter shapes are declarative protocol data."
+    },
+    {
+      "key": "runtime:clone:mirage/lib/dataverse-security-messages.mjs|mirage/lib/dataverse-security-messages2.mjs:c2180b74ed85fadd727e6680be39dbc1440f665942a457dfaba75c37a8aa341c",
+      "files": ["mirage/lib/dataverse-security-messages.mjs", "mirage/lib/dataverse-security-messages2.mjs"],
+      "lines": 14,
+      "type": "clone",
+      "reason": "Local write/transaction wrappers retain operation-specific response and privilege policy; pure context/read mechanics are shared."
     },
     {
       "key": "runtime:clone:mirage/lib/dataverse-solution-messages.mjs|mirage/lib/dataverse-solution-messages.mjs:68760b0406adc3ddedf441c03ddb9919cbb98f8b2832499c9ab82e4af2b163a5",
@@ -269,6 +276,13 @@
       "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
     },
     {
+      "key": "runtime:exports:lense/git.mjs:gitMarkerExists",
+      "file": "lense/git.mjs",
+      "type": "exports",
+      "name": "gitMarkerExists",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
       "key": "runtime:exports:lense/html-rewriter.mjs:inlineScriptUrl",
       "file": "lense/html-rewriter.mjs",
       "type": "exports",
@@ -311,6 +325,20 @@
       "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
     },
     {
+      "key": "runtime:exports:lense/panel.mjs:baselineNote",
+      "file": "lense/panel.mjs",
+      "type": "exports",
+      "name": "baselineNote",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
+      "key": "runtime:exports:lense/panel.mjs:editorNotFound",
+      "file": "lense/panel.mjs",
+      "type": "exports",
+      "name": "editorNotFound",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
       "key": "runtime:exports:lense/panel.mjs:resolveEditorCommand",
       "file": "lense/panel.mjs",
       "type": "exports",
@@ -318,10 +346,24 @@
       "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
     },
     {
+      "key": "runtime:exports:lense/panel.mjs:runSessionFlow",
+      "file": "lense/panel.mjs",
+      "type": "exports",
+      "name": "runSessionFlow",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
       "key": "runtime:exports:lense/portal-model.mjs:yamlKeyStyle",
       "file": "lense/portal-model.mjs",
       "type": "exports",
       "name": "yamlKeyStyle",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
+      "key": "runtime:exports:lense/process-identity.mjs:windowsOwnershipScript",
+      "file": "lense/process-identity.mjs",
+      "type": "exports",
+      "name": "windowsOwnershipScript",
       "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
     },
     {
@@ -759,6 +801,20 @@
       "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
     },
     {
+      "key": "runtime:exports:mirage/capture-shell.mjs:runCaptureShellCommand",
+      "file": "mirage/capture-shell.mjs",
+      "type": "exports",
+      "name": "runCaptureShellCommand",
+      "reason": "Deliberate in-process entry point of the capture-shell command with caller-supplied streams; the capture-shell tests drive it and the process entry runs the same function."
+    },
+    {
+      "key": "runtime:exports:mirage/cli-command.mjs:MIRAGE_COMMAND_OPTIONS",
+      "file": "mirage/cli-command.mjs",
+      "type": "exports",
+      "name": "MIRAGE_COMMAND_OPTIONS",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
       "key": "runtime:exports:mirage/dataverse-parity.mjs:compareRuns",
       "file": "mirage/dataverse-parity.mjs",
       "type": "exports",
@@ -955,6 +1011,13 @@
       "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
     },
     {
+      "key": "runtime:exports:mirage/lib/canvas-source.mjs:canvasSettings",
+      "file": "mirage/lib/canvas-source.mjs",
+      "type": "exports",
+      "name": "canvasSettings",
+      "reason": "Re-exported test seam: canvas-pcf.test.mjs checks the canvas settings contract through this module; settings-contracts.mjs imports the same function from canvas-settings.mjs."
+    },
+    {
       "key": "runtime:exports:mirage/lib/capability-registry.mjs:normalizeCapabilityRecord",
       "file": "mirage/lib/capability-registry.mjs",
       "type": "exports",
@@ -1036,6 +1099,20 @@
       "file": "mirage/lib/committed-work.mjs",
       "type": "exports",
       "name": "encodeEvent",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
+      "key": "runtime:exports:mirage/lib/compile-cache.mjs:fileDigest",
+      "file": "mirage/lib/compile-cache.mjs",
+      "type": "exports",
+      "name": "fileDigest",
+      "reason": "Test seam: the CLR SDK fixture (mirage/test/fixtures/clr-sdk.mjs) forms its cache keys with this digest; the module also uses it to identify compilers."
+    },
+    {
+      "key": "runtime:exports:mirage/lib/connection-settings.mjs:connectionSettings",
+      "file": "mirage/lib/connection-settings.mjs",
+      "type": "exports",
+      "name": "connectionSettings",
       "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
     },
     {
@@ -1414,6 +1491,13 @@
       "file": "mirage/lib/dataverse-security.mjs",
       "type": "exports",
       "name": "tokenKind",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
+      "key": "runtime:exports:mirage/lib/dataverse-settings.mjs:dataverseStatus",
+      "file": "mirage/lib/dataverse-settings.mjs",
+      "type": "exports",
+      "name": "dataverseStatus",
       "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
     },
     {
@@ -2313,10 +2397,24 @@
       "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
     },
     {
+      "key": "runtime:exports:mirage/lib/project-code-watch.mjs:projectCodeOrigin",
+      "file": "mirage/lib/project-code-watch.mjs",
+      "type": "exports",
+      "name": "projectCodeOrigin",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
       "key": "runtime:exports:mirage/lib/runtime-config.mjs:RUNTIME_KINDS",
       "file": "mirage/lib/runtime-config.mjs",
       "type": "exports",
       "name": "RUNTIME_KINDS",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
+      "key": "runtime:exports:mirage/lib/state-file-claim.mjs:stateFileEndpoint",
+      "file": "mirage/lib/state-file-claim.mjs",
+      "type": "exports",
+      "name": "stateFileEndpoint",
       "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
     },
     {
@@ -3195,6 +3293,13 @@
       "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
     },
     {
+      "key": "runtime:exports:mirage/trace.mjs:runTraceCommand",
+      "file": "mirage/trace.mjs",
+      "type": "exports",
+      "name": "runTraceCommand",
+      "reason": "Deliberate in-process entry point of the trace command with caller-supplied streams; the trace tests drive it and the process entry runs the same function."
+    },
+    {
       "key": "runtime:exports:mirage/webapi-inventory.mjs:supportOf",
       "file": "mirage/webapi-inventory.mjs",
       "type": "exports",
@@ -3860,6 +3965,13 @@
       "key": "tests:clone:test-browser/model-driven-commands.test.mjs|test-browser/model-driven-commands.test.mjs:e3f440b1b27197c6960996de95819f16543c7ad8f8b7cf8e943b44cbf3ae6a81",
       "files": ["test-browser/model-driven-commands.test.mjs", "test-browser/model-driven-commands.test.mjs"],
       "lines": 18,
+      "type": "clone",
+      "reason": "Independent scenario assertions and invented protocol fixtures; behavior and failure evidence stay in each suite."
+    },
+    {
+      "key": "tests:clone:test-browser/xray-card-ux.test.mjs|test-browser/xray.test.mjs:c82c3f6cb98c48ded1bd1f7b821bfc2d1d01f56c3ce0bcd91f855295a53d4197",
+      "files": ["test-browser/xray-card-ux.test.mjs", "test-browser/xray.test.mjs"],
+      "lines": 21,
       "type": "clone",
       "reason": "Independent scenario assertions and invented protocol fixtures; behavior and failure evidence stay in each suite."
     }

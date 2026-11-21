@@ -1408,6 +1408,9 @@ test('compact form command overflow retains Share and executes supported Save th
   await page.getByRole('menuitem', { name: 'Save', exact: true }).click();
   assert.equal((await saved).status(), 200);
   await page.getByRole('heading', { name: longTitle, exact: true }).waitFor();
+  // The saved record is read again: its header is on screen before the form under it, so the layout is measured
+  // once the content is no longer busy.
+  await page.locator('#content[aria-busy="false"]').waitFor();
   assert.ok(
     await page
       .locator('.record-header')

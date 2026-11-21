@@ -6,13 +6,20 @@ import { describe, it, before, after, afterEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import http, { createServer } from 'node:http';
 import https from 'node:https';
+import net from 'node:net';
 import childProcess from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { install as installRegistration } from '../lib/dataverse-plugin-registration.mjs';
-import { isLoopbackUrl, loopbackFetch, serviceEndpointDelivery, webhookDelivery } from '../lib/dataverse-webhooks.mjs';
+import {
+  deliver,
+  isLoopbackUrl,
+  loopbackFetch,
+  serviceEndpointDelivery,
+  webhookDelivery,
+} from '../lib/dataverse-webhooks.mjs';
 import { createLocalMessageBus } from '../lib/message-bus.mjs';
 import { createCounters } from '../lib/runtime-counters.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
@@ -91,8 +98,9 @@ async function startReceiver() {
   return {
     origin: `http://127.0.0.1:${port}`,
     log: async (prefix) =>
-      (await (await fetch(`http://127.0.0.1:${port}/__log`)).json()).filter((entry) =>
-        entry.path.startsWith(`${prefix}/`),
+      // A connection of its own per read: a pooled one may sit idle past the receiver's keep-alive timeout between tests.
+      (await (await fetch(`http://127.0.0.1:${port}/__log`, { headers: { connection: 'close' } })).json()).filter(
+        (entry) => entry.path.startsWith(`${prefix}/`),
       ),
     async stop() {
       // The receiver has exited before its directory goes (a running process can hold it busy on Windows).
@@ -189,6 +197,51 @@ describe('loopback guard (shared with TriggerServiceEndpointCheck)', () => {
       'not a url',
     ])
       assert.equal(isLoopbackUrl(url), false, url);
+  });
+});
+
+// @test-kind contract: Paqvilo delivers each web hook POST on a connection of its own
+describe('delivery connections', () => {
+  it('a delivery never rides a connection the receiver kept alive after an earlier delivery', async () => {
+    // A receiver whose idle timeout ends as the next request arrives: it answers the first request of a connection, keeping
+    // it alive, and resets the connection when another request is written to it.
+    let connections = 0,
+      reused = 0;
+    const receiver = net.createServer((socket) => {
+      connections++;
+      let answered = false,
+        text = '';
+      socket.on('error', () => {});
+      socket.on('data', (chunk) => {
+        if (answered) {
+          reused++;
+          socket.resetAndDestroy();
+          return;
+        }
+        text += chunk;
+        const head = text.indexOf('\r\n\r\n');
+        if (head < 0) return;
+        const length = Number(/content-length: (\d+)/i.exec(text)?.[1] ?? 0);
+        if (Buffer.byteLength(text.slice(head + 4)) < length) return;
+        answered = true;
+        socket.write(
+          'HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: keep-alive\r\nKeep-Alive: timeout=5\r\n\r\n{}',
+        );
+      });
+    });
+    await new Promise((resolve) => receiver.listen(0, '127.0.0.1', resolve));
+    try {
+      const request = {
+        url: `http://127.0.0.1:${receiver.address().port}/hook`,
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      };
+      for (let post = 1; post <= 4; post++)
+        assert.equal(await deliver(request, loopbackFetch), 200, `delivery ${post}`);
+      assert.deepEqual({ connections, reused }, { connections: 4, reused: 0 });
+    } finally {
+      await new Promise((resolve) => receiver.close(resolve));
+    }
   });
 });
 

@@ -180,12 +180,33 @@ const fieldReads = (mapping) =>
   Object.fromEntries(
     Object.entries(mapping?.fields ?? {}).map(([attribute, field]) => [attribute, fieldSnapshot(field)]),
   );
-// Whether two field snapshots hold the same values in the same order.
-const sameReads = (previous, current) =>
-  Array.isArray(previous) &&
-  previous.length === current.length &&
-  previous.every((value, index) => Object.is(value, current[index]));
-const sameTableReads = (previous, current) => Boolean(previous) && sameEntries(previous, current, sameReads);
+// Whether a field still reads as its snapshot: the comparison of fieldSnapshot(field) with the snapshot, without
+// building the new snapshot. An unchanged state is the common case and is compared on every metadata read of a write.
+const fieldReadsAs = (snapshot, field) => {
+  if (!Array.isArray(snapshot) || !Object.is(snapshot[0], field)) return false;
+  if (!field || typeof field !== 'object') return snapshot.length === 1;
+  const keys = Object.keys(field);
+  if (snapshot.length !== 1 + 2 * keys.length) return false;
+  for (let index = 0; index < keys.length; index++)
+    if (snapshot[1 + 2 * index] !== keys[index] || !Object.is(snapshot[2 + 2 * index], field[keys[index]]))
+      return false;
+  return true;
+};
+// Whether every table only a mapping declares still reads as the recorded field reads (mappedTableReads).
+const mappedTablesReadAs = (reads, metadata, mappings) => {
+  let tables = 0;
+  for (const name of Object.keys(mappings ?? {})) {
+    if (metadata.entities?.[name]) continue;
+    const previous = reads[name];
+    if (!previous) return false;
+    tables++;
+    const fields = mappings[name]?.fields ?? {};
+    const attributes = Object.keys(fields);
+    if (attributes.length !== Object.keys(previous).length) return false;
+    for (const attribute of attributes) if (!fieldReadsAs(previous[attribute], fields[attribute])) return false;
+  }
+  return tables === Object.keys(reads).length;
+};
 // The field reads of each table only a mapping declares, keyed by table name.
 const mappedTableReads = (metadata, mappings) =>
   Object.fromEntries(
@@ -197,32 +218,38 @@ const mappedTableReads = (metadata, mappings) =>
  * One memo of withMappedTables. While the revision function returns a value that is unchanged, and the metadata and the
  * state are the objects of the previous call, the previous value is returned without reading any mapping. Otherwise the
  * memo compares the mapping objects, the fields the mapped tables read and the metadata log, and rebuilds only when one
- * differs. A null revision means the store cannot vouch for its content, so every call takes the comparison. The
- * metadata is the overlay's result, which keeps its identity across ordinary record writes.
+ * differs. A null revision means the store cannot vouch for its content, so every call takes the comparison, except
+ * inside one read epoch of the overlay (readEpoch, the overlay's readEpochToken): the overlay retains its first
+ * projection for the whole epoch, and so does this memo, so a bulk reader inside a transaction (an extension install
+ * that reads the columns of every table) compares the mappings once, not once per table. The metadata is the overlay's
+ * result, which keeps its identity across ordinary record writes.
  */
-export function createMappedTables({ revision } = {}) {
+export function createMappedTables({ revision, readEpoch } = {}) {
   let last = null;
   return (metadata, state) => {
     const current = revision?.() ?? null;
     if (current !== null && last?.metadata === metadata && last.state === state && last.revision === current)
       return last.value;
+    const epoch = readEpoch?.() ?? null;
+    if (epoch !== null && last?.epoch === epoch && last.metadata === metadata && last.state === state)
+      return last.value;
     const seq = state.dataverse?.metadataLog?.at(-1)?.seq ?? 0;
-    const tables = mappedTableReads(metadata, state.mappings);
     if (
       last?.metadata !== metadata ||
       last.seq !== seq ||
       !sameEntries(last.mappings, state.mappings) ||
-      !sameEntries(last.tables, tables, sameTableReads)
+      !mappedTablesReadAs(last.tables, metadata, state.mappings)
     )
       last = {
         metadata,
         seq,
         mappings: { ...state.mappings },
-        tables,
+        tables: mappedTableReads(metadata, state.mappings),
         value: withMappedTables(metadata, state.mappings),
       };
     last.state = state;
     last.revision = current;
+    last.epoch = epoch;
     return last.value;
   };
 }
@@ -267,6 +294,7 @@ export function createSolutionMetadataOverlay({ appsOf = () => [], parseDocument
         epoch.base = base;
         epoch.state = state;
         epoch.value = value;
+        epoch.token = {};
       }
       return value;
     };
@@ -572,6 +600,12 @@ export function createSolutionMetadataOverlay({ appsOf = () => [], parseDocument
   // across cooperative yields; the next request always establishes a new epoch.
   // Staff grants and field permissions remain live checks, never epoch-cached.
   return Object.assign(resolve, {
+    // The identity of the projection the current read epoch retains: a new object each time the epoch resolves, null
+    // outside an epoch or before its first resolve. Read it after resolving, in the same turn.
+    readEpochToken: () => {
+      const epoch = readEpoch.getStore();
+      return epoch && !epoch.closed && epoch.resolved ? epoch.token : null;
+    },
     withReadEpoch: (fn, options = {}) => {
       const { valid = () => true, revision } = options;
       const inherited = readEpoch.getStore();

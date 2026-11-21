@@ -1795,3 +1795,30 @@ test('file, image, virtual and managed property columns name their AttributeType
     ['Virtual', 'Virtual', 'Virtual', 'ManagedProperty', 'String'],
   );
 });
+
+// @test-kind unproven: a Solution export's table audit flag reaches EntityDefinitions; no native capture pairs the two values
+test('EntityDefinitions IsAuditEnabled reads a Solution table audit flag, and a mapping override still wins', async (t) => {
+  const { mkdir, writeFile, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { makeTemporaryDirectory } = await import('../testing/owned-fixture.mjs');
+  const { scanSolutionSources, buildSolutionSchema } = await import('../lib/solution-schema.mjs');
+  const root = await makeTemporaryDirectory(join(tmpdir(), 'pp-metadata-audit-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(join(root, 'Entities', 'sample_audited'), { recursive: true });
+  await writeFile(
+    join(root, 'Entities', 'sample_audited', 'Entity.xml'),
+    '<Entity><Name>sample_audited</Name><EntityInfo><entity Name="sample_audited"><attributes><attribute ' +
+      'PhysicalName="sample_auditedId"><Type>primarykey</Type><Name>sample_auditedid</Name><LogicalName>' +
+      'sample_auditedid</LogicalName></attribute></attributes><IsAuditEnabled>1</IsAuditEnabled></entity>' +
+      '</EntityInfo></Entity>',
+  );
+  const schema = buildSolutionSchema(await scanSolutionSources([root]));
+  const audit = (mappings) =>
+    readMetadata(
+      createMetadataService({ organizationId: ORG, schema: () => schema, mappings: () => mappings }),
+      "EntityDefinitions(LogicalName='sample_audited')?$select=IsAuditEnabled",
+    ).IsAuditEnabled.Value;
+  assert.equal(audit({}), true);
+  assert.equal(audit({ sample_audited: { dataverseMetadata: { IsAuditEnabled: false } } }), false);
+});

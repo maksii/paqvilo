@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of virtual-table provider reads with invented providers; the native answers are not recorded
 // Virtual table reads: collection and single Web API reads call the provider's retrieveMultiple/retrieve with the
 // documented request shape and answer through the shared read path; a providerless virtual table answers 501 unless it
 // declares fallback 'local'.
@@ -182,6 +183,7 @@ test('SDK reads and writes of a providerless virtual table answer 501 VirtualPro
   );
 });
 
+// @test-kind contract: the module's own SDK read contract for provider-backed virtual tables; the native 501 is not recorded
 test('SDK reads of a provider-backed virtual table go to retrieveSync/retrieveMultipleSync, else 501 SdkVirtualReadUnsupported', async (t) => {
   const { store, calls, syncRows } = await setup(t);
   const sdk = sdkOf(store);
@@ -209,6 +211,11 @@ test('SDK reads of a provider-backed virtual table go to retrieveSync/retrieveMu
     'a row the provider does not have is not found, whatever the mirror holds',
   );
   assert.throws(() => sdk.fetch(fetchOf('x_sync')), unsupported);
+  // The FetchXML refusal names the provider contract that cannot carry FetchXML, not a Web API route.
+  assert.throws(
+    () => sdk.fetch(fetchOf('x_sync')),
+    (error) => /no provider operation takes FetchXML/.test(error.message) && !/Web API route/.test(error.message),
+  );
 });
 
 test("SDK reads of a declared fallback 'local' table read the local rows", async (t) => {

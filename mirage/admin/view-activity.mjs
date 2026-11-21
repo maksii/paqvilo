@@ -1,4 +1,4 @@
-// `#activity` view module: everything the runtime did, in one workspace (D-M-1..D-M-3). One activity is one trace
+// `#activity` view module: everything the runtime did, in one workspace. One activity is one trace
 // (a request, a job, a flow run); a step is a span; a finding is a diagnostic; a log line is a log stream entry. The
 // filter bar IS the address: `#activity?range=&result=&who=&table=&recordId=&host=&q=&live=` (plus the "More filters"
 // keys and the audit keys the old `#audit` links carry), and `#activity/<traceId>[/<spanId>]` opens an activity beside
@@ -28,7 +28,7 @@ const { e, failure, failed, json, fieldHelp, helpEntry, panel, pending } = viewC
 });
 
 // ---- The address
-/** The filter bar (D-M-3), in the order of the bar. */
+/** The filter bar, in the order of the bar. */
 const BAR = Object.freeze(['result', 'who', 'table', 'recordId', 'host', 'q']);
 /** "More filters": the trace store's other filters. */
 const MORE = Object.freeze([
@@ -86,7 +86,7 @@ const STORE_NAMES = {
 const ALIASES = { entity: 'table', search: 'q', sessionKey: 'session' };
 const RANGES = Object.freeze({ '5m': 300_000, '15m': 900_000, '1h': 3_600_000, '24h': 86_400_000, all: null });
 const RANGE_LABELS = { '5m': 'Last 5 minutes', '15m': 'Last 15 minutes', '1h': 'Last hour', '24h': 'Last 24 hours' };
-/** Result (D-M-2) of an activity or a step, and what it means: the result filter, the badges and the legend. */
+/** Result of an activity or a step, and what it means: the result filter, the badges and the legend. */
 const RESULT_MEANINGS = Object.freeze({
   ok: 'ended without an error',
   error: 'ended with an exception, a fault or an HTTP error answer',
@@ -96,7 +96,7 @@ const RESULT_MEANINGS = Object.freeze({
 });
 const RESULTS = Object.keys(RESULT_MEANINGS);
 const RESULT_TONES = { ok: 'ok', error: 'bad', denied: 'warn', running: 'info', cancelled: 'neutral' };
-/** The request audit's outcome in Result words (D-M-2): success is ok, pending is running. */
+/** The request audit's outcome in Result words: success is ok, pending is running. */
 const OUTCOME_RESULT = { success: 'ok', pending: 'running', error: 'error', denied: 'denied' };
 const RESULT_OUTCOME = { ok: 'success', running: 'pending', error: 'error', denied: 'denied' };
 /** The span kinds of the trace store (trace-store.mjs SPAN_KINDS); the runtime refuses any other kind filter. */
@@ -169,19 +169,12 @@ export const MODULES = Object.freeze([
   'native',
   'customapi',
 ]);
-/** The origin hosts a root span names (docs/design/tracing.md, origin.host). */
-const HOSTS = [
-  'power-pages',
-  'standalone',
-  'model-driven',
-  'canvas',
-  'code-app',
-  'dataverse-api',
-  'tds',
-  'soap',
-  'job',
-  'sim',
-];
+/** The origin hosts the runtime's trace `host` filter accepts (status.traceHosts, lib/trace-store.mjs TRACE_HOSTS). */
+const hostsOf = (ctx) => {
+  const state = ctx.state?.() ?? {};
+  const hosts = state.status?.traceHosts ?? state.traceHosts;
+  return Array.isArray(hosts) ? hosts : [];
+};
 const ACTOR_KINDS = new Set(['anonymous', 'contact', 'staff', 'app', 'system', 'flow', 'plugin']);
 const AUDIT_KINDS = ['api', 'page', 'form', 'liquid-fetchxml', 'entity-read', 'entity-query'];
 const LOG_TYPES = ['startup', 'request', 'liquid', 'data', 'plugin', 'diagnostic', 'reload'];
@@ -377,7 +370,7 @@ const activityResult = (summary, root) => {
   const label = root?.attributes?.browserProbe === true ? 'browser probe' : 'root ' + summary.status;
   return resultBadge(summary.result) + ' ' + kit.badge(label, 'neutral');
 };
-/** The HTTP status as a secondary badge (D-M-2); none without a status. */
+/** The HTTP status as a secondary badge; none without a status. */
 const httpBadge = (status) =>
   Number.isInteger(Number(status)) && status !== null && status !== ''
     ? ' ' +
@@ -404,7 +397,7 @@ const errorBadges = (summary, none = '0') =>
     .map((badge) => ` ${badge}`)
     .join('') || none;
 /**
- * Who (D-M-2): the actor and the session in one phrase, `Ada Member · contact:e2e00000`, `Visitor accb980f`,
+ * Who: the actor and the session in one phrase, `Ada Member · contact:e2e00000`, `Visitor accb980f`,
  * `Anonymous`, `Staff Ann · staff:5c1e0000`; an app, plug-in, flow or system caller by its kind and name.
  */
 export function whoText(actor, session) {
@@ -560,7 +553,7 @@ export function hashOf(d, over = {}) {
 }
 const hrefOf = (d, over) => `#${hashOf(d, over)}`;
 /**
- * A `who` value in D-M-2 words: the name of a caller the page shows (list rows, the open activity), else its kind and
+ * A `who` value in the Activity view's words: the name of a caller the page shows (list rows, the open activity), else its kind and
  * short id (`contact:e2e00000`, `Visitor accb980f`); the full value stays in the address.
  */
 function whoLabel(d, value) {
@@ -1039,7 +1032,7 @@ const SEARCH_LABELS = {
   stats: 'Search steps',
 };
 /**
- * The open tab's quick text filter, inline in the toolbar row (D-M-11): the `q=` filter of the address, part of the
+ * The open tab's quick text filter, inline in the toolbar row: the `q=` filter of the address, part of the
  * Filters form (`form=`), applied with Enter or when it is left; the drawer holds every other filter.
  */
 function searchBox(tab, d) {
@@ -1076,7 +1069,7 @@ function filterBar(ctx, d) {
     input(ctx, 'activity-who', 'who', f.who, { extra: ' placeholder="contact:…, visitor:…"', ...tip }) +
     input(ctx, 'activity-table', 'table', f.table, { extra: ' placeholder="Table logical name"', ...tip }) +
     input(ctx, 'activity-record', 'recordId', f.recordId, tip) +
-    select(ctx, 'activity-host', 'host', anyOf('Any host', HOSTS), f.host, tip) +
+    select(ctx, 'activity-host', 'host', anyOf('Any host', hostsOf(ctx)), f.host, tip) +
     // The Log stream's type is a filter like the others (it applies to that tab only; its chip says so elsewhere).
     (logServed(ctx)
       ? select(ctx, 'activity-log-type', 'type', anyOf('Every type', LOG_TYPES), d.type, {
@@ -1214,7 +1207,7 @@ function summaryText(ctx, d) {
 const sortColumn = (d, by, column) => ({ ...column, label: SORTS[by], sortKey: by });
 /** The list's place in the bottom controls: the view's own actions, then the zone and count summary. */
 const footOf = (ctx, d, actions) => `${actions}<span class="ui-page-summary">${e(summaryText(ctx, d))}</span>`;
-/** Every result with its meaning: the (i) of the Result column (D-M-6: no permanent legend under the list). */
+/** Every result with its meaning: the (i) of the Result column (no permanent legend under the list). */
 const RESULT_HELP =
   RESULTS.map((result) => `${result}: ${RESULT_MEANINGS[result]}.`).join(' ') +
   ' An activity reads error or denied when any of its steps did, even when its page answered HTTP 200; a second badge then names the root step’s own result (root ok). A browser’s own probe for a missing icon reads ok.';
@@ -1240,7 +1233,7 @@ const rowError = (item, root) => {
   return `<span class="ui-help ui-trace-error" title="${e(text)}">${e(text)}</span>`;
 };
 /**
- * Who of an audit entry (D-M-2): the contact by kind and short id, a visitor by its id when the entry names one, else
+ * Who of an audit entry: the contact by kind and short id, a visitor by its id when the entry names one, else
  * Anonymous; a contact or visitor is a link that filters by exactly that caller.
  */
 function auditWho(d, entry) {
@@ -1252,7 +1245,7 @@ function auditWho(d, entry) {
   return 'Anonymous';
 }
 /**
- * The bottom controls of a tab's list (D-M-7/D-M-8): its own controls, the tab's (i) and the zone/summary on the left,
+ * The bottom controls of a tab's list: its own controls, the tab's (i) and the zone/summary on the left,
  * the count, rows per page and pager on the right (only when the list pages).
  */
 function bottomBar(ctx, d, tab, controls, pager) {
@@ -1274,7 +1267,7 @@ function tabHelp(ctx, tab) {
     ? kit.info({ id: `help-activity-${tab}`, label: `About ${tabLabel(tab)}`, text: entry.intro, docs })
     : '';
 }
-/** Who (D-M-2) as a link that filters by exactly this caller; the full id is its title. */
+/** Who as a link that filters by exactly this caller; the full id is its title. */
 function whoLink(d, actor, session) {
   const text = whoText(actor, session);
   const value = whoValue(actor, session);
@@ -1357,7 +1350,7 @@ function activityListTable(ctx, d, list) {
       (filtered(d) && Number.isInteger(list.retained) ? ` of ${e(list.retained)} retained` : '') +
       (list.rangeFrom ? ` since ${when(list.rangeFrom)}` : ''),
   };
-  // The table starts right under the toolbar (D-M-7); its tools, count and pager follow it.
+  // The table starts right under the toolbar; its tools, count and pager follow it.
   return (
     auditIncompleteNotice(list.auditComplete) +
     kit.dataTable({
@@ -1648,7 +1641,7 @@ function payload(title, value, span) {
   );
   return [title, `${e(state)}${kit.info({ label: 'Why no ' + what, text: reason })}`];
 }
-/** A titled card of the detail pane (D-M-6: every block a card with a heading). */
+/** A titled card of the detail pane (every block a card with a heading). */
 const card = (title, body, id = '') =>
   `<section class="ui-activity-card"${id ? ' id="' + id + '"' : ''}><h4>${e(title)}</h4>${body}</section>`;
 // Span lookup by id per tree, built once per tree answer.
@@ -1663,7 +1656,7 @@ const byIdOf = (tree) => {
 };
 /**
  * The span an id names: from the open trace, else a span read for the drawer (d.linked), else null. A span that failed
- * carries its own `error` object; only a failed read (`failureOf`: no spanId, `error` a message) is not a span (DV-Y8-1).
+ * carries its own `error` object; only a failed read (`failureOf`: no spanId, `error` a message) is not a span.
  */
 const targetOf = (d, tree, spanId) => {
   const found = byIdOf(tree).get(spanId) ?? d.linked?.[spanId];
@@ -2916,7 +2909,7 @@ function breakdown(ctx, d) {
     caption: `Steps by ${label.toLowerCase()}`,
     // The bottom bar like every Activity table: count, rows and pager (the zone stays named once, in Stats' own bar).
     result: kit.pageItems(order.items, ctx.pager('activity-breakdown'), { text: (item) => item.name }),
-    // Its own search and Filters · n in its toolbar row (D-M-11): it is a table inside Stats, not the tab's main list.
+    // Its own search and Filters · n in its toolbar row: it is a table inside Stats, not the tab's main list.
     search: true,
     filters,
     sort: order.sort,
@@ -3340,6 +3333,11 @@ export const view = {
     const traceId = segments[0] || params.get('traceId') || null;
     const before = { list: listKey(ctx, d), traceId: d.traceId };
     d.filters = filtersOf(params);
+    // A stale link naming a host this runtime does not trace shows every host instead of the runtime's refusal. The
+    // API matches the host in any case (lib/trace-store.mjs), so the link's value is compared the same way.
+    d.filters.host = d.filters.host.trim().toLowerCase();
+    const hosts = hostsOf(ctx);
+    if (d.filters.host && hosts.length && !hosts.includes(d.filters.host)) d.filters.host = '';
     // A section the address opens with a More filter set stays open when that filter is cleared.
     if (moreState(d).active > 0) d.more = true;
     const range = params.get('range');
@@ -3518,7 +3516,7 @@ export const view = {
       (d.traceId
         ? `<section class="ui-activity-detail" data-ui-section="activity:detail" aria-labelledby="activity-detail-title">${detailPanel(ctx, d)}</section>`
         : '');
-    // The tab strip sits in the chrome's toolbar row; its panel follows the toolbar directly (D-M-7).
+    // The tab strip sits in the chrome's toolbar row; its panel follows the toolbar directly.
     const strip = tabStrip(
       tabs.map(([id, label]) => ({ id, label: id === 'findings' ? `${label}${findingCount}` : label })),
       tab,

@@ -872,7 +872,7 @@ export function createAuthority({
     if (!entry || entry.expiresAt <= now)
       return htmlPage(
         400,
-        'Code not recognised',
+        'Code not recognized',
         '<p>The code is unknown or has expired. Start the sign-in again.</p>',
       );
     const user = interactiveUser(input.oid);

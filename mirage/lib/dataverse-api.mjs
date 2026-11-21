@@ -1,4 +1,5 @@
 import { readRawBody } from './http-body.mjs';
+import { keepIdleConnections } from './idle-connections.mjs';
 import {
   accessNamesOf,
   entryMessageActive,
@@ -20,6 +21,7 @@ import { ownsChange, runOwned, runAtomic } from './dataverse-transaction-context
 import { createRequestContext, currentRequest, runWithRequest } from './request-context.mjs';
 export { runAtomic } from './dataverse-transaction-context.mjs';
 import { createOrganizationRuntime } from './dataverse-organization.mjs';
+import { systemClock } from './runtime-clock.mjs';
 import { createModelDrivenRecordService } from './dataverse-model-driven.mjs';
 import { organizationPrincipalContext } from './dataverse-principal-context.mjs';
 import { gzipSync } from 'node:zlib';
@@ -219,6 +221,8 @@ const BUILT_IN_FUNCTIONS = new Set([
   'RetrieveTotalRecordCount',
   'RetrieveMetadataChanges',
 ]);
+/** Whether the Web API answers this unbound function itself (not a registered operation). */
+export const isBuiltInFunction = (name) => BUILT_IN_FUNCTIONS.has(name);
 const BULK_MESSAGES = new Set(['CreateMultiple', 'UpdateMultiple', 'UpsertMultiple', 'DeleteMultiple']);
 
 function originOf(req, fallbackHost) {
@@ -601,7 +605,7 @@ function listParamTotals(d, c, route, common) {
   };
 }
 
-export function unboundFunction(d, c, route, common) {
+function unboundFunction(d, c, route, common) {
   if (c.method !== 'GET') return notFound(c);
   // A name that is not a function reads as an entity set (the default branch), which the record handlers trace.
   if (!BUILT_IN_FUNCTIONS.has(route.name)) return builtInFunction(d, c, route, common);
@@ -1641,7 +1645,8 @@ function dispatchMetadataRoute(d, c, route, { method, origin, url, prefer }) {
   };
 }
 
-function dispatchTaggedRoute(d, c, route, common, body) {
+// Exported for in-process callers that already resolved the caller (the code-app bridge, organization-host.mjs).
+export function dispatchTaggedRoute(d, c, route, common, body) {
   const { method, origin, url, prefer } = c;
   switch (route.kind) {
     case 'service':
@@ -2101,7 +2106,7 @@ export function createDataverseHandler(deps) {
     };
     let failure = null;
     // Ends on finish, or on a close before it (an aborted request or a destroyed in-process response, 499); idempotent.
-    // A response the client closed before it completed (499) names that as its error (DV-Y8-4).
+    // A response the client closed before it completed (499) names that as its error.
     const endSpan = (status) => endHttpSpan(span, status, failure, meta);
     res.on('finish', () => endSpan(res.statusCode));
     res.on('close', () => endSpan(res.writableFinished ? res.statusCode : 499));
@@ -2251,10 +2256,10 @@ export async function startDataverseApi({
   metadataFields = () => undefined,
   observed = null,
   errorTemplates = null,
-  clock = () => Date.now(),
+  clock = systemClock,
   tls = null,
   records = null,
-  log = () => {},
+  log = null,
   extensions = EXTENSIONS,
   managedIdentity = null,
   organization: suppliedOrganization = null,
@@ -2272,7 +2277,7 @@ export async function startDataverseApi({
       metadataFields,
       clock,
       records,
-      log,
+      log: log ?? undefined,
       extensions,
     }));
   ({ store, settings, change, clock } = organization);
@@ -2290,6 +2295,8 @@ export async function startDataverseApi({
     records: recordHandlers,
   } = organization;
   metadataFields = api.metadataFields;
+  // A supplied organization (the runtime hosts) carries the runtime log; token refusals and listener events go there.
+  log ??= api.log ?? (() => {});
   const servers = [];
   let tds, closing;
   const close = () =>
@@ -2353,13 +2360,13 @@ export async function startDataverseApi({
     });
 
     await beforeListen?.(organization);
-    const httpServer = http.createServer({ maxHeaderSize: MAX_HEADER_SIZE }, handle);
+    const httpServer = keepIdleConnections(http.createServer({ maxHeaderSize: MAX_HEADER_SIZE }, handle));
     servers.push(httpServer);
     await listen(httpServer, settings.port ?? 0, host);
     const origin = listenerOrigin('http', host, httpServer.address().port);
     let tlsOrigin = null;
     if (tls) {
-      const httpsServer = https.createServer({ ...tls, maxHeaderSize: MAX_HEADER_SIZE }, handle);
+      const httpsServer = keepIdleConnections(https.createServer({ ...tls, maxHeaderSize: MAX_HEADER_SIZE }, handle));
       servers.push(httpsServer);
       await listen(httpsServer, settings.tlsPort ?? 0, host);
       tlsOrigin = listenerOrigin('https', host, httpsServer.address().port);
@@ -2384,6 +2391,7 @@ export async function startDataverseApi({
       port: tdsSettings.port,
       enabled: tdsSettings.enabled,
       traces: traces ?? store.traces,
+      fieldSecurity: () => api.fieldSecurity ?? null,
     });
     api.tdsPort = tds?.port ?? null;
 

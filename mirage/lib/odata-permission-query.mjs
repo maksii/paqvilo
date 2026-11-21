@@ -384,7 +384,7 @@ export function authoredScalarODataFetch(table, params, { resolveAttribute } = {
       }
       if (grant.entity === parent.entity) {
         if (sameTableParentAnchor !== 'shared-root')
-          fail('Same-table Parent OData anchor behavior requires an explicit evidenced profile.');
+          fail('Same-table Parent OData anchor behaviour requires an explicit evidenced profile.');
         return filter([condition(relation.from, 'not-null'), render(parent, anyallalias, visited)]);
       }
       if (anyallalias) fail('Lookup traversal inside an N:N OData lambda requires separate native qualification.');

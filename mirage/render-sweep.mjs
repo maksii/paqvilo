@@ -37,7 +37,7 @@ import { reportCliError } from './cli-output.mjs';
  * Optional retained body samples omit simulator-owned runtime scripts before the 20,000-character
  * limit; bodyTruncated and bodyOmittedRuntimeScripts describe that sample. Classification uses the full response.
  */
-import { parseToolArgs, toolOptionsHelp } from './tool-options.mjs';
+import { assertToolPaths, parseToolArgs, toolOptionsHelp } from './tool-options.mjs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -77,6 +77,7 @@ function parseArgs(argv) {
   if (options.solutionRoots.length && !options.source) throw new Error('--solution-root applies to --source only.');
   if (options.persona && !['both', 'all', 'configured', COVERAGE_PERSONA, ...PERSONAS].includes(options.persona))
     throw new Error('--persona must be anonymous, authenticated, all-roles, configured, both or all.');
+  assertToolPaths('render-sweep', args);
   return options;
 }
 
@@ -320,9 +321,13 @@ export async function resolveTarget(options) {
     solutionRoots: configuredRoots.length
       ? configuredRoots
       : await (await import('./lib/solution-roots.mjs')).discoverSolutionRoots(cfg.sourceDir),
-    origin: cfg.origin,
+    // A live origin only for an HTTPS environment, as mirage serve does: a local sweep needs none, and a loopback
+    // environment URL (a local-only site) is the runtime itself, not a live portal.
+    origin: /^https:\/\//i.test(cfg.origin ?? '') ? cfg.origin : null,
     stateFile: options.state ?? path.join(cfg.stateDir, 'simulator', cfg.siteName, 'state.json'),
     preset: options.preset ?? cfg.mirageConfig?.preset ?? null,
+    // The site's preset follows its presetMode as mirage dev does: bootstrap keeps an existing state; --preset always applies.
+    presetMode: options.preset ? 'always' : (cfg.mirageConfig?.presetMode ?? 'always'),
     // Observed platform behaviour from the site's mirage settings (paqvilo.config.yml).
     simulatorOptions: {
       platform: cfg.mirageConfig?.platform,
@@ -379,7 +384,20 @@ function personaSession(simulator, persona) {
         identity: null,
         note: 'no configured contact; requests are anonymous',
       };
-    const session = simulator.signIn(contactId);
+    let session;
+    try {
+      session = simulator.signIn(contactId);
+    } catch (error) {
+      if (error.code !== 'PERSONA_CONTACT_UNAVAILABLE') throw error;
+      throw Object.assign(
+        new Error(
+          `Persona 'configured' cannot sign in: the state's configured contact ${contactId} is not an active local ` +
+            'contact. Select an active contact as the default persona in /_sim/ (Personas), or use --persona ' +
+            'authenticated or all-roles.',
+        ),
+        { code: error.code },
+      );
+    }
     return { headers: { cookie: session.cookieHeader }, identity: session.identity ?? configured, note: null };
   }
   const roles = personaRoleNames(simulator.portal, { allRoles: persona === COVERAGE_PERSONA });
@@ -406,8 +424,9 @@ async function sweepPersona(target, persona, options) {
       port: 0,
       ...target.simulatorOptions,
     });
-    // Personas change identity only; a preset is applied when --preset (or the site) asks for it.
-    const preset = target.preset ?? null;
+    // Personas change identity only; a preset is applied when --preset (or the site, unless its presetMode is
+    // bootstrap and the state already exists) asks for it.
+    const preset = target.presetMode === 'bootstrap' && isolated.copied ? null : (target.preset ?? null);
     if (preset) await simulator.applyPreset(preset);
     const session = await personaSession(simulator, persona); // NOSONAR: await kept: the value may be a thenable and timing matters
     const requestHeaders = session.headers;

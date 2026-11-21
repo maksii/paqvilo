@@ -8,7 +8,7 @@ import http from 'node:http';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import readline from 'node:readline';
-import { ownedFixture, removeFixtureDirectory, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, ownedClose, removeFixtureDirectory, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 // hang guard only: a blocked synchronous child cannot be ended by the test runner
 const CLI_HANG_GUARD_MS = 170_000;
@@ -93,6 +93,21 @@ test('an owner first requested after its test ended releases what it is given at
   assert.throws(() => owner.add(() => events.push('close')), /cleanup has already started/);
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(events, ['close']);
+});
+
+test('a resource registered after its test ended is closed and stops the abandoned body', async () => {
+  const hooks = [],
+    controller = new AbortController(),
+    closed = { first: 0, second: 0 };
+  const context = { after: (hook) => hooks.push(hook), signal: controller.signal };
+  ownedClose(context, { close: async () => void closed.first++ });
+  controller.abort();
+  await Promise.all(hooks.map((hook) => hook()));
+  const { promise, resolve } = Promise.withResolvers();
+  const second = { close: async () => resolve(void closed.second++) };
+  assert.throws(() => ownedClose(context, second), /already started/);
+  await promise;
+  assert.deepEqual(closed, { first: 1, second: 1 });
 });
 
 test('a listener started by a body that outlived its timeout is closed and the test process ends', async (t) => {

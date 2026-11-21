@@ -4,9 +4,10 @@ import { cloneStateData } from './state-clone.mjs';
 // privilege names, and the asyncoperation operationtype values chosen below.
 import { randomUUID } from 'node:crypto';
 import { DataError } from './data-error.mjs';
+import { stampMs, systemClock } from './runtime-clock.mjs';
 import { contextUrl, parseDataverseRoute, parsePrefer } from './dataverse-odata.mjs';
 import { guidKey } from './dataverse-values.mjs';
-import { privilegeDeniedError } from './dataverse-security.mjs';
+
 import { denied } from './dataverse-fls.mjs';
 import { parseEntityReference } from './data.mjs';
 import { parseXmlDocument, xmlEscapeAttribute } from './fetchxml-engine.mjs';
@@ -15,7 +16,11 @@ import { requireMetadataPrivilege } from './dataverse-metadata-relationships.mjs
 
 const CRM = 'Microsoft.Dynamics.CRM.';
 const BIND = '@odata.bind';
-const nowIso = () => new Date().toISOString();
+// A stored date from the wall clock, held across a small backward step of it (runtime-clock.mjs stampMs).
+// These rows are stamped from the system clock, so they keep a hold of their own: sharing the store's hold would let
+// wall time into the stamps of a store that runs on a fixed clock.
+const systemStamps = {};
+const nowIso = () => new Date(stampMs(systemStamps, systemClock)).toISOString();
 const invalid = (message, innerCode = '0x80040203') => new DataError(message, 400, 'InvalidRequest', { innerCode });
 const bodyOf = (c) => {
   if (typeof c.body !== 'string') return c.body ?? {};
@@ -300,7 +305,7 @@ function emptyRecycleBin(api) {
   return async (c) => {
     const { store } = api;
     if (!api.principals.roles(c.user).some((role) => role.name === 'System Administrator'))
-      throw privilegeDeniedError(c.user, RECYCLE_PRIVILEGE, REFERENCE);
+      throw api.principals.deniedError(c.user, RECYCLE_PRIVILEGE, REFERENCE);
     const keys = (store.state.tables[REFERENCE] ?? []).map((r) => guidKey(r.deleteditemreferenceid));
     await api.change(() =>
       store.transact(
@@ -1104,4 +1109,19 @@ export function install(api) {
   });
 }
 
-export const EXTENSION = { name: 'dataverse-data-messages', install };
+/** Capability record for the capability registry; dataverse-extensions.mjs adds the operations install registered. */
+function describe() {
+  return {
+    name: 'dataverse-data-messages',
+    version: 1,
+    kind: 'dataverse-extension',
+    level: 'behaviour',
+    reason: 'Recycle bin (delete hook, Restore, EmptyRecycleBin) and the classic import job run against the store.',
+    requires: [],
+    principal: 'caller',
+    stateOwner: 'store',
+    lifecycle: 'per-request',
+  };
+}
+
+export const EXTENSION = { name: 'dataverse-data-messages', install, describe };

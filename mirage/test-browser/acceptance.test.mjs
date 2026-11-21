@@ -6,21 +6,64 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../server.mjs';
-import { runAcceptance } from '../acceptance.mjs';
+import { runAcceptance as runAcceptanceImpl } from '../acceptance.mjs';
+import { fileURLToPath } from 'node:url';
+import {
+  registerFixtureDiagnostics,
+  finalizeFixtureDiagnostics,
+} from '../../test-browser/helpers/fixture-diagnostics.mjs';
 import { signInContext } from '../testing/session.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
-import { loopbackServer } from './shared-browser.mjs';
+import { ACCEPTANCE_HANG_GUARD_MS, loopbackServer } from './shared-browser.mjs';
 import { PROCESS_SLOTS } from '../test/process-slots.mjs';
 
 // Each test launches its own browser. Respect the lane's process budget as well as the outer file concurrency.
 const TESTS_IN_PARALLEL = Math.min(4, PROCESS_SLOTS);
 // The runner's action budget for every flow here. Steps that are meant to fail set their own shorter budget; the
 // rest keep this one, so a loaded host never ends a step by elapsed time.
-const ACTION_BUDGET_MS = 120_000;
+const ACTION_BUDGET_MS = ACCEPTANCE_HANG_GUARD_MS;
+const diagnosticFixtures = new WeakMap();
+function ownAcceptanceFixture(t, root) {
+  const fixture = { root, registration: null, completedReports: 0 };
+  diagnosticFixtures.set(t, fixture);
+  ownedFixture(t).remove(async () => {
+    const published = fixture.registration && finalizeFixtureDiagnostics(fixture.registration, t.signal);
+    if (published && !published.canRemove) return;
+    await fs.rm(root, { recursive: true, force: true });
+    if (published) {
+      assert.ok(
+        published.reports >= fixture.completedReports,
+        'every completed acceptance report survives fixture teardown',
+      );
+      for (const file of published.files)
+        assert.ok((await fs.stat(file)).isFile(), 'published diagnostics remain after the private fixture is removed');
+    }
+  });
+}
+async function runAcceptance(t, options) {
+  const fixture = diagnosticFixtures.get(t);
+  assert.ok(fixture, 'acceptance diagnostics are owned before the producer starts');
+  assert.ok(['evidence', 'failed-evidence'].includes(path.relative(fixture.root, options.outputDir)));
+  assert.equal(options.liveOrigin == null, true, 'synthetic diagnostics cannot capture a live comparison');
+  assert.ok(
+    options.flows.every((flow) => flow.mode !== 'live'),
+    'only local acceptance fixtures publish diagnostics',
+  );
+  fixture.registration = registerFixtureDiagnostics({
+    fixtureRoot: fixture.root,
+    kind: 'acceptance',
+    reportRoots: ['evidence', 'failed-evidence'],
+    origin: options.localUrl,
+    outputRoot: fileURLToPath(new URL('../../.paqvilo/', import.meta.url)),
+  });
+  const result = await runAcceptanceImpl(options);
+  if (result.report) fixture.completedReports++;
+  return result;
+}
 describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
   test('acceptance settles abandoned frame writes and records navigation cancellations', async (t) => {
     const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-detached-flow-'));
-    ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
+    ownAcceptanceFixture(t, root);
     const state = {
       config: { mode: 'local', pageMode: 'local', endpoints: [] },
       status: { sourceFingerprint: 'synthetic', implementationFingerprint: 'synthetic' },
@@ -50,7 +93,7 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
         );
       res.end('<iframe id="child" src="/frame"></iframe><p id="done" hidden>Saved</p>');
     });
-    const result = await runAcceptance({
+    const result = await runAcceptance(t, {
       timeout: ACTION_BUDGET_MS,
       localUrl: origin,
       outputDir: path.join(root, 'evidence'),
@@ -76,7 +119,7 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
 
   test('acceptance records old main-document reads as cancelled after navigation commits', async (t) => {
     const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-replaced-flow-'));
-    ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
+    ownAcceptanceFixture(t, root);
     const observed = new Set(),
       requestsObserved = Promise.withResolvers();
     const { origin } = await loopbackServer(t, (req, res) => {
@@ -111,7 +154,7 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
           : `<button id="save" onclick="fetch('/slow-one').catch(()=>{});fetch('/slow-two').catch(()=>{});fetch('/requests-observed').then(response=>response.text()).then(()=>location.href='/done')">Save</button>`,
       );
     });
-    const result = await runAcceptance({
+    const result = await runAcceptance(t, {
       timeout: ACTION_BUDGET_MS,
       localUrl: origin,
       outputDir: path.join(root, 'evidence'),
@@ -132,6 +175,69 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
     assert.ok(result.flows[0].navigationCancelledRequests.every((row) => row.reason === 'document-replaced'));
   });
 
+  for (const step of [
+    { action: 'identity', roles: ['Reviewer'] },
+    { action: 'preset', id: 'demo' },
+  ])
+    test(`acceptance settles queued page work before the ${step.action} step leaves the page`, async (t) => {
+      const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-step-settle-'));
+      ownAcceptanceFixture(t, root);
+      // The page queues its read as a task after the click. The fixture answers it only when the runner asks for its
+      // audit proof, which the runner does only inside its settle loop while a request is open: a step that reloads
+      // or leaves the page without settling cancels the read instead.
+      let heldRead = null;
+      const { origin } = await loopbackServer(t, (req, res) => {
+        req.resume();
+        const route = new URL(req.url, 'http://fixture').pathname;
+        res.setHeader('content-type', route.startsWith('/__sim/api/') ? 'application/json' : 'text/html');
+        if (route === '/__sim/api/state')
+          return res.end(
+            JSON.stringify({
+              csrf: 'invented',
+              config: { mode: 'local', pageMode: 'local', endpoints: [] },
+              status: { sourceFingerprint: 'synthetic', implementationFingerprint: 'synthetic' },
+            }),
+          );
+        if (route === '/__sim/api/session') return res.end(JSON.stringify({ contactId: 'tester' }));
+        if (route === '/__sim/api/session/sign-in') return res.end(JSON.stringify({ roles: ['Reviewer'] }));
+        if (route === '/__sim/api/audit/export') {
+          heldRead?.end('refreshed');
+          heldRead = null;
+          return res.end(JSON.stringify({ events: [] }));
+        }
+        if (route === '/refresh') {
+          heldRead = res;
+          return;
+        }
+        if (route === '/__sim/')
+          return res.end(
+            `<label for="preset">Available preset</label><select id="preset"><option value="demo">Demo</option></select><button id="apply" type="button">Apply selected preset</button><div id="confirm" hidden><button id="confirmed" type="button">Apply preset</button></div><script>document.getElementById('apply').onclick=()=>document.getElementById('confirm').hidden=false;document.getElementById('confirmed').onclick=()=>document.getElementById('confirm').hidden=true</script>`,
+          );
+        res.end(
+          `<button id="refresh" type="button" onclick="setTimeout(()=>fetch('/refresh').then(response=>response.text()),0)">Refresh</button>`,
+        );
+      });
+      const result = await runAcceptance(t, {
+        timeout: ACTION_BUDGET_MS,
+        localUrl: origin,
+        outputDir: path.join(root, 'evidence'),
+        flows: [
+          {
+            name: `Queued work before ${step.action}`,
+            steps: [{ action: 'navigate', path: '/' }, { action: 'click', selector: '#refresh' }, step],
+          },
+        ],
+      });
+      assert.equal(result.passed, true, JSON.stringify(result.flows[0]));
+      assert.equal(
+        result.flows[0].resources.filter((resource) => resource.url === origin + '/refresh' && resource.finished)
+          .length,
+        1,
+        `the queued read finishes before the ${step.action} step leaves the page`,
+      );
+      assert.equal(result.flows[0].navigationCancelledRequests?.length ?? 0, 0);
+    });
+
   for (const [beforeNavigation, lateNavigation] of [
     [false, false],
     [true, false],
@@ -139,7 +245,7 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
   ])
     test(`acceptance settles writes that straddle a delayed document replacement (hold=${beforeNavigation}, late=${lateNavigation})`, async (t) => {
       const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-navigation-boundary-')));
-      ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
+      ownAcceptanceFixture(t, root);
       const documentRequested = Promise.withResolvers();
       const beforeWriteObserved = Promise.withResolvers();
       const lateWritesObserved = Promise.withResolvers();
@@ -194,7 +300,7 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
         server.closeAllConnections();
         await new Promise((resolve) => server.close(resolve));
       });
-      const result = await runAcceptance({
+      const result = await runAcceptance(t, {
         timeout: ACTION_BUDGET_MS,
         localUrl: `http://127.0.0.1:${server.address().port}`,
         outputDir: path.join(root, 'evidence'),
@@ -238,7 +344,7 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
 
   test('acceptance opens and settles a modal without counting frame lifecycle requests as portal failures', async (t) => {
     const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-modal-acceptance-'));
-    ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
+    ownAcceptanceFixture(t, root);
     await fs.writeFile(path.join(root, 'website.yml'), 'adx_websiteid: site\nadx_name: Modal fixture');
     await fs.writeFile(path.join(root, 'Home.webpage.yml'), 'adx_webpageid: home\nadx_name: Host\nadx_partialurl: /\n');
     await fs.writeFile(
@@ -267,7 +373,7 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
       },
     });
     ownedFixture(t).add(() => app.close());
-    const report = await runAcceptance({
+    const report = await runAcceptance(t, {
       timeout: ACTION_BUDGET_MS,
       localUrl: app.url,
       outputDir: path.join(root, 'evidence'),
@@ -303,7 +409,7 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
 
   test('acceptance retains Chromium script SyntaxErrors even when their stack is empty', async (t) => {
     const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-syntax-flow-'));
-    ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
+    ownAcceptanceFixture(t, directory);
     await fs.writeFile(
       path.join(directory, 'Home.webpage.yml'),
       'adx_webpageid: home\nadx_name: Syntax fixture\nadx_partialurl: /\n',
@@ -318,7 +424,7 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
       watch: false,
     });
     ownedFixture(t).add(() => app.close());
-    const report = await runAcceptance({
+    const report = await runAcceptance(t, {
       timeout: ACTION_BUDGET_MS,
       localUrl: app.url,
       flows: [{ name: 'Syntax fixture', steps: [{ action: 'navigate', path: '/' }] }],
@@ -333,16 +439,19 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
 
   test('acceptance records actual role refresh, create/edit persistence, screenshots and failed assertions', async (t) => {
     const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-flow-'));
-    ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
+    ownAcceptanceFixture(t, directory);
     await fs.writeFile(
       path.join(directory, 'Home.webpage.yml'),
       'adx_webpageid: home\nadx_name: Flows\nadx_partialurl: /\n',
     );
     // The script reads user.roles; after a native save postback (success message shown)
-    // it schedules a delayed refresh request that the runner must record as finished.
+    // it schedules a refresh request that the runner must record as finished. The refresh is a task queued when the
+    // document is ready, as the native success postMessage queues the parent's subgrid refresh, so it runs before
+    // any page turn the runner queues later. A refresh delayed by wall-clock time is not queued page work: whether it ran
+    // before the next step would depend on the host's speed.
     await fs.writeFile(
       path.join(directory, 'Home.webpage.copy.html'),
-      '<h1>Portal flows</h1><input id="async-default"><button id="initialize-default" type="button" onclick="setTimeout(() => document.getElementById(&quot;async-default&quot;).value = &quot;Initialized&quot;, 200)">Initialize default</button><input id="userroles" type="hidden" value="{{user.roles | join: \'|\'}}"><div id="script-roles"></div><script>document.getElementById("script-roles").textContent=document.getElementById("userroles").value;document.addEventListener("DOMContentLoaded",()=>setTimeout(()=>{if(document.getElementById("MessageLabel"))fetch("/save-followup").then(r=>r.json());},150));</script>{% if request.params.id %}{% entityform name: "Contact edit form" %}{% else %}{% entityform name: "Contact form" %}{% endif %}',
+      '<h1>Portal flows</h1><input id="async-default"><button id="initialize-default" type="button" onclick="setTimeout(() => document.getElementById(&quot;async-default&quot;).value = &quot;Initialized&quot;, 200)">Initialize default</button><input id="userroles" type="hidden" value="{{user.roles | join: \'|\'}}"><div id="script-roles"></div><script>document.getElementById("script-roles").textContent=document.getElementById("userroles").value;document.addEventListener("DOMContentLoaded",()=>setTimeout(()=>{if(document.getElementById("MessageLabel"))fetch("/save-followup").then(r=>r.json());},0));</script>{% if request.params.id %}{% entityform name: "Contact edit form" %}{% else %}{% entityform name: "Contact form" %}{% endif %}',
     );
     await fs.writeFile(
       path.join(directory, 'Contact.basicform.yml'),
@@ -443,7 +552,7 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
     // Portal routes take their identity from the paqvilo-mirage-auth session only, so the runner's
     // browser context signs in as the "tester" contact with no web roles before the flows.
     const prepareContext = (context) => signInContext(context, app, 'tester', { roles: [] });
-    const result = await runAcceptance({
+    const result = await runAcceptance(t, {
       timeout: ACTION_BUDGET_MS,
       localUrl: app.url,
       prepareContext,
@@ -474,10 +583,27 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
       assert.ok(flow.screenshots.length > 0, `${flow.name} records final screenshot evidence`);
       for (const image of flow.screenshots) assert.ok((await fs.stat(image)).size > 0);
     }
-    const failed = await runAcceptance({
+    // The budget each screenshot runs under: its own timeout, else the page default when it was taken.
+    const screenshotBudgets = [];
+    const failed = await runAcceptance(t, {
       timeout: ACTION_BUDGET_MS,
       localUrl: app.url,
-      prepareContext,
+      prepareContext: async (context, origin) => {
+        context.on('page', (page) => {
+          let defaultTimeout;
+          const setDefaultTimeout = page.setDefaultTimeout.bind(page),
+            screenshot = page.screenshot.bind(page);
+          page.setDefaultTimeout = (ms) => {
+            defaultTimeout = ms;
+            setDefaultTimeout(ms);
+          };
+          page.screenshot = (options = {}) => {
+            screenshotBudgets.push({ file: path.basename(options.path), timeout: options.timeout ?? defaultTimeout });
+            return screenshot(options);
+          };
+        });
+        await prepareContext(context, origin);
+      },
       flows: [
         {
           name: 'Incorrect control expectation',
@@ -492,13 +618,17 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
     });
     assert.equal(failed.passed, false);
     assert.match(failed.flows[0].error, /expected field value/i);
-    assert.ok(failed.flows[0].screenshots.length);
+    assert.ok(failed.flows[0].screenshots.length, JSON.stringify(failed.flows[0].screenshotError));
+    // The failed step spent its own 2000 ms; its failure screenshot is not cut to that deadline.
+    assert.deepEqual(screenshotBudgets, [
+      { file: '1-Incorrect-control-expectation-failure.png', timeout: ACTION_BUDGET_MS },
+    ]);
     assert.equal(app.state().data.contact.length, 1);
   });
 
   test('default navigation proceeds at DOM readiness and retains a slow request failure', async (t) => {
     const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-ready-'));
-    ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
+    ownAcceptanceFixture(t, directory);
     const state = {
       config: { mode: 'local', pageMode: 'local', live: { allowWrites: false }, endpoints: [] },
       status: { sourceFingerprint: 'fixture-source', implementationFingerprint: 'fixture-implementation' },
@@ -528,7 +658,7 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
     });
     // One runner session: every owned Edge session costs seconds on a loaded host, while each flow
     // has its own page and observation. The second flow checks step deadline validation.
-    const result = await runAcceptance({
+    const result = await runAcceptance(t, {
       timeout: ACTION_BUDGET_MS,
       localUrl: `http://127.0.0.1:${server.address().port}`,
       flows: [

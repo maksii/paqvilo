@@ -3,6 +3,18 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+// The help contract of scripts/script-help.mjs, inline: the site build test runs this file without its siblings.
+const [arg] = process.argv.slice(2);
+if (arg === '--help' || arg === '-h') {
+  console.log(`Usage: npm run site:build   (node scripts/build-site.mjs)
+Replaces dist/pages with the public site files, docs/assets images and site/media recordings, and checks every
+project-site link. Offline. Takes no options; --help prints this help.`);
+  process.exit(0);
+}
+if (arg) {
+  console.error(`build-site: unknown option ${arg} (see --help).`);
+  process.exit(1);
+}
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const output = path.join(root, 'dist', 'pages');
 // Rebuild only the generated directory; stale files must never enter a Pages artifact.
@@ -17,10 +29,11 @@ if (
   throw new Error('The site output must be a generated directory inside this checkout.');
 fs.rmSync(output, { recursive: true, force: true });
 fs.mkdirSync(output, { recursive: true });
-for (const name of ['index.html', 'coverage.html', 'guide.html', 'guide.js', 'style.css'])
+// sitemap.xml names the published project-site URLs (a project site cannot serve the host's robots.txt).
+for (const name of ['index.html', 'coverage.html', 'guide.html', 'guide.js', 'style.css', 'favicon.svg', 'sitemap.xml'])
   fs.copyFileSync(path.join(root, 'site', name), path.join(output, name));
 fs.mkdirSync(path.join(output, 'assets'), { recursive: true });
-for (const name of ['overview.svg', 'lense-visual.png', 'mirage-visual.png'])
+for (const name of ['overview.svg', 'lense-visual.png', 'mirage-visual.png', 'social-preview.png'])
   fs.copyFileSync(path.join(root, 'docs/assets', name), path.join(output, 'assets', name));
 // Guide recordings: every file in site/media, flat (stills as WebP, clips as MP4).
 fs.mkdirSync(path.join(output, 'media'), { recursive: true });

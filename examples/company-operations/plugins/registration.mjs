@@ -1,10 +1,12 @@
 import { spawnSync } from 'node:child_process';
-import { join } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 export function localAssemblyIdentity(path) {
   if (process.platform !== 'win32') return { available: false, reason: 'WindowsReflectionReaderUnavailable' };
   const script =
-    '$assembly=[System.Reflection.Assembly]::ReflectionOnlyLoadFrom($env:PAQVILO_PLUGIN_INSPECT_PATH);$name=$assembly.GetName();[pscustomobject]@{name=$name.Name;version=$name.Version.ToString();moduleVersionId=$assembly.ManifestModule.ModuleVersionId.ToString()}|ConvertTo-Json -Compress';
+    "$assembly=[System.Reflection.Assembly]::ReflectionOnlyLoadFrom($env:PAQVILO_PLUGIN_INSPECT_PATH);$name=$assembly.GetName();[pscustomobject]@{name=$name.Name;version=$name.Version.ToString();publicKeyToken=(($name.GetPublicKeyToken()|ForEach-Object{$_.ToString('x2')}) -join '');moduleVersionId=$assembly.ManifestModule.ModuleVersionId.ToString()}|ConvertTo-Json -Compress";
   const result = spawnSync(
     join(process.env.SystemRoot ?? String.raw`C:\Windows`, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
     ['-NoProfile', '-NonInteractive', '-Command', script],
@@ -21,17 +23,65 @@ export function localAssemblyIdentity(path) {
   if (
     !/^[0-9a-f-]{36}$/i.test(identity.moduleVersionId) ||
     typeof identity.name !== 'string' ||
-    typeof identity.version !== 'string'
+    typeof identity.version !== 'string' ||
+    !/^([0-9a-f]{16})?$/.test(identity.publicKeyToken)
   )
     throw new Error('Assembly reflection identity is invalid.');
   return { available: true, ...identity };
 }
-export function connectionPath(args = process.argv.slice(2)) {
-  const index = args.indexOf('--connection');
-  if (index >= 0 && (!args[index + 1] || args[index + 1].startsWith('--')))
-    throw new Error('--connection requires a saved connection path.');
-  return index >= 0 ? args[index + 1] : '.paqvilo/dataverse/provisioning.connection.json';
+const pluginsRoot = dirname(fileURLToPath(import.meta.url));
+/** The local Release build of a registered assembly: bytes, SHA-256 and (on Windows) its reflected identity. */
+export async function localBuild(assembly) {
+  const path = join(pluginsRoot, assembly.project, 'bin/Release/net462', `${assembly.name}.dll`);
+  const bytes = await readFile(path);
+  return {
+    path,
+    bytes,
+    sha256: createHash('sha256').update(bytes).digest('hex'),
+    identity: localAssemblyIdentity(path),
+  };
 }
+/** The pluginassembly fields a local build determines; version and token only where reflection can read them. */
+export const assemblyFields = (build) => ({
+  ...(build.identity.available
+    ? { version: build.identity.version, publickeytoken: build.identity.publicKeyToken }
+    : {}),
+  content: build.bytes.toString('base64'),
+});
+const jsonObject = (text) => {
+  try {
+    const value = JSON.parse(text);
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+  } catch {
+    return null;
+  }
+};
+/**
+ * Names of the fields of `body` that `existing` (a Web API row) does not already hold. Lookups compare by ID, content
+ * is named `content hash`, and a JSON object field (step configuration) compares by member, whatever the key order,
+ * naming each differing member (`configuration.chainStepIds`).
+ */
+export function fieldDifferences(existing, body) {
+  return Object.entries(body).flatMap(([key, value]) => {
+    if (key.endsWith('@odata.bind')) {
+      const attr = key.slice(0, -11).toLowerCase().replace('eventhandler_plugintype', 'eventhandler');
+      const same = existing[`_${attr}_value`]?.toLowerCase() === /\(([a-f0-9-]+)\)$/i.exec(value)?.[1].toLowerCase();
+      return same ? [] : [key.slice(0, -11)];
+    }
+    const installed = typeof value === 'string' && jsonObject(existing[key]);
+    const desired = installed && jsonObject(value);
+    if (desired)
+      return [...new Set([...Object.keys(installed), ...Object.keys(desired)])]
+        .filter((member) => JSON.stringify(installed[member]) !== JSON.stringify(desired[member]))
+        .map((member) => `${key}.${member}`);
+    // Dataverse stores an empty string as null.
+    const stored = (field) => (field === '' || field === undefined ? null : field);
+    if (JSON.stringify(stored(existing[key])) === JSON.stringify(stored(value))) return [];
+    return [key === 'content' ? 'content hash' : key];
+  });
+}
+/** Whether the installed assembly row is the local build: the differing fields, empty when it is. */
+export const assemblyDifferences = (build, installed) => fieldDifferences(installed, assemblyFields(build));
 export const id = (name) => {
   const h = createHash('sha256').update(`company-operations/plugins/v1/${name}`).digest('hex');
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-a${h.slice(17, 20)}-${h.slice(20, 32)}`;

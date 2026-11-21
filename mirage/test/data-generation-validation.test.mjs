@@ -169,7 +169,7 @@ test('data command rejects extra positional arguments before loading packs or wr
   for (const action of ['generate', 'scaffold'])
     await assert.rejects(
       runDataCommand([action, 'unexpected'], { state: 'unused-state.json', pack: 'unused-pack' }),
-      /unexpected positional arguments/,
+      /Unexpected argument "unexpected"; data takes one action/,
     );
   await assert.rejects(runDataCommand(['generate'], { rows: '3' }), /--rows is supported only by data scaffold/);
   for (const name of ['pack', 'pack-module', 'count', 'materialize-persona-memberships'])

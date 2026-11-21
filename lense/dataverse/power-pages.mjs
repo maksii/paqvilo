@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
 import { pacExecutable } from './connection.mjs';
+import { requiredArgument } from '../../mirage/lib/required-argument.mjs';
 
 const execute = promisify(execFile);
 const ACCEPTED_EXECUTABLES = new Set(['pac', 'pac.exe', 'pac.launcher.exe']);
@@ -149,7 +150,9 @@ function dataModelName(value) {
   return typeof value === 'string' && value.length <= 64 ? value : null;
 }
 /** Read the management-plane inventory, separately from Dataverse site rows. */
-export async function readPowerPagesSites(options) {
+export async function readPowerPagesSites(
+  options = requiredArgument('readPowerPagesSites({ environment })', 'an options object with the environment'),
+) {
   const data = jsonResponse(await command('get-websites', [], options)),
     rows = Array.isArray(data) ? data : data.value;
   if (!Array.isArray(rows)) throw new Error('Power Pages management inventory is not a collection.');
@@ -159,7 +162,12 @@ export async function readPowerPagesSites(options) {
   return sites;
 }
 /** Read a single management ID; never infer it from a Dataverse website GUID. */
-export async function readPowerPagesSite(options) {
+export async function readPowerPagesSite(
+  options = requiredArgument(
+    'readPowerPagesSite({ environment, id })',
+    'an options object with the management site id',
+  ),
+) {
   if (!guid(options.id)) throw new Error('Power Pages management requires an explicit management site GUID.');
   const data = jsonResponse(await command('get-website-by-id', ['--id', options.id], options));
   let rows;
@@ -174,7 +182,12 @@ export async function readPowerPagesSite(options) {
 }
 /** Explicit mutation only. A completed command is not visibility propagation
  * proof; callers must journal beforehand and read back the exact target. */
-export async function setPowerPagesSiteVisibility(options) {
+export async function setPowerPagesSiteVisibility(
+  options = requiredArgument(
+    'setPowerPagesSiteVisibility({ environment, id, visibility })',
+    'an options object with the management site id and visibility',
+  ),
+) {
   if (!guid(options.id) || !['private', 'public'].includes(options.visibility))
     throw new Error('Power Pages visibility requires an explicit management GUID and private/public value.');
   await command('update-site-visibility', ['--id', options.id, '--site-visibility', options.visibility], options);

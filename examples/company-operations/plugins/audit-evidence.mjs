@@ -1,10 +1,21 @@
-import { connectionPath } from './registration.mjs';
 import { loadConnection, connectedClient } from '../../../lense/dataverse/index.mjs';
 import { readFile, writeFile } from 'node:fs/promises';
-const connection = await loadConnection(connectionPath());
+import { join } from 'node:path';
+import { cli } from '../cli.mjs';
+import { connectionHelp, defaultConnection, exampleRoot } from '../paths.mjs';
+const { values } = cli(
+  `Usage: node examples/company-operations/plugins/audit-evidence.mjs [--connection FILE]
+
+Run from the toolkit checkout. Reads the P02 plug-in event parts of the last qualification run from the live
+environment into the example's ignored .paqvilo/plugins/evidence-audit.json.
+
+${connectionHelp('  --connection FILE  ')}`,
+  { connection: { type: 'string' } },
+);
+const connection = await loadConnection(values.connection ?? defaultConnection);
 const c = connectedClient(connection);
 await c.verify(connection.organisationId);
-const report = JSON.parse(await readFile('examples/company-operations/.paqvilo/plugins/qualification.json', 'utf8'));
+const report = JSON.parse(await readFile(join(exampleRoot, '.paqvilo/plugins/qualification.json'), 'utf8'));
 const op = report.outcomes.find((o) => o.caseId === 'P02').operationId;
 const events = await c.list(
   `pqvd_pluginevents?$select=pqvd_payloadtext,pqvd_artifacttype,pqvd_payloadhash,pqvd_partnumber,pqvd_partcount&$filter=_pqvd_operationid_value eq ${op}`,
@@ -23,7 +34,7 @@ const summaries = events.map((e) => {
     initiatingUserId: p.context.InitiatingUserId,
   };
 });
-await writeFile('examples/company-operations/.paqvilo/plugins/evidence-audit.json', JSON.stringify(summaries, null, 2));
+await writeFile(join(exampleRoot, '.paqvilo/plugins/evidence-audit.json'), JSON.stringify(summaries, null, 2));
 console.log(
   JSON.stringify(
     {

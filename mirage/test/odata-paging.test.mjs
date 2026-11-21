@@ -5,7 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { createSimulator } from '../server.mjs';
 import { DataStore } from '../lib/data.mjs';
-import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, ownedClose, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('queued state replacement compares freshness inside transaction and preserves earlier edits', async () => {
   const store = await new DataStore().init();
@@ -21,32 +21,31 @@ test('queued state replacement compares freshness inside transaction and preserv
 
 test('portal API applies 5000/default and Prefer paging, follows signed cursors, rejects changed persona/data/query and skip', async (t) => {
   const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'odata-pages-'));
-  let app;
-  ownedFixture(t).add(async () => {
-    await app?.close();
-    await fs.rm(directory, { recursive: true, force: true });
-  });
+  ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   await fs.writeFile(path.join(directory, 'website.yml'), 'adx_websiteid: site\nadx_name: Paging');
   await fs.writeFile(
     path.join(directory, 'sitesetting.yml'),
     '- adx_name: Webapi/item/enabled\n  adx_value: true\n- adx_name: Webapi/item/fields\n  adx_value: itemid,name,owner',
   );
-  app = await createSimulator({
-    sourceDir: directory,
-    watch: false,
-    initial: {
-      mappings: { item: { entitySet: 'items', idColumn: 'itemid' } },
-      tables: {
-        item: Array.from({ length: 6001 }, (_, index) => ({
-          itemid: String(index).padStart(5, '0'),
-          name: 'Row ' + index,
-          owner: index === 6000 ? 'other' : 'person',
-        })),
+  const app = ownedClose(
+    t,
+    await createSimulator({
+      sourceDir: directory,
+      watch: false,
+      initial: {
+        mappings: { item: { entitySet: 'items', idColumn: 'itemid' } },
+        tables: {
+          item: Array.from({ length: 6001 }, (_, index) => ({
+            itemid: String(index).padStart(5, '0'),
+            name: 'Row ' + index,
+            owner: index === 6000 ? 'other' : 'person',
+          })),
+        },
+        permissions: [{ entity: 'item', roles: ['Reader'], scope: 'contact', field: 'owner', operations: ['read'] }],
+        simulator: { identityScope: 'configured', identity: { id: 'person', roles: ['Reader'] } },
       },
-      permissions: [{ entity: 'item', roles: ['Reader'], scope: 'contact', field: 'owner', operations: ['read'] }],
-      simulator: { identityScope: 'configured', identity: { id: 'person', roles: ['Reader'] } },
-    },
-  });
+    }),
+  );
   const read = async (url, prefer) => {
     const response = await fetch(new URL(url, app.url), { headers: prefer ? { Prefer: prefer } : {} });
     return {

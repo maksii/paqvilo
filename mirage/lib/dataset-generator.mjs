@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { tableFields } from './solution-schema.mjs';
 import { scaffoldId } from './scaffold-data.mjs';
 import { guidKey, parseDateValue, isDateOnlyField } from './dataverse-values.mjs';
+import { requiredArgument } from './required-argument.mjs';
 
 const own = (object, key) => (Object.hasOwn(object, key) ? object[key] : undefined);
 const object = (value) => value && [Object.prototype, null].includes(Object.getPrototypeOf(value));
@@ -234,14 +235,12 @@ function lookupRuleValue(rule, definition, index, key, candidates, label) {
  * counts selects tables explicitly; rules is { table: { column: { kind, ... } } }.
  * existing supplies lookup candidates and alternate-key collision checks. No inputs mutate.
  */
-export function generateDataset({
-  schema,
-  counts = {},
-  rules = {},
-  seed = 'dataset-v1',
-  existing = {},
-  collation = 'CI_AI',
-} = {}) {
+export function generateDataset(
+  { schema, counts = {}, rules = {}, seed = 'dataset-v1', existing = {}, collation = 'CI_AI' } = requiredArgument(
+    'generateDataset({ schema, counts })',
+    'an options object with schema and counts',
+  ),
+) {
   const selected = validateDatasetRequest(schema, counts, rules, existing, seed);
   const { fields, tables } = createDatasetTables(schema, selected, counts, seed);
   const pool = collectDatasetCandidates(schema, tables, existing);

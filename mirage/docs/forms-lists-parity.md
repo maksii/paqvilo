@@ -1,91 +1,183 @@
 # Forms and lists
 
-Mirage builds native basic/multistep forms, lists, lookups, subgrids and notes from exported portal configuration and Solution form/view metadata. Standard/enhanced record fields normalize into a common model. Missing managed metadata is reported and may use an explicit local fallback; it is not inferred from a customer name.
+Mirage builds native basic and multistep forms, lists, lookups, subgrids and notes from the exported portal
+configuration and Solution form and view metadata. Standard and enhanced records normalize into one model. Missing
+managed metadata is reported and may use an explicit local fallback; it is never inferred from a customer name. Client
+adapters supply platform-shaped form events, validators, date and picklist controls, lookup dialogs, grids, paging,
+actions, notes and attachments, and session-sensitive requests; permissions are checked by the local data layer.
+Generated fields and unsupported controls keep diagnostics.
 
-An associated-record source checks authorized related rows before binding: multiple matches produce the observed server error. An attribute-query reference binds the first authorized query result, with no match leaving the lookup blank. Use an exported unique key when the reference must identify one row; duplicate-match selection order remains provider-dependent.
+No replay case ([test kinds](../../docs/test-kinds.md#replay-cases)) records native form or list behaviour; the rules
+below are local models of Microsoft's documentation and site observations. A locally passing flow shows that the
+simulated scenario works. Compare the reference DOM and network behaviour before calling it platform parity
+([reference parity evidence](parity-evidence.md)); project tests should assert their own labels, relationships,
+actions and saved results against an explicitly registered dataset.
 
-Radio-style picklists on existing records display the exported default for a null column unless form metadata ignores defaults. Explicit stored values and source prepopulation retain precedence. Rendering the selection leaves the stored row unchanged.
+## Form selection and metadata
 
-DateOnly controls populated from the current clock retain the observed UTC suffix in their hidden postback value. The submitter accepts that clock default and the zone-free value produced by editing the control. Stored DateOnly values and other prepopulation sources retain their existing wire format.
+- **System forms.** Selection keeps both the enclosing FormXml group (`formType`; without a declared group, the
+  `FormXml/<group>/` directory) and an explicit numeric `<type>` (`systemFormType`), which wins: Main is `2`, Card `11`
+  ([SystemForm](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/reference/entities/systemform)). A
+  named portal form selects an eligible Main over an earlier same-name Card. If the matching forms all have known
+  non-Main types, Mirage reports `SYSTEMFORM_INELIGIBLE_TYPE` instead of approximating a layout. Microsoft documents a
+  [duplicate-name issue across form types](https://learn.microsoft.com/en-us/power-pages/known-issues), so the hosted
+  choice can differ when names collide.
+- **Labels.** The selected metadata LCID applies to form names, field labels, tabs, sections, nested quick forms and the
+  label fallback after tab-name matching; without a label in that LCID the first exported label is used.
+- **Record sources.** An associated-record source checks authorized related rows first; several matches produce the
+  observed server error. An attribute-query source binds the first authorized result, and no match leaves the lookup
+  blank; use an exported unique key when one row must be identified.
+- **Defaults.** Radio-style picklists on existing records show the exported default for a null column unless the form
+  ignores defaults; stored values and prepopulation win, and the stored row is unchanged. DateOnly controls filled from
+  the clock keep the observed UTC suffix in their hidden postback value; the submitter accepts it and the zone-free
+  edited value.
+- **Read security.** A form or advanced form step reads its record as Dataverse answers the reading principal: the
+  site's application user under standard authorization, the visitor's mapped Dataverse user under enhanced authorization
+  ([enhanced authorization](dataverse-parity.md#enhanced-authorization)). Unreadable secured columns are empty, masked
+  columns show their mask (for example `***7003`), calculated and formula columns show computed values, lookups the
+  related primary name. Lists, search, Liquid and the portal Web API follow the same rules ([column security on portal
+  reads](dataverse-parity.md#column-security-on-portal-reads)). A secured column posted back unchanged in its masked or
+  empty form is not written.
 
-The client adapters provide platform-shaped form events, validators, date/picklist controls, lookup dialogs, grids, paging, actions, notes/attachments and session-sensitive requests. Permissions are checked through the local data layer. Generated form fields and unsupported controls retain diagnostics for inspection.
+## Submission
 
-Opening a lookup dialog restores its current selection only when both the record
-ID and entity match a row returned by the authorized grid query. Filtered or
-unreadable records remain unselected. Selecting a row updates the form control;
-the parent record changes only after a successful form save.
+A Power Pages export is a WebForms portal, so native forms post the page back by default: URL-encoded (multipart with
+the attach-file control) successful controls to the form action, including modal documents and auto-generated steps.
+`observed.nativeFormTransport: json` selects the local JSON form endpoint instead.
 
-Basic form Activate/Deactivate buttons follow exported `Actions` settings. Mirage resolves the record again from the configured query, current user or related-record source, checks read/update permissions, and changes only state/status in an atomic local write. Status values require exported state/status metadata; unsupported actions, unresolved metadata and action filter criteria retain diagnostics. Confirmation, labels and redirects use source settings, while managed dialog placement and filter behavior require reference evidence. Multiple forms with repeated button IDs dispatch through the button's full WebForms name.
+- Mirage resolves the page's forms, actor, record and advanced-form session before decoding the WebForms target;
+  posted record or session controls cannot replace that context. ASP.NET view state and event validation are not
+  emulated. The postback keeps exact decimal and Int64 tokens, repeated and omitted controls, and converts textarea line
+  endings to LF. Files post only through the attach-file control's multipart form; URL-encoded file submission is
+  rejected. File selections do not survive a reload.
+- **Checkboxes** follow ASP.NET successful-control rules: a non-empty posted value (including a script's custom value)
+  saves `true`, empty or omitted saves `false`. Only editable checkboxes rendered by the selected form participate.
+  Boolean radio and select controls decode `1`/`0` and reject other text; the JSON API requires typed Booleans.
+- **Success.** Source success settings choose an inline HTML response or the redirect target. A redirect's appended
+  record-ID parameter must be configured explicitly: Mirage keeps the exported name and query settings and never
+  supplies a missing `id` ([on-success
+  settings](https://learn.microsoft.com/en-us/power-pages/configure/basic-forms#on-success-settings)). Redirect
+  responses carry `Content-Type: text/html; charset=utf-8`. Check the resulting page and saved record, not only the
+  submit response.
+- **Validation and write errors.** Required, format, range and length errors re-render the form as HTML with HTTP
+  status 200. A failed atomic basic-form write also re-renders with escaped posted values and
+  `#MessagePanel.alert-danger`; the original error stays in diagnostics. CSRF failures, malformed or forged controls,
+  inaccessible pages and errors before the write keep their error status. The JSON endpoint keeps its status and the
+  browser reloads the document with the posted values and error panel. Advanced forms keep their inline save-error
+  contract.
+- **Plug-in refusals.** When a plug-in refuses a basic form save with `InvalidPluginExecutionException` (a declarative
+  rule, a step handler's `reject(message)`, a plug-in type's throw or a CLR plug-in), the form re-renders with status
+  200 and `An unknown failure has occurred. Error ID # [<id>]`; `<id>` is a new GUID also sent as `x-ms-request-id` and
+  recorded as the diagnostic's `errorId`. With site setting `Site/EnableCustomPluginError` `true` (any case) the panel
+  shows the plug-in's message as escaped text. The trace and diagnostic always keep the message. Multistep steps answer
+  the simulator's request error page with the error's status, and lists keep their grid error message, even though
+  Microsoft documents the setting for them.
+- **Other write failures**, including an ordinary plug-in exception (0x80040224), show "An error occurred while
+  processing your request. Please try again." unless the site sets `observed.formSubmissionErrorMessage` with
+  `evidence`; that setting never changes a plug-in refusal. A permission failure inside the write uses the portal
+  access-denied wording unless that setting is set, which replaces it too.
 
-Native subgrid quick-find visibility follows its exported FormXml flag. Native PCF fields require explicit portal attribute enablement and a supported desktop binding. Native list/subgrid PCF hosting retains diagnostics and the native grid fallback; dataset hosting uses explicit Liquid table/view bindings. See [code components](code-components.md) for the host and save boundary, and [coverage](../../docs/coverage.md) for remaining limits.
+## Actions, lookups and modals
 
-When a form redirects after saving, configure its appended record-ID parameter explicitly. Mirage preserves the exported redirect name and query settings; it does not supply a missing `id` name. Check the resulting page and saved record, not only the successful submit response. See [basic form success settings](https://learn.microsoft.com/en-us/power-pages/configure/basic-forms#on-success-settings).
+- Basic form Activate and Deactivate buttons follow exported `Actions` settings. Mirage resolves the record again from
+  the configured query, current user or related record, checks read and update permissions, and changes only state and
+  status in one atomic write. Status values need exported state/status metadata; unsupported actions, unresolved
+  metadata and action filter criteria keep diagnostics. Confirmation, labels and redirects come from the source.
+  Repeated button IDs across forms dispatch through the button's full WebForms name.
+- A lookup dialog restores the current selection only when both record ID and table match a row of the authorized grid
+  query. Selecting a row updates the control; the record changes only after a successful save.
+- Native subgrid quick-find visibility follows the exported FormXml flag. Native PCF fields need explicit portal
+  attribute enablement and a desktop binding; list and subgrid PCF hosting keeps the native grid
+  ([code components](code-components.md)).
+- Modal and quick-view documents hold the browser's `load` event with a pending image until jQuery's ready promise and
+  one more macrotask (DOMContentLoaded without jQuery); a throwing ready callback does not block others. A marker script
+  at the end of the body requests the image once every parser-blocking script before it has arrived and run, so
+  delivery time does not count: the hold fails open 5 s after that request with `FRAME_READY_TIMEOUT`, and
+  `FRAME_LOAD_ORDERING` records the release order. A page whose inline script is blocked (a site
+  `Content-Security-Policy` without `'unsafe-inline'`) is not held; after 60 s `FRAME_READY_TIMEOUT` with ordering
+  `never-requested` reports it. Set
+  `observed.modalLoadOrdering: immediate` (with evidence) to opt out. This stabilizes local timing only.
+- A form subgrid on Document Locations renders the local document control
+  ([SharePoint](sharepoint.md#adapter-a-dataverse-document-integration)).
 
-A Power Pages export is a WebForms portal, so native forms post the page back by default: the browser submits URLencoded (multipart with the attach-file control) successful controls to the page's form action, including modal documents and auto-generated steps. `observed.nativeFormTransport: "json"` selects the local JSON form endpoint instead. Mirage resolves the page's current forms, actor, record and advanced-form session before decoding the exact WebForms target; posted record or session controls cannot replace that context. Source success settings choose an inline HTML response or the existing redirect target. Native required, format, range and length errors render HTML with status 200. Failed atomic basic-form writes also re-render the form with escaped posted values and `#MessagePanel.alert-danger`; their original error code/text remain in diagnostics and request evidence. CSRF, malformed/forged controls, inaccessible pages and errors before the write provider keep their error status. The JSON endpoint retains its error status and adds an error postback presentation; the browser reloads the same document with posted controls and the visible error panel. Advanced forms retain their existing LiquidServerControl inline save-error contract. Auto-generated steps render one tab per page: Next and Previous post the page back, the tab index and the earlier tabs' values travel in `__VIEWSTATE`, and the last tab's Insert saves them all. A multistep step with `adx_referenceentityshowreadonlyform` renders the referenced record's read-only form (`ReadOnlyFormView_<table>`) before its own form. A control the platform cannot render (an inline web resource, a quick view on a postback-rendered step, a control whose id the read-only form already rendered) stops the form at its cell with the platform's error alert and ends the server form's content there, as the live portal does. File selections cannot survive a browser reload and must be selected again.
+## Liquid form tags
 
-Liquid `entityform` and `webform` tags follow the page template (Microsoft Learn, "Dataverse Liquid tags"): a web template-based page renders its first tag and reports each later one, while a Rewrite-based page renders no tag from its copy and keeps its attached basic or multistep form as the page's form.
+`entityform` and `webform` tags follow the page template: a web-template page renders its first tag and reports each
+later one; a Rewrite page renders no tag from its copy and keeps its attached basic or multistep form.
 
-Modal and quick-view documents use a local pending image to release the browser's actual
-`load` event after jQuery's ready promise and one more macrotask. Without jQuery the image
-is released at DOMContentLoaded; a throwing ready callback does not block other callbacks.
-The blocker fails open after five seconds with `FRAME_READY_TIMEOUT`, and runtime shutdown
-closes owned blockers. `FRAME_LOAD_ORDERING` records the release ordering. This adapter
-stabilizes local resource timing; it does not establish identical timing on every deployment.
-An evidenced `observed.modalLoadOrdering: immediate` opts out.
+## Multistep forms
 
-Native checkbox postbacks follow ASP.NET's successful-control semantics: a non-empty
-posted value (including a project script's custom value) saves Boolean `true`; an empty
-or omitted value saves `false`. Only editable checkboxes rendered by the selected form
-participate. Read-only, disabled and off-tab controls are not cleared. Boolean radio/select
-controls decode their `1`/`0` values and reject invalid text; the JSON form API requires
-typed Boolean values. These rules do not coerce arbitrary direct DataStore writes.
-
-Permission failures use the existing portal access-denied wording. When a plug-in refuses a basic form's save with an
-`InvalidPluginExecutionException` (a declarative rule, a step handler's `reject(message)`, a plug-in type handler's
-throw or a CLR plug-in), the response is 200 and the form is rendered again with the posted values. The message panel
-above the form shows `An unknown failure has occurred. Error ID # [<id>]`. `<id>` is a new GUID that the response
-also sends as `x-ms-request-id`, and the runtime diagnostic records it as `errorId`. When the site setting
-`Site/EnableCustomPluginError` is `true` (any letter case), the panel shows the plug-in's message instead, as escaped
-plain text. This matches native basic-form create and update. The trace and the runtime diagnostic always keep the
-plug-in's message. Other write failures, including an ordinary plug-in exception (0x80040224), use the toolkit
-fallback "An error occurred while processing your request. Please try again." unless the site supplies
-`observed.formSubmissionErrorMessage` with `evidence`. That setting does not change a plug-in refusal. Microsoft Learn
-also documents `Site/EnableCustomPluginError` for multistep forms and list retrieval. Mirage does not apply it there:
-a plug-in refusal of a multistep-form step answers the simulator's request error page with the error's status, and
-lists keep their own grid-service error message.
-
-Native form redirects include `Content-Type: text/html; charset=utf-8`, matching the hosted response header.
-
-Systemform selection preserves both the literal enclosing FormXml group (`formType`; a document without a declared group takes its `FormXml/<group>/` directory, as SolutionPackager writes one directory per form type) and an explicit numeric `<type>` (`systemFormType`). The numeric value takes precedence: Dataverse documents Main as `2` and Card as `11` in the [SystemForm table reference](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/reference/entities/systemform). A named portal form selects an eligible Main rather than an earlier same-name Card. If matching exported forms have known non-Main types, Mirage reports `SYSTEMFORM_INELIGIBLE_TYPE` and does not invent an approximated editable layout. Missing and untyped legacy exports retain their existing approximation behavior; unknown group literals are preserved without a guessed numeric type.
-
-The selected metadata LCID applies to form names, field labels, tabs, sections and nested
-quick forms. It also applies to the local label fallback after tab-name matching. When that LCID has no exported
-label, the existing first-exported-label fallback remains in place.
-
-The [Power Pages Data workspace documentation](https://learn.microsoft.com/en-us/power-pages/configure/data-workspace-forms) describes Main as the supported portal form type. Microsoft also documents a [duplicate-name issue across form types](https://learn.microsoft.com/en-us/power-pages/known-issues) that can cause the wrong native form to render, so Mirage's choice can differ from the hosted one when names collide.
-
-Multistep imports preserve the exported `Start Step`, every owned step, and explicit next/condition-failure references. References to another form's step retain that record and emit an informational ownership diagnostic. Condition and redirect steps retain their raw settings, localized values, scripts and source references rather than being treated as load forms. Missing or inactive referenced records remain explicit dependencies. A missing declared initial step cannot select an unrelated later layout or redirect. Layout approximation retains the declared start and reports each absent Dataverse layout.
-
-Microsoft documents [Start Step as the first step, which cannot be Condition](https://learn.microsoft.com/en-us/power-pages/configure/multistep-form-properties), and [condition branches and step reuse restrictions](https://learn.microsoft.com/en-us/power-pages/configure/multistep-form-steps). Mirage reports an unsupported Condition start instead of rendering invented controls. During local submissions, a missing referenced next step cannot become terminal success, and a repeated condition chain cannot become a resumable load step. Direct missing references are checked before writes; branch checks use the saved row inside the provider's write unit and precede session/history updates, so a failed check rolls the local write back. A provider without transactions may commit its write before the branch check fails.
-
-Condition numeric comparisons retain saved Int64/Decimal digits and numeric literal digits through the exact arithmetic helpers. Adjacent values beyond JavaScript's integer precision, and decimal fractions that would collapse through `Number()`, select distinct local branches. Conditions use the provider's saved row, including provider changes, before updating session history. Microsoft does not document the platform's numeric coercion and precision for conditions.
-
-The [conditional step documentation](https://learn.microsoft.com/en-us/power-pages/configure/add-conditional-step) includes the unquoted multiword example `new_name = Jane Doe`. Mirage accepts these values up to a logical operator or group boundary, preserving their spaces, alongside quoted values and wildcard operands. Missing values, unbalanced groups, mismatched/unterminated quotes and adjoining quoted/unquoted values produce explicit unsupported-expression errors.
-
-The postback adapter retains exact decimal/Int64 tokens, declared repeated controls and omitted controls, and converts source textarea line endings to LF. Files post with the page only through the attach-file control's multipart form; URLencoded file submission is explicitly rejected. ASP.NET viewstate and event-validation blobs are not emulated.
-
-Project tests should assert their own rendered labels, relationships, native actions and backend results using an explicitly registered dataset. A flow that passes locally shows that the simulated scenario works; compare the reference DOM and network behaviour before calling it platform parity.
-
-A form or advanced form step reads its record as a Dataverse read by the reading principal answers it: in the standard authorization model that principal is the site's application user, in the enhanced model the visitor's mapped Dataverse user. Secured columns that principal cannot read are empty, and a readable secured column with a masking rule shows its masked value (for example `***7003`); the clear value never reaches the page. Calculated and formula columns show their computed value, and lookups show the related record's primary name. Lists, search, Liquid and the portal Web API follow the same rules (see [column security on portal reads](dataverse-parity.md#column-security-on-portal-reads)). A secured column that the form shows masked or empty and that is posted back unchanged is not written, so saving a form never replaces a stored secured value with its mask or with an empty value.
-
-Under enhanced authorization the same table permissions decide forms and lists, held through the mapped Dataverse security roles (see [Dataverse](dataverse-parity.md#enhanced-authorization)); secured columns a visitor's column security profiles do not grant read on render empty.
+- Imports keep the exported Start Step, every owned step and explicit next and condition-failure references. A
+  reference to another form's step keeps that record with an informational ownership diagnostic. Condition and
+  redirect steps keep their raw settings, localized values, scripts and references. Missing or inactive referenced
+  records stay explicit dependencies; a missing start step never selects an unrelated layout.
+- A Condition start step is reported unsupported, as
+  [documented](https://learn.microsoft.com/en-us/power-pages/configure/multistep-form-properties). During submission a
+  missing next step cannot become success and a repeated condition chain cannot become a load step. Direct references
+  are checked before writes; branch checks use the saved row inside the provider's write unit, before session and
+  history updates, so a failed check rolls back (a provider without transactions may already have committed).
+- Conditions compare Int64 and Decimal values and literals with exact arithmetic. Unquoted multiword values
+  (`new_name = Jane Doe`, as in the
+  [conditional step documentation](https://learn.microsoft.com/en-us/power-pages/configure/add-conditional-step)) run to
+  the next logical operator or group boundary. Missing values, unbalanced groups, bad quotes and adjoining quoted and
+  unquoted values are explicit unsupported-expression errors.
+- Auto-generated steps render one tab per page: Next and Previous post back, the tab index and earlier values travel in
+  `__VIEWSTATE`, and the last tab's Insert saves everything. A step with `adx_referenceentityshowreadonlyform` renders
+  the referenced record's read-only form (`ReadOnlyFormView_<table>`) first. A control the platform cannot render (an
+  inline web resource, a quick view on a postback step, a control whose ID the read-only form already rendered) stops
+  the form at its cell with the platform's error alert. This undocumented behaviour is a local model; no replay case
+  records it.
 
 ## Modern lists and the client API
 
-A list include with `isModern: 'true'` (the design studio's Modern list toggle) renders a modern list: local markup (`data-mirage-component="modern-list"`) over the list's own secured grid query, continued page by page as the list scrolls (infinite scroll; the batch is the list's page size). Views, search, metadata filters, sorting and the details, edit, create, delete and download actions come from the classic grid engine: the same views (a view selector when the list has several), search box, filter panel, sortable headers and action routes (a URL target opens its page, a basic form opens in a dialog over the modal form route). The import diagnostic `MODERN_LIST_LOCAL_MARKUP` (info, contract) names these includes. A modern list whose settings configure other action types (associate, disassociate, workflow, activate, deactivate, create related record) reports `MODERN_LIST_FEATURES_UNSERVED` and the blocking requirement row `portal:modern-list/<list>`; those actions are absent from the local list. Map, calendar and dataset code component lists are not served by the modern adapter: they render the classic list and report `MODERN_LIST_RENDERED_CLASSIC` (warning).
+A list include with `isModern: 'true'` renders a modern list: local markup (`data-mirage-component="modern-list"`) over
+the list's secured grid query, loading the next page (the list's page size) as it scrolls. Views and view selector,
+search, filters, sorting and the details, edit, create, delete and download actions come from the classic grid engine;
+a URL target opens its page and a basic form opens in a dialog over the modal form route. The import diagnostic
+`MODERN_LIST_LOCAL_MARKUP` names these includes. Other configured actions (associate, disassociate, workflow,
+activate, deactivate, create related record) are absent and report `MODERN_LIST_FEATURES_UNSERVED` with the blocking
+row `portal:modern-list/<list>`. Map, calendar and dataset code component lists render the classic list and report
+`MODERN_LIST_RENDERED_CLASSIC`.
 
-Every page runs the local [`$pages` client API](https://learn.microsoft.com/en-us/power-pages/configure/client-api). `Microsoft.PowerPages.onPagesClientApiReady(callback)` calls back and its promise resolves with `$pages` once the document is parsed; the deprecated `Microsoft.Dynamic365.Portal.onPagesClientApiReady` alias warns once; `isClientApiEnabled` is `"True"`. `$pages.currentPage.lists` (`getAll`, `getListById`, and per list `id`, `isModern`, `rows`, `columns`, `getColumn`, `getVisible`, `setVisible`, `getHtmlElement`, `on`/`off` with `loaded`, `rowclick` and `cellclick`; rows, columns and cells as documented) works for modern lists; a classic list answers empty rows and columns and ignores `on`/`off`, as documented. `$pages.ajax.request`, the `$pages.webAPI` record methods over `/_api`, `$pages.user.signIn/signOut` and `$pages.languages` work. `languages.setActive(code)` loads the page under `/<code>` like the language picker's links (the active language's path segment is replaced); a code that is not in `languages.getAll()` throws a `TypeError` and does not navigate. `languages.getAll()` (the client object's `activeLanguages`) lists the site's published website languages, or the page language when the site has none. `webAPI.uploadFileToColumn(set, id, column, file)` sends the file to the portal Web API file-column route with its name in `x-ms-file-name`; `webAPI.downloadFileFromColumn(set, id, column, { size })` answers a Blob of the bytes typed from the response's `mimetype` header (`size` `full`, the default, or `thumbnail` for image columns). Both send the whole file in one request (no 4-MB chunks); errors are the `AjaxError` of the request.
+Every page runs the local [`$pages` client API](https://learn.microsoft.com/en-us/power-pages/configure/client-api)
+(`mirage/lib/pages-client-api.js`), loaded right after the page runtime script: inline on pages that load the
+platform bundles, otherwise from `/__sim-static/pages-client-api.js`.
 
-`$pages.currentPage.forms` (`getAll`, `getFormById`, `getFormByName`) reads the basic and multistep forms rendered on the page. A form's `id` is its control element id (`EntityFormControl_…`, `WebFormControl_…`), `name` its form name; `controls`, `tabs` (each with `sections`, `getName`, `getVisible`, `setVisible`), sections (`controls`, `getName`, `getVisible`, `setVisible`), `isMultiStep`, `getVisible`, `setVisible`, `getHtmlElement` and `getControlByLogicalName` work. A multistep form adds `nextButton`/`previousButton` (jQuery elements, empty when absent), `hasNextStep`, `hasPreviousStep`, `goToNextStep` (clicks Next or Submit) and `goToPreviousStep` (throws without a previous step). Every control has the common methods (`getName`, `getLogicalName`, `getType`, `getValue`, `setValue`, `getVisible`, `setVisible`, `getDisabled`, `setDisabled`, `getRequired`, `setRequired`, `addValidator`, `removeValidator`, `clearValidators`) and the members of its type: String, Memo, Integer, Decimal, Double, Money, Email, URL, TickerSymbol, DateTime, Boolean, MultipleChoice, Picklist (`subType`), MultiSelectPicklist, Lookup (`isDropdown`, or `isModal` with `clearValue`), File and Image (`maxFileSizeInByte`, `removeFile`), Status and StatusReason (read-only), FormattedInteger and AddressComposite. `setRequired` and `addValidator` register validators that run when the form is submitted and report in the form's validation summary; a column required on the server stays required. A read-only control refuses `setValue`. `getValue` and `setValue` of a full name control use `{ firstName, middleName, lastName }` and throw when the form has none of its name boxes; rich text `getValue` and `setValue` read and write the editor HTML, and its `getType()` answers `undefined`; only code component controls throw `PagesClientApiUnsupported` naming the member (`Control.getValue`, `Control.setValue`), as do the Copilot Studio `agents` members (out of scope); each logs `PAGES_CLIENT_API_MEMBER_UNSUPPORTED` once. Forms and controls have no events. A Boolean control's value is its option label. The script loads right after the page runtime script, inline on pages that load the platform bundles and from `/__sim-static/pages-client-api.js` otherwise.
+| Member                                                     | Behaviour                                                                                                                                                                                                                                                                   |
+| ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Microsoft.PowerPages.onPagesClientApiReady(callback)`     | Calls back, and resolves with `$pages`, once the document is parsed. The deprecated `Microsoft.Dynamic365.Portal.onPagesClientApiReady` warns once. `isClientApiEnabled` is `"True"`                                                                                        |
+| `currentPage.lists`                                        | `getAll`, `getListById`; per list `id`, `isModern`, `rows`, `columns`, `getColumn`, `getVisible`, `setVisible`, `getHtmlElement`, `on`/`off` with `loaded`, `rowclick` and `cellclick`. A classic list answers empty rows and columns and ignores `on`/`off`, as documented |
+| `currentPage.forms`                                        | `getAll`, `getFormById`, `getFormByName` over rendered basic and multistep forms; see below                                                                                                                                                                                 |
+| `ajax.request`, `webAPI`, `user.signIn`, `user.signOut`    | Work; `webAPI` record methods use `/_api`                                                                                                                                                                                                                                   |
+| `webAPI.uploadFileToColumn(set, id, column, file)`         | Sends the whole file in one request with `x-ms-file-name` (no 4 MB chunks)                                                                                                                                                                                                  |
+| `webAPI.downloadFileFromColumn(set, id, column, { size })` | A Blob typed from the `mimetype` header; `size` is `full` (default) or `thumbnail` for image columns. Errors are the request's `AjaxError`                                                                                                                                  |
+| `languages.getAll()`, `languages.setActive(code)`          | The site's published languages (else the page language). `setActive` loads the page under `/<code>` like the language picker; an unknown code throws `TypeError` without navigating                                                                                         |
 
-A form subgrid on Document Locations renders the local Power Pages document control; see [SharePoint](sharepoint.md#adapter-a-dataverse-document-integration).
+`getAll` lists every basic form wrapper (`EntityFormControl_…`), then every multistep form wrapper
+(`WebFormControl_…`) that holds one form view, as the platform's client API does. A wrapper that shows only a message
+(record not found, a success message that hides the form) is a form without controls or name; modal and quick view
+documents have no such wrapper and list no form.
+
+Forms: `id` is the part of the wrapper element ID after `EntityFormControl_` or `WebFormControl_` (the form's ID
+without hyphens, as a live portal answers; `getFormById` takes this value, not the element ID) and `name` the form
+name; `controls`,
+`tabs` (with `sections`, `getName`, `getVisible`, `setVisible`), sections (`controls`, `getName`, `getVisible`,
+`setVisible`), `isMultiStep`, `getVisible`, `setVisible`, `getHtmlElement` and `getControlByLogicalName`. A multistep
+form adds `nextButton`/`previousButton` (jQuery, empty when absent), `hasNextStep` and `hasPreviousStep` (the Next, or
+the last step's Submit, and Previous button is present and visible, as on the platform), `goToNextStep` and
+`goToPreviousStep` (click that button, or throw "No next step available in the multi-step form." or "No previous step
+available in the multi-step form."). Forms and controls have no events.
+
+Controls have `getName`, `getLogicalName`, `getType`, `getValue`, `setValue`, `getVisible`, `setVisible`, `getDisabled`,
+`setDisabled`, `getRequired`, `setRequired`, `addValidator`, `removeValidator` and `clearValidators`, plus the members
+of their type: String, Memo, Integer, Decimal, Double, Money, Email, URL, TickerSymbol, DateTime, Boolean (value is the
+option label), MultipleChoice, Picklist (`subType`), MultiSelectPicklist, Lookup (`isDropdown`, or `isModal` with
+`clearValue`), File and Image (`maxFileSizeInByte`, `removeFile`), Status and StatusReason (read-only), FormattedInteger
+and AddressComposite.
+
+- `setRequired` and `addValidator` validators run on submit and report in the validation summary; a server-required
+  column stays required. A read-only control refuses `setValue`.
+- A full-name control reads and writes `{ firstName, middleName, lastName }` and throws when the form has none of its
+  boxes. Rich text reads and writes the editor HTML; its `getType()` is `undefined`.
+- Code component controls throw `PagesClientApiUnsupported` for `Control.getValue` and `Control.setValue`, as do the
+  Copilot Studio `agents` members; each logs `PAGES_CLIENT_API_MEMBER_UNSUPPORTED` once.

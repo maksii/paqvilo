@@ -151,6 +151,11 @@ test('parity verifies exact pixels and DOM, rejects mismatches/sign-in/runtime i
           '<body>',
           '<body><div id="paqvilo-panel" style="position:fixed;top:0;right:0;width:60px;height:60px;background:#f00">panel</div>',
         );
+      // Markup only the local runtime adds: provenance annotations and an injected toolkit element.
+      if (local && mode === 'toolkit-markup')
+        html = body
+          .replace('<h1>', '<h1 data-paqvilo-source="proof:node" data-sim-local-only="true">')
+          .replace('</body>', '<img hidden alt="" data-paqvilo-frame-ready src="/frame-ready"></body>');
       if (mode === 'signredirect') {
         if (!req.url.startsWith('/signin/')) {
           res
@@ -231,6 +236,9 @@ test('parity verifies exact pixels and DOM, rejects mismatches/sign-in/runtime i
   const userPage = context.pages()[0];
   await userPage.goto(localOrigin);
   const cdpUrl = `http://127.0.0.1:${await devToolsActivePort(profile)}`;
+  // These verifications are expected to succeed. The bound is longer than the runner's hang guard, so it never decides a
+  // result: verifyParity's own readiness and load bounds are finite, and the outcome is what the page does.
+  const STEP_GUARD_MS = 600_000;
   const verify = (name, options = {}) =>
     verifyParity({
       localUrl: localOrigin,
@@ -241,6 +249,8 @@ test('parity verifies exact pixels and DOM, rejects mismatches/sign-in/runtime i
       viewport: { width: 800, height: 600 },
       settleMs: 0,
       allowLoopbackLive: true,
+      timeout: STEP_GUARD_MS,
+      readinessTimeout: STEP_GUARD_MS,
       ...options,
     });
   // Tabs closed through another CDP connection close in this context asynchronously.
@@ -285,6 +295,11 @@ test('parity verifies exact pixels and DOM, rejects mismatches/sign-in/runtime i
   result = await verify('toolkit-panel');
   assert.equal(result.passed, true, JSON.stringify(result.differences));
   assert.equal(result.pixels.different, 0);
+  // Toolkit-owned attributes and injected elements are not part of the compared semantic DOM.
+  mode = 'toolkit-markup';
+  result = await verify('toolkit-markup');
+  assert.equal(result.passed, true, JSON.stringify(result.differences));
+  assert.equal(result.local.semanticDomSha256, result.live.semanticDomSha256);
   mode = 'session-marker';
   result = await verify('session-marker', {
     sessionStorageSeeds: { contactCookiesAccepted: 'true' },
@@ -294,12 +309,13 @@ test('parity verifies exact pixels and DOM, rejects mismatches/sign-in/runtime i
   assert.deepEqual(result.live.consoleErrors, []);
   assert.deepEqual(result.local.consoleErrors, []);
   mode = 'persistent-eventstream';
-  // The open event stream keeps network idle from arriving, so that wait lasts its whole bound (at most 5 s).
+  // The event stream is not counted as an open request, so readiness settles while it stays open.
   result = await verify('persistent-eventstream');
   assert.equal(result.passed, true, JSON.stringify(result.differences));
   assert.equal(result.local.quiescent, true);
   assert.equal(result.local.persistentConnections.length, 1);
   assert.deepEqual(result.local.pendingRequests, []);
+  assert.equal(result.local.networkIdleReached, true, 'readiness settles with the simulator event stream open');
   mode = 'slow-font';
   // The stalled font holds the font and network-idle waits until the readiness deadline; a short one keeps this
   // step fast while the page load keeps its own deadline.

@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { personaFixture } from '../test/fixtures/persona-catalog.mjs';
+import { workspaceSettled } from './shared-browser.mjs';
 
 // Interactive scale comes from server-rendered rows and an indexed filter that only toggles them. Durations depend
 // on the machine, so they are reported as diagnostics; the assertions check the mechanism.
@@ -30,6 +31,8 @@ test('1000-persona grouped sign-in and admin filtering render every persona once
   ownedFixture(t).add(() => browser.close());
   const page = await browser.newPage();
   await page.goto(app.url + '/_sim/#identity');
+  // The picker is mounted again by each render of the view: it is used once the view has everything it asked for.
+  await workspaceSettled(page);
   const picker = page.locator('#browser-persona-picker');
   const signInKeys = await page.evaluate((source) => {
     const documentCopy = new DOMParser().parseFromString(source, 'text/html');

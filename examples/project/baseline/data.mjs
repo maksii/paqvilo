@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Baseline fixture data: one invented dataset with stable GUIDs (2 parents + 1 deactivated, 14 items (item3, item9–item11 deactivated), 4 children + 1 deactivated), usable three ways —
-//   1. `reset` against the live environment (upsert every fixture row, delete every other row of
-//      the fixture tables, restore mutable values) so captures start from a known state;
+//   1. `reset` against the live environment (write the fields of each fixture row whose live value differs, delete
+//      every other row of the fixture tables) so captures start from a known state; the plan reports the same diff;
 //   2. `mirageTables(testerContactId)` for the Mirage data pack (same rows, Mirage record shape);
 //   3. `catalogue(testerContactId)` in the toolkit data-catalogue shape for compare/query tooling.
 //
@@ -12,7 +12,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseArgs } from 'node:util';
+import { cli, isMain, UsageError } from '../cli.mjs';
 import { guid } from './generate.mjs';
 
 const PREFIX = 'pqvd';
@@ -323,7 +323,8 @@ export function records(tester = TESTER_CONTACT) {
 export const TABLES = [
   { name: 'account', entitySet: 'accounts', primaryId: 'accountid', keys: [['accountnumber']] },
   { name: 'contact', entitySet: 'contacts', primaryId: 'contactid', keys: [] },
-  { name: PARENT, entitySet: `${PARENT}s`, primaryId: `${PARENT}id`, keys: [[p('code')]] },
+  // Keys list only the alternate keys the baseline manifest creates; the parent declares none.
+  { name: PARENT, entitySet: `${PARENT}s`, primaryId: `${PARENT}id`, keys: [] },
   { name: ITEM, entitySet: `${ITEM}s`, primaryId: `${ITEM}id`, keys: [[p('code')]] },
   { name: CHILD, entitySet: `${CHILD}s`, primaryId: `${CHILD}id`, keys: [] },
   { name: 'annotation', entitySet: 'annotations', primaryId: 'annotationid', keys: [] },
@@ -354,7 +355,8 @@ export function catalogue(tester = TESTER_CONTACT) {
       id: row.id,
       table: row.table,
       fields: row.fields,
-      refs: Object.fromEntries(Object.entries(row.refs).map(([field, key]) => [field, key === 'tester' ? null : key])),
+      // The tester contact is per site, not a catalogue record: its links are left unchecked rather than expected empty.
+      refs: Object.fromEntries(Object.entries(row.refs).filter(([, key]) => key !== 'tester')),
       deferredRefs: [],
     })),
     associations: [],
@@ -423,8 +425,13 @@ function* deletionRequests(rows, { table, fixtureIds, summary, idField, preserve
   }
 }
 
+// BigInt (Edm.Int64) columns: the fixture keeps the exact value as a string, because a JavaScript number rounds it
+// past 2^53. Dataverse rejects a quoted Int64 with HTTP 400, so the Web API body carries the digits as a JSON number.
+const BIGINT_COLUMNS = [p('bigint')];
+
 function liveUpsertBody(row, resolved) {
   const body = { ...row.fields };
+  for (const column of BIGINT_COLUMNS) if (typeof body[column] === 'string') body[column] = JSON.rawJSON(body[column]);
   for (const [field, key] of Object.entries(row.refs)) {
     const navigation = NAVIGATION[field];
     if (!navigation) throw new Error(`No navigation property for ${field}`);
@@ -435,11 +442,69 @@ function liveUpsertBody(row, resolved) {
   return { rest, statecode, statuscode };
 }
 
-/** Live reset: upsert every fixture row, remove every other row of the three fixture tables. */
+const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// The client parses Int64 values past 2^53 as their exact digits, so a string fixture value compares exactly.
+function sameValue(live, want) {
+  if (typeof want === 'string' && typeof live === 'string')
+    return GUID.test(want) ? live.toLowerCase() === want.toLowerCase() : live.replaceAll('\r\n', '\n') === want;
+  if (typeof want === 'number' && typeof live === 'number')
+    return Math.abs(live - want) <= 1e-9 * Math.max(1, Math.abs(want));
+  if (typeof want === 'string' && typeof live === 'number') return String(live) === want;
+  return (live ?? null) === (want ?? null);
+}
+
+/** The fields of one fixture row whose live value differs (every field when the row does not exist). */
+async function rowDifferences(client, row, resolved) {
+  const wanted = { ...row.fields };
+  for (const [field, key] of Object.entries(row.refs)) wanted[`_${field}_value`] = key ? resolved[key].id : null;
+  if (row.table === ITEM) wanted._transactioncurrencyid_value = CURRENCY;
+  const live = await client.optional(`${entitySet(row.table)}(${row.id})?$select=${Object.keys(wanted).join(',')}`);
+  return Object.keys(wanted).filter((name) => !live || !sameValue(live[name], wanted[name]));
+}
+
+/** Writes the differing fields of one fixture row (its state with a second PATCH, as the platform requires). */
+async function resetRow(client, row, resolved, { apply, summary, log }) {
+  const differing = new Set(await rowDifferences(client, row, resolved));
+  if (!differing.size) {
+    summary.unchanged++;
+    return;
+  }
+  const { rest, statecode, statuscode } = liveUpsertBody(row, resolved);
+  // A lookup is written as `nav@odata.bind` and read back as `_field_value`.
+  const readName = { 'transactioncurrencyid@odata.bind': '_transactioncurrencyid_value' };
+  for (const field of Object.keys(row.refs)) readName[`${NAVIGATION[field].nav}@odata.bind`] = `_${field}_value`;
+  const body = Object.fromEntries(Object.entries(rest).filter(([key]) => differing.has(readName[key] ?? key)));
+  const change = { table: row.table, id: row.id, key: row.key, fields: [...differing] };
+  summary.changes.push(change);
+  const url = `${entitySet(row.table)}(${row.id})`;
+  if (apply && Object.keys(body).length) await client.request(url, { method: 'PATCH', body });
+  if (apply && statecode !== undefined && (differing.has('statecode') || differing.has('statuscode')))
+    await client.request(url, { method: 'PATCH', body: { statecode, statuscode } });
+  log({ change: row.key, table: row.table, fields: change.fields });
+}
+
+/** File column data on the alpha item, compared byte for byte (the Web API uploads single-request files with PATCH). */
+async function resetFile(client, { apply, summary }) {
+  const file = client.url(`${entitySet(ITEM)}(${ids.item1})/${p('file')}`);
+  const authorization = { Authorization: `Bearer ${await client.token()}` };
+  const current = await client.fetch(`${file}/$value`, { headers: authorization });
+  const stored = current.ok ? Buffer.from(await current.arrayBuffer()) : Buffer.alloc(0);
+  if (stored.equals(BRIEF) && current.headers.get('x-ms-file-name') === 'baseline-brief.txt') return;
+  summary.files.push({ item: ids.item1, column: p('file') });
+  if (!apply) return;
+  const response = await client.fetch(file, {
+    method: 'PATCH',
+    headers: { ...authorization, 'Content-Type': 'application/octet-stream', 'x-ms-file-name': 'baseline-brief.txt' },
+    body: BRIEF,
+  });
+  if (!response.ok) throw new Error(`File upload failed (HTTP ${response.status})`);
+}
+
+/** Live reset: write the fixture rows' differing fields, remove every other row of the three fixture tables. */
 export async function resetLive(client, { apply = false, tester, log = () => {} }) {
   if (!tester) throw new Error('The live tester contact id is required (--tester).');
   const { rows, resolved } = records(tester);
-  const summary = { deleted: [], upserted: [], files: [] };
+  const summary = { deleted: [], changes: [], unchanged: 0, files: [] };
   const fixtureIds = new Set(rows.map((row) => row.id.toLowerCase()));
   for (const table of [CHILD, ITEM, PARENT]) {
     const set = entitySet(table);
@@ -466,47 +531,35 @@ export async function resetLive(client, { apply = false, tester, log = () => {} 
     urlOf: (_id, note) => `annotations(${note.annotationid})`,
   }))
     await client.request(url, { method: 'DELETE' });
-  for (const row of rows) {
-    const { rest, statecode, statuscode } = liveUpsertBody(row, resolved);
-    summary.upserted.push({ table: row.table, id: row.id });
-    if (apply) {
-      await client.request(`${entitySet(row.table)}(${row.id})`, { method: 'PATCH', body: rest });
-      if (statecode !== undefined)
-        await client.request(`${entitySet(row.table)}(${row.id})`, {
-          method: 'PATCH',
-          body: { statecode, statuscode },
-        });
-    }
-    log({ reset: row.key, table: row.table });
-  }
-  // File column data on the alpha item (the Web API uploads single-request files with PATCH).
-  summary.files.push({ item: ids.item1, column: p('file') });
-  if (apply) {
-    const response = await client.fetch(client.url(`${entitySet(ITEM)}(${ids.item1})/${p('file')}`), {
-      method: 'PATCH',
-      headers: {
-        Authorization: `Bearer ${await client.token()}`,
-        'Content-Type': 'application/octet-stream',
-        'x-ms-file-name': 'baseline-brief.txt',
-      },
-      body: BRIEF,
-    });
-    if (!response.ok) throw new Error(`File upload failed (HTTP ${response.status})`);
-  }
+  for (const row of rows) await resetRow(client, row, resolved, { apply, summary, log });
+  await resetFile(client, { apply, summary });
   return summary;
 }
 
 async function main() {
-  const { values, positionals } = parseArgs({
-    allowPositionals: true,
-    options: {
+  const { values, positionals } = cli(
+    `Usage: node examples/project/baseline/data.mjs reset --connection FILE --tester CONTACTID [--apply]
+       node examples/project/baseline/data.mjs catalogue [--out FILE]
+
+  reset       plan (or with --apply, write) the fixture rows in the live environment named by --connection;
+              requires --connection and --tester, --apply is optional
+  catalogue   write the fixture catalogue offline (default: baseline/data/catalogue.json in this project);
+              --out is optional, the other options do not apply
+  --tester    contact id of the signed-in portal Contact of the reference site (required by reset)
+Relative paths resolve from the working directory.`,
+    {
       connection: { type: 'string' },
       apply: { type: 'boolean' },
       tester: { type: 'string' },
       out: { type: 'string' },
     },
-  });
+    { positionals: 1 },
+  );
   const action = positionals[0];
+  const misplaced = { catalogue: ['connection', 'apply', 'tester'], reset: ['out'] }[action]?.find(
+    (name) => values[name] !== undefined,
+  );
+  if (misplaced) throw new UsageError(`--${misplaced} does not apply to ${action}.`);
   if (action === 'catalogue') {
     const out = values.out ?? path.join(path.dirname(fileURLToPath(import.meta.url)), 'data', 'catalogue.json');
     await fs.mkdir(path.dirname(out), { recursive: true });
@@ -514,11 +567,9 @@ async function main() {
     console.log(JSON.stringify({ catalogue: out, records: catalogue().records.length }));
     return;
   }
-  if (action !== 'reset')
-    throw new Error(
-      'Usage: data.mjs reset --connection FILE [--apply] --tester <contactid> | data.mjs catalogue [--out FILE]',
-    );
-  if (!values.connection) throw new Error('--connection is required');
+  if (action !== 'reset') throw new UsageError(`Unknown action ${action}; use reset or catalogue.`);
+  if (!values.connection) throw new UsageError('reset requires --connection FILE.');
+  if (!values.tester) throw new UsageError('reset requires --tester CONTACTID (the live tester contact id).');
   const { loadConnection, connectedClient } = await import('paqvilo/lense/dataverse/index.mjs');
   const info = await loadConnection(values.connection);
   const client = connectedClient(info);
@@ -532,14 +583,11 @@ async function main() {
     JSON.stringify({
       apply: Boolean(values.apply),
       deleted: summary.deleted.length,
-      upserted: summary.upserted.length,
+      changes: summary.changes.length,
+      unchanged: summary.unchanged,
       files: summary.files.length,
     }),
   );
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))
-  /* NOSONAR: module-level promise chain must not block evaluation */ main().catch((error) => {
-    console.error(error.message);
-    process.exitCode = 1;
-  });
+if (isMain(import.meta)) await main();

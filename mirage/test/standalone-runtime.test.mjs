@@ -1,3 +1,4 @@
+// @test-kind unproven: local standalone runtime models (organization API, model-driven surfaces, project settings); no native recording is replayed by these tests.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -8,8 +9,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createSimulator } from '../server.mjs';
 import { loadProjectConfig, projectSummary } from '../lib/project-config.mjs';
 import { writeSolutionAssetEntries } from '../lib/dataverse-solution-assets.mjs';
+import { dataverseHostStatus } from '../lib/dataverse-settings.mjs';
 import { readLocalFile } from '../../lense/local-file.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 
 const APP = '77777777-7777-4777-8777-777777777777';
 const CLIENT = '99999999-9999-4999-8999-999999999999';
@@ -158,57 +161,62 @@ async function client(sim) {
     });
 }
 
-test('solution-only model-driven runtime uses its organization core with HTTP API disabled and no portal source', async (t) => {
-  const { sim, root, solution, stateFile, files } = await fixture(t, {
-    runtime: { kind: 'model-driven', defaultApp: APP },
-  });
-  assert.equal(sim.dataverse, undefined);
-  assert.equal((await fetch(sim.url + '/main.aspx')).status, 200);
-  const catalogue = await body(await ui(sim, 'GET'));
-  assert.equal(catalogue.defaultApp, APP);
-  assert.equal(catalogue.apps.length, 1);
-  assert.equal(
-    Object.keys(catalogue.tables).some((name) => /^(adx_|mspp_)/.test(name)),
-    false,
-  );
-  const record = await body(await ui(sim, 'POST', '/tables/x_item', { x_name: 'Created without a portal' }), 201);
-  const changed = await body(
-    await ui(sim, 'PATCH', `/tables/x_item/${record.row.x_itemid}`, { x_name: 'Edited' }, record.etag),
-  );
-  assert.equal(changed.row.x_name, 'Edited');
-  await body(await ui(sim, 'DELETE', `/tables/x_item/${record.row.x_itemid}`, undefined, changed.etag));
-  assert.equal((await fetch(sim.url + '/_api/x_items')).status, 404);
-  const status = await body(await fetch(sim.url + '/_sim/api/status'));
-  assert.equal(status.capabilities.organization, true);
-  assert.equal(status.capabilities.dataverseApi, false);
-  assert.equal(status.links.powerPages, null);
-  assert.equal(status.simulation.recordPersistence, 'memory');
-  assert.equal((await fetch(sim.url + '/_sim/api/dataverse/session')).status, 200);
-  const summary = await body(await fetch(sim.url + '/_sim/api/state'));
-  assert.equal(summary.summaryMode, true);
-  assert.equal(Object.hasOwn(summary, 'data'), false);
-  assert.ok(summary.mappings.some((mapping) => mapping.logicalName === 'x_item'));
-  // Follow real module imports: a successful shell alone does not prove the browser can start.
-  const visited = new Set(),
-    pending = ['/__sim/app.mjs'];
-  while (pending.length) {
-    const pathname = pending.shift();
-    if (visited.has(pathname)) continue;
-    visited.add(pathname);
-    const response = await fetch(sim.url + pathname);
-    assert.equal(response.status, 200, pathname);
-    assert.match(response.headers.get('content-type'), /javascript/);
-    const source = await response.text();
-    for (const match of source.matchAll(/(?:from\s*|import\s*)['"](\.\/[^'"]+\.mjs)['"]/g))
-      pending.push(new URL(match[1], sim.url + pathname).pathname);
-  }
-  assert.ok(visited.has('/__sim/persona-search.mjs'));
-  assert.ok(visited.has('/__sim/persona-picker-view.mjs'));
-  await assert.rejects(fs.stat(stateFile), { code: 'ENOENT' });
-  assert.deepEqual((await fs.readdir(root)).sort(), ['solution']);
-  for (const [relative, content] of Object.entries(files))
-    assert.equal(await fs.readFile(path.join(solution, relative), 'utf8'), content);
-});
+// Hang guard only: it drives a runtime, the CLI or child processes through this file's fixtures; on a loaded slow host that is slow, not hung.
+test(
+  'solution-only model-driven runtime uses its organization core with HTTP API disabled and no portal source',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const { sim, root, solution, stateFile, files } = await fixture(t, {
+      runtime: { kind: 'model-driven', defaultApp: APP },
+    });
+    assert.equal(sim.dataverse, undefined);
+    assert.equal((await fetch(sim.url + '/main.aspx')).status, 200);
+    const catalogue = await body(await ui(sim, 'GET'));
+    assert.equal(catalogue.defaultApp, APP);
+    assert.equal(catalogue.apps.length, 1);
+    assert.equal(
+      Object.keys(catalogue.tables).some((name) => /^(adx_|mspp_)/.test(name)),
+      false,
+    );
+    const record = await body(await ui(sim, 'POST', '/tables/x_item', { x_name: 'Created without a portal' }), 201);
+    const changed = await body(
+      await ui(sim, 'PATCH', `/tables/x_item/${record.row.x_itemid}`, { x_name: 'Edited' }, record.etag),
+    );
+    assert.equal(changed.row.x_name, 'Edited');
+    await body(await ui(sim, 'DELETE', `/tables/x_item/${record.row.x_itemid}`, undefined, changed.etag));
+    assert.equal((await fetch(sim.url + '/_api/x_items')).status, 404);
+    const status = await body(await fetch(sim.url + '/_sim/api/status'));
+    assert.equal(status.capabilities.organization, true);
+    assert.equal(status.capabilities.dataverseApi, false);
+    assert.equal(status.links.powerPages, null);
+    assert.equal(status.simulation.recordPersistence, 'memory');
+    assert.equal((await fetch(sim.url + '/_sim/api/dataverse/session')).status, 200);
+    const summary = await body(await fetch(sim.url + '/_sim/api/state'));
+    assert.equal(summary.summaryMode, true);
+    assert.equal(Object.hasOwn(summary, 'data'), false);
+    assert.ok(summary.mappings.some((mapping) => mapping.logicalName === 'x_item'));
+    // Follow real module imports: a successful shell alone does not prove the browser can start.
+    const visited = new Set(),
+      pending = ['/__sim/app.mjs'];
+    while (pending.length) {
+      const pathname = pending.shift();
+      if (visited.has(pathname)) continue;
+      visited.add(pathname);
+      const response = await fetch(sim.url + pathname);
+      assert.equal(response.status, 200, pathname);
+      assert.match(response.headers.get('content-type'), /javascript/);
+      const source = await response.text();
+      for (const match of source.matchAll(/(?:from\s*|import\s*)['"](\.\/[^'"]+\.mjs)['"]/g))
+        pending.push(new URL(match[1], sim.url + pathname).pathname);
+    }
+    assert.ok(visited.has('/__sim/persona-search.mjs'));
+    assert.ok(visited.has('/__sim/persona-picker-view.mjs'));
+    await assert.rejects(fs.stat(stateFile), { code: 'ENOENT' });
+    assert.deepEqual((await fs.readdir(root)).sort(), ['solution']);
+    for (const [relative, content] of Object.entries(files))
+      assert.equal(await fs.readFile(path.join(solution, relative), 'utf8'), content);
+  },
+);
 
 test('solution-only API and model-driven surfaces share actual organization CRUD', async (t) => {
   const { sim } = await fixture(t, {
@@ -294,6 +302,7 @@ test('standalone validation responses agree with the documented payload and quer
   }
 });
 
+// @test-kind contract: Paqvilo's project platform settings need evidence, known keys and in-range values; no native behaviour is claimed.
 test('project platform settings need evidence, known keys and in-range values', async (t) => {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-platform-config-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -321,6 +330,7 @@ test('project platform settings need evidence, known keys and in-range values', 
 });
 
 for (const kind of ['dataverse-api', 'model-driven'])
+  // @test-kind contract: Paqvilo's root platform configuration is retained, enforced and exposed through its public administration; no native behaviour is claimed.
   test(`${kind} root platform configuration is retained, enforced and exposed through public administration`, async (t) => {
     const { sim } = await fixture(t, {
       runtime: { kind },
@@ -351,80 +361,98 @@ for (const kind of ['dataverse-api', 'model-driven'])
     assert.equal(sim.status().platformSettings.find((item) => item.key === 'QueryLinkEntityLimit').value, 1);
   });
 
-test('standalone project CLI forwards organization platform settings into the actual query runtime', async (t) => {
-  const { root, solution } = await solutionSources(t);
-  const file = path.join(root, 'cli-project.json');
-  await fs.writeFile(
-    file,
-    JSON.stringify({
-      version: 2,
-      runtime: { kind: 'dataverse-api' },
-      solutions: [{ id: 'schema', path: solution }],
-      dataverse: { tls: false, tds: { enabled: false } },
-      platform: { QueryLinkEntityLimit: 1, evidence: 'Invented CLI organization' },
-    }),
-  );
-  const toolkitRoot = fileURLToPath(new URL('../..', import.meta.url)),
-    cli = fileURLToPath(new URL('../../bin/paqvilo.mjs', import.meta.url));
-  const child = spawn(
-    process.execPath,
-    [
-      cli,
-      'mirage',
-      'serve',
-      '--project',
+// @test-kind contract: Paqvilo's standalone project CLI forwards organization platform settings into the query runtime; no native behaviour is claimed.
+// Hang guard only: it runs real CLI commands and the runtimes they start; on a loaded slow host that is slow, not hung.
+test(
+  'standalone project CLI forwards organization platform settings into the actual query runtime',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const { root, solution } = await solutionSources(t);
+    const file = path.join(root, 'cli-project.json');
+    await fs.writeFile(
       file,
-      '--port',
-      '0',
-      '--state',
-      path.join(root, 'cli-state.json'),
-      '--no-watch',
-      '--json',
-    ],
-    { cwd: toolkitRoot, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true },
-  );
-  const exited = new Promise((resolve) => child.once('exit', resolve));
-  // Stop the CLI (which holds its state file) before the owned directory is removed.
-  ownedFixture(t).add(async () => {
-    if (child.exitCode === null) {
-      child.stdin.write('stop\n');
-      // Bounded fallback for a CLI that ignores the documented stdin stop command.
-      const timer = setTimeout(() => child.kill(), 10000);
-      await exited;
-      clearTimeout(timer);
-    }
-  });
-  // Startup settles on the ready report or the child's failure; no wall-clock bound below the test's own timeout,
-  // since importing and starting the runtime on a loaded runner has no documented startup budget.
-  const started = await new Promise((resolve, reject) => {
-    let stdout = '',
-      stderr = '';
-    child.stdout.on('data', (chunk) => {
-      stdout += chunk;
-      try {
-        const report = JSON.parse(stdout);
-        if (report.url) resolve(report);
-      } catch {
-        /* await complete JSON */
+      JSON.stringify({
+        version: 2,
+        runtime: { kind: 'dataverse-api' },
+        solutions: [{ id: 'schema', path: solution }],
+        dataverse: { tls: false, tds: { enabled: false } },
+        platform: { QueryLinkEntityLimit: 1, evidence: 'Invented CLI organization' },
+      }),
+    );
+    const toolkitRoot = fileURLToPath(new URL('../..', import.meta.url)),
+      cli = fileURLToPath(new URL('../../bin/paqvilo.mjs', import.meta.url));
+    const child = spawn(
+      process.execPath,
+      [
+        cli,
+        'mirage',
+        'serve',
+        '--project',
+        file,
+        '--port',
+        '0',
+        '--state',
+        path.join(root, 'cli-state.json'),
+        '--no-watch',
+        '--json',
+      ],
+      { cwd: toolkitRoot, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true },
+    );
+    const exited = new Promise((resolve) => child.once('exit', resolve));
+    // Stop the CLI (which holds its state file) before the owned directory is removed.
+    ownedFixture(t).add(async () => {
+      if (child.exitCode === null) {
+        child.stdin.write('stop\n');
+        // Bounded fallback for a CLI that ignores the documented stdin stop command.
+        const timer = setTimeout(() => child.kill(), 10000);
+        await exited;
+        clearTimeout(timer);
       }
     });
-    child.stderr.on('data', (chunk) => {
-      stderr += chunk;
+    // Startup settles on the ready report or the child's failure; no wall-clock bound below the test's own timeout,
+    // since importing and starting the runtime on a loaded runner has no documented startup budget.
+    const started = await new Promise((resolve, reject) => {
+      let stdout = '',
+        stderr = '';
+      child.stdout.on('data', (chunk) => {
+        stdout += chunk;
+        try {
+          const report = JSON.parse(stdout);
+          if (report.url) resolve(report);
+        } catch {
+          /* await complete JSON */
+        }
+      });
+      child.stderr.on('data', (chunk) => {
+        stderr += chunk;
+      });
+      child.once('error', reject);
+      child.once('exit', (code) => reject(new Error(`Standalone CLI exited ${code}: ${stderr}`)));
     });
-    child.once('error', reject);
-    child.once('exit', (code) => reject(new Error(`Standalone CLI exited ${code}: ${stderr}`)));
+    const status = await body(await fetch(started.url + '/_sim/api/status'));
+    assert.equal(status.platformSettings.find((item) => item.key === 'QueryLinkEntityLimit').value, 1);
+    const org = await client({
+      url: started.url,
+      dataverse: status.dataverse,
+      csrf: status.csrf,
+      state: () => ({ csrf: status.csrf }),
+    });
+    const xml =
+      '<fetch><entity name="x_item"><link-entity name="x_item" alias="a" from="x_itemid" to="x_itemid"/><link-entity name="x_item" alias="b" from="x_itemid" to="x_itemid"/></entity></fetch>';
+    assert.equal((await org('GET', '/x_items?fetchXml=' + encodeURIComponent(xml))).status, 400);
+  },
+);
+
+// @test-kind contract: both hosts build the admin Dataverse status from dataverseHostStatus, so the standalone runtime reports the certificate as the Power Pages host does
+test('standalone Dataverse status has the Power Pages host shape, certificate included', async (t) => {
+  const { sim } = await fixture(t, {
+    runtime: { kind: 'dataverse-api' },
+    dataverse: { enabled: true, tls: true, tds: { enabled: false } },
   });
-  const status = await body(await fetch(started.url + '/_sim/api/status'));
-  assert.equal(status.platformSettings.find((item) => item.key === 'QueryLinkEntityLimit').value, 1);
-  const org = await client({
-    url: started.url,
-    dataverse: status.dataverse,
-    csrf: status.csrf,
-    state: () => ({ csrf: status.csrf }),
-  });
-  const xml =
-    '<fetch><entity name="x_item"><link-entity name="x_item" alias="a" from="x_itemid" to="x_itemid"/><link-entity name="x_item" alias="b" from="x_itemid" to="x_itemid"/></entity></fetch>';
-  assert.equal((await org('GET', '/x_items?fetchXml=' + encodeURIComponent(xml))).status, 400);
+  const listing = await body(await fetch(sim.url + '/_sim/api/dataverse'));
+  for (const key of Object.keys(dataverseHostStatus({}, {}, {}))) assert.ok(Object.hasOwn(listing, key), key);
+  assert.match(listing.certificateFingerprint, /^[0-9A-F]{2}(:[0-9A-F]{2})+$/i);
+  assert.equal(listing.organizationAvailable, true);
 });
 
 for (const kind of ['dataverse-api', 'model-driven'])
@@ -498,77 +526,80 @@ for (const kind of ['dataverse-api', 'model-driven'])
       }
     });
 
-test('independent client directory and ZIP sources reload without changing complete organization metadata', async (t) => {
-  const { root, solution } = await solutionSources(t);
-  const clientRoot = path.join(root, 'external-clients'),
-    archive = path.join(root, 'external.zip');
-  await fs.mkdir(path.join(clientRoot, 'WebResources'), { recursive: true });
-  const descriptor = (name, file) =>
-    `<WebResource><Name>${name}</Name><WebResourceType>3</WebResourceType><FileName>${file}</FileName></WebResource>`;
-  await fs.writeFile(path.join(clientRoot, 'WebResources/events.js'), 'window.External = 1;');
-  await fs.writeFile(
-    path.join(clientRoot, 'WebResources/events.js.data.xml'),
-    descriptor('x_/external.js', 'WebResources/events.js'),
-  );
-  const zip = (value) =>
-    writeSolutionAssetEntries([
-      {
-        name: 'customizations.xml',
-        data: Buffer.from(
-          `<ImportExportXml><WebResources>${descriptor('x_/archive.js', 'WebResources/archive.js')}</WebResources></ImportExportXml>`,
-        ),
-      },
-      { name: 'WebResources/archive.js', data: Buffer.from(`window.Archive = ${value};`) },
-    ]);
-  await fs.writeFile(archive, zip(1));
-  const sim = await createSimulator({
-    runtime: { kind: 'model-driven' },
-    solutionRoots: [solution],
-    projectRoot: root,
-    simulation: { level: 'dry-run' },
-    modelDriven: { trustedExtensions: true, clientSources: [clientRoot, archive] },
-    watch: true,
-  });
-  // The watcher closes before the owned directory is removed; t.after hooks run in registration order.
-  ownedFixture(t).add(() => sim.close());
-  const catalogue = await body(await ui(sim, 'GET'));
-  assert.ok(catalogue.tables.x_item);
-  const urls = Object.fromEntries(
-    catalogue.clientExtensions.resources.map((resource) => [resource.name, sim.url + resource.url]),
-  );
-  const selectedSource = async (url) => {
-    const response = await fetch(url);
-    assert.equal(response.status, 200);
-    const text = await response.text();
-    if (url === urls['x_/archive.js']) {
-      assert.doesNotMatch(text, /sourceMappingURL=/, 'a ZIP resource has no editable physical file');
-      return text;
-    }
-    const encoded = /sourceMappingURL=data:application\/json;charset=utf-8;base64,([\w+/=]+)/.exec(text)?.[1];
-    assert.ok(encoded, 'an external file-backed client retains debugger metadata after reload');
-    const map = JSON.parse(Buffer.from(encoded, 'base64').toString());
-    assert.deepEqual(map.sources, [
-      pathToFileURL(await fs.realpath(path.join(clientRoot, 'WebResources/events.js'))).href,
-    ]);
-    assert.ok(text.startsWith(map.sourcesContent[0]));
-    return map.sourcesContent[0];
-  };
-  assert.equal(await selectedSource(urls['x_/external.js']), 'window.External = 1;');
-  assert.equal(await selectedSource(urls['x_/archive.js']), 'window.Archive = 1;');
-  const changed = async (url, expected) => {
-    const deadline = Date.now() + 60_000;
-    while (Date.now() < deadline) {
-      if ((await selectedSource(url)) === expected) return;
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    assert.fail('Selected client source was not reloaded: ' + expected);
-  };
-  await fs.writeFile(path.join(clientRoot, 'WebResources/events.js'), 'window.External = 2;');
-  await changed(urls['x_/external.js'], 'window.External = 2;');
-  await fs.writeFile(archive, zip(2));
-  await changed(urls['x_/archive.js'], 'window.Archive = 2;');
-  assert.ok((await body(await ui(sim, 'GET'))).tables.x_item);
-});
+// @test-kind contract: Mirage's own source watcher reloads independent client sources into a running standalone runtime; no native behaviour is claimed.
+// Hang guard only: a standalone runtime start and source reloads that follow file-watcher events.
+test(
+  'independent client directory and ZIP sources reload without changing complete organization metadata',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const { root, solution } = await solutionSources(t);
+    const clientRoot = path.join(root, 'external-clients'),
+      archive = path.join(root, 'external.zip');
+    await fs.mkdir(path.join(clientRoot, 'WebResources'), { recursive: true });
+    const descriptor = (name, file) =>
+      `<WebResource><Name>${name}</Name><WebResourceType>3</WebResourceType><FileName>${file}</FileName></WebResource>`;
+    await fs.writeFile(path.join(clientRoot, 'WebResources/events.js'), 'window.External = 1;');
+    await fs.writeFile(
+      path.join(clientRoot, 'WebResources/events.js.data.xml'),
+      descriptor('x_/external.js', 'WebResources/events.js'),
+    );
+    const zip = (value) =>
+      writeSolutionAssetEntries([
+        {
+          name: 'customizations.xml',
+          data: Buffer.from(
+            `<ImportExportXml><WebResources>${descriptor('x_/archive.js', 'WebResources/archive.js')}</WebResources></ImportExportXml>`,
+          ),
+        },
+        { name: 'WebResources/archive.js', data: Buffer.from(`window.Archive = ${value};`) },
+      ]);
+    await fs.writeFile(archive, zip(1));
+    const sim = await createSimulator({
+      runtime: { kind: 'model-driven' },
+      solutionRoots: [solution],
+      projectRoot: root,
+      simulation: { level: 'dry-run' },
+      modelDriven: { trustedExtensions: true, clientSources: [clientRoot, archive] },
+      watch: true,
+    });
+    // The watcher closes before the owned directory is removed; t.after hooks run in registration order.
+    ownedFixture(t).add(() => sim.close());
+    const catalogue = await body(await ui(sim, 'GET'));
+    assert.ok(catalogue.tables.x_item);
+    const urls = Object.fromEntries(
+      catalogue.clientExtensions.resources.map((resource) => [resource.name, sim.url + resource.url]),
+    );
+    const selectedSource = async (url) => {
+      const response = await fetch(url);
+      assert.equal(response.status, 200);
+      const text = await response.text();
+      if (url === urls['x_/archive.js']) {
+        assert.doesNotMatch(text, /sourceMappingURL=/, 'a ZIP resource has no editable physical file');
+        return text;
+      }
+      const encoded = /sourceMappingURL=data:application\/json;charset=utf-8;base64,([\w+/=]+)/.exec(text)?.[1];
+      assert.ok(encoded, 'an external file-backed client retains debugger metadata after reload');
+      const map = JSON.parse(Buffer.from(encoded, 'base64').toString());
+      assert.deepEqual(map.sources, [
+        pathToFileURL(await fs.realpath(path.join(clientRoot, 'WebResources/events.js'))).href,
+      ]);
+      assert.ok(text.startsWith(map.sourcesContent[0]));
+      return map.sourcesContent[0];
+    };
+    assert.equal(await selectedSource(urls['x_/external.js']), 'window.External = 1;');
+    assert.equal(await selectedSource(urls['x_/archive.js']), 'window.Archive = 1;');
+    // The runtime announces no reload event: the served source is read until it shows the write. The 50 ms only paces
+    // the reads; a reload that never comes is ended by this test's hang guard, not by a deadline of its own.
+    const changed = async (url, expected) => {
+      while ((await selectedSource(url)) !== expected) await new Promise((resolve) => setTimeout(resolve, 50));
+    };
+    await fs.writeFile(path.join(clientRoot, 'WebResources/events.js'), 'window.External = 2;');
+    await changed(urls['x_/external.js'], 'window.External = 2;');
+    await fs.writeFile(archive, zip(2));
+    await changed(urls['x_/archive.js'], 'window.Archive = 2;');
+    assert.ok((await body(await ui(sim, 'GET'))).tables.x_item);
+  },
+);
 
 test('selected Dataverse locale reaches source apps, navigation, forms, views and canonical source rows', async (t) => {
   const FORM = '55555555-5555-4555-8555-555555555555',

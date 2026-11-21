@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own record-store design (runtime-performance.md, "Write-volume seams"): the work each seam does, counted, with no native behaviour asserted
 // Index and caching seams of the record store (runtime-performance.md, "Write-volume seams"): row indexes with
 // a validity check, the per-operation relationship graph, per-table revision counters, key-set paging,
 // SDK savepoints, journal section reuse, dirty-table persistence hashing and the service-protection window.
@@ -396,12 +397,19 @@ test('journaled row transactions reuse the section copy the previous commit prov
     persistence: { journalThresholdBytes: 0 },
   }).init();
   await s.update('x_item', gid(1), { x_name: 'a' }, ADMIN);
-  const copy = s.sectionSnapshot.sections.get('mappings').copy;
+  const copy = s.sectionSnapshot.sections.get('settings').copy;
+  const copied = s.work.backupMembers;
   await s.update('x_item', gid(1), { x_name: 'b' }, ADMIN);
   assert.equal(
-    s.sectionSnapshot.sections.get('mappings').copy,
+    s.sectionSnapshot.sections.get('settings').copy,
     copy,
-    "the second write reused the first write's mapping copy",
+    "the second write reused the first write's section copy",
+  );
+  // The mappings, nearly all of the section bytes, are not copied as a section: a write copies the mappings it reaches.
+  assert.equal(s.sectionSnapshot.sections.has('mappings'), false);
+  assert.ok(
+    s.work.backupMembers - copied < Object.keys(s.state.mappings).length,
+    'the second write copied fewer mappings than the state holds',
   );
   // A failed write that changed a section restores it, and leaves no copy to reuse.
   await assert.rejects(

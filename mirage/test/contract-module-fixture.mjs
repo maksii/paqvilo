@@ -11,6 +11,22 @@ import { randomUUID } from 'node:crypto';
 
 const APP_ID = '77777777-7777-4777-8777-777777777777';
 
+// node:test may omit a nested fetch cause. Preserve the original error and add
+// only its transport code, without headers, bearer tokens or response content.
+export function loopbackFetch(url, options) {
+  // Every fixture exchange owns its connection, including authentication before
+  // synchronous CLR work. A close header on only the later write can still reuse
+  // an older pooled connection; never retry a potentially committed operation.
+  const headers = new Headers(options?.headers);
+  if (!headers.has('connection')) headers.set('connection', 'close');
+  return fetch(url, { ...options, headers }).catch((error) => {
+    const code = error?.cause?.code;
+    if (error instanceof Error && typeof code === 'string' && /^(?:UND_ERR_[A-Z_]+|E[A-Z]+|ABORT_ERR)$/.test(code))
+      error.message += ` (${code})`;
+    throw error;
+  });
+}
+
 /**
  * contractModuleFixture(t, { mappings, tables, extension, options, providers }):
  *   mappings/tables seed the state; extension is the module's EXTENSION; options is the second install argument
@@ -60,7 +76,7 @@ export async function contractModuleFixture(
     await organization?.close();
   });
   const token = await (
-    await fetch(`${server.origin}/${server.tenantId}/oauth2/v2.0/token`, {
+    await loopbackFetch(`${server.origin}/${server.tenantId}/oauth2/v2.0/token`, {
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
@@ -72,7 +88,7 @@ export async function contractModuleFixture(
     })
   ).json();
   const request = (method, path, body, headers = {}) =>
-    fetch(`${server.origin}/api/data/v9.2${path}`, {
+    loopbackFetch(`${server.origin}/api/data/v9.2${path}`, {
       method,
       headers: {
         authorization: `Bearer ${token.access_token}`,

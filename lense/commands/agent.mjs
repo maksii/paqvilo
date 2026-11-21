@@ -3,6 +3,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { readLocalFile } from '../local-file.mjs';
+import { discoveryOwnerGone } from '../agent-discovery.mjs';
 
 const MAX_JSON = 4 * 1024 * 1024;
 const MAX_IMAGE = 32 * 1024 * 1024;
@@ -26,6 +27,45 @@ function outputName(output, config) {
   return (path.isAbsolute(relative) ? path.basename(output) : relative).replaceAll('\\', '/');
 }
 
+const NOT_WRITABLE = new Set(['EPERM', 'EACCES', 'EROFS', 'ENOTDIR', 'EISDIR']);
+
+/**
+ * Creates a new, empty output file (never replacing one) and returns its handle. The folder is created only when it
+ * is missing: Windows refuses `mkdir` of a drive root with EPERM even with `recursive`. A file system refusal becomes
+ * one `invalid_argument` line naming the path.
+ */
+export async function reserveOutput(output, config) {
+  const name = outputName(output, config);
+  const refused = (error) => {
+    // EEXIST while creating the folder means a file stands where a folder is needed.
+    if (!NOT_WRITABLE.has(error.code) && error.code !== 'EEXIST') return error;
+    return argument(
+      `Cannot write screenshot output ${name} (${error.code}): choose an --output in a folder you can write to.`,
+    );
+  };
+  const folder = path.dirname(output);
+  try {
+    const found = await fs.stat(folder).catch((error) => {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    });
+    if (!found) await fs.mkdir(folder, { recursive: true });
+    else if (!found.isDirectory()) throw Object.assign(new Error('not a folder'), { code: 'ENOTDIR' });
+  } catch (error) {
+    throw refused(error);
+  }
+  try {
+    return await fs.open(output, 'wx', 0o600);
+  } catch (error) {
+    if (error.code === 'EEXIST') {
+      throw argument(
+        `Screenshot output already exists: ${name}. Existing files are never replaced; choose a new --output.`,
+      );
+    }
+    throw refused(error);
+  }
+}
+
 function integer(value, name, fallback, min, max) {
   if (value === undefined) return fallback;
   if (
@@ -41,7 +81,20 @@ function integer(value, name, fallback, min, max) {
   return Number(value);
 }
 
+const STALE_SESSION = 'Session owner process is gone; its discovery file is stale (session stopped?)';
+
+/**
+ * Reads a session discovery file for use. A file whose owner process is gone is rejected (`session_stale`): its
+ * token is never sent anywhere, because whatever listens on that port now is not the session.
+ */
 export async function readDiscovery(file) {
+  const value = await parseDiscovery(file);
+  if (discoveryOwnerGone(value, file))
+    throw Object.assign(new Error(STALE_SESSION), { code: 'session_stale', status: 404 });
+  return value;
+}
+
+async function parseDiscovery(file) {
   let value;
   try {
     value = JSON.parse(await readLocalFile(file, { maxBytes: 64 * 1024, encoding: 'utf8' }));
@@ -190,7 +243,7 @@ export async function listAgentSessions(stateDir, timeout = 35_000, { fetchImpl 
         const file = path.join(dir, name);
         let entry;
         try {
-          entry = await readDiscovery(file);
+          entry = await parseDiscovery(file);
         } catch {
           invalidFiles.push(file);
           return;
@@ -205,6 +258,11 @@ export async function listAgentSessions(stateDir, timeout = 35_000, { fetchImpl 
           sourceDir: entry.sourceDir,
           discoveryFile: file,
         };
+        // A stale file is listed, never probed: the token must not reach whatever has that port now.
+        if (discoveryOwnerGone(entry, file)) {
+          sessions.push({ ...item, reachable: false, error: STALE_SESSION });
+          return;
+        }
         try {
           const status = await agentRequest(entry, '/v1/session', { timeout, fetchImpl });
           item.reachable = status.id === entry.id;
@@ -238,21 +296,8 @@ export default async function agent(_cfg, args, positionals = [], { fetchImpl = 
   assertAgentArguments(action, args, pageActions);
   const { route, body, guardMs } = agentActionRequest(action, args, timeout);
   const discovery = await readDiscovery(args.session);
-  let handle;
   const output = args.output ? path.resolve(args.output) : null;
-  if (output) {
-    await fs.mkdir(path.dirname(output), { recursive: true });
-    try {
-      handle = await fs.open(output, 'wx', 0o600);
-    } catch (error) {
-      if (error.code === 'EEXIST') {
-        throw argument(
-          `Screenshot output already exists: ${outputName(output, args.config)}. Existing files are never replaced; choose a new --output.`,
-        );
-      }
-      throw error;
-    }
-  }
+  let handle = output ? await reserveOutput(output, args.config) : null;
   try {
     const result = await agentRequest(discovery, route, {
       body,

@@ -3,24 +3,31 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { validateManifest } from 'paqvilo/dataverse';
 import { extendReferenceSchema } from './portal-security/reference-projections.mjs';
-import { parseArgs } from 'node:util';
-const { values: args } = parseArgs({
-  options: { out: { type: 'string' }, cohort: { type: 'string', default: 'source4' } },
-});
+import { cli, formatJson, UsageError } from './cli.mjs';
+const { values: args } = cli(
+  `Usage: node prepare-schema.mjs [--cohort source4|source5] [--out FILE]   (npm run schema:prepare)
+
+Regenerates the Dataverse manifest from the design documents in docs/design. Offline.
+
+  --cohort NAME  source4 (default) or the optional source5 qualification cohort
+  --out FILE     output file (default: dataverse/manifest.json in this example; source5 requires a separate file);
+                 a relative path resolves from the working directory`,
+  { out: { type: 'string' }, cohort: { type: 'string', default: 'source4' } },
+);
 
 const project = path.dirname(fileURLToPath(import.meta.url));
-if (!['source4', 'source5'].includes(args.cohort)) throw new Error('Expected --cohort source4 or source5.');
+if (!['source4', 'source5'].includes(args.cohort)) throw new UsageError('Expected --cohort source4 or source5.');
 const source5 = args.cohort === 'source5';
 const committedManifest = path.join(project, 'dataverse/manifest.json');
 const output = args.out ? path.resolve(args.out) : committedManifest;
 if (source5) {
-  if (!args.out) throw new Error('Source5 is an optional qualification cohort; provide a separate --out file.');
+  if (!args.out) throw new UsageError('Source5 is an optional qualification cohort; provide a separate --out file.');
   const resolvedOutput = await fs.realpath(output).catch((error) => {
     if (error.code === 'ENOENT') return output;
     throw error;
   });
   if (resolvedOutput === (await fs.realpath(committedManifest)))
-    throw new Error('Source5 requires a separate --out file, not the committed manifest.');
+    throw new UsageError('Source5 requires a separate --out file, not the committed manifest.');
 }
 const specDirectory = path.resolve(project, '../../docs/design');
 const documents = await Promise.all(
@@ -429,13 +436,13 @@ const manifest = validateManifest({
   scope: {
     prepared: 'Table/column/choice/relationship/key structure from the three specifications',
     remaining:
-      'Named forms/views, website components, plugin binaries/steps/images, flows, runtime invariants and seed data are subsequent implementation increments; default forms/views are platform-generated.',
+      'Not modeled here: named forms/views and Quick Find settings (forms/), website components (portal-security/, portal-harness/), plug-in assemblies/steps/images and integrity guards (plugins/) and seed data (data/) are deployed by their own tools in this example; flows are contracts only and are not deployed; default forms/views are platform-generated.',
   },
 });
 extendReferenceSchema(manifest);
 validateManifest(manifest);
 await fs.mkdir(path.dirname(output), { recursive: true });
-await fs.writeFile(output, JSON.stringify(manifest, null, 2) + '\n');
+await fs.writeFile(output, formatJson(manifest));
 console.log(
   JSON.stringify({
     cohort: args.cohort,

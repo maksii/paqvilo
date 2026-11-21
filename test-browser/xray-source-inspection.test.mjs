@@ -342,7 +342,7 @@ test('script truncation notes and displayed source rows agree on root-relative f
   const text = await page.locator('#paqvilo-xray .content').textContent();
   const ref = report.elementSources.find((row) => row.kind === 'script' && row.selector === '#id0').ref;
   assert.ok(text.includes(ref));
-  assert.ok(text.includes('Script index truncated; not attributed'));
+  assert.ok(text.includes('Skipped: too many scripts to search'));
   assert.ok(text.includes(ref));
   assert.equal(text.includes(fx.portal), false);
   assert.equal(/[A-Za-z]:\\/.test(text), false);
@@ -501,9 +501,9 @@ test('X-ray warns about oversized unreferenced sources without presenting them a
   await page.evaluate(() => document.getElementById('paqvilo-xray').__px.select(document.querySelector('aside')));
   await page.locator('#paqvilo-xray [data-evidence-role=limits] > summary').click();
   const text = await page.locator('#paqvilo-xray .content').innerText();
-  assert.ok(text.includes('markupSources: 1'));
+  assert.ok(text.includes('1 large file skipped'));
   assert.ok(text.includes('content-snippets/Oversize.contentsnippet.value.html'));
-  assert.ok(text.includes('Index omissions; not attributed to the selected element'));
+  assert.ok(text.includes('Files skipped by the search'));
   assert.equal(text.includes('PRIVATE_BODY_SENTINEL'), false);
   assert.equal(text.includes(fx.portal), false);
 });

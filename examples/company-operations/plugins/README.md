@@ -1,139 +1,212 @@
-# Company Operations plugin lab
+# Company Operations plug-in laboratory
 
-Dataverse plug-ins, a collector and SDK tools that record what the platform actually does with Power Pages queries and
-SDK pipelines: the query each plug-in stage receives, execution context, images and nested-call lineage. It implements
-[the plugin specification](../../../docs/design/dataverse-plugin-observation.md) for the
-[company model](../../../docs/design/company-operations-demo.md) and the
-[single-page harness](../../../docs/design/power-pages-permission-test-harness.md).
+Dataverse plug-ins, a collector and SDK tools that record what the platform does with Power Pages queries and SDK
+pipelines: the query each stage receives, execution context, images and nested-call lineage. The
+[plug-in design](../../../docs/design/dataverse-plugin-observation.md) owns the decisions; this page covers building,
+installing and running it.
 
-Everything here is project code for this example; nothing in it enters `lense/` or `mirage/`. SDK and application tests
-do not establish Power Pages Contact authorization; only the portal harness, signed in as the intended Contact, does.
+This is project code; nothing here enters `lense/` or `mirage/`. SDK and application tests do not establish Power Pages
+Contact authorization: only the [portal harness](../portal-harness/README.md), signed in as the intended Contact, does.
 
 ## Contents
 
-| Path                                             | What it is                                                                                                                                                                                                                         |
-| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `QueryObservation/`, `PipelineTests/`, `Shared/` | Two strong-name signed .NET Framework 4.6.2 assemblies: the incoming-query observer, and the pipeline chain, guards and recording code. They use pinned `Microsoft.CrmSdk.CoreAssemblies` 9.0.2.60 with committed NuGet lockfiles. |
-| `LabPublicSigning.snk`                           | A deliberately public synthetic signing key. It is not a production certificate or a managed-identity federation credential.                                                                                                       |
-| `registrations.json`                             | The authored step registry (231 step intentions) and the readiness flags of external dependencies.                                                                                                                                 |
-| `secure-provisioning.json`                       | Symbolic secret references and safe version labels for secure step configuration. No secret values.                                                                                                                                |
-| `collector/`                                     | Collector and worker source, deployment contract and the flow-only secret contract.                                                                                                                                                |
-| `Tests/`, `test/`                                | .NET fixture checks and Node tests.                                                                                                                                                                                                |
-| `SdkProbes/`, `sdk-projection-probes.mjs`        | Read-only SDK projection and count controls.                                                                                                                                                                                       |
-| `mirage-runtime.mjs`                             | Helpers that replay native captures against the original assemblies in Mirage.                                                                                                                                                     |
+| Path                                             | What it is                                                                                                                                                                                            |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `QueryObservation/`, `PipelineTests/`, `Shared/` | Two strong-name signed .NET Framework 4.6.2 assemblies (incoming-query observer; pipeline chain, guards and recording) on pinned `Microsoft.CrmSdk.CoreAssemblies` 9.0.2.60 with committed lockfiles. |
+| `LabPublicSigning.snk`                           | A deliberately public synthetic signing key; not a production certificate or federation credential.                                                                                                   |
+| `registrations.json`                             | Step registry for `PaqviloBehaviorPlugins`, generated by `prepare-registration.mjs`, and the `readiness` flags of external dependencies.                                                              |
+| `secure-provisioning.json`                       | Symbolic secret references and safe version labels for secure step configuration; no secret values.                                                                                                   |
+| `collector/`                                     | Collector and worker source, deployment contract and the flow-only secret contract.                                                                                                                   |
+| `Tests/`, `test/`                                | .NET fixture checks and Node tests.                                                                                                                                                                   |
+| `SdkProbes/`, `sdk-projection-probes.mjs`        | Read-only SDK projection and count controls.                                                                                                                                                          |
+| `mirage-runtime.mjs`                             | Replays native captures against the original assemblies in Mirage.                                                                                                                                    |
 
-Builds, environment-specific registrations, exported solutions and observed evidence stay under ignored `.paqvilo/`.
+Builds, environment-specific registrations, exported solutions and evidence stay under the project's ignored
+`.paqvilo/`.
 
 ## Build and install
 
-Provision the project schema through its [Dataverse manifest](../dataverse/manifest.json) first. The exported plug-in
-solution is an update package for that schema, not a standalone installer for new tables. From the toolkit checkout:
+Provision the schema and load the catalogue first (see the [project guide](../README.md)): the exported plug-in solution
+is an update package for that schema, not a first-install package. Every Node utility below except
+`prepare-registration.mjs` connects to Dataverse; all take `--connection <file>` (default
+`.paqvilo/dataverse/provisioning.connection.json` in the toolkit checkout, whatever the working directory) and check the
+saved organization first. Each prints its options with `--help`. Run from the toolkit checkout, against an environment
+you are authorized to change; the `dotnet` lines need the .NET SDK that the checkout's `global.json` pins, and
+`deploy.mjs`, `upload-assemblies.mjs` and `audit-installation.mjs` read the Release builds under
+`<project>/bin/Release/net462/`. The builds keep the commit and the build folder out of the assembly (no source revision
+in the version, no source-control data in the PDB, source paths mapped to `/_/`), so a new commit or another checkout
+without a code change leaves the bytes, and the plan, unchanged.
+
+**Run with no arguments, ten of these tools act on the environment named by the default connection.**
+`upload-assemblies.mjs`, `update-guard-config.mjs`, `provision-owner-team.mjs` and `verify-live.mjs` write to it;
+`deploy.mjs` (plan), `audit-installation.mjs`, `audit-evidence.mjs`, `inspect-metadata.mjs`,
+`inspect-operation-errors.mjs` and `inspect-trace.mjs` only read it. `deploy.mjs --apply`, `inspect-trace.mjs
+--enable` and `verify-live.mjs --cleanup RUN_ID --apply` also write; `verify-live.mjs --cleanup RUN_ID` alone only
+reads. Reports go to the example's ignored `examples/company-operations/.paqvilo/plugins/`, and each run replaces the
+previous report of the same name.
 
 ```powershell
 dotnet build examples/company-operations/plugins/QueryObservation/QueryObservation.csproj -c Release -p:RestoreLockedMode=true
 dotnet build examples/company-operations/plugins/PipelineTests/PipelineTests.csproj -c Release -p:RestoreLockedMode=true
-node examples/company-operations/plugins/prepare-registration.mjs
-node examples/company-operations/plugins/deploy.mjs --connection .paqvilo/dataverse/provisioning.connection.json
-node examples/company-operations/plugins/deploy.mjs --apply --connection .paqvilo/dataverse/provisioning.connection.json
-node examples/company-operations/plugins/provision-owner-team.mjs
-node examples/company-operations/plugins/verify-live.mjs
+node examples/company-operations/plugins/prepare-registration.mjs          # offline: regenerates registrations.json
+node examples/company-operations/plugins/deploy.mjs                        # read-only plan, deployment-plan.json
+node examples/company-operations/plugins/deploy.mjs --apply                # writes the create and update components of the plan
+node examples/company-operations/plugins/provision-owner-team.mjs          # security role and owner team for ChainNode Assign tests
+node examples/company-operations/plugins/verify-live.mjs                   # runs SDK profiles, writes qualification.json
+node examples/company-operations/plugins/audit-installation.mjs            # local build vs installed assemblies, installation-audit.json
 ```
 
-- `deploy.mjs` without `--apply` only reads. Every utility takes `--connection` and checks the saved expected
-  organisation before using it. Apply is resumable by stable component IDs and re-reads before creating anything.
+- The plan compares what apply would write with what is installed and lists the owner team and each assembly, plug-in
+  type, secure step configuration, step, image, Custom API part and environment variable as `create`, `update` (with
+  `changes` naming the differing properties: `content hash`, `version`, `publickeytoken`, step fields such as
+  `configuration.chainStepIds`, `solution membership`) or `unchanged`. It prints the counts per state, the changed
+  components and the unsupported steps; `deployment-plan.json` holds every row.
+- Apply re-reads each component and writes only those whose state is `create` or `update`, and only the differing
+  fields, so the apply journal `deployment.json` records the same states as the plan. An assembly whose content hash,
+  version and public key token match the local build is not uploaded again; when they differ, apply replaces the
+  installed plug-in code. `audit-installation.mjs` and `upload-assemblies.mjs` use the same comparison.
+- `verify-live.mjs` creates a test run, a CRUD probe, a test operation per case, and the plug-ins record chain nodes and
+  plug-in events for them. They stay as evidence (`audit-evidence.mjs` reads the events of the last run); the final
+  line names the run ID. `verify-live.mjs --cleanup RUN_ID` lists the rows of that run and `--cleanup RUN_ID --apply`
+  deletes exactly them: chain nodes, the probe, plug-in events, test operations and the test run. It refuses a run that
+  this tool did not create or that results, canary equipment or another run depend on. Every delete is a root request of
+  the configured SDK writer that the guards accept: chain nodes leaf to root with the `CO-OP:<operation>` tag, after
+  copying the nearest sealed ancestor's `configstatus` onto nodes DepthChain created unsealed (the plan counts them
+  under `seal`); each plug-in event through the owned-evidence contract below, with one maintenance intent per event
+  (`create` in the plan) that is deleted with the run's other operations. The final line counts passed and failed
+  cases; the exit code is 2 when any case failed and 1 when an error stopped the run.
+- `verify-live.mjs` needs an environment where no other assembly runs synchronous steps on every Create or on chain
+  nodes, such as an environment-wide recorder: they slow every nested operation, and the deep P09 chains then reach the
+  plug-in's 60-second suite budget before the platform's depth limit. It names such assemblies before the run
+  (`precondition: NotMet`) and reports those cases as `SuiteBudgetExceeded`; pause the steps, rerun, and remove the
+  failed run with `--cleanup RUN_ID --apply`.
+- `provision-owner-team.mjs` expects the owner team that `deploy.mjs --apply` creates and grants Basic ChainNode Read;
+  rerunning it, or `update-guard-config.mjs`, on an installed lab leaves the same state.
 - SDK message filters are discovered in the connected environment; a step is registered only where
-  `iscustomprocessingstepallowed` is true. Combinations the platform does not support (for example Currency
-  RetrieveMultiple or ChainNode Upsert filtered steps) are reported, not invented. Upsert is observed through its
-  Create/Update pipelines.
-- Images are registered only on supported message/stage pairs. Create postimages use the `Id` message property;
-  Update and Delete use `Target`.
-- `upload-assemblies.mjs` replaces the content of existing assemblies after a local build. `update-guard-config.mjs` sets the
-  registered chain-step provenance on the three ChainNode guards; a fresh install gets these IDs from `deploy.mjs`.
-- Secure step configuration is not carried by solution exports. The two synthetic secure-config secrets are generated in
-  memory and written only to secure step configuration.
+  `iscustomprocessingstepallowed` is true. Unsupported combinations (for example Currency RetrieveMultiple or ChainNode
+  Upsert filtered steps) are reported, not invented. Upsert is observed through its Create and Update pipelines.
+- Images are registered only on supported message/stage pairs: Create uses the `Id` message property, Update and Delete
+  use `Target`.
+- After a local rebuild, `upload-assemblies.mjs` replaces the existing assemblies that differ from the local build and
+  leaves the others alone. `update-guard-config.mjs` writes the registered chain-step IDs into the three ChainNode
+  guards; a fresh install gets them from `deploy.mjs`.
+- Secure step configuration is not carried by solution exports. The two synthetic secure-config secrets are generated
+  in memory and written only to secure step configuration, and only where it is missing: the plug-ins check only that
+  it is present, parses and carries its version label, so an existing one keeps its secret. Plan and journal show
+  `will set` or `kept`, never a value.
+- Diagnostics (read-only unless noted): `inspect-trace.mjs [--enable]` (recent `Paqvilo.Demo` exceptions from the
+  plug-in trace log; `--enable` first turns the organization trace log on, a write),
+  `inspect-operation-errors.mjs` (recent `OperationIntentGuard` exceptions), `inspect-metadata.mjs` (solution component
+  types and ChainNode privileges), `audit-evidence.mjs` (P02 event parts of the run recorded in
+  `.paqvilo/plugins/qualification.json`).
 
 ## Capture modes
 
-The unsecure step configuration selects `captureMode`:
+`deploy.mjs` sets `captureMode` in the unsecure step configuration to `TransactionalLab`.
 
-| Mode                                              | What it records                                                                                                                                                                     | Limit                                                                                                                                                    |
-| ------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `TraceOnly`                                       | Safe IDs and hashes in the plug-in trace log.                                                                                                                                       | No full queries; traces are capped and purged by the platform.                                                                                           |
-| `TransactionalLab` (what `deploy.mjs` configures) | Complete payloads as immutable, Unicode-safe event parts with a full SHA-256. Operation headers stay Partial with provenance `DataversePlugin.TransactionalLab.RollbackVulnerable`. | Evidence written inside the request transaction rolls back with a failed request. A recording write fault aborts the transaction; it is never swallowed. |
-| `DurableCollector`                                | Each snapshot is sent to an authenticated collector that stores it durably before acknowledging; an independent worker writes it to Dataverse.                                      | Needs the hosted collector, worker, storage and managed-identity federation, which this example does not deploy.                                         |
+- `TraceOnly`: safe IDs and hashes in the plug-in trace log. No full queries; the platform caps and purges traces.
+- `TransactionalLab`: complete payloads as immutable, Unicode-safe event parts with a full SHA-256; operation headers
+  stay Partial with provenance `DataversePlugin.TransactionalLab.RollbackVulnerable`. Evidence written inside the
+  request transaction rolls back with a failed request, and a recording write fault aborts the transaction rather than
+  being swallowed.
+- `DurableCollector`: each snapshot goes to an authenticated collector that stores it before acknowledging; an
+  independent worker writes it to Dataverse. Needs the hosted collector, worker, storage and managed-identity
+  federation, which this project does not deploy.
 
-`registrations.json` `readiness` marks external dependencies as not ready: business projection maintenance, the durable
-collector, the flow secret profile, Azure identity binding and the optional bulk and Merge profiles. Profiles that need
-them (P08 durable rollback, P13 Azure, P14 flow secret) stay blocked until they exist.
+`registrations.json` `readiness` marks business projection maintenance, the durable collector, the flow secret, Azure
+identity binding and the optional bulk and Merge profiles as not ready. Profiles that need them (P08 durable rollback,
+P13 Azure, P14 flow secret) stay blocked until they exist. The plan and apply journals add `transactionalCapture` (every
+supported step installed with its configuration), `operationGuard` (the `OperationIntentGuard` steps) and `probeABC`
+(the ChainA, ChainB and ChainC steps), each true when those steps are installed as registered, so a read-only plan of an
+installed lab reports them. `supportedProfiles` lists the profiles `verify-live.mjs` can run there; `blockedProfiles`
+names the others with their missing dependency (P05 until the owner team exists, P08, P13 and P14).
 
 The collector validates Entra v2 JWTs (roles, tenant, audience, issuer, writer identity), envelope identity and payload
-SHA-256, and stores a private Blob receipt before answering 202. The plug-in shares an eight-second transport budget per
-operation. Managed-identity token acquisition is synchronous and cannot be cancelled, so overruns are measured and no
+SHA-256, and stores a private Blob receipt before answering 202. The plug-in has an 8-second transport budget per
+operation; managed-identity token acquisition is synchronous and cannot be cancelled, so an overrun is measured and no
 further request is made. Unmatched receipts are kept privately; the worker never guesses a Contact.
 
-## What the guards protect
+## What the guards enforce
 
-- **Operation intent.** The server stamps the actor from the Run relationship, the GUID and the UTC markers. Portal Create
-  accepts only the Liquid and Web API lanes with a Pending capture state. Portal Update may change only the authored query,
-  hashes, client summary, Liquid XML and client finish time.
-- **Query capture binding.** Portal-lane capture uses the platform portal flag and `PortalsContactId` when available: the
-  Contact must match the immutable intent actor, otherwise capture is withheld and the query is left unchanged. Without
-  that interface, capture requires permission-shaped Contact predicates that all agree with the actor; this fallback is
-  labelled observed query binding, not identity attestation. Markers correlate requests; they never authenticate.
-- **SDK lane.** Requires a configured trusted caller and immutable SDK actor provenance; nested captures require the same
-  operation and the exact registered chain-step lineage. Shared portal backend identities are not trusted SDK callers.
-- **Evidence and projections.** Server events are writable only by configured recorder identities. All seven Access scope
-  projection N:N relationships reject untrusted association. Run and owner moves and cross-run result or probe bindings are
-  rejected.
-- **Business data.** Full scope and lifecycle projection reconciliation is not installed, so the mutable surface is small:
-  names, Contact first/last names, membership work contact details, equipment manufacturer/model/serial/condition,
-  selected descriptions and the employment contract reference. Structural selectors, dates, financial fields, keys,
-  lifecycle states and relationships stay maintenance-only.
-- **Disposable equipment.** Create needs a name, kind and condition, a `CO-CANARY-` tag, Stock state, a room whose site owns
-  the supplied Account, no current assignment and an existing `pqvd_canaryrunid` with an immutable Contact actor. Delete
-  also checks Stock state and no current assignment. Ordinary equipment Delete is not granted.
+Expect these refusals when a request breaks a rule:
 
-## SDK chain behaviour to know
+- **Operation intent.** The server stamps the actor from the Run relationship, the GUID and the UTC markers. Portal
+  Create accepts only the Liquid and Web API lanes with a Pending capture state. Portal Update may change only the
+  authored query, hashes, client summary, Liquid XML and client finish time.
+- **Query capture binding.** Portal-lane capture uses the platform portal flag and `PortalsContactId` when available:
+  the Contact must match the intent's actor, otherwise capture is withheld and the query is left unchanged. Without that
+  interface, capture requires permission-shaped Contact predicates that all agree with the actor, labelled observed
+  query binding, not identity attestation. Markers correlate requests; they never authenticate.
+- **SDK lane.** Requires a configured trusted caller and immutable SDK actor provenance; nested captures require the
+  same operation and the exact registered chain-step lineage. Shared portal backend identities are not trusted SDK
+  callers.
+- **Evidence and projections.** Server events are writable only by configured recorder identities. All eight Access
+  scope N:N relationships (`pqvd_access_*`) accept associations only from a trusted identity. Run and owner moves and
+  cross-run result or probe bindings are rejected.
+- **Business data.** No scope or lifecycle reconciler is installed, so only names, Contact first/last names,
+  membership work contact details, equipment manufacturer/model/serial/condition, selected descriptions and the
+  employment contract reference are mutable. Structural selectors, dates, financial fields, keys, lifecycle states and
+  relationships stay maintenance-only.
+- **Disposable equipment.** Create needs a name, kind and condition, a `CO-CANARY-` tag, Stock state, a room whose site
+  owns the supplied Account, no current assignment and an existing `pqvd_canaryrunid` with an immutable Contact actor.
+  Delete also checks Stock state and no current assignment. Ordinary equipment Delete is not granted.
 
-- The first request attaches one immutable `tag`; descendants inherit it. Setting a different tag on a descendant request
-  makes Dataverse fail with a duplicate-key fault.
-- Dataverse can replace caller contexts with internal ObjectModel contexts and drop caller variables, so ChainB seals its
-  configured step ID into the server-owned node `configstatus` before B -> C. Internal Delete and ownership exceptions
-  require that exact sealed step, the configured SDK application as initiating user and a same-operation ancestor.
-  Similar step names never authorize a mutation.
-- Execution Depth (platform limit) is not table-permission relationship depth. The depth profile runs only as an explicit
+## SDK chain behaviour
+
+- The first request attaches one immutable `tag`; descendants inherit it. Setting a different tag on a descendant
+  request makes Dataverse fail with a duplicate-key fault.
+- Dataverse can replace caller contexts with internal ObjectModel contexts and drop caller variables, so ChainB seals
+  its configured step ID into the server-owned node `configstatus` before B -> C. Internal Delete and ownership
+  exceptions require that exact sealed step, the configured SDK application as initiating user and a same-operation
+  ancestor.
+- A root SDK Delete reaches PreOperation and PostOperation steps as SYSTEM under the platform's own Delete of the same
+  row (step `ObjectModel Implementation`); only `InitiatingUserId` keeps the caller. The guards recognize exactly that
+  wrapper (stage 30, depth 1, same table and row, no parent) for the sole trusted writer: OperationIntentGuard admits it
+  as the recording administrator, EvidenceWriteGuard only through the owned-evidence contract.
+- Execution Depth (a platform limit) is not table-permission depth. The depth profile runs only as an explicit
   scenario; failed-hop evidence is not durable in `TransactionalLab` mode.
 - The query mutator is SDK-only and disabled by default.
 
 ## Optional contracts (off by default)
 
-| Setting                                                                                                            | Allows                                                                                                                                                                                                                                                                                        |
-| ------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `allowAnonymousObservation: true` with an `anonymousObservationTables` allowlist (intent guard and query observer) | Capture of anonymous portal reads against an SDK-created intent with provenance `AnonymousPortal.ConfiguredSDKIntent`. Requires a root portal call with an empty `PortalsContactId`. The controller Contact is never treated as the request identity.                                         |
-| `allowOwnedEvidenceDeletion: true` with exactly one `writerId`                                                     | Root Delete of an archived `pqvd_pluginevent` by that SDK writer, bound by the tag `CO-OWNED-EVIDENCE-DELETE:<maintenance-intent-GUID>` to a maintenance intent at most 30 minutes old that names the event GUID, original operation and full event hash. Archive and verify the event first. |
-| `allowOwnedEquipmentLookupTests: true` (Source5 only)                                                              | Room rebind of a disposable Stock canary within its Building and Account, and Probe-to-Equipment binding within the same Run. Needs the Source5 schema, where `pqvd_testoperation.pqvd_variant` is 128 characters.                                                                            |
+Each needs its own registration, assembly build and native qualification before its results count. The lab
+registration turns on one of them, `allowOwnedEvidenceDeletion`, on the EvidenceWriteGuard steps so that
+`verify-live.mjs --cleanup` can remove a run's events; to deploy with it off, drop that key from the configuration
+`stepBody` builds in `deploy.mjs` and run `deploy.mjs --apply` (cleanup then stops at the first event).
 
-Each of these needs its own registration, assembly build and native qualification before its results count.
+- `allowAnonymousObservation: true` with an `anonymousObservationTables` allowlist (intent guard and query observer):
+  captures anonymous portal reads against an SDK-created intent, provenance `AnonymousPortal.ConfiguredSDKIntent`.
+  Requires a root portal call with an empty `PortalsContactId`; the controller Contact is never treated as the request
+  identity.
+- `allowOwnedEvidenceDeletion: true` with exactly one `writerId` (on in the lab registration, see above): root Delete
+  of a `pqvd_pluginevent` by that SDK writer, bound by the tag `CO-OWNED-EVIDENCE-DELETE:<maintenance-intent-GUID>` to
+  a maintenance intent of the same run at most 30 minutes old whose case ID names the event GUID, pair key the original
+  operation and name `SHA256:<full event hash>`.
+- `allowOwnedEquipmentLookupTests: true` (Source5 only): Room rebind of a disposable Stock canary within its Building
+  and Account, and Probe-to-Equipment binding within the same Run. Needs the Source5 schema
+  (`pqvd_testoperation.pqvd_variant` at 128 characters).
 
 ## Replay in Mirage
 
-`mirage-runtime.mjs` binds the original exported assemblies and exact registered step IDs to Mirage. Supply a fresh native
-registration snapshot, installed/exported assembly hashes, a pinned external SDK, an owned cache directory and explicit
-backend grant profiles. A hash mismatch or unresolved registration is rejected; nothing is downloaded.
+`mirage-runtime.mjs` binds the original exported assemblies and exact registered step IDs to Mirage. Supply a fresh
+native registration snapshot, installed and exported assembly hashes, a pinned external SDK, an owned cache directory
+and explicit backend grant profiles. A hash mismatch or unresolved registration is rejected; nothing is downloaded.
 
 - `applyNativeDataSnapshot` loads frozen native reads into the local store atomically.
 - `replayNativeReadBatch` runs each authored FetchXML request through the original assemblies and compares raw incoming
-  queries, SDK collections and stable context fields with the native capture. Optional `webApiPortal` and `liquidReplay`
-  inputs also compare the Mirage Web API and Liquid outputs. A run is qualified only with `sourceWitness` readbacks proving
-  that permissions, memberships, data, row versions, site components and registration all match the snapshot.
+  queries, SDK collections and stable context fields with the native capture. Optional `webApiPortal` and
+  `liquidReplay` inputs also compare the Mirage Web API and Liquid outputs. A run qualifies only with `sourceWitness`
+  readbacks proving that permissions, memberships, data, row versions, site components and registration match the
+  snapshot.
 - `validateFinalQueryObserverWitness` gates the final-query-only campaign on identical paired captures.
-- `persistentHost: true` reuses the CLR process with a fresh plug-in instance per call; call `binding.close()` in `finally`.
+- `persistentHost: true` reuses the CLR process with a fresh plug-in instance per call; call `binding.close()` in
+  `finally`.
 
-Supplying an already expanded native query verifies CLR execution only; it does not test the permission compiler.
+Supplying an already expanded native query tests CLR execution only, not the permission compiler.
 
 `planSdkProjectionProbes` and `executeSdkProjectionProbes` (with `SdkProbes/SdkProbes.csproj`) run 21 read-only SDK
-projection and count controls through the sole native writer. The driver hash is verified, the connection token is passed
-over stdin only, and the driver selects TLS 1.2.
+projection and count controls through the sole native writer. The driver hash is verified, the token is passed over
+stdin only, and the driver uses TLS 1.2.
 
 ## Local checks
 
@@ -152,9 +225,9 @@ dotnet build examples/company-operations/plugins/Tests/Tests.csproj -c Release -
 ```
 
 These cover immutable intent, redaction, typed queries, inert observers, marker ambiguity, XML entity protection,
-protected scope associations, receipt validation, worker envelope integrity and chunk reassembly. The collector tests run
-the real worker against invented loopback identity, Blob and Dataverse gateways. They do not deploy or emulate Azure,
-qualify managed identity or prove hosted durability.
+protected scope associations, receipt validation, worker envelope integrity and chunk reassembly. The collector tests
+run the real worker against invented loopback identity, Blob and Dataverse gateways; they do not deploy or emulate
+Azure, qualify managed identity or prove hosted durability.
 
 ## References
 

@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { runtimePort } from '../lib/runtime-port.mjs';
 import { withProcessSlot } from './process-slots.mjs';
 import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { runMirageCommand } from '../cli-command.mjs';
 
 const cli = fileURLToPath(new URL('../cli.mjs', import.meta.url));
 const HANG_GUARD_MS = 170_000; // hang guard only: these steps are expected to succeed
@@ -129,6 +130,35 @@ async function run(t, args, cwd) {
     }
   });
 }
+// The command's entry function with its output captured: no process, no timer of its own.
+async function invoke(args, cwd) {
+  const chunks = { stdout: [], stderr: [] };
+  const stream = (name) => ({
+    write: (chunk) => {
+      chunks[name].push(String(chunk));
+      return true;
+    },
+  });
+  const code = await runMirageCommand(args, { stdout: stream('stdout'), stderr: stream('stderr'), cwd });
+  return { code, signal: null, stdout: chunks.stdout.join(''), stderr: chunks.stderr.join('') };
+}
+
+// @test-kind contract: the installed mirage command passes the entry function's output and exit code through unchanged
+test("the installed mirage command passes the entry function's output and exit code through unchanged", async (t) => {
+  const directory = await fixture(t, {
+    'standard/Home.webpage.yml': 'adx_webpageid: home\nadx_name: CLI entry parity\nadx_partialurl: /\n',
+  });
+  const standard = path.join(directory, 'standard');
+  const state = path.join(directory, 'entry-state.json');
+  // None of these starts a runtime, so each output is deterministic.
+  for (const args of [
+    ['inspect', '--source', standard, '--json'],
+    ['inspect', '--source', standard, '--not-an-option'],
+    ['render', '--source', standard, '--state', state, '--path', 'http://127.0.0.1:1/x'],
+  ]) {
+    assert.deepEqual(await run(t, args, directory), await invoke(args, directory), args.join(' '));
+  }
+});
 
 // @test-kind contract: runtime ports accept decimal integers from 0 to 65535 and reject empty and non-decimal spellings
 test('runtime ports accept decimal integers from 0 to 65535 and reject empty and non-decimal spellings', () => {
@@ -281,7 +311,7 @@ test('CLI: standard/enhanced inspect, local render, controlled argument errors a
           '--path',
           badPath,
         ]),
-      ].map((args) => run(t, args, directory)),
+      ].map((args) => invoke(args, directory)),
     );
   assert.equal(inspected.code, 0, inspected.stderr);
   const standardReport = JSON.parse(inspected.stdout);
@@ -303,6 +333,8 @@ test('CLI: standard/enhanced inspect, local render, controlled argument errors a
   for (const [index, result] of badRenders.entries()) {
     assert.equal(result.code, 1, badPaths[index]);
     assert.match(result.stderr, /portal-relative|escaped the local simulator/);
+    // A refused path is checked before a runtime starts, so no start-up report is written.
+    assert.doesNotMatch(result.stderr, /"type":"runtime-startup"/, badPaths[index]);
   }
   assert.equal(unrelatedTraffic, 0);
   assert.equal(unknownOption.code, 1);
@@ -312,7 +344,7 @@ test('CLI: standard/enhanced inspect, local render, controlled argument errors a
   assert.match(missingCdp.stderr, /requires --cdp/);
   assert.equal(withPreset.code, 1);
   assert.match(withPreset.stderr, /does not apply presets/);
-  const retired = await run(t, ['capture-shell', '--source', standard], directory);
+  const retired = await invoke(['capture-shell', '--source', standard], directory);
   assert.equal(retired.code, 1, retired.stdout);
   assert.match(retired.stderr, /Unknown command: capture-shell/);
   await assert.rejects(fs.stat(unusedState), { code: 'ENOENT' });
@@ -327,13 +359,11 @@ test('CLI: render names a redirect answer, keeps the output file unwritten and d
   const source = path.join(directory, 'source');
   const output = path.join(directory, 'redirected.html');
   const [plain, withOutput] = await Promise.all([
-    run(
-      t,
+    invoke(
       ['render', '--source', source, '--state', path.join(directory, 'plain-state.json'), '--path', '/secure'],
       directory,
     ),
-    run(
-      t,
+    invoke(
       [
         'render',
         '--source',
@@ -520,14 +550,14 @@ test('the startup preset comes from the command line, else the project file', as
     }),
   });
   const project = path.join(directory, 'project.json');
-  const fromProject = await run(t, ['inspect', '--project', project, '--json'], directory);
+  const fromProject = await invoke(['inspect', '--project', project, '--json'], directory);
   assert.equal(fromProject.code, 0, fromProject.stderr);
   assert.deepEqual(JSON.parse(fromProject.stdout).startupPreset, {
     name: 'invented-preset',
     mode: 'always',
     from: 'project',
   });
-  const fromCli = await run(t, ['inspect', '--project', project, '--preset', 'other-one', '--json'], directory);
+  const fromCli = await invoke(['inspect', '--project', project, '--preset', 'other-one', '--json'], directory);
   assert.equal(fromCli.code, 0, fromCli.stderr);
   assert.deepEqual(JSON.parse(fromCli.stdout).startupPreset, { name: 'other-one', mode: 'always', from: 'cli' });
 });
@@ -571,8 +601,7 @@ test('a default startup preset applies to serve only: render shows the exported 
   });
   const config = path.join(directory, 'catalogue.json');
   const render = (name, extra = []) =>
-    run(
-      t,
+    invoke(
       [
         'render',
         '--config',
@@ -653,4 +682,118 @@ test('CLI: serve reports the /_sim/ admin address in its startup JSON and serves
   );
   if (error) throw error;
   assert.equal(code, 0, output.stderr);
+});
+
+// @test-kind contract: the preflight report names the scenario file as the invocation spelled it
+test('the preflight report names the scenario file as the invocation spelled it', async (t) => {
+  const directory = await fixture(t, {
+    'standard/Home.webpage.yml': 'adx_webpageid: home\nadx_name: CLI scenario\nadx_partialurl: /\n',
+    'scen.json': '{"id":"s","requires":[]}',
+  });
+  const { stdout } = await invoke(
+    ['preflight', '--source', path.join(directory, 'standard'), '--scenario', 'scen.json', '--json'],
+    directory,
+  );
+  assert.equal(JSON.parse(stdout).scope.scenario.file, 'scen.json');
+});
+
+// @test-kind contract: an in-process mirage command reads the catalogue of the working directory it was given
+test('an in-process mirage command reads the catalogue of the working directory it was given', async (t) => {
+  const directory = await fixture(t, {
+    'standard/web-pages/Home.webpage.yml': 'adx_webpageid: home\nadx_name: CLI catalogue\nadx_partialurl: /\n',
+    'paqvilo.config.yml':
+      'sourceRoot: .\nsites:\n  invented:\n    source: standard\n    environments: { dev: https://invented.example.test }\n',
+  });
+  const { code, stderr } = await invoke(['inspect', '--site', 'invented', '--json'], directory);
+  assert.equal(code, 0, stderr);
+});
+
+// @test-kind contract: serve without --port uses the catalogue site's mirage.port, as the lifecycle commands do (docs/cli.md)
+test("CLI: catalogue serve without --port listens on the site's mirage.port", async (t) => {
+  const directory = await fixture(t, {
+    'portal/web-pages/home/Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\n',
+    'portal/web-pages/home/Home.webpage.copy.html': '<h1>Local home</h1>',
+    // Port 0 (any free port) tells the configured port from the 8787 default without needing a fixed free port.
+    'paqvilo.config.yml':
+      'sourceRoot: .\nsites:\n  local:\n    source: portal\n    environments: { local: http://127.0.0.1:8787 }\n    mirage:\n      port: 0\n',
+  });
+  const { child, completion, output, started } = await startServe(t, directory, [
+    '--config',
+    path.join(directory, 'paqvilo.config.yml'),
+    '--site',
+    'local',
+    '--state',
+    'state.json',
+    '--no-watch',
+    '--json',
+  ]);
+  assert.notEqual(new URL(started.url).port, '8787');
+  assert.equal((await fetch(started.url)).status, 200);
+  child.stdin.end('stop\n');
+  const { code, error } = await within(
+    completion,
+    HANG_GUARD_MS,
+    () => `CLI did not stop. stdout: ${output.stdout}\nstderr: ${output.stderr}`,
+  );
+  if (error) throw error;
+  assert.equal(code, 0, output.stderr);
+});
+
+// @test-kind contract: docs/configuration.md path rules: a relative --state names a file from the working directory, while discovery of a standalone --project lives under that project's own directory
+test('CLI: serve --project resolves --state from the working directory and discovery from the project directory', async (t) => {
+  const directory = await fixture(t, {
+    '.paqvilo/mirage/invented.project.yml':
+      'version: 2\nruntime:\n  kind: dataverse-api\ndataverse:\n  enabled: true\n  port: 0\n  tls: false\n',
+  });
+  const { child, completion, output, started } = await startServe(t, directory, [
+    '--project',
+    path.join('.paqvilo', 'mirage', 'invented.project.yml'),
+    '--port',
+    '0',
+    '--state',
+    path.join('local', 'state.json'),
+    '--no-watch',
+  ]);
+  assert.equal(
+    started.discovery,
+    path.join(directory, '.paqvilo', 'mirage', '.paqvilo', 'simulator', `session-${started.pid}.json`),
+  );
+  await fs.stat(started.discovery);
+  child.stdin.end('stop\n');
+  const { code, error } = await within(
+    completion,
+    HANG_GUARD_MS,
+    () => `CLI did not stop. stdout: ${output.stdout}\nstderr: ${output.stderr}`,
+  );
+  if (error) throw error;
+  assert.equal(code, 0, output.stderr);
+  // The state file is where the invocation named it, not under the project file's directory.
+  await fs.stat(path.join(directory, 'local', 'state.json'));
+  await assert.rejects(fs.stat(path.join(directory, '.paqvilo', 'mirage', 'local')), { code: 'ENOENT' });
+});
+
+// @test-kind contract: serve --project with --config --site (as lense start --project passes them) applies the catalogue site's persona settings to every project portal
+test('CLI: serve --project with --config --site applies the catalogue site persona settings', async (t) => {
+  const directory = await fixture(t, {
+    'portal/Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\n',
+    'portal/Home.webpage.copy.html': '<h1>Local home</h1>',
+    'project.json': JSON.stringify({ version: 1, portals: [{ id: 'main', path: './portal' }], solutions: [] }),
+    'paqvilo.config.yml':
+      'sourceRoot: .\nsites:\n  lab:\n    source: portal\n    defaultEnv: local\n    environments:\n      local: http://127.0.0.1:1\n    mirage:\n      personaContexts: { maxInstances: 2 }\n',
+  });
+  const { child, completion, started } = await startServe(t, directory, [
+    '--project',
+    path.join(directory, 'project.json'),
+    '--config',
+    path.join(directory, 'paqvilo.config.yml'),
+    '--site',
+    'lab',
+    '--port',
+    '0',
+    '--no-watch',
+  ]);
+  const runtimes = await (await fetch(`${started.portals[0].url}/__sim/api/persona-runtimes`)).json();
+  assert.equal(runtimes.maxInstances, 2);
+  child.stdin.end('stop\n');
+  await within(completion, HANG_GUARD_MS, () => 'CLI did not stop.');
 });

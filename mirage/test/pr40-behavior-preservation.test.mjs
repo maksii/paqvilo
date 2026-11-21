@@ -167,7 +167,8 @@ test('trace subscriptions retain concat spreadability for event selections', asy
     origin: 'http://127.0.0.1:12345',
     fetchImpl: async (url) => {
       requested = new URL(url);
-      return new Response('', { status: 200 });
+      // The client first reads the runtime status; anything else here answers empty.
+      return new Response(requested.pathname.endsWith('/status') ? '{}' : '', { status: 200 });
     },
   });
   const events = { 0: 'span-start', 1: 'trace-end', length: 2, [Symbol.isConcatSpreadable]: true };

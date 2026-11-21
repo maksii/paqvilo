@@ -37,7 +37,7 @@ async function localPortal(t) {
     initial: {
       version: 1,
       mappings: { contact: { entitySet: 'contacts', idColumn: 'contactid', nameColumn: 'fullname' } },
-      // The contact has no fullname column value: the trace names it from its first and last name (DV-C-9).
+      // The contact has no fullname column value: the trace names it from its first and last name.
       tables: { contact: [{ contactid: ADA, firstname: 'Ada', lastname: 'Member', statecode: 0 }] },
       permissions: [],
       settings: { permissionMode: 'permissive' },
@@ -134,4 +134,19 @@ test('an external sign-in traces the provider calls, its identity-provider roots
   const exported = JSON.stringify(app.trace.export({}));
   for (const needle of ['id_token=', '"access_token":"ey', 'client_secret='])
     assert.equal(exported.includes(needle), false, needle);
+});
+
+test('an administration sign-in root names its route with the documented /_sim spelling', async (t) => {
+  const sim = await localPortal(t);
+  for (const prefix of ['/_sim', '/__sim']) {
+    const response = await fetch(`${sim.url}${prefix}/api/session/sign-in`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.csrf },
+      body: JSON.stringify({ contactId: ADA }),
+    });
+    await response.arrayBuffer();
+    const root = (await endedTree(sim.trace, response.headers.get('x-trace-id'))).root;
+    assert.equal(root.name, 'POST /_sim/api/session/sign-in', prefix);
+    assert.equal(root.attributes.routeFamily, '_sim', prefix);
+  }
 });

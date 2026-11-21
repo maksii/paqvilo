@@ -8,6 +8,7 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 import { parse } from 'espree';
+import { parseSolutionXml, descendants } from '../mirage/lib/solution-xml.mjs';
 import { validateCommitMessage } from '../scripts/conventional-commit.mjs';
 import {
   classifyChanges as completeScope,
@@ -15,6 +16,7 @@ import {
   githubScope,
   suitesForScope,
   ciLanes,
+  browserLanes,
 } from '../.github/scripts/change-scope.mjs';
 import { tempDirSync } from './fixture.mjs';
 
@@ -46,7 +48,7 @@ test('secondary edits skip runtime jobs but packaged documentation retains relea
   });
   for (const file of [
     'mirage/README.md',
-    'mirage/docs/object-parity.md',
+    'mirage/docs/liquid-parity.md',
     'examples/company-operations/plugins/README.md',
     'AGENTS.md',
     'LICENSE',
@@ -70,6 +72,9 @@ test('secondary edits skip runtime jobs but packaged documentation retains relea
   ])
     assert.equal(classifyChanges([file]).runtime, true, file);
   assert.equal(classifyChanges(['mirage/package-lock.json']).dependencies, true);
+  assert.equal(classifyChanges(['paqvilo-lock.json']).dependencies, true);
+  for (const project of ['control.pcfproj', 'solution.cdsproj', 'client.fsproj', 'client.vbproj'])
+    assert.equal(classifyChanges([`examples/project/${project}`]).dependencies, true, project);
   // Documents that suites assert against (settings tables, documented error codes) select those suites.
   for (const [file, suites] of [
     ['docs/configuration.md', ['mirage']],
@@ -103,7 +108,7 @@ test('description, title, base and source events validate the same complete PR d
   };
   const eventFile = path.join(root, 'event.json'),
     output = path.join(root, 'output');
-  const run = (payload, forced = false) => {
+  const run = (payload) => {
     fs.writeFileSync(eventFile, JSON.stringify(payload));
     fs.writeFileSync(output, '');
     const env = {
@@ -111,7 +116,7 @@ test('description, title, base and source events validate the same complete PR d
       GITHUB_EVENT_PATH: eventFile,
       GITHUB_EVENT_NAME: 'pull_request',
       GITHUB_OUTPUT: output,
-      VALIDATE_ALL: String(forced),
+      VALIDATE_ALL: 'false',
     };
     for (const key of Object.keys(env)) if (key.startsWith('GIT_')) delete env[key];
     const result = spawnSync(
@@ -134,6 +139,18 @@ test('description, title, base and source events validate the same complete PR d
   assert.equal(scope.package, true);
   assert.equal(scope.smoke, true);
   assert.deepEqual(suitesForScope(scope), ['lense', 'mirage', 'examples']);
+  const written = Object.fromEntries(
+    synchronized.output
+      .trimEnd()
+      .split('\n')
+      .map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]),
+  );
+  for (const [key, value] of Object.entries(scope)) assert.equal(written[key], String(value), `GITHUB_OUTPUT ${key}`);
+  assert.equal(written.suites, JSON.stringify(suitesForScope(scope)));
+  assert.equal(written.units, JSON.stringify(ciLanes('unit', suitesForScope(scope))));
+  assert.equal(written.browsers, JSON.stringify(browserLanes(suitesForScope(scope))));
+  // The script's output is a pure function of its scope (the lines written above), so each edit is classified by the
+  // function the script calls; the real run above checks that output once.
   for (const edited of [
     event,
     { ...event, changes: {} },
@@ -143,17 +160,16 @@ test('description, title, base and source events validate the same complete PR d
     { ...event, changes: { base: { ref: { from: 'previous' } } } },
     { ...event, changes: { ...event.changes, unknown: {} } },
   ]) {
-    const result = run(edited);
-    assert.equal(result.status, 0, result.stderr);
-    assert.deepEqual(JSON.parse(result.stdout), scope);
-    assert.equal(result.output, synchronized.output, 'every PR edit retains the applicable source lanes');
+    assert.deepEqual(
+      githubScope(edited, 'pull_request', { VALIDATE_ALL: 'false' }, root),
+      scope,
+      'every PR edit retains the applicable source lanes',
+    );
   }
   const unavailable = run({ ...event, pull_request: { ...event.pull_request, base: { sha: 'a'.repeat(40) } } });
   assert.notEqual(unavailable.status, 0, 'description edits fail closed when the source diff is unavailable');
   assert.match(unavailable.stderr, /Cannot determine changed files/);
-  const forced = run(event, true);
-  assert.equal(forced.status, 0, forced.stderr);
-  assert.equal(JSON.parse(forced.stdout).full, true);
+  assert.equal(githubScope(event, 'pull_request', { VALIDATE_ALL: 'true' }, root).full, true);
   const ci = YAML.parse(fs.readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8'));
   assert.equal(ci.concurrency.group, 'ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}');
   assert.equal(ci.concurrency['cancel-in-progress'], "${{ github.event_name == 'pull_request' }}");
@@ -186,7 +202,7 @@ test('the stable required CI gate rejects failed, cancelled or skipped applicabl
     SDK: 'success',
     SMOKE: 'success',
   };
-  const run = (env) => {
+  const node = (env) => {
     const result = spawnSync(process.execPath, ['-e', script], {
       env: { ...process.env, ...env },
       encoding: 'utf8',
@@ -195,6 +211,28 @@ test('the stable required CI gate rejects failed, cancelled or skipped applicabl
     assert.equal(result.error, undefined);
     return result.status;
   };
+  // The script reads its inputs from process.env and its only effect is process.exit, so each combination below is
+  // evaluated here with those two supplied; a Node process per combination measured nothing more.
+  const run = (env) => {
+    const exited = Symbol('exit');
+    let status = 0;
+    const stub = {
+      env,
+      exit(code = 0) {
+        status = code;
+        throw exited;
+      },
+    };
+    try {
+      new Function('process', script)(stub);
+    } catch (error) {
+      if (error !== exited) throw error;
+    }
+    return status;
+  };
+  // Node itself runs the workflow's script to both outcomes.
+  assert.equal(node(required), 0);
+  assert.equal(node({ ...required, CHECKS: 'failure' }), 1);
   assert.equal(run(required), 0);
   for (const lane of ['SCOPE_RESULT', 'CHECKS', 'TESTS', 'BROWSER', 'WINDOWS', 'SDK', 'SMOKE'])
     for (const result of ['failure', 'cancelled', 'skipped'])
@@ -333,10 +371,16 @@ test('PR scope excludes unrelated base-branch code but includes both sides of re
   git('mv', 'runtime.mjs', 'docs/runtime.md');
   git('commit', '-qm', 'rename');
   const renamed = git('rev-parse', 'HEAD');
-  assert.equal(classify({ before: head }, { GITHUB_EVENT_NAME: 'push', GITHUB_SHA: renamed }).runtime, true);
-  assert.equal(classify({ pull_request: { base: { sha: head }, head: { sha: renamed } } }).runtime, true);
-  assert.equal(classify({}, { GITHUB_EVENT_NAME: 'workflow_dispatch' }).runtime, true);
-  assert.equal(classify({ before: head }, { VALIDATE_ALL: 'true' }).runtime, true);
+  // The same classification the script runs for each event, called directly: one process per case is not needed.
+  const scopeOf = (event, eventName, env = {}) =>
+    githubScope(event, eventName, { VALIDATE_ALL: 'false', ...env }, root);
+  assert.equal(scopeOf({ before: head }, 'push', { GITHUB_SHA: renamed }).runtime, true);
+  assert.equal(
+    scopeOf({ pull_request: { base: { sha: head }, head: { sha: renamed } } }, 'pull_request').runtime,
+    true,
+  );
+  assert.equal(scopeOf({}, 'workflow_dispatch').runtime, true);
+  assert.equal(scopeOf({ before: head }, 'pull_request', { VALIDATE_ALL: 'true' }).runtime, true);
 });
 
 // The hook executes staged copies, including every local module imported by its selected entry points.
@@ -707,8 +751,8 @@ test('verification receipts require an identical tree, toolchain, browser, fixtu
   const { matchingVerification } = await import('../scripts/ci.mjs');
   const identity = {
     tree: 'abc',
-    node: 'v24.22.1',
-    npm: '11.19.1',
+    node: 'v26.13.1',
+    npm: '12.2.2',
     platform: 'win32',
     arch: 'x64',
     chromium: 'fixture:100:200',
@@ -948,12 +992,12 @@ test('SDK fixtures reject stale DLL bytes and compiler pinning matches every CLR
   assert.throws(() => verifyClrSdk(path.join(root, 'fixture.dll')), /DLL digest mismatch/);
   const pin = JSON.parse(fs.readFileSync(new URL('../global.json', import.meta.url), 'utf8'));
   // Servicing patches of the pinned feature band are accepted; another band, minor or major is refused.
-  assert.deepEqual(pin.sdk, { version: '10.0.114', rollForward: 'latestPatch', allowPrerelease: false });
+  assert.deepEqual(pin.sdk, { version: '11.0.100', rollForward: 'latestPatch', allowPrerelease: false });
   const { dotnetSatisfies } = await import('../scripts/ci.mjs');
-  assert.equal(dotnetSatisfies('10.0.114', '10.0.114'), true);
-  assert.equal(dotnetSatisfies('10.0.114', '10.0.120'), true);
-  for (const other of ['10.0.113', '10.0.200', '10.1.100', '11.0.114', '10.0.114-preview.1', ''])
-    assert.equal(dotnetSatisfies('10.0.114', other), false, other);
+  assert.equal(dotnetSatisfies('11.0.100', '11.0.100'), true);
+  assert.equal(dotnetSatisfies('11.0.100', '11.0.101'), true);
+  for (const other of ['11.0.099', '11.0.200', '11.1.100', '10.0.404', '11.0.100-preview.1', ''])
+    assert.equal(dotnetSatisfies('11.0.100', other), false, other);
   const ci = YAML.parse(fs.readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8'));
   for (const name of ['test', 'windows', 'browser']) {
     const setup = ci.jobs[name].steps.find((step) => step.uses?.startsWith('actions/setup-dotnet@'));
@@ -1096,7 +1140,7 @@ test('example preparation removes stale local dependencies without following jun
   };
   fs.writeFileSync(path.join(project, 'package.json'), '{}');
   fs.writeFileSync(
-    path.join(checkout, 'npm-shrinkwrap.json'),
+    path.join(checkout, 'paqvilo-lock.json'),
     JSON.stringify({ packages: { 'node_modules/playwright-core': { version: '1.64.1' } } }),
   );
   install(checkout, '1.64.1');
@@ -1389,7 +1433,7 @@ test('the workflow token reaches only the step that provisions the pinned workfl
   assert.equal(new Set(cacheAction).size, 1, 'one pinned actions/cache commit');
   assert.equal(steps[restore].uses, `actions/cache/restore@${cacheAction[0]}`);
   // The job runs on Linux x64 only, where both pinned tool archives are .tar.gz files.
-  assert.equal(ci.jobs.checks['runs-on'], 'ubuntu-24.04');
+  assert.equal(ci.jobs.checks['runs-on'], 'ubuntu-26.04');
   const { assets } = await import('../scripts/check-workflows.mjs');
   for (const [, , , , archive] of Object.values(assets['linux-x64'])) assert.match(archive, /\.tar\.gz$/);
   assert.deepEqual(steps[restore].with, {
@@ -1598,11 +1642,70 @@ test('every third-party workflow action is allowed by the repository admin polic
   ].filter((file) => /\.ya?ml$/.test(file));
   for (const file of definitions) collectUses(YAML.parse(fs.readFileSync(file, 'utf8')));
   const thirdParty = uses.filter((reference) => !/^(\.\/|actions\/|github\/)/.test(reference));
-  assert.ok(thirdParty.includes('SonarSource/sonarqube-scan-action@4d1dc0c91ee400dcf8a6dddf2f705ac36542e304'));
+  assert.ok(thirdParty.includes('SonarSource/sonarqube-scan-action@59202af334b4ba7b5db01b701b8e79f8b3bef0f4'));
   assert.deepEqual(
     thirdParty.filter((reference) => !allowed.some((pattern) => matches(pattern, reference))),
     [],
   );
+});
+
+test('the repository admin plan takes the description and homepage from package.json', () => {
+  const script = fileURLToPath(new URL('../scripts/github-admin.mjs', import.meta.url));
+  // Plan mode only: without --apply the script prints its plan and calls no GitHub API.
+  const result = spawnSync(process.execPath, [script], { encoding: 'utf8', windowsHide: true });
+  assert.equal(result.status, 0, result.stderr);
+  const plan = JSON.parse(result.stdout);
+  const packageJson = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.equal(plan.settings.description, packageJson.description);
+  assert.equal(plan.settings.homepage, packageJson.homepage);
+});
+
+test('the new hosted runner label remains linted and Windows npm script arguments use bash', () => {
+  const config = YAML.parse(fs.readFileSync(new URL('../.github/actionlint.yaml', import.meta.url), 'utf8'));
+  assert.deepEqual(config, { 'self-hosted-runner': { labels: ['ubuntu-26.04'] } });
+  const ci = YAML.parse(fs.readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8'));
+  assert.equal(ci.defaults.run.shell, 'bash');
+  const port = ci.jobs.windows.steps.find((step) => step.name === 'Release port 80 for the ServiceClient gate');
+  assert.equal(port.shell, 'pwsh', 'the Windows service operation keeps its explicit PowerShell shell');
+  const expectedNpm = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).packageManager;
+  const npmSetup = ci.jobs.windows.steps.find((step) => step.name === 'Install the pinned npm version');
+  assert.ok(npmSetup.run.includes(expectedNpm));
+  assert.equal(npmSetup['working-directory'], '${{ runner.temp }}');
+});
+
+test('every tracked npm lockfile is covered by the dependency vulnerability audit', async () => {
+  const { auditedProjects } = await import('../scripts/audit-dependencies.mjs');
+  const root = fileURLToPath(new URL('../', import.meta.url));
+  const inventory = spawnSync('git', ['ls-files', '-z', '*package-lock.json'], {
+    cwd: root,
+    encoding: 'utf8',
+    windowsHide: true,
+  });
+  assert.equal(inventory.status, 0, inventory.stderr);
+  const locks = inventory.stdout.split('\0').filter(Boolean);
+  assert.ok(locks.includes('package-lock.json'));
+  for (const lock of locks)
+    assert.ok(auditedProjects.includes(path.posix.dirname(lock)), `${lock} must have audit coverage`);
+});
+
+test('solution Release builds explicitly select the package type declared by their exported metadata', () => {
+  const deployment = fileURLToPath(new URL('../examples/project/deployment/', import.meta.url));
+  const projects = fs.readdirSync(deployment).filter((name) => name.endsWith('.cdsproj'));
+  assert.ok(projects.length > 0);
+  for (const project of projects) {
+    const definition = parseSolutionXml(fs.readFileSync(path.join(deployment, project), 'utf8'));
+    const source = descendants(definition, 'SolutionRootPath')[0]?.text.trim();
+    assert.ok(source, `${project} names its source`);
+    const metadata = parseSolutionXml(fs.readFileSync(path.resolve(deployment, source, 'Other/Solution.xml'), 'utf8'));
+    const managed = descendants(metadata, 'Managed')[0]?.text.trim();
+    assert.ok(['0', '1'].includes(managed), `${project} metadata declares its package type`);
+    const expected = managed === '1' ? 'Managed' : 'Unmanaged';
+    assert.deepEqual(
+      descendants(definition, 'SolutionPackageType').map((node) => node.text.trim()),
+      [expected],
+      project,
+    );
+  }
 });
 
 test('npm CLI resolution finds the bundled npm in Windows and POSIX Node layouts', async (t) => {
@@ -1680,7 +1783,7 @@ test('package cache primer removes its preparation directory after success, fail
   const script = fileURLToPath(new URL('../scripts/prime-package-cache.mjs', import.meta.url));
   const dir = tempDirSync('paqvilo-prime-cache-');
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  fs.writeFileSync(path.join(dir, 'npm-shrinkwrap.json'), JSON.stringify({ packages: {} }));
+  fs.writeFileSync(path.join(dir, 'paqvilo-lock.json'), JSON.stringify({ packages: {} }));
   fs.mkdirSync(path.join(dir, 'examples', 'project'), { recursive: true });
   fs.writeFileSync(path.join(dir, 'examples', 'project', 'package.json'), '{}');
   fs.writeFileSync(

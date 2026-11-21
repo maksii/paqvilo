@@ -18,10 +18,11 @@ import { modelDrivenActionAvailability } from '../lense/model-driven-action-runn
 import { servesAgentSession } from './helpers/agent-endpoint.mjs';
 import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
 import { ANY_DEBUG_PORT_ARGS, devToolsPort } from './helpers/debug-port.mjs';
+import { manualClock } from '../test/helpers/startup-page.mjs';
 
-// A startup deadline for scenarios whose target phase stalls until cleanup. The stall never ends by itself, so the
-// asserted expiry does not depend on this length; it only has to outlast the earlier phases (browser launch or CDP
-// connection) however slow the host is.
+// The startup deadline of scenarios whose target phase stalls until cleanup. Each of them gives the run a clock that
+// only the test moves (`startupClock`), so no real guard is armed: the deadline ends the start when the test expires
+// it, never because the earlier phases (browser launch or CDP connection) took long on a slow host.
 const STALLED_STARTUP_DEADLINE_MS = 30_000;
 
 async function fixture(t, { resetDocument = false } = {}) {
@@ -146,52 +147,28 @@ test('model-driven startup deadline disposes a late owned browser context before
   const sibling = await browser.newContext(),
     siblingPage = await sibling.newPage();
   await siblingPage.setContent('<input value="sibling draft">');
-  // The test, not the host's speed, decides when the silence guard fires: it captures the run's one deadline timer.
-  const nativeSetTimeout = globalThis.setTimeout;
-  const nativeClearTimeout = globalThis.clearTimeout;
-  const deadlines = [];
-  const timeoutMock = t.mock.method(globalThis, 'setTimeout', (callback, delay, ...args) => {
-    const handle = nativeSetTimeout(callback, delay, ...args);
-    if (delay > STALLED_STARTUP_DEADLINE_MS / 2 && delay <= STALLED_STARTUP_DEADLINE_MS)
-      deadlines.push({ callback, handle, args });
-    return handle;
-  });
-  const expireDeadline = () => {
-    const [deadline] = deadlines;
-    nativeClearTimeout(deadline.handle);
-    // The deadline callback re-checks the clock (a silence guard): present it a clock at the silence limit.
-    const expiredAt = Date.now() + STALLED_STARTUP_DEADLINE_MS;
-    const clock = t.mock.method(Date, 'now', () => expiredAt);
-    try {
-      deadline.callback(...deadline.args);
-    } finally {
-      clock.mock.restore();
-    }
-  };
+  // The test, not the host's speed, decides when the silence guard fires: the run's deadline reads this clock.
+  const clock = manualClock();
   let late,
     lateClosed = false;
   t.mock.method(chromium, 'launchPersistentContext', async () => {
     // The silence guard ends the start while this owned launch is in flight; the launch then completes late.
-    expireDeadline();
+    clock.expire(STALLED_STARTUP_DEADLINE_MS);
     late = await browser.newContext();
     late.once('close', () => {
       lateClosed = true;
     });
     return late;
   });
-  let running;
-  try {
-    running = run(null, {
-      project: setup.project,
-      url: setup.origin,
-      headless: true,
-      browser: setup.channel,
-      'startup-timeout': String(STALLED_STARTUP_DEADLINE_MS),
-    });
-  } finally {
-    timeoutMock.mock.restore();
-  }
-  assert.equal(deadlines.length, 1, 'run must create exactly one configured startup deadline timer');
+  const running = run(null, {
+    project: setup.project,
+    url: setup.origin,
+    headless: true,
+    browser: setup.channel,
+    'startup-timeout': String(STALLED_STARTUP_DEADLINE_MS),
+    startupClock: clock,
+  });
+  assert.equal(clock.armed, 1, 'run must create exactly one configured startup deadline timer');
   await assert.rejects(running, (error) => error.code === 'startup_timeout' && error.phase === 'browser setup');
   assert.ok(late, 'the owned launch completed after the deadline ended the start');
   assert.equal(lateClosed, true, 'the run returns only after its late owned context is closed');
@@ -246,20 +223,27 @@ test('paired local-simulation panel opens on Mirage and stops without owning the
   });
   running.catch(() => {});
   const context = await browserOpened;
+  setup.owner.add(() => context.close());
   const page = context.pages()[0];
   await page.waitForSelector('#paqvilo-panel', { state: 'attached' });
+  // The collapsed pill names the site; the environment is in its tooltip.
   await page.waitForFunction(() =>
-    document.querySelector('#paqvilo-panel')?.shadowRoot?.textContent.includes('Local simulation'),
+    document
+      .querySelector('#paqvilo-panel')
+      ?.shadowRoot?.querySelector('.pill .lbl')
+      ?.getAttribute('title')
+      ?.includes('Local simulation'),
   );
   const availability = await page.evaluate(modelDrivenActionAvailability, {
     origin: runtime.url,
+    localSimulation: true,
     actions: [
       { id: 'environment', requirements: ['environment'] },
       { id: 'privileges', requirements: ['privileges'] },
     ],
   });
   assert.equal(availability[0].available, false);
-  assert.match(availability[0].reason, /local simulator has none/);
+  assert.match(availability[0].reason, /local simulation has none/);
   assert.equal(availability[1].available, false);
   assert.match(availability[1].reason, /security role privileges/);
   // Closing the dedicated browser is the user's stop; a session lifetime could instead
@@ -353,51 +337,24 @@ test('initial document deadline detaches an external CDP browser and preserves i
       resolve({ page, closed });
     }),
   );
-  const nativeSetTimeout = globalThis.setTimeout;
-  const nativeClearTimeout = globalThis.clearTimeout;
-  const matchedTimers = [];
-  let running;
-  let settled;
-  let deadline;
-  let deadlineFired = false;
-  const fireDeadline = () => {
-    if (!deadline || deadlineFired) return;
-    nativeClearTimeout(deadline.handle);
-    deadlineFired = true;
-    // The deadline callback re-checks the clock (a silence guard): present it a clock at the silence limit.
-    const expiredAt = Date.now() + STALLED_STARTUP_DEADLINE_MS;
-    const clock = t.mock.method(Date, 'now', () => expiredAt);
-    try {
-      deadline.callback(...deadline.args);
-    } finally {
-      clock.mock.restore();
-    }
-  };
-  const timeoutMock = t.mock.method(globalThis, 'setTimeout', (callback, delay, ...args) => {
-    const handle = nativeSetTimeout(callback, delay, ...args);
-    // The guard arms for its remaining time, so a millisecond that passes before arming shortens the delay.
-    if (delay > STALLED_STARTUP_DEADLINE_MS / 2 && delay <= STALLED_STARTUP_DEADLINE_MS)
-      matchedTimers.push({ callback, handle, args });
-    return handle;
+  // The run's deadline reads a clock that only this test moves: the silence guard fires when the test expires it.
+  const clock = manualClock();
+  const fireDeadline = () => clock.expire(STALLED_STARTUP_DEADLINE_MS);
+  const running = run(null, {
+    project: setup.project,
+    url: setup.origin,
+    headless: true,
+    'cdp-url': `http://127.0.0.1:${port}`,
+    'startup-timeout': String(STALLED_STARTUP_DEADLINE_MS),
+    startupClock: clock,
   });
+  const settled = running.then(
+    (value) => ({ status: 'fulfilled', value }),
+    (error) => ({ status: 'rejected', error }),
+  );
+  const armed = clock.armed;
   try {
-    running = run(null, {
-      project: setup.project,
-      url: setup.origin,
-      headless: true,
-      'cdp-url': `http://127.0.0.1:${port}`,
-      'startup-timeout': String(STALLED_STARTUP_DEADLINE_MS),
-    });
-    settled = running.then(
-      (value) => ({ status: 'fulfilled', value }),
-      (error) => ({ status: 'rejected', error }),
-    );
-  } finally {
-    timeoutMock.mock.restore();
-  }
-  if (matchedTimers.length === 1) deadline = matchedTimers[0];
-  try {
-    assert.equal(matchedTimers.length, 1, 'run must create exactly one configured startup deadline timer');
+    assert.equal(armed, 1, 'run must create exactly one configured startup deadline timer');
     const first = await Promise.race([
       setup.requested.then(() => ({ kind: 'document-requested' })),
       settled.then((result) => ({ kind: 'run-settled', result })),
@@ -424,11 +381,11 @@ test('initial document deadline detaches an external CDP browser and preserves i
   } finally {
     releaseOwnerClose();
     setup.releaseDocument();
-    if (matchedTimers.length === 1) fireDeadline();
+    fireDeadline();
     try {
       await external.close();
     } finally {
-      if (settled) await settled;
+      await settled;
     }
   }
 });
@@ -540,6 +497,9 @@ test('model-driven navigation and real filesystem cleanup failures both survive 
       headless: true,
       'debug-port': '0',
       timeout: '20000',
+      // The document is held until this test releases it: on a clock nobody moves, the start-up silence guard
+      // cannot end that wait first.
+      startupClock: manualClock(),
       output: path.join(directory, 'overlay.json'),
     },
     ['dev'],
@@ -570,4 +530,61 @@ test('model-driven navigation and real filesystem cleanup failures both survive 
   // This process's agent listener no longer serves the session, even if the port was reused.
   assert.equal(await servesAgentSession(blocker.discovery), false);
   assert.ok(setup.methods.every((method) => method === 'GET'));
+});
+
+// @test-kind contract: model-driven dev leaves native dialogs to the person and says what --no-reload does; Paqvilo's own designed behaviour on the invented loopback app.
+test('a headed model-driven session leaves a native confirm open for the person and says live reload is paused', async (t) => {
+  const setup = await fixture(t);
+  const browser = await chromium.launch({
+    channel: setup.channel === 'chromium' ? undefined : setup.channel,
+    headless: true,
+  });
+  setup.owner.add(() => browser.close());
+  const context = await browser.newContext({ proxy: setup.network.proxy });
+  // The run owns this context as it would own a headed browser it launched: the configuration is not headless.
+  const open = async () => ({
+    context,
+    attached: false,
+    debugPort: null,
+    profile: { kind: 'named', name: 'invented' },
+    close: () => context.close(),
+  });
+  const logs = [];
+  let installed;
+  const ready = new Promise((resolve) => {
+    installed = resolve;
+  });
+  const original = { log: console.log, error: console.error };
+  console.log = (line) => {
+    logs.push(String(line));
+    if (/overlay installed/.test(line)) installed();
+  };
+  console.error = () => {};
+  setup.owner.add(() => Object.assign(console, original));
+  const startup = { phase() {}, complete() {}, fail() {}, close() {} };
+  const settled = run(null, { project: setup.project, url: setup.origin, 'no-reload': true, startup }, ['dev'], {
+    open,
+  }).then(
+    () => null,
+    (error) => error,
+  );
+  await Promise.race([ready, settled]);
+  const page = context.pages()[0];
+  assert.ok(page, 'the session opened its app tab');
+  const cdp = await context.newCDPSession(page);
+  await cdp.send('Page.enable');
+  const opening = new Promise((resolve) => cdp.once('Page.javascriptDialogOpening', resolve));
+  const answer = page.evaluate(() => confirm('Discard the invented draft?'));
+  assert.equal((await opening).message, 'Discard the invented draft?');
+  // The person's answer: without a dialog listener Playwright dismissed the dialog itself and confirm() returned false.
+  await cdp.send('Page.handleJavaScriptDialog', { accept: true }).catch(() => {});
+  assert.equal(await answer, true, 'the confirm waits for and returns the answer given in the browser');
+  await context.close();
+  assert.equal(await settled, null);
+  Object.assign(console, original);
+  assert.equal(context.listenerCount('dialog'), 0, 'the dialog policy is removed when the session stops');
+  assert.ok(
+    logs.some((line) => /Live reload is paused \(--no-reload\)/.test(line) && !/to reload\.$/.test(line)),
+    JSON.stringify(logs),
+  );
 });

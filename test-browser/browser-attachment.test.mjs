@@ -258,18 +258,66 @@ test('a same-address navigation supersedes a pending late-document repair', asyn
   assert.equal(await page.locator('#draft').inputValue(), 'new document draft');
 });
 
-async function pendingResponseEdit(t, { delayRequestObservation = false } = {}) {
+async function pendingResponseEdit(t, { delayRequestObservation = false, releaseWithEdit = false } = {}) {
   let detach, release, attaching, releaseObservation;
+  // Names the step a cut or failed run was waiting on; a run that reaches its end reports nothing.
+  let stage = 'fixture',
+    crashed = false,
+    repairResult,
+    repairOutcome;
   const { browser, origin } = await lateInspectionFixture(t, '<!doctype html><input id="draft">', async () => {
+    if (stage !== 'done')
+      t.diagnostic(
+        `pending-response edit stopped at: ${stage}; page crashed: ${crashed}; repairLateDocument returned: ${JSON.stringify(repairResult) ?? 'not observed'}; repair navigation: ${repairOutcome ?? 'pending'}`,
+      );
     releaseObservation?.();
     release?.();
     if (attaching) detach = await attaching;
     await detach?.();
   });
-  const context = await browser.newContext({ serviceWorkers: 'block' }),
-    page = await context.newPage();
+  stage = 'new context';
+  const context = await browser.newContext({ serviceWorkers: 'block' });
+  // Observes the answer of the repair call only; every command and answer passes through unchanged.
+  const attach = context.newCDPSession.bind(context);
+  t.mock.method(context, 'newCDPSession', async (...args) => {
+    const cdp = await attach(...args),
+      send = cdp.send.bind(cdp);
+    cdp.send = async (method, params) => {
+      const answer = await send(method, params);
+      if (method === 'Runtime.callFunctionOn' && params.functionDeclaration?.startsWith('function repairLateDocument'))
+        repairResult = answer.exceptionDetails ? 'exception' : answer.result?.value;
+      return answer;
+    };
+    return cdp;
+  });
+  stage = 'new page';
+  const page = await context.newPage();
+  page.on('crash', () => {
+    crashed = true;
+  });
+  stage = 'initial goto';
   await page.goto(origin);
+  stage = 'initial focus';
   await page.locator('#draft').focus();
+  // Input.insertText reaching the browser before the corrective response does not order them in the renderer: a
+  // commit processed first replaces the document, the edit never reaches it, and Chromium never answers the command.
+  // The page's first beforeinput listener holds the renderer in a synchronous request until the browser has
+  // accepted the response, so the edit is applied, and cancels, with the answered response pending in the browser.
+  const editApplying = Promise.withResolvers(),
+    accepted = Promise.withResolvers();
+  if (releaseWithEdit)
+    await page.evaluate(() =>
+      addEventListener(
+        'beforeinput',
+        () => {
+          const request = new XMLHttpRequest();
+          request.open('GET', '/edit-applying', false);
+          request.send();
+        },
+        { capture: true, once: true },
+      ),
+    );
+  stage = 'interception setup';
   let requested, reported, settled, repairRequest;
   const held = new Promise((resolve) => {
       requested = resolve;
@@ -278,7 +326,10 @@ async function pendingResponseEdit(t, { delayRequestObservation = false } = {}) 
       reported = resolve;
     }),
     completed = new Promise((resolve) => {
-      settled = resolve;
+      settled = (outcome) => {
+        repairOutcome ??= outcome;
+        resolve(outcome);
+      };
     });
   const gate = new Promise((resolve) => {
     release = resolve;
@@ -313,14 +364,19 @@ async function pendingResponseEdit(t, { delayRequestObservation = false } = {}) 
     context,
     origin,
     async (route) => {
-      if (route.request().isNavigationRequest()) {
+      const navigation = route.request().isNavigationRequest();
+      if (new URL(route.request().url()).pathname === '/edit-applying') {
+        editApplying.resolve();
+        await accepted.promise;
+      } else if (navigation) {
         requested();
         await gate;
       }
-      await route.fulfill({
+      const acknowledged = await route.fulfill({
         headers: { 'content-type': 'text/html' },
         body: '<!doctype html><input id="draft"><script>window.localPreview=true</script>',
       });
+      if (navigation) accepted.resolve(acknowledged);
     },
     { onError: reported },
   );
@@ -328,9 +384,31 @@ async function pendingResponseEdit(t, { delayRequestObservation = false } = {}) 
   const editing = (async () => {
     // Fetch and Playwright observe this navigation through separate CDP sessions.
     // Cancellation can only be asserted through Playwright after it knows the request.
+    stage = 'Fetch pause and Playwright request (held: false, observed: false)';
+    held.then(() => {
+      if (!editingStarted) stage = stage.replace('held: false', 'held: true');
+    });
+    observed.promise.then(() => {
+      if (!editingStarted) stage = stage.replace('observed: false', 'observed: true');
+    });
     await Promise.all([held, observed.promise]);
     editingStarted = true;
-    await page.keyboard.insertText('draft entered after repair started');
+    stage = 'insertText';
+    const typing = page.keyboard.insertText('draft entered after repair started');
+    if (releaseWithEdit) {
+      stage = 'edit applying in the old document';
+      await editApplying.promise;
+      release();
+      stage = 'corrective response accepted';
+      assert.equal(
+        await accepted.promise,
+        true,
+        'the browser accepts the corrective response before the edit cancels it',
+      );
+      stage = 'insertText';
+    }
+    await typing;
+    stage = 'insertText answered';
   })();
   if (delayRequestObservation) {
     await Promise.all([held, observationHeld.promise]);
@@ -340,17 +418,24 @@ async function pendingResponseEdit(t, { delayRequestObservation = false } = {}) 
   }
   await editing;
   release();
+  stage = 'attaching';
   detach = await attaching;
+  stage = 'requestfailed or load of the repair';
   assert.equal(await completed, 'cancelled', 'the old document cannot commit a replacement after accepting an edit');
+  stage = 'inputValue';
   assert.equal(await page.locator('#draft').inputValue(), 'draft entered after repair started');
+  stage = 'draft warning';
   assert.equal((await warning).code, 'reload_required');
   assert.equal(page.url(), origin + '/');
+  stage = 'final goto';
   await page.goto(origin);
+  stage = 'final evaluate';
   assert.equal(
     await page.evaluate(() => window.localPreview),
     true,
     'explicit navigation still applies the complete overlay',
   );
+  stage = 'done';
 }
 
 test('editing while a corrective response is pending cancels only that repair and preserves the draft', async (t) => {
@@ -359,6 +444,10 @@ test('editing while a corrective response is pending cancels only that repair an
 
 test('pending-response editing waits for Playwright request delivery after the Fetch pause', async (t) => {
   await pendingResponseEdit(t, { delayRequestObservation: true });
+});
+
+test('a corrective response answered together with the cancelling edit still reports the reload warning', async (t) => {
+  await pendingResponseEdit(t, { releaseWithEdit: true });
 });
 
 test('late repair distinguishes pristine native controls from edited form state', async (t) => {
@@ -613,4 +702,66 @@ test('cancelled and superseded repairs release their navigation ownership', asyn
         'owned tracker and binding globals are removed',
       );
     });
+});
+
+test('a draft tracker whose installation answer is outstanding when setup ends is removed from the page', async (t) => {
+  const installed = Promise.withResolvers(),
+    gate = Promise.withResolvers();
+  let opening;
+  const { browser, origin } = await lateInspectionFixture(t, '<!doctype html><input id="draft">', async () => {
+    gate.resolve();
+    await opening?.then(
+      (detach) => detach(),
+      () => {},
+    );
+  });
+  const context = await browser.newContext({ serviceWorkers: 'block' }),
+    page = await context.newPage();
+  await page.goto(origin);
+  // Setup guards fire only when the test fires them; release guards are never fired.
+  const guards = new Set();
+  const clock = {
+    setTimeout: (fire, ms, ...args) => {
+      const guard = { fire: () => fire(...args), ms };
+      guards.add(guard);
+      return guard;
+    },
+    clearTimeout: (guard) => guards.delete(guard),
+  };
+  const attach = context.newCDPSession.bind(context);
+  const removed = [];
+  let registration;
+  t.mock.method(context, 'newCDPSession', async (...args) => {
+    const cdp = await attach(...args),
+      send = cdp.send.bind(cdp);
+    cdp.send = async (method, params) => {
+      if (method === 'Page.removeScriptToEvaluateOnNewDocument') removed.push(params.identifier);
+      const answer = await send(method, params);
+      if (
+        method === 'Page.addScriptToEvaluateOnNewDocument' &&
+        params.runImmediately &&
+        params.source?.includes('function installLateDraftTracker')
+      ) {
+        // The browser has registered and installed the tracker; only its answer is withheld.
+        registration = answer.identifier;
+        installed.resolve();
+        await gate.promise;
+      }
+      return answer;
+    };
+    return cdp;
+  });
+  const trackerGlobals = () =>
+    page.evaluate(() => Object.getOwnPropertyNames(window).filter((name) => name.startsWith('__paqviloLateDraft_')));
+  opening = interceptOrigin(context, origin, (route) => route.fallback(), { onError: () => {}, clock });
+  await installed.promise;
+  assert.notDeepEqual(await trackerGlobals(), [], 'the tracker is installed while its answer is outstanding');
+  // The setup stops waiting for the answer, and its release starts before the answer arrives.
+  const waiting = [...guards].filter(({ ms }) => ms === 30_000);
+  assert.equal(waiting.length, 1, 'only the installation command is awaited');
+  waiting[0].fire();
+  gate.resolve();
+  await assert.rejects(opening, /Page\.addScriptToEvaluateOnNewDocument did not answer within 30000 ms/);
+  assert.deepEqual(await trackerGlobals(), [], 'the tracker and its binding global are removed from the document');
+  assert.deepEqual(removed, [registration], 'the tracker registration is removed');
 });

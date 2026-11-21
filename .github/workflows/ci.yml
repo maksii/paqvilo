@@ -31,6 +31,9 @@ on:
         default: true
 permissions:
   contents: read
+defaults:
+  run:
+    shell: bash
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -40,7 +43,7 @@ env:
 jobs:
   changes:
     name: Change scope and commit convention
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     outputs:
       runtime: ${{ steps.scope.outputs.runtime }}
@@ -65,6 +68,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version-file: .node-version
+          package-manager-cache: false
       - name: Validate the squash commit title
         if: github.event_name == 'pull_request'
         env:
@@ -81,7 +85,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.quality == 'true' || needs.changes.outputs.package == 'true'
     name: Static checks and release boundary
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -91,9 +95,18 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version-file: .node-version
+          package-manager-cache: false
+      - name: Install the pinned npm version
+        working-directory: ${{ runner.temp }}
+        run: |
+          npm install --global npm@12.2.2 --ignore-scripts --no-audit --no-fund
+          test "$(npm --version)" = "12.2.2"
+      - name: Restore npm cache with the pinned npm version
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
           cache: npm
           cache-dependency-path: |
-            npm-shrinkwrap.json
+            paqvilo-lock.json
             mirage/package-lock.json
       - name: Stamp preview package metadata
         if: inputs.package_version != ''
@@ -111,7 +124,7 @@ jobs:
       - name: Restore the pinned workflow tool archives
         id: tools-cache
         if: needs.changes.outputs.quality == 'true'
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25
         with:
           path: .paqvilo/tools/*/*.tar.gz
           key: workflow-tools-${{ runner.os }}-${{ runner.arch }}-${{ steps.tools.outputs.key }}
@@ -124,7 +137,7 @@ jobs:
       # Saved as soon as provisioning verified them, so a run whose checks fail still keeps them for the next run.
       - name: Save the pinned workflow tool archives
         if: needs.changes.outputs.quality == 'true' && steps.tools-cache.outputs.cache-hit != 'true' && hashFiles('.paqvilo/tools/*/*.tar.gz') != ''
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25
         with:
           path: .paqvilo/tools/*/*.tar.gz
           key: workflow-tools-${{ runner.os }}-${{ runner.arch }}-${{ steps.tools.outputs.key }}
@@ -151,9 +164,9 @@ jobs:
   test:
     needs: changes
     if: needs.changes.outputs.runtime == 'true'
-    name: Unit tests (Node 24, ${{ matrix.suite }}${{ matrix.shard && format(' {0}', matrix.shard) || '' }})
-    runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    name: Unit tests (Node 26, ${{ matrix.suite }}${{ matrix.shard && format(' {0}', matrix.shard) || '' }})
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -166,9 +179,18 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version-file: .node-version
+          package-manager-cache: false
+      - name: Install the pinned npm version
+        working-directory: ${{ runner.temp }}
+        run: |
+          npm install --global npm@12.2.2 --ignore-scripts --no-audit --no-fund
+          test "$(npm --version)" = "12.2.2"
+      - name: Restore npm cache with the pinned npm version
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
           cache: npm
           cache-dependency-path: |
-            npm-shrinkwrap.json
+            paqvilo-lock.json
             mirage/package-lock.json
       - name: Stamp preview package metadata
         if: inputs.package_version != ''
@@ -181,7 +203,7 @@ jobs:
           git config --global gc.auto 0
       - name: Install the pinned .NET SDK
         if: matrix.suite != 'lense'
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73
         with:
           global-json-file: global.json
       # The code that decides which fixtures preparation downloads names the caches this lane restores.
@@ -192,7 +214,7 @@ jobs:
       - name: Restore the pinned ecosystem fixture archives
         id: ecosystem-cache
         if: steps.fixtures.outputs.ecosystem == 'true'
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25
         with:
           path: .paqvilo/ci/ecosystem/*.tar.gz
           key: ecosystem-fixtures-${{ runner.os }}-${{ steps.fixtures.outputs.ecosystem_key }}
@@ -201,7 +223,7 @@ jobs:
       # Saved as soon as preparation verified them, so a run whose tests fail still keeps them for the next run.
       - name: Save the pinned ecosystem fixture archives
         if: steps.fixtures.outputs.ecosystem == 'true' && steps.ecosystem-cache.outputs.cache-hit != 'true' && hashFiles('.paqvilo/ci/ecosystem/*.tar.gz') != ''
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25
         with:
           path: .paqvilo/ci/ecosystem/*.tar.gz
           key: ecosystem-fixtures-${{ runner.os }}-${{ steps.fixtures.outputs.ecosystem_key }}
@@ -210,9 +232,9 @@ jobs:
   browser:
     needs: changes
     if: needs.changes.outputs.runtime == 'true'
-    name: Browser tests (Node 24, ${{ matrix.os }}, ${{ matrix.channel }}, ${{ matrix.suite }}${{ matrix.shard && format(' {0}', matrix.shard) || '' }})
+    name: Browser tests (Node 26, ${{ matrix.os }}, ${{ matrix.channel }}, ${{ matrix.suite }}${{ matrix.shard && format(' {0}', matrix.shard) || '' }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 40
+    timeout-minutes: 60
     env:
       PAQ_CI_BROWSER: ${{ matrix.channel }}
     strategy:
@@ -227,9 +249,18 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version-file: .node-version
+          package-manager-cache: false
+      - name: Install the pinned npm version
+        working-directory: ${{ runner.temp }}
+        run: |
+          npm install --global npm@12.2.2 --ignore-scripts --no-audit --no-fund
+          test "$(npm --version)" = "12.2.2"
+      - name: Restore npm cache with the pinned npm version
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
           cache: npm
           cache-dependency-path: |
-            npm-shrinkwrap.json
+            paqvilo-lock.json
             mirage/package-lock.json
       - name: Stamp preview package metadata
         if: inputs.package_version != ''
@@ -244,13 +275,13 @@ jobs:
         id: playwright
         run: node -e "require('node:fs').appendFileSync(process.env.GITHUB_OUTPUT,'version='+require('./package.json').dependencies['playwright-core']+'\n')"
       - name: Restore matching Chromium
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
         with:
           path: ${{ runner.os == 'Windows' && '~/AppData/Local/ms-playwright' || '~/.cache/ms-playwright' }}
           key: playwright-chromium-${{ runner.os }}-${{ steps.playwright.outputs.version }}
       - name: Install the pinned .NET SDK
         if: matrix.suite != 'lense'
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73
         with:
           global-json-file: global.json
       # The code that decides which fixtures preparation downloads names the caches this lane restores.
@@ -261,7 +292,7 @@ jobs:
       - name: Restore the pinned CLR SDK reference archive
         id: sdk-reference-cache
         if: steps.fixtures.outputs.sdk_reference == 'true'
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25
         with:
           path: .paqvilo/ci/sdk-reference/sdk.zip
           key: sdk-reference-${{ runner.os }}-${{ steps.fixtures.outputs.sdk_reference_key }}
@@ -270,7 +301,7 @@ jobs:
       # Saved as soon as preparation verified it, so a run whose tests fail still keeps it for the next run.
       - name: Save the pinned CLR SDK reference archive
         if: steps.fixtures.outputs.sdk_reference == 'true' && steps.sdk-reference-cache.outputs.cache-hit != 'true' && hashFiles('.paqvilo/ci/sdk-reference/sdk.zip') != ''
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25
         with:
           path: .paqvilo/ci/sdk-reference/sdk.zip
           key: sdk-reference-${{ runner.os }}-${{ steps.fixtures.outputs.sdk_reference_key }}
@@ -291,9 +322,9 @@ jobs:
   windows:
     needs: changes
     if: needs.changes.outputs.runtime == 'true'
-    name: Windows unit tests (Node 24, ${{ matrix.suite }}${{ matrix.shard && format(' {0}', matrix.shard) || '' }})
+    name: Windows unit tests (Node 26, ${{ matrix.suite }}${{ matrix.shard && format(' {0}', matrix.shard) || '' }})
     runs-on: windows-2025
-    timeout-minutes: 40
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -306,9 +337,18 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version-file: .node-version
+          package-manager-cache: false
+      - name: Install the pinned npm version
+        working-directory: ${{ runner.temp }}
+        run: |
+          npm install --global npm@12.2.2 --ignore-scripts --no-audit --no-fund
+          test "$(npm --version)" = "12.2.2"
+      - name: Restore npm cache with the pinned npm version
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
           cache: npm
           cache-dependency-path: |
-            npm-shrinkwrap.json
+            paqvilo-lock.json
             mirage/package-lock.json
       - name: Stamp preview package metadata
         if: inputs.package_version != ''
@@ -321,14 +361,14 @@ jobs:
           git config --global gc.auto 0
       - name: Install the pinned .NET SDK
         if: matrix.suite != 'lense'
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73
         with:
           global-json-file: global.json
       - name: Install Python for the required SDK client
         if: matrix.suite == 'mirage' && (!matrix.shard || startsWith(matrix.shard, '1/')) && needs.changes.outputs.sdk == 'true'
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
         with:
-          python-version: '3.13'
+          python-version: '3.15'
       # The code that decides which fixtures preparation downloads names the caches this lane restores.
       - name: Select the fixture archives this lane prepares
         id: fixtures
@@ -337,14 +377,14 @@ jobs:
       - name: Restore the pinned ecosystem fixture archives
         id: ecosystem-cache
         if: steps.fixtures.outputs.ecosystem == 'true'
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25
         with:
           path: .paqvilo/ci/ecosystem/*.tar.gz
           key: ecosystem-fixtures-${{ runner.os }}-${{ steps.fixtures.outputs.ecosystem_key }}
       - name: Restore the pinned CLR SDK reference archive
         id: sdk-reference-cache
         if: steps.fixtures.outputs.sdk_reference == 'true'
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25
         with:
           path: .paqvilo/ci/sdk-reference/sdk.zip
           key: sdk-reference-${{ runner.os }}-${{ steps.fixtures.outputs.sdk_reference_key }}
@@ -354,13 +394,13 @@ jobs:
       # Saved as soon as preparation verified them, so a run whose tests fail still keeps them for the next run.
       - name: Save the pinned ecosystem fixture archives
         if: steps.fixtures.outputs.ecosystem == 'true' && steps.ecosystem-cache.outputs.cache-hit != 'true' && hashFiles('.paqvilo/ci/ecosystem/*.tar.gz') != ''
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25
         with:
           path: .paqvilo/ci/ecosystem/*.tar.gz
           key: ecosystem-fixtures-${{ runner.os }}-${{ steps.fixtures.outputs.ecosystem_key }}
       - name: Save the pinned CLR SDK reference archive
         if: steps.fixtures.outputs.sdk_reference == 'true' && steps.sdk-reference-cache.outputs.cache-hit != 'true' && hashFiles('.paqvilo/ci/sdk-reference/sdk.zip') != ''
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25
         with:
           path: .paqvilo/ci/sdk-reference/sdk.zip
           key: sdk-reference-${{ runner.os }}-${{ steps.fixtures.outputs.sdk_reference_key }}
@@ -388,7 +428,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.sdk == 'true'
     name: Linux SDK clients and storage volume
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -398,12 +438,23 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version-file: .node-version
-      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+          package-manager-cache: false
+      - name: Install the pinned npm version
+        working-directory: ${{ runner.temp }}
+        run: |
+          npm install --global npm@12.2.2 --ignore-scripts --no-audit --no-fund
+          test "$(npm --version)" = "12.2.2"
+      - name: Restore npm cache with the pinned npm version
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73
         with:
           global-json-file: global.json
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
         with:
-          python-version: '3.13'
+          python-version: '3.15'
       - name: Permit the SDK's loopback port 80 on this hosted runner
         if: runner.environment == 'github-hosted'
         run: sudo sysctl -w net.ipv4.ip_unprivileged_port_start=0
@@ -415,7 +466,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.smoke == 'true'
     name: Package smoke test
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -425,9 +476,18 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version-file: .node-version
+          package-manager-cache: false
+      - name: Install the pinned npm version
+        working-directory: ${{ runner.temp }}
+        run: |
+          npm install --global npm@12.2.2 --ignore-scripts --no-audit --no-fund
+          test "$(npm --version)" = "12.2.2"
+      - name: Restore npm cache with the pinned npm version
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
           cache: npm
           cache-dependency-path: |
-            npm-shrinkwrap.json
+            paqvilo-lock.json
             mirage/package-lock.json
       - name: Stamp preview package metadata
         if: inputs.package_version != ''
@@ -463,7 +523,7 @@ jobs:
       - windows
       - sdk-linux
       - package
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - name: Require every job to succeed

@@ -777,10 +777,17 @@ function validateCampaignResult(result, roleWitness) {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const args = process.argv.slice(2);
-  if (args.length !== 2 || args[0] !== '--job')
-    throw new Error('Usage: node mirage-campaign-replay.mjs --job <private offline job.json>');
+  // Loaded only when run as a command: the replay runtime's own imports stay the fingerprinted set.
+  const { cli, UsageError } = await import('../cli.mjs');
+  const { values } = cli(
+    `Usage: node portal-harness/mirage-campaign-replay.mjs --job <private-job.json>
+
+Run from examples/company-operations. Replays frozen native captures through Mirage offline; a relative job path
+resolves from the working directory.`,
+    { job: { type: 'string' } },
+  );
+  if (!values.job) throw new UsageError('--job <private-job.json> is required.');
   console.log(
-    JSON.stringify(await runMirageReplayCampaign(JSON.parse(await boundedBytes(path.resolve(args[1]), 65536)))),
+    JSON.stringify(await runMirageReplayCampaign(JSON.parse(await boundedBytes(path.resolve(values.job), 65536)))),
   );
 }

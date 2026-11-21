@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own provider setting parsers and pack export registrations over invented inputs
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import '../lib/provider-modules.mjs';
@@ -28,7 +29,7 @@ const SETTINGS = {
   connections: [
     { x_conn: { provider: 'http', connector: 'x_widgets' } },
     { x_conn: { password: 'literal' } },
-    /not a connection setting/,
+    /Unknown connections\.x_conn key 'password'/,
   ],
   secrets: [
     { 'x-vault/x-secret': { variable: 'X_SECRET' } },

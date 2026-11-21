@@ -10,7 +10,7 @@ import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
 import { signInContext } from '../testing/session.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
-import { loopbackServer } from './shared-browser.mjs';
+import { loopbackServer, openPortalPage } from './shared-browser.mjs';
 
 // A record form with a Create related record action whose target form opens
 // in a modal, and the record state hiding the inapplicable state action.
@@ -88,7 +88,7 @@ test('create related record opens the target form dialog; the record state hides
   const context = await browser.newContext();
   await signInContext(context, app, 'editor', { roles: ['Editor'] });
   const page = await context.newPage();
-  const response = await page.goto(`${app.url}/?row=${id}`);
+  const response = await openPortalPage(page, `${app.url}/?row=${id}`);
   const html = await response.text();
   // Server markup: both state buttons, no hidden marker; the form dialog with an empty frame.
   const descendants = (root) => {
@@ -267,7 +267,7 @@ test('a cancelled lookup create dialog leaves no success listener behind, so one
   page.on('request', (request) => {
     if (request.method() === 'POST' && new URL(request.url()).pathname === '/grid-data') refreshes.push(request.url());
   });
-  await page.goto(`http://127.0.0.1:${server.address().port}/`);
+  await openPortalPage(page, `http://127.0.0.1:${server.address().port}/`);
   await openAndCancelCreate(page);
   await openAndCancelCreate(page);
   // The create form reports success to the page; the listener of the open dialog runs once.

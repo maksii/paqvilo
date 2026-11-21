@@ -521,7 +521,7 @@ test('a web file is compared with what the environment serves', async () => {
   const { call } = await setup({ [`${ORIGIN}/scripts/app.js`]: { body: 'console.log("online app");\n' } });
   const diff = await call('diff', { rel: 'web-files/app.js', url: '/scripts/app.js' });
   assert.equal(diff.ok, true);
-  assert.equal(diff.against, 'dev online');
+  assert.equal(diff.against, 'deployed');
   assert.deepEqual(
     diff.lines.filter((l) => l[0] !== ' '),
     [
@@ -1317,7 +1317,48 @@ test('a tab that crashes during the removal makes dispose report it at once', as
   assert.equal(tab.page.listenerCount('crash'), 0, 'the removal released its crash listener');
 });
 
-// @test-kind contract: closing a tab immediately releases its panel listeners
+// @test-kind contract: a tab that crashed before the removal is reported at once, with no wait for a document or the guard
+test('a tab that had crashed before the removal makes dispose report it without waiting for the guard', async (t) => {
+  const { tab, panel } = await setup();
+  // The renderer ended while the session ran: `crash` was reported then, and nothing reports it again.
+  tab.page.emit('crash', tab.page);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const removal = scriptedRemoval(tab.page, [() => Promise.reject(new Error('page.evaluate: Target crashed'))]);
+  // No timer is advanced: a removal that waited for its 30 s guard would never settle here.
+  await assert.rejects(
+    panel.dispose(),
+    /could not be confirmed removed from 1 tab\(s\): page\.evaluate: Target crashed/,
+  );
+  assert.equal(removal.asks(), 1);
+});
+
+// @test-kind contract: a crashed tab that was reloaded is asked like any other tab
+test('a tab that crashed and then loaded a new document is waited for as a live tab is', async (t) => {
+  const { tab, panel } = await setup();
+  const main = tab.page.mainFrame();
+  tab.page.emit('crash', tab.page);
+  tab.page.emit('framenavigated', main);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let asked;
+  const failedAsk = new Promise((resolve) => {
+    asked = resolve;
+  });
+  scriptedRemoval(tab.page, [
+    () => {
+      asked();
+      return Promise.reject(new Error('invented evaluation failure'));
+    },
+  ]);
+  const reported = assert.rejects(
+    panel.dispose(),
+    /could not be confirmed removed from 1 tab\(s\): invented evaluation failure/,
+  );
+  await failedAsk;
+  await new Promise((resolve) => setImmediate(resolve));
+  t.mock.timers.tick(30_000);
+  await reported;
+});
+
 test('closing a tab immediately releases its panel listeners', async () => {
   const { tab } = await setup();
   assert.ok(tab.page.listenerCount('console') > 0);
@@ -1683,6 +1724,77 @@ test("Mirage browser sessions: Tweaks show this browser's session and identity p
   tab.page.emit('load');
   assert.equal(flows.length, kept);
   assert.deepEqual(cookieWrites(), [], 'the panel never sets the session cookie itself');
+});
+
+/** A Mirage dev loop whose browser is anonymous, with one scenario that signs it in as a persona. */
+async function sessionLoop() {
+  const loop = await setup();
+  loop.session.cfg.mirage = true;
+  fakeMirage(loop.b, {
+    report: { path: '/scripts', view: 'summary', page: null, tables: [], counts: { templates: 0 } },
+    personas: { personas: [{ contactId: 'alex', name: 'Alex Local', roles: ['Member'], active: true }] },
+    status: { scenarios: [{ id: 'as-alex', name: 'Alex', persona: { contactId: 'alex' } }] },
+    onWrite: async () => ({ status: 200, body: {} }),
+  });
+  const get = loop.b.context.request.get;
+  // The personas read of a sign-in is held when the test sets `loop.personas`, and announced through `loop.asked`.
+  loop.asked = Promise.withResolvers();
+  loop.b.context.request.get = async (url, options) => {
+    const pathname = new URL(String(url)).pathname;
+    if (pathname.endsWith('/session'))
+      return { ok: () => true, status: () => 200, json: async () => ({ signedIn: false, contactId: null, roles: [] }) };
+    if (pathname.endsWith('/personas') && loop.personas) {
+      loop.asked.resolve();
+      await loop.personas.promise;
+    }
+    return get(url, options);
+  };
+  return loop;
+}
+
+// @test-kind contract: a dev loop stopped while a sign-in still reads the persona starts no portal sign-in in the page
+test('a sign-in whose persona read outlasts the dev loop starts no session flow in the page', async () => {
+  const loop = await sessionLoop();
+  loop.personas = Promise.withResolvers();
+  const answer = loop.call('signin', { contactId: 'alex' });
+  await loop.asked.promise;
+  const disposal = loop.panel.dispose();
+  loop.personas.resolve();
+  const result = await answer;
+  await disposal;
+  assert.deepEqual([result.ok, result.error], [false, 'The dev loop has stopped.']);
+  assert.deepEqual(loop.tab.page.flows, [], 'the stopped dev loop ran no sign-in in the page');
+});
+
+// @test-kind contract: a scenario sign-in that waits for the reload is dropped with its load listener when the dev loop stops
+test('a scenario sign-in waiting for the reload leaves no load listener once the dev loop stops', async () => {
+  const { tab, panel, call } = await sessionLoop();
+  const watching = tab.page.listenerCount('load');
+  const applied = await call('scenario', { id: 'as-alex' });
+  assert.deepEqual([applied.ok, applied.navigating, applied.contactId], [true, true, 'alex']);
+  assert.equal(tab.page.listenerCount('load'), watching + 1, 'the session flow waits for the reload');
+  await panel.dispose();
+  assert.equal(tab.page.listenerCount('load'), 0, 'the stopped dev loop listens for no load');
+  tab.page.emit('load');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(tab.page.flows, []);
+});
+
+// Regression: the session flow waited for the Mirage's reload for at most 4 s, then ran in the document that a slower
+// reload destroyed. Virtual time passes every deadline here; only the load itself starts the flow.
+// @test-kind contract: a scenario sign-in starts at the page's load and at no deadline before it
+test('a scenario sign-in starts at the reload itself, however long the reload takes', async (t) => {
+  const { tab, call } = await sessionLoop();
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const applied = await call('scenario', { id: 'as-alex' });
+  assert.deepEqual([applied.ok, applied.navigating], [true, true]);
+  t.mock.timers.tick(3_600_000);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(tab.page.flows, [], 'no deadline stands in for the reload');
+  const flow = sessionFlow(tab.page);
+  tab.page.emit('load');
+  await flow;
+  assert.deepEqual(tab.page.flows.at(-1).fields, { contactId: 'alex' });
 });
 
 // @test-kind contract: Mirage Tweaks report whether local pages are confined to loopback, with the exceptions

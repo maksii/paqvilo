@@ -23,6 +23,7 @@ test('provenance initializers retain the browser WindowProxy when globalThis is 
         (0, eval)(`(${domSource})`)({
           slot: '__inventedAliasDom',
           secret: 'invented-secret',
+          notifyKey: 'invented-notify-key',
           binding: '__inventedAliasBinding',
         });
         (0, eval)(`(${portalSource})`)({ slot: '__inventedAliasPortal', secret: 'invented-secret' });
@@ -49,6 +50,7 @@ test('DOM provenance cloning does not invoke a page override of Array.prototype.
   await page.evaluate(installDomProvenance, {
     slot: '__inventedProvenance',
     secret: 'invented-secret',
+    notifyKey: 'invented-notify-key',
     binding: '__inventedProvenanceBinding',
   });
   const calls = await page.evaluate(() => {

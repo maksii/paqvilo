@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { runtimeOrigin } from './runtime.mjs';
+import { requiredArgument } from '../lib/required-argument.mjs';
 
 const failure = (message, code, status) => Object.assign(new Error(message), { code, ...(status ? { status } : {}) });
 const methods = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']);
@@ -78,15 +79,17 @@ function portalRoute(origin, route) {
  * private cookie is never returned in session descriptions or matrix reports.
  * This client never starts a runtime, changes the configured persona, or retries
  * a request whose mutation may already have committed. */
-export async function createPortalSession({
-  origin,
-  contactId,
-  roles,
-  id = randomUUID(),
-  fetchImpl = globalThis.fetch,
-  timeoutMs = 30000,
-  signal,
-} = {}) {
+export async function createPortalSession(
+  {
+    origin,
+    contactId,
+    roles,
+    id = randomUUID(),
+    fetchImpl = globalThis.fetch,
+    timeoutMs = 30000,
+    signal,
+  } = requiredArgument('createPortalSession({ origin })', 'an options object with the runtime origin'),
+) {
   origin = runtimeOrigin(origin);
   if (
     typeof id !== 'string' ||
@@ -94,10 +97,13 @@ export async function createPortalSession({
     id.length > 160 ||
     typeof fetchImpl !== 'function' ||
     !Number.isInteger(timeoutMs) ||
-    timeoutMs < 1 ||
+    timeoutMs < 0 ||
     timeoutMs > 300000
   )
     throw failure('Portal session requires a bounded identity label and timeout.', 'InvalidPortalSession');
+  // timeoutMs 0 sets no client deadline, as for connectRuntime: the caller's signal alone ends a request then. A caller
+  // that waits for real work (a test under its runner's own guard) uses it, so a busy host never fails a request.
+  const clientDeadline = () => (timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : null);
   const cookies = new Map();
   let csrf = '',
     active = 0,
@@ -137,7 +143,7 @@ export async function createPortalSession({
     const cookie = cookieHeader(url);
     if (cookie) headers.set('cookie', cookie);
     headers.set('x-paqvilo-local-only', 'true');
-    const signals = [AbortSignal.timeout(timeoutMs), signal, init.signal].filter(Boolean);
+    const signals = [clientDeadline(), signal, init.signal].filter(Boolean);
     const response = await fetchImpl(url, {
       ...init,
       method,
@@ -161,7 +167,7 @@ export async function createPortalSession({
         headers: { ...headers, ...(cookie ? { cookie } : {}) },
         ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
         redirect: 'error',
-        signal: AbortSignal.any([AbortSignal.timeout(timeoutMs), signal].filter(Boolean)),
+        signal: AbortSignal.any([clientDeadline(), signal].filter(Boolean)),
       });
     const value = await response.json();
     if (!response.ok)
@@ -184,8 +190,10 @@ export async function createPortalSession({
       changing = false;
     }
   };
-  const state = await administration('/state?summary=1');
-  if (state.config?.mode === 'live' || state.config?.pageMode === 'live')
+  // Session controls need the current transport modes and CSRF token, not a
+  // verification snapshot and a walk of every implementation file.
+  const state = await administration('/status');
+  if (state.mode === 'live' || state.pageMode === 'live')
     throw failure('Portal session automation requires a local Mirage runtime.', 'LocalRuntimeRequired', 409);
   csrf = state.csrf;
   if (typeof csrf !== 'string' || !csrf)

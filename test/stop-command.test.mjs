@@ -12,6 +12,7 @@ import { randomBytes } from 'node:crypto';
 import { inflateRawSync } from 'node:zlib';
 import { mirageStopCommand, mirageCommandHint, listenerPort } from '../lense/stop-command.mjs';
 import { tempDir } from './fixture.mjs';
+import { SCENARIO_HANG_GUARD_MS } from './helpers/bounded-command.mjs';
 
 const execute = promisify(execFile);
 const shells = process.platform === 'win32' ? ['cmd', 'cmd-delayed', 'powershell'] : ['posix'];
@@ -92,6 +93,8 @@ async function capture(command, shell, directory, cli, bashFile, { batch = false
 async function collectorFixture(t, { reportCwd = false } = {}) {
   const directory = await tempDir('paqvilo-stop-argv-');
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  // Its own package.json, without paqvilo, bounds the hint's project lookup whatever lies above the temp folder.
+  await fs.writeFile(path.join(directory, 'package.json'), '{}');
   const cli = path.join(directory, 'collector.mjs');
   await fs.writeFile(
     cli,
@@ -119,12 +122,17 @@ async function collectorFixture(t, { reportCwd = false } = {}) {
   return { directory, cli, bashFile, availableShells: [...shells, ...(bashFile ? ['git-bash'] : [])] };
 }
 
-test('Windows and POSIX formatters keep copied hints on one line while retaining ordinary literal quoting', () => {
+test('Windows and POSIX formatters keep copied hints on one line while retaining ordinary literal quoting', async (t) => {
   const cli = path.resolve('invented-cli.mjs');
+  // A folder outside any project: its own package.json without paqvilo is the nearest one, so the readable hint
+  // starts with npx paqvilo whatever lies above the temp folder (lense/command-hint.mjs).
+  const outside = await tempDir('paqvilo-stop-hint-');
+  t.after(() => fs.rm(outside, { recursive: true, force: true }));
+  await fs.writeFile(path.join(outside, 'package.json'), '{}');
   for (const platform of ['linux', 'win32'])
     for (const { values, windowsReadable, posixReadable } of cases) {
       const args = values.flatMap((value) => ['--project', value]);
-      const hint = mirageStopCommand(args, { cli, platform });
+      const hint = mirageStopCommand(args, { cli, platform, from: outside });
       assert.doesNotMatch(hint, /[\r\n]/, platform);
       assert.equal(hint.startsWith('npx paqvilo '), platform === 'win32' ? windowsReadable : posixReadable);
       if (hint.startsWith('node -e ')) {
@@ -147,7 +155,7 @@ test('printed stop commands preserve literal argv in every native shell without 
     await Promise.all(
       availableShells.map(async (shell) => {
         const platform = shell === 'posix' || shell === 'git-bash' ? 'linux' : 'win32';
-        const hint = mirageStopCommand(args, { cli, platform });
+        const hint = mirageStopCommand(args, { cli, platform, from: directory });
         assert.doesNotMatch(hint, /[\r\n]/, 'the copyable command remains a single line');
         assert.equal(hint.startsWith('npx paqvilo '), platform === 'win32' ? windowsReadable : posixReadable);
         assert.deepEqual(
@@ -160,6 +168,43 @@ test('printed stop commands preserve literal argv in every native shell without 
   }
   assert.throws(() => mirageStopCommand(['--project', 'invalid\0path'], { cli }), /NUL/);
   assert.throws(() => mirageStopCommand([], { cli: './relative-cli.mjs' }), /absolute CLI/);
+});
+
+// @test-kind contract: a group hint with distinct selectors prints one readable command per line when every argument quotes
+test('a line-per-command group hint replays each readable command and keeps the batch for unquotable arguments', async (t) => {
+  const { directory, cli, bashFile, availableShells } = await collectorFixture(t);
+  const commands = ['customer', 'partner'].map((site) => [
+    'mirage',
+    'stop',
+    '--config',
+    path.join(directory, 'invented catalogue', 'paqvilo.config.yml'),
+    '--site',
+    site,
+  ]);
+  await Promise.all(
+    availableShells.map(async (shell) => {
+      const platform = shell === 'posix' || shell === 'git-bash' ? 'linux' : 'win32';
+      const lines = mirageCommandHint(commands, { cli, platform, from: directory, lines: true }).split('\n');
+      assert.equal(lines.length, 2, shell);
+      for (const [index, line] of lines.entries()) {
+        assert.ok(line.startsWith('npx paqvilo mirage stop --config '), shell + ': ' + line);
+        assert.deepEqual(await capture(line, shell, directory, cli, bashFile), commands[index], shell + ': ' + line);
+      }
+    }),
+  );
+  // Without `lines` a group stays one batch; an argument no shell can quote keeps the batch with `lines` too.
+  assert.match(mirageCommandHint(commands, { cli, platform: 'linux', from: directory }), /^node -e /);
+  const unquotable = [...commands, ['mirage', 'stop', '--project', 'line\nvalue']];
+  assert.match(mirageCommandHint(unquotable, { cli, platform: 'linux', from: directory, lines: true }), /^node -e /);
+  assert.match(
+    mirageCommandHint([['mirage', 'stop', '--project', 'D:\\%PAQ_STOP_TEST%\\file.yml'], ...commands], {
+      cli,
+      platform: 'win32',
+      from: directory,
+      lines: true,
+    }),
+    /^node -e /,
+  );
 });
 
 test('listener selectors retain default HTTP ports and distinguish an absent listener', () => {
@@ -232,61 +277,69 @@ test('a compressed sixteen-target command fits CMD and attempts every target aft
   );
 });
 
-test('oversized incompressible commands use immutable file transport across shells', async (t) => {
-  const { directory, cli, bashFile, availableShells } = await collectorFixture(t, { reportCwd: true });
-  const selected = path.join(directory, "file runtime %PAQ_STOP_TEST% !PAQ_STOP_TEST! $ ` O'Brien & ^");
-  await fs.mkdir(selected);
-  const cwd = await fs.realpath(selected);
-  const commands = Array.from({ length: 6 }, (_, i) => [
-    'mirage',
-    'stop',
-    '--fixture',
-    String(i),
-    '--literal',
-    randomBytes(2048).toString('hex'),
-  ]);
-  const payloadFile = path.join(directory, "payload %PAQ_STOP_TEST% !PAQ_STOP_TEST! $ ` O'Brien & ^.json");
-  const stored = [];
-  const storePayload = (data) => {
-    stored.push(Buffer.from(data));
-    writeFileSync(payloadFile, data, { mode: 0o600 });
-    return payloadFile;
-  };
-  assert.throws(() => mirageCommandHint(commands, { cli, platform: 'win32' }), /copyable shell limit/);
-  assert.throws(() => mirageCommandHint(commands, { cli, storePayload: () => './relative.json' }), /absolute filename/);
-  for (const shell of availableShells) {
-    const platform = ['posix', 'git-bash'].includes(shell) ? 'linux' : 'win32';
-    const hint = mirageCommandHint(commands, { cli, platform, storePayload, cwd });
-    assert.ok(hint.length <= 8000, shell);
-    assert.doesNotMatch(hint, /[\r\n]/);
-    assert.deepEqual(
-      JSON.parse(stored.at(-1).toString('utf8')),
-      commands.map((args) => [cli, ...args]),
+// Hang guard only: three stop hints replayed in every available shell.
+test(
+  'oversized incompressible commands use immutable file transport across shells',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const { directory, cli, bashFile, availableShells } = await collectorFixture(t, { reportCwd: true });
+    const selected = path.join(directory, "file runtime %PAQ_STOP_TEST% !PAQ_STOP_TEST! $ ` O'Brien & ^");
+    await fs.mkdir(selected);
+    const cwd = await fs.realpath(selected);
+    const commands = Array.from({ length: 6 }, (_, i) => [
+      'mirage',
+      'stop',
+      '--fixture',
+      String(i),
+      '--literal',
+      randomBytes(2048).toString('hex'),
+    ]);
+    const payloadFile = path.join(directory, "payload %PAQ_STOP_TEST% !PAQ_STOP_TEST! $ ` O'Brien & ^.json");
+    const stored = [];
+    const storePayload = (data) => {
+      stored.push(Buffer.from(data));
+      writeFileSync(payloadFile, data, { mode: 0o600 });
+      return payloadFile;
+    };
+    assert.throws(() => mirageCommandHint(commands, { cli, platform: 'win32' }), /copyable shell limit/);
+    assert.throws(
+      () => mirageCommandHint(commands, { cli, storePayload: () => './relative.json' }),
+      /absolute filename/,
     );
-    assert.deepEqual(
-      await capture(hint, shell, directory, cli, bashFile, { batch: true }),
-      commands.map((args) => [cwd, ...args]),
-      shell,
+    for (const shell of availableShells) {
+      const platform = ['posix', 'git-bash'].includes(shell) ? 'linux' : 'win32';
+      const hint = mirageCommandHint(commands, { cli, platform, storePayload, cwd });
+      assert.ok(hint.length <= 8000, shell);
+      assert.doesNotMatch(hint, /[\r\n]/);
+      assert.deepEqual(
+        JSON.parse(stored.at(-1).toString('utf8')),
+        commands.map((args) => [cli, ...args]),
+      );
+      assert.deepEqual(
+        await capture(hint, shell, directory, cli, bashFile, { batch: true }),
+        commands.map((args) => [cwd, ...args]),
+        shell,
+      );
+      await fs.appendFile(payloadFile, ' ');
+      assert.deepEqual(
+        await capture(hint, shell, directory, cli, bashFile, { batch: true, expectedCode: 1 }),
+        [],
+        'changed file never invokes a child',
+      );
+      await fs.writeFile(payloadFile, Buffer.alloc(1024 * 1024 + 1));
+      assert.deepEqual(
+        await capture(hint, shell, directory, cli, bashFile, { batch: true, expectedCode: 1 }),
+        [],
+        'oversized replacement never invokes a child',
+      );
+    }
+    assert.equal(mirageCommandHint([], { cli }), null);
+    assert.throws(
+      () => mirageCommandHint([['mirage', 'stop', 'x'.repeat(1024 * 1024)]], { cli, storePayload }),
+      /byte limit/,
     );
-    await fs.appendFile(payloadFile, ' ');
-    assert.deepEqual(
-      await capture(hint, shell, directory, cli, bashFile, { batch: true, expectedCode: 1 }),
-      [],
-      'changed file never invokes a child',
-    );
-    await fs.writeFile(payloadFile, Buffer.alloc(1024 * 1024 + 1));
-    assert.deepEqual(
-      await capture(hint, shell, directory, cli, bashFile, { batch: true, expectedCode: 1 }),
-      [],
-      'oversized replacement never invokes a child',
-    );
-  }
-  assert.equal(mirageCommandHint([], { cli }), null);
-  assert.throws(
-    () => mirageCommandHint([['mirage', 'stop', 'x'.repeat(1024 * 1024)]], { cli, storePayload }),
-    /byte limit/,
-  );
-});
+  },
+);
 
 test('external command replay refuses a pipe before reading or executing any child', async (t) => {
   const { directory, cli } = await collectorFixture(t);

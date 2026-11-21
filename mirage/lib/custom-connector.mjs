@@ -16,7 +16,8 @@
 // Execution reaches only loopback URLs (connection rewrites) or pack httpFixtures, as the http provider does.
 // OAuth: a static token reference, the client credentials flow (OpenAPI 2.0 `flow: application`) or the authorization code
 // flow (`flow: accessCode`: signed in through the loopback redirect with PKCE, refreshed with its refresh token;
-// connector-runtime.mjs); the implicit and password flows answer 501 OperationUnsupported.
+// connector-runtime.mjs); the implicit and password flows run with a static token reference and otherwise answer 501
+// OperationUnsupported.
 // The managed API id a flow uses for a Solution custom connector is not known, so both the connector name and
 // shared_<name with _ encoded as -5f> are accepted.
 const SUPPORTED_POLICIES = Object.freeze([
@@ -210,10 +211,14 @@ export function compileConnector(record) {
     diagnostics = [...openapi.diagnostics];
   const policies = compilePolicies(record.policyInstances);
   appendPolicyDiagnostics(diagnostics, policies, openapi.operations);
+  // The flow's token is never acquired locally, but a connection's static token reference runs it: the connector is not
+  // blocked, and a call on a connection without one answers 501 OperationUnsupported (applyAuthentication).
   if (openapi.auth.type === 'oauth' && !OAUTH_FLOWS.includes(openapi.auth.flow))
     diagnostics.push({
       code: 'CONNECTOR_AUTH_UNSUPPORTED',
-      message: `The OAuth ${openapi.auth.flow || 'unspecified'} flow is not run locally; the client credentials (application) and authorization code (accessCode) flows are.`,
+      severity: 'warning',
+      tokenOnly: true,
+      message: `The OAuth ${openapi.auth.flow || 'unspecified'} flow is not run locally; its connections need a static token reference (auth.token).`,
     });
   const scriptText = typeof record.scriptText === 'string' ? record.scriptText : null;
   if (
@@ -246,7 +251,7 @@ export function compileConnector(record) {
     policies,
     connectionParameters: record.connectionParameters ?? {},
     script: scriptText === null ? null : { text: scriptText, operations: (record.scriptOperations ?? []).map(String) },
-    blocked: diagnostics.find((d) => blocking.has(d.code)) ?? null,
+    blocked: diagnostics.find((d) => blocking.has(d.code) && !d.tokenOnly) ?? null,
     diagnostics,
   };
 }

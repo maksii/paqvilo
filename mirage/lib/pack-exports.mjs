@@ -1,7 +1,9 @@
 // One registry of recognised data-pack exports. Each row says how an export is shaped
 // (kind), how its keys are normalised (key), how its value is validated (check, throws) and what happens
 // when two packs register the same key (collide). Unknown pack keys produce PACK_EXPORT_UNKNOWN.
+import { requiredArgument } from './required-argument.mjs';
 import { validateEndpoints } from './extensions.mjs';
+import { choiceMessage } from './runtime-config.mjs';
 
 const GUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 const isMap = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -73,7 +75,7 @@ function pendingCheck(name, shape) {
 
 const row = (spec) => Object.freeze({ kind: 'map', key: exact, collide: 'error', pending: null, ...spec });
 
-/** Recognised exports. Provider modules replace their pending rows with registerPackExport(). */
+/** Recognized exports. Provider modules replace their pending rows with registerPackExport(). */
 export const PACK_EXPORTS = {
   serverLogics: row({ key: lower, check: mapOf(named, 'serverLogics must map exported names to functions') }),
   cloudFlows: row({ key: lower, check: mapOf(named, 'cloudFlows must map exported names to functions') }),
@@ -137,6 +139,7 @@ const PENDING = {
   storageProviders: 'storage-provider.mjs',
   messageProviders: 'message-bus.mjs',
   virtualTableProviders: 'dataverse-virtual-providers.mjs',
+  virtualTables: 'dataverse-virtual-providers.mjs',
   outboxHandlers: 'outbox.mjs',
   serviceFixtures: 'service-fixtures.mjs',
   powerFx: 'canvas-power-fx.mjs',
@@ -220,7 +223,7 @@ function validatePackCapabilities(value) {
     )
       throw new TypeError('capabilities records need a name and a kind');
     if (!CAPABILITY_LEVELS.includes(record.level))
-      throw new TypeError(`capability ${record.name} level must be ${CAPABILITY_LEVELS.join(', ')}`);
+      throw new TypeError(choiceMessage(`capability ${record.name} level`, CAPABILITY_LEVELS, record.level));
   }
 }
 registerPackExport('capabilities', {
@@ -243,7 +246,10 @@ const entriesOf = (spec, value) => (spec.entries ? spec.entries(value) : Object.
  * PACK_EXPORT_UNKNOWN for keys no row recognises (strict: throws) and PACK_EXPORT_PENDING for exports
  * still checked by the default shape check.
  */
-export function validatePackExports(pack, { strict = false } = {}) {
+export function validatePackExports(
+  pack = requiredArgument('validatePackExports(pack)', 'a pack module object'),
+  { strict = false } = {},
+) {
   const unknown = Object.keys(pack).filter((key) => !CORE.includes(key) && !Object.hasOwn(PACK_EXPORTS, key));
   if (unknown.length && strict) throw new Error(`Data pack ${pack.id}: unknown exports ${unknown.join(', ')}`);
   const diagnostics = unknown.map((key) => ({
@@ -284,7 +290,10 @@ export function snapshotPackExports(pack) {
 }
 
 /** Map normalisedKey → { value, pack } across packs, in pack order, with one collision message for every export. */
-export function collectPackExport(packs = [], name) {
+export function collectPackExport(
+  packs = [],
+  name = requiredArgument('collectPackExport(packs, name)', 'a pack export name'),
+) {
   const spec = PACK_EXPORTS[name];
   if (!spec) throw new Error(`Unknown pack export ${name}`);
   const result = new Map();

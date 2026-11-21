@@ -1,4 +1,4 @@
-import { decodeXml } from './importer.mjs';
+import { decodeXml } from './xml-text.mjs';
 
 /**
  * Small non-resolving XML reader for unpacked Dataverse solution files.

@@ -1779,7 +1779,7 @@ export const FUNCTIONS = {
     fn(fx, value) {
       if (isBlank(value) || value === '') return null;
       const color = parseCanvasColor(value);
-      return color ? canvasColorCss(color) : fail('InvalidArgument', 'The color is not supported.');
+      return color ? canvasColorCss(color) : fail('InvalidArgument', 'The colour is not supported.');
     },
   },
   ColorFade: {
@@ -1790,7 +1790,7 @@ export const FUNCTIONS = {
         fade = toNumber(amount);
       if (fade instanceof FxError) return fade;
       if (!color || !Number.isFinite(fade) || fade < -1 || fade > 1)
-        return fail('InvalidArgument', 'The color or fade amount is invalid.');
+        return fail('InvalidArgument', 'The colour or fade amount is invalid.');
       return canvasColorCss(
         color.map((channel, index) => {
           if (index === 3) return channel;

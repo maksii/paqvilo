@@ -1,34 +1,43 @@
 import { loadConnection, connectedClient } from '../../../lense/dataverse/index.mjs';
-import { id, assemblies, localAssemblyIdentity } from './registration.mjs';
-import { readFile, writeFile } from 'node:fs/promises';
+import { id, assemblies, localBuild, assemblyDifferences } from './registration.mjs';
+import { cli } from '../cli.mjs';
+import { connectionHelp, defaultConnection } from '../paths.mjs';
+import { writeFile } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 const root = dirname(fileURLToPath(import.meta.url));
-const args = process.argv.slice(2);
-const at = args.indexOf('--connection');
-if (at >= 0 && (!args[at + 1] || args[at + 1].startsWith('--')))
-  throw new Error('--connection requires a saved connection path.');
-const connection = await loadConnection(
-  at >= 0 ? args[at + 1] : resolve(root, '../../../.paqvilo/dataverse/provisioning.connection.json'),
+const { values } = cli(
+  `Usage: node examples/company-operations/plugins/audit-installation.mjs [--connection FILE]
+
+Run from the toolkit checkout. Compares each installed assembly in the live environment with the local Release build
+(content hash, version and public key token, as deploy.mjs does; read-only) and saves the example's ignored
+.paqvilo/plugins/installation-audit.json.
+
+${connectionHelp('  --connection FILE  ')}`,
+  { connection: { type: 'string' } },
 );
+const connection = await loadConnection(values.connection ?? defaultConnection);
 const c = connectedClient(connection);
 const who = await c.verify(connection.organisationId);
 const builds = [];
 const types = [];
 for (const a of assemblies) {
-  const bytes = await readFile(resolve(root, a.project, 'bin/Release/net462', a.name + '.dll'));
-  const row = await c.get(`pluginassemblies(${id('assembly/' + a.name)})?$select=content,name,version,isolationmode`);
-  const localHash = createHash('sha256').update(bytes).digest('hex'),
-    installedHash = createHash('sha256').update(Buffer.from(row.content, 'base64')).digest('hex');
+  const build = await localBuild(a);
+  const row = await c.get(
+    `pluginassemblies(${id('assembly/' + a.name)})?$select=content,name,version,publickeytoken,isolationmode`,
+  );
+  const differences = assemblyDifferences(build, row);
   builds.push({
-    assemblyIdentity: localAssemblyIdentity(resolve(root, a.project, 'bin/Release/net462', a.name + '.dll')),
+    assemblyIdentity: build.identity,
     assembly: a.name,
     version: row.version,
+    publicKeyToken: row.publickeytoken,
     isolationMode: row.isolationmode,
-    localHash,
-    installedHash,
-    match: localHash === installedHash,
+    localHash: build.sha256,
+    installedHash: createHash('sha256').update(Buffer.from(row.content, 'base64')).digest('hex'),
+    match: differences.length === 0,
+    differences,
   });
   for (const type of a.types) types.push(id(`type/${a.name}.${type}`));
 }

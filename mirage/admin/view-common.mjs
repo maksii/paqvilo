@@ -16,12 +16,31 @@ function pending(ctx, button, work) /* NOSONAR: constant return value is part of
   return true;
 }
 
+/**
+ * One run of `work` at a time. A call made while a run is in progress waits for it and shares one further run with
+ * every other waiting call, so the answers of an earlier run never arrive after those of a later one.
+ */
+export function oneAtATime(work) {
+  let last = Promise.resolve(),
+    waiting;
+  return () => {
+    if (waiting) return waiting;
+    const run = last.then(() => {
+      waiting = undefined;
+      return work();
+    });
+    waiting = run;
+    last = run.catch(() => {});
+    return run;
+  };
+}
+
 export function viewCommon({ id, label, kit, help }) {
   const e = kit.escapeHtml;
   const value = (item) => (typeof item === 'function' ? item() : item);
   const helpEntry = (ctx, key) => (ctx.help ?? help)[key] ?? { intro: '' };
   const docOf = (ctx, entry) => (entry.doc ? kit.docLink(entry.doc, value(ctx.docs) ?? {}) : null);
-  // Panel help (D-M-6): one (i) at the top of the section; the text, steps, example and doc link are in its popover.
+  // Panel help: one (i) at the top of the section; the text, steps, example and doc link are in its popover.
   const helpBlock = (ctx, key, title) => {
     const entry = helpEntry(ctx, key),
       doc = docOf(ctx, entry);
@@ -36,7 +55,7 @@ export function viewCommon({ id, label, kit, help }) {
     return html ? `<p class="ui-section-help">${html}</p>` : '';
   };
   const deepLink = (name) => new URLSearchParams(String(globalThis.location?.hash ?? '').split('?')[1] ?? '').get(name);
-  // The shared data table (D-M-8): search above once a list has more than one page, count and paging below;
+  // The shared data table: search above once a list has more than one page, count and paging below;
   // every data column sorts (`kit.sortable`; the shell keeps `ctx.pager(key).sort`).
   const list = (ctx, key, items, data, emptyText, caption, extra = {}) => {
     const state = ctx.pager(key),
@@ -48,7 +67,7 @@ export function viewCommon({ id, label, kit, help }) {
       caption,
       emptyText,
       sort: state.sort,
-      // D-M-11: every table has its search box, its column filters and the bottom controls bar.
+      // every table has its search box, its column filters and the bottom controls bar.
       search: true,
       filters: state.filters ?? {},
       result: kit.pageItems(kit.sortItems(kit.filterItems(rows, columns, state.filters), columns, state.sort), state),
@@ -74,7 +93,7 @@ export function viewCommon({ id, label, kit, help }) {
     `${totals?.active ?? 0} active · ${totals?.locked ?? 0} locked · ${totals?.scheduled ?? 0} scheduled · ${totals?.deadLettered ?? 0} dead-lettered`;
   /** Visible help for a control from `HELP[key].fields[name]`; give the control `aria-describedby="<controlId>-help"`. */
   const fieldHelp = (ctx, controlId, key, name) => kit.fieldHelp(controlId, helpEntry(ctx, key).fields?.[name] ?? '');
-  // D-M-7 page chrome: the hidden H1, the view's (i) (the shell puts it after the breadcrumb) and one toolbar row.
+  // Page chrome: the hidden H1, the view's (i) (the shell puts it after the breadcrumb) and one toolbar row.
   // `options`: { actions, filters, summary, chips } as kit.pageChrome takes them.
   function heading(ctx, options = {}) {
     const entry = (ctx.help ?? help)[`${id}.about`] ?? helpEntry(ctx, id),

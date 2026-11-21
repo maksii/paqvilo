@@ -11,10 +11,14 @@ import { observeDocumentCommits } from './lib/document-commits.mjs';
 import { openBrowserWriteNet, UNATTRIBUTED } from './lib/browser-write-net.mjs';
 import { readLocalFile } from '../lense/local-file.mjs';
 import { createHash, createHmac, randomBytes } from 'node:crypto';
-import { parseToolArgs } from './tool-options.mjs';
+import { assertToolPaths, parseToolArgs } from './tool-options.mjs';
+import { mirageToolHelp } from './tool-registry.mjs';
 import { fileURLToPath } from 'node:url';
-import { validateLivePath, decodePagingCookie } from './lib/live.mjs';
+import { CDP_CONNECT_FAILURE, validateLivePath, decodePagingCookie } from './lib/live.mjs';
 import { fetchLocalState } from './lib/local-state-fetch.mjs';
+import { isToolkitAttribute, isToolkitElement } from './lib/render-provenance.mjs';
+import { readJsonOption } from './lib/path-options.mjs';
+import { requiredArgument } from './lib/required-argument.mjs';
 import {
   normalizeSemicolonWhitespace,
   replaceEmails,
@@ -109,7 +113,10 @@ const trace = (...parts) => {
 // ---- Read-only guards
 
 /** Validate a portal-relative scenario path before any request is formed. */
-export function assertReadOnlyPath(value, { allowDenied = false, denied = activePlanDeniedRoutes() } = {}) {
+export function assertReadOnlyPath(
+  value = requiredArgument('assertReadOnlyPath(value, options)', 'a portal-relative path'),
+  { allowDenied = false, denied = activePlanDeniedRoutes() } = {},
+) {
   if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//') || value.length > 8192)
     throw new Error('Scenario paths must be portal-relative.');
   validateLivePath(value);
@@ -209,7 +216,7 @@ const ALLOWED_PREFER =
   /^(?:odata\.maxpagesize=[1-9]\d{0,4}|odata\.include-annotations="(?:\*|[\w.*,-]+)"(?:\s*,\s*odata\.maxpagesize=[1-9]\d{0,4})?)$/i; // NOSONAR: regex kept: a rewrite would change matches or captures
 
 /** Validate the scenario plan. Unsafe or ambiguous definitions fail before any request. */
-export function validatePlan(plan) {
+export function validatePlan(plan = requiredArgument('validatePlan(plan)', 'a parity plan object')) {
   if (!plan || typeof plan !== 'object' || Array.isArray(plan)) throw new Error('A parity plan object is required.');
   if (plan.version !== 1) throw new Error('Parity plan version 1 is required.');
   if (!Array.isArray(plan.scenarios) || !plan.scenarios.length || plan.scenarios.length > 300)
@@ -485,6 +492,8 @@ export function redactUrl(value, { origins = [], base, keepPaging = false } = {}
   const raw = String(value ?? '').trim();
   if (!raw) return '';
   if (/^(?:javascript|data|blob|mailto|tel):/i.test(raw)) return raw.split(':')[0].toLowerCase() + ':';
+  // about:blank and its kin have an opaque origin ("null"): keep the URL itself instead of "null" + "blank".
+  if (/^about:[\w-]*$/i.test(raw)) return raw.toLowerCase();
   if (raw.startsWith('#')) return '#' + normalizeText(raw.slice(1));
   let parsed;
   try {
@@ -772,7 +781,7 @@ const DEFAULT_EXCLUDE = Object.freeze([
   '[data-paqvilo-mirage-runtime]',
 ]);
 const DEFAULT_OPAQUE = Object.freeze(['svg']);
-const IGNORED_ATTRIBUTES = new Set(['style', 'nonce', 'data-sim-trace', 'data-paqvilo-mirage-runtime']);
+const IGNORED_ATTRIBUTES = new Set(['style', 'nonce']);
 
 function attributeValue(name, value, element, origins) {
   if (URL_ATTRIBUTES.has(name)) return withoutContentHash(redactUrl(platformAsset(value), { origins }));
@@ -820,7 +829,9 @@ function prepareTreeNode(raw, { origins, ignoredClass, ignoredAttribute }) {
     node.opaque = raw.o;
     node.opaqueCount = raw.n;
   }
-  const kids = (raw.c ?? []).map((child) => prepareTreeNode(child, { origins, ignoredClass, ignoredAttribute }));
+  const kids = (raw.c ?? [])
+    .filter((child) => child.t !== undefined || !isToolkitElement(Object.keys(child.a ?? {})))
+    .map((child) => prepareTreeNode(child, { origins, ignoredClass, ignoredAttribute }));
   node.kids = collapseRepeats(kids);
   return node;
 }
@@ -828,13 +839,7 @@ function prepareTreeNode(raw, { origins, ignoredClass, ignoredAttribute }) {
 function prepareTreeAttributes(raw, origins, ignoredAttribute) {
   const attrs = {};
   for (const [name, value] of Object.entries(raw.a ?? {})) {
-    if (
-      ignoredAttribute.has(name) ||
-      name === 'class' ||
-      name.startsWith('data-sim-') ||
-      name.startsWith('data-paqvilo-mirage')
-    )
-      continue;
+    if (ignoredAttribute.has(name) || name === 'class' || isToolkitAttribute(name)) continue;
     if (raw.d && !['id', 'role', 'type', 'name'].includes(name) && !URL_ATTRIBUTES.has(name)) {
       attrs[name] = value ? '{data}' : '';
       continue;
@@ -2192,9 +2197,12 @@ export async function openCdpTabDriver({
     throw new Error('The reference origin must be a credential-free HTTPS origin.');
   let socketUrl = endpoint.href;
   if (endpoint.protocol === 'http:') {
-    const version = await (
-      await fetch(new URL('/json/version', endpoint), { signal: AbortSignal.timeout(10000) })
-    ).json();
+    // An endpoint that does not answer is the one line every tool's --cdp prints, never fetch's "fetch failed".
+    const version = await fetch(new URL('/json/version', endpoint), { signal: AbortSignal.timeout(10000) })
+      .then((response) => response.json())
+      .catch((error) => {
+        throw Object.assign(new Error(CDP_CONNECT_FAILURE, { cause: error }), { status: 409, code: 'LIVE_BRIDGE' });
+      });
     socketUrl = version.webSocketDebuggerUrl;
   }
   const socketTarget = new URL(socketUrl);
@@ -3365,6 +3373,8 @@ export async function startIsolatedMirage({
       origin,
       watch: false,
       port: 0,
+      // A comparison against a reference portal needs the original asset bytes, not the appended debugger metadata.
+      sourceMaps: false,
       ...(deploymentProfile ? { deploymentProfile } : {}),
     });
     if (preset) await app.applyPreset(preset);
@@ -3397,7 +3407,15 @@ export async function startIsolatedMirage({
  * goes through the session API and changes no runtime state. Mirroring a reference persona is
  * a role override with the persona's exported web-role names on the local synthetic contact.
  */
-export function createIdentityController(localUrl, { fetchImpl = fetch } = {}) {
+// mirrorHint and signInHint end the refusals without a contact: each caller names the inputs its own command accepts.
+export function createIdentityController(
+  localUrl,
+  {
+    fetchImpl = fetch,
+    mirrorHint = 'set persona.contactId in the plan or pass --persona-contact',
+    signInHint = 'pass --persona-contact',
+  } = {},
+) {
   const origin = new URL(localUrl).origin;
   if (!loopbackHost(new URL(origin).hostname)) throw new Error('Local sign-in is limited to a loopback runtime.');
   let persona = null;
@@ -3432,10 +3450,7 @@ export function createIdentityController(localUrl, { fetchImpl = fetch } = {}) {
   const controller = {
     /** Sign in as the local synthetic contact with the reference persona's web-role names. */
     async mirror({ contactId, roles }) {
-      if (!contactId)
-        throw new Error(
-          'Persona mirroring needs a local synthetic contact; set persona.contactId in the plan or pass --persona-contact.',
-        );
+      if (!contactId) throw new Error(`Persona mirroring needs a local synthetic contact; ${mirrorHint}.`);
       const state = await localState(origin);
       const known = new Set((state.status?.webRoles ?? []).map((role) => role.name));
       const unresolved = roles.filter((role) => !known.has(role));
@@ -3452,8 +3467,7 @@ export function createIdentityController(localUrl, { fetchImpl = fetch } = {}) {
     /** Sign in as a local contact with its own memberships (the runtime's default persona when omitted). */
     async signInAs(contactId) {
       const id = contactId ?? (await defaultPersona());
-      if (!id)
-        throw new Error('The local runtime offers no default persona for signed-in scenarios; pass --persona-contact.');
+      if (!id) throw new Error(`The local runtime offers no default persona for signed-in scenarios; ${signInHint}.`);
       persona = { contactId: id };
       await signIn();
     },
@@ -4009,7 +4023,9 @@ function compareShellAttributes(live, local, origins) {
   ]) {
     const left = new Map(a.map(([name, value]) => [name.toLowerCase(), value]));
     const right = new Map(b.map(([name, value]) => [name.toLowerCase(), value]));
-    const names = [...new Set([...left.keys(), ...right.keys()])].sort(/* NOSONAR: preserve default string coercion */);
+    const names = [...new Set([...left.keys(), ...right.keys()])]
+      .filter((name) => !isToolkitAttribute(name))
+      .sort(/* NOSONAR: preserve default string coercion */);
     for (const name of names) compareShellAttribute(element, name, left, right, text, deltas);
   }
   return deltas;
@@ -5359,17 +5375,37 @@ const questionEvidence = (item) => item.scenario + ' (' + item.verdict + ')';
 
 // ---- CLI
 
+// Argument and path validation errors name option names and the user's own paths and ids only (never file content,
+// headers or query values), so they print verbatim; every other error is runtime text and is normalised (cliMessage).
+function argumentPhase(validate) {
+  try {
+    return validate();
+  } catch (error) {
+    throw Object.assign(error, { verbatim: true });
+  }
+}
+
+const cliMessage = (error) => (error.verbatim ? error.message : normalizeText(error.message));
+
 async function main() {
+  // A parse error can echo any stray argument value, so it stays normalised.
   const values = parseMainArgs();
-  validateMainDelay(values);
+  argumentPhase(() => {
+    validateMainDelay(values);
+    assertToolPaths('parity-suite', values);
+  });
   const { site, explicit, sourceOptions } = await prepareMainOptions(values);
+  if (values.list) {
+    await listMainScenarios(values, site, sourceOptions);
+    return;
+  }
   if (values.reclassify) {
     await reclassifyMainReport(values, sourceOptions);
     return;
   }
-  const { origin, sourceDir } = resolveMainTarget(values, site);
+  const { origin, sourceDir } = argumentPhase(() => resolveMainTarget(values, site));
   const anonymousBrowser = values['anonymous-browser'] ?? 'owned';
-  validateAnonymousBrowser(anonymousBrowser, values);
+  argumentPhase(() => validateAnonymousBrowser(anonymousBrowser, values));
   await runMainExecution({ values, site, explicit, sourceOptions, origin, sourceDir, anonymousBrowser });
 }
 
@@ -5434,7 +5470,7 @@ async function prepareMainOptions(values) {
 async function reclassifyMainReport(values, sourceOptions) {
   // Offline: apply the current classification rules to a saved report without new requests.
   const plan = await loadScenarioPlans(sourceOptions(null, 'all'));
-  const report = reclassifyReport(JSON.parse(await fs.readFile(values.reclassify, 'utf8')), plan);
+  const report = reclassifyReport(await readJsonOption('reclassify', values.reclassify), plan);
   await fs.writeFile(values.reclassify, JSON.stringify(report, null, 2));
   await fs.writeFile(path.join(path.dirname(values.reclassify), 'summary.md'), summaryMarkdown(report));
   console.log(
@@ -5449,6 +5485,21 @@ async function reclassifyMainReport(values, sourceOptions) {
       2,
     ),
   );
+}
+
+/**
+ * --list: one `id<TAB>tags<TAB>title` line per scenario the source selection (--core/--no-core, --pack, --packs,
+ * --pack-module, --scenarios) and the --only/--tags/--exclude-tags filters would run. The portal export of --source or
+ * the catalogue site only decides which packs `auto` selects; no runtime or browser starts and nothing is written.
+ */
+async function listMainScenarios(values, site, sourceOptions) {
+  const sourceDir = values.source ?? site?.sourceDir;
+  const portal = sourceDir ? await (await import('./lib/importer.mjs')).importPortal(path.resolve(sourceDir)) : null;
+  const plan = await loadScenarioPlans(sourceOptions(portal, 'auto'));
+  for (const scenario of selectScenarios(plan.scenarios, scenarioSelectionOptions(values)))
+    console.log(
+      [scenario.id, (scenario.tags ?? []).join(','), String(scenario.title ?? '').replaceAll(/\s+/g, ' ')].join('\t'),
+    );
 }
 
 /** --only, --tags and --exclude-tags as lists; an absent or empty value is no filter. */
@@ -5470,21 +5521,26 @@ function assertScenarioSelection(plan, values) {
   const options = scenarioSelectionOptions(values);
   const known = new Set(plan.scenarios.map((scenario) => scenario.id));
   const unknown = (options.only ?? []).filter((id) => !known.has(id));
-  if (unknown.length) throw selectionRefusal(`Unknown scenario ids: ${unknown.join(', ')}`);
+  if (unknown.length)
+    throw selectionRefusal(
+      `Unknown scenario ids: ${unknown.join(', ')}. Add --list to the same selection to print the available ids and tags.`,
+    );
   if (!selectScenarios(plan.scenarios, options).length) throw selectionRefusal('No scenario selected.');
 }
 
 function selectionRefusal(message) {
-  return Object.assign(new Error(message), { exitCode: 2 });
+  return Object.assign(new Error(message), { exitCode: 2, verbatim: true });
 }
 
 function resolveMainTarget(values, site) {
   const origin = values.origin ?? site?.origin;
   const sourceDir = values.source ?? (values.local ? undefined : site?.sourceDir);
-  if (!origin || !values.out || (!values.local && !sourceDir))
-    throw new Error(
-      'Usage: node mirage/parity-suite.mjs (--local http://127.0.0.1:PORT | --source PORTAL_DIR | --site SITE --env ENV) [--state STATE] [--preset NAME|none] [--origin https://PORTAL] [--cdp http://127.0.0.1:PORT] [--anonymous-browser owned|cdp] [--scenarios FILE | --pack ID | --packs auto|all|none] [--no-core] --out DIR [--only IDS] [--tags T] [--exclude-tags T]',
-    );
+  const missing = [
+    !values.local && !sourceDir && '--local, --source or --site',
+    !values.out && '--out',
+    !origin && '--origin (or a catalogue site with an origin)',
+  ].filter(Boolean);
+  if (missing.length) throw new Error(`Missing ${missing.join('; ')}.\n${mirageToolHelp('parity-suite').trimEnd()}`);
   return { origin, sourceDir };
 }
 
@@ -5524,7 +5580,7 @@ async function prepareMainRun({ values, site, explicit, sourceOptions, origin, s
     resources.owned = ownedRun.owned;
     catalogue = ownedRun.catalogue;
   }
-  const ids = values.ids ? JSON.parse(await fs.readFile(values.ids, 'utf8')) : null;
+  const ids = values.ids ? await readJsonOption('ids', values.ids) : null;
   const localUrl = resources.owned?.url ?? values.local;
   const state = await localState(localUrl);
   validateLocalMainState(state);
@@ -5740,7 +5796,7 @@ async function cleanupMainResources(identity, live, anonymousCdp, browser, owned
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   /* NOSONAR: module-level promise chain must not block evaluation */ main().catch((error) => {
-    console.error(normalizeText(error.message));
+    console.error(cliMessage(error));
     process.exitCode = error.exitCode ?? 1;
   });
 }

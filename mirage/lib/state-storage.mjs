@@ -1,3 +1,4 @@
+import { requiredArgument } from './required-argument.mjs';
 import { createJsonTextCoalescer } from './json-text.mjs';
 import { createReadStream } from 'node:fs';
 import { open, stat, rm } from 'node:fs/promises';
@@ -232,7 +233,7 @@ async function append(handle, entries, hash, start, { header = false, recordRefe
 export class StateStorage {
   constructor(file, { journalThresholdBytes = DEFAULT_JOURNAL_THRESHOLD } = {}) {
     if (!Number.isSafeInteger(journalThresholdBytes) || journalThresholdBytes < 0)
-      throw new TypeError('journalThresholdBytes must be a nonnegative safe integer');
+      throw new TypeError('journalThresholdBytes must be a non-negative safe integer');
     this.file = file;
     this.threshold = journalThresholdBytes;
     this.digest = null;
@@ -620,7 +621,7 @@ export class StateStorage {
 
 /** Public file reads return ordinary detached data. Runtime owners use
  * StateStorage.load() to retain bounded page storage and close its session. */
-export async function readStateFile(file, options) {
+export async function readStateFile(file = requiredArgument('readStateFile(file)', 'a state file path'), options) {
   const storage = new StateStorage(file);
   try {
     const state = await storage.load(options);

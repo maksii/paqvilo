@@ -1,5 +1,10 @@
+import { requiredArgument } from './required-argument.mjs';
 /** Exercise the visible native editor, then wait for its bound value to commit. */
-export function richTextBody(page, field, { mode = 'native' } = {}) {
+export function richTextBody(
+  page = requiredArgument('richTextBody(page, field)', 'a Playwright page'),
+  field,
+  { mode = 'native' } = {},
+) {
   if (!/^[a-z_][a-z0-9_]*$/i.test(field)) throw new Error('Rich text field must be a logical field name.');
   const root = `div.control[data-logical-name="${field}"]`;
   if (mode === 'native')
@@ -15,7 +20,11 @@ export function richTextBody(page, field, { mode = 'native' } = {}) {
  * The mode of the rendered editor: "native" when the managed control's frame is present
  * (its CKEditor bytes are captured), "adapter" for the local compatibility editor.
  */
-export async function resolveRichTextMode(page, field, { timeout = 30000 } = {}) {
+export async function resolveRichTextMode(
+  page = requiredArgument('resolveRichTextMode(page, field)', 'a Playwright page'),
+  field,
+  { timeout = 30000 } = {},
+) {
   if (!/^[a-z_][a-z0-9_]*$/i.test(field)) throw new Error('Rich text field must be a logical field name.');
   const root = `div.control[data-logical-name="${field}"]`;
   const deadline = Date.now() + timeout;
@@ -32,7 +41,10 @@ export async function resolveRichTextMode(page, field, { timeout = 30000 } = {})
  * finished showing: Bootstrap moves focus to the modal when its show transition ends, which
  * takes focus from an editor typed into earlier, as it would from a user typing that soon.
  */
-export async function settleHostModal(frame, { timeout = 5000 } = {}) {
+export async function settleHostModal(
+  frame = requiredArgument('settleHostModal(frame)', 'a Playwright frame'),
+  { timeout = 5000 } = {},
+) {
   const host = typeof frame.frameElement === 'function' ? await frame.frameElement().catch(() => null) : null;
   if (!host) return;
   await host
@@ -65,7 +77,12 @@ export async function settleHostModal(frame, { timeout = 5000 } = {}) {
 }
 
 /** Edit a rich text control; mode "auto" follows the rendered editor. Returns the mode used. */
-export async function editRichText(page, field, text, options) {
+export async function editRichText(
+  page = requiredArgument('editRichText(page, field, text)', 'a Playwright page'),
+  field,
+  text,
+  options,
+) {
   const mode = options?.mode === 'auto' ? await resolveRichTextMode(page, field) : options?.mode;
   const body = richTextBody(page, field, { ...options, mode });
   await body.waitFor({ state: 'visible' });
@@ -118,7 +135,12 @@ export async function editRichText(page, field, text, options) {
   return mode ?? 'native';
 }
 
-export async function assertRichText(page, field, text, options) {
+export async function assertRichText(
+  page = requiredArgument('assertRichText(page, field, text)', 'a Playwright page'),
+  field,
+  text,
+  options,
+) {
   const mode = options?.mode === 'auto' ? await resolveRichTextMode(page, field) : options?.mode;
   const body = richTextBody(page, field, { ...options, mode });
   await body.waitFor({ state: 'visible' });

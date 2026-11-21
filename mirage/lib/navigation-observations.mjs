@@ -1,3 +1,4 @@
+import { requiredArgument } from './required-argument.mjs';
 import { simulatorBackgroundRequest } from './simulator-background-requests.mjs';
 /** A portal page redirects its slash-less path to the trailing-slash page, so the
  * replacement read may complete under the redirected URL. */
@@ -11,7 +12,10 @@ function comparableUrl(value) {
 }
 
 /** Retain raw failures; recognize only observed authored cancellations with a successful replacement read. */
-export function classifyNavigationObservations(report, pages = []) {
+export function classifyNavigationObservations(
+  report = requiredArgument('classifyNavigationObservations(report)', 'a navigation report'),
+  pages = [],
+) {
   const used = new Set();
   const sourceSupersededReads = [];
   for (const [failureIndex, failure] of report.failedRequests.entries()) {
