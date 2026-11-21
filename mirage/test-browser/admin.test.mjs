@@ -461,7 +461,13 @@ test('admin: record and configuration CRUD, routing, identity, presets, errors, 
     .getByRole('group', { name: 'Available web roles', exact: true })
     .getByLabel('Reviewer', { exact: true })
     .uncheck();
+  // The first save's notice can still be on screen, so the notice does not say that this save has arrived: its
+  // PATCH answer does (the fixture applies the patch before it answers).
+  const rolesSaved = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === '/__sim/api/config' && response.request().method() === 'PATCH',
+  );
   await page.getByRole('button', { name: 'Save identity' }).click();
+  assert.equal((await rolesSaved).status(), 200);
   await page.getByText('Configuration saved.', { exact: true }).waitFor();
   assert.deepEqual(workspace.config.identity.roles, ['Tester', 'Authority']);
   // The preset picker is a collapsed section on this view.

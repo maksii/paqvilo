@@ -117,7 +117,13 @@ test('contact membership checkboxes survive a workspace refresh until saved, and
     'unsaved choice was discarded',
   );
   await memberships.getByLabel('Reviewer', { exact: true }).check();
+  // The first save's notice can still be on screen, so the notice does not say that this save has arrived: its
+  // PATCH answer does (the simulator applies the patch before it answers).
+  const rolesSaved = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === '/__sim/api/config' && response.request().method() === 'PATCH',
+  );
   await page.getByRole('button', { name: 'Save contact roles', exact: true }).click();
+  assert.equal((await rolesSaved).status(), 200);
   await page.getByText('Configuration saved.', { exact: true }).waitFor();
   assert.deepEqual(
     app
