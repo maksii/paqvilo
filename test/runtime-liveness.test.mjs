@@ -14,7 +14,8 @@ async function listeningProcess(t) {
     process.execPath,
     [
       '-e',
-      "const s=require('node:net').createServer(()=>{});s.listen(0,'127.0.0.1',()=>console.log(s.address().port));",
+      // Printed as a string: console.log colours a number when FORCE_COLOR is set, as it is in CI.
+      "const s=require('node:net').createServer(()=>{});s.listen(0,'127.0.0.1',()=>console.log(String(s.address().port)));",
     ],
     { stdio: ['ignore', 'pipe', 'inherit'] },
   );
@@ -27,7 +28,12 @@ test('a reused runtime that is killed is reported gone, with nothing polling for
   const { child, port } = await listeningProcess(t);
   const accepted = [];
   const timers = [];
-  const clock = { setTimeout: (...args) => (timers.push(args), {}), clearTimeout: () => {} };
+  // Records a recheck instead of waiting for it; once the test has seen the process end, a recheck runs at once.
+  let ended = false;
+  const clock = {
+    setTimeout: (run, ms) => (ended ? setImmediate(run) : timers.push([run, ms]), {}),
+    clearTimeout: () => {},
+  };
   const watched = watchRuntimeGone(
     { pid: child.pid, url: `http://127.0.0.1:${port}` },
     {
@@ -45,11 +51,23 @@ test('a reused runtime that is killed is reported gone, with nothing polling for
   watched.gone.then(() => (gone = true));
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(gone, false, 'a running runtime is not reported gone');
+  assert.deepEqual(timers, [], 'nothing polled the running runtime');
   // The end no handler of that process can announce: the operating system closes its connections.
+  const exited = once(child, 'exit');
   child.kill('SIGKILL');
+  if (process.platform === 'win32') {
+    // Windows reports the process as ended before it closes its connections: the closed connection is the whole signal.
+    await watched.gone;
+    assert.equal(accepted.length, 1, 'one connection observed the runtime; it was not opened again');
+    assert.deepEqual(timers, [], 'no timer waited for the end');
+    return;
+  }
+  // POSIX lists an ended child until its parent, this test, has observed the exit. The connection may close first, so
+  // the watcher can find the process still listed and look again; once the exit is observed, that look reports the end.
+  await exited;
+  ended = true;
+  for (const [run] of timers.splice(0)) run();
   await watched.gone;
-  assert.equal(accepted.length, 1, 'one connection observed the runtime; it was not opened again');
-  assert.deepEqual(timers, [], 'no timer waited for the end');
 });
 
 test('an idle connection the running runtime drops is opened again and is not an end', async (t) => {

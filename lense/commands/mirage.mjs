@@ -385,7 +385,7 @@ export async function processStartTimeMs(
 
 // ---- ownership records
 /**
- * Only a missing records file means "no sessions"; any other read failure is surfaced, never taken as empty, and
+ * Only a records file that does not exist means "no sessions"; any other read failure is surfaced, never taken as empty, and
  * says what the user can do about it.
  */
 export async function ownedSessions(paths = DEFAULT_PATHS) {
@@ -398,7 +398,8 @@ export async function ownedSessions(paths = DEFAULT_PATHS) {
   try {
     text = await fs.readFile(paths.ownershipFile, 'utf8');
   } catch (error) {
-    if (error.code === 'ENOENT') return [];
+    // ENOTDIR (POSIX; Windows answers ENOENT): a folder on the way is a file, so the records file does not exist either.
+    if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return [];
     throw new Error(
       `Could not read the Mirage ownership records ${paths.ownershipFile}: ${error.message}.${remedy()}`,
       {
