@@ -3,21 +3,27 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Capabilities — what Paqvilo Lense and Mirage support</title>
+    <title>Power Platform local development: what Paqvilo supports</title>
     <meta
       name="description"
-      content="What Lense can override on a live Power Pages portal, what Mirage renders and simulates locally, and where the supported boundaries are."
+      content="Which Power Pages, Dataverse Web API, plug-in, model-driven, canvas, code app, PCF and cloud flow features Paqvilo runs locally, and where the limits are."
     />
     <link rel="canonical" href="https://paqvilo.dev/coverage.html" />
-    <meta property="og:type" content="website" />
+    <meta property="og:type" content="article" />
     <meta property="og:site_name" content="Paqvilo" />
     <meta property="og:url" content="https://paqvilo.dev/coverage.html" />
-    <meta property="og:title" content="Capabilities — what Paqvilo Lense and Mirage support" />
+    <meta property="og:title" content="Power Platform local development: what Paqvilo supports" />
     <meta
       property="og:description"
-      content="What Lense can override on a live Power Pages portal, what Mirage renders and simulates locally, and where the supported boundaries are."
+      content="Which Power Pages, Dataverse Web API, plug-in, model-driven, canvas, code app, PCF and cloud flow features Paqvilo runs locally, and where the limits are."
     />
     <meta property="og:image" content="https://paqvilo.dev/assets/social-preview.png" />
+    <meta property="og:image:width" content="1280" />
+    <meta property="og:image:height" content="640" />
+    <meta
+      property="og:image:alt"
+      content="Paqvilo: local-first, pro-code Power Pages development with Lense and Mirage."
+    />
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="theme-color" content="#182d2a" />
     <link rel="icon" href="favicon.svg" type="image/svg+xml" />
@@ -32,123 +38,711 @@
   <body>
     <a class="skip" href="#main">Skip to content</a>
     <header class="nav wrap">
-      <a class="brand" href="index.html" aria-label="Paqvilo home"><span class="mark">p.</span> paqvilo</a>
+      <a class="brand" href="./" aria-label="paqvilo home"><span class="mark">p.</span> paqvilo</a>
       <nav aria-label="Main">
         <a href="guide.html">Guide</a><a href="coverage.html" aria-current="page">Capabilities</a
         ><a href="https://github.com/maksii/paqvilo/blob/main/docs/index.md">Docs ↗</a
         ><a href="https://github.com/maksii/paqvilo">GitHub ↗</a>
       </nav>
     </header>
-    <main id="main" class="wrap capabilities">
-      <p class="eyebrow">THE TOOLKIT, IN PRACTICE</p>
-      <h1>Know what<br />you can <em>build.</em></h1>
+    <main id="main" class="wrap doc">
+      <p class="eyebrow">CAPABILITIES · PAQVILO 0.9.8</p>
+      <h1>Power Platform local development: what runs on your machine, and what does not</h1>
       <p class="lead">
-        Portal exports reveal the sources. Solution metadata adds forms, views, fields and component bindings. Paqvilo
-        makes those relationships easier to work with.
+        Paqvilo reads the Power Pages and Solution sources you export with the Power Platform CLI and runs a working
+        model of them on localhost. This page lists each development scenario, how it is executed, and where the model
+        stops. For the commands, see the <a href="guide.html">developer guide</a>.
       </p>
-      <nav class="jump" aria-label="Capability sections">
-        <a href="#lense">01 / Lense ↓</a><a href="#mirage">02 / Mirage ↓</a
-        ><a href="#boundaries">Supported boundaries ↓</a>
-      </nav>
-      <section class="capability-section" id="lense">
-        <div class="cap-title">
-          <p class="number">01 / LIVE PREVIEW</p>
-          <h2>Lense</h2>
-          <p>Your local changes.<br />The online platform.</p>
+
+      <ul class="legend" aria-label="How a capability is executed">
+        <li><span class="mode m-local">Runs locally</span>Your own code executes on your machine.</li>
+        <li>
+          <span class="mode m-sim">Simulated</span>Paqvilo's model of the platform answers, from your exported metadata
+          and local data.
+        </li>
+        <li>
+          <span class="mode m-live">Live environment</span>The real platform answers. Actions can change real data.
+        </li>
+        <li><span class="mode m-static">Static analysis</span>Sources are read. Nothing is built or executed.</li>
+        <li><span class="mode m-limit">Limited</span>Works within the stated bounds, or only after you opt in.</li>
+      </ul>
+
+      <section class="block" aria-labelledby="glance-title">
+        <h2 id="glance-title">Supported scenarios at a glance</h2>
+        <div class="table-wrap">
+          <table class="matrix">
+            <thead>
+              <tr>
+                <th scope="col">Scenario</th>
+                <th scope="col">How it runs</th>
+                <th scope="col">In short</th>
+                <th scope="col">Details</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <th scope="row">Power Pages site on localhost</th>
+                <td><span class="mode m-sim">Simulated</span></td>
+                <td>
+                  Liquid, forms, lists, web roles, table permissions and the Power Pages Web API from your export.
+                </td>
+                <td><a href="#power-pages">Power Pages ↓</a></td>
+              </tr>
+              <tr>
+                <th scope="row">Local edits on a deployed portal</th>
+                <td><span class="mode m-live">Live environment</span></td>
+                <td>Your local JavaScript, CSS and literal markup replace the deployed ones in one browser.</td>
+                <td><a href="#lense">Live preview ↓</a></td>
+              </tr>
+              <tr>
+                <th scope="row">Dataverse Web API and SDK</th>
+                <td><span class="mode m-sim">Simulated</span></td>
+                <td>OData, <code>$metadata</code>, <code>$batch</code>, FetchXML, SOAP and OAuth for real clients.</td>
+                <td><a href="#dataverse">Dataverse ↓</a></td>
+              </tr>
+              <tr>
+                <th scope="row">Dataverse plug-ins</th>
+                <td>
+                  <span class="mode m-sim">Simulated</span><span class="mode m-local">Runs locally</span
+                  ><span class="mode m-limit">Windows for C#</span>
+                </td>
+                <td>Registered steps in a local pipeline; original C# assemblies with VS Code breakpoints.</td>
+                <td><a href="#plugins">Plug-ins ↓</a></td>
+              </tr>
+              <tr>
+                <th scope="row">Model-driven apps</th>
+                <td><span class="mode m-sim">Simulated</span><span class="mode m-limit">Scripts opt-in</span></td>
+                <td>Sitemap, views and main forms; form scripts and commands on a bounded client API.</td>
+                <td><a href="#model-driven">Model-driven ↓</a></td>
+              </tr>
+              <tr>
+                <th scope="row">Canvas apps</th>
+                <td><span class="mode m-sim">Simulated</span></td>
+                <td>A local player that evaluates the app's Power Fx on local data, with an inspector.</td>
+                <td><a href="#canvas">Canvas ↓</a></td>
+              </tr>
+              <tr>
+                <th scope="row">Power Apps code apps</th>
+                <td><span class="mode m-local">Runs locally</span><span class="mode m-sim">Simulated host</span></td>
+                <td>Your Vite dev server with HMR, behind a local stand-in for the Power Apps host.</td>
+                <td><a href="#code-apps">Code apps ↓</a></td>
+              </tr>
+              <tr>
+                <th scope="row">PCF code components</th>
+                <td><span class="mode m-local">Runs locally</span><span class="mode m-sim">Simulated host</span></td>
+                <td>Your built control on portal pages and forms, bound to local records.</td>
+                <td><a href="#pcf">PCF ↓</a></td>
+              </tr>
+              <tr>
+                <th scope="row">Cloud flows and server logic</th>
+                <td><span class="mode m-sim">Simulated</span><span class="mode m-local">Runs locally</span></td>
+                <td>Exported flows in a local interpreter; Power Pages server logic runs as written.</td>
+                <td><a href="#flows">Flows ↓</a></td>
+              </tr>
+              <tr>
+                <th scope="row">Request tracing</th>
+                <td><span class="mode m-local">Runs locally</span></td>
+                <td>Every local request as one tree: render, Web API, plug-in stages, permission decisions.</td>
+                <td><a href="#tracing">Tracing ↓</a></td>
+              </tr>
+              <tr>
+                <th scope="row">Source review</th>
+                <td><span class="mode m-static">Static analysis</span></td>
+                <td><code>paqvilo analyze</code> checks exported sources offline, for CI or before a commit.</td>
+                <td><a href="#analyze">Analysis ↓</a></td>
+              </tr>
+              <tr>
+                <th scope="row">Automated tests and AI agents</th>
+                <td><span class="mode m-local">Runs locally</span></td>
+                <td>Node tests against the local runtime, JSON output and a bounded browser API.</td>
+                <td><a href="#testing">Testing ↓</a></td>
+              </tr>
+              <tr>
+                <th scope="row">Dataverse schema as code</th>
+                <td><span class="mode m-static">Offline plan</span><span class="mode m-live">Live apply</span></td>
+                <td>Plan table and column changes from a manifest; apply them to an environment you administer.</td>
+                <td>
+                  <a href="https://github.com/maksii/paqvilo/blob/main/docs/dataverse-provisioning.md">Reference ↗</a>
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </div>
-        <div class="cap-detail">
-          <h3>Override &amp; preview</h3>
-          <p>
-            Discovered JavaScript, CSS, images and fonts; supported page, form and list inline fields; unambiguous
-            literal HTML baseline patches in page copy, templates and snippets.
-          </p>
-          <h3>Inspect &amp; trace</h3>
-          <p>
-            Page/template/snippet/asset chains, rendered controls, exported roles and permissions. With Solution
-            sources: FormXml, views, fields, PCF manifests and resources, observed Web API entity sets, plugin
-            registrations and mapped C# sources.
-          </p>
-          <p>
-            Selected-element evidence separates Owner and Local source, each with exact, candidate, conflicting,
-            unavailable or stale status. Enclosing components and page dependencies remain context. Serving or parsing
-            an asset does not establish execution or mounting. Observed script creation, clone and attachment callsites
-            remain distinct. See <a href="guide.html#xray">selection evidence in the guide</a>.
-          </p>
-          <p>
-            A selected Power Pages field shows the available column → Solution form → table → basic form → host webpage
-            hierarchy. Accessible same-origin modal frames use their current document's context; inaccessible frames
-            remain boundaries. Reopening a modal does not transfer a removed selection to its replacement.
-          </p>
-          <h3>See what happened</h3>
-          <p>
-            Applied resources, unmatched patches, errors and changes needing deployment. Source audits measure
-            classification; inspect the actual page to verify an overlay. The Issues tab also reports changed sources
-            whose inline or markup preview is disabled.
-          </p>
-          <div class="boundary">
-            Liquid, Dataverse, authentication, PCF and server logic execute online. Lense does not execute server-side
-            edits locally or deploy changes.
+      </section>
+
+      <section class="cap" id="power-pages" aria-labelledby="power-pages-title">
+        <div class="cap-head">
+          <h2 id="power-pages-title">Power Pages local development</h2>
+          <p>Two tools read the same <code>pac pages download</code> export. Neither uploads or deploys.</p>
+        </div>
+        <div class="cap-body">
+          <div class="split" id="mirage">
+            <h3>Run the site on localhost (Mirage) <span class="mode m-sim">Simulated</span></h3>
+            <div>
+              <p class="sub">You can</p>
+              <ul>
+                <li>Render pages from Liquid web templates, content snippets, page copy and language variants.</li>
+                <li>Use basic forms, multistep forms and lists built from the exported metadata.</li>
+                <li>
+                  Sign in as local personas with web roles and see table permissions (global, contact, account, parent
+                  and self scopes) applied.
+                </li>
+                <li>Call the Power Pages Web API at <code>/_api/</code> with its site-setting and token rules.</li>
+                <li>Save a source file and have the open pages reload.</li>
+              </ul>
+            </div>
+            <div class="no">
+              <p class="sub">Boundaries</p>
+              <ul>
+                <li>
+                  A model of the documented contracts, not the hosted service. An unsupported tag or control is reported
+                  as a diagnostic instead of being guessed.
+                </li>
+                <li>
+                  A multistep form that starts on a Condition step is reported as unsupported; modern lists lack some
+                  actions.
+                </li>
+                <li>
+                  Standard, enhanced and code-site (SPA) exports differ in what the sources reveal. Missing managed
+                  metadata can leave a binding unresolved.
+                </li>
+              </ul>
+            </div>
           </div>
+          <div class="split" id="lense">
+            <h3>
+              Preview local edits on the deployed portal (Lense) <span class="mode m-live">Live environment</span>
+            </h3>
+            <div>
+              <p class="sub">You can</p>
+              <ul>
+                <li>Serve local JavaScript, CSS, images and fonts in place of the deployed web files.</li>
+                <li>
+                  Override the JavaScript and CSS blocks of pages, basic forms, multistep form steps and lists, and
+                  patch literal markup in web templates, snippets and page copy.
+                </li>
+                <li>See a saved stylesheet swap in place, and switch one key between Local and Online.</li>
+                <li>Pick an element and open the source file that produces it.</li>
+              </ul>
+            </div>
+            <div class="no">
+              <p class="sub">Boundaries</p>
+              <ul>
+                <li>
+                  Liquid, Dataverse, authentication and server logic run online. An edit that needs them is listed as
+                  needing deployment.
+                </li>
+                <li>It is the real site: submitting a form or calling the Web API changes real data.</li>
+                <li>Only your dedicated browser sees the overlay. Nothing is written to the environment.</li>
+              </ul>
+            </div>
+          </div>
+          <p class="cap-links">
+            <a href="guide.html#power-pages-local">Guide: develop a site locally →</a
+            ><a href="guide.html#lense">Guide: preview on a live portal →</a
+            ><a href="https://github.com/maksii/paqvilo/blob/main/docs/coverage.md">Detailed coverage ↗</a
+            ><a href="https://github.com/maksii/paqvilo/blob/main/docs/lense.md">Lense reference ↗</a>
+          </p>
         </div>
       </section>
-      <section class="capability-section" id="mirage">
-        <div class="cap-title">
-          <p class="number">02 / LOCAL DEVELOPMENT</p>
-          <h2>Mirage</h2>
-          <p>Your exported portal.<br />A local working model.</p>
+
+      <section class="cap" id="dataverse" aria-labelledby="dataverse-title">
+        <div class="cap-head">
+          <h2 id="dataverse-title">Local Dataverse Web API and SDK endpoint</h2>
+          <p>A local organization for integration code and API tests, without a development environment.</p>
+          <span class="mode m-sim">Simulated</span>
         </div>
-        <div class="cap-detail">
-          <h3>Render &amp; serve</h3>
-          <p>
-            Exported assets, supported Liquid and includes, snippets and language variants. Native forms, lists, typed
-            fields, lookups, subgrids, quick views and notes from supported exported metadata.
-          </p>
-          <h3>Inspect &amp; simulate</h3>
-          <p>
-            Source navigation with local runtime context. Supported Web API CRUD, FetchXML, queries, relationships and
-            role/table-permission scopes. Separate local personas, records and explicitly registered project data packs.
-          </p>
-          <h3>Extend supported contracts</h3>
-          <p>
-            Standard PCF page controls, enabled native single-field bindings and explicit Liquid dataset bindings.
-            Exported operations with supported request/response flows, JSON mocks, opted-in local server code or trusted
-            providers. Plugin registrations with supported write-stage mocks or trusted handlers.
-          </p>
-          <h3>Control local scenarios</h3>
-          <p>
-            Tweaks for identity and permission/data scenarios; <code>/_sim/</code> for local administration. Source
-            edits and project-owned tests stay separate from the online environment.
+        <div class="cap-body">
+          <div>
+            <p class="sub">You can</p>
+            <ul>
+              <li>
+                Call OData at <code>/api/data/v9.x/</code>: create, read, update, delete and upsert,
+                <code>$metadata</code>, <code>$batch</code> with change-set rollback, FetchXML, saved queries, alternate
+                keys, change tracking and file columns.
+              </li>
+              <li>
+                Connect <code>ServiceClient</code> and <code>CrmServiceClient</code> through the SOAP Organization
+                service, and read with SQL over a read-only TDS endpoint.
+              </li>
+              <li>
+                Sign in with MSAL against a local token authority: client credentials, authorization code with PKCE,
+                device code and on-behalf-of.
+              </li>
+              <li>Test security roles, teams, sharing, impersonation and column security.</li>
+            </ul>
+          </div>
+          <div class="no">
+            <p class="sub">Boundaries</p>
+            <ul>
+              <li>
+                Off by default beside a portal: enable <code>mirage.dataverse</code>. A <code>dataverse-api</code>
+                runtime has it on.
+              </li>
+              <li>The .NET SDK clients need the endpoint on port 80; MSAL clients need TLS and the local CA file.</li>
+              <li>
+                Search is a simple token matcher, TDS refuses CTEs, window functions and writes, and metadata writes
+                need the <code>deep</code> simulation level.
+              </li>
+              <li>Not a hosted service: no external federation, and tokens are local to the runtime.</li>
+            </ul>
+          </div>
+          <p class="cap-links">
+            <a href="guide.html#dataverse-api">Guide: start a local Dataverse API →</a
+            ><a href="https://github.com/maksii/paqvilo/blob/main/mirage/docs/dataverse-api.md"
+              >Dataverse API reference ↗</a
+            >
           </p>
         </div>
       </section>
-      <section class="limits" id="boundaries">
-        <p class="eyebrow">MAKE THE BOUNDARY EXPLICIT</p>
-        <h2>A useful model.<br />An honest scope.</h2>
+
+      <section class="cap" id="plugins" aria-labelledby="plugins-title">
+        <div class="cap-head">
+          <h2 id="plugins-title">Dataverse plug-in testing and debugging</h2>
+          <p>Run the plug-in steps of your Solution on local writes, and debug the original C# in VS Code.</p>
+          <span class="mode m-sim">Simulated pipeline</span><span class="mode m-local">Runs locally</span
+          ><span class="mode m-limit">Windows for C#</span>
+        </div>
+        <div class="cap-body">
+          <div>
+            <p class="sub">You can</p>
+            <ul>
+              <li>
+                Run registered steps in pre-validation, pre-operation and post-operation, with images, shared variables
+                and asynchronous jobs.
+              </li>
+              <li>
+                Choose per step: the original .NET Framework assembly, a JavaScript handler, a JSON mock, a placeholder
+                or disabled.
+              </li>
+              <li>
+                Set a breakpoint in your C# source and attach VS Code to the plug-in host, from a Debug DLL and PDB. No
+                Plug-in Profiler and no environment.
+              </li>
+              <li>Evaluate low-code plug-ins (Power Fx) and read plug-in trace logs and the request trace.</li>
+            </ul>
+          </div>
+          <div class="no">
+            <p class="sub">Boundaries</p>
+            <ul>
+              <li>
+                Original assemblies load on Windows x64 with the .NET Framework compiler and the Dataverse SDK
+                assemblies. On other systems use handlers or mocks.
+              </li>
+              <li>The plug-in host is not a sandbox: your assembly runs with your own user's rights.</li>
+              <li>
+                An SDK call the local pipeline does not model throws <code>LocalPluginSdkUnsupported</code>. Steps of
+                equal rank run in step-id order.
+              </li>
+              <li>No hot reload: rebuild, then restart the runtime.</li>
+            </ul>
+          </div>
+          <p class="cap-links">
+            <a href="guide.html#plugins">Guide: run plug-in steps →</a
+            ><a href="guide.html#plugin-debug">Guide: debug C# in VS Code →</a
+            ><a href="https://github.com/maksii/paqvilo/blob/main/mirage/docs/dataverse-plugins.md"
+              >Plug-in reference ↗</a
+            >
+          </p>
+        </div>
+      </section>
+
+      <section class="cap" id="model-driven" aria-labelledby="model-driven-title">
+        <div class="cap-head">
+          <h2 id="model-driven-title">Model-driven apps on localhost</h2>
+          <p>Open the apps of an exported Solution and test form scripts and commands against local rows.</p>
+          <span class="mode m-sim">Simulated</span><span class="mode m-limit">Scripts opt-in</span>
+        </div>
+        <div class="cap-body">
+          <div>
+            <p class="sub">You can</p>
+            <ul>
+              <li>
+                Open an app at <code>/main.aspx</code>: sitemap, views with search, sort, paging and filters, main
+                forms, lookups, subgrids and web resources.
+              </li>
+              <li>
+                With <code>modelDriven.trustedExtensions</code>, run form event handlers, classic and modern commands
+                and PCF controls.
+              </li>
+              <li>
+                Rely on a bounded <code>Xrm</code> and <code>formContext</code> client API that throws on a member it
+                does not implement, instead of silently doing nothing.
+              </li>
+            </ul>
+          </div>
+          <div class="no">
+            <p class="sub">Boundaries</p>
+            <ul>
+              <li>
+                No charts, business process flows, Advanced Find, quick create forms, global search or Power BI.
+                Dashboards show their lists only.
+              </li>
+              <li>File and image controls are read-only.</li>
+              <li>Scripts run only after you opt in, because they are your code running in your browser.</li>
+            </ul>
+          </div>
+          <p class="cap-links">
+            <a href="guide.html#model-driven">Guide: run a model-driven app →</a
+            ><a href="https://github.com/maksii/paqvilo/blob/main/mirage/docs/model-driven-apps.md"
+              >Model-driven reference ↗</a
+            ><a href="https://github.com/maksii/paqvilo/blob/main/mirage/docs/model-driven-client-api.md"
+              >Supported client API ↗</a
+            >
+          </p>
+        </div>
+      </section>
+
+      <section class="cap" id="canvas" aria-labelledby="canvas-title">
+        <div class="cap-head">
+          <h2 id="canvas-title">Canvas apps in a local player</h2>
+          <p>Play a canvas app from its source and see which formula produced what.</p>
+          <span class="mode m-sim">Simulated</span>
+        </div>
+        <div class="cap-body">
+          <div>
+            <p class="sub">You can</p>
+            <ul>
+              <li>
+                Run an app from an <code>.msapp</code> file or extracted <code>Src/*.pa.yaml</code> sources at
+                <code>/_apps/canvas/&lt;app&gt;</code>.
+              </li>
+              <li>Have its Power Fx evaluated by a local interpreter on local Dataverse tables.</li>
+              <li>Inspect a control's source file and line, the app state and formula errors.</li>
+              <li>Edit a source folder and reload, or drive the app over HTTP from a test.</li>
+            </ul>
+          </div>
+          <div class="no">
+            <p class="sub">Boundaries</p>
+            <ul>
+              <li>Behaviour, not pixel fidelity: no device controls and no Studio round trip.</li>
+              <li>Delegation is approximate: a non-delegable query reads 500 rows and says so.</li>
+              <li>A connector works only with a local implementation you provide.</li>
+              <li>The player needs a local Dataverse user; a visitor without one gets 401.</li>
+            </ul>
+          </div>
+          <p class="cap-links">
+            <a href="guide.html#canvas">Guide: play a canvas app →</a
+            ><a href="https://github.com/maksii/paqvilo/blob/main/mirage/docs/canvas-apps.md">Canvas reference ↗</a>
+          </p>
+        </div>
+      </section>
+
+      <section class="cap" id="code-apps" aria-labelledby="code-apps-title">
+        <div class="cap-head">
+          <h2 id="code-apps-title">Power Apps code apps with Vite and HMR</h2>
+          <p>Develop a code app against local Dataverse data instead of a tenant.</p>
+          <span class="mode m-local">Runs locally</span><span class="mode m-sim">Simulated host</span>
+        </div>
+        <div class="cap-body">
+          <div>
+            <p class="sub">You can</p>
+            <ul>
+              <li>
+                Let <code>mirage dev</code> start each app's dev server and open it at
+                <code>/_apps/code/&lt;name&gt;/</code>.
+              </li>
+              <li>
+                Keep the Power Apps SDK imports of your app working through a Vite plug-in, with hot module replacement
+                and source breakpoints.
+              </li>
+              <li>Switch apps, set parameters and watch connections and requests in a workbench.</li>
+            </ul>
+          </div>
+          <div class="no">
+            <p class="sub">Boundaries</p>
+            <ul>
+              <li>A stand-in for the host contract, not the Power Apps player or its Local Play.</li>
+              <li>
+                A connector call answers 501 unless you supply a local simulation. Dataverse calls use local data.
+              </li>
+              <li>The bridge follows the SDK's internals: pin the SDK version and retest when you upgrade it.</li>
+            </ul>
+          </div>
+          <p class="cap-links">
+            <a href="guide.html#code-apps">Guide: develop a code app →</a
+            ><a href="https://github.com/maksii/paqvilo/blob/main/mirage/docs/code-apps.md">Code apps reference ↗</a>
+          </p>
+        </div>
+      </section>
+
+      <section class="cap" id="pcf" aria-labelledby="pcf-title">
+        <div class="cap-head">
+          <h2 id="pcf-title">PCF code components on real forms and local data</h2>
+          <p>Host your built control where it will live, bound to rows instead of test-harness inputs.</p>
+          <span class="mode m-local">Runs locally</span><span class="mode m-sim">Simulated host</span>
+        </div>
+        <div class="cap-body">
+          <div>
+            <p class="sub">You can</p>
+            <ul>
+              <li>
+                Mount standard field controls on portal pages (<code>{% codecomponent %}</code>) and portal form fields.
+              </li>
+              <li>
+                Mount field controls, dataset controls on subgrids and virtual (React) controls on model-driven forms.
+              </li>
+              <li>Mount scalar controls in the canvas player (<code>canvas.codeComponents: true</code>).</li>
+              <li>Have <code>context.webAPI</code> read and write local records on portal pages and forms.</li>
+            </ul>
+          </div>
+          <div class="no">
+            <p class="sub">Boundaries</p>
+            <ul>
+              <li>Production bundles from your Solution; Paqvilo does not build the control.</li>
+              <li>Portal pages host no virtual controls and no PCF in native lists or subgrids.</li>
+              <li>Model-driven dataset controls take one sort column and one AND filter group.</li>
+              <li>Virtual controls need the platform libraries supplied by your project.</li>
+            </ul>
+          </div>
+          <p class="cap-links">
+            <a href="guide.html#pcf">Guide: host a PCF control →</a
+            ><a href="https://github.com/maksii/paqvilo/blob/main/mirage/docs/code-components.md">PCF reference ↗</a>
+          </p>
+        </div>
+      </section>
+
+      <section class="cap" id="flows" aria-labelledby="flows-title">
+        <div class="cap-head">
+          <h2 id="flows-title">Power Automate cloud flows and server logic</h2>
+          <p>Exercise what a page or a row change triggers, without calling a cloud connector.</p>
+          <span class="mode m-sim">Simulated flows</span><span class="mode m-local">Server logic runs locally</span>
+        </div>
+        <div class="cap-body">
+          <div>
+            <p class="sub">You can</p>
+            <ul>
+              <li>
+                Run exported cloud flows in a local interpreter: Power Pages, manual, HTTP, recurrence and Dataverse row
+                triggers; conditions, loops, variables, expressions, child flows and approvals.
+              </li>
+              <li>Have Dataverse connector actions read and write local rows.</li>
+              <li>Execute Power Pages server logic JavaScript as exported.</li>
+              <li>Replace any operation with a JSON mock or a provider from your project.</li>
+            </ul>
+          </div>
+          <div class="no">
+            <p class="sub">Boundaries</p>
+            <ul>
+              <li>
+                No cloud connector is ever called. Other connectors use loopback URLs, fixtures or your providers.
+              </li>
+              <li>A closed set of expression functions; action retry policies and static results are not modelled.</li>
+              <li>Classic (XAML) workflows are not interpreted.</li>
+            </ul>
+          </div>
+          <p class="cap-links">
+            <a href="guide.html#flows">Guide: run or mock an operation →</a
+            ><a href="https://github.com/maksii/paqvilo/blob/main/mirage/docs/operations.md">Operations reference ↗</a>
+          </p>
+        </div>
+      </section>
+
+      <section class="cap" id="tracing" aria-labelledby="tracing-title">
+        <div class="cap-head">
+          <h2 id="tracing-title">Request tracing and the Monitor</h2>
+          <p>See why a local request rendered, saved, was denied or failed.</p>
+          <span class="mode m-local">Runs locally</span>
+        </div>
+        <div class="cap-body">
+          <div>
+            <p class="sub">You can</p>
+            <ul>
+              <li>
+                Read each request as one tree: page render with its templates, Web API or form step, Dataverse
+                operation, plug-in stages, flows and connector calls.
+              </li>
+              <li>See the table-permission decision that hid a row or refused a write.</li>
+              <li>
+                Use the Monitor in <code>/_sim/</code>, <code>paqvilo mirage trace</code> or the test API, and export
+                JSON, NDJSON or OTLP.
+              </li>
+            </ul>
+          </div>
+          <div class="no">
+            <p class="sub">Boundaries</p>
+            <ul>
+              <li>Local runtime only. Lense does not trace the live platform.</li>
+              <li>
+                On by default at <code>summary</code>; <code>full</code> adds redacted payloads. Kept in memory unless
+                you set <code>persist</code>.
+              </li>
+            </ul>
+          </div>
+          <p class="cap-links">
+            <a href="guide.html#trace">Guide: trace a request →</a
+            ><a href="https://github.com/maksii/paqvilo/blob/main/mirage/docs/tracing.md">Tracing reference ↗</a>
+          </p>
+        </div>
+      </section>
+
+      <section class="cap" id="analyze" aria-labelledby="analyze-title">
+        <div class="cap-head">
+          <h2 id="analyze-title">Offline analysis of Power Platform sources</h2>
+          <p>Review an export before you commit or deploy it.</p>
+          <span class="mode m-static">Static analysis</span>
+        </div>
+        <div class="cap-body">
+          <div>
+            <p class="sub">You can</p>
+            <ul>
+              <li>
+                Run <code>paqvilo analyze</code> on a folder or a project: rules for Dataverse and ALM, model-driven
+                apps, canvas apps, PCF, code apps, cloud flows, connectors and Power Pages.
+              </li>
+              <li>Get each finding with its rule, file and line, as text or <code>--json</code>.</li>
+              <li>Set the failing severity with <code>--fail-on</code> for a CI gate.</li>
+            </ul>
+          </div>
+          <div class="no">
+            <p class="sub">Boundaries</p>
+            <ul>
+              <li>Reads sources only: nothing is built or executed and no tenant is contacted.</li>
+              <li>It complements the solution checker of your environment; it does not replace it.</li>
+            </ul>
+          </div>
+          <p class="cap-links">
+            <a href="guide.html#analyze">Guide: analyze sources →</a
+            ><a href="https://github.com/maksii/paqvilo/blob/main/docs/static-analysis.md">Rules reference ↗</a>
+          </p>
+        </div>
+      </section>
+
+      <section class="cap" id="testing" aria-labelledby="testing-title">
+        <div class="cap-head">
+          <h2 id="testing-title">Automated tests, CI and AI coding agents</h2>
+          <p>Check a change without an environment, a tenant or a person clicking.</p>
+          <span class="mode m-local">Runs locally</span>
+        </div>
+        <div class="cap-body">
+          <div>
+            <p class="sub">You can</p>
+            <ul>
+              <li>
+                Write Node tests against a running local runtime: sessions as personas, Web API calls, records and
+                traces, and, with an in-process simulator, a fixed clock and sequential ids for repeatable runs.
+              </li>
+              <li>Parse <code>--json</code> output from the status, inspection, trace and analysis commands.</li>
+              <li>
+                Give a coding agent a bounded browser API: sessions, pages, events, snapshots, screenshots and
+                navigation, confined to one origin.
+              </li>
+            </ul>
+          </div>
+          <div class="no">
+            <p class="sub">Boundaries</p>
+            <ul>
+              <li>A passing local test is evidence about the local model, not proof of platform behaviour.</li>
+              <li>Browser tests need Edge or Chrome on the machine or runner.</li>
+              <li>Neither tool grants an agent permission to change live data or deploy.</li>
+            </ul>
+          </div>
+          <p class="cap-links">
+            <a href="guide.html#tests">Guide: write a repeatable test →</a
+            ><a href="guide.html#agents">Guide: work with a coding agent →</a
+            ><a href="https://github.com/maksii/paqvilo/blob/main/docs/public-api.md">Public API ↗</a>
+          </p>
+        </div>
+      </section>
+
+      <section class="block" aria-labelledby="fit-title">
+        <h2 id="fit-title">Where it fits next to the Microsoft tools</h2>
         <p>
-          Mirage implements selected Power Pages contracts. Unsupported features retain diagnostics. Native list/subgrid
-          PCF hosting falls back to the native grid; React/virtual controls, platform libraries, advanced dataset
-          operators and record navigation remain unsupported. External connectors, custom APIs and unsupported flow
-          actions need project providers or mocks. Compiled Dataverse plugin assemblies require explicitly configured
-          original-assembly mode on Windows; they do not run by default.
+          Paqvilo adds a local loop around the official tools. You still export, build and deploy with the Power
+          Platform CLI.
         </p>
-        <p>
-          Standard, enhanced and code-site/SPA exports have different source coverage. Missing managed metadata and
-          dynamic references can leave bindings unresolved. Validate your deployed result in an authorized environment.
-          Deployment stays with your separate PAC/site process.
-        </p>
+        <div class="table-wrap">
+          <table class="matrix">
+            <thead>
+              <tr>
+                <th scope="col">Task</th>
+                <th scope="col">Usual route</th>
+                <th scope="col">With Paqvilo</th>
+                <th scope="col">Guide</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <th scope="row">See a Power Pages change</th>
+                <td><code>pac pages upload</code>, then wait for the cache and refresh.</td>
+                <td>Save the file: the local site reloads, or the live page shows your local file.</td>
+                <td><a href="guide.html#power-pages-local">Develop locally →</a></td>
+              </tr>
+              <tr>
+                <th scope="row">Debug a plug-in</th>
+                <td>Profile the step in an environment, then replay it in the Plug-in Registration Tool.</td>
+                <td>Attach VS Code to the original assembly while the local pipeline runs it.</td>
+                <td><a href="guide.html#plugin-debug">Debug C# →</a></td>
+              </tr>
+              <tr>
+                <th scope="row">Try a PCF control with data</th>
+                <td>
+                  The test harness (<code>npm start watch</code>) with mock or CSV inputs, or a deployed control
+                  redirected to your local bundle.
+                </td>
+                <td>The built control on a local form, with records and a working Web API.</td>
+                <td><a href="guide.html#pcf">Host a control →</a></td>
+              </tr>
+              <tr>
+                <th scope="row">Run a code app</th>
+                <td>
+                  <code>npm run dev</code> with the Power Apps CLI (formerly <code>pac code run</code>), using the
+                  connections of your environment.
+                </td>
+                <td>The same dev server against local Dataverse data.</td>
+                <td><a href="guide.html#code-apps">Develop a code app →</a></td>
+              </tr>
+              <tr>
+                <th scope="row">Test integration code</th>
+                <td>A shared development environment and an app registration.</td>
+                <td>A local endpoint that <code>ServiceClient</code> and MSAL can sign in to.</td>
+                <td><a href="guide.html#dataverse-api">Start the API →</a></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="limits" id="boundaries" aria-labelledby="boundaries-title">
+        <p class="eyebrow">BEFORE YOU RELY ON IT</p>
+        <h2 id="boundaries-title">Limits that apply to every scenario</h2>
+        <ul>
+          <li>
+            <strong>A simulation, not an emulator.</strong> Mirage models the parts of Power Pages and Dataverse it
+            documents and reports what a source uses beyond them. Check what matters in a real environment before you
+            release.
+          </li>
+          <li>
+            <strong>No cloud connectors.</strong> Flows, canvas apps and code apps never reach a real connector locally.
+            Dataverse actions use local data; for the rest you supply a provider or a mock.
+          </li>
+          <li>
+            <strong>Windows and Linux; C# on Windows.</strong> The toolkit needs Node.js 26.13.1 or later in the 26.x
+            line and Edge or Chrome. Original .NET Framework plug-in assemblies load on Windows x64 only.
+          </li>
+          <li>
+            <strong>Deployment and licensing are unchanged.</strong> Mirage and Lense do not deploy or host production
+            sites, and nothing here replaces Microsoft licences. An environment is written to only when you ask: by the
+            <code>paqvilo dataverse</code> commands that apply, register or publish, by Mirage started with
+            <code>--allow-live-writes</code>, and by what you do yourself in a Lense browser.
+          </li>
+        </ul>
         <div class="actions">
-          <a class="button" href="https://github.com/maksii/paqvilo/blob/main/docs/coverage.md"
-            >Read the detailed coverage →</a
-          ><a class="text-link" href="https://github.com/maksii/paqvilo/blob/main/docs/project-extensions.md"
-            >Extend in your project ↗</a
-          >
+          <a class="button" href="guide.html">Open the developer guide →</a
+          ><a class="text-link" href="https://github.com/maksii/paqvilo/blob/main/docs/coverage.md"
+            >Detailed coverage ↗</a
+          ><a class="text-link" href="https://github.com/maksii/paqvilo/blob/main/docs/faq.md">FAQ ↗</a>
         </div>
       </section>
     </main>
     <footer class="wrap">
-      <a class="brand" href="index.html">paqvilo</a>
-      <p>Independent tooling for Microsoft Power Pages. AGPL-3.0-only.</p>
+      <a class="brand" href="./">paqvilo</a>
+      <p>
+        Independent open-source tooling for Microsoft Power Platform. Not affiliated with or endorsed by Microsoft.
+        AGPL-3.0-only.
+      </p>
       <a href="https://www.npmjs.com/package/paqvilo">npm ↗</a
+      ><a href="https://github.com/maksii/paqvilo/blob/main/CONTRIBUTING.md">Contribute ↗</a
       ><a href="https://github.com/maksii/paqvilo/issues">Issues ↗</a>
     </footer>
   </body>

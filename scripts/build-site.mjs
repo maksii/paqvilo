@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 const [arg] = process.argv.slice(2);
 if (arg === '--help' || arg === '-h') {
   console.log(`Usage: npm run site:build   (node scripts/build-site.mjs)
-Replaces dist/pages with the public site files, docs/assets images and site/media recordings, and checks every
+Replaces dist/pages with the public site files, two docs/assets images and the site/media screenshots, and checks every
 project-site link. Offline. Takes no options; --help prints this help.`);
   process.exit(0);
 }
@@ -29,32 +29,48 @@ if (
   throw new Error('The site output must be a generated directory inside this checkout.');
 fs.rmSync(output, { recursive: true, force: true });
 fs.mkdirSync(output, { recursive: true });
-// sitemap.xml names the published project-site URLs (a project site cannot serve the host's robots.txt).
-for (const name of ['index.html', 'coverage.html', 'guide.html', 'guide.js', 'style.css', 'favicon.svg', 'sitemap.xml'])
+// robots.txt and sitemap.xml are served from the root of the site's own domain.
+for (const name of [
+  'index.html',
+  'coverage.html',
+  'guide.html',
+  'guide.js',
+  'style.css',
+  'favicon.svg',
+  'robots.txt',
+  'sitemap.xml',
+])
   fs.copyFileSync(path.join(root, 'site', name), path.join(output, name));
 fs.mkdirSync(path.join(output, 'assets'), { recursive: true });
-for (const name of ['overview.svg', 'lense-visual.png', 'mirage-visual.png', 'social-preview.png'])
+// Only the images a page references: the diagram and the social preview.
+for (const name of ['overview.svg', 'social-preview.png'])
   fs.copyFileSync(path.join(root, 'docs/assets', name), path.join(output, 'assets', name));
-// Guide recordings: every file in site/media, flat (stills as WebP, clips as MP4).
+// Screenshots: every file in site/media, flat (stills as WebP, clips as MP4).
 fs.mkdirSync(path.join(output, 'media'), { recursive: true });
 for (const entry of fs.readdirSync(path.join(root, 'site/media'), { withFileTypes: true })) {
   if (!entry.isFile()) throw new Error(`site/media must contain files only: ${entry.name}`);
   fs.copyFileSync(path.join(root, 'site/media', entry.name), path.join(output, 'media', entry.name));
 }
 fs.writeFileSync(path.join(output, '.nojekyll'), '');
-// Catch project-site path mistakes and missing assets before publication.
-for (const name of ['index.html', 'coverage.html', 'guide.html']) {
-  const html = fs.readFileSync(path.join(output, name), 'utf8');
+// Catch project-site path mistakes, missing assets and anchors that name no element before publication.
+const pages = ['index.html', 'coverage.html', 'guide.html'];
+const read = (name) => fs.readFileSync(path.join(output, name), 'utf8');
+const ids = new Map(
+  pages.map((name) => [name, new Set([...read(name).matchAll(/\sid="([^"]+)"/g)].map((match) => match[1]))]),
+);
+for (const name of pages) {
+  const html = read(name);
   for (const match of html.matchAll(/(?:href|src|poster)="([^"]+)"/g)) {
     const target = match[1].split('#')[0];
     if (!target || /^(?:https?:|mailto:)/.test(target)) continue;
     if (target.startsWith('/') || !fs.existsSync(path.join(output, target)))
       throw new Error(`Broken project-site link in ${name}: ${target}`);
   }
-  // In-page links must name an existing id.
-  const ids = new Set([...html.matchAll(/\sid="([^"]+)"/g)].map((match) => match[1]));
+  // A fragment must name an existing id, on this page or on the site page it points to.
   for (const [, page, id] of html.matchAll(/href="([^"#]*)#([^"]+)"/g)) {
-    if ((!page || page === name) && !ids.has(id)) throw new Error(`Broken in-page link in ${name}: #${id}`);
+    if (!page && !ids.get(name).has(id)) throw new Error(`Broken in-page link in ${name}: #${id}`);
+    if (ids.has(page) && !ids.get(page).has(id))
+      throw new Error(`Broken ${page === name ? 'in-page' : 'cross-page'} link in ${name}: ${page}#${id}`);
   }
 }
 console.log(`GitHub Pages built and links checked: ${output}`);

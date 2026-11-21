@@ -47,17 +47,14 @@ test('site builds replace stale output and retain only deliberate public files',
     'guide.js',
     'index.html',
     'media',
+    'robots.txt',
     'sitemap.xml',
     'style.css',
   ]);
-  assert.deepEqual(fs.readdirSync(path.join(output, 'assets')).sort(), [
-    'lense-visual.png',
-    'mirage-visual.png',
-    'overview.svg',
-    'social-preview.png',
-  ]);
+  assert.deepEqual(fs.readdirSync(path.join(output, 'assets')).sort(), ['overview.svg', 'social-preview.png']);
   for (const [built, original] of [
     ['favicon.svg', 'site/favicon.svg'],
+    ['robots.txt', 'site/robots.txt'],
     ['sitemap.xml', 'site/sitemap.xml'],
     ['assets/social-preview.png', 'docs/assets/social-preview.png'],
   ])
@@ -89,6 +86,18 @@ test('site build rejects a broken in-page link', (t) => {
   const result = run();
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /Broken in-page link in guide\.html: #no-such-section/);
+});
+
+test('site build rejects a link to a missing section of another page', (t) => {
+  const { checkout, run } = fixture(t);
+  const home = path.join(checkout, 'site/index.html');
+  fs.writeFileSync(
+    home,
+    fs.readFileSync(home, 'utf8').replace('</main>', '<a href="guide.html#no-such-section">x</a></main>'),
+  );
+  const result = run();
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Broken cross-page link in index\.html: guide\.html#no-such-section/);
 });
 
 for (const redirected of ['dist', 'dist/pages']) {
