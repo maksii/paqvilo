@@ -28,10 +28,16 @@ export async function stateFileEndpoint(stateFile, { platform = process.platform
     .update(platform === 'win32' ? real.toLowerCase() : real)
     .digest('hex')
     .slice(0, 32);
-  return platform === 'win32'
-    ? String.raw`\\.\pipe\paqvilo-state-` + key
-    : path.join(tmpdir, `paqvilo-state-${key}.sock`);
+  if (platform === 'win32') return String.raw`\\.\pipe\paqvilo-state-` + key;
+  const name = `paqvilo-state-${key}.sock`;
+  const socket = path.join(tmpdir, name);
+  // A socket path longer than sun_path cannot be listened on (EINVAL). macOS's per-user temporary folder already takes
+  // 100 of its 103 bytes, so a longer TMPDIR (a sandbox, a CI runner) falls back to /tmp, which every POSIX host has.
+  return Buffer.byteLength(socket) <= socketPathLimit(platform) ? socket : path.posix.join('/tmp', name);
 }
+
+/** The longest Unix socket path, in bytes, before the terminating NUL of sun_path: 108 on Linux, 104 elsewhere. */
+const socketPathLimit = (platform) => (platform === 'linux' ? 107 : 103);
 
 /** " (pid N, url)" of the runtime that holds a claim, as far as it said who it is. */
 function holderText(holder) {

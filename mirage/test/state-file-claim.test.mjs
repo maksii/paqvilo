@@ -57,6 +57,33 @@ test('every spelling of one state file is the same claim, and another file is an
   await other.release();
 });
 
+test('a temporary folder too long for a Unix socket path falls back to /tmp, and the claim still holds', async (t) => {
+  const stateFile = path.join(await folder(t), 'state.json');
+  // sun_path holds 104 bytes on macOS (108 on Linux); macOS's own temporary folder leaves only three to spare.
+  const long = '/' + 'x'.repeat(60);
+  for (const [platform, limit] of [
+    ['darwin', 103],
+    ['linux', 107],
+  ]) {
+    const fallback = await stateFileEndpoint(stateFile, { platform, tmpdir: long });
+    assert.match(fallback, /^\/tmp\/paqvilo-state-[0-9a-f]{32}\.sock$/, platform);
+    const fits = '/' + 'y'.repeat(limit - fallback.length + '/tmp'.length - 1);
+    const kept = await stateFileEndpoint(stateFile, { platform, tmpdir: fits });
+    assert.equal(kept.length, limit, `${platform}: a path of exactly the limit is kept`);
+    assert.equal(path.dirname(kept), fits);
+    assert.equal(path.basename(kept), path.basename(fallback), 'the same file names the same socket');
+  }
+  if (process.platform === 'win32') return;
+  // Two runtimes whose (different) temporary folders are both too long meet at the same socket in /tmp.
+  const base = os.tmpdir();
+  const tmpdir = t.mock.method(os, 'tmpdir', () => path.join(base, 'z'.repeat(120)));
+  const held = await claimStateFile(stateFile);
+  ownedFixture(t).add(() => held.release());
+  tmpdir.mock.restore();
+  t.mock.method(os, 'tmpdir', () => path.join(base, 'w'.repeat(120)));
+  await assert.rejects(claimStateFile(stateFile), { code: 'StateFileInUse' });
+});
+
 test('a holder that was killed holds nothing: the next claim succeeds without any clean-up', async (t) => {
   const stateFile = path.join(await folder(t), 'state.json');
   const child = spawn(
