@@ -33,7 +33,8 @@ test('multiselect search preserves typed terms and keyboard selection cannot tog
   });
   const input = page.getByRole('combobox', { name: 'Tags', exact: true });
   await input.focus();
-  await page.keyboard.press('Control+A');
+  // Select all: Command+A on macOS, where Control+A moves to the start of the line.
+  await page.keyboard.press('ControlOrMeta+A');
   await page.keyboard.type('B');
   assert.equal(await input.inputValue(), 'B');
   assert.deepEqual(await page.getByRole('option').allTextContents(), ['Select all3 items', 'Blue', 'Black']);
