@@ -53,6 +53,11 @@ await store.compact(); // optional, during an idle period
   because NTFS can update it on a plain read). Any difference is a `StateConflict`, even for an equal-size edit. Two
   stale runtimes never merge their in-memory state: share one runtime between browser sessions and give independent
   scenarios separate state paths.
+- **One runtime per state file.** A runtime that persists its state (every simulation level except `dry-run`) holds its
+  state file for as long as it runs, however it was started (`mirage dev`, `start`, `serve` or `createSimulator`). A
+  second runtime on that file refuses to start with 409 `StateFileInUse`, naming the holder's process ID and address;
+  stop that runtime or pass `--state <other file>`. The hold ends with the process, also when it is killed, so nothing
+  has to be cleaned up.
 - **Stale locks**: each lock records its owner (process, host, toolkit version). A writer killed during a checkpoint
   leaves `<state file>.lock` and possibly `<state file>.paqvilo-<token>.tmp`; the state file keeps its last committed
   content. A lock taken on this host whose owner process has ended is reclaimed, with its unpublished temporary file, at

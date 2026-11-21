@@ -66,6 +66,33 @@ test('imported flow JSON retains authored unsafe numeric literals before local e
   assert.match(stringifyExactJson(result.body), /"decimal":99999999999\.1234567891/);
 });
 
+// @test-kind contract: a flow file that cannot be parsed is refused with its own path, so a start or reload names what to fix
+test('a flow definition that is not valid JSON or XML is refused by its file name', async (t) => {
+  const { dir } = await source(t, '');
+  await fs.mkdir(path.join(dir, 'Workflows'));
+  const data = path.join(dir, 'Workflows', 'Truncated.json.data.xml'),
+    definition = path.join(dir, 'Workflows', 'Truncated.json');
+  await fs.writeFile(data, `<Workflow WorkflowId="{${role}}"/>`);
+  await fs.writeFile(definition, '{"properties":{"definition":{"triggers":{"manual":{"type":"Requ');
+  const invalidJson = await importOperationWorkflows([{ dir }]).then(
+    () => null,
+    (error) => error,
+  );
+  assert.ok(invalidJson instanceof Error, 'a truncated definition stops the import');
+  assert.ok(invalidJson.cause instanceof SyntaxError);
+  assert.equal(invalidJson.message, `Flow definition ${definition} is not valid JSON: ${invalidJson.cause.message}`);
+
+  await fs.writeFile(definition, '{}');
+  await fs.writeFile(data, `<Workflow WorkflowId="{${role}}">`);
+  const invalidXml = await importOperationWorkflows([{ dir }]).then(
+    () => null,
+    (error) => error,
+  );
+  assert.ok(invalidXml instanceof Error, 'an unclosed companion file stops the import');
+  assert.equal(invalidXml.cause.message, 'One complete XML root is required');
+  assert.equal(invalidXml.message, `Flow definition ${data} is not valid XML: One complete XML root is required`);
+});
+
 test('exported server connector writes exact raw literals and returns raw-number JSON without internal tags', async (t) => {
   const { record } = await source(
     t,

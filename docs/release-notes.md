@@ -283,6 +283,24 @@ this session.` A trusted CLR plug-in descriptor with
 
 ### Fixed
 
+- A data pack plug-in step handler that never returns no longer freezes Mirage for good: a served runtime ends at the
+  2-minute plug-in limit with a message naming the step. An error that pack code throws later, from a timer or an
+  unawaited promise, is the diagnostic `PROJECT_CODE_UNCAUGHT` instead of the end of the runtime.
+- Two runtimes can no longer write one state file: the second refuses to start with `StateFileInUse`, naming the first
+  one's process ID and address, also for `mirage serve` and for the same `--state` used from another folder.
+- A `cloudFlows` pack handler that returns nothing answers 500 naming the handler instead of an internal TypeError, and a
+  `cloudFlows` or `serverLogics` handler that never settles ends its request with 504 after 120 s. The same holds for
+  the other asynchronous pack handlers: a `workflows` or `dataverseMessages` handler that never settles ends its
+  invocation with 504 `PackHandlerTimeout` after 120 s and can no longer write through the API it kept, and a pack
+  connector operation or `httpFixtures` responder that never settles fails its call with 504 `ProviderTimeout` at the
+  call's time limit (120 s by default).
+- A data pack module that cannot be loaded, and a cloud flow definition that is not valid JSON or XML, are reported with
+  their file name. A pack file saved while Mirage runs is reported as `PACK_FILE_CHANGED` (packs load at startup).
+- A reload that loses a whole kind of portal source (every web template, every table permission, the website record)
+  reports `PORTAL_SOURCE_REMOVED` with what is gone.
+- A start refused because an identical start is still running says so, instead of "with different settings", and a
+  `.paqvilo` folder that cannot be created is reported with its path, the cause and the next step.
+- Snapshot folders of isolated persona runtimes left by a killed Mirage are removed by the next persona launch.
 - `mirage dev` on a Mirage that was already running (for example after an earlier dev command was killed) ends with
   "is no longer running" when that Mirage ends, instead of staying open on an address nothing answers.
 - A crashed tab no longer delays the end of a dev session by about a minute of clean-up timeouts; the tab is reported

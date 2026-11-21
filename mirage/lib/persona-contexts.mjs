@@ -2,6 +2,20 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { personaContextSettings } from './persona-context-settings.mjs';
+import { claimStateFile } from './state-file-claim.mjs';
+
+/**
+ * Whether no running runtime uses the snapshot folder `folder`: a persona runtime holds its `state.json` while it runs
+ * (state-file-claim.mjs), so a folder whose state file can be claimed belongs to a parent that was killed.
+ */
+async function abandoned(folder) {
+  try {
+    await (await claimStateFile(path.join(folder, 'state.json'))).release();
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 const failure = (message, status = 400, code = 'PersonaContextInvalid') =>
   Object.assign(new Error(message), { status, code });
@@ -13,11 +27,26 @@ export function createPersonaContexts({
   start,
   maxInstances = 4,
   directory = path.join(process.cwd(), '.paqvilo', 'persona-runtimes'),
+  isAbandoned = abandoned,
 } = {}) {
   personaContextSettings({ maxInstances });
   const entries = new Map();
   let queue = Promise.resolve(),
-    closed = false;
+    closed = false,
+    swept = false;
+  // A parent that was killed leaves its snapshot folders, each a copy of the state: the first launch of this manager
+  // removes those no running runtime uses. A folder that cannot be judged or removed is left where it is.
+  const sweepAbandoned = async () => {
+    if (swept) return;
+    swept = true;
+    const owned = new Set([...entries.values()].map((entry) => entry.directory));
+    const names = await fs.readdir(directory).catch(() => []);
+    for (const name of names) {
+      const folder = path.join(directory, name);
+      if (!name.startsWith('instance-') || owned.has(folder) || !(await isAbandoned(folder))) continue;
+      await fs.rm(folder, { recursive: true, force: true }).catch(() => {});
+    }
+  };
   const serialize = (fn) => {
     const task = queue.then(fn);
     queue = task.catch(() => {});
@@ -75,6 +104,7 @@ export function createPersonaContexts({
               'PersonaContextLimit',
             );
           await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+          await sweepAbandoned();
           const instanceDirectory = await fs.mkdtemp(path.join(directory, 'instance-'));
           try {
             const file = path.join(instanceDirectory, 'state.json');

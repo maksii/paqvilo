@@ -711,7 +711,15 @@ function importWorkflowEntry(layer, entry, byName, result, limit) {
     }
   });
   if (contained.includes(null)) return;
-  const xml = parseSolutionXml(contained[0]);
+  // A file that does not parse stops the import; the parser's message alone does not say which file it read.
+  const parsed = (parse, index, format) => {
+    try {
+      return parse(contained[index]);
+    } catch (error) {
+      throw new Error(`Flow definition ${files[index]} is not valid ${format}: ${error.message}`, { cause: error });
+    }
+  };
+  const xml = parsed(parseSolutionXml, 0, 'XML');
   const id = canonical(xml.attrs.WorkflowId ?? descendants(xml, 'Workflow')[0]?.attrs.WorkflowId);
   if (!/^[0-9a-f-]{36}$/.test(id)) return;
   const node = descendants(xml, 'Workflow')[0] ?? xml,
@@ -727,7 +735,7 @@ function importWorkflowEntry(layer, entry, byName, result, limit) {
     name: xml.attrs.Name ?? node.attrs.Name ?? null,
     active,
     activation: { sourceValue: state, sourceFile: files[0] },
-    definition: parseExactJson(contained[1]),
+    definition: parsed(parseExactJson, 1, 'JSON'),
   });
 }
 

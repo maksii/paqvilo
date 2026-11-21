@@ -572,6 +572,13 @@ export async function runMirageCommand( // NOSONAR: the command dispatch of the 
   }
   const stateDir = path.resolve(statePath);
   const command = positionals[0] ?? 'serve';
+  // A served runtime survives the two faults of project code that would otherwise take it down without a word
+  // (lib/project-code-watch.mjs): an error thrown outside a request, and a step handler that never returns.
+  if (processEntry && command === 'serve') {
+    const { guardProjectCodeFaults, watchProjectCode } = await import('./lib/project-code-watch.mjs');
+    guardProjectCodeFaults();
+    watchProjectCode();
+  }
   if (processEntry && command === 'serve' && process.env.MIRAGE_SETUP_RUNTIME) {
     // Started by a toolkit command that waits for this runtime: until its discovery record is published, the runtime
     // says every few seconds that its event loop turns ('alive', lense/startup-progress.mjs), and once it is published

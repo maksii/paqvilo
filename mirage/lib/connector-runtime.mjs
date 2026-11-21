@@ -688,6 +688,27 @@ function armDeadline(fire, budget) {
   return () => clearTimeout(timer);
 }
 
+// The answer of a data pack's connector operation or http fixture. It is project code the call would otherwise wait on
+// without end: one that has not settled within the call's budget fails the call with ProviderTimeout, and the call stops
+// waiting for it. What it throws is passed on.
+async function packAnswer(call, context, what) {
+  let disarm;
+  const expired = new Promise((_resolve, reject) => {
+    disarm = armDeadline(
+      () => reject(connectorError('ProviderTimeout', what + ' did not answer within the action time limit.')),
+      timeBudgetMs(context?.timeoutMs),
+    );
+  });
+  const pending = Promise.resolve().then(call);
+  // It may still reject after its call stopped waiting: that rejection has no call left to report it.
+  pending.catch(() => {});
+  try {
+    return await Promise.race([pending, expired]);
+  } finally {
+    disarm();
+  }
+}
+
 // The rejection loopbackFetch gives for a redirect answer (dataverse-webhooks.mjs), on the error or on its cause.
 const isRedirectRefusal = (error) => error?.code === 'LoopbackRedirect' || error?.cause?.code === 'LoopbackRedirect';
 
@@ -775,14 +796,14 @@ function fixtureProvider(fixtures) {
     capability: capability('fixture', { operations: ['Http'], requires: ['pack:httpFixtures'] }),
     async invoke(request, context) {
       return (
-        (await fixtureAnswer(fixtures, httpRequest(request, context.settings))) ??
+        (await fixtureAnswer(fixtures, httpRequest(request, context.settings), context)) ??
         fail('ConnectorNotConfigured', 'No pack http fixture matches this request.')
       );
     },
     async poll(location, request, context) {
       const statusUrl = statusUrlOf(location, request);
       return {
-        ...((await fixtureAnswer(fixtures, pollRequest(statusUrl, context.settings))) ??
+        ...((await fixtureAnswer(fixtures, pollRequest(statusUrl, context.settings), context)) ??
           fail('ConnectorNotConfigured', 'No pack http fixture matches the status request.')),
         statusUrl,
       };
@@ -790,10 +811,14 @@ function fixtureProvider(fixtures) {
   };
 }
 // The pack httpFixtures answer of a built request, or null when no fixture matches.
-async function fixtureAnswer(fixtures, req) {
+async function fixtureAnswer(fixtures, req, context) {
   const fixture = fixtures.find((f) => (f.method === '*' || same(f.method, req.method)) && f.url.test(req.url));
   if (!fixture) return null;
-  const answer = await fixture.respond(structuredClone(req));
+  const answer = await packAnswer(
+    () => fixture.respond(structuredClone(req)),
+    context,
+    'The pack http fixture ' + fixture.id,
+  );
   if (!isMap(answer)) fail('ProviderFailed', 'The http fixture returned no response object.');
   const nextLink = nextLinkOf(answer.body);
   return {
@@ -827,7 +852,7 @@ const SCRIPT_RESTORE =
 ) {
   const cached = new Map();
   const send = (req, context) =>
-    Promise.resolve(fixtureAnswer(fixtures, req)).then((answer) => answer ?? sendLoopback(req, context));
+    Promise.resolve(fixtureAnswer(fixtures, req, context)).then((answer) => answer ?? sendLoopback(req, context));
   const form = (grant, credentials, extra) =>
     new URLSearchParams({
       grant_type: grant,
@@ -1207,14 +1232,19 @@ function packProvider(pack) {
     supportsOperation: (connectorId, operationId) =>
       Object.hasOwn(pack.connectors[connectorId]?.operations ?? {}, operationId),
     async invoke(request, context) {
-      const answer = await pack.connectors[request.connectorId].operations[request.operationId](
-        structuredClone({
-          connectorId: request.connectorId,
-          operationId: request.operationId,
-          parameters: request.parameters ?? {},
-          ...(request.nextLink ? { nextLink: request.nextLink } : {}),
-        }),
+      const answer = await packAnswer(
+        () =>
+          pack.connectors[request.connectorId].operations[request.operationId](
+            structuredClone({
+              connectorId: request.connectorId,
+              operationId: request.operationId,
+              parameters: request.parameters ?? {},
+              ...(request.nextLink ? { nextLink: request.nextLink } : {}),
+            }),
+            context,
+          ),
         context,
+        'The pack connector operation ' + request.connectorId + '.' + request.operationId,
       );
       if (!isMap(answer) || !Number.isInteger(answer.statusCode))
         fail('ProviderFailed', 'The pack connector returned no { statusCode, body } result.');

@@ -58,6 +58,41 @@ test('context launches serialize duplicate starts, fingerprint definitions and c
   await assert.rejects(manager.open({ id: 'one', label: 'One' }), /closed/);
 });
 
+test('the first launch removes the snapshot folders a killed parent left, and keeps one a running runtime uses', async (t) => {
+  const owned = await makeTemporaryDirectory(path.join(os.tmpdir(), 'persona-runtimes-'));
+  t.after(() => fs.rm(owned, { recursive: true, force: true }));
+  // Three folders from earlier parents: two abandoned, one whose runtime still runs; and a folder that is not a snapshot.
+  for (const name of ['instance-dead1', 'instance-dead2', 'instance-live', 'notes']) {
+    await fs.mkdir(path.join(owned, name));
+    await fs.writeFile(path.join(owned, name, 'state.json'), 'fixture');
+  }
+  const judged = [];
+  const manager = createPersonaContexts({
+    directory: owned,
+    maxInstances: 2,
+    isAbandoned: async (folder) => {
+      judged.push(path.basename(folder));
+      return path.basename(folder) !== 'instance-live';
+    },
+    snapshot: async (file) => fs.writeFile(file, 'fixture'),
+    start: async () => ({ url: 'http://127.0.0.1:1', close: async () => {} }),
+  });
+  t.after(() => manager.close());
+  assert.deepEqual((await fs.readdir(owned)).sort(), ['instance-dead1', 'instance-dead2', 'instance-live', 'notes']);
+  const first = await manager.open({ id: 'a', label: 'A' });
+  const after = (await fs.readdir(owned)).sort();
+  assert.equal(after.includes('instance-dead1'), false);
+  assert.equal(after.includes('instance-dead2'), false);
+  assert.ok(after.includes('instance-live'), 'a folder a running runtime uses is kept');
+  assert.ok(after.includes('notes'), 'a folder that is not a snapshot is not touched');
+  assert.equal(after.filter((name) => name.startsWith('instance-')).length, 2, 'the live one and the one just created');
+  assert.deepEqual(judged.sort(), ['instance-dead1', 'instance-dead2', 'instance-live']);
+  // Later launches do not judge the folders again.
+  await manager.open({ id: 'b', label: 'B' });
+  assert.equal(judged.length, 3);
+  assert.equal(first.created, true);
+});
+
 test('catalogue/default context limits are validated and resolved for CLI runtimes', async (t) => {
   for (const value of [null, [], { unknown: 1 }, { maxInstances: -1 }, { maxInstances: 1.5 }, { maxInstances: 33 }])
     assert.throws(() => personaContextSettings(value), /personaContexts/);

@@ -1,4 +1,6 @@
 import { liveDataverseSettings } from './live-dataverse-settings.mjs';
+import { STATE_CLAIM } from './state-file-claim.mjs';
+import { onProjectCodeFault } from './project-code-watch.mjs';
 import { createRecordCapabilitiesSummary } from './record-capabilities-summary.mjs';
 import { statusResponseChunks } from './status-response.mjs';
 // Solution-only composition. Power Pages imports, contact sessions and live bridges are absent.
@@ -252,6 +254,7 @@ function profileDefaultLocation({ setup, project }) {
     adminToken = randomBytes(32).toString('hex');
   const presetMode = options.presetMode ?? 'always';
   if (!['always', 'bootstrap'].includes(presetMode)) throw new Error('presetMode must be bootstrap or always');
+  await options[STATE_CLAIM]?.take();
   const stateExisted = stateFile
     ? await fs.stat(stateFile).then(
         () => true,
@@ -362,6 +365,8 @@ function profileDefaultLocation({ setup, project }) {
     if (diagnostics.length > 500) diagnostics.shift();
   };
   sourceDiagnostic = diagnostic;
+  // An error project code throws outside a request (project-code-watch.mjs) is a finding of this runtime.
+  const releaseProjectCodeFaults = onProjectCodeFault(diagnostic);
   early.splice(0).forEach(diagnostic);
   // Findings of the project file (an unknown key of a version-1 project is ignored and reported) at startup.
   for (const entry of options.project?.diagnostics ?? []) diagnostic(entry);
@@ -595,6 +600,7 @@ function profileDefaultLocation({ setup, project }) {
   const HOST_API_ROUTES = HOST_API.map(([prefix]) => prefix);
   const close = () =>
     (closing ??= (async () => {
+      releaseProjectCodeFaults();
       const errors = [];
       const cleanup = async (fn) => {
         try {
@@ -618,6 +624,7 @@ function profileDefaultLocation({ setup, project }) {
       await adminStopped;
       server?.closeAllConnections();
       await stopped;
+      await cleanup(() => options[STATE_CLAIM]?.release());
       if (errors.length) throw new AggregateError(errors, 'Standalone runtime cleanup failed.');
     })());
   try {

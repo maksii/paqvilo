@@ -1,4 +1,5 @@
 import { initializePluginOperation } from './plugin-operation-context.mjs';
+import { projectCode } from './project-code-watch.mjs';
 import { canonicalTagVariables } from './plugin-request-tag.mjs';
 import { cloneStateData } from './state-clone.mjs';
 import {
@@ -2642,51 +2643,55 @@ function copyBulkParentFrame(phaseFrame, bulkParent, asyncExecution) {
             };
             /* NOSONAR: closure intentionally captures the loop state */ output = inSpan(span, () =>
               /* NOSONAR: closure intentionally captures the loop state */ execution.run(() =>
-                handler({
-                  // The operation's shared variables, the same collection as a plug-in type handler's
-                  // context.SharedVariables: what a handler leaves there is what later steps of the operation see.
-                  sharedVariables: invocationContext?.SharedVariables ?? {},
-                  step: cloneStateData(item),
-                  entity,
-                  operation: bridged ? bridgedMessage : operation,
-                  stage,
-                  target: cloneStateData(target),
-                  // A bridged multiple step's grouped view of the one record (plugin-single-multiple.mjs).
-                  ...(bridged
-                    ? {
-                        targets: bridgeTargets(),
-                        previousRecords: [previous ? cloneStateData(previous) : null],
-                        records: stage === 40 ? [cloneStateData(record)] : [],
-                      }
-                    : {}),
-                  record: cloneStateData(record),
-                  previous: previous ? cloneStateData(previous) : null,
-                  preImage: image([0, 2], previous),
-                  postImage: stage === 40 ? image([1, 2], record) : undefined,
-                  identity: cloneStateData(identity),
-                  changedAttributes: [...changedAttributes],
-                  ...(association ? { associationParameters: cloneStateData(associationParameters) } : {}),
-                  ...(bulk
-                    ? {
-                        targets: cloneStateData(targets),
-                        previousRecords: cloneStateData(previousRecords),
-                        records: cloneStateData(records),
-                      }
-                    : {}),
-                  ...(read
-                    ? {
-                        query: cloneStateData(query),
-                        collection: cloneStateData(collection),
-                        columns: cloneStateData(columns),
-                        entityResult: cloneStateData(holder?.entity),
-                      }
-                    : {}),
-                  ...(typed ? { context: handlerContext } : {}),
-                  trace,
-                  reject: (message) => {
-                    throw new DataError(String(message), 400, 'PluginValidation', { declaredValidationMessage: true });
-                  },
-                }),
+                projectCode(`plug-in step ${item.name ?? item.typeName ?? item.id} (${item.id})`, () =>
+                  handler({
+                    // The operation's shared variables, the same collection as a plug-in type handler's
+                    // context.SharedVariables: what a handler leaves there is what later steps of the operation see.
+                    sharedVariables: invocationContext?.SharedVariables ?? {},
+                    step: cloneStateData(item),
+                    entity,
+                    operation: bridged ? bridgedMessage : operation,
+                    stage,
+                    target: cloneStateData(target),
+                    // A bridged multiple step's grouped view of the one record (plugin-single-multiple.mjs).
+                    ...(bridged
+                      ? {
+                          targets: bridgeTargets(),
+                          previousRecords: [previous ? cloneStateData(previous) : null],
+                          records: stage === 40 ? [cloneStateData(record)] : [],
+                        }
+                      : {}),
+                    record: cloneStateData(record),
+                    previous: previous ? cloneStateData(previous) : null,
+                    preImage: image([0, 2], previous),
+                    postImage: stage === 40 ? image([1, 2], record) : undefined,
+                    identity: cloneStateData(identity),
+                    changedAttributes: [...changedAttributes],
+                    ...(association ? { associationParameters: cloneStateData(associationParameters) } : {}),
+                    ...(bulk
+                      ? {
+                          targets: cloneStateData(targets),
+                          previousRecords: cloneStateData(previousRecords),
+                          records: cloneStateData(records),
+                        }
+                      : {}),
+                    ...(read
+                      ? {
+                          query: cloneStateData(query),
+                          collection: cloneStateData(collection),
+                          columns: cloneStateData(columns),
+                          entityResult: cloneStateData(holder?.entity),
+                        }
+                      : {}),
+                    ...(typed ? { context: handlerContext } : {}),
+                    trace,
+                    reject: (message) => {
+                      throw new DataError(String(message), 400, 'PluginValidation', {
+                        declaredValidationMessage: true,
+                      });
+                    },
+                  }),
+                ),
               ),
             );
           } finally {

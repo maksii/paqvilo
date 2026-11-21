@@ -1,4 +1,5 @@
 import { initializePluginOperation } from './plugin-operation-context.mjs';
+import { designedWait } from './project-code-watch.mjs';
 import { cloneStateData } from './state-clone.mjs';
 import fs from 'node:fs/promises';
 import syncFs from 'node:fs';
@@ -2123,7 +2124,7 @@ function awaitHostProcessExit(channel, guardMs = CLR_HOST_EXIT_GUARD_MS) {
     if (drainSessionPackets(channel, 'host-process-exited')) return true;
     const remaining = deadline - Date.now();
     if (remaining <= 0) return false;
-    Atomics.wait(channel.flags, 0, 0, remaining);
+    designedWait(() => Atomics.wait(channel.flags, 0, 0, remaining));
     Atomics.store(channel.flags, 0, 0);
   }
 }
@@ -2579,7 +2580,7 @@ function executePooledClr(runtime, input, options, verified) {
           : new DataError('Owned pooled CLR host could not start.', 503, 'LocalPluginHostUnavailable');
       if (Date.now() > deadline)
         throw ownedPid ? timedOut() : new DataError('Owned CLR host did not start.', 503, 'LocalPluginHostUnavailable');
-      Atomics.wait(flags, 0, 0, 20);
+      designedWait(() => Atomics.wait(flags, 0, 0, 20));
       Atomics.store(flags, 0, 0);
     }
     completed = true;

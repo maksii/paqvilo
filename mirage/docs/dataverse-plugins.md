@@ -32,6 +32,15 @@ placeholder.
 - **An exported step without bytes** (a Power Pages export carries none) runs original code only through a trusted
   `pluginRuntimes` descriptor ([original assembly registration](#original-assembly-registration)). Discovery alone
   never enables a DLL; missing CLR prerequisites do not prevent mocks or disabled choices.
+- **A project handler that misbehaves** fails its own write and nothing else. A thrown error, a returned promise or an
+  unusable result is the plug-in fault of that write, which is rolled back. A handler that never returns is ended at
+  the platform's 2-minute plug-in limit: a served runtime (`mirage dev`, `start`, `serve`) writes
+  `Mirage stopped: plug-in step <name> (<id>) did not return within 120 s` to its log and exits, because a JavaScript
+  loop cannot be interrupted from outside and it blocks every other request meanwhile. An error the handler throws
+  later, from a timer or an unawaited promise, has no request to report it: a served runtime records
+  `PROJECT_CODE_UNCAUGHT` with the file and line and keeps serving. An asynchronous `workflows` or
+  `dataverseMessages` handler whose promise never settles ends its invocation with 504 `PackHandlerTimeout` after
+  120 s; the runtime keeps serving, and what the handler does through its API afterwards is refused.
 - **Mocks** are validated by the admin endpoint for result shape, source table and stage. An explicit mock still
   applies when the original registration needs an unavailable image or identity adapter, and diagnostics state that the
   original logic did not run. A mock never gives an unknown message or stage a pipeline. Choosing mock or disabled for

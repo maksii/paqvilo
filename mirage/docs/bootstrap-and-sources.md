@@ -38,6 +38,13 @@ metadata and packs supply project behaviour. State writes follow the
   checkout, or `SOLUTION_XML_INVALID`) rejects it with 409 `SOURCE_RELOAD_REJECTED`: portal, metadata, environment
   variables and registrations stay as they were, the watcher records `RELOAD_FAILED`, and the rejected scan never
   becomes the baseline. An error already present at startup does not block later reloads.
+- A change reported while a reload reads the sources gets a reload of its own, also when the first one failed (a
+  checkout that was still writing).
+- The portal source is whatever is on disk, so a reload that loses records is accepted. When a whole kind of portal
+  record is gone (every web template, every table permission, the website record), the reload reports one
+  `PORTAL_SOURCE_REMOVED` warning that lists the kinds and their previous counts; it goes away with the reload that
+  finds them again.
+- Data packs load at startup. A pack file saved later is reported as `PACK_FILE_CHANGED`; restart Mirage to use it.
 
 Project files declare portals, Solutions, reference origins and explicit pack modules. Site-specific `observed` settings
 with evidence supply behaviour that cannot be exported, such as a deployment-specific login path or response header. Do

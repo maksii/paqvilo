@@ -66,6 +66,11 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { readLocalFile } from '../lense/local-file.mjs';
 import { readWebFileSource, webFileSourcePaths } from './lib/web-file-source.mjs';
+import { onProjectCodeFault } from './lib/project-code-watch.mjs';
+import { packHandlerAnswer } from './lib/pack-handler-answer.mjs';
+import { portalSourceLoss } from './lib/portal-source-loss.mjs';
+import { packChangeNotice, watchPackFiles } from './lib/pack-change-notice.mjs';
+import { deferredStateClaim, STATE_CLAIM } from './lib/state-file-claim.mjs';
 import { randomBytes, randomUUID, createHash, timingSafeEqual } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -105,7 +110,7 @@ import {
   validatePortalOverrides,
 } from './lib/portal-overrides.mjs';
 import { platformSettingEntries, validatePlatformOverrides } from './lib/platform-settings.mjs';
-import { configurationPresetDiagnostics, discoverPacks, OWNED_PRESET } from './lib/preset-registry.mjs';
+import { configurationPresetDiagnostics, discoverPacks, OWNED_PRESET, packModules } from './lib/preset-registry.mjs';
 import {
   experimentPresets,
   experimentId,
@@ -699,13 +704,33 @@ function recordListenerErrorOnce(record, name) {
 export async function createSimulator(options) {
   requireRuntimeSources('createSimulator(options)', options);
   const runtime = runtimeSettings(options.runtime);
+  // A runtime that persists its state (every level but dry-run, organization-host.mjs) holds its state file for as
+  // long as it runs (lib/state-file-claim.mjs): a second runtime on the same file is refused before it reads or
+  // writes anything. The host takes the claim where it first needs the file, after it has checked its options.
+  const level = (options.simulation ?? options.project?.simulation)?.level ?? null;
+  const stateClaim = options.stateFile && level !== 'dry-run' ? deferredStateClaim(options.stateFile) : null;
   if (runtime.kind !== 'power-pages') {
     const { createStandaloneRuntime } = await import('./lib/standalone-runtime.mjs');
-    return createStandaloneRuntime({ ...options, runtime });
+    try {
+      const standalone = await createStandaloneRuntime({ ...options, runtime, [STATE_CLAIM]: stateClaim });
+      stateClaim?.describe({ url: standalone.url ?? standalone.origin ?? null });
+      return standalone;
+    } catch (error) {
+      await stateClaim?.release();
+      throw error;
+    }
   }
   const owners = new Set();
+  if (stateClaim) owners.add({ closeRecordStorage: () => stateClaim.release() });
   try {
-    return await createPowerPagesSimulator({ ...options, runtime, [RECORD_OWNERS]: owners });
+    const simulator = await createPowerPagesSimulator({
+      ...options,
+      runtime,
+      [RECORD_OWNERS]: owners,
+      [STATE_CLAIM]: stateClaim,
+    });
+    stateClaim?.describe({ url: simulator.url ?? null });
+    return simulator;
   } catch (error) {
     // The composed host closes first, then the record storage. A close failure never replaces the startup error: it is
     // listed on error.cleanupErrors.
@@ -726,6 +751,7 @@ export async function createSimulator(options) {
 
 /* NOSONAR: single-pass routine, splitting it would change shared state */ async function createPowerPagesSimulator({
   [RECORD_OWNERS]: recordOwners,
+  [STATE_CLAIM]: stateClaim = null,
   [SHARED_TRACES]: sharedTraces = null,
   runtime: runtimeOption,
   modelDriven: modelDrivenOption,
@@ -870,6 +896,7 @@ export async function createSimulator(options) {
   let restoredState, restoredStorage;
   if (stateFile) {
     const preloadStarted = performance.now();
+    await stateClaim?.take();
     try {
       const { StateStorage, readStateFile } = await import('./lib/state-storage.mjs');
       if (!simulation) {
@@ -1041,6 +1068,18 @@ export async function createSimulator(options) {
     project?.dataPacks?.length || dataPacks.length || packs.length
       ? await discoverPacks({ project, portal: sourcePortal, explicit: dataPacks, packs })
       : undefined;
+  // Project pack files saved after this point are not loaded: each is reported once, and again after every reload
+  // (lib/pack-change-notice.mjs). `packFileNotice` reports to the diagnostic sink once that exists.
+  const changedPackFiles = new Set();
+  let packFileNotice = null;
+  const releasePackFiles = watchPackFiles(
+    (await packModules({ project, explicit: dataPacks })).map((entry) => entry.module),
+    (file) => {
+      changedPackFiles.add(file);
+      packFileNotice?.(file);
+    },
+  );
+  recordOwners?.add({ closeHost: releasePackFiles });
   // HTTP endpoints of the packs that serve this portal (built-in and project packs).
   const packConfigurations = configurationPresetReport(projectPacks ?? []);
   packConfigurations.diagnostics = configurationPresetDiagnostics(projectPacks ?? [], {
@@ -1588,6 +1627,8 @@ export async function createSimulator(options) {
   const close = () => {
     if (closePromise) return closePromise;
     closing = true;
+    releaseProjectCodeFaults();
+    releasePackFiles();
     // The listener stays open until the end so new requests still get SIMULATOR_CLOSING. A body still arriving is
     // drained while it progresses; guardStalledBody ends one that stops.
     server.closeIdleConnections();
@@ -1630,6 +1671,7 @@ export async function createSimulator(options) {
       await attempt(closeAppsListener);
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));
+      await attempt(() => stateClaim?.release());
       if (failures.length) throw new AggregateError(failures, 'Runtime shutdown completed with cleanup failures.');
     })().catch((cause) => {
       closePromise = null;
@@ -1838,6 +1880,10 @@ export async function createSimulator(options) {
   };
   sourceDiagnostic = recordDiagnostic;
   earlySourceDiagnostics.splice(0).forEach(recordDiagnostic);
+  // An error project code throws outside a request (project-code-watch.mjs) is a finding of this runtime.
+  const releaseProjectCodeFaults = onProjectCodeFault(recordDiagnostic);
+  packFileNotice = (file) => recordDiagnostic(packChangeNotice(file));
+  for (const file of changedPackFiles) packFileNotice(file);
   // Findings of the project file (an unknown key of a version-1 project is ignored and reported) at startup.
   for (const entry of project?.diagnostics ?? []) recordDiagnostic(entry);
   await organizationHost.createBackend();
@@ -2129,7 +2175,15 @@ export async function createSimulator(options) {
       if (failure) throw failure;
       return value;
     }
-    return await flowHandler({ ...context, runExportedCloudFlow: () => runExportedCloudFlow(context) });
+    return packHandlerAnswer(
+      {
+        kind: 'cloudFlows',
+        name: flow.name,
+        describe:
+          'the flow response ({ status, body } or the body itself), for example the result of runExportedCloudFlow()',
+      },
+      () => flowHandler({ ...context, runExportedCloudFlow: () => runExportedCloudFlow(context) }),
+    );
   };
   const executeServerLogic = async ({ name, method = 'GET', operation, body = '', input = '', query = {} }) => {
     const record = operationPortal().serverLogics.find(
@@ -2168,7 +2222,9 @@ export async function createSimulator(options) {
     };
     if (item.mode === 'exported') return runExportedServerLogic(context);
     if (!handler) operationPlaceholder(item);
-    const answer = await handler({ ...context, runExportedServerLogic: () => runExportedServerLogic(context) });
+    const answer = await packHandlerAnswer({ kind: 'serverLogics', name: record.name, usable: () => true }, () =>
+      handler({ ...context, runExportedServerLogic: () => runExportedServerLogic(context) }),
+    );
     return typeof answer === 'string' ? answer : JSON.stringify(answer ?? null);
   };
   const formSubmissionOptions = (formIdentity, visitor, pageTarget) => {
@@ -7815,6 +7871,10 @@ export async function createSimulator(options) {
             changed: changed.slice(0, 20),
             message: `Reloaded portal and solution sources (${changed.length} changed path(s)); mappings, schemas and the permission model were recompiled.`,
           });
+          const loss = portalSourceLoss(previous.sourcePortal, sourcePortal);
+          if (loss) recordDiagnostic({ ...loss, revision });
+          // Still true after this reload: packs are not part of it.
+          for (const file of changedPackFiles) packFileNotice?.(file);
           if (watch && watchedLayers !== layerSignature()) {
             await restartWatcher();
             // The restart cancelled the reload a notification during this pass scheduled, and the new watcher does not

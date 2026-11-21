@@ -2207,7 +2207,7 @@ export async function start(
   let child, exited;
   args.startup?.phase('process launch', identity.runtime?.kind ?? 'power-pages');
   await pruneStartupLogs(paths, await ownedSessions(paths));
-  await fs.mkdir(paths.logRoot, { recursive: true });
+  await createStateFolder(paths.logRoot);
   const log = path.join(paths.logRoot, `startup-${Date.now()}-${Math.random().toString(16).slice(2)}.log`); // NOSONAR: pseudo-random value for simulation, not a secret
   const logHandle = await fs.open(log, 'a');
   // The runtime announces its start-up progress and its readiness to this command here (lense/start-channel.mjs).
@@ -2469,6 +2469,47 @@ export async function start(
   }
 }
 
+const STATE_FOLDER_BLOCKED = new Set(['ENOTDIR', 'EEXIST']);
+const STATE_FOLDER_READ_ONLY = new Set(['EACCES', 'EPERM', 'EROFS']);
+
+/** The nearest existing path at or above `folder`: what blocks, or would hold, the folder that could not be made. */
+function nearestExisting(folder) {
+  for (let current = path.resolve(folder); ; current = path.dirname(current)) {
+    let stats = null;
+    try {
+      stats = fsSync.statSync(current, { throwIfNoEntry: false }) ?? null;
+    } catch {
+      /* below a file, or unreadable: look further up */
+    }
+    if (stats || path.dirname(current) === current) return { path: current, stats };
+  }
+}
+
+/**
+ * Creates a folder of the local state (.paqvilo). A file in its place, or a place that cannot be written, is reported
+ * with the folder, the cause and the next step; any other failure is passed on unchanged.
+ */
+export async function createStateFolder(folder, { mkdir = fs.mkdir } = {}) {
+  try {
+    await mkdir(folder, { recursive: true });
+  } catch (error) {
+    const blocked = STATE_FOLDER_BLOCKED.has(error?.code);
+    if (!blocked && !STATE_FOLDER_READ_ONLY.has(error?.code)) throw error;
+    const existing = nearestExisting(folder);
+    const at = existing.stats ? existing.path : (error.path ?? folder);
+    const reason = blocked
+      ? `${at} exists but is not a folder (${error.code}). Remove or rename it`
+      : `${at} is not writable (${error.code}). Allow writing there`;
+    throw Object.assign(
+      new Error(
+        `Cannot create the local state folder ${folder}: ${reason}, or run from a project folder you can write to.`,
+        { cause: error },
+      ),
+      { code: error.code },
+    );
+  }
+}
+
 async function exitedBeforeReady(log, logRoot) {
   const output = await readLocalFile(log, { root: logRoot, encoding: 'utf8' }).catch(() => '');
   // The runtime's start-up progress records stay in the log for progress consumers; the message keeps what it said.
@@ -2541,6 +2582,11 @@ function stateFileConflict(entry, identity) {
     ['--runtime', entry.identity?.runtime?.kind ?? identity.runtime.kind, '--state', identity.stateFile],
     { cli: TOOLKIT_CLI },
   );
+  // The same settings: a start that is still running, or one made at the same moment, recorded this runtime.
+  if (identityMatches(entry.identity, identity))
+    return new Error(
+      `Mirage pid ${entry.pid} is already starting (or running) for state file ${identity.stateFile} with the same settings; wait until it is ready and run the command again to reuse it, or stop it with ${stop}.`,
+    );
   return new Error(
     `Mirage pid ${entry.pid} already uses state file ${identity.stateFile} with different settings; stop it with ${stop} or pass --state <other file>.`,
   );

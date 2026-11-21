@@ -4,7 +4,13 @@ import assert from 'node:assert/strict';
 import fsSync from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { start, miragePaths, ownedSessions, updateOwnedSessions } from '../lense/commands/mirage.mjs';
+import {
+  createStateFolder,
+  start,
+  miragePaths,
+  ownedSessions,
+  updateOwnedSessions,
+} from '../lense/commands/mirage.mjs';
 import { tempDir } from './fixture.mjs';
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import { readyRuntime } from './helpers/mirage-session-doubles.mjs';
@@ -187,6 +193,112 @@ test('a start that wins the ownership lock after a live runtime claimed the same
   );
   assert.deepEqual(signals, ['SIGTERM']);
   assert.equal(await fs.readFile(paths.ownershipFile, 'utf8'), claimed);
+});
+
+// @test-kind contract: a start refused for a concurrent start with the same settings says so, and stops its own child
+test('a start that loses to a concurrent start with the same settings names the same settings and stops its own child', async (t) => {
+  const { root, paths, stateFile } = await fixture(t);
+  const signals = [];
+  const child = { ...exitedChild(CHILD), exitCode: null, kill: (signal) => signals.push(signal) };
+  // The other command records its runtime after this start found nothing to reuse and spawned its own child.
+  let claimed = null;
+  const identityOf = async (pid) => {
+    if (pid !== CHILD) return 'rival identity';
+    await ownRecord(paths, { pid: RIVAL, processIdentity: 'rival identity', stateFile, presetMode: 'always' });
+    claimed = await fs.readFile(paths.ownershipFile, 'utf8');
+    return 'child identity';
+  };
+  let refusal;
+  await assert.rejects(
+    start(
+      cfg(root),
+      { port: '0', state: stateFile },
+      { paths, alive: (pid) => pid === RIVAL, spawnRuntime: () => child, identityOf },
+    ),
+    (error) => {
+      refusal = error.message;
+      return true;
+    },
+  );
+  assert.match(
+    refusal,
+    new RegExp(
+      `^Mirage pid ${RIVAL} is already starting \\(or running\\) for state file ${escapeRegExp(stateFile)} with the same settings; wait until it is ready and run the command again to reuse it, or stop it with .+\\.$`,
+    ),
+  );
+  assert.doesNotMatch(refusal, /different settings|--state <other file>/);
+  assert.deepEqual(signals, ['SIGTERM']);
+  assert.equal(await fs.readFile(paths.ownershipFile, 'utf8'), claimed);
+});
+
+// @test-kind contract: a local state folder that cannot be created is reported with the folder, the cause and the next step, before spawning
+test('a start whose local state folder is a file names the folder and the file in its way, before spawning', async (t) => {
+  const root = await tempDir('paq-state-owner-');
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
+  const stateDir = path.join(root, '.paqvilo');
+  await fs.writeFile(stateDir, 'not a folder');
+  const site = cfg(stateDir);
+  const paths = miragePaths(site);
+  let spawned = 0;
+  let failure;
+  await assert.rejects(
+    start(
+      site,
+      { port: '0', state: path.resolve(root, 'shared', 'state.json') },
+      {
+        paths,
+        identityOf: async () => null,
+        spawnRuntime() {
+          spawned++;
+          return exitedChild(CHILD);
+        },
+      },
+    ),
+    (error) => {
+      failure = error;
+      return true;
+    },
+  );
+  assert.match(failure.code, /^(ENOTDIR|EEXIST)$/);
+  assert.equal(
+    failure.message,
+    `Cannot create the local state folder ${paths.logRoot}: ${stateDir} exists but is not a folder (${failure.code}). Remove or rename it, or run from a project folder you can write to.`,
+  );
+  assert.equal(failure.cause.code, failure.code);
+  assert.equal(spawned, 0);
+});
+
+test('a local state folder that is not writable is reported as such, and other failures pass unchanged', async (t) => {
+  const { root } = await fixture(t);
+  const folder = path.join(root, 'mirage', 'logs');
+  for (const code of ['EACCES', 'EPERM', 'EROFS']) {
+    const cause = Object.assign(new Error(`${code}: invented`), { code });
+    await assert.rejects(
+      createStateFolder(folder, {
+        mkdir: async () => {
+          throw cause;
+        },
+      }),
+      (error) => {
+        assert.equal(
+          error.message,
+          `Cannot create the local state folder ${folder}: ${root} is not writable (${code}). Allow writing there, or run from a project folder you can write to.`,
+        );
+        assert.equal(error.code, code);
+        assert.equal(error.cause, cause);
+        return true;
+      },
+    );
+  }
+  const other = Object.assign(new Error('ENOSPC: invented'), { code: 'ENOSPC' });
+  await assert.rejects(
+    createStateFolder(folder, {
+      mkdir: async () => {
+        throw other;
+      },
+    }),
+    (error) => error === other,
+  );
 });
 
 // @test-kind contract: a live record whose PID no longer carries its recorded start identity is stale, so a start neither refuses on it nor keeps it

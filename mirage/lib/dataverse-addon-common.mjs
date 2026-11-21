@@ -151,17 +151,26 @@ export function registerAddon(api, spec) {
       const packed = api.addonHandlers?.get(name);
       let result;
       if (packed) {
-        result = await invokeTrustedHandler(api, packed.handler, {
-          name,
-          args: argsOf(c),
-          target: c.target
-            ? { logicalName: c.target.mapping?.logicalName ?? null, id: c.target.id ?? null, row: c.target.row ?? null }
-            : null,
-          caller: c.caller,
-          user: c.user,
-          origin: c.origin,
-          version: c.version,
-        });
+        result = await invokeTrustedHandler(
+          api,
+          packed.handler,
+          {
+            name,
+            args: argsOf(c),
+            target: c.target
+              ? {
+                  logicalName: c.target.mapping?.logicalName ?? null,
+                  id: c.target.id ?? null,
+                  row: c.target.row ?? null,
+                }
+              : null,
+            caller: c.caller,
+            user: c.user,
+            origin: c.origin,
+            version: c.version,
+          },
+          { label: `The data pack's dataverseMessages handler for "${name}"` },
+        );
       } else if (own) result = await own(c);
       else throw fallback();
       if (result === undefined || result === null) return undefined;

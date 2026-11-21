@@ -467,6 +467,7 @@ async function runClassic(api, config, run) {
       { workflow: run.row, target: run.target, caller: run.caller, inputs: run.inputs },
       {
         workingTarget: true,
+        label: `The data pack's workflows handler for "${run.row?.name ?? run.row?.workflowid ?? 'this workflow'}"`,
         trace: (text) => {
           trace.push(String(text));
           span?.event('trace', { message: String(text) });

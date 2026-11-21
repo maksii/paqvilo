@@ -326,9 +326,19 @@ export async function loadPack(
     module instanceof URL || /^file:/i.test(String(module))
       ? String(module)
       : pathToFileURL(path.resolve(String(module))).href;
-  const imported = await import(url);
-  const pack = validatePack(imported.default, fileURLToPath(url));
-  packDirectories.set(pack, path.dirname(fileURLToPath(url)));
+  const file = fileURLToPath(url);
+  let imported;
+  try {
+    imported = await import(url);
+  } catch (error) {
+    // The import error alone ("Unexpected token ';'") does not say which pack it belongs to; V8 gives no location for it.
+    let reason = error?.message ?? String(error);
+    if (error?.code === 'ERR_MODULE_NOT_FOUND' && error.url === url) reason = 'the module file was not found';
+    else if (error instanceof SyntaxError) reason = `syntax error: ${reason}`;
+    throw new Error(`Data pack ${file}: could not be loaded: ${reason}`, { cause: error });
+  }
+  const pack = validatePack(imported.default, file);
+  packDirectories.set(pack, path.dirname(file));
   return pack;
 }
 

@@ -272,7 +272,8 @@ Validation runs when the configuration loads and stops with a message that names
 
 **Errors.** `ConnectorNotConfigured` (501), `ConnectionNotBound` (409), `ConnectionUnauthorized` (401, undeclared
 principal), `PermissionDenied` (403), `OperationUnsupported` (501), `ProviderUnavailable` (503, including a non-loopback
-URL), `ProviderTimeout` (504), `ProviderFailed` (502, including a refused redirect); Dataverse backend errors such as
+URL), `ProviderTimeout` (504, including a pack connector operation or `httpFixtures` responder that has not settled
+within the call's time limit), `ProviderFailed` (502, including a refused redirect); Dataverse backend errors such as
 `LocalBackendPermissionDenied` keep their codes. A failed call, or a connector, `Http`, child-flow or pack action answer
 of 400 or above (including the last answer of an exhausted retry policy), fails the action with
 `error: { code: 'ActionFailed', message }` and keeps the status, headers and body as outputs; a throwing provider adds
