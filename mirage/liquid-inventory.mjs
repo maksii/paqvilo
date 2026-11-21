@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { isEntryPoint } from '../lense/entry-point.mjs';
 import { reportCliError } from './cli-output.mjs';
 import { assertReportOutput } from './lib/report-output.mjs';
 import { assertProjectOutput } from './lib/project-output.mjs';
@@ -24,7 +25,6 @@ import { assertToolPaths, parseToolArgs, toolOptionsHelp, inventoryInputs } from
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { importPortal } from './lib/importer.mjs';
 import { createPortalRenderer } from './lib/liquid.mjs';
 import { Block, Variable } from './lib/liquid-engine.mjs';
@@ -860,7 +860,7 @@ async function main(argv = process.argv.slice(2)) {
   return options.strict && report.unsupported.length ? 1 : 0;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))
+if (isEntryPoint(import.meta.url))
   /* NOSONAR: module-level promise chain must not block evaluation */ main().then(
     (code) => {
       process.exitCode = code;

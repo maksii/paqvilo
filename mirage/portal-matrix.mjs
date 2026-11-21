@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { isEntryPoint } from '../lense/entry-point.mjs';
 import { reportCliError } from './cli-output.mjs';
 import { observeProcessReadiness } from './lib/process-readiness.mjs';
 import { orderedMap as mapLimit } from '../lense/async-map.mjs';
@@ -2745,7 +2746,7 @@ async function main(argv = process.argv.slice(2)) {
   return options.strict && matrix.problems.length ? 1 : 0;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))
+if (isEntryPoint(import.meta.url))
   /* NOSONAR: module-level promise chain must not block evaluation */ main().then(
     (code) => {
       process.exitCode = code;

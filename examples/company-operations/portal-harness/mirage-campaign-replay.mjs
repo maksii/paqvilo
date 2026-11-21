@@ -1,3 +1,4 @@
+import { isMain } from '../cli.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -776,7 +777,7 @@ function validateCampaignResult(result, roleWitness) {
     throw new Error('Role replay result does not cover its exact native physical page set.');
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMain(import.meta)) {
   // Loaded only when run as a command: the replay runtime's own imports stay the fingerprinted set.
   const { cli, UsageError } = await import('../cli.mjs');
   const { values } = cli(

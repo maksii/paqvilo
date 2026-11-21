@@ -1,8 +1,8 @@
+import { isEntryPoint } from '../lense/entry-point.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 import { answerHelp } from './script-help.mjs';
 
 const core = '(?:0|[1-9][0-9]*)';
@@ -107,7 +107,7 @@ export function verifyArchive(directory, version) {
   return archive;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntryPoint(import.meta.url)) {
   answerHelp(process.argv.slice(2), {
     name: 'release-version',
     usage: `Usage: node scripts/release-version.mjs plan|stamp|verify

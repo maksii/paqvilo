@@ -1,7 +1,7 @@
+import { isMain } from '../cli.mjs';
 import { readFile, writeFile, mkdir, open } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { gzipSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
 import { savePrivateJson } from './private-journal.mjs';
@@ -501,7 +501,7 @@ async function main(configFile) {
   }
 }
 
-if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
+if (isMain(import.meta)) {
   const { cli } = await import('../cli.mjs');
   const {
     positionals: [file],

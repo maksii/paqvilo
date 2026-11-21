@@ -1,6 +1,5 @@
+import { isEntryPoint } from '../lense/entry-point.mjs';
 import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { answerHelp } from './script-help.mjs';
 
@@ -150,7 +149,7 @@ export async function prunePreviews({
   return { ...plan, applied: true, removed, skipped };
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntryPoint(import.meta.url)) {
   answerHelp(process.argv.slice(2), {
     name: 'preview-retention',
     options: ['--keep', '--apply'],

@@ -1,3 +1,4 @@
+import { isEntryPoint } from '../lense/entry-point.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -174,7 +175,7 @@ export async function checkWorkflows({
   run(shellcheck, ['--shell=sh', '.githooks/pre-commit', '.githooks/commit-msg', '.githooks/pre-push']);
   console.log('Workflow and hook checks passed (actionlint 1.7.12, ShellCheck 0.11.0).');
 }
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntryPoint(import.meta.url)) {
   try {
     await checkWorkflows();
   } catch (error) {

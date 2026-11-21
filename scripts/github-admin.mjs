@@ -1,10 +1,9 @@
 // Declarative repository setup via gh. No tokens, private data or registry publishing.
+import { isEntryPoint } from '../lense/entry-point.mjs';
 import fs from 'node:fs';
-import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 
-const isEntry = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const isEntry = isEntryPoint(import.meta.url);
 const args = isEntry ? process.argv.slice(2) : [];
 const apply = args.includes('--apply');
 // Help and argument errors are answered before anything is read from or sent to GitHub.

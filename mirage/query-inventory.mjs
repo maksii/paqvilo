@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { isEntryPoint } from '../lense/entry-point.mjs';
 import { reportCliError } from './cli-output.mjs';
 import { parseToolArgs } from './tool-options.mjs';
 import { assertToolOptions } from './tool-registry.mjs';
@@ -6,7 +7,6 @@ import { createHash } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
-import { pathToFileURL } from 'node:url';
 import { importPortal } from './lib/importer.mjs';
 
 function literalLinkMetrics(body) {
@@ -134,7 +134,7 @@ async function main(args) {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+if (isEntryPoint(import.meta.url)) {
   /* NOSONAR: module-level promise chain must not block evaluation */ main(process.argv.slice(2)).catch((error) => {
     reportCliError(error);
     process.exitCode = 1;

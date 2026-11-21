@@ -1,4 +1,5 @@
 // Audit the distributable file list without creating an archive or contacting a registry.
+import { isEntryPoint } from '../lense/entry-point.mjs';
 import fs from 'node:fs';
 import { packedPackage } from './npm-pack.mjs';
 import path from 'node:path';
@@ -686,7 +687,7 @@ function checkLockConsistency(root) {
   if (packageLock !== shrinkwrap) throw new Error('paqvilo-lock.json must match package-lock.json');
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntryPoint(import.meta.url)) {
   const [arg] = process.argv.slice(2);
   if (arg === '--help' || arg === '-h') {
     console.log(`Usage: npm run release:check   (node scripts/release-check.mjs under npm)

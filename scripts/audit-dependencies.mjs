@@ -1,7 +1,8 @@
+import { isEntryPoint } from '../lense/entry-point.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { runNpmAudit } from './audit-process.mjs';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { npmCliPath } from './npm-cli.mjs';
 import {
   readAuditInputs,
@@ -148,4 +149,4 @@ See docs/dependency-upgrades.md.`);
   }
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) await main(process.argv.slice(2));
+if (isEntryPoint(import.meta.url)) await main(process.argv.slice(2));

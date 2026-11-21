@@ -1,4 +1,5 @@
 // Keep Prettier's discovery/configuration while avoiding truncate writes to mapped Windows files.
+import { isEntryPoint } from '../lense/entry-point.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -45,7 +46,7 @@ export async function formatProject(directory) {
   return pending.length;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntryPoint(import.meta.url)) {
   answerHelp(process.argv.slice(2), {
     name: 'format',
     usage: `Usage: npm run format   (node scripts/format.mjs)

@@ -10,6 +10,7 @@
 // controls) and dom.html supplies their text. Hidden templates and resource strings do not count.
 //
 //   node scripts/baseline-reference.mjs --evidence <dir> --matrix <matrix.json> [--label live] [--reasons <json>] [--out mirage/docs/baseline/reference.md]
+import { isEntryPoint } from '../lense/entry-point.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { parseOptions } from '../lense/cli-options.mjs';
@@ -452,7 +453,7 @@ async function main() {
   );
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))
+if (isEntryPoint(import.meta.url))
   /* NOSONAR: module-level promise chain must not block evaluation */ main().catch((error) => {
     console.error(error.message);
     process.exitCode = 1;

@@ -1,5 +1,6 @@
 // Local CodeQL gate: the CLI bundle and security-extended suites the Security workflow runs, over the validated tree
 // as CI checks it out, failing on every result GitHub has not dismissed.
+import { isEntryPoint } from '../lense/entry-point.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
@@ -428,7 +429,7 @@ export async function codeqlGate({
   }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntryPoint(import.meta.url)) {
   const [arg] = process.argv.slice(2);
   if (arg === '--help' || arg === '-h') {
     console.log(`Usage: node scripts/codeql.mjs

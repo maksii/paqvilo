@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { isEntryPoint } from '../lense/entry-point.mjs';
 import { reportCliError } from './cli-output.mjs';
 import { parseToolArgs } from './tool-options.mjs';
 import { assertToolOptions } from './tool-registry.mjs';
@@ -330,7 +331,7 @@ async function main(argv = process.argv.slice(2)) {
   return report;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))
+if (isEntryPoint(import.meta.url))
   /* NOSONAR: module-level promise chain must not block evaluation */ main().catch((error) => {
     if (error.usage) console.error(error.message);
     else reportCliError(error);

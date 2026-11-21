@@ -1,6 +1,6 @@
+import { isEntryPoint } from '../lense/entry-point.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 import os from 'node:os';
 import { parseOptions } from '../lense/cli-options.mjs';
 import { joinNegativeValues } from '../mirage/tool-options.mjs';
@@ -492,5 +492,4 @@ export async function runPerformanceCli(
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href)
-  process.exitCode = await runPerformanceCli(process.argv.slice(2));
+if (isEntryPoint(import.meta.url)) process.exitCode = await runPerformanceCli(process.argv.slice(2));

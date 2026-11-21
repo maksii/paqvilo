@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { isEntryPoint } from '../lense/entry-point.mjs';
 import { stripLastLineQuery } from './lib/strip-last-line-query.mjs';
 import { reportCliError } from './cli-output.mjs';
 // Static inventory of portal Web API (/_api) request shapes and FetchXML
@@ -9,7 +10,6 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
-import { pathToFileURL } from 'node:url';
 import { importPortal } from './lib/importer.mjs';
 import { importSolutionData } from './lib/solution-data.mjs';
 import { inventoryPortalQueries } from './query-inventory.mjs';
@@ -1105,7 +1105,7 @@ async function main(args) {
     );
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+if (isEntryPoint(import.meta.url)) {
   /* NOSONAR: module-level promise chain must not block evaluation */ main(process.argv.slice(2)).catch((error) => {
     reportCliError(error);
     process.exitCode = 1;

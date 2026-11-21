@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { isEntryPoint } from '../lense/entry-point.mjs';
 import { reportCliError } from './cli-output.mjs';
 import { assertReportOutput } from './lib/report-output.mjs';
 /**
@@ -16,7 +17,6 @@ import { assertReportOutput } from './lib/report-output.mjs';
 import fs from 'node:fs/promises';
 import { platformSettingEntries } from './lib/platform-settings.mjs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { assertToolPaths, parseToolArgs } from './tool-options.mjs';
 import { mirageToolHelp } from './tool-registry.mjs';
 import { importPortal, portalField as field } from './lib/importer.mjs';
@@ -603,7 +603,7 @@ export function formatReport(report) {
   return lines.join('\n');
 }
 
-const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const isMain = isEntryPoint(import.meta.url);
 if (isMain) {
   try {
     const args = parseToolArgs('bootstrap-report', process.argv.slice(2));

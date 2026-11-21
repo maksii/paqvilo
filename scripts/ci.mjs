@@ -1,3 +1,4 @@
+import { isEntryPoint } from '../lense/entry-point.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { availableParallelism, tmpdir, totalmem } from 'node:os';
@@ -1741,7 +1742,7 @@ async function main() {
   }
   if (failure) throw failure;
 }
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntryPoint(import.meta.url)) {
   try {
     await main();
   } catch (error) {

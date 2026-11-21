@@ -486,5 +486,13 @@ async function main() {
   return installProjects(root, result.projects);
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))
-  process.exitCode = await main();
+// Inline rather than lense/entry-point.mjs: this bootstrap is also used on its own, before the toolkit is installed.
+// Node loads the entry script from its real path (macOS /tmp and /var are links into /private).
+const startedHere = () => {
+  try {
+    return Boolean(process.argv[1]) && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+};
+if (startedHere()) process.exitCode = await main();

@@ -1,8 +1,7 @@
+import { isEntryPoint } from '../lense/entry-point.mjs';
 import { execFileSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { resolveGitExecutable } from './trusted-git.mjs';
 import { answerHelp } from './script-help.mjs';
 
@@ -198,7 +197,7 @@ async function main() {
   process.stdout.write(`Full-source Sonar branch ${result.branch}: zero unresolved issues.\n`);
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntryPoint(import.meta.url)) {
   answerHelp(process.argv.slice(2), {
     // The prefix keeps the message the CLI has always given for unexpected arguments.
     name: 'Unexpected Sonar verifier arguments',

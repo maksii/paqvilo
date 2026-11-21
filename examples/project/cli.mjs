@@ -1,6 +1,7 @@
 // Shared by this example's scripts: strict arguments, one-line failures and Prettier-stable generated JSON.
 // Twin of the other example's cli.mjs: examples/project/cli.mjs and examples/company-operations/cli.mjs are
 // byte-identical so each example stays a self-contained package; test/example-cli-twins.test.mjs checks it.
+import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
@@ -8,7 +9,17 @@ import { fileURLToPath } from 'node:url';
 /** An argument problem: reported with a pointer to --help. */
 export class UsageError extends Error {}
 
-export const isMain = (meta) => Boolean(process.argv[1]) && path.resolve(process.argv[1]) === fileURLToPath(meta.url);
+/**
+ * Whether `meta` is the started script's. Node loads it from its real path (macOS /tmp and /var are links into
+ * /private), so the started path is compared the same way.
+ */
+export const isMain = (meta) => {
+  try {
+    return Boolean(process.argv[1]) && fs.realpathSync(process.argv[1]) === fileURLToPath(meta.url);
+  } catch {
+    return false;
+  }
+};
 
 const HINT = ' Run it with --help for usage.';
 export function errorLine(error) {

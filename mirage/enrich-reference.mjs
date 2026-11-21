@@ -1,5 +1,5 @@
+import { isEntryPoint } from '../lense/entry-point.mjs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { parseToolArgs } from './tool-options.mjs';
 import { assertToolOptions } from './tool-registry.mjs';
@@ -120,7 +120,7 @@ export async function enrichReference({ store, origin, cdpUrl, plan, bridge: sup
   }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntryPoint(import.meta.url)) {
   try {
     const values = parseToolArgs('enrich-reference', process.argv.slice(2));
     assertToolOptions('enrich-reference', values, ['origin', 'cdp']);

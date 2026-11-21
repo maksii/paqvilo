@@ -1,4 +1,5 @@
 // Review-only analysis: tools never execute source, remove code, or contact portal references.
+import { isEntryPoint } from '../lense/entry-point.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -588,7 +589,7 @@ Findings are written to .paqvilo/code-review/. See docs/code-review.md.`);
   console.log('Dead-code and clone review passed.');
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntryPoint(import.meta.url)) {
   try {
     await main();
   } catch (error) {
