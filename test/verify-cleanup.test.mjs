@@ -202,7 +202,8 @@ function createVerifyConfig(t, inlineChecks = false) {
 
 // Starts verification on the portal page. `at` names the step the interrupt lands in; 'idle' raises nothing and
 // holds the watcher's idle wait behind the `idle` promise. `finished` resolves to the run's record, and
-// `idleRequested` resolves once the run asks the watcher to become idle, after its dev panel checks.
+// `idleRequested` resolves once the run asks the watcher to become idle before its diagnostics (with 'idle')
+// or for the first time (otherwise).
 function startVerify(t, { at, signal = 'SIGINT', idle = Promise.resolve() }) {
   const cfg = createVerifyConfig(t, at === 'until');
   const source = new EventEmitter();
@@ -225,6 +226,9 @@ function startVerify(t, { at, signal = 'SIGINT', idle = Promise.resolve() }) {
       configurable: true,
       get: () => () => {
         marks.push('watcher idle wait');
+        // The run waits twice: before it asks whether the page is still online, then before the diagnostics. Only
+        // the second wait is the held one.
+        if (at === 'idle' && marks.length === 1) return Promise.resolve();
         if (at === 'idle') t.mock.timers.enable({ apis: ['setTimeout'] });
         idleRequested.resolve();
         return idle;
@@ -447,11 +451,15 @@ test('the diagnostics after the edits are captured only once the watcher is idle
   // a pause that is still armed would fire on this tick and capture the diagnostics before the watcher is idle
   t.mock.timers.tick(10_000);
   await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(run.marks, ['watcher idle wait'], 'the capture waits while the watcher is busy');
+  assert.deepEqual(
+    run.marks,
+    ['watcher idle wait', 'watcher idle wait'],
+    'the capture waits while the watcher is busy',
+  );
   t.mock.timers.reset();
   idle.resolve();
   const outcome = await run.finished;
-  assert.deepEqual(outcome.marks, ['watcher idle wait', 'afterEdits capture']);
+  assert.deepEqual(outcome.marks, ['watcher idle wait', 'watcher idle wait', 'afterEdits capture']);
   assert.notEqual(outcome.report.diagnostics.afterEdits, null);
   assert.equal(outcome.report.cleanup.temporarySourceRemoved, true);
 });

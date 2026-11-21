@@ -12,6 +12,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 import verify, { diagnosticSnapshot } from '../lense/commands/verify.mjs';
+import { OverlaySession } from '../lense/session.mjs';
 import { editSource } from '../lense/source-edit.mjs';
 import { createFixture, HOME_ID, SITE } from '../test/fixture.mjs';
 import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
@@ -59,6 +60,7 @@ function component(dir, id, type, name, content, attachment) {
 
 // heldScript, when given, adds a parser-blocking script in front of the page's failing script. It is called for each
 // request of that script and the answer waits for the promise it returns, so the document stays in parsing until then.
+// documentGate, when given, is called with each request of the start page and its answer waits for the same.
 async function fixture(
   t,
   layout,
@@ -220,7 +222,7 @@ ${heldScript ? `<script src="${HELD_JS_URL}"></script>` : ''}<script>throw new E
     }
     const content = assets[pathname] ?? (pathname === '/' ? ['text/html; charset=utf-8', html] : null);
     if (content && pathname === '/' && documentGate) {
-      void Promise.resolve(documentGate()).then(() =>
+      void Promise.resolve(documentGate(request)).then(() =>
         response.writeHead(200, { 'content-type': content[0], 'cache-control': 'no-store' }).end(content[1]),
       );
     } else if (content)
@@ -838,4 +840,124 @@ test('verify waits for the recorded inline replacement when the edited script al
     assert.ok(check, `missing coverage: ${prefix}`);
     assert.deepEqual({ ok: check.ok, detail: check.detail }, { ok: true, detail: 'replaced inline block' }, prefix);
   }
+});
+
+// @test-kind contract: verify reads the online page only after the watcher has applied every save it made.
+test('verify asks whether the page is still online only after the refresh for its later saves has reloaded it', async (t) => {
+  // An enhanced component XML save reloads the whole model from disk. The watcher's first refresh is held until every
+  // edit is saved, so its reload shows all of them. The later saves then wait in a second refresh, which is held until
+  // the content snippet check, the last edit check, has passed. The online check's request of the page is answered
+  // only once the reload of that second refresh has committed, so a run that sends it earlier loses its page.
+  const homeRefresh = Promise.withResolvers();
+  const editsSaved = Promise.withResolvers();
+  const snippetChecked = Promise.withResolvers();
+  const laterReloadCommitted = Promise.withResolvers();
+  const stage = { armed: false, first: 'waiting', second: 'waiting' };
+  let laterReloads = 0;
+  let onlineRequests = 0;
+  let onlineRequestsBeforeCommit = 0;
+  ownedFixture(t).add(async () => {
+    homeRefresh.resolve();
+    editsSaved.resolve();
+    snippetChecked.resolve();
+    laterReloadCommitted.resolve();
+  });
+  const fx = await fixture(t, 'enhanced', false, '', null, (request) => {
+    // a document navigation accepts HTML first; the online check's fetch from the page accepts anything
+    if (/^text\/html/.test(request.headers.accept ?? '') || stage.second === 'waiting') return null;
+    onlineRequests++;
+    if (stage.committed !== true) onlineRequestsBeforeCommit++;
+    return laterReloadCommitted.promise;
+  });
+  const refreshAsync = OverlaySession.prototype.refreshAsync;
+  const homeXml = path.join('powerpagecomponents', 'home', 'powerpagecomponent.xml');
+  OverlaySession.prototype.refreshAsync = async function (files, options) {
+    if (stage.armed && stage.first === 'waiting' && files.some((file) => path.resolve(file).endsWith(homeXml))) {
+      stage.first = 'held';
+      homeRefresh.resolve();
+      await editsSaved.promise;
+      try {
+        return await refreshAsync.call(this, files, options);
+      } finally {
+        stage.first = 'applied';
+      }
+    }
+    if (stage.first === 'applied' && stage.second === 'waiting') {
+      stage.second = 'held';
+      await snippetChecked.promise;
+      stage.second = 'released';
+    }
+    return refreshAsync.call(this, files, options);
+  };
+  const launch = chromium.launchPersistentContext;
+  chromium.launchPersistentContext = async function (profileDir, options) {
+    const context = await launch.call(this, profileDir, {
+      ...options,
+      proxy: { server: fx.cfg.origin, bypass: '127.0.0.1,localhost' },
+      args: [
+        ...options.args,
+        '--disable-background-networking',
+        '--disable-component-update',
+        '--disable-sync',
+        '--disable-domain-reliability',
+        '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost',
+      ],
+    });
+    const page = context.pages()[0];
+    const goto = page.goto.bind(page);
+    // the watcher reloads with waitUntil 'commit' and returns once the new document has committed
+    page.goto = async (url, options) => {
+      const later = options?.waitUntil === 'commit' && stage.second === 'released';
+      const response = await goto(url, options);
+      if (later) {
+        laterReloads++;
+        stage.committed = true;
+        laterReloadCommitted.resolve();
+      }
+      return response;
+    };
+    return context;
+  };
+  const output = [];
+  const log = console.log;
+  const logError = console.error;
+  const capture = (...values) => {
+    const line = values.join(' ');
+    output.push(line);
+    if (/^\s*PASS\s+content snippet\b/.test(line)) snippetChecked.resolve();
+  };
+  console.log = capture;
+  console.error = capture;
+  let result;
+  try {
+    result = await verify(
+      fx.cfg,
+      {},
+      {
+        onPhase: (phase) => {
+          if (phase === 'edits-saved') editsSaved.resolve();
+          if (phase !== 'inline-script-edits') return undefined;
+          stage.armed = true;
+          return homeRefresh.promise;
+        },
+      },
+    );
+  } finally {
+    OverlaySession.prototype.refreshAsync = refreshAsync;
+    chromium.launchPersistentContext = launch;
+    console.log = log;
+    console.error = logError;
+  }
+  const { report } = reportFor(fx.cfg);
+  assert.equal(stage.first, 'applied', 'the first refresh read the component sources after every edit was saved');
+  assert.equal(stage.second, 'released', 'the later saves waited in a second refresh until the last edit check');
+  assert.ok(laterReloads >= 1, 'the second refresh reloaded the page');
+  assert.equal(onlineRequests, 1, 'the online check asked for the page once');
+  assert.equal(onlineRequestsBeforeCommit, 0, 'the online check asked for the page after the later reload committed');
+  assert.equal(report.error, undefined);
+  assert.equal(result, 0);
+  assert.equal(
+    report.checks.find((check) => check.name === 'the rest of the page still comes from the online site')?.ok,
+    true,
+  );
 });

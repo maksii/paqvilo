@@ -564,6 +564,32 @@ test(
     const adminOrigin = new URL(admin.url()).origin;
     await admin.getByRole('heading', { name: 'Simulation presets', exact: true }).waitFor();
     await evidence('demo-admin', admin);
+    // The administration announces an applied preset in a notice that hides itself 4.5 s later. The portal page's reload
+    // (below) can outlast that on a loaded host, and a wait for the visible notice that starts after it then never ends.
+    // Record the first notice shown from before the confirm on; `hidden` answers its text once it has hidden itself.
+    const recordNotice = () =>
+      admin.evaluateHandle(() => {
+        let hidden, text;
+        const record = { hidden: new Promise((resolve) => (hidden = resolve)) };
+        const observer = new MutationObserver((changes) => {
+          const notice = document.querySelector('#notification');
+          // Only a change of the notice itself: one already on screen before the confirm is not this preset's.
+          if (!notice || !changes.some((change) => notice.contains(change.target))) return;
+          if (text === undefined && !notice.hidden && notice.textContent) text = notice.textContent;
+          else if (text !== undefined && notice.hidden) {
+            observer.disconnect();
+            hidden(text);
+          }
+        });
+        observer.observe(document, {
+          subtree: true,
+          childList: true,
+          characterData: true,
+          attributes: true,
+          attributeFilter: ['hidden'],
+        });
+        return record;
+      });
     // Applying a preset saves state, which publishes `reload` on /__sim/events before the
     // POST answers; the portal page reloads itself. A test reload would race that navigation,
     // so wait until the page renders the runtime revision published with the response.
@@ -576,6 +602,7 @@ test(
             new URL(response.url()).pathname,
           ),
       );
+      const notice = await recordNotice();
       await admin.locator('#confirm-submit').click();
       const presetResponse = await presetApplied;
       assert.equal(presetResponse.status(), 200, await presetResponse.text());
@@ -584,13 +611,17 @@ test(
       // Revisions only grow: a page that renders a later one (another reload was published meanwhile) also shows the
       // preset, where an exact match would wait for a revision the page has already passed.
       await page.waitForFunction((least) => window.__portalSimulation?.revision >= least, revision);
+      return notice;
     };
     stage = 'preset example-empty';
-    await applyPreset('example-empty');
-    await admin.getByText('Preset applied.', { exact: true }).waitFor();
+    const emptyNotice = await applyPreset('example-empty');
+    // The order of a slow portal reload, every time: the notice is read only after it has hidden itself.
+    stage = 'preset example-empty: administration notice';
+    assert.equal(await emptyNotice.evaluate((record) => record.hidden), 'Preset applied.');
+    await emptyNotice.dispose();
     await page.locator('[data-account-empty]').waitFor({ state: 'visible' });
     stage = 'preset example-demo';
-    await applyPreset('example-demo');
+    await (await applyPreset('example-demo')).dispose();
     await admin.locator('#confirm').waitFor({ state: 'hidden' });
     await page.locator('[data-account-rows] tr').first().waitFor();
     assert.equal(await page.locator('[data-account-rows] tr').count(), 8);

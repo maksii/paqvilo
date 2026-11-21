@@ -319,6 +319,8 @@ this session.` A trusted CLR plug-in descriptor with
 - `lense verify` no longer reports page, form or list custom JavaScript as "inline <script> not replaced", or page
   custom CSS as "inline <style> not replaced", when the edit reached the page before the reload that records the
   replacement.
+- `lense verify` no longer fails with "Execution context was destroyed" when a reload for its later saves replaces the
+  page while it checks that the rest of the page still comes from the online site.
 - Local sources reach slow-starting tabs and popups; element provenance no longer stays pending on scripts read with
   `fetch` or XHR.
 - Element provenance survives a DevTools session re-attach of an unchanged document; a page script can no longer read

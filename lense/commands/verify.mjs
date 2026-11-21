@@ -888,6 +888,9 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
     } else skip('content snippet', 'no unique plain-text snippet in visible markup text could be picked safely');
 
     // everything else must still be the real site
+    // A refresh that reloads the model reads every saved source from disk, so the checks above can pass on its
+    // document while later saves still wait in the watcher. Their reload would replace the page under this request.
+    await scope.until(watcher.whenIdle());
     const stillOnline = await scope.until(
       page.evaluate(async () => {
         const r = await fetch(location.href, { cache: 'no-store' });
