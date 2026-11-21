@@ -166,7 +166,7 @@
     "eslint-plugin-unicorn": "80.0.0",
     "globals": "17.14.0",
     "jscpd": "5.4.3",
-    "knip": "6.45.1",
+    "knip": "6.46.1",
     "prettier": "3.10.1",
     "typescript": "6.0.3",
     "typescript-eslint": "8.73.0",
