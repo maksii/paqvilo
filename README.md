@@ -5,9 +5,9 @@
 [![npm version](https://img.shields.io/npm/v/paqvilo)](https://www.npmjs.com/package/paqvilo)
 [![Node.js](https://img.shields.io/node/v/paqvilo)](https://nodejs.org/)
 [![License](https://img.shields.io/npm/l/paqvilo)](https://github.com/maksii/paqvilo/blob/main/LICENSE)
-[![Pages](https://github.com/maksii/paqvilo/actions/workflows/pages.yml/badge.svg?branch=main)](https://maksii.github.io/paqvilo/)
+[![Pages](https://github.com/maksii/paqvilo/actions/workflows/pages.yml/badge.svg?branch=main)](https://paqvilo.dev/)
 
-[Website](https://maksii.github.io/paqvilo/) · [Guide](https://maksii.github.io/paqvilo/guide.html) ·
+[Website](https://paqvilo.dev/) · [Guide](https://paqvilo.dev/guide.html) ·
 [Documentation](https://github.com/maksii/paqvilo/blob/main/docs/index.md) ·
 [Discussions](https://github.com/maksii/paqvilo/discussions)
 
@@ -41,7 +41,7 @@ with simulated data.](https://raw.githubusercontent.com/maksii/paqvilo/main/docs
 | Automate checks in CI or with an AI coding agent       | Node testing helpers, `--json` output from the inspection, audit and status commands, offline static analysis (`paqvilo analyze`) and a bounded browser API for agents                                                              | [Public API](https://github.com/maksii/paqvilo/blob/main/docs/public-api.md), [CLI](https://github.com/maksii/paqvilo/blob/main/docs/cli.md)                             |
 
 The [coverage guide](https://github.com/maksii/paqvilo/blob/main/docs/coverage.md) compares Lense and Mirage area by
-area, and the [step-by-step guide](https://maksii.github.io/paqvilo/guide.html) shows each workflow with recordings.
+area, and the [step-by-step guide](https://paqvilo.dev/guide.html) shows each workflow with recordings.
 
 ## Try it
 

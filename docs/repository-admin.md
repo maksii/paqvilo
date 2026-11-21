@@ -23,8 +23,13 @@ node scripts/github-admin.mjs --apply
 | CodeQL       | Ruleset from `.github/code-scanning-ruleset.json` (error alerts, high/critical security alerts), applied once `main` has a CodeQL analysis                              |
 | Actions      | Read-only workflow tokens; only GitHub-owned actions and `SonarSource/sonarqube-scan-action`; full-SHA pins required                                                    |
 | Security     | Secret scanning and push protection, Dependabot alerts and security fixes, private vulnerability reporting                                                              |
-| Environments | `github-pages` deploys from `main`; `npm` admits `v*` tags; Pages is built by Actions with HTTPS enforced                                                               |
+| Environments | `github-pages` deploys from `main`; `npm` admits `v*` tags; Pages is built by Actions on the homepage domain with HTTPS enforced                                        |
 | Metadata     | Description, homepage, topics, Discussions and the `bug`, `enhancement` and `skip-changelog` labels                                                                     |
+
+The Pages custom domain is the `package.json` homepage host (`paqvilo.dev`). Its DNS is outside this repository: the
+apex has the GitHub Pages `A`/`AAAA` records and `www` is a `CNAME` to `maksii.github.io`, all DNS-only (an orange-cloud
+proxy stops GitHub from issuing the certificate). The domain is verified on the `maksii` account
+(`_github-pages-challenge-maksii` TXT record), so no other repository can claim it.
 
 The script updates its named rulesets and leaves others alone. It does not publish packages, commit or post
 announcements. Re-run `--apply` after the first Pages deployment (HTTPS certificate) and after the first `main` Security

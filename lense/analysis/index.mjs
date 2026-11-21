@@ -17,7 +17,7 @@ const sourceRule = {
   confidence: 'high',
   message: 'Export metadata could not be parsed; dependent checks are incomplete.',
   remediation: 'Correct source syntax and rerun analysis. Diagnostic output deliberately omits source values.',
-  references: ['https://maksii.github.io/paqvilo/'],
+  references: ['https://paqvilo.dev/'],
 };
 const payloadRule = {
   id: 'PAQ-SOURCE-002',
@@ -29,7 +29,7 @@ const payloadRule = {
     'The XML envelope is readable, but its record payload is absent, empty or unsupported; dependent checks are incomplete.',
   remediation:
     'Check the export format and record availability. Retain incomplete coverage for withheld settings; do not disclose or invent secret values.',
-  references: ['https://maksii.github.io/paqvilo/'],
+  references: ['https://paqvilo.dev/'],
 };
 export const analysisRules = Object.freeze(
   [
