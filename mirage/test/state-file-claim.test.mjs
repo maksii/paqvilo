@@ -70,8 +70,8 @@ test('a temporary folder too long for a Unix socket path falls back to /tmp, and
     const fits = '/' + 'y'.repeat(limit - fallback.length + '/tmp'.length - 1);
     const kept = await stateFileEndpoint(stateFile, { platform, tmpdir: fits });
     assert.equal(kept.length, limit, `${platform}: a path of exactly the limit is kept`);
-    assert.equal(path.dirname(kept), fits);
-    assert.equal(path.basename(kept), path.basename(fallback), 'the same file names the same socket');
+    assert.equal(path.posix.dirname(kept), fits);
+    assert.equal(path.posix.basename(kept), path.posix.basename(fallback), 'the same file names the same socket');
   }
   if (process.platform === 'win32') return;
   // Two runtimes whose (different) temporary folders are both too long meet at the same socket in /tmp.

@@ -527,16 +527,17 @@ function resolveMacEditorCommand(editor, env, regular) {
   if (!/^code(?:-insiders)?$/.test(editor)) return editor;
   const onPath = String(env.PATH ?? '')
     .split(':')
-    .filter((dir) => path.isAbsolute(dir))
-    .some((dir) => regular(path.join(dir, editor)));
+    .filter((dir) => path.posix.isAbsolute(dir))
+    .some((dir) => regular(path.posix.join(dir, editor)));
   if (onPath) return editor;
   const app = editor === 'code-insiders' ? 'Visual Studio Code - Insiders.app' : 'Visual Studio Code.app';
   const roots = [
     '/Applications',
-    ...(env.HOME && path.isAbsolute(env.HOME) ? [path.join(env.HOME, 'Applications')] : []),
+    ...(env.HOME && path.posix.isAbsolute(env.HOME) ? [path.posix.join(env.HOME, 'Applications')] : []),
   ];
   return (
-    roots.map((root) => path.join(root, app, 'Contents', 'Resources', 'app', 'bin', editor)).find(regular) ?? editor
+    roots.map((root) => path.posix.join(root, app, 'Contents', 'Resources', 'app', 'bin', editor)).find(regular) ??
+    editor
   );
 }
 

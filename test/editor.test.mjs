@@ -89,7 +89,7 @@ test('Windows editor discovery returns the full CLI path from PATH/PATHEXT or th
 });
 
 test('macOS editor discovery uses code on PATH, else the VS Code app bundle CLI, else the name as given', () => {
-  const bundle = (root, app, command) => path.join(root, app, 'Contents', 'Resources', 'app', 'bin', command);
+  const bundle = (root, app, command) => path.posix.join(root, app, 'Contents', 'Resources', 'app', 'bin', command);
   const stable = bundle('/Applications', 'Visual Studio Code.app', 'code');
   const insiders = bundle('/Users/invented/Applications', 'Visual Studio Code - Insiders.app', 'code-insiders');
   let files = new Set([stable, insiders]);

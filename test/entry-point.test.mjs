@@ -25,7 +25,7 @@ test('a script started through a linked folder is the entry point; an imported o
   const { physical, linked } = linkedFolder(t);
   fs.writeFileSync(
     path.join(physical, 'script.mjs'),
-    `import { isEntryPoint } from ${JSON.stringify(helper)};\nconsole.log(isEntryPoint(import.meta.url));\n`,
+    `import { isEntryPoint } from ${JSON.stringify(helper)};\nprocess.stdout.write(String(isEntryPoint(import.meta.url)));\n`,
   );
   fs.writeFileSync(path.join(physical, 'importer.mjs'), `import './script.mjs';\n`);
   for (const folder of [physical, linked]) {

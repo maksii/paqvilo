@@ -33,7 +33,7 @@ export async function stateFileEndpoint(stateFile, { platform = process.platform
   const name = `paqvilo-state-${key}.sock`;
   // On macOS this name leaves three bytes of sun_path to spare in the per-user temporary folder; a longer one falls
   // back to /tmp.
-  return path.join(unixSocketFolder(Buffer.byteLength(name), { platform, tmpdir }), name);
+  return path.posix.join(unixSocketFolder(Buffer.byteLength(name), { platform, tmpdir }), name);
 }
 
 /** " (pid N, url)" of the runtime that holds a claim, as far as it said who it is. */
