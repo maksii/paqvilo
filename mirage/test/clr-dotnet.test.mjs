@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { dotnetBuildInputs, dotnetCompilerArguments, writeDotnetRuntimeConfig } from '../lib/clr-dotnet.mjs';
+import { dotnetBuildInputs, dotnetCompile, writeDotnetRuntimeConfig } from '../lib/clr-dotnet.mjs';
 
 function folder(t) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'paq-clr-dotnet-')));
@@ -28,9 +28,7 @@ test('the probe builds in its private folder pinned to the chosen SDK and keeps 
     'nuget/system.security.cryptography.pkcs/runtimes/win/lib/net10.0/System.Security.Cryptography.Pkcs.dll',
   );
   const calls = [];
-  // A project of the caller's pins another SDK; the probe must not run under it.
-  const project = folder(t);
-  fs.writeFileSync(path.join(project, 'global.json'), JSON.stringify({ sdk: { version: '8.0.100' } }));
+  // The caller's folder may hold a global.json pinning another SDK: the probe runs in its own folder, pinned.
   const run = (command, args, options) => {
     const out = args.find((argument) => argument.startsWith('-p:PaqviloOut=')).slice('-p:PaqviloOut='.length);
     calls.push({
@@ -45,19 +43,38 @@ test('the probe builds in its private folder pinned to the chosen SDK and keeps 
     return { status: 0, stdout: '', stderr: '' };
   };
   const toolchain = { dotnet: '/usr/share/dotnet/dotnet', sdkVersion: '10.0.404' };
-  const cwd = process.cwd();
-  process.chdir(project);
-  t.after(() => process.chdir(cwd));
   const inputs = dotnetBuildInputs(toolchain, { run, cacheRoot: false });
   assert.equal(calls.length, 1);
-  assert.notEqual(calls[0].cwd, project, 'not the caller folder');
+  assert.notEqual(calls[0].cwd, process.cwd(), 'not the caller folder');
   assert.ok(calls[0].cwd.startsWith(os.tmpdir()), 'a private folder');
   assert.deepEqual(calls[0].globalJson, { sdk: { version: '10.0.404', rollForward: 'disable' } });
   assert.equal(inputs.csc, path.join(roslyn, 'bincore', 'csc.dll'));
   assert.deepEqual(inputs.compile, [reference]);
   assert.deepEqual(inputs.runtime, [portable], 'a runtimes/<rid>/ variant is for another platform');
   assert.equal(fs.existsSync(calls[0].cwd), false, 'the probe folder is removed');
-  assert.deepEqual(dotnetCompilerArguments(inputs).slice(0, 4), ['exec', inputs.csc, '/noconfig', '/nostdlib+']);
+  const [command, compile] = dotnetCompile(toolchain, inputs, {
+    out: 'Host.exe',
+    target: 'exe',
+    sources: ['Host.cs'],
+    references: ['Sdk.dll'],
+    defines: ['PAQVILO_CORECLR'],
+    run: (file, args) => [file, args],
+  });
+  assert.equal(command, toolchain.dotnet);
+  assert.deepEqual(
+    compile.slice(0, 4),
+    ['exec', inputs.csc, '/noconfig', '/nostdlib+'],
+    'the SDK compiler, no csc.rsp',
+  );
+  for (const argument of [
+    '/target:exe',
+    '/define:PAQVILO_CORECLR',
+    '/out:Host.exe',
+    '/reference:' + reference,
+    '/reference:Sdk.dll',
+  ])
+    assert.ok(compile.includes(argument), argument);
+  assert.equal(compile.at(-1), 'Host.cs');
 });
 
 test('a failed restore names the packages it needs and the last lines of the build output', (t) => {

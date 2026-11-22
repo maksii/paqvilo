@@ -9,7 +9,7 @@ import { spawnSync } from 'node:child_process';
 import { compileCached, compileCacheKey } from './compile-cache.mjs';
 
 /** The framework the host and fixtures target: .NET 10, the current long-term support release. */
-export const DOTNET_TARGET = 'net10.0';
+const DOTNET_TARGET = 'net10.0';
 // The WCF client: System.ServiceModel.Primitives with its System.ServiceModel facade, which the .NET Framework
 // Microsoft.Xrm.Sdk (FaultException<OrganizationServiceFault>) and plug-ins that catch its faults bind to. An exact
 // version, so a build never floats to a newer package.
@@ -119,7 +119,7 @@ export function dotnetBuildInputs(toolchain, { run = spawnSync, cacheRoot, timeo
 }
 
 /** The dotnet arguments that start the SDK's C# compiler against the .NET reference assemblies (csc options follow). */
-export const dotnetCompilerArguments = (inputs) => [
+const dotnetCompilerArguments = (inputs) => [
   'exec',
   inputs.csc,
   '/noconfig',

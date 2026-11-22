@@ -6,7 +6,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { openStartChannel } from '../lense/start-channel.mjs';
-import { privateSocketFolder, unixSocketFolder } from '../mirage/lib/socket-path.mjs';
+import { unixSocketFolder } from '../mirage/lib/socket-path.mjs';
 
 test('the start channel forwards only allow-listed phase records and bounds what a client sends', async (t) => {
   const channel = await openStartChannel();
@@ -66,6 +66,8 @@ test(
     const base = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-socket-folder-')));
     t.after(() => fs.rm(base, { recursive: true, force: true }));
     const uid = process.getuid();
+    // A temporary folder too long for any socket path: the private folder in `base` is used instead.
+    const privateSocketFolder = (options) => unixSocketFolder(200, { tmpdir: '/' + 'x'.repeat(10), ...options });
     const folder = privateSocketFolder({ base, uid });
     assert.equal(folder, path.join(base, `paqvilo-${uid}`));
     assert.equal((await fs.stat(folder)).mode & 0o777, 0o700, 'created closed to other accounts');

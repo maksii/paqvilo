@@ -12,7 +12,6 @@ import { clrHostCommand, clrToolchain } from '../../lib/clr-toolchain.mjs';
 import {
   dotnetBuildInputs,
   dotnetCompile,
-  dotnetCompilerArguments,
   writeDotnetRuntimeConfig,
 } from '../../lib/clr-dotnet.mjs';
 
@@ -47,16 +46,6 @@ const dotnetInputs = () => (inputs ??= dotnetBuildInputs(TOOLCHAIN));
 // A framework assembly named without a path (System.ServiceModel.dll) is a .NET Framework reference: under .NET the
 // resolved reference set already holds it (or its facade), so only file references are passed on.
 const fileReference = (reference) => path.isAbsolute(reference) && fs.existsSync(reference);
-
-/**
- * The C# compiler command for `args` (csc options and sources): the .NET Framework compiler, or the SDK's csc under .NET
- * with the resolved references and PAQVILO_CORECLR (the host source's modern .NET branches).
- */
-export function cscCommand(args) {
-  if (!DOTNET) return [CSC, args];
-  const kept = args.filter((argument) => !argument.startsWith('/reference:') || fileReference(argument.slice(11)));
-  return [TOOLCHAIN.dotnet, [...dotnetCompilerArguments(dotnetInputs()), '/define:PAQVILO_CORECLR', ...kept]];
-}
 
 /** Under .NET a fixture executable runs through dotnet: its runtime configuration and the package assemblies it may bind
  * (the WCF client) are placed beside it once. */

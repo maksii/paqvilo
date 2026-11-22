@@ -11,7 +11,7 @@ const unixSocketPathLimit = (platform = process.platform) => (platform === 'linu
  * folder owned by this account that no one else can enter, so another local account can neither place nor read a socket
  * in it.
  */
-export function privateSocketFolder({ base = '/tmp', uid = process.getuid?.() } = {}) {
+function privateSocketFolder(base, uid) {
   if (!Number.isInteger(uid)) throw new Error('A private socket folder needs a POSIX account id.');
   const folder = path.posix.join(base, `paqvilo-${uid}`);
   try {
@@ -32,13 +32,19 @@ export function privateSocketFolder({ base = '/tmp', uid = process.getuid?.() } 
 
 /**
  * The folder to put a Unix socket in, `tail` bytes (its name, and any folder of its own) below it: the temporary folder
- * when the path fits, else this account's private folder in /tmp (`shared`). A longer path cannot be listened on
+ * when the path fits, else `shared`: by default this account's private folder in `base` (/tmp). A longer path cannot be listened on
  * (EINVAL), and macOS's per-user temporary folder already takes about 50 of the 103 bytes, so a longer TMPDIR (a sandbox,
  * a CI runner) would leave too little.
  */
 export function unixSocketFolder(
   tail,
-  { platform = process.platform, tmpdir = os.tmpdir(), shared = privateSocketFolder } = {},
+  {
+    platform = process.platform,
+    tmpdir = os.tmpdir(),
+    base = '/tmp',
+    uid = process.getuid?.(),
+    shared = () => privateSocketFolder(base, uid),
+  } = {},
 ) {
   return Buffer.byteLength(tmpdir) + 1 + tail <= unixSocketPathLimit(platform) ? tmpdir : shared();
 }

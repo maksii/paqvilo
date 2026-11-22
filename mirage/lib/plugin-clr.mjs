@@ -656,10 +656,15 @@ export function buildClrRuntime(descriptor, { assembly, sdk, dependencies = [], 
     // rather than the plug-in's. An injected compiler or run replaces the host compilation only.
     const inputs = dotnet ? dotnetBuildInputs(toolchain) : null;
     for (const file of inputs?.runtime ?? []) {
-      const destination = path.join(directory, path.basename(file));
-      if (syncFs.existsSync(destination)) fail('CLR dependency filenames must be unique.');
-      const bytes = readClrFileSync(file);
-      syncFs.writeFileSync(destination, bytes, { flag: 'wx' });
+      const destination = path.join(directory, path.basename(file)),
+        bytes = readClrFileSync(file);
+      try {
+        // Exclusive: a plug-in dependency of the same name is never replaced.
+        syncFs.writeFileSync(destination, bytes, { flag: 'wx' });
+      } catch (cause) {
+        if (cause.code === 'EEXIST') fail('CLR dependency filenames must be unique.');
+        throw cause;
+      }
       files.push({ path: destination, sourcePath: file, sha256: sha(bytes), toolchain: true });
     }
     // The host context implements IPluginExecutionContext7 when the installed SDK declares it (current
