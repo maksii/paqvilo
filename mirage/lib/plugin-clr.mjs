@@ -627,9 +627,9 @@ function copyClrToolchainAssemblies(directory, inputs, files) {
       bytes = readClrFileSync(file);
     try {
       syncFs.writeFileSync(destination, bytes, { flag: 'wx' });
-    } catch (cause) {
-      if (cause.code === 'EEXIST') fail('CLR dependency filenames must be unique.');
-      throw cause;
+    } catch (error) {
+      if (error.code === 'EEXIST') fail('CLR dependency filenames must be unique.');
+      throw error;
     }
     files.push({ path: destination, sourcePath: file, sha256: sha(bytes), toolchain: true });
   }

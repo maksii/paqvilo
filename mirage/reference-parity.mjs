@@ -323,7 +323,8 @@ export function normalizeContract(body, contract) {
   return report;
 }
 
-if (isEntryPoint(import.meta.url)) {
+if (process.argv[1] && isEntryPoint(import.meta.url)) {
+  // `process.argv[1] &&` stays: a dismissed CodeQL alert above is matched by the text that follows its line.
   try {
     const values = parseToolArgs('reference-parity', process.argv.slice(2));
     assertToolOptions('reference-parity', values, ['local', 'origin', 'cdp']);
