@@ -454,15 +454,22 @@ the newest `microsoft.crmsdk.coreassemblies/<version>/lib/net462` in the NuGet p
 `npm run ci:prepare`). A `Microsoft.Crm.Sdk.Proxy.dll` beside it is supplied too. Microsoft assemblies are not
 distributed with the toolkit.
 
-The host is a .NET Framework program. On Windows the .NET Framework 4 compiler builds it and it runs on its own; on
-macOS and Linux [Mono](https://www.mono-project.com/) builds it with its own `csc.exe` and runs it (`brew install mono`
-on macOS, the `mono-devel` package on Linux), found on `PATH` or in its standard install folders. Mono runs the same
-original assemblies and SDK; only [debugging](#debug-original-c-in-vs-code) needs Windows.
+The host is a small C# program. On Windows the .NET Framework 4 compiler builds it and it runs on the .NET Framework, as
+Dataverse runs plug-ins. On macOS and Linux a [.NET SDK](https://dot.net) 10 or later builds it and it runs on .NET 10
+or any later runtime: the original .NET Framework assembly and `Microsoft.Xrm.Sdk.dll` load unchanged. The SDK is found
+through `DOTNET_ROOT`, `PATH` or its standard install folders; the first build restores the .NET 10 reference pack and
+the WCF client (`System.ServiceModel.Primitives`) from NuGet, and later builds run offline. Every host runs in UTC with
+the sandbox's en-US culture.
 
-When the assembly cannot run (no SDK, neither .NET Framework nor Mono, host compilation failure, a type that cannot
-load or construct) the step fails with 400 `0x80040224` naming the type and assembly (local wording), its operation
-rolls back, and `PLUGIN_CLR_LOAD_FAILED` records the cause. Choose mock or disabled in `/_sim/` to run without the CLR
-host.
+On modern .NET a plug-in that calls a .NET Framework-only API (`System.Web` serializers, `ConfigurationManager`,
+`AppDomain` or remoting) fails with the missing type or method, and text formatted with a culture the plug-in creates
+itself uses ICU data (for example a narrow no-break space before AM/PM). Run such plug-ins, and
+[debugging](#debug-original-c-in-vs-code), on Windows.
+
+When the assembly cannot run (no SDK, neither .NET Framework nor a .NET 10 SDK, host compilation failure, a type that
+cannot load or construct) the step fails with 400 `0x80040224` naming the type and assembly (local wording), its
+operation rolls back, and `PLUGIN_CLR_LOAD_FAILED` records the cause. Choose mock or disabled in `/_sim/` to run without
+the CLR host.
 
 ## Original assembly registration
 
@@ -578,7 +585,7 @@ and SDK savepoint rollbacks; nothing else does. If saving the trace also fails, 
 | Context                 | Typed inputs, outputs, shared variables, images, formatted values, complete ParentContext, Depth, correlation | Locally generated ids and timestamps differ; image attribute order follows the stored row; equal-rank order follows step id               |
 | SDK                     | CRUD, reads, relationships, bulk, typed queries, ExecuteMultiple/Transaction, metadata reads, custom APIs     | Unsupported messages, query facets and value types fail with `LocalPluginSdkUnsupported`; fault codes without a capture use the Web API's |
 | Asynchronous            | Durable committed jobs, retry, cancellation, restart recovery                                                 | No cloud scheduling, service protection or back-off timing; fixed start delay                                                             |
-| Runtime                 | Original CLR on Windows .NET Framework or Mono, uploaded content by default, debugging on Windows             | Not a security sandbox; flow Recurrence triggers run on the local scheduler ([operations](operations.md#execution-boundary))              |
+| Runtime                 | Original CLR on Windows .NET Framework or .NET 10+, uploaded content by default, debugging on Windows         | Not a security sandbox; flow Recurrence triggers run on the local scheduler ([operations](operations.md#execution-boundary))              |
 
 A passing local pipeline does not prove native parity: native system logic absent from the export (currency validation,
 server-side extensions) stays absent. Facts marked "as recorded natively" are `observation` evidence; only replay

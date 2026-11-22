@@ -77,8 +77,8 @@ test('a standalone runtime switch to clr prepares the CLR runtime and stores not
     body: JSON.stringify({ operations: { [key]: { mode: 'clr' } } }),
   });
   const answer = await response.text();
-  // With a CLR toolchain (.NET Framework on Windows, Mono elsewhere) the missing assembly is read; without one the
-  // built-in CLR host is refused before reading it.
+  // With a CLR toolchain (.NET Framework on Windows, a .NET 10+ SDK elsewhere) the missing assembly is read; without
+  // one the built-in CLR host is refused before reading it.
   assert.ok(response.status >= 400, answer);
   if (clrToolchain()) assert.match(JSON.parse(answer).error.message, /Invented\.Missing\.dll/);
   else assert.equal(JSON.parse(answer).error.code, 'LocalPluginClrUnavailable', answer);

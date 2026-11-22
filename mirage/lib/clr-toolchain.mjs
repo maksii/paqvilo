@@ -1,17 +1,25 @@
-// The .NET Framework toolchain that compiles and starts the local plug-in host (plugin-clr-host.cs). On Windows it is the
-// .NET Framework 4 compiler, and the host executable runs on its own. Elsewhere (macOS, Linux) it is Mono: the host and
-// the original plug-in assemblies are .NET Framework images, which Mono runs; Mono's csc.exe compiles the host and the
-// mono command starts it.
+// The toolchain that compiles and starts the local plug-in host (plugin-clr-host.cs). On Windows it is the .NET
+// Framework 4 compiler and the host executable runs on its own, as Dataverse runs plug-ins on the .NET Framework. On macOS
+// and Linux it is a supported .NET SDK (10 or later): the original .NET Framework plug-in assemblies and the
+// Microsoft.Xrm.Sdk they reference load on modern .NET, the host is compiled with the SDK's own C# compiler and the dotnet
+// command starts it.
 import fs from 'node:fs';
 import path from 'node:path';
 
-// Where Mono installs its mono command when PATH does not name it: Homebrew (Apple silicon, Intel), the mono-project.com
-// macOS package, and Linux distribution packages.
-const MONO_FOLDERS = [
-  '/opt/homebrew/bin',
-  '/usr/local/bin',
-  '/Library/Frameworks/Mono.framework/Versions/Current/Commands',
-  '/usr/bin',
+/** The oldest .NET SDK the host is built with: the current long-term support release. */
+export const DOTNET_MIN_MAJOR = 10;
+
+// Where installers put the dotnet command when PATH does not name it: the dotnet-install script, the macOS installer,
+// Homebrew (Apple silicon, Intel), and Linux distribution and Microsoft packages.
+const dotnetFolders = (env) => [
+  ...(env.HOME && path.isAbsolute(env.HOME) ? [path.join(env.HOME, '.dotnet')] : []),
+  '/usr/local/share/dotnet',
+  '/opt/homebrew/opt/dotnet/libexec',
+  '/usr/local/opt/dotnet/libexec',
+  '/usr/share/dotnet',
+  '/usr/lib/dotnet',
+  '/usr/lib64/dotnet',
+  '/opt/dotnet',
 ];
 
 function executableFile(file) {
@@ -24,49 +32,102 @@ function executableFile(file) {
   }
 }
 
-/** The mono command on PATH or in a standard install folder, or null. */
-function findMono(env, standardFolders) {
-  const folders = [
+const versionParts = (name) => name.split(/[.-]/).map((part) => (/^\d+$/.test(part) ? Number(part) : part));
+function compareVersions(a, b) {
+  const left = versionParts(a),
+    right = versionParts(b);
+  for (let index = 0; index < Math.max(left.length, right.length); index++) {
+    const x = left[index] ?? -1,
+      y = right[index] ?? -1;
+    if (x === y) continue;
+    // A prerelease label sorts before the release it precedes (10.0.100-rc.1 before 10.0.100).
+    if (typeof x !== typeof y) return typeof x === 'number' ? 1 : -1;
+    return x < y ? -1 : 1;
+  }
+  return 0;
+}
+
+/** The newest SDK under a dotnet root with its C# compiler, of major version DOTNET_MIN_MAJOR or later, or null. */
+function newestSdk(root) {
+  let names;
+  try {
+    names = fs.readdirSync(path.join(root, 'sdk'));
+  } catch {
+    return null;
+  }
+  const usable = names
+    .filter((name) => /^\d+\.\d+\.\d+/.test(name) && Number(name.split('.')[0]) >= DOTNET_MIN_MAJOR)
+    .filter((name) => fs.existsSync(path.join(root, 'sdk', name, 'Roslyn', 'bincore', 'csc.dll')))
+    .sort(compareVersions);
+  const version = usable.at(-1);
+  return version ? { version, directory: path.join(root, 'sdk', version) } : null;
+}
+
+/** The dotnet command (DOTNET_ROOT, PATH, then the standard install folders) whose root holds a usable SDK, or null. */
+function findDotnet(env, folders) {
+  const candidates = [
+    ...(env.DOTNET_ROOT && path.isAbsolute(env.DOTNET_ROOT) ? [env.DOTNET_ROOT] : []),
     ...String(env.PATH ?? '')
       .split(path.delimiter)
       .filter((folder) => path.isAbsolute(folder)),
-    ...standardFolders,
+    ...folders,
   ];
-  for (const folder of folders) {
-    const file = path.join(folder, 'mono');
-    if (executableFile(file)) return file;
+  for (const folder of candidates) {
+    const file = path.join(folder, 'dotnet');
+    if (!executableFile(file)) continue;
+    let command;
+    try {
+      // A dotnet on PATH is usually a link (/usr/bin/dotnet, /opt/homebrew/bin/dotnet) into its root.
+      command = fs.realpathSync(file);
+    } catch {
+      continue;
+    }
+    const sdk = newestSdk(path.dirname(command));
+    if (sdk) return { command, root: path.dirname(command), sdk };
   }
   return null;
 }
 
 /**
- * `{ runtime, compiler, compilerArguments, launcher }`: run `compiler` with `compilerArguments` before the csc options
- * to build the host, and start the host with `launcher` (null: the executable itself). Null when no toolchain is
- * installed. Mono's compiler is the csc.exe of the same Mono installation, so a `csc` of another tool on PATH is never
- * used.
+ * The toolchain, or null when none is installed:
+ * - Windows: `{ kind: 'netfx', runtime, compiler, compilerArguments: [], launcher: null }`, the .NET Framework compiler.
+ * - elsewhere: `{ kind: 'dotnet', runtime, dotnet, root, sdkVersion, sdkDirectory, compiler, launcher }`, a .NET SDK of
+ *   major version DOTNET_MIN_MAJOR or later; `compiler` and `launcher` are the dotnet command.
  */
-export function clrToolchain({ platform = process.platform, env = process.env, folders = MONO_FOLDERS } = {}) {
+export function clrToolchain({ platform = process.platform, env = process.env, folders } = {}) {
   if (platform === 'win32')
     return {
+      kind: 'netfx',
       runtime: '.NET Framework',
       compiler: path.join(env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),
       compilerArguments: [],
       launcher: null,
     };
-  const mono = findMono(env, folders);
-  if (!mono) return null;
-  let real;
-  try {
-    real = fs.realpathSync(mono);
-  } catch {
-    return null;
-  }
-  const csc = path.resolve(path.dirname(real), '..', 'lib', 'mono', '4.5', 'csc.exe');
-  if (!fs.existsSync(csc)) return null;
-  return { runtime: 'Mono', compiler: real, compilerArguments: [csc], launcher: real };
+  const found = findDotnet(env, folders ?? dotnetFolders(env));
+  if (!found) return null;
+  return {
+    kind: 'dotnet',
+    runtime: '.NET',
+    dotnet: found.command,
+    root: found.root,
+    sdkVersion: found.sdk.version,
+    sdkDirectory: found.sdk.directory,
+    compiler: found.command,
+    launcher: found.command,
+  };
 }
 
-/** The command and arguments that start the host `executable` with `args` under `toolchain`. */
+/** The command and arguments that start the host `executable` with `args` under `launcher` (null: the executable itself). */
 export function clrHostCommand(launcher, executable, args) {
   return launcher ? [launcher, [executable, ...args]] : [executable, args];
+}
+
+/**
+ * The environment of a host process. Under modern .NET the sandbox's UTC clock is the process time zone (TZ=UTC): .NET
+ * reads it for TimeZoneInfo.Local and DateTime.Now, also after a plug-in clears the cached zone; the host checks it.
+ * The .NET Framework host pins UTC itself and gets the environment unchanged.
+ */
+export function clrHostEnvironment(launcher, env = process.env) {
+  if (!launcher) return env;
+  return { ...env, TZ: 'UTC', DOTNET_CLI_TELEMETRY_OPTOUT: '1', DOTNET_NOLOGO: '1' };
 }

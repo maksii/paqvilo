@@ -55,5 +55,5 @@ missing metadata can need a mock or a [project extension](project-extensions.md)
 
 Not by default. Mirage imports the assembly, type and step registrations and runs trusted project handlers, mocks or
 visible placeholders that report the skipped logic. An explicitly configured original-assembly mode can run a trusted
-plug-in DLL locally, on Windows or with Mono on macOS and Linux. See
+plug-in DLL locally, on Windows or with the .NET 10 SDK or later on macOS and Linux. See
 [plug-in simulation](../mirage/docs/dataverse-plugins.md).

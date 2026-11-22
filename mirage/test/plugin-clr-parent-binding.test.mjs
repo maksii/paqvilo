@@ -32,22 +32,34 @@ async function bareRuntime(t) {
   });
   return { root, runtime };
 }
-const run = (file, args) =>
-  spawnSync(...hostCommand(file, args), { windowsHide: true, encoding: 'utf8', timeout: CLI_HANG_GUARD_MS, input: '' });
-// The holder starts a process that exits at once and keeps a handle to it, so its PID cannot be reused, then starts the
-// host with that PID (`named`: and its start time), closes the host's input and returns the host's exit code.
+const run = (file, args, env) =>
+  spawnSync(...hostCommand(file, args), {
+    windowsHide: true,
+    encoding: 'utf8',
+    timeout: CLI_HANG_GUARD_MS,
+    input: '',
+    ...(env ? { env: { ...process.env, ...env } } : {}),
+  });
+// The holder starts a host that exits once its input closes and keeps a handle to it, so its PID cannot be reused, then
+// starts the host with that PID (`named`: and its start time), closes the host's input and returns the host's exit code. Under .NET
+// (macOS, Linux) the host is started through dotnet: INVENTED_HOST_LAUNCHER names it.
 async function exitedParentHost(root, runtime, named) {
   const source = path.join(root, 'Holder.cs'),
     holder = path.join(root, 'Holder.exe');
   await fs.writeFile(
     source,
-    'using System.Diagnostics;public static class Holder{static ProcessStartInfo Start(string file,string args){return new ProcessStartInfo(file,args){UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true};}' +
-      'public static int Main(string[] args){using(var gone=Process.Start(Start(args[0],"--process-start 0"))){gone.WaitForExit();' +
-      'var parent="--parent "+gone.Id+(args.Length>1?" --parent-start "+gone.StartTime.ToUniversalTime().Ticks:"");' +
+    'using System;using System.Diagnostics;public static class Holder{static ProcessStartInfo Start(string file,string args){var launcher=Environment.GetEnvironmentVariable("INVENTED_HOST_LAUNCHER");if(!String.IsNullOrEmpty(launcher)){args="\\""+file+"\\" "+args;file=launcher;}return new ProcessStartInfo(file,args){UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true};}' +
+      // The first host binds the holder, so it waits for its input: its start time is read while it runs (.NET on macOS
+      // and Linux cannot read it after the exit), then closing the input ends it.
+      'public static int Main(string[] args){using(var gone=Process.Start(Start(args[0],"--parent "+Process.GetCurrentProcess().Id))){var born=gone.StartTime.ToUniversalTime().Ticks;gone.StandardInput.Close();gone.WaitForExit();' +
+      'var parent="--parent "+gone.Id+(args.Length>1?" --parent-start "+born:"");' +
       'using(var host=Process.Start(Start(args[0],parent))){host.StandardInput.Close();host.WaitForExit();return host.ExitCode;}}}}',
   );
   compileClr(source, holder, { target: 'exe' });
-  return run(holder, named ? [runtime.executable, 'named'] : [runtime.executable]);
+  const [launcher] = hostCommand(runtime.executable, []);
+  return run(holder, named ? [runtime.executable, 'named'] : [runtime.executable], {
+    INVENTED_HOST_LAUNCHER: launcher === runtime.executable ? '' : launcher,
+  });
 }
 
 test(

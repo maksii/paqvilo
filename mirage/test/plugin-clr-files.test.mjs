@@ -131,9 +131,19 @@ test('CLR opened-file read rejects a pathname replaced during reading without re
     fs.open = original;
   }
 });
+// The case-variant spelling of the cache root names the same folder only where file names ignore case (Windows, and
+// macOS by default); Linux file systems are case-sensitive.
+const caseInsensitiveTemp = (() => {
+  const probe = syncFs.mkdtempSync(path.join(os.tmpdir(), 'paq-case-'));
+  try {
+    return syncFs.existsSync(probe.toUpperCase()) && syncFs.existsSync(probe.toLowerCase());
+  } finally {
+    syncFs.rmSync(probe, { recursive: true, force: true });
+  }
+})();
 test(
   'Actual original CLR case-variant cache compiles once, runs verified snapshot bytes and removes snapshots after success, fault, timeout and nesting',
-  { skip: CLR_SKIP },
+  { skip: CLR_SKIP || (!caseInsensitiveTemp && 'the temporary folder is on a case-sensitive file system') },
   async (t) => {
     const root = await fixture(t),
       sdk = clrSdk(),

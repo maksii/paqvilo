@@ -3,21 +3,23 @@ import { SANDBOX_WORKER_CRASH } from './plugin-fault.mjs';
 import { workerData } from 'node:worker_threads';
 import { spawn } from 'node:child_process';
 import readline from 'node:readline';
-import { clrHostCommand, clrToolchain } from './clr-toolchain.mjs';
+import { clrHostCommand, clrHostEnvironment, clrToolchain } from './clr-toolchain.mjs';
 const { port, signal, executable, launcher, input, timeout, parentProcessId, label } = workerData,
   flags = new Int32Array(signal);
 let complete = false,
   child;
 try {
-  const [command, args] = clrHostCommand(
-    launcher === undefined ? (clrToolchain()?.launcher ?? null) : launcher,
-    executable,
-    ['--parent', String(parentProcessId), ...(label ? ['--label', label] : [])],
-  );
+  const hostLauncher = launcher === undefined ? (clrToolchain()?.launcher ?? null) : launcher;
+  const [command, args] = clrHostCommand(hostLauncher, executable, [
+    '--parent',
+    String(parentProcessId),
+    ...(label ? ['--label', label] : []),
+  ]);
   child = spawn(command, args, {
     shell: false,
     windowsHide: true,
     stdio: ['pipe', 'pipe', 'pipe'],
+    env: clrHostEnvironment(hostLauncher),
   });
 } catch (error) {
   // A start the system refuses outright throws here: no process exists, and the main thread learns it at once.

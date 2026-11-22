@@ -24,7 +24,7 @@ import {
   pluginExecutionDepth,
   PLUGIN_MAX_DEPTH,
 } from '../lib/plugin-clr.mjs';
-import { CLR_SKIP, clrSdk, compileClr, hostCommand } from './fixtures/clr-sdk.mjs';
+import { CLR_SKIP, clrSdk, compileClr, hostCommand, toolchainPaths } from './fixtures/clr-sdk.mjs';
 import { ownedFixture, makeTemporaryDirectory, removeFixtureDirectory } from '../testing/owned-fixture.mjs';
 
 const user = '10000000-0000-0000-0000-000000000001',
@@ -61,14 +61,23 @@ async function incarnationAbsent(executable, pid, start) {
 // The process ids that own a listening TCP socket on a loopback port, read from the system's own table (netstat), so no
 // connection is made and another process that takes the freed port is told apart by its id. A listening row has the
 // foreign address 0.0.0.0:0, whatever the system language.
-// On macOS and Linux lsof reads the same table: -t prints only the owning process ids (exit 1 when there is none).
+// On macOS and Linux lsof reads the same table: -t prints only the owning process ids (exit 1 when there is none). A
+// minimal Linux image may not have lsof; the tests that read the table then skip.
+const LISTENER_TABLE_MISSING =
+  process.platform !== 'win32' &&
+  Boolean(spawnSync('lsof', ['-v'], { encoding: 'utf8', timeout: CLI_HANG_GUARD_MS }).error) &&
+  'lsof is not installed, so listening sockets cannot be read from the system table';
 function loopbackListeners(port) {
   if (process.platform !== 'win32') {
-    const { status, stdout } = spawnSync('lsof', ['-nP', '-t', '-iTCP@127.0.0.1:' + port, '-sTCP:LISTEN'], {
-      encoding: 'utf8',
-      timeout: CLI_HANG_GUARD_MS,
-    });
-    assert.ok(status === 0 || (status === 1 && !stdout.trim()), 'lsof lists the TCP listeners');
+    const { status, stdout, stderr, error } = spawnSync(
+      'lsof',
+      ['-nP', '-t', '-iTCP@127.0.0.1:' + port, '-sTCP:LISTEN'],
+      { encoding: 'utf8', timeout: CLI_HANG_GUARD_MS },
+    );
+    assert.ok(
+      status === 0 || (status === 1 && !stdout.trim()),
+      'lsof lists the TCP listeners: ' + (error?.message ?? stderr),
+    );
     return stdout.split(/\r?\n/).filter(Boolean).map(Number);
   }
   const { status, stdout } = spawnSync('netstat', ['-ano', '-p', 'TCP'], {
@@ -109,9 +118,19 @@ Console.WriteLine("{\"kind\":\"result\"}");if(args[0]=="--persistent")while(Cons
     directory,
     assembly,
     executable,
-    allowedFiles: ['Protocol.cs', 'Protocol.exe', 'Original.dll', 'runtime.json', 'invoke.mjs'],
+    allowedFiles: [
+      'Protocol.cs',
+      'Protocol.exe',
+      'Original.dll',
+      'runtime.json',
+      'invoke.mjs',
+      ...toolchainPaths(executable).map((file) => path.basename(file)),
+    ],
     files: await Promise.all(
-      [assembly, executable].map(async (file) => ({ path: file, sha256: hash(await fs.readFile(file)) })),
+      [assembly, ...toolchainPaths(executable), executable].map(async (file) => ({
+        path: file,
+        sha256: hash(await fs.readFile(file)),
+      })),
     ),
     descriptor: { typeName: 'Invented.Original' },
     provenance: { hostSourceSha256: hash(await fs.readFile(new URL('../lib/plugin-clr-host.cs', import.meta.url))) },
@@ -431,82 +450,86 @@ test(
       [false, true],
       [true, true],
     ])
-      await t.test((persistentHost ? 'pooled' : 'fresh') + (detached ? ', detached from the job' : ''), async () => {
-        const runtimeFile = path.join(root, 'runtime-' + persistentHost + '.json'),
-          script = path.join(root, 'parent-' + persistentHost + '.mjs');
-        await fs.writeFile(
-          runtimeFile,
-          JSON.stringify({ ...runtime, descriptor: { ...runtime.descriptor, persistentHost } }),
-        );
-        await fs.writeFile(
-          script,
-          `import fs from'node:fs';import http from'node:http';import{executeClrPlugin,clrContext}from${JSON.stringify(new URL('../lib/plugin-clr.mjs', import.meta.url).href)};import{DataStore}from${JSON.stringify(new URL('../lib/data.mjs', import.meta.url).href)};const runtime=JSON.parse(fs.readFileSync(process.argv[2]));const server=http.createServer((q,s)=>s.end('owned'));await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));fs.writeSync(1,JSON.stringify({port:server.address().port})+'\\n');const store=new DataStore({state:{mappings:{widget:{idColumn:'widgetid'}},tables:{widget:[]}}}),step={id:'${user}',name:'Invented',images:[]};executeClrPlugin(runtime,clrContext({runtime,store,step,entity:'widget',operation:'create',stage:20,target:{},record:{widgetid:'${rowId}'},frame:{},depth:1}),{store,diagnostic:note=>fs.writeSync(1,JSON.stringify(note)+'\\n')});`,
-        );
-        const child = spawn(process.execPath, [script, runtimeFile], {
-          windowsHide: true,
-          stdio: ['ignore', 'pipe', 'pipe'],
-          ...(detached ? { env: { ...process.env, NODE_OPTIONS: '--import=' + detachedHost } } : {}),
-        });
-        let hostPid,
-          port,
-          hostAbsent = false,
-          buffer = '',
-          error = '';
-        child.stdout.setEncoding('utf8');
-        child.stderr.setEncoding('utf8');
-        child.stderr.on('data', (chunk) => {
-          error += chunk;
-        });
-        try {
-          // No wall-clock limit: the child reaches the loop, or exits once its plugin limit (120 s default) fails.
-          await new Promise((resolve, reject) => {
-            child.once('exit', (code) => reject(new Error('Invented child exited early: ' + code + ' ' + error)));
-            child.stdout.on('data', (chunk) => {
-              buffer += chunk;
-              for (;;) {
-                const end = buffer.indexOf('\n');
-                if (end < 0) break;
-                const row = JSON.parse(buffer.slice(0, end));
-                buffer = buffer.slice(end + 1);
-                if (row.port) port = row.port;
-                if (row.code === 'PLUGIN_CLR_HOST_STARTED') hostPid = row.pid;
-                if (row.code === 'PLUGIN_CLR_TRACE' && row.message === 'entered-cpu-loop') resolve();
-              }
-            });
+      await t.test(
+        (persistentHost ? 'pooled' : 'fresh') + (detached ? ', detached from the job' : ''),
+        { skip: LISTENER_TABLE_MISSING },
+        async () => {
+          const runtimeFile = path.join(root, 'runtime-' + persistentHost + '.json'),
+            script = path.join(root, 'parent-' + persistentHost + '.mjs');
+          await fs.writeFile(
+            runtimeFile,
+            JSON.stringify({ ...runtime, descriptor: { ...runtime.descriptor, persistentHost } }),
+          );
+          await fs.writeFile(
+            script,
+            `import fs from'node:fs';import http from'node:http';import{executeClrPlugin,clrContext}from${JSON.stringify(new URL('../lib/plugin-clr.mjs', import.meta.url).href)};import{DataStore}from${JSON.stringify(new URL('../lib/data.mjs', import.meta.url).href)};const runtime=JSON.parse(fs.readFileSync(process.argv[2]));const server=http.createServer((q,s)=>s.end('owned'));await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));fs.writeSync(1,JSON.stringify({port:server.address().port})+'\\n');const store=new DataStore({state:{mappings:{widget:{idColumn:'widgetid'}},tables:{widget:[]}}}),step={id:'${user}',name:'Invented',images:[]};executeClrPlugin(runtime,clrContext({runtime,store,step,entity:'widget',operation:'create',stage:20,target:{},record:{widgetid:'${rowId}'},frame:{},depth:1}),{store,diagnostic:note=>fs.writeSync(1,JSON.stringify(note)+'\\n')});`,
+          );
+          const child = spawn(process.execPath, [script, runtimeFile], {
+            windowsHide: true,
+            stdio: ['ignore', 'pipe', 'pipe'],
+            ...(detached ? { env: { ...process.env, NODE_OPTIONS: '--import=' + detachedHost } } : {}),
           });
-          assert.ok(hostPid > 0);
-          assert.ok(port > 0);
-          // The host's own identity: its id and the time it started, read while it runs its CPU loop.
-          const hostStart = processStart(runtime.executable, hostPid);
-          assert.ok(hostStart, 'the running host has a readable start time');
-          assert.deepEqual(loopbackListeners(port), [child.pid], 'the parent listens on its port before the kill');
-          const exited = new Promise((resolve) => child.once('exit', (code, signal) => resolve(signal)));
-          child.kill('SIGKILL');
-          assert.equal(await exited, 'SIGKILL', 'the parent, and the server it listened with, ended by the kill');
-          hostAbsent = await incarnationAbsent(runtime.executable, hostPid, hostStart);
-          assert.equal(
-            hostAbsent,
-            true,
-            'Only the recorded orphan host must terminate, even while plugin code never returns.',
-          );
-          // Neither the parent's socket nor one of the host still listens there; another process that took the freed
-          // port has another id.
-          assert.deepEqual(
-            loopbackListeners(port).filter((pid) => pid === child.pid || pid === hostPid),
-            [],
-            'nothing of the parent or its host still listens on the parent port',
-          );
-        } finally {
-          child.kill();
-          // Once the host is absent its process id may name another process, so only a host still seen is signalled.
-          if (hostPid && !hostAbsent)
-            try {
-              process.kill(hostPid);
-            } catch {
-              /* The owned child may already have exited. */
-            }
-        }
-      });
+          let hostPid,
+            port,
+            hostAbsent = false,
+            buffer = '',
+            error = '';
+          child.stdout.setEncoding('utf8');
+          child.stderr.setEncoding('utf8');
+          child.stderr.on('data', (chunk) => {
+            error += chunk;
+          });
+          try {
+            // No wall-clock limit: the child reaches the loop, or exits once its plugin limit (120 s default) fails.
+            await new Promise((resolve, reject) => {
+              child.once('exit', (code) => reject(new Error('Invented child exited early: ' + code + ' ' + error)));
+              child.stdout.on('data', (chunk) => {
+                buffer += chunk;
+                for (;;) {
+                  const end = buffer.indexOf('\n');
+                  if (end < 0) break;
+                  const row = JSON.parse(buffer.slice(0, end));
+                  buffer = buffer.slice(end + 1);
+                  if (row.port) port = row.port;
+                  if (row.code === 'PLUGIN_CLR_HOST_STARTED') hostPid = row.pid;
+                  if (row.code === 'PLUGIN_CLR_TRACE' && row.message === 'entered-cpu-loop') resolve();
+                }
+              });
+            });
+            assert.ok(hostPid > 0);
+            assert.ok(port > 0);
+            // The host's own identity: its id and the time it started, read while it runs its CPU loop.
+            const hostStart = processStart(runtime.executable, hostPid);
+            assert.ok(hostStart, 'the running host has a readable start time');
+            assert.deepEqual(loopbackListeners(port), [child.pid], 'the parent listens on its port before the kill');
+            const exited = new Promise((resolve) => child.once('exit', (code, signal) => resolve(signal)));
+            child.kill('SIGKILL');
+            assert.equal(await exited, 'SIGKILL', 'the parent, and the server it listened with, ended by the kill');
+            hostAbsent = await incarnationAbsent(runtime.executable, hostPid, hostStart);
+            assert.equal(
+              hostAbsent,
+              true,
+              'Only the recorded orphan host must terminate, even while plugin code never returns.',
+            );
+            // Neither the parent's socket nor one of the host still listens there; another process that took the freed
+            // port has another id.
+            assert.deepEqual(
+              loopbackListeners(port).filter((pid) => pid === child.pid || pid === hostPid),
+              [],
+              'nothing of the parent or its host still listens on the parent port',
+            );
+          } finally {
+            child.kill();
+            // Once the host is absent its process id may name another process, so only a host still seen is signalled.
+            if (hostPid && !hostAbsent)
+              try {
+                process.kill(hostPid);
+              } catch {
+                /* The owned child may already have exited. */
+              }
+          }
+        },
+      );
   },
 );
 
@@ -923,7 +946,10 @@ async function stageProtocolFiles(directory, executable) {
   await fs.writeFile(assembly, 'invented assembly bytes');
   await fs.copyFile(executable, host);
   const files = await Promise.all(
-    [assembly, host].map(async (file) => ({ path: file, sha256: hash(await fs.readFile(file)) })),
+    [assembly, ...toolchainPaths(host), host].map(async (file) => ({
+      path: file,
+      sha256: hash(await fs.readFile(file)),
+    })),
   );
   return { directory, assembly, executable: host, files, allowedFiles: files.map((file) => path.basename(file.path)) };
 }

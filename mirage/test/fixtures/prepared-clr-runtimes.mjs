@@ -128,7 +128,16 @@ function validatePreparedPair(descriptor, runtime) {
   if (pathKey(path.dirname(runtimeDirectory)) !== cache)
     throw fixtureError('declared cache root must be the physical parent of the captured runtime directory.');
 
-  const hostEntries = runtime.files.filter((file) => typeof file?.sourcePath !== 'string' || !file.sourcePath);
+  // Files of the host toolchain (the .NET host's runtime configuration and package assemblies) sit beside the host and
+  // are not the plug-in's: each is a regular file directly inside the runtime directory.
+  const toolchainFiles = runtime.files.filter((file) => file?.toolchain === true);
+  for (const file of toolchainFiles) {
+    const captured = physical(file.path, 'toolchain file');
+    if (pathKey(path.dirname(captured)) !== runtimeDirectory)
+      throw fixtureError('a toolchain file must be directly inside its runtime directory.');
+  }
+  const pluginFiles = runtime.files.filter((file) => file?.toolchain !== true);
+  const hostEntries = pluginFiles.filter((file) => typeof file?.sourcePath !== 'string' || !file.sourcePath);
   if (hostEntries.length !== 1 || runtime.files.at(-1) !== hostEntries[0])
     throw fixtureError('the final captured file must be the one source-less compiled host executable.');
   if (typeof runtime.executable !== 'string' || !runtime.executable)
@@ -146,7 +155,7 @@ function validatePreparedPair(descriptor, runtime) {
     throw fixtureError(`compiled host must be a regular file (${cause.code ?? 'unavailable'}).`);
   }
 
-  const sourceFiles = runtime.files.slice(0, -1);
+  const sourceFiles = pluginFiles.slice(0, -1);
   const assembly = sourcePath(sourceFiles[0], 'captured assembly source');
   const sdk = sourcePath(sourceFiles[1], 'captured SDK source');
   if (assembly !== confinedSource(descriptor.root, descriptor.assembly, 'declared assembly source'))
