@@ -4,7 +4,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { dotnetBuildInputs, dotnetCompile, writeDotnetRuntimeConfig } from '../lib/clr-dotnet.mjs';
+import { clrToolchain } from '../lib/clr-toolchain.mjs';
+import { CLR_SKIP } from './fixtures/clr-sdk.mjs';
 
 function folder(t) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'paq-clr-dotnet-')));
@@ -48,6 +51,9 @@ test('the probe builds in its private folder pinned to the chosen SDK and keeps 
   assert.notEqual(calls[0].cwd, process.cwd(), 'not the caller folder');
   assert.ok(calls[0].cwd.startsWith(os.tmpdir()), 'a private folder');
   assert.deepEqual(calls[0].globalJson, { sdk: { version: '10.0.404', rollForward: 'disable' } });
+  assert.deepEqual(calls[0].args.slice(0, 3), ['msbuild', calls[0].args[1], '-restore']);
+  for (const argument of ['-nodeReuse:false', '-p:UseSharedCompilation=false'])
+    assert.ok(calls[0].args.includes(argument), argument + ': no build process outlives the probe');
   assert.equal(inputs.csc, path.join(roslyn, 'bincore', 'csc.dll'));
   assert.deepEqual(inputs.compile, [reference]);
   assert.deepEqual(inputs.runtime, [portable], 'a runtimes/<rid>/ variant is for another platform');
@@ -97,3 +103,36 @@ test('a failed restore names the packages it needs and the last lines of the bui
     'an existing configuration is never replaced',
   );
 });
+
+test(
+  'the probe build leaves no process running: no pipe or socket of one stays in the temporary folder',
+  {
+    skip:
+      CLR_SKIP ||
+      (clrToolchain()?.kind !== 'dotnet' && 'the .NET Framework compiler on Windows starts no build server'),
+  },
+  (t) => {
+    // A build server that outlives the build keeps its debugger pipes and diagnostics socket in the temporary folder
+    // it was started with: the probe gets a folder of its own, in a process of its own.
+    const temporary = folder(t);
+    const script = `import { clrToolchain } from ${JSON.stringify(new URL('../lib/clr-toolchain.mjs', import.meta.url).href)};
+import { dotnetBuildInputs } from ${JSON.stringify(new URL('../lib/clr-dotnet.mjs', import.meta.url).href)};
+const inputs = dotnetBuildInputs(clrToolchain(), { cacheRoot: false });
+console.log(JSON.stringify({ compile: inputs.compile.length, runtime: inputs.runtime.length }));`;
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+      env: { ...process.env, TMPDIR: temporary },
+      encoding: 'utf8',
+      windowsHide: true,
+    });
+    assert.equal(result.status, 0, result.stderr || result.error?.message);
+    const { compile, runtime } = JSON.parse(result.stdout);
+    assert.ok(compile > 0 && runtime > 0, 'the probe resolved the reference and package assemblies');
+    assert.deepEqual(
+      fs.readdirSync(temporary).filter((name) => {
+        const stat = fs.lstatSync(path.join(temporary, name));
+        return stat.isFIFO() || stat.isSocket();
+      }),
+      [],
+    );
+  },
+);

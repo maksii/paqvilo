@@ -64,9 +64,23 @@ function probe(toolchain, run, timeout) {
       path.join(work, 'global.json'),
       JSON.stringify({ sdk: { version: toolchain.sdkVersion, rollForward: 'disable' } }) + '\n',
     );
+    // `dotnet build` leaves an MSBuild node and the compiler server running for minutes after it returns, with their
+    // pipes and folders in the temporary folder, and a folder of its own there. MSBuild itself, with node reuse and the
+    // shared compiler off, restores and builds the same and leaves no process.
     const build = run(
       toolchain.dotnet,
-      ['build', project, '-nologo', '-v:q', '-c', 'Release', '-p:PaqviloOut=' + work, '-o', path.join(work, 'out')],
+      [
+        'msbuild',
+        project,
+        '-restore',
+        '-nologo',
+        '-v:q',
+        '-nodeReuse:false',
+        '-p:UseSharedCompilation=false',
+        '-p:Configuration=Release',
+        '-p:PaqviloOut=' + work,
+        '-p:OutputPath=' + path.join(work, 'out') + path.sep,
+      ],
       { shell: false, cwd: work, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, timeout, env: buildEnvironment() },
     );
     if (build.error || build.status !== 0) {
