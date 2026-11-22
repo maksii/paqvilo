@@ -1649,7 +1649,7 @@ test('every third-party workflow action is allowed by the repository admin polic
   );
 });
 
-test('the repository admin plan takes the description and homepage from package.json', () => {
+test('the repository admin plan takes the description, homepage and Pages domain from package.json', () => {
   const script = fileURLToPath(new URL('../scripts/github-admin.mjs', import.meta.url));
   // Plan mode only: without --apply the script prints its plan and calls no GitHub API.
   const result = spawnSync(process.execPath, [script], { encoding: 'utf8', windowsHide: true });
@@ -1658,6 +1658,7 @@ test('the repository admin plan takes the description and homepage from package.
   const packageJson = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   assert.equal(plan.settings.description, packageJson.description);
   assert.equal(plan.settings.homepage, packageJson.homepage);
+  assert.deepEqual(plan.pages, { build_type: 'workflow', cname: new URL(packageJson.homepage).hostname });
 });
 
 test('the new hosted runner label remains linted and Windows npm script arguments use bash', () => {

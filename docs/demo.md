@@ -78,8 +78,9 @@ These are sample scenarios, not every Power Pages feature; [coverage](coverage.m
 - **Backend operations.** Under **Manage data and personas > Backend operations**, set a local JSON response mock, call
   the operation from **Extended** and compare; **Use source default** restores it. See
   [operation modes](../mirage/docs/operations.md) before enabling exported code.
-- **Plug-ins.** The same catalogue lists the plug-in steps. The sample pack supplies their local handlers; Mirage does
-  not run the compiled assembly. See the [plug-in guide](../mirage/docs/dataverse-plugins.md).
+- **Plug-ins.** The same catalogue lists the plug-in steps. The sample pack supplies their local handlers, which is
+  why the compiled assembly does not run until you choose **Execute trusted original CLR assembly** for a step
+  (Windows). See the [plug-in guide](../mirage/docs/dataverse-plugins.md).
 - **Empty state.** Under **Manage data and personas > Plugins & presets**, apply **Empty account workspace**, refresh,
   then apply **Populated account workspace** to restore.
 

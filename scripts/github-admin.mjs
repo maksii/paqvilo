@@ -56,6 +56,9 @@ const settings = {
     secret_scanning_push_protection: { status: 'enabled' },
   },
 };
+// The Pages custom domain is the homepage host; its DNS (GitHub Pages A/AAAA records, DNS-only) and the account's
+// verified domain live outside this repository, see docs/repository-admin.md.
+export const pages = { build_type: 'workflow', cname: new URL(packageJson.homepage).hostname };
 const protection = {
   required_status_checks: {
     strict: true,
@@ -97,6 +100,7 @@ if (isEntry && !apply) {
       {
         repo,
         settings,
+        pages,
         protection,
         tagRules,
         additional: [
@@ -140,8 +144,9 @@ if (isEntry && !apply) {
   const existingTags = existingRules.find((rule) => rule.name === tagRules.name);
   const rulesetSuffix = (rule) => (rule ? `/${rule.id}` : '');
   api(existingTags ? 'PUT' : 'POST', `${endpoint}/rulesets${rulesetSuffix(existingTags)}`, tagRules);
-  const pages = api('GET', `${endpoint}/pages`, undefined, { missing: true });
-  api(pages ? 'PUT' : 'POST', `${endpoint}/pages`, { build_type: 'workflow' });
+  const existingPages = api('GET', `${endpoint}/pages`, undefined, { missing: true });
+  api(existingPages ? 'PUT' : 'POST', `${endpoint}/pages`, { build_type: pages.build_type });
+  api('PUT', `${endpoint}/pages`, pages);
   // GitHub provisions the certificate after the first deployment; retry on reapply.
   const https = api('PUT', `${endpoint}/pages`, { https_enforced: true }, { missing: true });
   if (!https) console.log('Pages HTTPS certificate pending; reapply after the first deployment.');
