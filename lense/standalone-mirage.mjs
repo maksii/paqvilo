@@ -84,10 +84,13 @@ export async function developStandalone(cfg, args, session, { open = openBrowser
   if (signal?.aborted) throw signal.reason;
   const progress = args.startup ?? startupProgress();
   progress.phase('browser setup');
-  const { context, close, attached, profile } = await open(
-    { ...cfg, origin: session.url },
-    { debugPort: cfg.browser.debugPort },
-  );
+  const {
+    context,
+    close,
+    attached,
+    profile,
+    page: profilePage,
+  } = await open({ ...cfg, origin: session.url }, { debugPort: cfg.browser.debugPort });
   if (profile) logBrowserProfile(attached, cfg, profile);
   let stop, page;
   const errors = [];
@@ -102,7 +105,7 @@ export async function developStandalone(cfg, args, session, { open = openBrowser
   signal?.addEventListener('abort', stop, { once: true });
   if (signal?.aborted) stop();
   try {
-    page = attached ? await context.newPage() : (context.pages()[0] ?? (await context.newPage()));
+    page = profilePage ?? (attached ? await context.newPage() : (context.pages()[0] ?? (await context.newPage())));
     // Observe this owned tab before navigation/readiness can yield. In an
     // attached browser its closure does not close the user-owned context.
     if (attached) page.once('close', stop);

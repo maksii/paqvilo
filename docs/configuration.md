@@ -86,7 +86,7 @@ resolved paths under `resolved` (programmatic: [`resolveCatalogue`](public-api.m
 | `PAQVILO_BROWSER`, `PAQVILO_HEADLESS`                   | `msedge`, `chrome` or `chromium`; no browser window                                                                |
 | `PAQVILO_PROFILE_DIR`, `PAQVILO_PROFILE`                | Folder of toolkit profiles; named profile (1–64 letters, digits, `_`, `-`; case-insensitive)                       |
 | `PAQVILO_USER_DATA_DIR`, `PAQVILO_PROFILE_DIRECTORY`    | Existing browser user-data root (relative to the catalogue) and its child profile, e.g. `Default`                  |
-| `PAQVILO_CDP_URL`, `PAQVILO_DEBUG_PORT`                 | Attach to a running browser; debugger port of a launched browser (`0` = off)                                       |
+| `PAQVILO_CDP_URL`, `PAQVILO_DEBUG_PORT`                 | Attach to a running browser (endpoint, or a channel such as `msedge`); launched browser debugger port (`0` = off)  |
 | `PAQVILO_BYPASS_CSP`                                    | `true` bypasses Content-Security-Policy in the dev browser (default `false`)                                       |
 | `PAQVILO_AGENT`, `PAQVILO_LIVE_RELOAD`, `PAQVILO_PANEL` | `false` disables the agent API, reload on save, or the page panel                                                  |
 | `PAQVILO_EDITOR`                                        | Command run as `<command> -g file:line` from the panel (default `code`)                                            |
@@ -104,8 +104,10 @@ generated editor paths with `paqvilo init --refresh-editor` after changing check
 between worktrees.
 
 Browser profiles keep identities separate. `browser.profile` cannot be combined with `browser.userDataDir`;
-`browser.profileDirectory` requires `browser.userDataDir`; `browser.cdpUrl` cannot be combined with any of them. An
-attached CDP browser stays user-owned: clear an inherited `browser.debugPort` with `null`, `PAQVILO_DEBUG_PORT=0` or
+`browser.profileDirectory` requires `browser.userDataDir` (the profile to launch) or `browser.cdpUrl` (the open profile
+of the attached browser to use); `browser.cdpUrl` cannot be combined with `browser.profile` or `browser.userDataDir`.
+[Which browser profile](lense.md#which-browser-profile) has the steps for each choice. An attached CDP browser stays
+user-owned: clear an inherited `browser.debugPort` with `null`, `PAQVILO_DEBUG_PORT=0` or
 `dev --debug-port 0`, and attach your debugger to that browser's own endpoint.
 
 ## Lense catalogue settings
@@ -128,8 +130,8 @@ Top level:
 | `sourceMaps`     | `true`              | Debugger metadata on Lense overlays (Mirage has its own `mirage.sourceMaps`)   |
 
 `browser`: `channel` (`msedge`), `headless` (`false`), `profileDir` (`.paqvilo/profiles`), `profile`, `userDataDir`,
-`profileDirectory`, `cdpUrl` (`http`, `https`, `ws` or `wss`), `debugPort` (0 or `null` = off) and `bypassCSP`
-(`false`). The last six default to `null`/`false`.
+`profileDirectory`, `cdpUrl` (an `http`, `https`, `ws` or `wss` endpoint, or a channel such as `msedge`), `debugPort`
+(0 or `null` = off) and `bypassCSP` (`false`). The last six default to `null`/`false`.
 
 Site keys (also accepted under `defaults` where noted above):
 

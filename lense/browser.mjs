@@ -13,6 +13,7 @@ import { createInspectionProvenanceTransport } from './inspection-provenance-tra
 import { refreshUrl } from './navigation.mjs';
 import { pageKey } from './html-rewriter.mjs';
 import { browserProfileInfo, validateBrowserProfile, validateDebuggerMode } from './browser-profile.mjs';
+import { ATTACH_CHANNELS } from './config-schema.mjs';
 export { browserProfileDir } from './browser-profile.mjs';
 
 // BROWSER_HANG_GUARD_MS (mirage/lib/browser-launch.mjs) bounds each browser start-up wait in place of Playwright's own
@@ -43,8 +44,10 @@ export async function openBrowser(cfg, overrides = {}) {
         `Expected one browser context at the CDP endpoint, found ${contexts.length}. Attach to the debugging endpoint of the intended profile.`,
       );
     }
+    const profile = browserProfileInfo(cfg);
+    const page = await selectedProfilePage(browser, context, profile.profileDirectory, guardMs);
     // closing only detaches: the browser belongs to the user
-    return { context, attached: true, profile: browserProfileInfo(cfg), close: () => browser.close() };
+    return { context, attached: true, profile, page, close: () => browser.close() };
   }
   const profile = browserProfileInfo(cfg, overrides.profileDir);
   validateBrowserProfile(profile);
@@ -104,6 +107,17 @@ export async function openBrowser(cfg, overrides = {}) {
     debugPort: debugPort || null,
     close: () => closeLaunchedBrowser(context, stopKeeping, previousWindow, closeGuardMs),
   };
+}
+
+// Without a named profile directory no tab is opened here. A failed selection detaches from the user's browser.
+async function selectedProfilePage(browser, context, profileDirectory, guardMs) {
+  if (!profileDirectory) return undefined;
+  try {
+    return await openAttachedProfilePage(browser, context, profileDirectory, guardMs);
+  } catch (error) {
+    await bounded(browser.close(), guardMs).catch(() => {});
+    throw stepHangGuardError(error, 'Selecting the profile of the attached browser', guardMs);
+  }
 }
 
 function ensureOwnedProfileDirectory(profile, profileDir) {
@@ -383,18 +397,93 @@ function hangGuardMessage(what, guardMs, cause) {
   );
 }
 
+const REMOTE_DEBUGGING_SWITCH =
+  '"Allow remote debugging for this browser instance" at edge://inspect/#remote-debugging (chrome://inspect/#remote-debugging in Chrome)';
+
 async function connectAttachedBrowser(endpoint, guardMs) {
+  // A channel name stands for the running everyday browser: Playwright reads its endpoint from DevToolsActivePort.
+  const channel = ATTACH_CHANNELS.includes(endpoint) ? endpoint : null;
   try {
     return await chromium.connectOverCDP(endpoint, { timeout: guardMs });
   } catch (error) {
-    if (error?.name === 'TimeoutError') throw hangGuardError(error, 'Attaching to the debugging endpoint', guardMs); // One line with the cause, without Playwright's API prefix, call log or the endpoint itself.
+    if (error?.name === 'TimeoutError')
+      throw hangGuardError(
+        error,
+        channel
+          ? `Attaching to the running ${channel} (it waits until the remote debugging prompt in that browser is allowed)`
+          : 'Attaching to the debugging endpoint',
+        guardMs,
+      ); // One line with the cause, without Playwright's API prefix, call log or the endpoint itself.
     const reason = String(error?.message ?? error)
       .split('\n')[0]
       .replace(/^browserType\.connectOverCDP:\s*/, '');
+    if (channel)
+      throw new Error(
+        `Cannot attach to the running ${channel} named by --cdp-url (${stripTrailingCharacters(reason, '.')}). Start that browser, tick ${REMOTE_DEBUGGING_SWITCH}, and start again. An endpoint is served once that page shows "Server running at:" with an address.`,
+        { cause: error },
+      );
     throw new Error(
-      `Cannot attach to the --cdp-url browser debugging endpoint (${reason}). Start the browser with a remote debugging port and pass that endpoint to --cdp-url.`,
+      `Cannot attach to the --cdp-url browser debugging endpoint (${reason}). Start the browser with a remote debugging port and pass that endpoint to --cdp-url. For a running everyday browser, tick ${REMOTE_DEBUGGING_SWITCH} and pass its channel instead, such as --cdp-url msedge: that endpoint has no HTTP discovery.`,
       { cause: error },
     );
+  }
+}
+
+const profileDirectoryOf = (profilePath) => profilePath.trim().split(/[\\/]/).findLast(Boolean) ?? '';
+const sameProfileDirectory = (a, b) => (process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b);
+
+// A new tab of an attached browser opens in the profile whose window was active last. Its profile is read from the
+// browser's own version page, in a tab opened for the session.
+async function openProfileProbe(context, guardMs) {
+  const page = await bounded(context.newPage(), guardMs);
+  try {
+    const cdp = await bounded(context.newCDPSession(page), guardMs);
+    const { targetInfo } = await bounded(cdp.send('Target.getTargetInfo'), guardMs);
+    await bounded(cdp.detach(), guardMs);
+    await page.goto('chrome://version', { timeout: guardMs });
+    const profilePath = await page.locator('#profile_path').innerText({ timeout: guardMs });
+    return { page, browserContextId: targetInfo.browserContextId, directory: profileDirectoryOf(profilePath) };
+  } catch (error) {
+    await bounded(page.close(), guardMs).catch(() => {});
+    throw new Error(
+      `Cannot read which profile the attached browser opens tabs in (${String(error?.message ?? error).split('\n')[0]}). --profile-directory needs a Chromium-based browser that serves chrome://version.`,
+      { cause: error },
+    );
+  }
+}
+
+/**
+ * The tab of an attached session in the profile directory the selection names. When a new tab opens in another
+ * profile, a tab of each other open profile is activated in turn, which makes that profile the one new tabs open in.
+ * Nothing is launched and no profile data is read: a profile without an open window cannot be selected.
+ */
+export async function openAttachedProfilePage(browser, context, wanted, guardMs = BROWSER_HANG_GUARD_MS) {
+  const session = await bounded(browser.newBrowserCDPSession(), guardMs);
+  try {
+    const tried = new Set();
+    const open = new Set();
+    const settle = async (probe) => {
+      if (sameProfileDirectory(probe.directory, wanted)) return probe.page;
+      tried.add(probe.browserContextId);
+      open.add(probe.directory);
+      await bounded(probe.page.close(), guardMs);
+      return null;
+    };
+    let page = await settle(await openProfileProbe(context, guardMs));
+    if (page) return page;
+    const { targetInfos } = await bounded(session.send('Target.getTargets'), guardMs);
+    for (const target of targetInfos) {
+      if (target.type !== 'page' || tried.has(target.browserContextId)) continue;
+      tried.add(target.browserContextId);
+      await bounded(session.send('Target.activateTarget', { targetId: target.targetId }), guardMs);
+      page = await settle(await openProfileProbe(context, guardMs));
+      if (page) return page;
+    }
+    throw new Error(
+      `The attached browser has no open window of the profile directory "${wanted}" (open: ${[...open].join(', ')}). Open a window of that profile in the attached browser and start again. edge://version or chrome://version shows the directory as the last part of Profile path.`,
+    );
+  } finally {
+    await bounded(session.detach(), guardMs).catch(() => {});
   }
 }
 

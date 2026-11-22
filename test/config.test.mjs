@@ -680,6 +680,18 @@ test('profile fields are schema checked and CDP attachment cannot ignore a resol
     await assert.rejects(load(selector), /browser.cdpUrl.*cannot be combined/);
   }
   await assert.rejects(load({ 'cdp-url': 'https://user:secret@example.com' }), /credentials/);
+  // A channel names the running everyday browser, and a profile directory names the open profile to use in it.
+  const everyday = await load({ 'cdp-url': 'msedge', 'profile-directory': 'Profile 5' });
+  assert.equal(everyday.browser.cdpUrl, 'msedge');
+  assert.equal(everyday.browser.profileDirectory, 'Profile 5');
+  assert.equal(everyday.browser.userDataDir, null);
+  write('.env', '');
+  write('paqvilo.config.local.yml', 'browser: { cdpUrl: chrome, profileDirectory: Default, debugPort: null }');
+  const personal = await load();
+  assert.equal(personal.browser.cdpUrl, 'chrome');
+  assert.equal(personal.browser.profileDirectory, 'Default');
+  for (const unknown of ['firefox', 'edge', 'MSEDGE'])
+    await assert.rejects(load({ 'cdp-url': unknown }), /browser.cdpUrl is not a URL/);
 });
 
 test('CDP selection cannot silently ignore an inherited or explicit launch debugger port', async () => {

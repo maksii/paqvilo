@@ -4,7 +4,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { loadCatalogue, loadDevTargets, ENV_SETTINGS, resolveMirageConfig, mirageOnlySite } from '../config.mjs';
 import { detectFormat } from '../portal-model.mjs';
-import { browserProfileInfo } from '../browser-profile.mjs';
+import { browserProfileInfo, validateBrowserProfile } from '../browser-profile.mjs';
 import { resolveCatalogue } from '../resolved-catalogue.mjs';
 import { scanSolutionSources } from '../../mirage/lib/solution-schema.mjs';
 import { inventoryCounts } from '../model-driven.mjs';
@@ -215,6 +215,7 @@ function printListJson({
   args,
   unconfigured,
 }) {
+  const { problem: profileProblem = null, ...profile } = profileInfo ?? {};
   console.log(
     JSON.stringify(
       {
@@ -246,7 +247,8 @@ function printListJson({
             profileDir: inEffect.browser.profileDir,
             userDataDir: inEffect.browser.userDataDir,
             profileDirectory: inEffect.browser.profileDirectory,
-            profileInfo,
+            profileInfo: profile,
+            profileProblem,
           },
           agent: inEffect.agent,
           mirage: inEffect.mirageConfig,
@@ -329,7 +331,7 @@ function printSite(site, context) {
 function inEffectProfile(browser, inEffect) {
   return chooseLazily(
     () => browser.cdpUrl,
-    () => 'attached browser',
+    () => 'attached browser' + (browser.profileDirectory ? ', profile directory ' + browser.profileDirectory : ''),
     () =>
       chooseLazily(
         () => browser.userDataDir,
@@ -350,6 +352,18 @@ function inEffectProfile(browser, inEffect) {
   );
 }
 
+// The offline part of the check dev makes before it launches: a selection that cannot start is reported here too.
+function listedProfileInfo(inEffect) {
+  const info = browserProfileInfo(inEffect);
+  let problem = null;
+  try {
+    validateBrowserProfile(info);
+  } catch (error) {
+    problem = error.message;
+  }
+  return { ...info, problem };
+}
+
 function printInEffect(inEffect, profileInfo, mirageText) {
   if (!inEffect) return;
   console.log(`in effect:  ${inEffect.siteName} @ ${inEffect.envName}  ${inEffect.origin}`);
@@ -364,6 +378,7 @@ function printInEffect(inEffect, profileInfo, mirageText) {
     console.log(
       `            user-data root ${profileInfo.userDataDir}, profile directory ${profileInfo.profileDirectory}`,
     );
+  if (profileInfo.problem) console.log(`            browser profile cannot be used: ${profileInfo.problem}`);
   console.log(
     `            mirage ${mirageText(inEffect.mirageConfig) || 'defaults (sibling Solution discovery, port 8787)'}`,
   );
@@ -460,7 +475,7 @@ export default async function list(_cfg, args) {
   const configured = new Set(sites.map((s) => s.source && path.resolve(s.source).toLowerCase()));
   const unconfigured = discoverExtracts(catalogue.sourceRoot).filter((dir) => !configured.has(dir.toLowerCase()));
   const coverage = listCoverage(inEffect, targets, sites, args, catalogue, problem);
-  const profileInfo = inEffect ? browserProfileInfo(inEffect) : null;
+  const profileInfo = inEffect ? listedProfileInfo(inEffect) : null;
   const settings = safeSettings(catalogue);
 
   if (args.json) {

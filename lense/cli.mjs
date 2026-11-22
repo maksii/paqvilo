@@ -62,8 +62,10 @@ Browser selection (dev/list/verify/doctor)
   --browser <channel>    msedge, chrome or chromium
   --profile <name>       named persistent toolkit profile
   --user-data-dir <dir>  explicit existing browser user-data root
-  --profile-directory <dir> child profile in that root, such as Default or Profile 1
-  --cdp-url <url>        dev/list/doctor: attach to an already running browser
+  --profile-directory <dir> child profile in that root, such as Default or Profile 1;
+                         with --cdp-url, the open profile of the attached browser to use
+  --cdp-url <url|channel> dev/list/doctor: attach to an already running browser by its debugging
+                         endpoint, or by channel (msedge, chrome) when its remote debugging switch is on
 
 Other
   --path <urlpath>  dev: optional first tab only; verify: page to test

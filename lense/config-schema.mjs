@@ -184,6 +184,27 @@ function validateRoute(rule, at) {
   for (const field of ['file', 'dir']) if (rule[field] !== undefined) string(rule[field], `${at}.${field}`);
 }
 
+/**
+ * A running everyday browser can be named instead of its endpoint: the browser writes the endpoint of its remote
+ * debugging switch (edge://inspect or chrome://inspect, "Allow remote debugging for this browser instance") to the
+ * DevToolsActivePort file of its normal user-data directory, and the attachment reads it from there.
+ */
+export const ATTACH_CHANNELS = [
+  'msedge',
+  'msedge-beta',
+  'msedge-dev',
+  'msedge-canary',
+  'chrome',
+  'chrome-beta',
+  'chrome-dev',
+  'chrome-canary',
+];
+
+/** browser.cdpUrl is a debugging endpoint URL or the channel name of a running everyday browser. */
+export function validateCdpUrl(value, name = 'browser.cdpUrl') {
+  if (!ATTACH_CHANNELS.includes(value)) httpUrl(value, name, ['http:', 'https:', 'ws:', 'wss:']);
+}
+
 function validateBrowser(browser) {
   keys(
     browser,
@@ -208,7 +229,7 @@ function validateBrowser(browser) {
   if (browser.userDataDir !== null) browserUserDataDir(browser.userDataDir);
   if (browser.profileDirectory !== null) browserProfileDirectory(browser.profileDirectory);
   debugPort(browser.debugPort);
-  if (browser.cdpUrl !== null) httpUrl(browser.cdpUrl, 'browser.cdpUrl', ['http:', 'https:', 'ws:', 'wss:']);
+  if (browser.cdpUrl !== null) validateCdpUrl(browser.cdpUrl);
 }
 
 function validateSites(sites) {

@@ -185,14 +185,14 @@ const ROOT = [
     'browser.profileDirectory',
     'string',
     10,
-    'Profile folder name inside userDataDir.',
+    'Profile folder name inside userDataDir, or the open profile to use in an attached browser (cdpUrl).',
     'browser:\n  profileDirectory: Default\n',
   ],
   [
     'browser.cdpUrl',
     'string',
     10,
-    'Attach to a running browser through its DevTools endpoint.',
+    'Attach to a running browser: its DevTools endpoint, or a channel such as msedge when its remote debugging switch is on.',
     'browser:\n  cdpUrl: http://127.0.0.1:9222\n',
   ],
   [

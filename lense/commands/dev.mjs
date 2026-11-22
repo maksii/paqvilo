@@ -749,7 +749,7 @@ export async function develop(args, setup, { open = openBrowser, source = proces
     devStop,
   );
   if (!opened) return devExitCode(undefined, args);
-  const { context, attached, close, debugPort, profile } = opened;
+  const { context, attached, close, debugPort, profile, page: profilePage } = opened;
   logBrowserProfile(attached, config, profile);
   const browser = watchBrowserEnd(context, stop);
   let runtime;
@@ -759,7 +759,9 @@ export async function develop(args, setup, { open = openBrowser, source = proces
     runtime = await startDevSessions(context, selection, { args, attached, stop, debugPort });
     logDevPanel(runtime, config);
     const startUrl = devStartUrl(config);
-    const page = attached ? await context.newPage() : (context.pages()[0] ?? (await context.newPage()));
+    // An attached session with a selected profile already holds its tab in that profile.
+    const page =
+      profilePage ?? (attached ? await context.newPage() : (context.pages()[0] ?? (await context.newPage())));
     console.log(`\nopening ${startUrl}`);
     try {
       const loaded = await waitForStartupPage(
@@ -880,8 +882,10 @@ export function logBrowserProfile(attached, cfg, profile) {
   const profileName = profile.name ? ` profile ${profile.name}` : '';
   const profileDirectory =
     profile.profileDirectory && profile.kind === 'external' ? ` (${profile.profileDirectory})` : '';
+  // Without a selected profile directory an attached browser opens the tab in the profile whose window was active last.
+  const unselected = attached && !profile.profileDirectory ? ' (last active profile)' : '';
   console.log(
-    `browser     ${attached ? 'attached browser' : cfg.browser.channel}; ${profile.kind === 'legacy' || profile.kind === 'named' ? 'toolkit' : profile.kind}${profileName}${profileDirectory}`,
+    `browser     ${attached ? 'attached browser' : cfg.browser.channel}; ${profile.kind === 'legacy' || profile.kind === 'named' ? 'toolkit' : profile.kind}${profileName}${profileDirectory}${unselected}`,
   );
 }
 

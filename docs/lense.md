@@ -71,9 +71,10 @@ reload alone does not mean an edit was applied.
 
 ### Which browser profile
 
-`dev`, `verify --signed-in` and `model-driven dev` choose the browser the same way (catalogue keys in
-[configuration](configuration.md)). `lense list --site <site> --env <env>` prints the choice for that selection as
-`browser profile:` and `user-data root`; `dev` repeats it on its `browser` line.
+`dev`, `mirage dev`, `verify --signed-in` and `model-driven dev` choose the browser the same way (catalogue keys in
+[configuration](configuration.md); `verify` does not attach). `lense list --site <site> --env <env>` prints the choice
+for that selection as `browser profile:` and `user-data root`, with `browser profile cannot be used:` when the selection
+cannot launch; `dev` repeats the choice on its `browser` line.
 
 | Option                                                 | Browser                                                                                 |
 | ------------------------------------------------------ | --------------------------------------------------------------------------------------- |
@@ -81,6 +82,7 @@ reload alone does not mean an edit was applied.
 | `--profile <name>`                                     | A named toolkit profile, `<profiles>/named/<channel>/<name>`                            |
 | `--user-data-dir <root>` + `--profile-directory <dir>` | An existing profile; `<root>` is the parent of the Profile Path in `edge://version`     |
 | `--cdp-url <endpoint>`                                 | A browser you started with a debugging endpoint; Lense attaches to it                   |
+| `--cdp-url msedge` + `--profile-directory <dir>`       | Your running everyday Edge (or `chrome`), in the open profile you name                  |
 
 `<profiles>` is `browser.profileDir`, by default `.paqvilo/profiles` beside the catalogue (Chrome and Chromium use a
 `default/<channel>/` subfolder).
@@ -100,11 +102,38 @@ reload alone does not mean an edit was applied.
   refused before anything starts ("Edge cannot be automated through launch flags in its normal user-data directory"),
   so an everyday Edge profile can only be used by attaching. A missing root fails with "Existing browser user-data
   directory not found", a missing child with "Existing browser profile directory not found" (`--profile-directory`
-  defaults to `Default`). `lense doctor` does not check these values.
+  defaults to `Default`). `lense list` reports these; `lense doctor` does not check them.
 - `--cdp-url` accepts an `http`, `https`, `ws` or `wss` endpoint; one that does not answer fails with "Cannot attach to
   the --cdp-url browser debugging endpoint". An attached browser stays yours: when Lense stops it detaches and leaves
   the browser and its debugging endpoint running. `--debug-port` cannot be combined with `--cdp-url`; attach your
   debugger to the browser's own endpoint.
+- An attached browser opens the Lense tab in the profile whose window was active last, and `dev` prints
+  `(last active profile)`. Add `--profile-directory <dir>` to name the profile: Lense opens its tab, reads the profile
+  from the browser's version page, and when it is another one brings a tab of each other open profile to the front in
+  turn until the tab opens in the named profile. A profile without an open window is refused with "The attached browser
+  has no open window of the profile directory", listing the open ones. Tabs of every open profile share the attached
+  session, so the overlay also applies to the same portal opened in another profile of that browser.
+
+#### An everyday Edge profile
+
+Edge and Chrome ignore debugging flags on their normal user-data directory, so a profile kept there (for example
+`Profile 5` of `%LOCALAPPDATA%MicrosoftEdgeUser Data`) is used by attaching to the running browser:
+
+1. In that browser open `edge://inspect/#remote-debugging` (`chrome://inspect/#remote-debugging` in Chrome) and tick
+   **Allow remote debugging for this browser instance**. The setting is kept across restarts.
+2. Open a window of the profile. `edge://version` shows its directory as the last part of **Profile path**; the name
+   shown in the profile menu is a label, not the directory.
+3. Start with `--cdp-url msedge --profile-directory "Profile 5"` (or `browser.cdpUrl: msedge` and
+   `browser.profileDirectory: Profile 5` in `paqvilo.config.local.yml`), and allow the connection in the prompt the
+   browser shows. Lense waits for that answer.
+
+A channel name (`msedge`, `msedge-beta`, `msedge-dev`, `msedge-canary`, `chrome`, `chrome-beta`, `chrome-dev`,
+`chrome-canary`) stands for the endpoint that browser writes to `DevToolsActivePort` in its normal user-data directory.
+That endpoint has no HTTP discovery and its port is not always 9222, so `--cdp-url http://127.0.0.1:9222` does not
+reach it. A ticked setting is not proof that the browser serves the endpoint: it does while `DevToolsActivePort` exists
+and the setting's page shows `Server running at:` with an address. A page that stays at `starting…` serves nothing
+(untick and tick the setting, or restart the browser), and the start fails with "Cannot attach to the running msedge
+named by --cdp-url".
 
 ## Commands
 
