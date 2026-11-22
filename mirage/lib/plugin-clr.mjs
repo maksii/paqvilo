@@ -594,6 +594,18 @@ function validateClrSymbolFiles(descriptor, symbols) {
       fail('VS Code CLR debugging requires a portable PDB. Build with DebugType=portable.');
   }
 }
+/** Writes each original (assembly, SDK, dependencies, symbols) into the new runtime directory: its runtime file entries. */
+function snapshotClrOriginals(directory, originals, nameOf) {
+  return originals.map((original) => {
+    const destination = path.join(directory, nameOf(original));
+    syncFs.writeFileSync(destination, original.bytes, { flag: 'wx' });
+    return {
+      path: destination,
+      ...(original.path ? { sourcePath: original.path } : {}),
+      sha256: sha(original.bytes),
+    };
+  });
+}
 // VS Code attaches its .NET Framework debugger to the Windows host process; the .NET host on macOS and Linux has no such
 // attach configuration yet.
 function refuseClrDebugOffWindows(descriptor, toolchain) {
@@ -723,16 +735,7 @@ export function buildClrRuntime(descriptor, { assembly, sdk, dependencies = [], 
     signature = sha(Buffer.concat([source, ...originals.map((f) => f.bytes)]));
   const directory = syncFs.mkdtempSync(path.join(cacheParent, 'clr-' + signature + '-'));
   try {
-    const files = [];
-    for (const original of originals) {
-      const destination = path.join(directory, nameOf(original));
-      syncFs.writeFileSync(destination, original.bytes, { flag: 'wx' });
-      files.push({
-        path: destination,
-        ...(original.path ? { sourcePath: original.path } : {}),
-        sha256: sha(original.bytes),
-      });
-    }
+    const files = snapshotClrOriginals(directory, originals, nameOf);
     const executable = path.join(directory, 'paqvilo-plugin-host.exe'),
       sourceFile = path.join(directory, 'paqvilo-plugin-host.cs');
     syncFs.writeFileSync(sourceFile, source, { flag: 'wx' });
