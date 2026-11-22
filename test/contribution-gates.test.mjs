@@ -1081,10 +1081,13 @@ test('Mirage lanes on every platform and Windows examples require the verified C
   for (const suite of ['examples', 'lense', 'quality']) assert.equal(requiresClrFixture(suite, 'linux'), false);
   const source = fs.readFileSync(new URL('../scripts/ci.mjs', import.meta.url), 'utf8');
   assert.match(source, /if \(requiresClrFixture\(suite\)\) await clrFixture\(\)/);
-  assert.match(source, /if \(requiresClrFixture\(suite\)\) requireClrFixtureFile\(\);/);
   assert.match(
     source,
-    /function requireClrFixtureFile\(\) \{[\s\S]*?verifyClrSdk\(sdk\);[\s\S]*?environment\('PAQ_TEST_XRM_SDK', sdk\)/,
+    /if \(requiresClrFixture\(suite\)\) requireClrFixtureFile\(\{ required: process\.platform === 'win32' \}\);/,
+  );
+  assert.match(
+    source,
+    /function requireClrFixtureFile\(\{ required = true \} = \{\}\) \{[\s\S]*?if \(!required\) return;[\s\S]*?verifyClrSdk\(sdk\);[\s\S]*?environment\('PAQ_TEST_XRM_SDK', sdk\)/,
   );
 });
 

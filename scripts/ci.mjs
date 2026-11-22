@@ -483,16 +483,24 @@ function requireFixtures(suite, { unit = true, browser = true, shard = null } = 
       throw new Error('Incomplete CI validation: install the locked TDS fixture with ci:prepare.');
   }
   if (needsEcosystem(suite, unit, shard)) requireEcosystemFixtures();
-  if (requiresClrFixture(suite)) requireClrFixtureFile();
+  if (requiresClrFixture(suite)) requireClrFixtureFile({ required: process.platform === 'win32' });
   if (suite === 'examples') requireExampleFixtures();
   if (browser) environment('PAQVILO_BROWSER', ciBrowser());
 }
 
-function requireClrFixtureFile() {
+/**
+ * The verified SDK fixture for the original plug-in DLL tests. Windows requires it: the .NET Framework host is the
+ * reference runtime. macOS and Linux use it when preparation restored it (prepare fails when it cannot) and otherwise
+ * leave those tests to skip; a fixture that is present is always digest-checked.
+ */
+function requireClrFixtureFile({ required = true } = {}) {
   const sdk =
     process.env.PAQ_TEST_XRM_SDK ||
     path.join(root, '.paqvilo/ci/sdk-reference/reference/lib/net462/Microsoft.Xrm.Sdk.dll');
-  if (!fs.existsSync(sdk)) throw new Error('Incomplete CI validation: CLR SDK fixture missing; run ci:prepare.');
+  if (!fs.existsSync(sdk)) {
+    if (!required) return;
+    throw new Error('Incomplete CI validation: CLR SDK fixture missing; run ci:prepare.');
+  }
   verifyClrSdk(sdk);
   environment('PAQ_TEST_XRM_SDK', sdk);
 }
