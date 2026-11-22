@@ -7,6 +7,7 @@
 // synthetic contact) come from a project file merged in with --project.
 //
 //   node scripts/baseline-matrix.mjs --out <matrix.json> [--manifest examples/project/baseline/site-manifest.json] [--project <project.json>]
+import { isEntryPoint } from '../lense/entry-point.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { parseOptions } from '../lense/cli-options.mjs';
@@ -1199,7 +1200,7 @@ async function main() {
   console.log(JSON.stringify({ out: values.out, scenarios: matrix.scenarios.length, byComponent: by }));
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))
+if (isEntryPoint(import.meta.url))
   /* NOSONAR: module-level promise chain must not block evaluation */ main().catch((error) => {
     console.error(error.message);
     process.exitCode = 1;

@@ -3,10 +3,11 @@
 // reference (MicrosoftDocs/powerapps-docs at a pinned commit). Facts only: names, types, option
 // labels, ownership and relationships. Description prose is never read. Maintainer-run: main()
 // fetches the pages into an ignored cache; the parser and builder are pure and tests never fetch.
+import { isEntryPoint } from '../lense/entry-point.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 export const DEFAULT_COMMIT = 'c3a8c43bfabbbbf1b6dd018fbb37bce6f6b7cd59';
 export const LICENCE = 'CC-BY-4.0';
@@ -832,7 +833,7 @@ export async function main(argv = process.argv.slice(2)) {
   return 0;
 }
 
-if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
+if (isEntryPoint(import.meta.url)) {
   /* NOSONAR: module-level promise chain must not block evaluation */ main().then(
     (code) => {
       process.exitCode = code;

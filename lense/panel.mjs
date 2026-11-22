@@ -476,9 +476,10 @@ const readableName = (value) => {
 /**
  * The full path of the editor CLI on Windows: PATH with PATHEXT, then the ordinary VS Code install folders for `code`
  * and `code-insiders`. cmd.exe runs a quoted bare name such as "code" with the wrong batch directory (%~dp0 becomes the
- * working directory, exit 9009), so the launcher always needs the full path. Returns null when nothing is found; other
- * platforms return the command unchanged (spawn searches PATH there). PATH folders the shell would interpret are not
- * searched; they are added to `skipped` when given, so a "not found" can name them.
+ * working directory, exit 9009), so the launcher always needs the full path. Returns null when nothing is found; macOS
+ * also finds VS Code in its app bundle (`resolveMacEditorCommand`), and other platforms return the command unchanged
+ * (spawn searches PATH there). PATH folders the shell would interpret are not searched; they are added to `skipped`
+ * when given, so a "not found" can name them.
  */
 /** A Windows path the shell will not interpret. */
 const shellSafe = (value) => typeof value === 'string' && value && !/["%!\r\n&|<>^]/.test(value);
@@ -517,11 +518,35 @@ const findVsCode = (command, value, regular) => {
   }
   return null;
 };
+/**
+ * macOS: VS Code puts no `code` on PATH until "Shell Command: Install 'code' command in PATH" is run, so a bare `code`
+ * or `code-insiders` not found on PATH is taken from the app bundle in /Applications or ~/Applications. Anything else
+ * is returned unchanged (spawn searches PATH).
+ */
+function resolveMacEditorCommand(editor, env, regular) {
+  if (!/^code(?:-insiders)?$/.test(editor)) return editor;
+  const onPath = String(env.PATH ?? '')
+    .split(':')
+    .filter((dir) => path.posix.isAbsolute(dir))
+    .some((dir) => regular(path.posix.join(dir, editor)));
+  if (onPath) return editor;
+  const app = editor === 'code-insiders' ? 'Visual Studio Code - Insiders.app' : 'Visual Studio Code.app';
+  const roots = [
+    '/Applications',
+    ...(env.HOME && path.posix.isAbsolute(env.HOME) ? [path.posix.join(env.HOME, 'Applications')] : []),
+  ];
+  return (
+    roots
+      .map((root) => path.posix.join(root, app, 'Contents', 'Resources', 'app', 'bin', editor))
+      .find((file) => regular(file)) ?? editor
+  );
+}
+
 export function resolveEditorCommand(
   editor,
   { platform = process.platform, env = process.env, fs: fileSystem = fs, skipped } = {},
 ) {
-  if (platform !== 'win32') return editor;
+  if (platform !== 'win32' && platform !== 'darwin') return editor;
   const regular = (file) => {
     try {
       return shellSafe(file) && fileSystem.statSync(file).isFile();
@@ -529,6 +554,7 @@ export function resolveEditorCommand(
       return false;
     }
   };
+  if (platform === 'darwin') return resolveMacEditorCommand(editor, env, regular);
   const value = (name) => Object.entries(env).find(([key]) => key.toLowerCase() === name.toLowerCase())?.[1];
   const names = pathExtNames(editor, value('PATHEXT'));
   // A path is used as given, or with a PATHEXT extension as Windows runs it (C:\tools\subl runs subl.exe).

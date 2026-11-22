@@ -1,5 +1,5 @@
+import { isEntryPoint } from '../entry-point.mjs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { parseOptions } from '../cli-options.mjs';
 import { choose } from '../prompt.mjs';
 import { paqviloCommand } from '../command-hint.mjs';
@@ -225,7 +225,7 @@ export async function runInit(args = process.argv.slice(2)) {
   return report.ok ? 0 : 1;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntryPoint(import.meta.url)) {
   runInit()
     .then((code) => {
       process.exitCode = code;

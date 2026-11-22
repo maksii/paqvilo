@@ -57,6 +57,37 @@ test('every spelling of one state file is the same claim, and another file is an
   await other.release();
 });
 
+test('a temporary folder too long for a Unix socket path falls back to a private folder in /tmp, and the claim holds', async (t) => {
+  const stateFile = path.join(await folder(t), 'state.json');
+  // sun_path holds 104 bytes on macOS (108 on Linux); macOS's own temporary folder leaves only three to spare.
+  const long = '/' + 'x'.repeat(60);
+  for (const [platform, limit] of [
+    ['darwin', 103],
+    ['linux', 107],
+  ]) {
+    const shared = () => '/tmp/paqvilo-1000';
+    const fallback = await stateFileEndpoint(stateFile, { platform, tmpdir: long, shared });
+    assert.match(fallback, /^\/tmp\/paqvilo-1000\/paqvilo-state-[0-9a-f]{32}\.sock$/, platform);
+    const fits = '/' + 'y'.repeat(limit - fallback.length + shared().length - 1);
+    const kept = await stateFileEndpoint(stateFile, { platform, tmpdir: fits, shared });
+    assert.equal(kept.length, limit, `${platform}: a path of exactly the limit is kept`);
+    assert.equal(path.posix.dirname(kept), fits);
+    assert.equal(path.posix.basename(kept), path.posix.basename(fallback), 'the same file names the same socket');
+  }
+  if (process.platform === 'win32') return;
+  // Two runtimes whose (different) temporary folders are both too long meet at the same socket in this account's
+  // private /tmp folder, which no other account can enter.
+  const base = os.tmpdir();
+  const tmpdir = t.mock.method(os, 'tmpdir', () => path.join(base, 'z'.repeat(120)));
+  const held = await claimStateFile(stateFile);
+  ownedFixture(t).add(() => held.release());
+  tmpdir.mock.restore();
+  t.mock.method(os, 'tmpdir', () => path.join(base, 'w'.repeat(120)));
+  await assert.rejects(claimStateFile(stateFile), { code: 'StateFileInUse' });
+  const privateFolder = await fs.stat(`/tmp/paqvilo-${process.getuid()}`);
+  assert.equal(privateFolder.mode & 0o777, 0o700, 'the fallback folder is closed to other accounts');
+});
+
 test('a holder that was killed holds nothing: the next claim succeeds without any clean-up', async (t) => {
   const stateFile = path.join(await folder(t), 'state.json');
   const child = spawn(

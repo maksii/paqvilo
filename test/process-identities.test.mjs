@@ -121,3 +121,55 @@ test('POSIX reads proc start times and uses ps, without a time limit, for missin
   assert.equal(processIdentity(130), null);
   assert.deepEqual(calls, ['120', '130']);
 });
+
+test('ps start times are read in the C locale whatever locale the user runs in', async (t) => {
+  // macOS ps formats lstart with the locale's names ("Сб 21 лист. 23:47:31 2026" under uk_UA), which the start-time
+  // parser cannot read and which differs between shells in different locales.
+  const previous = { LANG: process.env.LANG, LC_ALL: process.env.LC_ALL, LC_TIME: process.env.LC_TIME };
+  Object.assign(process.env, { LANG: 'uk_UA.UTF-8', LC_ALL: 'uk_UA.UTF-8', LC_TIME: 'de_DE.UTF-8' });
+  t.after(() => {
+    for (const [key, value] of Object.entries(previous))
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+  });
+  const locales = [];
+  processPlatform(t, 'darwin', {
+    spawnSync(command, _args, options) {
+      assert.equal(command, 'ps');
+      locales.push(options.env?.LC_ALL);
+      return { status: 0, stdout: 'Sat Nov 21 23:47:31 2026\n' };
+    },
+    execFile(command, _args, options, done) {
+      assert.equal(command, 'ps');
+      locales.push(options.env?.LC_ALL);
+      done(null, 'Sat Nov 21 23:47:31 2026\n');
+    },
+  });
+  t.mock.method(fs, 'readFileSync', () => {
+    throw Object.assign(Error('Invented proc-less system'), { code: 'ENOENT' });
+  });
+  t.mock.method(fs.promises, 'readFile', async () => {
+    throw Object.assign(Error('Invented proc-less system'), { code: 'ENOENT' });
+  });
+  assert.equal(processIdentity(110), 'Sat Nov 21 23:47:31 2026');
+  assert.equal(await processIdentityAsync(120), 'Sat Nov 21 23:47:31 2026');
+  assert.deepEqual(locales, ['C', 'C']);
+});
+
+test(
+  'a real ps start time is the C form under a localized environment',
+  { skip: process.platform !== 'darwin' },
+  () => {
+    const previous = process.env.LC_ALL;
+    process.env.LC_ALL = 'uk_UA.UTF-8';
+    try {
+      assert.match(
+        processIdentity(1),
+        /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) [A-Z][a-z]{2} +\d{1,2} \d{2}:\d{2}:\d{2} \d{4}$/,
+      );
+    } finally {
+      if (previous === undefined) delete process.env.LC_ALL;
+      else process.env.LC_ALL = previous;
+    }
+  },
+);

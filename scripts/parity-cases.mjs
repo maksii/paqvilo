@@ -4,10 +4,10 @@
 //     [--revise-change <text> --revise-evidence <text> [--revise-drop-volatile <case-id>#<pointer> ...]]
 //   node scripts/parity-cases.mjs check [<dir>]
 //   node scripts/parity-cases.mjs report [<dir>] [--json]
+import { isEntryPoint } from '../lense/entry-point.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { fileURLToPath } from 'node:url';
 import { buildParityCases, loadParityCases } from '../mirage/testing/parity-cases.mjs';
 
 // Report order of the oracle kinds; the library validates `oracle.kind` against the same three values.
@@ -409,6 +409,6 @@ export async function main(argv, { stdout = process.stdout, stderr = process.std
   }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntryPoint(import.meta.url)) {
   process.exitCode = await main(process.argv.slice(2));
 }

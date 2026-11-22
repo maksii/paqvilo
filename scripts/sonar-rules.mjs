@@ -10,6 +10,7 @@
 // ESLint counterpart and stay server-only.
 //   node scripts/sonar-rules.mjs [--base <rev>]   the repository of the working directory against <rev> (merge base;
 //                                                 default origin/main)
+import { isEntryPoint } from '../lense/entry-point.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
@@ -308,5 +309,4 @@ Reports new findings of the local SonarQube rule approximation; exits 1 when the
 }
 
 // The options module instances that ESLint imports carry a profile and never run the command.
-if (!profile && process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))
-  process.exitCode = await main(process.argv.slice(2));
+if (!profile && isEntryPoint(import.meta.url)) process.exitCode = await main(process.argv.slice(2));

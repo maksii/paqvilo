@@ -9,7 +9,7 @@ import { createHash } from 'node:crypto';
 import { syncBuiltinESMExports } from 'node:module';
 import workerThreads from 'node:worker_threads';
 import { executeClrPlugin, closeClrHostPool, clrHostPoolStatus } from '../lib/plugin-clr.mjs';
-import { CLR_SKIP, compileClr } from './fixtures/clr-sdk.mjs';
+import { CLR_SKIP, compileClr, toolchainPaths } from './fixtures/clr-sdk.mjs';
 
 // The forced schedule: every CLR worker starts its host this long after it was created, past the step's
 // 100 ms timeout plus the main thread's 1 s margin.
@@ -173,7 +173,10 @@ async function silentHostRuntime(
   await fs.writeFile(assembly, 'invented assembly bytes');
   const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
   const files = await Promise.all(
-    [assembly, executable].map(async (file) => ({ path: file, sha256: hash(await fs.readFile(file)) })),
+    [assembly, ...toolchainPaths(executable), executable].map(async (file) => ({
+      path: file,
+      sha256: hash(await fs.readFile(file)),
+    })),
   );
   return {
     directory,

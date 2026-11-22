@@ -141,7 +141,8 @@
               <ol>
                 <li>
                   Install <a href="https://nodejs.org/en/download">Node.js 26.13.1 or later in the 26.x line</a>, Edge
-                  or Chrome, and <a href="https://git-scm.com/downloads">Git</a>. Windows and Linux are supported.
+                  or Chrome, and <a href="https://git-scm.com/downloads">Git</a>. Windows, macOS and Linux are
+                  supported.
                 </li>
                 <li>
                   In a project folder (skip <code>npm init</code> when it already has a <code>package.json</code>):
@@ -1406,8 +1407,9 @@ curl -s "$ORIGIN/api/data/v9.2/WhoAmI" -H "Authorization: Bearer $ACCESS_TOKEN"<
                   exported step is listed with its message, table and stage.
                 </li>
                 <li>
-                  Choose how a step runs: the original assembly (<a href="#plugin-debug">Windows</a>), a project
-                  handler, a JSON mock, a placeholder or disabled.
+                  Choose how a step runs: the original assembly (Windows, or .NET 10+ on macOS and Linux;
+                  <a href="#plugin-debug">debugging on Windows</a>), a project handler, a JSON mock, a placeholder or
+                  disabled.
                 </li>
                 <li>
                   A project handler is a synchronous JavaScript function in the default export of your

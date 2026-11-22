@@ -5,6 +5,7 @@
  * browser (signed-in identity) or a cookie-free request/owned headless browser
  * (anonymous). Every saved value passes through normalisation and redaction.
  */
+import { isEntryPoint } from '../lense/entry-point.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { observeDocumentCommits } from './lib/document-commits.mjs';
@@ -5794,7 +5795,7 @@ async function cleanupMainResources(identity, live, anonymousCdp, browser, owned
   if (owned?.workspace) await fs.rm(owned.workspace, { recursive: true, force: true }).catch(() => {});
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntryPoint(import.meta.url)) {
   /* NOSONAR: module-level promise chain must not block evaluation */ main().catch((error) => {
     console.error(cliMessage(error));
     process.exitCode = error.exitCode ?? 1;

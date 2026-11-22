@@ -1,3 +1,4 @@
+import { existsSync, realpathSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -776,7 +777,11 @@ function validateCampaignResult(result, roleWitness) {
     throw new Error('Role replay result does not cover its exact native physical page set.');
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// Inline: the replay modules also run from a project copy without this example's cli.mjs. Node loads the started
+// script from its real path (macOS /tmp and /var are links into /private).
+const startedHere = (started = process.argv[1], self = fileURLToPath(import.meta.url)) =>
+  Boolean(started) && (path.resolve(started) === self || (existsSync(started) && realpathSync(started) === self));
+if (startedHere()) {
   // Loaded only when run as a command: the replay runtime's own imports stay the fingerprinted set.
   const { cli, UsageError } = await import('../cli.mjs');
   const { values } = cli(

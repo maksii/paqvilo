@@ -21,7 +21,7 @@ import { DataStore, emptyState } from '../lib/data.mjs';
 import { pluginCatalogue } from '../lib/exported-plugins.mjs';
 import { createOrganizationBackend } from '../lib/organization-backend.mjs';
 import { releaseStaleUploadedRuntimes } from '../lib/plugin-uploaded.mjs';
-import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
+import { CLR_SKIP, clrSdk, compileClr, hostCommand } from './fixtures/clr-sdk.mjs';
 
 const USER = '10000000-0000-4000-8000-000000000001';
 const NOOP_SOURCE =
@@ -142,7 +142,7 @@ test(
       'public static class Held{public static void Main(){System.Console.WriteLine("running");System.Threading.Thread.Sleep(1000);}}',
     );
     compileClr(source, executable, { target: 'exe' });
-    const held = spawn(executable, [], { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+    const held = spawn(...hostCommand(executable, []), { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
     const closed = new Promise((resolve) => held.once('close', resolve));
     ownedFixture(t).add(() => {
       held.kill();
@@ -298,7 +298,7 @@ test(
       'public static class Held{public static void Main(){System.Console.WriteLine("running");System.Console.In.ReadToEnd();}}',
     );
     compileClr(source, executable, { target: 'exe' });
-    const held = spawn(executable, [], { windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] });
+    const held = spawn(...hostCommand(executable, []), { windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] });
     const closed = new Promise((resolve) => held.once('close', resolve));
     ownedFixture(t).add(() => {
       held.kill();
@@ -875,7 +875,8 @@ test('a diagnostic callback that throws never makes a release reject', async (t)
 
 test(
   'an operations-override change settles while its released directory is held, and the host close waits for it',
-  { skip: CLR_SKIP },
+  // Only Windows refuses to remove a folder a running program was started from; macOS and Linux remove it at once.
+  { skip: CLR_SKIP || (process.platform !== 'win32' && 'a running program holds its folder only on Windows') },
   async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-clr-release-'));
     ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
@@ -895,7 +896,7 @@ test(
       'public static class Held{public static void Main(){System.Console.WriteLine("running");System.Console.In.ReadToEnd();}}',
     );
     compileClr(source, path.join(directory, 'Held.exe'), { target: 'exe' });
-    const held = spawn(path.join(directory, 'Held.exe'), [], {
+    const held = spawn(...hostCommand(path.join(directory, 'Held.exe'), []), {
       windowsHide: true,
       stdio: ['pipe', 'pipe', 'ignore'],
     });

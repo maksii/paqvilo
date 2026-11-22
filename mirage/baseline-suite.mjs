@@ -1,3 +1,4 @@
+import { isEntryPoint } from '../lense/entry-point.mjs';
 import {
   validateScenarioId,
   validateCaptureLabel,
@@ -30,7 +31,6 @@ import http from 'node:http';
 import { assertToolPaths, parseToolCommand } from './tool-options.mjs';
 import { runMutatingHook, MUTATING_HOOK_FAILURE } from './baseline-hooks.mjs';
 import { randomBytes } from 'node:crypto';
-import { fileURLToPath } from 'node:url';
 import {
   captureNetDecision,
   captureScenario,
@@ -1049,7 +1049,7 @@ async function runCompareAction({ action, values, matrix, outDir, only }) {
   process.exitCode = report.totals.fail || report.totals.error ? 1 : 0;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntryPoint(import.meta.url)) {
   /* NOSONAR: module-level promise chain must not block evaluation */ main().catch((error) => {
     console.error(error.message);
     process.exitCode = 1;

@@ -1,3 +1,4 @@
+import { isEntryPoint } from '../lense/entry-point.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { availableParallelism, tmpdir, totalmem } from 'node:os';
@@ -79,6 +80,28 @@ function requireDotnet() {
     );
 }
 
+/**
+ * Extracts the verified SDK package's lib/net462 assemblies into `destination`. Windows uses its system bsdtar; macOS and
+ * Linux read the ZIP with the toolkit's own validated reader (GNU tar cannot read a ZIP, and no unzip is assumed), which
+ * refuses links, ZIP64, overlapping members and size or CRC mismatches before anything is written.
+ */
+async function extractClrSdk(archive, destination) {
+  if (process.platform === 'win32') return extractZipOnWindows(archive, destination);
+  const { readSolutionAssetEntries } = await import('../mirage/lib/dataverse-solution-assets.mjs');
+  const net462 = (name) => name.startsWith('lib/net462/');
+  for (const { name, data } of readSolutionAssetEntries(fs.readFileSync(archive), {
+    include: net462,
+    strictNames: net462,
+  })) {
+    const parts = name.split('/');
+    if (parts.some((part) => !part || part === '.' || part === '..'))
+      throw new Error(`CLR SDK archive member has an unsafe name: ${name}`);
+    const file = path.join(destination, ...parts);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, data, { flag: 'wx' });
+  }
+}
+
 async function clrFixture() {
   const directory = assertOwnedCiState(root, 'sdk-reference');
   const sdk = path.join(directory, 'reference/lib/net462/Microsoft.Xrm.Sdk.dll');
@@ -98,7 +121,7 @@ async function clrFixture() {
     // Retire only the checked owned tree, including stale nested links, before extraction.
     fs.rmSync(destination, { recursive: true, force: true });
     fs.mkdirSync(destination);
-    extractZipOnWindows(archive, destination);
+    await extractClrSdk(archive, destination);
   }
   if (!fs.existsSync(sdk)) throw new Error('CLR SDK fixture extraction did not produce Microsoft.Xrm.Sdk.dll.');
   verifyClrSdk(sdk);
@@ -226,8 +249,10 @@ export const needsEcosystem = (suite, unit, shard) =>
   ['mirage', 'all'].includes(suite) &&
   (!shard || shardFiles(packageTests('mirage', 'test').files, shard).includes(path.normalize(ECOSYSTEM_TEST)));
 
+// Windows runs the original plug-in DLLs on the .NET Framework (Mirage and the examples); macOS and Linux run Mirage's
+// on the .NET SDK the lane installs (the examples' own CLR checks are Windows-only).
 export function requiresClrFixture(suite, platform = process.platform) {
-  return platform === 'win32' && ['mirage', 'examples', 'all'].includes(suite);
+  return (platform === 'win32' ? ['mirage', 'examples', 'all'] : ['mirage', 'all']).includes(suite);
 }
 
 export function resetExampleModules(checkout = root) {
@@ -458,16 +483,24 @@ function requireFixtures(suite, { unit = true, browser = true, shard = null } = 
       throw new Error('Incomplete CI validation: install the locked TDS fixture with ci:prepare.');
   }
   if (needsEcosystem(suite, unit, shard)) requireEcosystemFixtures();
-  if (requiresClrFixture(suite)) requireClrFixtureFile();
+  if (requiresClrFixture(suite)) requireClrFixtureFile({ required: process.platform === 'win32' });
   if (suite === 'examples') requireExampleFixtures();
   if (browser) environment('PAQVILO_BROWSER', ciBrowser());
 }
 
-function requireClrFixtureFile() {
+/**
+ * The verified SDK fixture for the original plug-in DLL tests. Windows requires it: the .NET Framework host is the
+ * reference runtime. macOS and Linux use it when preparation restored it (prepare fails when it cannot) and otherwise
+ * leave those tests to skip; a fixture that is present is always digest-checked.
+ */
+function requireClrFixtureFile({ required = true } = {}) {
   const sdk =
     process.env.PAQ_TEST_XRM_SDK ||
     path.join(root, '.paqvilo/ci/sdk-reference/reference/lib/net462/Microsoft.Xrm.Sdk.dll');
-  if (!fs.existsSync(sdk)) throw new Error('Incomplete CI validation: CLR SDK fixture missing; run ci:prepare.');
+  if (!fs.existsSync(sdk)) {
+    if (!required) return;
+    throw new Error('Incomplete CI validation: CLR SDK fixture missing; run ci:prepare.');
+  }
   verifyClrSdk(sdk);
   environment('PAQ_TEST_XRM_SDK', sdk);
 }
@@ -1741,7 +1774,7 @@ async function main() {
   }
   if (failure) throw failure;
 }
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntryPoint(import.meta.url)) {
   try {
     await main();
   } catch (error) {

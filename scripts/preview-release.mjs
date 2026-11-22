@@ -1,6 +1,5 @@
-import path from 'node:path';
+import { isEntryPoint } from '../lense/entry-point.mjs';
 import { execFileSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 import { parse } from 'yaml';
 import { branchToken, previewRelease } from './release-version.mjs';
 import { answerHelp } from './script-help.mjs';
@@ -61,7 +60,7 @@ export function requestPreview({ repo, branch, publish = false, timestamp, runGh
   };
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntryPoint(import.meta.url)) {
   const args = process.argv.slice(2);
   answerHelp(args, {
     name: 'preview-release',

@@ -1073,17 +1073,21 @@ test('staged fixture imports use staged toolkit sources and locked registry depe
   assertCleaned();
 });
 
-test('Windows examples require the verified CLR fixture independently of Mirage lanes', async () => {
+test('Mirage lanes on every platform and Windows examples require the verified CLR fixture', async () => {
   const { requiresClrFixture } = await import('../scripts/ci.mjs');
   for (const suite of ['mirage', 'examples', 'all']) assert.equal(requiresClrFixture(suite, 'win32'), true);
   for (const suite of ['lense', 'quality']) assert.equal(requiresClrFixture(suite, 'win32'), false);
-  for (const suite of ['mirage', 'examples', 'all']) assert.equal(requiresClrFixture(suite, 'linux'), false);
+  for (const suite of ['mirage', 'all']) assert.equal(requiresClrFixture(suite, 'linux'), true);
+  for (const suite of ['examples', 'lense', 'quality']) assert.equal(requiresClrFixture(suite, 'linux'), false);
   const source = fs.readFileSync(new URL('../scripts/ci.mjs', import.meta.url), 'utf8');
   assert.match(source, /if \(requiresClrFixture\(suite\)\) await clrFixture\(\)/);
-  assert.match(source, /if \(requiresClrFixture\(suite\)\) requireClrFixtureFile\(\);/);
   assert.match(
     source,
-    /function requireClrFixtureFile\(\) \{[\s\S]*?verifyClrSdk\(sdk\);[\s\S]*?environment\('PAQ_TEST_XRM_SDK', sdk\)/,
+    /if \(requiresClrFixture\(suite\)\) requireClrFixtureFile\(\{ required: process\.platform === 'win32' \}\);/,
+  );
+  assert.match(
+    source,
+    /function requireClrFixtureFile\(\{ required = true \} = \{\}\) \{[\s\S]*?if \(!required\) return;[\s\S]*?verifyClrSdk\(sdk\);[\s\S]*?environment\('PAQ_TEST_XRM_SDK', sdk\)/,
   );
 });
 
@@ -1558,7 +1562,8 @@ test('ci.mjs fixtures answers for every CI lane what prepare with the same argum
     (lane) => laneFixtures(['--suite', 'mirage', '--unit', '--shard', lane.shard], 'linux').ecosystem,
   );
   assert.equal(shardsWithEcosystem.length, 1, 'exactly one Mirage unit shard runs the ecosystem import checks');
-  assert.deepEqual(laneFixtures(['--suite', 'mirage', '--unit'], 'linux'), { ecosystem: true, sdk_reference: false });
+  // Linux Mirage lanes run the original plug-in DLLs on the .NET SDK they install, so they prepare the SDK fixture too.
+  assert.deepEqual(laneFixtures(['--suite', 'mirage', '--unit'], 'linux'), { ecosystem: true, sdk_reference: true });
   assert.deepEqual(laneFixtures(['--suite', 'mirage', '--browser', '--shard', '1/2'], 'win32'), {
     ecosystem: false,
     sdk_reference: true,

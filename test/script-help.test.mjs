@@ -220,7 +220,11 @@ const entryPoints = fs
 test('every module exemption names an existing script without a main guard', () => {
   for (const name of MODULES.keys()) {
     const source = fs.readFileSync(path.join(root, 'scripts', name), 'utf8');
-    assert.doesNotMatch(source, /path\.resolve\(process\.argv\[1\]\)|pathToFileURL\(process\.argv\[1\]\)/, name);
+    assert.doesNotMatch(
+      source,
+      /isEntryPoint\(|path\.resolve\(process\.argv\[1\]\)|pathToFileURL\(process\.argv\[1\]\)/,
+      name,
+    );
   }
 });
 

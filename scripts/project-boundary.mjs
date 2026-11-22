@@ -1,3 +1,4 @@
+import { isEntryPoint } from '../lense/entry-point.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -82,7 +83,7 @@ export function inspectProjectBoundary(directory = root) {
   return findings;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntryPoint(import.meta.url)) {
   const [arg] = process.argv.slice(2);
   if (arg === '--help' || arg === '-h') {
     console.log(`Usage: node scripts/project-boundary.mjs

@@ -28,7 +28,8 @@ Chrome), else the one in `./paqvilo.config.yml`; with neither, or when that file
 as not checked and why. Commit
 `package.json` and `package-lock.json` (use `npm ci --ignore-scripts` for repeatable installs) and ignore
 `node_modules/` and `.paqvilo/`. On Windows, run `git config core.longpaths true` in any repository that will hold deep
-portal exports.
+portal exports. On macOS, Inspect finds VS Code in `/Applications` or `~/Applications` when its `code` shell command is
+not installed, and the panel shortcuts written **Alt+Shift+…** use the Option key.
 
 ### Try the demo
 

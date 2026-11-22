@@ -326,8 +326,8 @@
             <p class="sub">Boundaries</p>
             <ul>
               <li>
-                Original assemblies load on Windows x64 with the .NET Framework compiler and the Dataverse SDK
-                assemblies. On other systems use handlers or mocks.
+                Original assemblies load with the Dataverse SDK assemblies: on Windows x64 with the .NET Framework
+                compiler, on macOS and Linux with the .NET 10 SDK or later. Without either, use handlers or mocks.
               </li>
               <li>The plug-in host is not a sandbox: your assembly runs with your own user's rights.</li>
               <li>
@@ -717,8 +717,9 @@
             Dataverse actions use local data; for the rest you supply a provider or a mock.
           </li>
           <li>
-            <strong>Windows and Linux; C# on Windows.</strong> The toolkit needs Node.js 26.13.1 or later in the 26.x
-            line and Edge or Chrome. Original .NET Framework plug-in assemblies load on Windows x64 only.
+            <strong>Windows, macOS and Linux; C# debugging on Windows.</strong> The toolkit needs Node.js 26.13.1 or
+            later in the 26.x line and Edge or Chrome. Original .NET Framework plug-in assemblies load on Windows x64,
+            or on macOS and Linux with the .NET 10 SDK or later.
           </li>
           <li>
             <strong>Deployment and licensing are unchanged.</strong> Mirage and Lense do not deploy or host production

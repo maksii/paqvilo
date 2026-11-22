@@ -6,9 +6,8 @@
 // queued persisted lines and SSE frames. --json prints one envelope { schemaVersion: 1, ok, command, result } (watch: one
 // per line); a failure is { ok: false, error: { code, message, parameter? } }. A filter or setting the runtime (or the
 // same check before connecting) refuses prints `<code>: <message>` and exits 2; any other failure exits 1.
+import { isEntryPoint } from '../lense/entry-point.mjs';
 import { once } from 'node:events';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { assertToolPaths, parseToolCommand } from './tool-options.mjs';
 import { mirageToolHelp } from './tool-registry.mjs';
 import { connectRuntime, runtimeOrigin } from './testing/runtime.mjs';
@@ -550,5 +549,4 @@ export async function runTraceCommand(args, { stdout = process.stdout, stderr = 
   }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))
-  process.exitCode = await runTraceCommand(process.argv.slice(2));
+if (isEntryPoint(import.meta.url)) process.exitCode = await runTraceCommand(process.argv.slice(2));

@@ -1,10 +1,10 @@
+import { isEntryPoint } from '../lense/entry-point.mjs';
 import { requiredArgument } from './lib/required-argument.mjs';
 import fs from 'node:fs/promises';
 import pathModule from 'node:path';
 import { createHash } from 'node:crypto';
 import { PNG } from 'pngjs';
 import pixelmatch from 'pixelmatch';
-import { fileURLToPath } from 'node:url';
 import { parseToolArgs } from './tool-options.mjs';
 import { localUnreachable } from './lib/local-state-fetch.mjs';
 import { connectLoopbackBrowser, stripAnsi } from './lib/live.mjs';
@@ -694,7 +694,7 @@ export async function verifyParity(
   return result;
 }
 
-if (process.argv[1] && pathModule.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntryPoint(import.meta.url)) {
   try {
     const values = parseToolArgs('verify', process.argv.slice(2));
     const report = await verifyParity({

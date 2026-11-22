@@ -1,8 +1,7 @@
 // Read-only verification of GitHub's effective PR state, not historical job success.
+import { isEntryPoint } from '../lense/entry-point.mjs';
 import { spawnSync } from 'node:child_process';
 import { parseOptions } from '../lense/cli-options.mjs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { answerHelp } from './script-help.mjs';
 
 function checkKey(check) {
@@ -101,7 +100,7 @@ function command(program, args) {
   return result.stdout.trim();
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntryPoint(import.meta.url)) {
   answerHelp(process.argv.slice(2), {
     name: 'pr-readiness',
     options: ['--pr', '--repo'],

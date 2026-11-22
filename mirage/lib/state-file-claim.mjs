@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { unixSocketFolder } from './socket-path.mjs';
 
 /*
  * One runtime writes a state file. The writer lock beside the file is held only while a save runs, and the ownership
@@ -18,7 +19,7 @@ import path from 'node:path';
 export const STATE_CLAIM = Symbol('state file claim');
 
 /** The endpoint of the claim on `stateFile`: the same for every spelling of the path that names the same file. */
-export async function stateFileEndpoint(stateFile, { platform = process.platform, tmpdir = os.tmpdir() } = {}) {
+export async function stateFileEndpoint(stateFile, { platform = process.platform, tmpdir = os.tmpdir(), shared } = {}) {
   const resolved = path.resolve(stateFile);
   // The folder may be reached through a link or another letter case; the file itself may not exist yet.
   const folder = await fs.realpath(path.dirname(resolved)).catch(() => path.dirname(resolved));
@@ -28,9 +29,14 @@ export async function stateFileEndpoint(stateFile, { platform = process.platform
     .update(platform === 'win32' ? real.toLowerCase() : real)
     .digest('hex')
     .slice(0, 32);
-  return platform === 'win32'
-    ? String.raw`\\.\pipe\paqvilo-state-` + key
-    : path.join(tmpdir, `paqvilo-state-${key}.sock`);
+  if (platform === 'win32') return String.raw`\\.\pipe\paqvilo-state-` + key;
+  const name = `paqvilo-state-${key}.sock`;
+  // On macOS this name leaves three bytes of sun_path to spare in the per-user temporary folder; a longer one falls
+  // back to this account's private folder in /tmp.
+  return path.posix.join(
+    unixSocketFolder(Buffer.byteLength(name), { platform, tmpdir, ...(shared ? { shared } : {}) }),
+    name,
+  );
 }
 
 /** " (pid N, url)" of the runtime that holds a claim, as far as it said who it is. */

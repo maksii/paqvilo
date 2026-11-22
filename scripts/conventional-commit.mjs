@@ -1,6 +1,5 @@
+import { isEntryPoint } from '../lense/entry-point.mjs';
 import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 // Conventional Commits permits types beyond feat/fix. Keep the type open to contributors.
 export function validateCommitMessage(message) {
@@ -11,7 +10,7 @@ export function validateCommitMessage(message) {
     throw new Error('Separate the subject from the body/footer with a blank line.');
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntryPoint(import.meta.url)) {
   const flag = process.argv[2];
   if (flag === '--help' || flag === '-h') {
     console.log(`Usage: node scripts/conventional-commit.mjs --file <commit-message-file> | --title
