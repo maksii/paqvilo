@@ -259,9 +259,25 @@ test('a channel whose browser has no remote debugging endpoint fails with the sw
   await assert.rejects(openBrowser({ browser: { cdpUrl: 'msedge', debugPort: null } }), (error) => {
     assert.match(
       error.message,
-      /^Cannot attach to the running msedge named by --cdp-url \(Could not connect to msedge: DevToolsActivePort file not found at \/invented\/DevToolsActivePort\)\. Start that browser, tick "Allow remote debugging for this browser instance" at edge:\/\/inspect\/#remote-debugging/,
+      /^Cannot attach to the running msedge named by --cdp-url \(Could not connect to msedge: DevToolsActivePort file not found at \/invented\/DevToolsActivePort\)\. That browser has not served a remote debugging endpoint: start it, tick "Allow remote debugging for this browser instance" at edge:\/\/inspect\/#remote-debugging/,
     );
+    assert.match(error.message, /"Server running at:".*edge-devtools-wdp-remote-debugging/);
     assert.doesNotMatch(error.message, /\n|browserType\./);
+    return true;
+  });
+});
+
+test('a channel whose endpoint refuses the connection names the closed browser, the setting and the cancelled prompt', async (t) => {
+  // The endpoint file is still there after the browser closed, the setting was turned off or the prompt was cancelled.
+  t.mock.method(chromium, 'connectOverCDP', async () => {
+    throw new Error('browserType.connectOverCDP: Could not connect to msedge.\nMake sure msedge is running');
+  });
+  await assert.rejects(openBrowser({ browser: { cdpUrl: 'msedge', debugPort: null } }), (error) => {
+    assert.match(
+      error.message,
+      /^Cannot attach to the running msedge named by --cdp-url \(Could not connect to msedge\)\. The browser is closed, its setting "Allow remote debugging for this browser instance" .* is off, or its "Allow remote debugging\?" prompt was answered with Cancel\./,
+    );
+    assert.doesNotMatch(error.message, /\n|browserType\.|has not served/);
     return true;
   });
 });

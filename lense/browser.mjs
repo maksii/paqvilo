@@ -400,6 +400,16 @@ function hangGuardMessage(what, guardMs, cause) {
 const REMOTE_DEBUGGING_SWITCH =
   '"Allow remote debugging for this browser instance" at edge://inspect/#remote-debugging (chrome://inspect/#remote-debugging in Chrome)';
 
+// The endpoint file outlives the endpoint: it stays after the browser closes or the setting is turned off. A missing
+// file means the browser has not served yet; a refused connection means it is closed, the setting is off, or the
+// browser's own prompt was answered with Cancel.
+function channelAttachError(channel, reason, cause) {
+  const advice = /DevToolsActivePort file not found/.test(reason)
+    ? `That browser has not served a remote debugging endpoint: start it, tick ${REMOTE_DEBUGGING_SWITCH}, and start again. Its page shows "Server running at:" with an address once it serves, and stays at "starting…" while the Edge flag edge-devtools-wdp-remote-debugging (edge://flags) is Enabled.`
+    : `The browser is closed, its setting ${REMOTE_DEBUGGING_SWITCH} is off, or its "Allow remote debugging?" prompt was answered with Cancel. Start it, check that the setting's page shows "Server running at:" with an address, and answer the prompt with Allow.`;
+  return new Error(`Cannot attach to the running ${channel} named by --cdp-url (${reason}). ${advice}`, { cause });
+}
+
 async function connectAttachedBrowser(endpoint, guardMs) {
   // A channel name stands for the running everyday browser: Playwright reads its endpoint from DevToolsActivePort.
   const channel = ATTACH_CHANNELS.includes(endpoint) ? endpoint : null;
@@ -417,11 +427,7 @@ async function connectAttachedBrowser(endpoint, guardMs) {
     const reason = String(error?.message ?? error)
       .split('\n')[0]
       .replace(/^browserType\.connectOverCDP:\s*/, '');
-    if (channel)
-      throw new Error(
-        `Cannot attach to the running ${channel} named by --cdp-url (${stripTrailingCharacters(reason, '.')}). Start that browser, tick ${REMOTE_DEBUGGING_SWITCH}, and start again. An endpoint is served once that page shows "Server running at:" with an address.`,
-        { cause: error },
-      );
+    if (channel) throw channelAttachError(channel, stripTrailingCharacters(reason, '.'), error);
     throw new Error(
       `Cannot attach to the --cdp-url browser debugging endpoint (${reason}). Start the browser with a remote debugging port and pass that endpoint to --cdp-url. For a running everyday browser, tick ${REMOTE_DEBUGGING_SWITCH} and pass its channel instead, such as --cdp-url msedge: that endpoint has no HTTP discovery.`,
       { cause: error },

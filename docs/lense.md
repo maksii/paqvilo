@@ -85,7 +85,7 @@ cannot launch; `dev` repeats the choice on its `browser` line.
 | `--cdp-url msedge` + `--profile-directory <dir>`       | Your running everyday Edge (or `chrome`), in the open profile you name                  |
 
 `<profiles>` is `browser.profileDir`, by default `.paqvilo/profiles` beside the catalogue (Chrome and Chromium use a
-`default/<channel>/` subfolder).
+`default/<channel>/` subfolder). `mirage dev` keeps its own toolkit profile, `<profiles>/<site> Mirage-<env>`.
 
 - Toolkit and named profiles are persistent. A new one starts anonymous: sign in once in the headed Lense window through
   the portal's own sign-in. Lense keeps the portal's cookies in the session file beside the profile folder, so every
@@ -117,23 +117,31 @@ cannot launch; `dev` repeats the choice on its `browser` line.
 #### An everyday Edge profile
 
 Edge and Chrome ignore debugging flags on their normal user-data directory, so a profile kept there (for example
-`Profile 5` of `%LOCALAPPDATA%MicrosoftEdgeUser Data`) is used by attaching to the running browser:
+`Profile 5` of `%LOCALAPPDATA%/Microsoft/Edge/User Data`) is used by attaching to the running browser:
 
 1. In that browser open `edge://inspect/#remote-debugging` (`chrome://inspect/#remote-debugging` in Chrome) and tick
-   **Allow remote debugging for this browser instance**. The setting is kept across restarts.
+   **Allow remote debugging for this browser instance**. The page then shows `Server running at:` with an address. The
+   setting is kept across restarts.
 2. Open a window of the profile. `edge://version` shows its directory as the last part of **Profile path**; the name
    shown in the profile menu is a label, not the directory.
 3. Start with `--cdp-url msedge --profile-directory "Profile 5"` (or `browser.cdpUrl: msedge` and
-   `browser.profileDirectory: Profile 5` in `paqvilo.config.local.yml`), and allow the connection in the prompt the
-   browser shows. Lense waits for that answer.
+   `browser.profileDirectory: Profile 5` in `paqvilo.config.local.yml`), and answer the browser's **Allow remote
+   debugging?** prompt with **Allow**. The prompt appears at every start and Lense waits for the answer.
 
 A channel name (`msedge`, `msedge-beta`, `msedge-dev`, `msedge-canary`, `chrome`, `chrome-beta`, `chrome-dev`,
 `chrome-canary`) stands for the endpoint that browser writes to `DevToolsActivePort` in its normal user-data directory.
 That endpoint has no HTTP discovery and its port is not always 9222, so `--cdp-url http://127.0.0.1:9222` does not
-reach it. A ticked setting is not proof that the browser serves the endpoint: it does while `DevToolsActivePort` exists
-and the setting's page shows `Server running at:` with an address. A page that stays at `starting…` serves nothing
-(untick and tick the setting, or restart the browser), and the start fails with "Cannot attach to the running msedge
-named by --cdp-url".
+reach it.
+
+A ticked setting is not proof that the browser serves the endpoint; the `Server running at:` line with an address is.
+`DevToolsActivePort` is not proof either: the file stays after the browser closes or the setting is turned off.
+
+- The page stays at `Server running at: starting…` while the Edge flag `edge-devtools-wdp-remote-debugging`
+  ("Enable remote debugging over Windows Device Portal" in `edge://flags`) is Enabled, or when the browser was started
+  with its own debugging flags. Set the flag to Default and restart Edge. The start fails with "That browser has not
+  served a remote debugging endpoint" when it never served.
+- A closed browser, a setting that was turned off and a prompt answered with **Cancel** all fail with "The browser is
+  closed, its setting ... is off, or its "Allow remote debugging?" prompt was answered with Cancel".
 
 ## Commands
 
