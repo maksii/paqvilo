@@ -182,9 +182,10 @@ const outcomes=[call(),call()];closeClrHostPool();console.log(JSON.stringify({pi
     );
     assert.deepEqual((await fs.readdir(directory)).sort(), [...runtime.allowedFiles].sort());
     assert.deepEqual(
-      (await fs.readdir(temporary)).filter((name) => /^(?:clr-debug-pipe|dotnet-diagnostic)-/.test(name)),
+      // A socket name the system cut inside the process id (a very long temporary folder) belongs to no one host.
+      (await fs.readdir(temporary)).filter((name) => /^(?:clr-debug-pipe|dotnet-diagnostic)-\d+-/.test(name)),
       [],
-      'an ended host leaves no runtime pipe or socket in the temporary folder',
+      'an ended host leaves no runtime pipe or socket of its own in the temporary folder',
     );
     await fs.rm(temporary, { recursive: true, force: true, maxRetries: 5 });
   }

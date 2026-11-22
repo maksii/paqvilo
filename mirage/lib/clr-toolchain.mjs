@@ -122,11 +122,21 @@ export function clrToolchain({ platform = process.platform, env = process.env, f
  * diagnostics socket there, named after its process id, and removes them only when it exits by itself; a host that was
  * ended (after its result, on a timeout or cancel, when its pool closes) or that crashed leaves all three. The .NET
  * Framework host (`launcher` null) creates none.
+ *
+ * The socket's path is cut to the length a Unix socket address holds, so in a long temporary folder its name ends
+ * early (`dotnet-diagnostic-<pid>-<number>-sock`, `dotnet-diagnostic-<pid>-`). A name cut before the dash that ends
+ * the process id is the same for other processes too and is left alone.
  */
 export function removeClrHostLeftovers(launcher, pid, env = process.env) {
   if (!launcher || !Number.isInteger(pid)) return;
   const folder = env.TMPDIR || '/tmp';
-  const own = [`clr-debug-pipe-${pid}-`, `dotnet-diagnostic-${pid}-`];
+  const pipe = `clr-debug-pipe-${pid}-`,
+    socket = `dotnet-diagnostic-${pid}-`;
+  // What follows the process id in a socket name, whole or cut anywhere: digits, then the start of "-socket".
+  const socketEnd = (rest) => {
+    const digits = /^\d*/.exec(rest)[0].length;
+    return digits === rest.length || (digits > 0 && '-socket'.startsWith(rest.slice(digits)));
+  };
   let names;
   try {
     names = fs.readdirSync(folder);
@@ -134,8 +144,10 @@ export function removeClrHostLeftovers(launcher, pid, env = process.env) {
     return;
   }
   for (const name of names) {
-    const prefix = own.find((start) => name.startsWith(start));
-    if (!prefix || !/^\d+-(?:in|out|socket)$/.test(name.slice(prefix.length))) continue;
+    const own = name.startsWith(pipe)
+      ? /^\d+-(?:in|out)$/.test(name.slice(pipe.length))
+      : name.startsWith(socket) && socketEnd(name.slice(socket.length));
+    if (!own) continue;
     try {
       fs.rmSync(path.join(folder, name), { force: true });
     } catch {

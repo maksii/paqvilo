@@ -15,12 +15,33 @@ import {
 test('an ended .NET host loses exactly its own debugger pipes and diagnostics socket', (t) => {
   const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'paq-clr-leftovers-')));
   t.after(() => fs.rmSync(folder, { recursive: true, force: true }));
-  const own = ['clr-debug-pipe-712-689-in', 'clr-debug-pipe-712-689-out', 'dotnet-diagnostic-712-689-socket'];
-  // Hosts whose process id only shares digits with this one, and files that merely look alike.
+  // The socket's name is cut where its path reaches the length of a Unix socket address: every cut that still ends
+  // the process id is this host's.
+  const own = [
+    'clr-debug-pipe-712-689-in',
+    'clr-debug-pipe-712-689-out',
+    'dotnet-diagnostic-712-689-socket',
+    'dotnet-diagnostic-712-690-sock',
+    'dotnet-diagnostic-712-691-',
+    'dotnet-diagnostic-712-692',
+    'dotnet-diagnostic-712-6',
+    'dotnet-diagnostic-712-',
+  ];
+  // Hosts whose process id only shares digits with this one, a name cut inside the process id (other processes have
+  // the same one), and files that merely look alike.
   const others = [
     'clr-debug-pipe-7123-689-in',
     'clr-debug-pipe-1712-689-out',
+    'clr-debug-pipe-712-689-',
     'dotnet-diagnostic-71-2689-socket',
+    'dotnet-diagnostic-7123-689-sock',
+    'dotnet-diagnostic-712',
+    'dotnet-diagnostic-71',
+    'dotnet-diagnostic-',
+    'dotnet-diagnostic-712-689-socket.txt',
+    'dotnet-diagnostic-712-689-sockets',
+    'dotnet-diagnostic-712--socket',
+    'dotnet-diagnostic-712-notes',
     'clr-debug-pipe-712-689-in.txt',
     'clr-debug-pipe-712-notes-in',
     'notes-712.txt',
