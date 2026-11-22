@@ -83,9 +83,9 @@
                 <ol>
                   <li><a href="#install">Install</a></li>
                   <li><a href="#demo">Run the demo</a></li>
-                  <li><a href="#project">Set up your project</a></li>
+                  <li><a href="#project">Set up a project</a></li>
+                  <li><a href="#sources">Point at your sources</a></li>
                   <li><a href="#scaffold">Generate a full project</a></li>
-                  <li><a href="#sources">Use an export in another folder</a></li>
                   <li><a href="#choose">Choose a workflow</a></li>
                 </ol>
               </div>
@@ -200,68 +200,122 @@ npx --no-install paqvilo doctor --setup --browser msedge</code></pre>
             </article>
 
             <article class="task" id="project">
-              <h3>Set up your project in the browser</h3>
+              <h3>Set up a Paqvilo project</h3>
               <p class="what">
-                The setup workspace (<code>/_setup/</code>) finds the exports in a folder, writes the catalogue
-                (<code>paqvilo.config.yml</code>) for you and starts the local preview. Use it in a new folder or in the
-                repository that already holds your export. Paqvilo reads exports; it does not download them.
+                A Paqvilo project is a folder with the package and a catalogue (<code>paqvilo.config.yml</code>) that
+                says where your sources are. Put it wherever you like. A folder of its own, beside your repositories, is
+                the recommended setup: the portal export, the Solutions and the Paqvilo project can each live in a
+                different repository. Paqvilo only reads those folders; it does not download or move them.
               </p>
               <ol>
                 <li>
-                  In the folder that holds your exported site (from
-                  <a
-                    href="https://learn.microsoft.com/en-us/power-pages/configure/power-platform-cli-tutorial#download-website-content"
-                    ><code>pac pages download</code></a
-                  >) or unpacked Solutions, install Paqvilo and open setup. Run <code>npm init -y</code> first if the
-                  folder has no <code>package.json</code>.
+                  Create the project folder, install Paqvilo and open the setup workspace:
                   <div class="cmd">
-                    <pre><code>npm install --save-dev paqvilo
+                    <pre><code>mkdir paqvilo-project
+cd paqvilo-project
+npm init -y
+npm install --save-dev paqvilo
 npx --no-install paqvilo setup --open</code></pre>
                   </div>
                 </li>
                 <li>
-                  The page opens on <b>Quick setup</b> and says what it found, for example
-                  <i>1 website export, 1 Solution</i>. It searches up to four folders deep, so the folder names and the
-                  layout are yours. Choose what to run: a Power Pages website, model-driven apps, canvas apps, the
-                  Dataverse Web API, or several.
+                  The page opens on <b>Quick setup</b>. Tick what you want to run (a Power Pages website, model-driven
+                  apps, canvas apps, the Dataverse Web API, or several), name the project and press
+                  <b>Create project</b>. This writes <code>paqvilo.config.yml</code> in the project folder.
                 </li>
                 <li>
-                  Press <b>Create project</b>. It writes <code>paqvilo.config.yml</code> with the folders it found and
-                  adds the local state to <code>.gitignore</code>.
+                  Under <b>Your exported files</b>, press <b>Choose folder…</b>. Paste the path of your website export
+                  into <b>Folder</b> and press <b>Open</b>, or browse with <b>Up one folder</b>. The dialog confirms
+                  what it sees (<i>This folder is a Website export</i>). Press <b>Use this folder</b>.
                 </li>
                 <li>
-                  Review <b>Your exported files</b> and <b>Data (optional)</b> with <b>Change</b>, then press
-                  <b>Start preview</b> under <b>Run it</b>.
+                  Press <b>Add a Solution folder…</b> for each unpacked Solution, wherever it is, then <b>Save</b>.
                 </li>
                 <li>
-                  Use <b>Open website</b> for the local site and <b>Open simulator</b> for
-                  <a href="#sim"><code>/_sim/</code></a
-                  >. <b>Check</b> lists what is ready and what is missing, with the step that fixes it.
+                  Under <b>Run it</b>, press <b>Start preview</b>, then <b>Open website</b> for the local site or
+                  <b>Open simulator</b> for <a href="#sim"><code>/_sim/</code></a
+                  >. <b>Check</b> says what is ready and what is missing, with the step that fixes it.
                 </li>
               </ol>
               <figure class="shot">
                 <img
-                  src="media/09a-setup-quick.webp"
+                  src="media/09a-setup-choose-folder.webp"
                   width="1600"
                   height="900"
                   loading="lazy"
-                  alt="The setup workspace on Quick setup for a folder with an existing export. Five steps: What you want to run, Your exported files with the website and Solution folders it found, Data (optional), Run it with a Start preview button, and Check."
+                  alt="The setup workspace with the dialog Choose your website export folder. The Folder field holds a path in another repository, and the dialog says: This folder is a Website export. Buttons: Use this folder and Cancel."
+                />
+                <figcaption>Pointing the project at a website export that lives in another repository.</figcaption>
+              </figure>
+              <figure class="shot">
+                <img
+                  src="media/09b-setup-quick.webp"
+                  width="1600"
+                  height="900"
+                  loading="lazy"
+                  alt="Quick setup with five steps. Your exported files lists the website in one repository and the Solution in another. Run it shows the preview running, with Open website, Open apps, Open simulator, Restart and Stop."
                 />
                 <figcaption>
-                  Quick setup after <b>Create project</b>, in a folder whose export sits in <code>site-export</code>.
+                  Quick setup with the website and the Solution in two other repositories, and the preview running.
                 </figcaption>
               </figure>
               <p class="result">
-                <b>Result</b> A catalogue that names your export, and a preview on localhost. Each answer is saved at
-                once and applies at the next preview start.
+                <b>Result</b> A catalogue that points at your sources, and a preview on localhost. Each answer is saved
+                at once and applies at the next preview start.
               </p>
               <p class="note">
-                <b>Note</b> <b>All settings</b> (top right) is the full editor in nine stages, from <b>Project</b> to
-                <b>Start &amp; check</b>: ports, live environments for Lense, test people, sample data, outside services
-                and Web API access. Setup never deploys, synchronizes or contacts a live portal.
+                <b>Note</b> If the project folder already contains exports, for example when you install Paqvilo inside
+                the portal repository, Quick setup finds them and offers them. <b>All settings</b> (top right) is the
+                full editor in nine stages: ports, live environments for Lense, test people, sample data, outside
+                services and Web API access. Setup never deploys, synchronizes or contacts a live portal.
               </p>
               <p class="more">
                 <a href="https://github.com/maksii/paqvilo/blob/main/docs/setup.md">Setup workspace ↗</a> ·
+                <a href="https://github.com/maksii/paqvilo/blob/main/docs/configuration.md">Configuration ↗</a>
+              </p>
+            </article>
+
+            <article class="task" id="sources">
+              <h3>Point at your sources in the catalogue</h3>
+              <p class="what">
+                The setup workspace edits <code>paqvilo.config.yml</code>; you can write the same file by hand. Each
+                path may be absolute, or relative to the catalogue's folder.
+              </p>
+              <ol>
+                <li>
+                  Name the website export, at least one environment, and the unpacked Solutions:
+                  <div class="cmd file">
+                    <pre><code>sites:
+  portal:
+    source: ../portal-repository/site        # the folder with website.yml
+    environments:
+      local: http://127.0.0.1:8787
+    mirage:
+      solutionRoots:
+        - ../solutions-repository/Core       # omit without a Solution export
+        - C:/work/another-repository/Sales   # absolute paths work too</code></pre>
+                  </div>
+                </li>
+                <li>
+                  Check what Paqvilo reads from them:
+                  <div class="cmd">
+                    <pre><code>npx --no-install paqvilo mirage inspect --config ./paqvilo.config.yml --site portal
+npx --no-install paqvilo mirage preflight --config ./paqvilo.config.yml --site portal</code></pre>
+                  </div>
+                </li>
+              </ol>
+              <p class="result">
+                <b>Result</b> <code>mirage inspect</code> lists the pages, forms and templates of the export and names
+                the folder it read. <code>mirage preflight</code> lists each Solution it loaded and reports a path it
+                could not read.
+              </p>
+              <p class="note">
+                <b>Note</b> To use another checkout of the portal once, for example a second worktree, leave the
+                catalogue alone and add <code>--repo &lt;folder&gt;</code> (or set <code>PAQVILO_REPO</code>). Since
+                0.9.8 a command run in a folder without <code>paqvilo.config.yml</code> stops with
+                <code>CONFIG_NOT_FOUND</code>: run it from the project folder or pass <code>--config</code>.
+              </p>
+              <p class="more">
                 <a href="https://github.com/maksii/paqvilo/blob/main/docs/configuration.md">Configuration ↗</a>
               </p>
             </article>
@@ -274,8 +328,8 @@ npx --no-install paqvilo setup --open</code></pre>
                 keep and share.
               </p>
               <div class="cmd">
-                <pre><code>npx paqvilo@0.9 init ./my-portal-project
-cd my-portal-project
+                <pre><code>npx paqvilo@0.9 init ./paqvilo-project
+cd paqvilo-project
 npm run setup
 npm run configure</code></pre>
               </div>
@@ -286,70 +340,27 @@ npm run configure</code></pre>
                 </li>
                 <li>
                   <code>npm run configure</code> opens the <a href="#project">setup workspace</a>. Point it at your
-                  export, or <a href="#sources">edit the catalogue</a> yourself.
+                  sources there, or <a href="#sources">edit the catalogue</a>: the generated one holds placeholders.
                 </li>
                 <li>
-                  Check what is still unfinished, then that everything is readable:
+                  List what is still unfinished:
                   <div class="cmd">
-                    <pre><code>npm run check:scaffold
-npm run check:project</code></pre>
+                    <pre><code>npm run check:scaffold</code></pre>
                   </div>
                 </li>
               </ol>
               <p class="result">
                 <b>Result</b> <code>check:scaffold</code> lists each open <code>TODO(paqvilo-init)</code> marker with
-                file and line; a new project has about ten. From then on <code>npm run mirage:dev</code> and
+                file and line; a new project has about ten. <code>npm run mirage:dev</code> and
                 <code>npm run dev</code> start Mirage and Lense.
               </p>
               <p class="note">
-                <b>Note</b> In a repository that already has files, add <code>--into-existing</code>. It adds the
-                missing files and reports the ones it skipped; it never merges an existing <code>package.json</code> or
+                <b>Note</b> In a folder that already has files, add <code>--into-existing</code>. It adds the missing
+                files and reports the ones it skipped; it never merges an existing <code>package.json</code> or
                 catalogue, so the npm scripts are not added there.
               </p>
               <p class="more">
                 <a href="https://github.com/maksii/paqvilo/blob/main/docs/project-scaffold.md">Project scaffold ↗</a>
-              </p>
-            </article>
-
-            <article class="task" id="sources">
-              <h3>Use an export in another folder</h3>
-              <p class="what">
-                The export does not have to live in the project. Many teams keep the portal in its own repository and
-                the Paqvilo project beside it.
-              </p>
-              <ol>
-                <li>
-                  In the catalogue, <code>source</code> and <code>solutionRoots</code> resolve from
-                  <code>sourceRoot</code>, and <code>sourceRoot</code> from the catalogue's folder. All three accept
-                  absolute paths:
-                  <div class="cmd file">
-                    <pre><code>sourceRoot: C:/work/portal-repository
-sites:
-  portal:
-    source: portal            # the folder with website.yml
-    mirage:
-      solutionRoots: [./solutions/Core]   # [] without a Solution export</code></pre>
-                  </div>
-                </li>
-                <li>
-                  To use another checkout once, for example a second worktree, leave the catalogue alone and pass
-                  <code>--repo</code> (or set <code>PAQVILO_REPO</code>):
-                  <div class="cmd">
-                    <pre><code>npx --no-install paqvilo mirage inspect --config ./paqvilo.config.yml --site portal --repo C:/work/portal-worktree</code></pre>
-                  </div>
-                </li>
-              </ol>
-              <p class="result">
-                <b>Result</b> <code>mirage inspect</code> lists the pages it read from that folder and any diagnostics.
-                When the folder is wrong, it names the path it looked in.
-              </p>
-              <p class="note">
-                <b>Note</b> Since 0.9.8 a command run in a folder without <code>paqvilo.config.yml</code> stops with
-                <code>CONFIG_NOT_FOUND</code>. Run it from the project folder or pass <code>--config</code>; commands
-                given <code>--source</code> or <code>--project</code> without <code>--site</code> need no catalogue.
-              </p>
-              <p class="more">
-                <a href="https://github.com/maksii/paqvilo/blob/main/docs/configuration.md">Configuration ↗</a>
               </p>
             </article>
 
@@ -611,10 +622,11 @@ npx --no-install paqvilo mirage dev --config ./paqvilo.config.yml --site portal 
                   </div>
                 </li>
                 <li>
-                  Commit the export once (run <code>git init</code> first if the project is not a repository yet). Lense
-                  compares your files with this Git baseline to patch markup:
+                  Commit the export once, in the repository that holds it (run <code>git init</code> there if it is not
+                  a repository yet). Lense compares your files with this Git baseline to patch markup; a repository
+                  around the Paqvilo project does not supply it:
                   <div class="cmd">
-                    <pre><code>git add &lt;export folder&gt;
+                    <pre><code>git add .
 git commit -m "Baseline portal export"</code></pre>
                   </div>
                 </li>
@@ -647,79 +659,564 @@ git commit -m "Baseline portal export"</code></pre>
             </article>
 
             <article class="task" id="lense-panel">
-              <h3>Find your way around the Lense panel</h3>
+              <h3>Use the Lense panel</h3>
               <p class="what">
-                The panel is where you see what Lense did to the page. Open it with
-                <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd>. This one sits on a live portal whose heading is red
-                because of one local CSS edit.
+                The panel is where you see what Lense did to the page, find the file behind an element and read what
+                still needs a deployment. It starts as a pill in the corner; click it or press
+                <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd> to open it.
               </p>
-              <figure class="shot tour">
-                <div class="tour-scroll">
-                  <div class="tour-frame">
-                    <img
-                      src="media/08a-lense-panel.webp"
-                      width="840"
-                      height="690"
-                      loading="lazy"
-                      alt="The Lense panel over a live portal page, on its Overrides tab. The header shows the site and environment with a REAL DATA badge and a Local and Online switch. The list shows the style file demo.css marked edited and differs from deployed. Numbers mark the parts explained in the list below."
-                    />
-                    <ol class="tour-marks" aria-hidden="true">
-                      <li class="mk1">1</li>
-                      <li class="mk2">2</li>
-                      <li class="mk3">3</li>
-                      <li class="mk4">4</li>
-                      <li class="mk5">5</li>
-                      <li class="mk6">6</li>
-                      <li class="mk7">7</li>
-                      <li class="mk8">8</li>
-                      <li class="mk9">9</li>
-                      <li class="mk10">10</li>
-                    </ol>
-                  </div>
-                </div>
+              <figure class="shot pill">
+                <img
+                  src="media/08h-lense-pill.webp"
+                  width="776"
+                  height="168"
+                  loading="lazy"
+                  alt="The collapsed Lense pill: LOCAL, the site name demo, a REAL DATA badge, the branch main, and three counters."
+                />
                 <figcaption>
-                  Lense 0.9.8 on a demo portal, <b>Overrides</b> tab, filtered to the edited file.
+                  The pill: the mode, the site, the branch, and counters for overrides on this page, source notes and
+                  errors.
                 </figcaption>
               </figure>
-              <ol class="tour-legend">
-                <li>
-                  <b>Site and environment.</b> <b>REAL DATA</b> marks an environment you flagged with
-                  <code>caution: true</code>.
-                </li>
-                <li>
-                  <b>Local | Online.</b> <b>Online</b> shows the page as deployed, without your files, in every tab of
-                  the site (<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd>).
-                </li>
-                <li>
-                  <b>Tools</b>, left to right: live reload on save, <a href="#xray">X-ray</a>, project setup, a larger
-                  panel, hide everything (<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>L</kbd>) and collapse.
-                </li>
-                <li>
-                  <b>Git baseline.</b> The branch and the commit your files are compared with. It is your local history,
-                  not the deployed version.
-                </li>
-                <li>
-                  <b>Tabs.</b> <b>Overrides</b>: local files laid over the page. <b>Inspect</b>: the templates, forms,
-                  tables and access rules behind it. <b>Issues</b>: page errors and edits that need a deployment.
-                  <b>Activity</b>: what Lense did and when. <b>Explore</b>: search the tables, forms, views and files of
-                  your sources.
-                </li>
-                <li>
-                  <b>Filters.</b> <b>Edited</b> keeps the files you changed; <b>Differs from deployed</b> the ones whose
-                  content is not what the portal serves.
-                </li>
-                <li>
-                  <b>Local files.</b> <b>all</b> overrides the site with every local file, <b>changed vs Git</b> only
-                  with the files you changed since the baseline.
-                </li>
-                <li><b>A file.</b> Its kind, name and state. Click it to open the file in your editor.</li>
-                <li><b>Per file</b>: compare it with the deployed version, pause this override, copy the path.</li>
-                <li><b>Footer.</b> The shortcuts, and how many files the local sources hold.</li>
-              </ol>
+              <p>
+                Each view below is the panel on a live demo portal with three local edits: a stylesheet, a script and a
+                page copy. Select a number on the picture, or an item in the list, to see what that part does.
+              </p>
+              <div class="tour">
+                <section class="tour-view" id="lense-overrides">
+                  <h4>Overrides</h4>
+                  <p class="tour-lead">
+                    Your local files that this page uses, and whether each one differs from what the portal serves. This
+                    is the tab to check after every save.
+                  </p>
+                  <div class="tour-stage">
+                    <div class="tour-frame">
+                      <img
+                        src="media/08a-lense-overrides.webp"
+                        width="1720"
+                        height="1768"
+                        loading="lazy"
+                        alt="The Lense panel on its Overrides tab. Header with the site and environment, a REAL DATA badge and a Local and Online switch. The list groups script files and style files; demo.css and demo-runtime.js are marked edited and differs from deployed, the others same as deployed."
+                      />
+                      <a
+                        class="spot"
+                        href="#lp-overrides-1"
+                        style="--x: 1.28%; --y: 0.68%; --w: 16.51%; --h: 4.3%"
+                        aria-label="1"
+                        ><span>1</span></a
+                      >
+                      <a
+                        class="spot"
+                        href="#lp-overrides-2"
+                        style="--x: 65.06%; --y: 1.36%; --w: 12.5%; --h: 2.71%"
+                        aria-label="2"
+                        ><span>2</span></a
+                      >
+                      <a
+                        class="spot up"
+                        href="#lp-overrides-3"
+                        style="--x: 78.26%; --y: 1.13%; --w: 20.7%; --h: 3.17%"
+                        aria-label="3"
+                        ><span>3</span></a
+                      >
+                      <a
+                        class="spot"
+                        href="#lp-overrides-4"
+                        style="--x: 0.12%; --y: 5.43%; --w: 99.77%; --h: 2.94%"
+                        aria-label="4"
+                        ><span>4</span></a
+                      >
+                      <a
+                        class="spot"
+                        href="#lp-overrides-5"
+                        style="--x: 1.28%; --y: 17.76%; --w: 33.08%; --h: 2.71%"
+                        aria-label="5"
+                        ><span>5</span></a
+                      >
+                      <a
+                        class="spot"
+                        href="#lp-overrides-6"
+                        style="--x: 76.1%; --y: 17.76%; --w: 22.62%; --h: 2.71%"
+                        aria-label="6"
+                        ><span>6</span></a
+                      >
+                      <a
+                        class="spot"
+                        href="#lp-overrides-7"
+                        style="--x: 1.28%; --y: 78.22%; --w: 84.88%; --h: 5.43%"
+                        aria-label="7"
+                        ><span>7</span></a
+                      >
+                      <a
+                        class="spot"
+                        href="#lp-overrides-8"
+                        style="--x: 86.05%; --y: 79.3%; --w: 10%; --h: 3.17%"
+                        aria-label="8"
+                        ><span>8</span></a
+                      >
+                      <a
+                        class="spot"
+                        href="#lp-overrides-9"
+                        style="--x: 1.51%; --y: 97.23%; --w: 96.98%; --h: 2.26%"
+                        aria-label="9"
+                        ><span>9</span></a
+                      >
+                    </div>
+                  </div>
+                  <p class="tour-caption" hidden></p>
+                  <ol class="tour-legend">
+                    <li id="lp-overrides-1">
+                      <b>Where you are.</b> The site and the environment. <b>REAL DATA</b> marks an environment flagged
+                      <code>caution: true</code> in the catalogue.
+                    </li>
+                    <li id="lp-overrides-2">
+                      <b>Local | Online.</b> <b>Local</b> lays your files over the site. <b>Online</b> shows it as
+                      deployed, in every tab of this site (<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd>).
+                    </li>
+                    <li id="lp-overrides-3">
+                      <b>Tools</b>, left to right: live reload on save, <a href="#xray">X-ray</a>, project setup (opens
+                      <a href="#project">setup</a> in a new tab), panel size, hide everything
+                      (<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>L</kbd>), collapse
+                      (<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd>).
+                    </li>
+                    <li id="lp-overrides-4">
+                      <b>Git baseline.</b> The branch and the commit your files are compared with. It is the local
+                      history of the export, not the deployed version.
+                    </li>
+                    <li id="lp-overrides-5">
+                      <b>Filters.</b> <b>Edited</b>: files you changed since the baseline. <b>Differs from deployed</b>:
+                      files whose content is not what the portal serves.
+                    </li>
+                    <li id="lp-overrides-6">
+                      <b>Local files.</b> <b>all</b> overrides the site with every local file;
+                      <b>changed vs Git</b> only with the ones you changed. Switching reloads the page.
+                    </li>
+                    <li id="lp-overrides-7">
+                      <b>A file.</b> Its kind, name and state: <b>edited</b>, <b>differs from deployed</b> or
+                      <b>same as deployed</b>, and how often the page requested it. Click the row to open the file in
+                      your editor.
+                    </li>
+                    <li id="lp-overrides-8">
+                      <b>Per file:</b> compare it with the deployed version, pause this override to see the online one,
+                      copy the path.
+                    </li>
+                    <li id="lp-overrides-9">
+                      <b>Footer.</b> The shortcuts, and how many files and scripts the local sources hold.
+                    </li>
+                  </ol>
+                </section>
+                <section class="tour-view" id="lense-inspect">
+                  <h4>Inspect</h4>
+                  <p class="tour-lead">
+                    What the page is made of, read from your sources: its files, template chain, forms and lists, tables
+                    and access rules. Use it to find the file to edit.
+                  </p>
+                  <div class="tour-stage">
+                    <div class="tour-frame">
+                      <img
+                        src="media/08b-lense-inspect.webp"
+                        width="1720"
+                        height="1768"
+                        loading="lazy"
+                        alt="The Inspect tab for the home page: a filter, section chips, the page with its template, and groups for page source files, page access rules and the template chain."
+                      />
+                      <a
+                        class="spot"
+                        href="#lp-inspect-1"
+                        style="--x: 1.28%; --y: 13.46%; --w: 86.28%; --h: 3.39%"
+                        aria-label="1"
+                        ><span>1</span></a
+                      >
+                      <a
+                        class="spot up"
+                        href="#lp-inspect-2"
+                        style="--x: 88.49%; --y: 13.57%; --w: 10.23%; --h: 3.17%"
+                        aria-label="2"
+                        ><span>2</span></a
+                      >
+                      <a
+                        class="spot"
+                        href="#lp-inspect-3"
+                        style="--x: 1.28%; --y: 17.76%; --w: 69.65%; --h: 2.71%"
+                        aria-label="3"
+                        ><span>3</span></a
+                      >
+                      <a
+                        class="spot"
+                        href="#lp-inspect-4"
+                        style="--x: 1.28%; --y: 21.38%; --w: 95.7%; --h: 8.37%"
+                        aria-label="4"
+                        ><span>4</span></a
+                      >
+                      <a
+                        class="spot"
+                        href="#lp-inspect-5"
+                        style="--x: 1.28%; --y: 45.08%; --w: 95.7%; --h: 5.43%"
+                        aria-label="5"
+                        ><span>5</span></a
+                      >
+                      <a
+                        class="spot"
+                        href="#lp-inspect-6"
+                        style="--x: 1.28%; --y: 71.44%; --w: 95.7%; --h: 5.49%"
+                        aria-label="6"
+                        ><span>6</span></a
+                      >
+                      <a
+                        class="spot"
+                        href="#lp-inspect-7"
+                        style="--x: 1.28%; --y: 78.05%; --w: 95.7%; --h: 3.62%"
+                        aria-label="7"
+                        ><span>7</span></a
+                      >
+                    </div>
+                  </div>
+                  <p class="tour-caption" hidden></p>
+                  <ol class="tour-legend">
+                    <li id="lp-inspect-1"><b>Filter</b> by the name of a table, template or setting.</li>
+                    <li id="lp-inspect-2">
+                      <b>Refresh</b> re-reads your sources and the page. <b>Select an element</b> lets you pick
+                      something on the page. The third button collapses or expands every group.
+                    </li>
+                    <li id="lp-inspect-3">
+                      <b>Sections:</b> <b>Page &amp; templates</b>, <b>Forms &amp; controls</b>,
+                      <b>Tables &amp; access</b>, <b>Files &amp; snippets</b>, and <b>Not found</b> for what the page
+                      uses but your sources lack.
+                    </li>
+                    <li id="lp-inspect-4">
+                      <b>The page</b>, its template and publishing state. On a live portal Inspect says that web-role
+                      membership is not known from an export.
+                    </li>
+                    <li id="lp-inspect-5">
+                      <b>A source file</b> of the page. Click the row to open it; the button copies its path.
+                    </li>
+                    <li id="lp-inspect-6">
+                      <b>An access rule</b> from your sources. An exported grant does not prove what the signed-in user
+                      may do.
+                    </li>
+                    <li id="lp-inspect-7">
+                      <b>Template chain:</b> the page template, web templates and includes the page renders through.
+                    </li>
+                  </ol>
+                </section>
+                <section class="tour-view" id="lense-element">
+                  <h4>Selected element</h4>
+                  <p class="tour-lead">
+                    Press <b>Select an element</b> on the Inspect tab and click something on the page. The panel shows
+                    which sources produce it and how certain each match is.
+                  </p>
+                  <div class="tour-stage">
+                    <div class="tour-frame">
+                      <img
+                        src="media/08c-lense-element.webp"
+                        width="1720"
+                        height="1768"
+                        loading="lazy"
+                        alt="The Inspect tab with a heading selected on the page. It is headed Likely source file, Home, h2, and lists Contained in: Home, web page; and Source files: the page copy and the page template, both marked Likely with the reason for the match."
+                      />
+                      <a
+                        class="spot up"
+                        href="#lp-element-1"
+                        style="--x: 91.98%; --y: 13.57%; --w: 3.26%; --h: 3.17%"
+                        aria-label="1"
+                        ><span>1</span></a
+                      >
+                      <a
+                        class="spot"
+                        href="#lp-element-2"
+                        style="--x: 1.4%; --y: 22.4%; --w: 91.51%; --h: 5.43%"
+                        aria-label="2"
+                        ><span>2</span></a
+                      >
+                      <a
+                        class="spot"
+                        href="#lp-element-3"
+                        style="--x: 93.26%; --y: 22.62%; --w: 3.26%; --h: 3.17%"
+                        aria-label="3"
+                        ><span>3</span></a
+                      >
+                      <a
+                        class="spot"
+                        href="#lp-element-4"
+                        style="--x: 2.33%; --y: 31.45%; --w: 93.6%; --h: 4.64%"
+                        aria-label="4"
+                        ><span>4</span></a
+                      >
+                      <a
+                        class="spot"
+                        href="#lp-element-5"
+                        style="--x: 2.33%; --y: 40.55%; --w: 85.47%; --h: 7.41%"
+                        aria-label="5"
+                        ><span>5</span></a
+                      >
+                      <a
+                        class="spot"
+                        href="#lp-element-6"
+                        style="--x: 88.37%; --y: 42.65%; --w: 6.63%; --h: 3.17%"
+                        aria-label="6"
+                        ><span>6</span></a
+                      >
+                    </div>
+                  </div>
+                  <p class="tour-caption" hidden></p>
+                  <ol class="tour-legend">
+                    <li id="lp-element-1">
+                      <b>Select an element.</b> Picking does not click the element, so links and buttons do not fire.
+                    </li>
+                    <li id="lp-element-2"><b>The selection:</b> the verdict, the page and the element.</li>
+                    <li id="lp-element-3"><b>Deselect</b> and remove the highlight on the page.</li>
+                    <li id="lp-element-4"><b>Contained in:</b> the page, form or list around the element.</li>
+                    <li id="lp-element-5">
+                      <b>Source files</b> with a state each: <b>Exact</b>, <b>Likely</b>, <b>Conflict</b>,
+                      <b>Not found</b> or <b>Outdated</b>, and the reason, here a markup match on a parent element.
+                    </li>
+                    <li id="lp-element-6">
+                      <b>Open</b> the file in your editor at the matching line, or copy the reference.
+                    </li>
+                  </ol>
+                </section>
+                <section class="tour-view" id="lense-issues">
+                  <h4>Issues</h4>
+                  <p class="tour-lead">
+                    What Lense could not show and what went wrong on the page. Read it before you trust a preview.
+                  </p>
+                  <div class="tour-stage">
+                    <div class="tour-frame">
+                      <img
+                        src="media/08d-lense-issues.webp"
+                        width="1720"
+                        height="1768"
+                        loading="lazy"
+                        alt="The Issues tab with two groups. Needs deployment or a source fix: a page copy file whose preview is disabled in the site markup settings. JavaScript errors: a permissions policy violation reported four times from a platform script."
+                      />
+                      <a
+                        class="spot"
+                        href="#lp-issues-1"
+                        style="--x: 1.28%; --y: 17.76%; --w: 97.44%; --h: 9.11%"
+                        aria-label="1"
+                        ><span>1</span></a
+                      >
+                      <a
+                        class="spot"
+                        href="#lp-issues-2"
+                        style="--x: 1.28%; --y: 28%; --w: 97.44%; --h: 9.05%"
+                        aria-label="2"
+                        ><span>2</span></a
+                      >
+                      <a
+                        class="spot up"
+                        href="#lp-issues-3"
+                        style="--x: 83.31%; --y: 13.8%; --w: 11.92%; --h: 2.71%"
+                        aria-label="3"
+                        ><span>3</span></a
+                      >
+                      <a
+                        class="spot"
+                        href="#lp-issues-4"
+                        style="--x: 94.53%; --y: 22.45%; --w: 3.26%; --h: 3.17%"
+                        aria-label="4"
+                        ><span>4</span></a
+                      >
+                      <a
+                        class="spot up"
+                        href="#lp-issues-5"
+                        style="--x: 95.47%; --y: 13.57%; --w: 3.26%; --h: 3.17%"
+                        aria-label="5"
+                        ><span>5</span></a
+                      >
+                    </div>
+                  </div>
+                  <p class="tour-caption" hidden></p>
+                  <ol class="tour-legend">
+                    <li id="lp-issues-1">
+                      <b>Needs deployment or a source fix.</b> An edit Lense cannot lay over the page, with the file and
+                      the reason. Here a page copy change: this site has the page copy preview switched off, so only a
+                      deployment shows it.
+                    </li>
+                    <li id="lp-issues-2">
+                      <b>JavaScript errors</b> on the page, with their source and count. This one comes from a platform
+                      script, not from a local file.
+                    </li>
+                    <li id="lp-issues-3"><b>Local files only</b> hides issues that do not come from your files.</li>
+                    <li id="lp-issues-4"><b>Copy the message</b>, for a ticket or a colleague.</li>
+                    <li id="lp-issues-5"><b>Clear the list.</b></li>
+                  </ol>
+                </section>
+                <section class="tour-view" id="lense-activity">
+                  <h4>Activity</h4>
+                  <p class="tour-lead">
+                    A timed log of what Lense did: saves it picked up, reloads, and switches between Local and Online.
+                  </p>
+                  <div class="tour-stage">
+                    <div class="tour-frame">
+                      <img
+                        src="media/08e-lense-activity.webp"
+                        width="1720"
+                        height="1768"
+                        loading="lazy"
+                        alt="The Activity tab with three timed entries: overrides on, overrides off, and a save of three files that reloaded the page."
+                      />
+                      <a
+                        class="spot"
+                        href="#lp-activity-1"
+                        style="--x: 1.28%; --y: 24.94%; --w: 97.44%; --h: 5.49%"
+                        aria-label="1"
+                        ><span>1</span></a
+                      >
+                      <a
+                        class="spot"
+                        href="#lp-activity-2"
+                        style="--x: 1.28%; --y: 17.76%; --w: 97.44%; --h: 7.24%"
+                        aria-label="2"
+                        ><span>2</span></a
+                      >
+                      <a
+                        class="spot"
+                        href="#lp-activity-3"
+                        style="--x: 1.28%; --y: 13.46%; --w: 93.26%; --h: 3.39%"
+                        aria-label="3"
+                        ><span>3</span></a
+                      >
+                      <a
+                        class="spot up"
+                        href="#lp-activity-4"
+                        style="--x: 95.47%; --y: 13.57%; --w: 3.26%; --h: 3.17%"
+                        aria-label="4"
+                        ><span>4</span></a
+                      >
+                    </div>
+                  </div>
+                  <p class="tour-caption" hidden></p>
+                  <ol class="tour-legend">
+                    <li id="lp-activity-1">
+                      <b>A save.</b> The files Lense picked up and what it did, here one page reload for three files. A
+                      stylesheet saved alone is swapped without a reload.
+                    </li>
+                    <li id="lp-activity-2"><b>Settings.</b> Each switch of the overrides, with the time.</li>
+                    <li id="lp-activity-3"><b>Filter</b> the log by text.</li>
+                    <li id="lp-activity-4"><b>Clear the list.</b></li>
+                  </ol>
+                </section>
+                <section class="tour-view" id="lense-explore">
+                  <h4>Explore</h4>
+                  <p class="tour-lead">
+                    Search the whole site export, not only the current page: pages, scripts, styles, templates and
+                    snippets.
+                  </p>
+                  <div class="tour-stage">
+                    <div class="tour-frame">
+                      <img
+                        src="media/08f-lense-explore.webp"
+                        width="1720"
+                        height="1768"
+                        loading="lazy"
+                        alt="The Explore tab with the search text liquid and 44 matches: a page row and rows for its script, style, copy and summary files."
+                      />
+                      <a
+                        class="spot"
+                        href="#lp-explore-1"
+                        style="--x: 1.28%; --y: 13.46%; --w: 97.44%; --h: 3.39%"
+                        aria-label="1"
+                        ><span>1</span></a
+                      >
+                      <a
+                        class="spot"
+                        href="#lp-explore-2"
+                        style="--x: 1.28%; --y: 20.93%; --w: 87.21%; --h: 5.43%"
+                        aria-label="2"
+                        ><span>2</span></a
+                      >
+                      <a
+                        class="spot"
+                        href="#lp-explore-3"
+                        style="--x: 1.28%; --y: 26.36%; --w: 87.21%; --h: 5.43%"
+                        aria-label="3"
+                        ><span>3</span></a
+                      >
+                      <a
+                        class="spot"
+                        href="#lp-explore-4"
+                        style="--x: 89.42%; --y: 22%; --w: 6.63%; --h: 3.17%"
+                        aria-label="4"
+                        ><span>4</span></a
+                      >
+                    </div>
+                  </div>
+                  <p class="tour-caption" hidden></p>
+                  <ol class="tour-legend">
+                    <li id="lp-explore-1"><b>Search</b> for a page, file, template or snippet.</li>
+                    <li id="lp-explore-2"><b>A page.</b> The arrow opens it in this browser.</li>
+                    <li id="lp-explore-3">
+                      <b>A file</b> with its kind and path. Click the row to open it in your editor.
+                    </li>
+                    <li id="lp-explore-4">
+                      <b>Go to</b> the page, or copy its address. A file row copies the file path.
+                    </li>
+                  </ol>
+                </section>
+                <section class="tour-view" id="lense-online">
+                  <h4>Online mode</h4>
+                  <p class="tour-lead">
+                    Press <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd> to see the page exactly as the portal serves it,
+                    then again to return. Use it to tell your change apart from what is already deployed.
+                  </p>
+                  <div class="tour-stage">
+                    <div class="tour-frame">
+                      <img
+                        src="media/08g-lense-online.webp"
+                        width="1720"
+                        height="1768"
+                        loading="lazy"
+                        alt="The panel in Online mode. The switch is on Online, a banner says: Overrides are off, this is the page exactly as online serves it, with a Back to local button. The file list says: Online mode, switch back to Local to lay your sources over the site."
+                      />
+                      <a
+                        class="spot"
+                        href="#lp-online-1"
+                        style="--x: 65.06%; --y: 1.36%; --w: 12.5%; --h: 2.71%"
+                        aria-label="1"
+                        ><span>1</span></a
+                      >
+                      <a
+                        class="spot"
+                        href="#lp-online-2"
+                        style="--x: 1.28%; --y: 70.36%; --w: 84.3%; --h: 4.64%"
+                        aria-label="2"
+                        ><span>2</span></a
+                      >
+                      <a
+                        class="spot"
+                        href="#lp-online-3"
+                        style="--x: 86.16%; --y: 71.15%; --w: 11.4%; --h: 3.05%"
+                        aria-label="3"
+                        ><span>3</span></a
+                      >
+                      <a
+                        class="spot"
+                        href="#lp-online-4"
+                        style="--x: 1.28%; --y: 75.85%; --w: 97.44%; --h: 10.75%"
+                        aria-label="4"
+                        ><span>4</span></a
+                      >
+                    </div>
+                  </div>
+                  <p class="tour-caption" hidden></p>
+                  <ol class="tour-legend">
+                    <li id="lp-online-1"><b>Online</b> is selected. Every tab of this site switches with it.</li>
+                    <li id="lp-online-2">
+                      <b>The banner</b> stays on the page while the overrides are off, so a screenshot shows which
+                      version it is.
+                    </li>
+                    <li id="lp-online-3"><b>Back to local</b> lays your files over the site again.</li>
+                    <li id="lp-online-4"><b>The list is empty</b> in this mode: nothing local is applied.</li>
+                  </ol>
+                </section>
+              </div>
               <p class="note">
                 <b>Note</b> <code>mirage dev</code> shows the same panel on localhost. There it has no
-                <b>Local | Online</b> switch, and adds the <b>Tweaks</b> tab for personas and the <b>Mirage</b> tab for
-                the runtime.
+                <b>Local | Online</b> switch, and adds the <b>Tweaks</b> tab to
+                <a href="#identities">sign in as a persona</a> and the <b>Mirage</b> tab for the runtime, its
+                diagnostics and the links to <a href="#sim"><code>/_sim/</code></a
+                >.
               </p>
               <p class="more">
                 <a href="https://github.com/maksii/paqvilo/blob/main/docs/lense.md#source-mapping-and-comparison-scope"
