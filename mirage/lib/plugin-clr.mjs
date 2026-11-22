@@ -594,6 +594,101 @@ function validateClrSymbolFiles(descriptor, symbols) {
       fail('VS Code CLR debugging requires a portable PDB. Build with DebugType=portable.');
   }
 }
+// VS Code attaches its .NET Framework debugger to the Windows host process; the .NET host on macOS and Linux has no such
+// attach configuration yet.
+function refuseClrDebugOffWindows(descriptor, toolchain) {
+  if (descriptor.debug === true && toolchain.kind !== 'netfx')
+    fail(
+      'CLR plug-in debugging needs Windows; run the step without debug on macOS and Linux.',
+      'LocalPluginClrUnavailable',
+      501,
+    );
+}
+/**
+ * .NET (macOS, Linux): copies the package assemblies the host binds (the WCF client of the SDK's fault types) beside it,
+ * registered and verified against their NuGet source like every other runtime file, and marked as the toolchain's rather
+ * than the plug-in's. The write is exclusive: a plug-in dependency of the same name is never replaced.
+ */
+function copyClrToolchainAssemblies(directory, inputs, files) {
+  for (const file of inputs?.runtime ?? []) {
+    const destination = path.join(directory, path.basename(file)),
+      bytes = readClrFileSync(file);
+    try {
+      syncFs.writeFileSync(destination, bytes, { flag: 'wx' });
+    } catch (cause) {
+      if (cause.code === 'EEXIST') fail('CLR dependency filenames must be unique.');
+      throw cause;
+    }
+    files.push({ path: destination, sourcePath: file, sha256: sha(bytes), toolchain: true });
+  }
+}
+/** The host compiler run for `defines` into `folder`: the SDK's csc under .NET, else the .NET Framework compiler. */
+function clrHostCompiler({ toolchain, inputs, compilerFile, run, timeout, sourceFile, sdkFile, hostName }) {
+  if (inputs)
+    return (defines, folder) =>
+      dotnetCompile({ ...toolchain, dotnet: compilerFile }, inputs, {
+        out: path.join(folder, hostName),
+        target: 'exe',
+        sources: [sourceFile],
+        references: [sdkFile],
+        defines: ['PAQVILO_CORECLR', ...defines],
+        run,
+        timeout,
+      });
+  return (defines, folder) =>
+    run(
+      compilerFile,
+      [
+        '/nologo',
+        '/target:exe',
+        ...defines.map((name) => '/define:' + name),
+        '/out:' + path.join(folder, hostName),
+        '/reference:' + sdkFile,
+        '/reference:System.Web.Extensions.dll',
+        '/reference:System.Runtime.Serialization.dll',
+        '/reference:System.ServiceModel.dll',
+        sourceFile,
+      ],
+      { shell: false, windowsHide: true, encoding: 'utf8', maxBuffer: 256 * 1024, timeout },
+    );
+}
+/** The compile-cache key of a host: the compiler, its references, the host source, the SDK bytes and its services. */
+function clrHostCacheKey({ toolchain, inputs, compilerFile, source, sdkSha256, services }) {
+  return compileCacheKey(
+    inputs
+      ? [
+          'clr-plugin-host-dotnet/1',
+          compilerIdentity(inputs.csc),
+          toolchain.sdkVersion,
+          ...inputs.compile,
+          sha(source),
+          sdkSha256,
+          services.join(','),
+        ]
+      : ['clr-plugin-host/1', compilerIdentity(compilerFile), sha(source), sdkSha256, services.join(',')],
+  );
+}
+/**
+ * The cached build of a host: IPluginExecutionContext7 when the installed SDK declares it (current online contract),
+ * else the Context4 class. Returns the context interface version.
+ */
+function buildClrHostVersion(compile, services, { compilerFile, compileGuardMs, hostName }) {
+  return (folder) => {
+    let version = 7,
+      build = compile(['PAQVILO_CONTEXT7', ...services], folder);
+    if (!build.error && build.status !== 0 && /IPluginExecutionContext7/.test(String(build.stdout))) {
+      version = 4;
+      build = compile(services, folder);
+    }
+    if (build.error || build.status !== 0)
+      fail(
+        clrCompileFailure(build, compilerFile, compileGuardMs, path.join(folder, hostName)),
+        'LocalPluginClrBuild',
+        501,
+      );
+    return version;
+  };
+}
 // A hang guard, not a deadline: the compiler runs synchronously, so a compiler that never exits is stopped after this long.
 const CLR_COMPILE_GUARD_MS = 600_000;
 /**
@@ -621,14 +716,7 @@ export function buildClrRuntime(descriptor, { assembly, sdk, dependencies = [], 
   const originals = [assembly, sdk, ...dependencies, ...symbols],
     nameOf = (file) => file.name ?? path.basename(file.path);
   validateClrSymbolFiles(descriptor, symbols);
-  // VS Code attaches its .NET Framework debugger to the Windows host process; the .NET host on macOS and Linux has no
-  // such attach configuration yet.
-  if (descriptor.debug === true && toolchain.kind !== 'netfx')
-    fail(
-      'CLR plug-in debugging needs Windows; run the step without debug on macOS and Linux.',
-      'LocalPluginClrUnavailable',
-      501,
-    );
+  refuseClrDebugOffWindows(descriptor, toolchain);
   const names = originals.map((f) => nameOf(f).toLowerCase());
   if (new Set(names).size !== names.length) fail('CLR dependency filenames must be unique.');
   const source = readClrFileSync(hostSource),
@@ -651,84 +739,27 @@ export function buildClrRuntime(descriptor, { assembly, sdk, dependencies = [], 
     const hostName = path.basename(executable),
       compilerFile = compiler ?? toolchain.compiler,
       dotnet = toolchain.kind === 'dotnet';
-    // .NET (macOS, Linux): the package assemblies the host binds (the WCF client of the SDK's fault types) sit beside it,
-    // registered and verified against their NuGet source like every other runtime file, and marked as the toolchain's
-    // rather than the plug-in's. An injected compiler or run replaces the host compilation only.
+    // An injected compiler or run replaces the host compilation only; the .NET build inputs are always resolved.
     const inputs = dotnet ? dotnetBuildInputs(toolchain) : null;
-    for (const file of inputs?.runtime ?? []) {
-      const destination = path.join(directory, path.basename(file)),
-        bytes = readClrFileSync(file);
-      try {
-        // Exclusive: a plug-in dependency of the same name is never replaced.
-        syncFs.writeFileSync(destination, bytes, { flag: 'wx' });
-      } catch (cause) {
-        if (cause.code === 'EEXIST') fail('CLR dependency filenames must be unique.');
-        throw cause;
-      }
-      files.push({ path: destination, sourcePath: file, sha256: sha(bytes), toolchain: true });
-    }
-    // The host context implements IPluginExecutionContext7 when the installed SDK declares it (current
-    // online contract); an older SDK gets the Context4 class instead.
-    const compile = (defines, folder) =>
-      dotnet
-        ? dotnetCompile({ ...toolchain, dotnet: compilerFile }, inputs, {
-            out: path.join(folder, hostName),
-            target: 'exe',
-            sources: [sourceFile],
-            references: [files[1].path],
-            defines: ['PAQVILO_CORECLR', ...defines],
-            run,
-            timeout: compileGuardMs,
-          })
-        : run(
-            compilerFile,
-            [
-              '/nologo',
-              '/target:exe',
-              ...defines.map((name) => '/define:' + name),
-              '/out:' + path.join(folder, hostName),
-              '/reference:' + files[1].path,
-              '/reference:System.Web.Extensions.dll',
-              '/reference:System.Runtime.Serialization.dll',
-              '/reference:System.ServiceModel.dll',
-              sourceFile,
-            ],
-            { shell: false, windowsHide: true, encoding: 'utf8', maxBuffer: 256 * 1024, timeout: compileGuardMs },
-          );
+    copyClrToolchainAssemblies(directory, inputs, files);
+    const compile = clrHostCompiler({
+      toolchain,
+      inputs,
+      compilerFile,
+      run,
+      timeout: compileGuardMs,
+      sourceFile,
+      sdkFile: files[1].path,
+      hostName,
+    });
     // The ILogger, IFeatureControlService(2) and IManagedIdentityService classes compile when the SDK declares them.
     const services = clrServiceDefines(sdk.bytes);
     const { meta: contextInterfaceVersion } = compileCached({
       ...(compileCache === undefined ? {} : { root: compileCache }),
-      key: compileCacheKey(
-        dotnet
-          ? [
-              'clr-plugin-host-dotnet/1',
-              compilerIdentity(inputs.csc),
-              toolchain.sdkVersion,
-              ...inputs.compile,
-              sha(source),
-              files[1].sha256,
-              services.join(','),
-            ]
-          : ['clr-plugin-host/1', compilerIdentity(compilerFile), sha(source), files[1].sha256, services.join(',')],
-      ),
+      key: clrHostCacheKey({ toolchain, inputs, compilerFile, source, sdkSha256: files[1].sha256, services }),
       files: [hostName],
       into: directory,
-      build(folder) {
-        let version = 7,
-          build = compile(['PAQVILO_CONTEXT7', ...services], folder);
-        if (!build.error && build.status !== 0 && /IPluginExecutionContext7/.test(String(build.stdout))) {
-          version = 4;
-          build = compile(services, folder);
-        }
-        if (build.error || build.status !== 0)
-          fail(
-            clrCompileFailure(build, compilerFile, compileGuardMs, path.join(folder, hostName)),
-            'LocalPluginClrBuild',
-            501,
-          );
-        return version;
-      },
+      build: buildClrHostVersion(compile, services, { compilerFile, compileGuardMs, hostName }),
     });
     if (dotnet) {
       // dotnet starts the host with .NET 10 or any later runtime.
