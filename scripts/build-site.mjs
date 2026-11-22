@@ -43,7 +43,7 @@ for (const name of [
   fs.copyFileSync(path.join(root, 'site', name), path.join(output, name));
 fs.mkdirSync(path.join(output, 'assets'), { recursive: true });
 // Only the images a page references: the diagram and the social preview.
-for (const name of ['overview.svg', 'social-preview.png'])
+for (const name of ['social-preview.png'])
   fs.copyFileSync(path.join(root, 'docs/assets', name), path.join(output, 'assets', name));
 // Screenshots: every file in site/media, flat (stills as WebP, clips as MP4).
 fs.mkdirSync(path.join(output, 'media'), { recursive: true });

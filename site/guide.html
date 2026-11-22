@@ -83,7 +83,9 @@
                 <ol>
                   <li><a href="#install">Install</a></li>
                   <li><a href="#demo">Run the demo</a></li>
-                  <li><a href="#project">Connect your export</a></li>
+                  <li><a href="#project">Set up your project</a></li>
+                  <li><a href="#scaffold">Generate a full project</a></li>
+                  <li><a href="#sources">Use an export in another folder</a></li>
                   <li><a href="#choose">Choose a workflow</a></li>
                 </ol>
               </div>
@@ -91,9 +93,11 @@
                 <p class="toc-group">Power Pages</p>
                 <ol>
                   <li><a href="#power-pages-local">Develop a site locally</a></li>
+                  <li><a href="#sim">Manage the simulator</a></li>
                   <li><a href="#identities">Personas and permissions</a></li>
                   <li><a href="#data">Local data</a></li>
                   <li><a href="#lense">Preview on a live portal</a></li>
+                  <li><a href="#lense-panel">The Lense panel</a></li>
                   <li><a href="#xray">Find the source of an element</a></li>
                   <li><a href="#debug-js">Debug portal JavaScript</a></li>
                   <li><a href="#check">Check a change</a></li>
@@ -196,54 +200,148 @@ npx --no-install paqvilo doctor --setup --browser msedge</code></pre>
             </article>
 
             <article class="task" id="project">
-              <h3>Create a project and connect your export</h3>
+              <h3>Set up your project in the browser</h3>
               <p class="what">
-                A project holds a catalogue (<code>paqvilo.config.yml</code>) that names your exported site, its
-                Solution folders and its environments. Paqvilo reads exports; it does not download them.
+                The setup workspace (<code>/_setup/</code>) finds the exports in a folder, writes the catalogue
+                (<code>paqvilo.config.yml</code>) for you and starts the local preview. Use it in a new folder or in the
+                repository that already holds your export. Paqvilo reads exports; it does not download them.
               </p>
               <ol>
                 <li>
-                  Generate the project in a new folder and install it:
-                  <div class="cmd">
-                    <pre><code>npx paqvilo@0.9 init ./my-portal-project
-cd my-portal-project
-npm run setup</code></pre>
-                  </div>
-                </li>
-                <li>
-                  Put the site you exported with the Power Platform CLI (
+                  In the folder that holds your exported site (from
                   <a
                     href="https://learn.microsoft.com/en-us/power-pages/configure/power-platform-cli-tutorial#download-website-content"
                     ><code>pac pages download</code></a
-                  >) in <code>sources/portal-export/</code>, and unpacked Solutions, if you have them, in
-                  <code>solutions/</code>.
-                </li>
-                <li>
-                  Set these values in the generated <code>paqvilo.config.yml</code> and keep its other keys (or fill the
-                  same fields in the browser with <code>npm run configure</code>):
-                  <div class="cmd file">
-                    <pre><code>sourceRoot: ./sources
-sites:
-  portal:
-    source: portal-export
-    environments:
-      dev: https://your-portal.example.test
-defaults:
-  mirage:
-    solutionRoots: [../solutions/Core] # [] without a Solution export</code></pre>
+                  >) or unpacked Solutions, install Paqvilo and open setup. Run <code>npm init -y</code> first if the
+                  folder has no <code>package.json</code>.
+                  <div class="cmd">
+                    <pre><code>npm install --save-dev paqvilo
+npx --no-install paqvilo setup --open</code></pre>
                   </div>
                 </li>
                 <li>
-                  Check the project, then what Paqvilo reads from the export:
+                  The page opens on <b>Quick setup</b> and says what it found, for example
+                  <i>1 website export, 1 Solution</i>. It searches up to four folders deep, so the folder names and the
+                  layout are yours. Choose what to run: a Power Pages website, model-driven apps, canvas apps, the
+                  Dataverse Web API, or several.
+                </li>
+                <li>
+                  Press <b>Create project</b>. It writes <code>paqvilo.config.yml</code> with the folders it found and
+                  adds the local state to <code>.gitignore</code>.
+                </li>
+                <li>
+                  Review <b>Your exported files</b> and <b>Data (optional)</b> with <b>Change</b>, then press
+                  <b>Start preview</b> under <b>Run it</b>.
+                </li>
+                <li>
+                  Use <b>Open website</b> for the local site and <b>Open simulator</b> for
+                  <a href="#sim"><code>/_sim/</code></a
+                  >. <b>Check</b> lists what is ready and what is missing, with the step that fixes it.
+                </li>
+              </ol>
+              <figure class="shot">
+                <img
+                  src="media/09a-setup-quick.webp"
+                  width="1600"
+                  height="900"
+                  loading="lazy"
+                  alt="The setup workspace on Quick setup for a folder with an existing export. Five steps: What you want to run, Your exported files with the website and Solution folders it found, Data (optional), Run it with a Start preview button, and Check."
+                />
+                <figcaption>
+                  Quick setup after <b>Create project</b>, in a folder whose export sits in <code>site-export</code>.
+                </figcaption>
+              </figure>
+              <p class="result">
+                <b>Result</b> A catalogue that names your export, and a preview on localhost. Each answer is saved at
+                once and applies at the next preview start.
+              </p>
+              <p class="note">
+                <b>Note</b> <b>All settings</b> (top right) is the full editor in nine stages, from <b>Project</b> to
+                <b>Start &amp; check</b>: ports, live environments for Lense, test people, sample data, outside services
+                and Web API access. Setup never deploys, synchronizes or contacts a live portal.
+              </p>
+              <p class="more">
+                <a href="https://github.com/maksii/paqvilo/blob/main/docs/setup.md">Setup workspace ↗</a> ·
+                <a href="https://github.com/maksii/paqvilo/blob/main/docs/configuration.md">Configuration ↗</a>
+              </p>
+            </article>
+
+            <article class="task" id="scaffold">
+              <h3>Generate a full project</h3>
+              <p class="what">
+                <code>paqvilo init</code> writes a complete project around the catalogue: npm scripts, VS Code tasks and
+                launch settings, a data pack, starter tests and guides for your team. Choose it for a project you will
+                keep and share.
+              </p>
+              <div class="cmd">
+                <pre><code>npx paqvilo@0.9 init ./my-portal-project
+cd my-portal-project
+npm run setup
+npm run configure</code></pre>
+              </div>
+              <ol>
+                <li>
+                  <code>init</code> writes files only. <code>npm run setup</code> installs the dependencies and checks
+                  Node, Git and the browser.
+                </li>
+                <li>
+                  <code>npm run configure</code> opens the <a href="#project">setup workspace</a>. Point it at your
+                  export, or <a href="#sources">edit the catalogue</a> yourself.
+                </li>
+                <li>
+                  Check what is still unfinished, then that everything is readable:
                   <div class="cmd">
-                    <pre><code>npx --no-install paqvilo init --check
-npx --no-install paqvilo mirage inspect --config ./paqvilo.config.yml --site portal</code></pre>
+                    <pre><code>npm run check:scaffold
+npm run check:project</code></pre>
                   </div>
                 </li>
               </ol>
               <p class="result">
-                <b>Result</b> <code>init --check</code> lists what is still unfinished, with file and line.
-                <code>mirage inspect</code> lists your pages and any diagnostics.
+                <b>Result</b> <code>check:scaffold</code> lists each open <code>TODO(paqvilo-init)</code> marker with
+                file and line; a new project has about ten. From then on <code>npm run mirage:dev</code> and
+                <code>npm run dev</code> start Mirage and Lense.
+              </p>
+              <p class="note">
+                <b>Note</b> In a repository that already has files, add <code>--into-existing</code>. It adds the
+                missing files and reports the ones it skipped; it never merges an existing <code>package.json</code> or
+                catalogue, so the npm scripts are not added there.
+              </p>
+              <p class="more">
+                <a href="https://github.com/maksii/paqvilo/blob/main/docs/project-scaffold.md">Project scaffold ↗</a>
+              </p>
+            </article>
+
+            <article class="task" id="sources">
+              <h3>Use an export in another folder</h3>
+              <p class="what">
+                The export does not have to live in the project. Many teams keep the portal in its own repository and
+                the Paqvilo project beside it.
+              </p>
+              <ol>
+                <li>
+                  In the catalogue, <code>source</code> and <code>solutionRoots</code> resolve from
+                  <code>sourceRoot</code>, and <code>sourceRoot</code> from the catalogue's folder. All three accept
+                  absolute paths:
+                  <div class="cmd file">
+                    <pre><code>sourceRoot: C:/work/portal-repository
+sites:
+  portal:
+    source: portal            # the folder with website.yml
+    mirage:
+      solutionRoots: [./solutions/Core]   # [] without a Solution export</code></pre>
+                  </div>
+                </li>
+                <li>
+                  To use another checkout once, for example a second worktree, leave the catalogue alone and pass
+                  <code>--repo</code> (or set <code>PAQVILO_REPO</code>):
+                  <div class="cmd">
+                    <pre><code>npx --no-install paqvilo mirage inspect --config ./paqvilo.config.yml --site portal --repo C:/work/portal-worktree</code></pre>
+                  </div>
+                </li>
+              </ol>
+              <p class="result">
+                <b>Result</b> <code>mirage inspect</code> lists the pages it read from that folder and any diagnostics.
+                When the folder is wrong, it names the path it looked in.
               </p>
               <p class="note">
                 <b>Note</b> Since 0.9.8 a command run in a folder without <code>paqvilo.config.yml</code> stops with
@@ -251,8 +349,7 @@ npx --no-install paqvilo mirage inspect --config ./paqvilo.config.yml --site por
                 given <code>--source</code> or <code>--project</code> without <code>--site</code> need no catalogue.
               </p>
               <p class="more">
-                <a href="https://github.com/maksii/paqvilo/blob/main/docs/project-scaffold.md">Project scaffold ↗</a>
-                · <a href="https://github.com/maksii/paqvilo/blob/main/docs/configuration.md">Configuration ↗</a>
+                <a href="https://github.com/maksii/paqvilo/blob/main/docs/configuration.md">Configuration ↗</a>
               </p>
             </article>
 
@@ -338,6 +435,87 @@ npx --no-install paqvilo mirage inspect --config ./paqvilo.config.yml --site por
                 To run it in the background, use <code>mirage start</code>, <code>mirage status</code> and
                 <code>mirage stop</code> with the same options.
                 <a href="https://github.com/maksii/paqvilo/blob/main/mirage/README.md">Mirage reference ↗</a>
+              </p>
+            </article>
+
+            <article class="task" id="sim">
+              <h3>Manage the running simulator in <code>/_sim/</code></h3>
+              <p class="what">
+                <code>/_sim/</code> is the administration workspace of a running Mirage: what is ready, what each
+                request did, the local records, and who the browser is signed in as.
+              </p>
+              <ol>
+                <li>
+                  Open it from the <code>admin</code> address the terminal prints, from <b>Open simulator</b> in
+                  <a href="#project">setup</a>, or from the <b>Mirage</b> tab of the panel. Typing
+                  <code>/_sim/</code> after the portal address also works: the browser is redirected.
+                </li>
+                <li>
+                  It opens on <b>Monitor → Health</b>: readiness, request and failure counts, and a map of the simulated
+                  system.
+                </li>
+                <li>Use the navigation on the left for the rest:</li>
+              </ol>
+              <table class="choose">
+                <thead>
+                  <tr>
+                    <th scope="col">Group</th>
+                    <th scope="col">Go there to</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <th scope="row">Monitor</th>
+                    <td>See health, and in <b>Activity</b> <a href="#trace">every request as a tree of steps</a>.</td>
+                  </tr>
+                  <tr>
+                    <th scope="row">Data</th>
+                    <td>
+                      Browse, create, edit and delete rows in <b>Data records</b>; see the loaded
+                      <a href="#data">data packs</a> and their endpoints.
+                    </td>
+                  </tr>
+                  <tr>
+                    <th scope="row">Platform</th>
+                    <td>
+                      Choose how <a href="#flows">backend operations</a> answer, read flow runs and jobs, run the
+                      preflight, and try a site setting or snippet value without editing the export.
+                    </td>
+                  </tr>
+                  <tr>
+                    <th scope="row">Identity</th>
+                    <td>
+                      <a href="#identities">Sign this browser in as a persona</a>, manage the users and app
+                      registrations of the <a href="#dataverse-api">Dataverse API</a>, and open scenarios.
+                    </td>
+                  </tr>
+                  <tr>
+                    <th scope="row">Runtime</th>
+                    <td>See the simulation level and where changes are saved; export or import the state.</td>
+                  </tr>
+                </tbody>
+              </table>
+              <figure class="shot">
+                <img
+                  src="media/10a-sim-health.webp"
+                  width="1600"
+                  height="900"
+                  loading="lazy"
+                  alt="The simulator workspace of the demo on Monitor, Health: the Power Pages runtime is OK with 61 of 83 parts ready, counters for requests, plug-in step runs and flow runs, and the navigation groups Workspace, Monitor, Data and Platform on the left."
+                />
+                <figcaption>
+                  <code>/_sim/</code> of the demo. The top bar opens the apps, project setup and the portal.
+                </figcaption>
+              </figure>
+              <p class="note">
+                <b>Note</b> <code>/_sim/</code> manages a running preview;
+                <a href="#project"><code>/_setup/</code></a> changes its configuration, which applies at the next start.
+                <b>Project setup</b> in the top bar switches between them.
+              </p>
+              <p class="more">
+                <a href="https://github.com/maksii/paqvilo/blob/main/mirage/docs/sim-administration.md"
+                  >Simulator administration ↗</a
+                >
               </p>
             </article>
 
@@ -436,7 +614,7 @@ npx --no-install paqvilo mirage dev --config ./paqvilo.config.yml --site portal 
                   Commit the export once (run <code>git init</code> first if the project is not a repository yet). Lense
                   compares your files with this Git baseline to patch markup:
                   <div class="cmd">
-                    <pre><code>git add sources/portal-export
+                    <pre><code>git add &lt;export folder&gt;
 git commit -m "Baseline portal export"</code></pre>
                   </div>
                 </li>
@@ -465,6 +643,88 @@ git commit -m "Baseline portal export"</code></pre>
               </p>
               <p class="more">
                 <a href="https://github.com/maksii/paqvilo/blob/main/docs/lense.md">Lense reference ↗</a>
+              </p>
+            </article>
+
+            <article class="task" id="lense-panel">
+              <h3>Find your way around the Lense panel</h3>
+              <p class="what">
+                The panel is where you see what Lense did to the page. Open it with
+                <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd>. This one sits on a live portal whose heading is red
+                because of one local CSS edit.
+              </p>
+              <figure class="shot tour">
+                <div class="tour-scroll">
+                  <div class="tour-frame">
+                    <img
+                      src="media/08a-lense-panel.webp"
+                      width="840"
+                      height="690"
+                      loading="lazy"
+                      alt="The Lense panel over a live portal page, on its Overrides tab. The header shows the site and environment with a REAL DATA badge and a Local and Online switch. The list shows the style file demo.css marked edited and differs from deployed. Numbers mark the parts explained in the list below."
+                    />
+                    <ol class="tour-marks" aria-hidden="true">
+                      <li class="mk1">1</li>
+                      <li class="mk2">2</li>
+                      <li class="mk3">3</li>
+                      <li class="mk4">4</li>
+                      <li class="mk5">5</li>
+                      <li class="mk6">6</li>
+                      <li class="mk7">7</li>
+                      <li class="mk8">8</li>
+                      <li class="mk9">9</li>
+                      <li class="mk10">10</li>
+                    </ol>
+                  </div>
+                </div>
+                <figcaption>
+                  Lense 0.9.8 on a demo portal, <b>Overrides</b> tab, filtered to the edited file.
+                </figcaption>
+              </figure>
+              <ol class="tour-legend">
+                <li>
+                  <b>Site and environment.</b> <b>REAL DATA</b> marks an environment you flagged with
+                  <code>caution: true</code>.
+                </li>
+                <li>
+                  <b>Local | Online.</b> <b>Online</b> shows the page as deployed, without your files, in every tab of
+                  the site (<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd>).
+                </li>
+                <li>
+                  <b>Tools</b>, left to right: live reload on save, <a href="#xray">X-ray</a>, project setup, a larger
+                  panel, hide everything (<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>L</kbd>) and collapse.
+                </li>
+                <li>
+                  <b>Git baseline.</b> The branch and the commit your files are compared with. It is your local history,
+                  not the deployed version.
+                </li>
+                <li>
+                  <b>Tabs.</b> <b>Overrides</b>: local files laid over the page. <b>Inspect</b>: the templates, forms,
+                  tables and access rules behind it. <b>Issues</b>: page errors and edits that need a deployment.
+                  <b>Activity</b>: what Lense did and when. <b>Explore</b>: search the tables, forms, views and files of
+                  your sources.
+                </li>
+                <li>
+                  <b>Filters.</b> <b>Edited</b> keeps the files you changed; <b>Differs from deployed</b> the ones whose
+                  content is not what the portal serves.
+                </li>
+                <li>
+                  <b>Local files.</b> <b>all</b> overrides the site with every local file, <b>changed vs Git</b> only
+                  with the files you changed since the baseline.
+                </li>
+                <li><b>A file.</b> Its kind, name and state. Click it to open the file in your editor.</li>
+                <li><b>Per file</b>: compare it with the deployed version, pause this override, copy the path.</li>
+                <li><b>Footer.</b> The shortcuts, and how many files the local sources hold.</li>
+              </ol>
+              <p class="note">
+                <b>Note</b> <code>mirage dev</code> shows the same panel on localhost. There it has no
+                <b>Local | Online</b> switch, and adds the <b>Tweaks</b> tab for personas and the <b>Mirage</b> tab for
+                the runtime.
+              </p>
+              <p class="more">
+                <a href="https://github.com/maksii/paqvilo/blob/main/docs/lense.md#source-mapping-and-comparison-scope"
+                  >Panel reference ↗</a
+                >
               </p>
             </article>
 

@@ -51,7 +51,7 @@ test('site builds replace stale output and retain only deliberate public files',
     'sitemap.xml',
     'style.css',
   ]);
-  assert.deepEqual(fs.readdirSync(path.join(output, 'assets')).sort(), ['overview.svg', 'social-preview.png']);
+  assert.deepEqual(fs.readdirSync(path.join(output, 'assets')).sort(), ['social-preview.png']);
   for (const [built, original] of [
     ['favicon.svg', 'site/favicon.svg'],
     ['robots.txt', 'site/robots.txt'],
