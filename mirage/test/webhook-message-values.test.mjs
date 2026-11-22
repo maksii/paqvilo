@@ -12,7 +12,7 @@ import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
 import { createOrganizationBackend } from '../lib/organization-backend.mjs';
 
 import { prepareClrRuntime } from '../lib/plugin-clr.mjs';
-import { CLR_SKIP, clrSdk, compileClr, hostCommand } from './fixtures/clr-sdk.mjs';
+import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 import { createPreparedClrRuntimePreparer } from './fixtures/prepared-clr-runtimes.mjs';
 import { ownedFixture, makeTemporaryDirectory, removeFixtureDirectory } from '../testing/owned-fixture.mjs';
 import { fixedClock } from '../lib/runtime-clock.mjs';
@@ -182,11 +182,7 @@ var serializer = new DataContractJsonSerializer(typeof(RemoteExecutionContext));
 } }`,
     );
     compileClr(source, executable, { target: 'exe', references: [sdk, 'System.Runtime.Serialization.dll'] });
-    const result = spawnSync(...hostCommand(executable, []), {
-      encoding: 'utf8',
-      windowsHide: true,
-      timeout: CLI_HANG_GUARD_MS,
-    });
+    const result = spawnSync(executable, [], { encoding: 'utf8', windowsHide: true, timeout: CLI_HANG_GUARD_MS });
     assert.equal(result.status, 0, result.stderr);
     const native = JSON.parse(result.stdout),
       expected = parameters(native),

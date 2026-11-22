@@ -1,17 +1,24 @@
 import fs from 'node:fs';
-import path from 'node:path';
+
+// The links macOS installs above every user folder, and where each one points. Nothing else is trusted: a check on
+// ownership alone would also pass every link a project or archive creates when the tool runs as root (a container, CI,
+// sudo).
+const MACOS_SYSTEM_LINKS = new Map([
+  ['/tmp', 'private/tmp'],
+  ['/var', 'private/var'],
+  ['/etc', 'private/etc'],
+]);
 
 /**
- * Whether `file` (its lstat `stat`) is a link the operating system installs above every user folder, such as macOS's
- * /var and /tmp (links into /private): owned by root, in a folder owned by root that no group or other user may write,
- * so neither a project nor another account can have placed or replaced it. Windows reports every owner as 0, so no link
- * counts there.
+ * Whether `file` (its lstat `stat`) is one of the links macOS installs above every user folder (/tmp, /var and /etc,
+ * links into /private): that exact path, pointing at its fixed target and owned by root. No link is trusted elsewhere.
  */
 export function systemLink(file, stat, platform = process.platform) {
-  if (platform === 'win32' || !stat.isSymbolicLink() || stat.uid !== 0) return false;
+  if (platform !== 'darwin' || !stat.isSymbolicLink() || stat.uid !== 0) return false;
+  const target = MACOS_SYSTEM_LINKS.get(file);
+  if (!target) return false;
   try {
-    const parent = fs.statSync(path.dirname(file));
-    return parent.uid === 0 && (parent.mode & 0o022) === 0;
+    return fs.readlinkSync(file) === target;
   } catch {
     return false;
   }

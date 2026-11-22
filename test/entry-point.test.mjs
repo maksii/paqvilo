@@ -34,6 +34,11 @@ test('a script started through a linked folder is the entry point; an imported o
     assert.equal(started.trim(), 'true', `started from ${folder}`);
     const imported = execFileSync(process.execPath, [path.join(folder, 'importer.mjs')], { encoding: 'utf8' });
     assert.equal(imported.trim(), 'false', `imported from ${folder}`);
+    // --preserve-symlinks-main keeps the linked path in import.meta.url: the path as typed then matches.
+    const preserved = execFileSync(process.execPath, ['--preserve-symlinks-main', path.join(folder, 'script.mjs')], {
+      encoding: 'utf8',
+    });
+    assert.equal(preserved.trim(), 'true', `started from ${folder} with --preserve-symlinks-main`);
   }
 });
 

@@ -6,6 +6,7 @@ import fsSync from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { assertScaffoldPath, writeScaffold } from '../lense/scaffold.mjs';
+import { systemLink } from '../mirage/lib/system-link.mjs';
 
 async function physicalTemp(t, parent = os.tmpdir()) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(parent, 'paqvilo-scaffold-path-')));
@@ -26,6 +27,22 @@ test('a link the user or a project created is refused anywhere in a scaffold pat
   await assert.rejects(writeScaffold(path.join(alias, 'project'), { 'a.txt': 'x' }), /without symbolic links/);
   assert.deepEqual(await fs.readdir(physical), [], 'nothing was written through the link');
   await assert.rejects(assertScaffoldPath(alias, { directory: true }), /without symbolic links/);
+});
+
+test('only macOS /tmp, /var and /etc are system links, even for a link that belongs to root', async (t) => {
+  const root = await physicalTemp(t);
+  const alias = path.join(root, 'alias');
+  await fs.symlink(root, alias, process.platform === 'win32' ? 'junction' : 'dir');
+  // Run as root (a container, CI or sudo), a cloned or extracted project's links belong to root too.
+  const asRoot = (file) => {
+    const info = fsSync.lstatSync(file);
+    return { isSymbolicLink: () => info.isSymbolicLink(), uid: 0 };
+  };
+  assert.equal(systemLink(alias, asRoot(alias), 'darwin'), false, 'a project link owned by root is not trusted');
+  for (const platform of ['linux', 'win32', 'freebsd'])
+    assert.equal(systemLink('/tmp', { isSymbolicLink: () => true, uid: 0 }, platform), false, platform);
+  assert.equal(systemLink('/tmp', { isSymbolicLink: () => true, uid: 501 }, 'darwin'), false, 'not owned by root');
+  assert.equal(systemLink('/private', { isSymbolicLink: () => true, uid: 0 }, 'darwin'), false, 'not a listed link');
 });
 
 // macOS installs /tmp and /var as root-owned links into /private; every temporary folder is reached through them.

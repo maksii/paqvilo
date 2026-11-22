@@ -283,8 +283,8 @@ export async function runMirageReplayShards(job, { workers = 10, runWorker = spa
 }
 // Inline: the replay modules also run from a project copy without this example's cli.mjs. Node loads the started
 // script from its real path (macOS /tmp and /var are links into /private).
-const startedHere = (started = process.argv[1]) =>
-  Boolean(started) && existsSync(started) && realpathSync(started) === fileURLToPath(import.meta.url);
+const startedHere = (started = process.argv[1], self = fileURLToPath(import.meta.url)) =>
+  Boolean(started) && (path.resolve(started) === self || (existsSync(started) && realpathSync(started) === self));
 if (startedHere()) {
   // Loaded only when run as a command: the replay runtime's own imports stay the fingerprinted set.
   const { cli, UsageError } = await import('../cli.mjs');

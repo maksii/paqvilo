@@ -7,7 +7,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { CLR_SKIP, clrSdk, cscCommand, hostCommand } from './fixtures/clr-sdk.mjs';
+import { CLR_SKIP, clrSdk } from './fixtures/clr-sdk.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test(
@@ -41,8 +41,10 @@ var counted=By();counted.PageInfo=new PagingInfo{ReturnTotalRecordCount=true};Ro
     );
     const host = fileURLToPath(new URL('../lib/plugin-clr-host.cs', import.meta.url));
     // An executable over two sources with /main, which compileClr (one library source) does not build.
+    const csc = path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe');
     await promisify(execFile)(
-      ...cscCommand([
+      csc,
+      [
         '/nologo',
         '/target:exe',
         '/main:Invented.PagingProbe',
@@ -53,15 +55,11 @@ var counted=By();counted.PageInfo=new PagingInfo{ReturnTotalRecordCount=true};Ro
         '/reference:System.ServiceModel.dll',
         host,
         source,
-      ]),
+      ],
       { encoding: 'utf8', windowsHide: true, signal: t.signal },
     );
     // A non-zero exit rejects with the probe's stdout and stderr; the test's own deadline bounds a hung probe.
-    const result = await promisify(execFile)(...hostCommand(exe, []), {
-      encoding: 'utf8',
-      windowsHide: true,
-      signal: t.signal,
-    });
+    const result = await promisify(execFile)(exe, [], { encoding: 'utf8', windowsHide: true, signal: t.signal });
     assert.deepEqual(JSON.parse(result.stdout), [
       'QueryByAttribute-constructor',
       'QueryExpression-constructor',
