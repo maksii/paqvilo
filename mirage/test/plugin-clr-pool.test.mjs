@@ -24,7 +24,7 @@ import {
   pluginExecutionDepth,
   PLUGIN_MAX_DEPTH,
 } from '../lib/plugin-clr.mjs';
-import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
+import { CLR_SKIP, clrSdk, compileClr, hostCommand } from './fixtures/clr-sdk.mjs';
 import { ownedFixture, makeTemporaryDirectory, removeFixtureDirectory } from '../testing/owned-fixture.mjs';
 
 const user = '10000000-0000-0000-0000-000000000001',
@@ -37,7 +37,7 @@ const CLI_HANG_GUARD_MS = 170_000;
 // The start time (UTC ticks) of process `pid`, read by a CLR host executable's --process-start mode; null when it
 // cannot be read (no such process, or no access).
 function processStart(executable, pid) {
-  const result = spawnSync(executable, ['--process-start', String(pid)], {
+  const result = spawnSync(...hostCommand(executable, ['--process-start', String(pid)]), {
     windowsHide: true,
     encoding: 'utf8',
     timeout: CLI_HANG_GUARD_MS,
@@ -61,7 +61,16 @@ async function incarnationAbsent(executable, pid, start) {
 // The process ids that own a listening TCP socket on a loopback port, read from the system's own table (netstat), so no
 // connection is made and another process that takes the freed port is told apart by its id. A listening row has the
 // foreign address 0.0.0.0:0, whatever the system language.
+// On macOS and Linux lsof reads the same table: -t prints only the owning process ids (exit 1 when there is none).
 function loopbackListeners(port) {
+  if (process.platform !== 'win32') {
+    const { status, stdout } = spawnSync('lsof', ['-nP', '-t', '-iTCP@127.0.0.1:' + port, '-sTCP:LISTEN'], {
+      encoding: 'utf8',
+      timeout: CLI_HANG_GUARD_MS,
+    });
+    assert.ok(status === 0 || (status === 1 && !stdout.trim()), 'lsof lists the TCP listeners');
+    return stdout.split(/\r?\n/).filter(Boolean).map(Number);
+  }
   const { status, stdout } = spawnSync('netstat', ['-ano', '-p', 'TCP'], {
     windowsHide: true,
     encoding: 'utf8',
@@ -397,7 +406,7 @@ test(
       serviceProfile: { userId: user, evidence: 'Invented backend', grants: [] },
       context: { initiatingUserId: user, organizationId: user, businessUnitId: user },
     });
-    const born = spawnSync(runtime.executable, ['--process-start', String(process.pid)], {
+    const born = spawnSync(...hostCommand(runtime.executable, ['--process-start', String(process.pid)]), {
       windowsHide: true,
       encoding: 'utf8',
       timeout: CLI_HANG_GUARD_MS,
@@ -405,8 +414,12 @@ test(
     assert.equal(born.status, 0, born.error?.message);
     assert.match(born.stdout, /^\d+$/);
     const reused = spawnSync(
-      runtime.executable,
-      ['--parent', String(process.pid), '--parent-start', String(BigInt(born.stdout) + 1n)],
+      ...hostCommand(runtime.executable, [
+        '--parent',
+        String(process.pid),
+        '--parent-start',
+        String(BigInt(born.stdout) + 1n),
+      ]),
       { windowsHide: true, encoding: 'utf8', timeout: CLI_HANG_GUARD_MS },
     );
     assert.equal(reused.status, 74, 'An existing PID with a different birth time cannot authorize this host.');

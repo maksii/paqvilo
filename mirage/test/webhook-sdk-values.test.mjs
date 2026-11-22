@@ -13,7 +13,7 @@ import { decodeMessage } from '../lib/amqp-client.mjs';
 import { parseExactJson, stringifyExactJson } from '../lib/exact-numeric.mjs';
 import { startFakeBroker } from '../testing/amqp-fake-broker.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
-import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
+import { CLR_SKIP, clrSdk, compileClr, hostCommand } from './fixtures/clr-sdk.mjs';
 
 // hang guard only: a blocked synchronous child cannot be ended by the test runner
 const CLI_HANG_GUARD_MS = 170_000;
@@ -67,7 +67,11 @@ c.PreEntityImages["Null"]=new Entity("widget",new Guid("${id}"));
 var serializer=new DataContractJsonSerializer(typeof(RemoteExecutionContext));using(var stream=new MemoryStream()){serializer.WriteObject(stream,c);Console.Write(Encoding.UTF8.GetString(stream.ToArray()));}}}`,
     );
     compileClr(source, executable, { target: 'exe', references: [sdk, 'System.Runtime.Serialization.dll'] });
-    const oracle = spawnSync(executable, [], { encoding: 'utf8', windowsHide: true, timeout: CLI_HANG_GUARD_MS });
+    const oracle = spawnSync(...hostCommand(executable, []), {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: CLI_HANG_GUARD_MS,
+    });
     assert.equal(oracle.status, 0, oracle.stderr);
     const oracleContext = parseExactJson(oracle.stdout);
     const expected = parameterValues(oracleContext);

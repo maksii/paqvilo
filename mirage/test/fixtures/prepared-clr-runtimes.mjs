@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { validateClrDescriptor } from '../../lib/plugin-clr.mjs';
+import { systemLink } from '../../lib/system-link.mjs';
 
 const proxyAssembly = 'Microsoft.Crm.Sdk.Proxy.dll';
 const hostAssembly = 'paqvilo-plugin-host.exe';
@@ -33,7 +34,10 @@ function canonicalCacheDirectory(value, label) {
   try {
     for (const part of pathParts(value)) {
       const stat = fs.lstatSync(part);
-      if (stat.isSymbolicLink() || !stat.isDirectory()) throw fixtureError(`${label} cannot contain symlink components.`);
+      // macOS /var and /tmp are system links; the runtime accepts them as well (system-link.mjs).
+      if (systemLink(part, stat)) continue;
+      if (stat.isSymbolicLink() || !stat.isDirectory())
+        throw fixtureError(`${label} cannot contain symlink components.`);
     }
     return pathKey(fs.realpathSync.native(value));
   } catch (cause) {
@@ -99,7 +103,8 @@ function runtimeSnapshotPath(file, directory, source, label) {
     throw fixtureError(`${label} snapshot name does not match its captured source.`);
   try {
     const named = fs.lstatSync(file.path);
-    if (named.isSymbolicLink() || !named.isFile()) throw fixtureError(`${label} snapshot must be a regular non-symlink file.`);
+    if (named.isSymbolicLink() || !named.isFile())
+      throw fixtureError(`${label} snapshot must be a regular non-symlink file.`);
   } catch (cause) {
     if (cause.message?.startsWith('Invalid prepared CLR fixture mapping:')) throw cause;
     throw fixtureError(`${label} snapshot must be a regular file (${cause.code ?? 'unavailable'}).`);
@@ -134,7 +139,8 @@ function validatePreparedPair(descriptor, runtime) {
     throw fixtureError('the source-less captured file must be the expected host inside the runtime directory.');
   try {
     const named = fs.lstatSync(runtime.executable);
-    if (named.isSymbolicLink() || !named.isFile()) throw fixtureError('the compiled host must be a regular non-symlink file.');
+    if (named.isSymbolicLink() || !named.isFile())
+      throw fixtureError('the compiled host must be a regular non-symlink file.');
   } catch (cause) {
     if (cause.message?.startsWith('Invalid prepared CLR fixture mapping:')) throw cause;
     throw fixtureError(`compiled host must be a regular file (${cause.code ?? 'unavailable'}).`);
@@ -171,12 +177,16 @@ function validatePreparedPair(descriptor, runtime) {
   const capturedSet = new Set(capturedDependencies);
   if (capturedSet.size !== capturedDependencies.length)
     throw fixtureError('captured dependency sources must be unique.');
-  dependencyFiles.forEach((file, index) => runtimeSnapshotPath(file, runtimeDirectory, capturedDependencies[index], 'dependency'));
+  dependencyFiles.forEach((file, index) =>
+    runtimeSnapshotPath(file, runtimeDirectory, capturedDependencies[index], 'dependency'),
+  );
 
   const missing = declaredDependencies.filter((source) => !capturedSet.has(source));
   if (missing.length) throw fixtureError('a declared dependency does not match the captured dependency sources.');
   const extras = capturedDependencies.filter((source) => !declaredSet.has(source));
-  const declaredProxy = (descriptor.dependencies ?? []).some((relative) => basename(relative) === proxyAssembly.toLowerCase());
+  const declaredProxy = (descriptor.dependencies ?? []).some(
+    (relative) => basename(relative) === proxyAssembly.toLowerCase(),
+  );
   if (extras.length > 1 || (extras.length && declaredProxy))
     throw fixtureError('captured dependencies contain an undeclared source.');
   if (!declaredProxy) {
@@ -208,7 +218,8 @@ export function createPreparedClrRuntimePreparer(runtimes, descriptors) {
   for (const [stepId, runtime] of runtimes) {
     if (!descriptors.has(stepId)) throw fixtureError('every runtime must have a descriptor entry.');
     const descriptor = descriptors.get(stepId);
-    if (!descriptor || typeof descriptor !== 'object') throw fixtureError('every runtime must have a descriptor object.');
+    if (!descriptor || typeof descriptor !== 'object')
+      throw fixtureError('every runtime must have a descriptor object.');
     const existing = byDescriptor.get(descriptor);
     if (existing && existing !== runtime)
       throw fixtureError('one descriptor object cannot identify different prepared runtime objects.');

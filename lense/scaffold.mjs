@@ -1,25 +1,12 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-
-/**
- * A link the operating system installs above every user folder, such as macOS's /tmp, /var and /etc (links into
- * /private): owned by root, in a folder owned by root that no group or other user may write, so neither a project nor
- * another account can have placed or replaced it. Windows reports every owner as 0, so no link counts there.
- */
-async function systemLink(current, info, platform) {
-  if (platform === 'win32' || info.uid !== 0) return false;
-  try {
-    const parent = await fs.stat(path.dirname(current));
-    return parent.uid === 0 && (parent.mode & 0o022) === 0;
-  } catch {
-    return false;
-  }
-}
+import { systemLink } from '../mirage/lib/system-link.mjs';
 
 /** Throw unless an existing path component may be used: a folder (or system link) above the target, or the target. */
-async function assertScaffoldComponent(current, info, { target, directory, platform }) {
+function assertScaffoldComponent(current, info, { target, directory, platform }) {
   const isTarget = current === target;
-  if (info.isSymbolicLink() && !isTarget && (await systemLink(current, info, platform))) return;
+  // An operating-system link above the target, such as macOS's /tmp and /var (links into /private), is followed.
+  if (!isTarget && systemLink(current, info, platform)) return;
   if (info.isSymbolicLink() || ((!isTarget || directory) && !info.isDirectory())) {
     throw new Error(`Scaffold path must be a regular directory without symbolic links: ${current}`);
   }
@@ -42,7 +29,7 @@ export async function assertScaffoldPath(file, { directory = false, platform = p
       if (error.code === 'ENOENT') continue;
       throw error;
     }
-    await assertScaffoldComponent(current, info, { target, directory, platform });
+    assertScaffoldComponent(current, info, { target, directory, platform });
   }
   return target;
 }

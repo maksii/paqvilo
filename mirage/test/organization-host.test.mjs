@@ -3,6 +3,7 @@
 // clr in the standalone host prepares the CLR runtime before the choice is stored, close runs in one order and
 // the operation catalogue is memoised while the store revision and the sources are unchanged.
 import test from 'node:test';
+import { clrToolchain } from '../lib/clr-toolchain.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -76,9 +77,10 @@ test('a standalone runtime switch to clr prepares the CLR runtime and stores not
     body: JSON.stringify({ operations: { [key]: { mode: 'clr' } } }),
   });
   const answer = await response.text();
-  // Windows reads the missing assembly; other platforms refuse the built-in CLR host before reading it.
+  // With a CLR toolchain (.NET Framework on Windows, Mono elsewhere) the missing assembly is read; without one the
+  // built-in CLR host is refused before reading it.
   assert.ok(response.status >= 400, answer);
-  if (process.platform === 'win32') assert.match(JSON.parse(answer).error.message, /Invented\.Missing\.dll/);
+  if (clrToolchain()) assert.match(JSON.parse(answer).error.message, /Invented\.Missing\.dll/);
   else assert.equal(JSON.parse(answer).error.code, 'LocalPluginClrUnavailable', answer);
   assert.equal(sim.store.state.simulator.operations?.[key], undefined, 'nothing is stored when preparation fails');
 });

@@ -27,6 +27,8 @@ import { internalStageContext, internalStageSource, internalStepReference } from
 import { standardFieldDefinition } from './dataverse-standard.mjs';
 import { collectPackExport } from './pack-exports.mjs';
 import { inspectAssembly } from './clr-assembly-reader.mjs';
+import { clrToolchain } from './clr-toolchain.mjs';
+import { systemLink } from './system-link.mjs';
 import { compileCached, compileCacheKey, compilerIdentity } from './compile-cache.mjs';
 import { localOrganizationService, validateServiceProfile, sdkValueToRecord } from './local-organization-service.mjs';
 import {
@@ -354,10 +356,11 @@ function readClrBytesSync(fd) {
   }
   return Buffer.concat(chunks, total);
 }
-/** Canonical spelling may differ on Windows; actual link components remain forbidden. */
+/** Canonical spelling may differ on Windows; link components other than system links remain forbidden. */
 export async function canonicalClrDirectory(directory) {
   for (const part of pathParts(directory)) {
     const stat = await fs.lstat(part);
+    if (systemLink(part, stat)) continue;
     if (stat.isSymbolicLink() || !stat.isDirectory()) fail('CLR cache root cannot use a symlink.');
   }
   return fs.realpath(directory);
@@ -365,6 +368,7 @@ export async function canonicalClrDirectory(directory) {
 function canonicalClrDirectorySync(directory) {
   for (const part of pathParts(directory)) {
     const stat = syncFs.lstatSync(part);
+    if (systemLink(part, stat)) continue;
     if (stat.isSymbolicLink() || !stat.isDirectory())
       fail('CLR cache directory or dependencies changed.', 'LocalPluginSourceChanged', 409);
   }
@@ -564,13 +568,20 @@ async function prepareSharedClrRuntime(sharedRuntimes, descriptor, options) {
   sharedRuntimes.set(key, runtime);
   return runtime;
 }
+// The command that starts a runtime's host: the one it was prepared with, else (a runtime assembled elsewhere) the
+// installed toolchain's.
+const hostLauncher = (runtime) =>
+  runtime.launcher !== undefined ? runtime.launcher : (clrToolchain()?.launcher ?? null);
+/** The toolchain that builds and starts the host: .NET Framework on Windows, Mono on macOS and Linux. */
 function requireClrPlatform() {
-  if (process.platform !== 'win32')
+  const toolchain = clrToolchain();
+  if (!toolchain)
     fail(
-      'The built-in CLR host requires Windows .NET Framework; configure mocks on other platforms.',
+      'The built-in CLR host needs the .NET Framework on Windows, or Mono on macOS and Linux (brew install mono, or the mono-devel package); configure mocks otherwise.',
       'LocalPluginClrUnavailable',
       501,
     );
+  return toolchain;
 }
 function validateClrSymbolFiles(descriptor, symbols) {
   const nameOf = (file) => file.name ?? path.basename(file.path);
@@ -591,7 +602,7 @@ const CLR_COMPILE_GUARD_MS = 600_000;
  */
 export function buildClrRuntime(descriptor, { assembly, sdk, dependencies = [], symbols = [] }, options = {}) {
   validateClrDescriptor(descriptor);
-  requireClrPlatform();
+  const toolchain = requireClrPlatform();
   syncFs.mkdirSync(path.resolve(descriptor.cacheRoot), { recursive: true });
   // No link components; the native spelling is the canonical one (as prepareClrRuntime's fs.realpath gives it).
   canonicalClrDirectorySync(descriptor.cacheRoot);
@@ -609,6 +620,13 @@ export function buildClrRuntime(descriptor, { assembly, sdk, dependencies = [], 
   const originals = [assembly, sdk, ...dependencies, ...symbols],
     nameOf = (file) => file.name ?? path.basename(file.path);
   validateClrSymbolFiles(descriptor, symbols);
+  // VS Code attaches its .NET Framework debugger to the Windows host process; Mono hosts have no such attach target.
+  if (descriptor.debug === true && toolchain.launcher)
+    fail(
+      'CLR plug-in debugging needs Windows; run the step without debug under Mono.',
+      'LocalPluginClrUnavailable',
+      501,
+    );
   const names = originals.map((f) => nameOf(f).toLowerCase());
   if (new Set(names).size !== names.length) fail('CLR dependency filenames must be unique.');
   const source = readClrFileSync(hostSource),
@@ -628,8 +646,11 @@ export function buildClrRuntime(descriptor, { assembly, sdk, dependencies = [], 
     const executable = path.join(directory, 'paqvilo-plugin-host.exe'),
       sourceFile = path.join(directory, 'paqvilo-plugin-host.cs');
     syncFs.writeFileSync(sourceFile, source, { flag: 'wx' });
-    const compilerFile =
-      compiler ?? path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe');
+    // An injected compiler is a csc-compatible command run as given; the toolchain's may need arguments first (Mono runs
+    // its csc.exe through mono).
+    const compilerFile = compiler ?? toolchain.compiler,
+      compilerArguments = compiler ? [] : toolchain.compilerArguments,
+      compilerImage = compiler ?? compilerArguments[0] ?? compilerFile;
     // The host context implements IPluginExecutionContext7 when the installed SDK declares it (current
     // online contract); an older SDK gets the Context4 class instead.
     const hostName = path.basename(executable);
@@ -637,6 +658,7 @@ export function buildClrRuntime(descriptor, { assembly, sdk, dependencies = [], 
       run(
         compilerFile,
         [
+          ...compilerArguments,
           '/nologo',
           '/target:exe',
           ...defines.map((name) => '/define:' + name),
@@ -655,7 +677,7 @@ export function buildClrRuntime(descriptor, { assembly, sdk, dependencies = [], 
       ...(compileCache === undefined ? {} : { root: compileCache }),
       key: compileCacheKey([
         'clr-plugin-host/1',
-        compilerIdentity(compilerFile),
+        compilerIdentity(compilerImage),
         sha(source),
         files[1].sha256,
         services.join(','),
@@ -685,6 +707,8 @@ export function buildClrRuntime(descriptor, { assembly, sdk, dependencies = [], 
     return {
       descriptor,
       executable,
+      // The command that starts the executable (mono), or null when it runs on its own.
+      launcher: toolchain.launcher,
       assembly: files[0].path,
       files,
       directory,
@@ -2303,6 +2327,7 @@ function executePooledClr(runtime, input, options, verified) {
         port: port2,
         signal,
         executable: snapshot.executable,
+        launcher: hostLauncher(runtime),
         parentProcessId: process.pid,
         label: runtime.hostLabel?.() ?? null,
       },
@@ -2375,6 +2400,7 @@ function executePooledClr(runtime, input, options, verified) {
         port: port2,
         signal,
         executable: snapshot.executable,
+        launcher: hostLauncher(runtime),
         input: invocation,
         timeout,
         parentProcessId: process.pid,

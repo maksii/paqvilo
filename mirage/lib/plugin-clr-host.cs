@@ -394,8 +394,26 @@ public static class PaqviloPluginHost {
  // PROCESS_BASIC_INFORMATION: pointer-sized fields on both 32-bit and 64-bit hosts.
  [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]struct BasicInformation{public IntPtr ExitStatus,PebBaseAddress,AffinityMask,BasePriority,UniqueProcessId,InheritedFromUniqueProcessId;}
  [System.Runtime.InteropServices.DllImport("ntdll.dll")]static extern int NtQueryInformationProcess(IntPtr process,int informationClass,ref BasicInformation information,int length,out int returned);
- // The PID that created this host (ProcessBasicInformation): independent of wall-clock creation times.
- static long CreatorId(){var info=new BasicInformation();int returned;using(var self=Process.GetCurrentProcess())return NtQueryInformationProcess(self.Handle,0,ref info,System.Runtime.InteropServices.Marshal.SizeOf(typeof(BasicInformation)),out returned)==0?info.InheritedFromUniqueProcessId.ToInt64():-1;}
+ [System.Runtime.InteropServices.DllImport("libc",EntryPoint="getppid")]static extern int GetParentProcessId();
+ // The PID that created this host: ProcessBasicInformation on Windows, getppid() under Mono on macOS and Linux (the
+ // parent starts mono itself, so the parent of mono is the creator). Both are independent of wall-clock creation times.
+ static long CreatorId(){if(Environment.OSVersion.Platform!=PlatformID.Win32NT)return GetParentProcessId();var info=new BasicInformation();int returned;using(var self=Process.GetCurrentProcess())return NtQueryInformationProcess(self.Handle,0,ref info,System.Runtime.InteropServices.Marshal.SizeOf(typeof(BasicInformation)),out returned)==0?info.InheritedFromUniqueProcessId.ToInt64():-1;}
+ [System.Runtime.InteropServices.DllImport("libc",EntryPoint="dup")]static extern int Dup(int fd);
+ [System.Runtime.InteropServices.DllImport("libc",EntryPoint="dup2")]static extern int Dup2(int fd,int target);
+ // The protocol's output stream. Mono (macOS, Linux) writes its native crash report (FailFast, a fatal signal) to file
+ // descriptor 1, so there the protocol keeps a private copy of the parent's pipe and descriptor 1 becomes standard error:
+ // a crash report never reaches the protocol, and the host's exit is reported as the crash it is.
+ static Stream ProtocolOutput(){if(Environment.OSVersion.Platform==PlatformID.Win32NT)return Console.OpenStandardOutput();int fd=Dup(1);if(fd<0||Dup2(2,1)<0)throw new InvalidOperationException("The CLR host cannot separate its protocol output.");return new DescriptorStream(fd);}
+ // A write-only stream over a POSIX file descriptor: Mono's FileStream does not take a descriptor it did not open.
+ sealed class DescriptorStream:Stream {
+  readonly int fd;public DescriptorStream(int fd){this.fd=fd;}
+  [System.Runtime.InteropServices.DllImport("libc",EntryPoint="write",SetLastError=true)]static extern IntPtr PosixWrite(int fd,byte[] buffer,IntPtr count);
+  public override void Write(byte[] buffer,int offset,int count){while(count>0){var chunk=offset==0?buffer:new byte[count];if(offset!=0)Buffer.BlockCopy(buffer,offset,chunk,0,count);long written=PosixWrite(fd,chunk,(IntPtr)count).ToInt64();if(written<0){if(System.Runtime.InteropServices.Marshal.GetLastWin32Error()==4)continue;throw new IOException("The CLR host protocol output failed.");}offset+=(int)written;count-=(int)written;if(offset>=buffer.Length)break;}}
+  public override void Flush(){}
+  public override bool CanRead{get{return false;}}public override bool CanSeek{get{return false;}}public override bool CanWrite{get{return true;}}
+  public override long Length{get{throw new NotSupportedException();}}public override long Position{get{throw new NotSupportedException();}set{throw new NotSupportedException();}}
+  public override int Read(byte[] buffer,int offset,int count){throw new NotSupportedException();}public override long Seek(long offset,SeekOrigin origin){throw new NotSupportedException();}public override void SetLength(long value){throw new NotSupportedException();}
+ }
  static EntityImageCollection Images(object value){var result=new EntityImageCollection();foreach(var pair in Map(value))result[pair.Key]=(Entity)Decode(pair.Value);return result;}
  public static int Main(string[] args){
   // A trailing `--label <text>` names the host in a debugger's process picker; the host ignores its value.
@@ -409,7 +427,7 @@ public static class PaqviloPluginHost {
   if((args.Length!=offset+2&&!named)||args[offset]!="--parent")return 73;
   int parentId;long parentStart=0;if(!Int32.TryParse(args[offset+1],out parentId)||parentId<=0||(named&&(!Int64.TryParse(args[offset+3],out parentStart)||parentStart<=0)))return 73;
   try{using(var owner=Process.GetProcessById(parentId)){if(named?owner.StartTime.ToUniversalTime().Ticks!=parentStart:CreatorId()!=parentId)return 74;if(owner.HasExited)return 74;}}catch{return 74;}
-  Input=new StreamReader(Console.OpenStandardInput(),new System.Text.UTF8Encoding(false));Output=new StreamWriter(Console.OpenStandardOutput(),new System.Text.UTF8Encoding(false));Console.SetOut(TextWriter.Null);Console.SetError(TextWriter.Null);
+  Input=new StreamReader(Console.OpenStandardInput(),new System.Text.UTF8Encoding(false));Output=new StreamWriter(ProtocolOutput(),new System.Text.UTF8Encoding(false));Console.SetOut(TextWriter.Null);Console.SetError(TextWriter.Null);
   SandboxCulture();
   // The reader routes SDK answers to their waiting callers and runs every invocation on its own thread, so a nested Execute
   // enters this process while its caller waits in an SDK call (native depth: nested steps run on the same worker process).
@@ -421,7 +439,8 @@ public static class PaqviloPluginHost {
  static void SandboxCulture(){var culture=CultureInfo.GetCultureInfo("en-US");CultureInfo.DefaultThreadCurrentCulture=culture;CultureInfo.DefaultThreadCurrentUICulture=culture;Thread.CurrentThread.CurrentCulture=culture;Thread.CurrentThread.CurrentUICulture=culture;PinUtc();}
  // .NET Framework has no public setter for the local zone: TimeZoneInfo.Local, the DateTime.Now offset cache and
  // TimeZone.CurrentTimeZone are replaced by UTC, again before each invocation (a plug-in may call ClearCachedData).
- static void PinUtc(){const BindingFlags S=BindingFlags.NonPublic|BindingFlags.Static,I=BindingFlags.NonPublic|BindingFlags.Instance;var cached=typeof(TimeZoneInfo).GetField("s_cachedData",S);var data=cached==null?null:cached.GetValue(null);var type=data==null?null:data.GetType();var local=type==null?null:type.GetField("m_localTimeZone",I);var year=type==null?null:type.GetField("m_oneYearLocalFromUtc",I);var rule=typeof(TimeZoneInfo).GetNestedType("OffsetAndRule",BindingFlags.NonPublic);var zone=typeof(TimeZone).GetField("currentTimeZone",S);if(local==null||year==null||rule==null||zone==null)throw new InvalidOperationException("The CLR host cannot pin the sandbox time zone to UTC on this .NET Framework.");lock(data){local.SetValue(data,TimeZoneInfo.Utc);year.SetValue(data,Activator.CreateInstance(rule,I|BindingFlags.Public,null,new object[]{DateTime.UtcNow.Year,TimeSpan.Zero,null},null));}zone.SetValue(null,new UtcZone());if(TimeZoneInfo.Local.Id!="UTC"||TimeZoneInfo.Local.GetUtcOffset(DateTime.UtcNow)!=TimeSpan.Zero||(DateTime.Now-DateTime.UtcNow).Duration()>TimeSpan.FromMinutes(1)||TimeZone.CurrentTimeZone.GetUtcOffset(DateTime.Now)!=TimeSpan.Zero)throw new InvalidOperationException("The CLR host time zone is not UTC.");}
+ // Mono (macOS and Linux) keeps the local zone in the same cache under its corefx name and has no one-year offset cache.
+ static void PinUtc(){const BindingFlags S=BindingFlags.NonPublic|BindingFlags.Static,I=BindingFlags.NonPublic|BindingFlags.Instance;var cached=typeof(TimeZoneInfo).GetField("s_cachedData",S);var data=cached==null?null:cached.GetValue(null);var type=data==null?null:data.GetType();bool mono=Type.GetType("Mono.Runtime")!=null;var local=type==null?null:type.GetField(mono?"_localTimeZone":"m_localTimeZone",I);var year=type==null?null:type.GetField("m_oneYearLocalFromUtc",I);var rule=typeof(TimeZoneInfo).GetNestedType("OffsetAndRule",BindingFlags.NonPublic);var zone=typeof(TimeZone).GetField("currentTimeZone",S);if(local==null||zone==null||(!mono&&(year==null||rule==null)))throw new InvalidOperationException("The CLR host cannot pin the sandbox time zone to UTC on this .NET Framework.");lock(data){local.SetValue(data,TimeZoneInfo.Utc);if(!mono)year.SetValue(data,Activator.CreateInstance(rule,I|BindingFlags.Public,null,new object[]{DateTime.UtcNow.Year,TimeSpan.Zero,null},null));}zone.SetValue(null,new UtcZone());if(TimeZoneInfo.Local.Id!="UTC"||TimeZoneInfo.Local.GetUtcOffset(DateTime.UtcNow)!=TimeSpan.Zero||(DateTime.Now-DateTime.UtcNow).Duration()>TimeSpan.FromMinutes(1)||TimeZone.CurrentTimeZone.GetUtcOffset(DateTime.Now)!=TimeSpan.Zero)throw new InvalidOperationException("The CLR host time zone is not UTC.");}
  sealed class UtcZone:TimeZone {public override string StandardName{get{return TimeZoneInfo.Utc.StandardName;}}public override string DaylightName{get{return TimeZoneInfo.Utc.DaylightName;}}public override DaylightTime GetDaylightChanges(int year){return new DaylightTime(DateTime.MinValue,DateTime.MinValue,TimeSpan.Zero);}public override TimeSpan GetUtcOffset(DateTime time){return TimeSpan.Zero;}}
  static int ExecuteLine(Dictionary<string,object> input){
   InvocationLease lease=null;bool pluginExecuting=false;var invocationId=Get(input,"invocationId") as string;try{

@@ -8,7 +8,7 @@ import path from 'node:path';
 import { once } from 'node:events';
 import { spawn, spawnSync } from 'node:child_process';
 import { prepareClrRuntime } from '../lib/plugin-clr.mjs';
-import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
+import { CLR_SKIP, clrSdk, compileClr, hostCommand } from './fixtures/clr-sdk.mjs';
 
 const user = '10000000-0000-0000-0000-000000000001';
 // hang guard only: a blocked synchronous child cannot be ended by the test runner
@@ -33,7 +33,7 @@ async function bareRuntime(t) {
   return { root, runtime };
 }
 const run = (file, args) =>
-  spawnSync(file, args, { windowsHide: true, encoding: 'utf8', timeout: CLI_HANG_GUARD_MS, input: '' });
+  spawnSync(...hostCommand(file, args), { windowsHide: true, encoding: 'utf8', timeout: CLI_HANG_GUARD_MS, input: '' });
 // The holder starts a process that exits at once and keeps a handle to it, so its PID cannot be reused, then starts the
 // host with that PID (`named`: and its start time), closes the host's input and returns the host's exit code.
 async function exitedParentHost(root, runtime, named) {

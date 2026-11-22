@@ -3,12 +3,18 @@ import { SANDBOX_WORKER_CRASH } from './plugin-fault.mjs';
 import { workerData } from 'node:worker_threads';
 import { spawn } from 'node:child_process';
 import readline from 'node:readline';
-const { port, signal, executable, input, timeout, parentProcessId, label } = workerData,
+import { clrHostCommand, clrToolchain } from './clr-toolchain.mjs';
+const { port, signal, executable, launcher, input, timeout, parentProcessId, label } = workerData,
   flags = new Int32Array(signal);
 let complete = false,
   child;
 try {
-  child = spawn(executable, ['--parent', String(parentProcessId), ...(label ? ['--label', label] : [])], {
+  const [command, args] = clrHostCommand(
+    launcher === undefined ? (clrToolchain()?.launcher ?? null) : launcher,
+    executable,
+    ['--parent', String(parentProcessId), ...(label ? ['--label', label] : [])],
+  );
+  child = spawn(command, args, {
     shell: false,
     windowsHide: true,
     stdio: ['pipe', 'pipe', 'pipe'],

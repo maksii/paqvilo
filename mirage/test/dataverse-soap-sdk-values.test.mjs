@@ -9,7 +9,7 @@ import { createHash } from 'node:crypto';
 import { decodeValue, encodeValue, NS, parseXml } from '../lib/dataverse-soap-xml.mjs';
 import { soapSdkResults } from '../lib/dataverse-soap-sdk-values.mjs';
 const soapSdkValue = (value) => soapSdkResults({ value }).get('value');
-import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
+import { CLR_SKIP, clrSdk, compileClr, hostCommand } from './fixtures/clr-sdk.mjs';
 
 // hang guard only: a blocked synchronous child cannot be ended by the test runner
 const CLI_HANG_GUARD_MS = 170_000;
@@ -67,13 +67,13 @@ var d=new XmlDocument();d.LoadXml(Console.In.ReadToEnd());var row=(Entity)new Da
       .map(([name, uri]) => `xmlns:${name}="${uri}"`)
       .join(' ');
     const options = { encoding: 'utf8', windowsHide: true, timeout: CLI_HANG_GUARD_MS };
-    const read = spawnSync(executable, [], {
+    const read = spawnSync(...hostCommand(executable, []), {
       ...options,
       input: `<root ${declarations}>${encodeValue('a:Entity', entity)}</root>`,
     });
     assert.equal(read.status, 0, read.stderr);
     assert.equal(read.stdout, 'observed');
-    const write = spawnSync(executable, ['write'], options);
+    const write = spawnSync(...hostCommand(executable, ['write']), options);
     assert.equal(write.status, 0, write.stderr);
     const decoded = decodeValue(parseXml(write.stdout));
     assert.equal(decoded.relatedEntities.length, 1);
@@ -157,7 +157,7 @@ var alias=(AliasedValue)row["alias"];if(alias.EntityLogicalName!="widget"||alias
       const declarations = Object.entries(NS)
         .map(([name, uri]) => `xmlns:${name}="${uri}"`)
         .join(' ');
-      const result = spawnSync(executable, [], {
+      const result = spawnSync(...hostCommand(executable, []), {
         input: `<root ${declarations}>${encodeValue('b:value', soapSdkValue(value()))}</root>`,
         encoding: 'utf8',
         windowsHide: true,

@@ -1,18 +1,31 @@
-// Original-DLL fixtures need the .NET Framework compiler and the verified public Microsoft.Xrm.Sdk.dll. .NET Framework
-// exists only on Windows, so these tests skip elsewhere; on Windows a missing SDK fixture fails instead of skipping.
+// Original-DLL fixtures need a .NET Framework toolchain (the Windows .NET Framework compiler, or Mono on macOS and Linux)
+// and the verified public Microsoft.Xrm.Sdk.dll. Without a toolchain these tests skip. On Windows, where CI prepares the
+// SDK fixture, a missing one fails instead of skipping; on macOS and Linux they also skip until it is prepared (npm run
+// ci:prepare -- --suite mirage --unit) or named by PAQ_TEST_XRM_SDK.
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { generateKeyPairSync } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { compileCached, compileCacheKey, compilerIdentity, fileDigest } from '../../lib/compile-cache.mjs';
-
-export const CLR_SKIP = process.platform !== 'win32' && 'CLR plugin hosts need the Windows .NET Framework compiler';
+import { clrHostCommand, clrToolchain } from '../../lib/clr-toolchain.mjs';
 
 // The location `npm run ci:prepare -- --suite mirage --unit` restores; PAQ_TEST_XRM_SDK overrides it.
 const PREPARED_SDK = fileURLToPath(
   new URL('../../../.paqvilo/ci/sdk-reference/reference/lib/net462/Microsoft.Xrm.Sdk.dll', import.meta.url),
 );
+
+const TOOLCHAIN = clrToolchain();
+const sdkPrepared = () => fs.existsSync(path.resolve(process.env.PAQ_TEST_XRM_SDK || PREPARED_SDK));
+export const CLR_SKIP =
+  (!TOOLCHAIN && 'CLR plugin hosts need the .NET Framework compiler (Windows) or Mono') ||
+  (process.platform !== 'win32' && !sdkPrepared() && 'CLR plugin hosts under Mono need the prepared SDK fixture');
+
+/** The C# compiler command with `args` (csc options and sources): the .NET Framework compiler, or Mono's csc.exe. */
+export const cscCommand = (args) => [CSC, [...CSC_ARGUMENTS, ...args]];
+
+/** The command and arguments that start a compiled .NET Framework executable: itself on Windows, through mono elsewhere. */
+export const hostCommand = (executable, args = []) => clrHostCommand(TOOLCHAIN?.launcher ?? null, executable, args);
 
 export function clrSdk() {
   const sdk = path.resolve(process.env.PAQ_TEST_XRM_SDK || PREPARED_SDK);
@@ -23,7 +36,8 @@ export function clrSdk() {
   return sdk;
 }
 
-const CSC = path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe');
+const CSC = TOOLCHAIN?.compiler ?? 'csc';
+const CSC_ARGUMENTS = TOOLCHAIN?.compilerArguments ?? [];
 // hang guard only: a blocked synchronous child cannot be ended by the test runner
 const CLI_HANG_GUARD_MS = 170_000;
 
@@ -42,7 +56,7 @@ export function compileClr(source, out, { target = 'library', references = [], k
     ...(cacheRoot === undefined ? {} : { root: cacheRoot }),
     key: compileCacheKey([
       'clr-fixture/1',
-      compilerIdentity(CSC),
+      compilerIdentity(CSC_ARGUMENTS[0] ?? CSC),
       target,
       // The assembly's identity is its output file name.
       name,
@@ -56,6 +70,7 @@ export function compileClr(source, out, { target = 'library', references = [], k
       const build = run(
         CSC,
         [
+          ...CSC_ARGUMENTS,
           '/nologo',
           '/target:' + target,
           '/out:' + path.join(folder, name),
