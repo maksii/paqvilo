@@ -101,14 +101,14 @@ test('a CLR host gets its parent PID alone; no parent probe process starts', { s
   await fs.mkdir(directory);
   const source = path.join(directory, 'Protocol.cs'),
     executable = path.join(directory, 'Protocol.exe');
-  // Every start logs its arguments. Unbound, it reads its input and then exits 74, as a host that cannot bind its
+  // Every start logs its arguments and, bound, waits after its result for its owner to end it. Unbound, it reads its input and then exits 74, as a host that cannot bind its
   // parent does; reading first means the input write has completed, so the exit decides the outcome.
   await fs.writeFile(
     source,
     String.raw`using System;public static class Protocol{public static void Main(string[] args){
 System.IO.File.AppendAllText(Environment.GetEnvironmentVariable("INVENTED_ARGS_LOG"),String.Join(" ",args)+"\n");
 Console.ReadLine();if(Environment.GetEnvironmentVariable("INVENTED_PARENT_MODE")=="unbound")Environment.Exit(74);
-Console.WriteLine("{\"kind\":\"result\"}");if(args[0]=="--persistent")while(Console.ReadLine()!=null)Console.WriteLine("{\"kind\":\"result\"}");}}`,
+Console.WriteLine("{\"kind\":\"result\"}");if(args[0]=="--persistent")while(Console.ReadLine()!=null)Console.WriteLine("{\"kind\":\"result\"}");else Console.ReadLine();}}`,
   );
   compileClr(source, executable, { target: 'exe' });
   const assembly = path.join(directory, 'Original.dll');
@@ -153,9 +153,18 @@ const outcomes=[call(),call()];closeClrHostPool();console.log(JSON.stringify({pi
     { pooled: true, mode: 'unbound', outcome: unbound, hosts: 2 },
   ];
   for (const { pooled, mode, outcome, hosts } of cases) {
-    const log = path.join(root, `${pooled}-${mode}.log`);
+    const log = path.join(root, `${pooled}-${mode}.log`),
+      temporary = path.join(root, `${pooled}-${mode}-tmp`);
+    await fs.mkdir(temporary);
     const result = spawnSync(process.execPath, [path.join(directory, 'invoke.mjs')], {
-      env: { ...process.env, INVENTED_PARENT_MODE: mode, INVENTED_POOLED: String(pooled), INVENTED_ARGS_LOG: log },
+      env: {
+        ...process.env,
+        INVENTED_PARENT_MODE: mode,
+        INVENTED_POOLED: String(pooled),
+        INVENTED_ARGS_LOG: log,
+        // Modern .NET creates its debugger pipes and diagnostics socket in this folder.
+        TMPDIR: temporary,
+      },
       windowsHide: true,
       encoding: 'utf8',
       timeout: CLI_HANG_GUARD_MS,
@@ -172,6 +181,12 @@ const outcomes=[call(),call()];closeClrHostPool();console.log(JSON.stringify({pi
       'every execution snapshot is removed',
     );
     assert.deepEqual((await fs.readdir(directory)).sort(), [...runtime.allowedFiles].sort());
+    assert.deepEqual(
+      (await fs.readdir(temporary)).filter((name) => /^(?:clr-debug-pipe|dotnet-diagnostic)-/.test(name)),
+      [],
+      'an ended host leaves no runtime pipe or socket in the temporary folder',
+    );
+    await fs.rm(temporary, { recursive: true, force: true, maxRetries: 5 });
   }
 });
 

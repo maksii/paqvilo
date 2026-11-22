@@ -117,6 +117,33 @@ export function clrToolchain({ platform = process.platform, env = process.env, f
   };
 }
 
+/**
+ * Removes what an ended .NET host left in its temporary folder. At start the runtime creates two debugger pipes and a
+ * diagnostics socket there, named after its process id, and removes them only when it exits by itself; a host that was
+ * ended (after its result, on a timeout or cancel, when its pool closes) or that crashed leaves all three. The .NET
+ * Framework host (`launcher` null) creates none.
+ */
+export function removeClrHostLeftovers(launcher, pid, env = process.env) {
+  if (!launcher || !Number.isInteger(pid)) return;
+  const folder = env.TMPDIR || '/tmp';
+  const own = [`clr-debug-pipe-${pid}-`, `dotnet-diagnostic-${pid}-`];
+  let names;
+  try {
+    names = fs.readdirSync(folder);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    const prefix = own.find((start) => name.startsWith(start));
+    if (!prefix || !/^\d+-(?:in|out|socket)$/.test(name.slice(prefix.length))) continue;
+    try {
+      fs.rmSync(path.join(folder, name), { force: true });
+    } catch {
+      // A folder that became read-only: nothing this owner can remove.
+    }
+  }
+}
+
 /** The command and arguments that start the host `executable` with `args` under `launcher` (null: the executable itself). */
 export function clrHostCommand(launcher, executable, args) {
   return launcher ? [launcher, [executable, ...args]] : [executable, args];

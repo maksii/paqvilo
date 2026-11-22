@@ -4,7 +4,35 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { clrHostCommand, clrHostEnvironment, clrToolchain, DOTNET_MIN_MAJOR } from '../lib/clr-toolchain.mjs';
+import {
+  clrHostCommand,
+  clrHostEnvironment,
+  clrToolchain,
+  DOTNET_MIN_MAJOR,
+  removeClrHostLeftovers,
+} from '../lib/clr-toolchain.mjs';
+
+test('an ended .NET host loses exactly its own debugger pipes and diagnostics socket', (t) => {
+  const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'paq-clr-leftovers-')));
+  t.after(() => fs.rmSync(folder, { recursive: true, force: true }));
+  const own = ['clr-debug-pipe-712-689-in', 'clr-debug-pipe-712-689-out', 'dotnet-diagnostic-712-689-socket'];
+  // Hosts whose process id only shares digits with this one, and files that merely look alike.
+  const others = [
+    'clr-debug-pipe-7123-689-in',
+    'clr-debug-pipe-1712-689-out',
+    'dotnet-diagnostic-71-2689-socket',
+    'clr-debug-pipe-712-689-in.txt',
+    'clr-debug-pipe-712-notes-in',
+    'notes-712.txt',
+  ];
+  for (const name of [...own, ...others]) fs.writeFileSync(path.join(folder, name), '');
+  removeClrHostLeftovers(null, 712, { TMPDIR: folder });
+  removeClrHostLeftovers('/usr/bin/dotnet', undefined, { TMPDIR: folder });
+  assert.deepEqual(fs.readdirSync(folder).sort(), [...own, ...others].sort(), 'no .NET host, or none started');
+  removeClrHostLeftovers('/usr/bin/dotnet', 712, { TMPDIR: folder });
+  assert.deepEqual(fs.readdirSync(folder).sort(), [...others].sort());
+  assert.doesNotThrow(() => removeClrHostLeftovers('/usr/bin/dotnet', 712, { TMPDIR: path.join(folder, 'absent') }));
+});
 
 test('Windows compiles with the .NET Framework 4 compiler and runs the host executable itself', () => {
   const toolchain = clrToolchain({ platform: 'win32', env: { WINDIR: 'D:\\Windows' } });
