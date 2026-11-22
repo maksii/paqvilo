@@ -1,8 +1,8 @@
 // Guide enhancements: copy buttons, a collapsed contents list on small screens and the contents highlight.
 // Without JavaScript the page is complete: every command is selectable text and every link works.
-const status = Object.assign(document.createElement('p'), { className: 'sr-only' });
-status.setAttribute('role', 'status');
-document.body.append(status);
+const announcer = Object.assign(document.createElement('p'), { className: 'sr-only' });
+announcer.setAttribute('role', 'status');
+document.body.append(announcer);
 
 for (const block of document.querySelectorAll('.cmd')) {
   if (!navigator.clipboard) break;
@@ -15,7 +15,7 @@ for (const block of document.querySelectorAll('.cmd')) {
       copied = false;
     }
     button.textContent = copied ? 'Copied' : 'Select the text';
-    status.textContent = copied ? 'Copied to clipboard' : 'Copy failed; select the text instead';
+    announcer.textContent = copied ? 'Copied to clipboard' : 'Copy failed; select the text instead';
     setTimeout(() => {
       button.textContent = 'Copy';
     }, 1600);
