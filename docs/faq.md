@@ -53,7 +53,10 @@ missing metadata can need a mock or a [project extension](project-extensions.md)
 
 ## Does Mirage execute my Dataverse plug-in DLL?
 
-Not by default. Mirage imports the assembly, type and step registrations and runs trusted project handlers, mocks or
-visible placeholders that report the skipped logic. An explicitly configured original-assembly mode can run a trusted
-plug-in DLL locally, on Windows or with the .NET 10 SDK or later on macOS and Linux. See
+It depends on where the assembly comes from. A Power Pages export carries registrations without the DLL, so those steps
+run trusted project handlers, mocks or visible placeholders that report the skipped logic, unless a trusted
+`pluginRuntimes` descriptor names your build. A step whose assembly has content (read from a Solution export's
+`.dll`, or uploaded to the local organization) runs it by default when no handler or mock is registered for it.
+Original assemblies run on Windows x64 (.NET Framework) or, with the .NET 10 SDK or later, on macOS and Linux; since
+0.9.8 you can debug them in VS Code on Windows. See
 [plug-in simulation](../mirage/docs/dataverse-plugins.md).
