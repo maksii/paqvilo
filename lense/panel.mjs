@@ -536,8 +536,9 @@ function resolveMacEditorCommand(editor, env, regular) {
     ...(env.HOME && path.posix.isAbsolute(env.HOME) ? [path.posix.join(env.HOME, 'Applications')] : []),
   ];
   return (
-    roots.map((root) => path.posix.join(root, app, 'Contents', 'Resources', 'app', 'bin', editor)).find(regular) ??
-    editor
+    roots
+      .map((root) => path.posix.join(root, app, 'Contents', 'Resources', 'app', 'bin', editor))
+      .find((file) => regular(file)) ?? editor
   );
 }
 
