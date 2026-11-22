@@ -41,7 +41,8 @@ with simulated data.](https://raw.githubusercontent.com/maksii/paqvilo/main/docs
 | Automate checks in CI or with an AI coding agent       | Node testing helpers, `--json` output from the inspection, audit and status commands, offline static analysis (`paqvilo analyze`) and a bounded browser API for agents                                                              | [Public API](https://github.com/maksii/paqvilo/blob/main/docs/public-api.md), [CLI](https://github.com/maksii/paqvilo/blob/main/docs/cli.md)                             |
 
 The [coverage guide](https://github.com/maksii/paqvilo/blob/main/docs/coverage.md) compares Lense and Mirage area by
-area, and the [step-by-step guide](https://paqvilo.dev/guide.html) shows each workflow with recordings.
+area, the [capabilities page](https://paqvilo.dev/coverage.html) shows how each scenario is executed, and the
+[developer guide](https://paqvilo.dev/guide.html) gives the commands for each workflow.
 
 ## Try it
 
