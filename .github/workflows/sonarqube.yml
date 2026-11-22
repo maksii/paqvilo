@@ -4,11 +4,11 @@ on:
     branches:
       - main
       # Release line: analysed so pull requests into it have a base to compare with.
-      - 0.9.8
+      - 0.9.9
   pull_request:
     branches:
       - main
-      - 0.9.8
+      - 0.9.9
     types:
       - opened
       - synchronize

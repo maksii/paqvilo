@@ -6,7 +6,7 @@ on:
   pull_request:
     branches:
       - main
-      - 0.9.8
+      - 0.9.9
     types:
       - opened
       - synchronize
