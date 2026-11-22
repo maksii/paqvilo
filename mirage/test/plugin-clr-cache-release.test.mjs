@@ -21,7 +21,7 @@ import { DataStore, emptyState } from '../lib/data.mjs';
 import { pluginCatalogue } from '../lib/exported-plugins.mjs';
 import { createOrganizationBackend } from '../lib/organization-backend.mjs';
 import { releaseStaleUploadedRuntimes } from '../lib/plugin-uploaded.mjs';
-import { CLR_SKIP, clrSdk, compileClr, hostCommand } from './fixtures/clr-sdk.mjs';
+import { CLR_SKIP, clrSdk, compileClr, hostCommand, removeHostLeftovers } from './fixtures/clr-sdk.mjs';
 
 const USER = '10000000-0000-4000-8000-000000000001';
 const NOOP_SOURCE =
@@ -146,7 +146,7 @@ test(
     const closed = new Promise((resolve) => held.once('close', resolve));
     ownedFixture(t).add(() => {
       held.kill();
-      return closed;
+      return closed.then(() => removeHostLeftovers(held));
     });
     await new Promise((resolve, reject) => {
       held.once('error', reject);
@@ -302,7 +302,7 @@ test(
     const closed = new Promise((resolve) => held.once('close', resolve));
     ownedFixture(t).add(() => {
       held.kill();
-      return closed;
+      return closed.then(() => removeHostLeftovers(held));
     });
     await new Promise((resolve, reject) => {
       held.once('error', reject);
@@ -909,7 +909,7 @@ test(
     );
     ownedFixture(t).add(() => {
       held.kill();
-      return closed;
+      return closed.then(() => removeHostLeftovers(held));
     });
     await new Promise((resolve, reject) => {
       held.once('error', reject);

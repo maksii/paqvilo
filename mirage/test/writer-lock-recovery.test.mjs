@@ -18,6 +18,7 @@ import {
   takeWriterLock,
   writerLockBusyMessage,
 } from '../lib/transactional-files.mjs';
+import { stateFileEndpoint } from '../lib/state-file-claim.mjs';
 import { ownedFixture } from '../testing/owned-fixture.mjs';
 import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 
@@ -80,6 +81,9 @@ async function gatedWriter(t, options, gate) {
       assert.ok(child.kill('SIGKILL'), 'Owned writer termination must be accepted');
       await exited;
     }
+    // A killed writer leaves the socket of its claim on the state file; no later start of this test may take it over.
+    if (process.platform !== 'win32' && options.stateFile)
+      await fs.rm(await stateFileEndpoint(options.stateFile), { force: true });
   });
   const next = () =>
     Promise.race([

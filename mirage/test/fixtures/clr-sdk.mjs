@@ -8,7 +8,7 @@ import { spawnSync } from 'node:child_process';
 import { generateKeyPairSync } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { compileCached, compileCacheKey, compilerIdentity, fileDigest } from '../../lib/compile-cache.mjs';
-import { clrHostCommand, clrToolchain } from '../../lib/clr-toolchain.mjs';
+import { clrHostCommand, clrToolchain, removeClrHostLeftovers } from '../../lib/clr-toolchain.mjs';
 import {
   dotnetBuildInputs,
   dotnetCompile,
@@ -78,6 +78,11 @@ export function toolchainPaths(executable) {
 export function hostCommand(executable, args = []) {
   prepareExecutable(executable);
   return clrHostCommand(TOOLCHAIN?.launcher ?? null, executable, args);
+}
+
+/** Removes what the .NET runtime of a fixture process `child` that a test ended left in the temporary folder. */
+export function removeHostLeftovers(child) {
+  removeClrHostLeftovers(TOOLCHAIN?.launcher ?? null, child.pid);
 }
 
 export function clrSdk() {
