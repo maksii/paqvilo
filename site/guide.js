@@ -105,15 +105,20 @@ for (const tour of document.querySelectorAll('.tour')) {
     };
     caption.hidden = false;
     caption.setAttribute('aria-live', 'polite');
+    // The first real use stops the pulse that marks the chips as controls.
+    const use = (index) => {
+      tour.classList.add('is-used');
+      select(index);
+    };
     for (const [index, spot] of spots.entries()) {
       spot.addEventListener('click', (event) => {
         event.preventDefault();
-        select(index);
+        use(index);
       });
-      spot.addEventListener('mouseenter', () => select(index));
-      spot.addEventListener('focus', () => select(index));
-      items[index].addEventListener('mouseenter', () => select(index));
-      items[index].addEventListener('click', () => select(index));
+      spot.addEventListener('mouseenter', () => use(index));
+      spot.addEventListener('focus', () => use(index));
+      items[index].addEventListener('mouseenter', () => use(index));
+      items[index].addEventListener('click', () => use(index));
     }
     select(0);
   }

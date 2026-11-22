@@ -1225,7 +1225,7 @@ kbd {
 }
 .spot span {
   position: absolute;
-  left: -25px;
+  left: 3px;
   top: calc(50% - 11px);
   width: 22px;
   height: 22px;
@@ -1238,10 +1238,45 @@ kbd {
     sans-serif;
   text-align: center;
   box-shadow: 0 0 0 2px #fff;
+  transition:
+    left 0.16s ease-out,
+    top 0.16s ease-out;
 }
-.spot.up span {
-  left: calc(50% - 11px);
-  top: -25px;
+/* A ring that breathes until the reader has used the tour once: the chips are controls, not labels. */
+.spot span::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  box-shadow: 0 0 0 0 rgba(185, 237, 123, 0.9);
+  animation: spot-pulse 2.6s ease-out infinite;
+}
+.spot:nth-of-type(2n) span::after {
+  animation-delay: 0.5s;
+}
+.spot:nth-of-type(3n) span::after {
+  animation-delay: 1s;
+}
+.tour.is-used .spot span::after,
+.spot.is-on span::after {
+  animation: none;
+}
+@keyframes spot-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(24, 45, 42, 0.55);
+  }
+  60%,
+  100% {
+    box-shadow: 0 0 0 9px rgba(24, 45, 42, 0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .spot span {
+    transition: none;
+  }
+  .spot span::after {
+    animation: none;
+  }
 }
 .spot:hover,
 .spot:focus-visible,
@@ -1257,6 +1292,22 @@ kbd {
   background: var(--green);
   color: var(--ink);
   box-shadow: 0 0 0 2px var(--ink);
+}
+/* The active chip steps off the element it marks. */
+.spot.to-left:hover span,
+.spot.to-left:focus-visible span,
+.spot.to-left.is-on span {
+  left: -26px;
+}
+.spot.to-up:hover span,
+.spot.to-up:focus-visible span,
+.spot.to-up.is-on span {
+  top: -26px;
+}
+.spot.to-down:hover span,
+.spot.to-down:focus-visible span,
+.spot.to-down.is-on span {
+  top: calc(100% + 4px);
 }
 .tour-caption {
   margin: 0;
