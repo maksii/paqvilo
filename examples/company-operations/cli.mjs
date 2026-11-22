@@ -13,13 +13,8 @@ export class UsageError extends Error {}
  * Whether `meta` is the started script's. Node loads it from its real path (macOS /tmp and /var are links into
  * /private), so the started path is compared the same way.
  */
-export const isMain = (meta) => {
-  try {
-    return Boolean(process.argv[1]) && fs.realpathSync(process.argv[1]) === fileURLToPath(meta.url);
-  } catch {
-    return false;
-  }
-};
+export const isMain = (meta, started = process.argv[1]) =>
+  Boolean(started) && fs.existsSync(started) && fs.realpathSync(started) === fileURLToPath(meta.url);
 
 const HINT = ' Run it with --help for usage.';
 export function errorLine(error) {

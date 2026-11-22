@@ -1,4 +1,4 @@
-import { realpathSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -283,13 +283,8 @@ export async function runMirageReplayShards(job, { workers = 10, runWorker = spa
 }
 // Inline: the replay modules also run from a project copy without this example's cli.mjs. Node loads the started
 // script from its real path (macOS /tmp and /var are links into /private).
-const startedHere = () => {
-  try {
-    return Boolean(process.argv[1]) && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
-  } catch {
-    return false;
-  }
-};
+const startedHere = (started = process.argv[1]) =>
+  Boolean(started) && existsSync(started) && realpathSync(started) === fileURLToPath(import.meta.url);
 if (startedHere()) {
   // Loaded only when run as a command: the replay runtime's own imports stay the fingerprinted set.
   const { cli, UsageError } = await import('../cli.mjs');
