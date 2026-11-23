@@ -85,6 +85,7 @@ Other
   --mirage          doctor: also gate Sources diagnostics and Mirage configuration
   --lint-profiles   doctor: lint all exported deployment-profiles as warnings
   --fail-on <none|error|warning|hint> doctor/analyze: static analysis threshold
+  --analysis-limit <ceiling>=<n> doctor/analyze: raise or lower one static analysis ceiling (repeatable)
                     doctor defaults to none (advisory); analyze defaults to error
   --json            list/map/status/doctor/analyze/audit/resources/verify/agent: machine readable output;
                     mirage (except dev) and model-driven inspect too
