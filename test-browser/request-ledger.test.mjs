@@ -61,10 +61,21 @@ test('real browser: the ledger lists local, platform, external and worker reques
   owner.add(() => fx.cleanup());
   const session = new OverlaySession({ origin, sourceDir: fx.dir, site: structuredClone(SITE), sourceMaps: false });
   const channel = process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium');
+  // The second server stands for a public third-party host, as a portal's external origins are. A document Lense
+  // answers itself has no network address, so the browser counts it as public, and an image from another loopback
+  // address is then a public-to-local request under Local Network Access: refused, and its permission check can reach
+  // the browser before the document's commit, which terminates the page's renderer (the navigation ends with
+  // ERR_ABORTED, or the page crashes). Marking that one server public keeps the checks on and makes the request what
+  // the test means it to be.
   const browser = await chromium.launch({
     channel: channel === 'chromium' ? undefined : channel,
     headless: true,
-    args: ['--disable-background-networking', '--disable-component-update', '--disable-sync'],
+    args: [
+      '--disable-background-networking',
+      '--disable-component-update',
+      '--disable-sync',
+      `--ip-address-space-overrides=${new URL(external).host}=public`,
+    ],
   });
   owner.add(() => browser.close());
   const context = await browser.newContext({ serviceWorkers: 'block' });
@@ -80,9 +91,6 @@ test('real browser: the ledger lists local, platform, external and worker reques
       ),
     );
   const loaded = ['/scripts/app.js', '/pixel.png', '/worker.js', '/worker-data.json', '/_api/contacts'].map(settled);
-  // What the browser itself answered for the other origin. A loopback image under a document that interception
-  // fulfilled can be refused by the browser's local network access checks; the ledger records either outcome.
-  const pixel = loaded[1].then(async (request) => (request.failure() ? 'failed' : (await request.response()).status()));
   await page.goto(`${origin}/`);
   await page.waitForFunction(() => window.workerDone && window.fetched);
   await Promise.all(loaded);
@@ -96,7 +104,8 @@ test('real browser: the ledger lists local, platform, external and worker reques
     url: external,
     method: 'GET',
     type: 'image',
-    status: await pixel,
+    // The external host answered the image itself.
+    status: 200,
     class: 'external',
     count: 1,
   });
