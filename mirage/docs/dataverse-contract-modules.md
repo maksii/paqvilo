@@ -68,8 +68,11 @@ itself.
 
 Arithmetic uses JavaScript numbers. Money and decimal results can therefore differ from the platform in the last digits.
 
-**Writes.** A create, update or upsert that includes a calculated column is refused with HTTP 400 `0x80048d19`, and
-nothing is stored. The native refusal is not known; this invalid-property shape stands in.
+**Writes.** A create, update or upsert that includes a calculated column succeeds and ignores the value, as the
+Dataverse Web API and the portal `/_api` do (captured 2026-11-23): nothing is stored for the column, reads compute it,
+and an update that carries only calculated columns changes no stored column while `modifiedon` and `versionnumber`
+advance, as for an empty update. `CALCULATED_WRITE_IGNORED` is reported once per column so the ignored value is
+visible locally.
 
 **Diagnostics.** `CALCULATED_UNSUPPORTED` is reported once per column in these cases:
 
@@ -377,8 +380,8 @@ The validator is `validateRollups(map)`; install is `install(api, { rollups, dia
 
 - SUM over no matching child rows is 0; MIN, MAX and AVG over none are null.
 - An unsupported definition stores state 2 (OverflowError), the nearest platform error state.
-- A write to a rollup column is refused with the invalid-property shape (`0x80048d19`), assumed from the calculated
-  module.
+- A write to a rollup column is refused with the invalid-property shape (`0x80048d19`). This is not natively
+  qualified; natively, a calculated column in a write is ignored instead (see [calculated columns](#calculated-columns)).
 - The platform keeps no per-row stale flag; its system job recalculates incrementally per column. The local `_state = 0`
   mark only tells the hourly local task which rows to visit.
 

@@ -26,7 +26,6 @@ import { validateDerivedColumns, derivedColumnsOf } from './derived-columns.mjs'
 // describe(api) is contract: the subset above is the simulator's own grammar, not the designer's XAML. It is behaviour only when
 // the installed api's pack calculatedColumns cover every calculated column of the store.
 // Arithmetic and comparison of numbers are exact decimals (exact-numeric.mjs), as Dataverse decimal and money columns are.
-import { DataError } from './data-error.mjs';
 import { compareNumeric, isExactNumeric } from './exact-numeric.mjs';
 import { FxError, decimalArithmetic } from './power-fx.mjs';
 import { parseSolutionXml } from './solution-xml.mjs';
@@ -320,16 +319,6 @@ export function validateCalculatedColumns(map) {
 
 // ---- Extension
 
-// The native refusal of a value for a calculated column (IsValidForCreate/IsValidForUpdate are false) is not known; the
-// payload reader's invalid-property shape (0x80048d19) stands in.
-const writeRefused = (mapping, column) =>
-  new DataError(
-    `The attribute '${column}' of entity '${mapping.logicalName}' is a calculated field and cannot be set.`,
-    400,
-    'InvalidRequest',
-    { innerCode: '0x80048d19' },
-  );
-
 const states = new WeakMap();
 
 function stateOf(api) {
@@ -531,8 +520,19 @@ function install(api, options = {}) {
   api.recordHooks.add('beforeWrite', (c, mapping, { operation, data }) => {
     if (operation === 'delete' || !data) return;
     const calculated = calculatedColumnsOf(api, mapping.logicalName);
-    const column = Object.keys(data).find((key) => Object.hasOwn(calculated, key.toLowerCase()));
-    if (column) throw writeRefused(mapping, column);
+    // Native (captured 2026-11-23, Dataverse Web API and the portal /_api): a create or update that includes a
+    // calculated column answers 204 and ignores its value; an update with only calculated columns changes no stored
+    // column, though modifiedon and versionnumber advance as for an empty update. The value is computed on read.
+    for (const column of Object.keys(data)) {
+      if (!Object.hasOwn(calculated, column.toLowerCase())) continue;
+      delete data[column];
+      report(state, {
+        code: 'CALCULATED_WRITE_IGNORED',
+        table: mapping.logicalName,
+        column,
+        message: 'A write included this calculated column; its value was ignored, as the platform ignores it.',
+      });
+    }
   });
 }
 
