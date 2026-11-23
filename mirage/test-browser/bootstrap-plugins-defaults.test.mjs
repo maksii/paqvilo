@@ -1,3 +1,4 @@
+// @test-kind unproven: the local Bootstrap adapter modelled on Bootstrap 3.4.1 plug-in defaults (and Bootstrap 5 data-bs-* markup); its assertions are not each checked against the package
 import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -36,6 +37,12 @@ $('#nav-btn-signIn').on('click', function () {
   $('#SignInModal').modal();
 });
 </script></body></html>`,
+  '/nested': `<!doctype html><html lang="en"><head><title>Nested</title></head><body>
+<section class="modal fade" id="outer" tabindex="-1" role="dialog"><div class="modal modal-dialog" id="inner"><div class="modal-content"><div class="modal-body">Nested <button type="button" class="close" data-dismiss="modal" aria-label="Close nested">x</button></div></div></div></section>
+<style>.modal { display: none; } #outer > .modal { display: block; }</style>
+<script src="/jquery.js"></script><script src="/compat.js"></script>
+<script>window.hidden = []; $(document).on('hidden.bs.modal', function (e) { window.hidden.push(e.target.id); });</script>
+</body></html>`,
   '/controls': `<!doctype html><html lang="en"><head><title>Controls</title></head><body>
 <div id="c1" class="collapse">One</div><div id="c2" class="collapse">Two</div>
 <a href="#c3" id="c3Toggle" class="collapsed" data-toggle="collapse" aria-expanded="false">Three</a><div id="c3" class="collapse">Three body</div>
@@ -135,6 +142,26 @@ test('a modal opens on .modal() without arguments and through the data API, as w
   await page.getByRole('button', { name: 'Close five' }).click();
   assert.equal(await page.locator('#bs5').isVisible(), false);
   assert.deepEqual(await state(), { backdrops: 0, modalOpen: false });
+  assert.deepEqual(errors, []);
+});
+
+// @test-kind observation: Bootstrap 3.4.1 js/modal.js binds click.dismiss.bs.modal on the shown modal element, delegated to [data-dismiss="modal"] (line 69)
+test('a dismiss closes the shown modal around it through nested modal-classed markup, as Bootstrap 3.4.1 binds it', async (t) => {
+  const { page, errors, origin } = await open(t);
+  await page.goto(`${origin}/nested`);
+  await page.evaluate(() => window.jQuery('#outer').modal('show'));
+  await page.getByRole('button', { name: 'Close nested' }).click();
+  assert.deepEqual(
+    await page.evaluate(() => {
+      const outer = document.querySelector('#outer');
+      return {
+        display: getComputedStyle(outer).display,
+        ariaHidden: outer.getAttribute('aria-hidden'),
+        hidden: window.hidden,
+      };
+    }),
+    { display: 'none', ariaHidden: 'true', hidden: ['outer'] },
+  );
   assert.deepEqual(errors, []);
 });
 

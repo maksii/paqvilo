@@ -569,6 +569,16 @@
     if (dismiss) {
       if (!local('modal')) return true;
       click.preventDefault();
+      // Bootstrap 3.4.1 binds the dismiss on each modal it shows (js/modal.js, click.dismiss.bs.modal delegated to
+      // [data-dismiss="modal"]): the click closes every shown modal that holds the button, whatever markup with the
+      // modal class sits between. Bootstrap 5 closes the nearest .modal (util/component-functions.js).
+      if (dismiss.matches('[data-dismiss="modal"]')) {
+        const shown = [];
+        for (let element = dismiss.parentElement; element; element = element.parentElement)
+          if (instance(element, 'modal')?.shown) shown.push(element);
+        for (const element of shown) $(element).modal('hide');
+        return true;
+      }
       const element = dismiss.closest('.modal');
       if (element) $(element).modal('hide');
       return true;
