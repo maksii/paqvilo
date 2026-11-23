@@ -146,7 +146,10 @@ differ from native. Stage 30 is the main operation, not a general extensibility 
 - **Order of checks on Create.** The table-level grant gate precedes all handlers; then stages 10 and 20, declarative
   rules and their effects, the portal row-scope check (after stage 20, so local rules can establish a relationship
   first), then stage 40. A row-scope denial also revokes the request's independent PreValidation SDK writes. Scoped
-  denials report permission name, scope and relationship.
+  denials report permission name, scope and relationship. The Append/AppendTo check covers the lookups the request
+  sends: a lookup that only a server-side step sets on Create is not checked against the visitor's table permissions,
+  as natively (captured 2026-11-23: the portal checks the request before Dataverse runs the pipeline; the same lookup
+  sent by the client is refused with 403 `90040106`). On Update a step's lookup changes are still checked.
 - **Transactions.** Top-level PreValidation runs outside the transaction (`IsInTransaction` false), and its SDK writes
   commit independently and survive a later rejection. Nested PreValidation and stages 20 and 40 join the caller's
   transaction. An SDK write that fails inside a synchronous plug-in invalidates the enclosing transaction; catching the

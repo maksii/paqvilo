@@ -5620,18 +5620,23 @@ export class DataStore {
         else this.mutateRow(mapping.logicalName, targets, index, values);
       }
   }
-  pluginBindingInput(mapping, input, target, identity) {
+  /**
+   * The lookups a portal write's relationship checks cover, with the value the pipeline left. `sentOnly` (Create): only
+   * the lookups the request sends. Native (captured 2026-11-23, Create through the portal /_api): the portal checks the
+   * request's lookups against table permissions before Dataverse runs the pipeline, so a lookup only a server-side
+   * plug-in sets is not checked (the create succeeds without Append or AppendTo for it), while the same lookup sent by
+   * the client is refused (90040106). Without it (Update) the plug-in's changes are checked too.
+   */
+  pluginBindingInput(mapping, input, target, identity, { sentOnly = false } = {}) {
     const relationships = this.relationshipsFor(mapping, identity);
+    const attributeOf = (key) =>
+      key.endsWith('@odata.bind') ? (relationships[key.slice(0, -11)]?.from ?? key.slice(0, -11)) : key;
+    const sent = Object.entries(input).filter(([key]) => own(target, attributeOf(key)));
+    if (!sentOnly) return { ...Object.fromEntries(sent), ...target };
+    const attributes = new Set(sent.map(([key]) => attributeOf(key)));
     return {
-      ...Object.fromEntries(
-        Object.entries(input).filter(([key]) => {
-          const attribute = key.endsWith('@odata.bind')
-            ? (relationships[key.slice(0, -11)]?.from ?? key.slice(0, -11))
-            : key;
-          return own(target, attribute);
-        }),
-      ),
-      ...target,
+      ...Object.fromEntries(sent),
+      ...Object.fromEntries(Object.entries(target).filter(([name]) => attributes.has(name))),
     };
   }
   validateBindings(mapping, input, row, identity, previous = null, nativeContactAssociation = null) {
@@ -6135,7 +6140,7 @@ export class DataStore {
       throw cause;
     }
     // Normalization drops raw navigation names; retain them for relationship validation.
-    const bindingInput = this.pluginBindingInput(m, input, pluginTarget, identity);
+    const bindingInput = this.pluginBindingInput(m, input, pluginTarget, identity, { sentOnly: true });
     // Runtime audit/ownership stamps are not visitor-authored associations.
     // Keep explicit input and any plugin change subject to the normal checks.
     for (const [name, value] of Object.entries(systemColumns ?? {}))

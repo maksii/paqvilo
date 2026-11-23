@@ -1,3 +1,4 @@
+// @test-kind observation: native capture 2026-11-23 (paqvilo-developer feedback-251-252-parity q2-q2-1795452185577.json): on Create through the portal /_api a lookup the request sends needs AppendTo (90040106, nothing created) and one a stage-20 plug-in sets is not checked
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore } from '../lib/data.mjs';
@@ -51,14 +52,28 @@ test('explicit user-supplied ownership bindings still require appendTo and roll 
   }
 });
 
-test('a plugin changing an internal stamp still requires visitor appendTo and rolls back', async () => {
+test('a lookup a stage-20 plug-in sets on create is not checked against the visitor, as the portal does not check it', async () => {
   const store = fixture();
   store.setPluginPipeline(({ target, stage }) => {
     if (stage === 20) target.owningbusinessunit = reference('other-unit');
   });
+  const row = await store.transact(() =>
+    store.createRecordAsync('exa_item', { name: 'Plugin set' }, identity, options()),
+  );
+  assert.deepEqual(row.owningbusinessunit, reference('other-unit'));
+  assert.equal(store.tableRows('exa_item').length, 1);
+  // The same lookup sent by the visitor is refused and nothing is created.
+  const sent = fixture();
   await assert.rejects(
-    store.transact(() => store.createRecordAsync('exa_item', { name: 'Plugin changed' }, identity, options())),
+    sent.transact(() =>
+      sent.createRecordAsync(
+        'exa_item',
+        { name: 'Sent', owningbusinessunit: reference('other-unit') },
+        identity,
+        options(),
+      ),
+    ),
     (error) => error.status === 403,
   );
-  assert.equal(store.tableRows('exa_item').length, 0);
+  assert.equal(sent.tableRows('exa_item').length, 0);
 });
