@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { dotnetBuildInputs, dotnetCompile, writeDotnetRuntimeConfig } from '../lib/clr-dotnet.mjs';
 import { clrToolchain } from '../lib/clr-toolchain.mjs';
 import { CLR_SKIP } from './fixtures/clr-sdk.mjs';
@@ -105,34 +106,37 @@ test('a failed restore names the packages it needs and the last lines of the bui
 });
 
 test(
-  'the probe build leaves no process running: no pipe or socket of one stays in the temporary folder',
+  'the probe build leaves no process running',
   {
     skip:
       CLR_SKIP ||
-      (clrToolchain()?.kind !== 'dotnet' && 'the .NET Framework compiler on Windows starts no build server'),
+      (clrToolchain()?.kind !== 'dotnet' && 'the .NET Framework compiler on Windows starts no build server') ||
+      (process.platform !== 'linux' && 'the processes a build left are found through /proc'),
   },
-  (t) => {
-    // A build server that outlives the build keeps its debugger pipes and diagnostics socket in the temporary folder
-    // it was started with: the probe gets a folder of its own, in a process of its own.
-    const temporary = folder(t);
-    const script = `import { clrToolchain } from ${JSON.stringify(new URL('../lib/clr-toolchain.mjs', import.meta.url).href)};
-import { dotnetBuildInputs } from ${JSON.stringify(new URL('../lib/clr-dotnet.mjs', import.meta.url).href)};
-const inputs = dotnetBuildInputs(clrToolchain(), { cacheRoot: false });
-console.log(JSON.stringify({ compile: inputs.compile.length, runtime: inputs.runtime.length }));`;
-    const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
-      env: { ...process.env, TMPDIR: temporary },
-      encoding: 'utf8',
-      windowsHide: true,
-    });
-    assert.equal(result.status, 0, result.stderr || result.error?.message);
-    const { compile, runtime } = JSON.parse(result.stdout);
-    assert.ok(compile > 0 && runtime > 0, 'the probe resolved the reference and package assemblies');
-    assert.deepEqual(
-      fs.readdirSync(temporary).filter((name) => {
-        const stat = fs.lstatSync(path.join(temporary, name));
-        return stat.isFIFO() || stat.isSocket();
-      }),
-      [],
-    );
+  () => {
+    // Every process the build starts inherits its environment, a build server that outlives it included: the build
+    // runs with a variable of its own, and afterwards no process may carry it. The temporary folder and the NuGet
+    // folders stay the shared ones (NuGet keeps its locks between processes in the temporary folder).
+    const mark = 'PAQVILO_PROBE_TEST_' + randomUUID().replaceAll('-', '');
+    const run = (command, args, options) =>
+      spawnSync(command, args, { ...options, env: { ...options.env, [mark]: '1' } });
+    const inputs = dotnetBuildInputs(clrToolchain(), { run, cacheRoot: false });
+    assert.ok(inputs.compile.length > 0 && inputs.runtime.length > 0, 'the probe resolved the assemblies');
+    const left = fs
+      .readdirSync('/proc')
+      .filter((name) => /^\d+$/.test(name))
+      .flatMap((pid) => {
+        try {
+          const marked = fs
+            .readFileSync(`/proc/${pid}/environ`, 'utf8')
+            .split('\0')
+            .includes(mark + '=1');
+          return marked ? [fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').slice(0, 3).join(' ')] : [];
+        } catch {
+          // Gone meanwhile, or another account's process.
+          return [];
+        }
+      });
+    assert.deepEqual(left, [], 'no process of the build is still running');
   },
 );

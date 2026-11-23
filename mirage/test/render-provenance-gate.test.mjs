@@ -30,7 +30,7 @@ const EDITOR = {
  */
 async function harnessPortal() {
   const { prepare } = await import(pathToFileURL(path.join(harness, 'compile.mjs')).href);
-  const { shellSource } = await import(pathToFileURL(path.join(harness, 'deploy.mjs')).href);
+  const { shellSource } = await import(pathToFileURL(path.join(harness, 'shell-source.mjs')).href);
   const output = await fsp.mkdtemp(path.join(os.tmpdir(), 'paqvilo-harness-'));
   try {
     const { manifest, templates } = await prepare({ outputDirectory: output });
