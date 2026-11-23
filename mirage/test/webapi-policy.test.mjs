@@ -584,7 +584,7 @@ test('HTTP optional profile default inherits table grants while explicit sensiti
   assert.equal(app.store.snapshot().tables.contact.find((row) => row.contactid === 'person').fullname, 'Visible');
 });
 
-test('native lookup bindings do not publish target endpoints and enforce source append, target appendTo and source column writes', async (t) => {
+test('native lookup bindings do not publish target endpoints and enforce source appendTo, target append and source column writes', async (t) => {
   const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-webapi-bind-'));
   ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   await fs.writeFile(
@@ -618,14 +618,14 @@ test('native lookup bindings do not publish target endpoints and enforce source 
       entity: 'contact',
       scope: 'global',
       roles: ['Reader'],
-      operations: ['read', 'create', 'update', 'append'],
+      operations: ['read', 'create', 'update', 'appendTo'],
     },
     {
       id: 'target',
       entity: 'account',
       scope: 'global',
       roles: ['Reader'],
-      operations: ['read', 'update', 'appendTo'],
+      operations: ['read', 'update', 'append'],
     },
   ];
   const app = await createSimulator({
@@ -662,11 +662,11 @@ test('native lookup bindings do not publish target endpoints and enforce source 
   assert.equal(response.status, 404);
   assert.deepEqual(await apiError(response), { code: '9004010C', sim: 'WebApiTableNotEnabled' });
   const targetGrant = app.store.snapshot().permissions.find((rule) => rule.id === 'target');
-  // Binding needs Append on the source and AppendTo on the target, not read
-  // on the target record (90040105/90040106). ExampleApp grants global AppendTo-only
-  // contact permissions so co-authors from other organisations can be bound.
+  // Binding needs Append To on the source and Append on the target, not read on the target record; either missing is
+  // 90040106 (native, paqvilo-developer feedback-251-252-parity q5/q6/q8).
   for (const [operations, expected] of [
-    [['appendTo'], null],
+    [['append'], null],
+    [['appendTo'], { code: '90040106', sim: 'PermissionDenied' }],
     [['read'], { code: '90040106', sim: 'PermissionDenied' }],
   ]) {
     const state = app.store.snapshot();

@@ -283,10 +283,15 @@ export function webApiPolicy(portal, store, entity) {
       return defaults.length === 0 || defaults.includes(operationValue[operation]);
     });
   };
-  const enabled = (name, configured) =>
-    configured.has('*') ||
-    configured.has(name) ||
-    Boolean(mapping.relationships?.[name]?.from && configured.has(mapping.relationships[name].from));
+  // A single-valued navigation is enabled by its lookup column. A collection-valued or many-to-many navigation must be
+  // listed by name: its `from` is the table's own key, and native refuses the $ref with 90040101 although the key is
+  // listed (captured 2026-11-23).
+  const enabled = (name, configured) => {
+    const rel = mapping.relationships?.[name];
+    return (
+      configured.has('*') || configured.has(name) || Boolean(rel?.from && rel.many !== true && configured.has(rel.from))
+    );
+  };
   const reserved = (name) => {
     const logical = String(name).replace(/@odata\.bind$/, '');
     const physical =

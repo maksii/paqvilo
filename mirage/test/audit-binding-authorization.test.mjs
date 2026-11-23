@@ -1,4 +1,4 @@
-// @test-kind security: platform audit stamps preserve Targets without acquiring visitor association privileges; explicit and plug-in bindings remain checked.
+// @test-kind security: platform audit stamps preserve Targets without acquiring visitor association privileges; every binding the caller sends remains checked, while a lookup a PreOperation plug-in sets or changes is not a visitor association (native, portal /_api Create and Update, 2026-11-23: workbench feedback-251-252-parity q2-*/q3-* evidence).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore } from '../lib/data.mjs';
@@ -33,7 +33,7 @@ function fixture() {
         systemuser: [{ systemuserid: 'platform' }, { systemuserid: 'other' }],
       },
       permissions: [
-        { entity: 'x_item', roles: ['Writer'], scope: 'global', operations: ['read', 'create', 'update', 'append'] },
+        { entity: 'x_item', roles: ['Writer'], scope: 'global', operations: ['read', 'create', 'update', 'appendTo'] },
       ],
       settings: { permissionMode: 'enforce', associationPermissions: 'enforce' },
     },
@@ -61,7 +61,7 @@ test('scalar create and update retain audit stamps in rows and plug-in Targets w
   assert.deepEqual(targets.at(-1).modifiedby, stamps.modifiedby);
 });
 
-test('explicit and plug-in-authored lookup changes still require AppendTo and roll back', async () => {
+test('caller-sent lookup changes still require Append on the related table and roll back; plug-in-authored ones do not', async () => {
   for (const input of [
     { x_reviewer: ref('other') },
     { 'x_reviewer@odata.bind': '/systemusers(other)' },
@@ -76,23 +76,30 @@ test('explicit and plug-in-authored lookup changes still require AppendTo and ro
     );
     assert.equal(store.tableRows('x_item')[0].x_name, 'Before');
   }
+  // Native Update through the portal: a PreOperation step that sets or changes a lookup on a table the
+  // visitor has no AppendTo on succeeds (204) with the step's value, while the client-sent bind is 403 90040106.
+  for (const lookup of ['x_reviewer', 'modifiedby']) {
+    const { store } = fixture();
+    store.setPluginPipeline(({ target, stage }) => {
+      if (stage === 20) target[lookup] = ref('other');
+    });
+    await store.transact(() =>
+      store.updateRecordAsync('x_item', 'item', { x_name: 'Plug-in set' }, actor, { systemColumns: stamps }),
+    );
+    assert.equal(store.tableRows('x_item')[0].x_name, 'Plug-in set', lookup);
+  }
   const { store } = fixture();
   store.setPluginPipeline(({ target, stage }) => {
-    if (stage === 20) target.modifiedby = ref('other');
+    if (stage === 20) target.x_reviewer = ref('other');
   });
-  await assert.rejects(
-    store.transact(() =>
-      store.updateRecordAsync('x_item', 'item', { x_name: 'Denied' }, actor, { systemColumns: stamps }),
-    ),
-    (e) => e.status === 403,
-  );
-  assert.equal(store.tableRows('x_item')[0].x_name, 'Before');
+  await store.transact(() => store.updateRecordAsync('x_item', 'item', { x_name: 'Plug-in set' }, actor));
+  assert.equal(store.tableRows('x_item')[0].x_reviewer.id, 'other');
   const allowed = fixture().store;
   allowed.state.permissions.push({
     entity: 'systemuser',
     roles: ['Writer'],
     scope: 'global',
-    operations: ['appendTo'],
+    operations: ['append'],
   });
   await allowed.transact(() =>
     allowed.updateRecordAsync('x_item', 'item', { x_reviewer: ref('other') }, actor, { systemColumns: stamps }),

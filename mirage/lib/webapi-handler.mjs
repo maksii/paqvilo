@@ -407,6 +407,17 @@ function permissionErrorResponse({ internal, details, respond, selfNnPermissionE
       response.body.error.innererror.type = 'EntityPermissionAppendToIsMissingDuringAssociationChange';
     return response;
   }
+  // Native portal association refusals (captured 2026-11-23): a missing Append To or Append grant names the related
+  // table "to" the request's table; a collection-valued $ref without Write on its own row reads as a create refusal.
+  if (details.association)
+    return respond(
+      403,
+      '90040106',
+      `You don’t have permission to associate or disassociate table ${details.association.table} to ${details.association.to}`,
+      plain,
+    );
+  if (details.associationSourceWrite)
+    return respond(403, '90040103', `You don’t have permission to create records for ${table} table.`, plain);
   if (operation === 'create')
     return respond(403, '90040103', `You don't have permission to create ${table} entity.`, plain);
   if (operation === 'update' || operation === 'write')
@@ -1844,8 +1855,11 @@ async function reference(t) {
   const { mapping, policy, store, target, method } = t;
   const navigation = target.segment;
   if (!['POST', 'PUT', 'DELETE'].includes(method)) throw methodNotAllowed(method, '$ref');
-  policy.assertWrite({ [`${navigation}@odata.bind`]: null }, 'update');
   const rel = mapping.relationships?.[navigation];
+  // Native order for a collection-valued POST $ref (captured 2026-11-23): the association's table permissions and Write
+  // on the request's row are refused before the navigation's Web API field check.
+  const collectionPost = rel && rel.many !== false && target.targetKey == null && method === 'POST';
+  if (!collectionPost) policy.assertWrite({ [`${navigation}@odata.bind`]: null }, 'update');
   if (!rel)
     throw new DataError(
       `Relationship ${navigation} is not mapped for ${mapping.logicalName}.`,
@@ -1874,6 +1888,10 @@ async function reference(t) {
       throw methodNotAllowed(method, 'a single-valued navigation property; use PUT');
     const body = await readBody(t);
     const { id: targetId } = referenced(body['@odata.id'], '@odata.id');
+    store.authorizedAssociation(mapping.logicalName, id, navigation, targetId, t.deps.identity, {
+      portalRequest: true,
+    });
+    policy.assertWrite({ [`${navigation}@odata.bind`]: null }, 'update');
     await portalWrite(t, () => portalAssociation(t, mapping, id, navigation, targetId, true));
     return sendNoContent(t);
   }

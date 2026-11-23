@@ -478,7 +478,7 @@ test('FetchXML traverses only declared structural many-to-many edges while both 
   await store.replaceState(denied);
   assert.equal(store.fetchXml(xml, user).entities.length, 0);
 });
-// @test-kind security: a create outside the caller's parent scope or permission gate is refused and rolled back
+// @test-kind security: a create outside the caller's parent scope or permission gate is refused and rolled back; the lookup grants follow the native direction (Append To on the bound table, Append on the related table)
 test('Parent-scoped create stages trusted backend links and rolls back gate, scope and lookup rejection atomically', async () => {
   const initial = {
     mappings: {
@@ -510,7 +510,7 @@ test('Parent-scoped create stages trusted backend links and rolls back gate, sco
         id: 'app',
         entity: 'app',
         roles: ['Member'],
-        operations: ['create', 'read', 'append'],
+        operations: ['create', 'read', 'appendTo'],
         scope: 'parent',
         parentPermissionId: 'coauthor',
         relationship: {
@@ -545,7 +545,7 @@ test('Parent-scoped create stages trusted backend links and rolls back gate, sco
         id: 'account',
         entity: 'account',
         roles: ['Member'],
-        operations: ['read', 'appendTo'],
+        operations: ['read', 'append'],
         scope: 'contact',
         field: 'contact',
       },

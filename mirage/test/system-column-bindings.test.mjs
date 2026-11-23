@@ -77,3 +77,35 @@ test('a lookup a stage-20 plug-in sets on create is not checked against the visi
   );
   assert.equal(sent.tableRows('exa_item').length, 0);
 });
+
+// @test-kind observation: native capture 2026-11-23 (paqvilo-developer feedback-251-252-parity q3-* evidence): on Update through the portal /_api a client-sent lookup without AppendTo is refused (403 90040106, row unchanged), while a stage-20 plug-in that sets or changes the same lookup on a name-only PATCH succeeds (204) with the plug-in's value
+test('a lookup a stage-20 plug-in sets or changes on update is not checked; the same lookup sent is refused', async () => {
+  const updatable = (initial) => {
+    const store = fixture();
+    store.state.permissions[0].operations.push('read', 'update');
+    store.state.tables.exa_item.push({ exa_itemid: 'row', name: 'Before', ...initial });
+    return store;
+  };
+  for (const initial of [{}, { owningbusinessunit: reference('runtime-unit') }]) {
+    const store = updatable(initial);
+    store.setPluginPipeline(({ target, stage }) => {
+      if (stage === 20) target.owningbusinessunit = reference('other-unit');
+    });
+    await store.transact(() => store.updateRecordAsync('exa_item', 'row', { name: 'Plugin set' }, identity));
+    assert.equal(store.tableRows('exa_item')[0].name, 'Plugin set');
+    assert.equal(store.tableRows('exa_item')[0].owningbusinessunit.id, 'other-unit');
+  }
+  const sent = updatable({});
+  await assert.rejects(
+    sent.transact(() =>
+      sent.updateRecordAsync(
+        'exa_item',
+        'row',
+        { name: 'Sent', owningbusinessunit: reference('other-unit') },
+        identity,
+      ),
+    ),
+    (error) => error.status === 403,
+  );
+  assert.equal(sent.tableRows('exa_item')[0].name, 'Before');
+});

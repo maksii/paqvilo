@@ -340,15 +340,25 @@ the principal cannot read is evaluated as empty and is not refused. Notes and at
 rows through the same masking. The SharePoint document listing returns only file and folder names, sizes, types and
 dates.
 
-Imported many-to-many associations check the source Update/Append grant and the target AppendTo grant. Their
-metadata-declared intersect rows do not require a separate Create/Delete grant for an association operation. Direct
-intersect-table writes and manually configured edge mappings retain their own CRUD checks. Export bootstrap preserves
-explicit Append and AppendTo flags, including false values.
+Portal associations follow the table permission definitions (Learn `mspp_entitypermission`: Append attaches another
+record to the specified record, Append To appends the specified record to another record). A lookup bind on create or
+update, a single- or collection-valued `$ref` and a many-to-many `$ref` need Append To on the table of the request (the
+row holding the lookup, or the URL row of a `$ref`) and Append on the related table; the related table needs no Web API
+settings and no Read. Either missing grant is 403 `90040106` "You don’t have permission to associate or disassociate
+table <related> to <request table>". A collection-valued `$ref` then needs Write on its URL row (403 `90040103` "You
+don’t have permission to create records for <table> table."), and a `$ref` navigation must be a listed Web API field
+(403 `90040101`, checked after the permissions). Native, captured 2026-11-23 through a site's `/_api` (Paqvilo
+developer workbench `feedback-251-252-parity`, Q3–Q8). Grants imported from a portal export enforce these checks
+unless the state sets `settings.associationPermissions: "compatibility"`. Metadata-declared intersect rows do not
+require a separate Create/Delete grant for an association operation. Direct intersect-table writes and manually
+configured edge mappings retain their own CRUD checks. Export bootstrap preserves explicit Append and AppendTo flags,
+including false values.
 
 `observed.webApiSelfNnPermissionErrors: { x_relationship: "native-classic" }` qualifies the captured portal denial
-envelope for specific imported self-referencing N:N relationships. A missing endpoint Append or AppendTo grant returns
-the witnessed `90040106`/AppendTo message for those schemas. The profile requires site evidence; SDK errors, other
-relationships and unqualified sites retain their independent error contracts.
+envelope for specific imported self-referencing N:N relationships: a missing endpoint Append or AppendTo grant returns
+the witnessed `90040106` message with the `EntityPermissionAppendToIsMissingDuringAssociationChange` inner error type
+for those schemas. The profile requires site evidence; other relationships and unqualified sites answer `90040106` with
+the generic inner error, and SDK errors keep their independent contract.
 
 ## Portal Web API file and image columns
 
@@ -389,9 +399,9 @@ previously selected lookup on edit. Standalone code-component pages receive the 
 the browser's handling of authored nested forms.
 
 Configured native-form association with the current portal contact is a server-owned stamp. It does not require the
-visitor's source Append or Contact AppendTo grants. The internal exception is consumed by the root form create before
-plug-ins and deep inserts; it cannot authorize another lookup, a changed plug-in target, an ordinary Web API binding, a
-missing target or a denied row Create. Other on-save lookup metadata retains ordinary relationship permission checks.
+visitor's source Append To or Contact Append grants. The internal exception is consumed by the root form create before
+plug-ins and deep inserts; it cannot authorize another lookup, an ordinary Web API binding, a missing target or a denied
+row Create. A lookup a plug-in sets or changes is not a visitor binding and is not checked (native Create and Update). Other on-save lookup metadata retains ordinary relationship permission checks.
 
 A terminal native multistep POST redirects to the same page with `msg=success` and its final `stepid`. The GET renders
 success only for the same owner's completed form and final committed step history; start-new sessions also require their

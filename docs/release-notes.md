@@ -21,6 +21,14 @@ Each version lists what changed for users of the package and what to do when upg
   laid over twice. See [a checkout ahead of the portal, or behind it](lense.md#a-checkout-ahead-of-the-portal-or-behind-it).
 - **Code component files.** A bundle or style sheet the page loads from `/_pcfwebresource/` is served from your
   Solution's `Controls/<name>` folder, and a Solution web resource from `WebResources/`, when the page declares them.
+- **Static analysis of large sources.** A site raises the inventory ceilings it needs in the catalogue
+  (`sites.<id>.analysis.limits`) or for one run (`--analysis-limit files=50000` on `doctor` and `analyze`, repeatable),
+  up to fixed maximums. The report lists every changed ceiling and names the one a source tree exhausts. See
+  [bounded local inventory](static-analysis.md#bounded-local-inventory).
+- **`uploadedAssemblies`.** The catalogue or project setting chooses whether registered plug-in steps and Custom API
+  main operations of an assembly with uploaded content run it (`clr`, the default) or start as placeholders; a choice
+  in `/_sim/` still overrides it, and preflight says where a step's mode came from. See
+  [configuration](configuration.md).
 
 ### Improved
 
@@ -44,6 +52,28 @@ Each version lists what changed for users of the package and what to do when upg
   `WebForm.aspx`): every page of the path with its whole title, in the site's Bootstrap build. Before, it rendered
   the site's Breadcrumbs web template there, and page inspection listed that template for such pages. A page title
   keeps the spaces its record holds around it.
+- An option of another action beside `--help` (for example `paqvilo mirage stop --headed --help`) fails with
+  `unsupported_option`, as it does without `--help`, instead of printing help.
+- Static analysis no longer counts .NET build output (`bin`, `obj`) or a folder of restored NuGet packages (one that
+  holds `.nupkg` files) against the inventory ceilings; an authored `packages` folder is still analysed.
+- A lookup that a plug-in sets or changes on create or update is not checked against the visitor's table permissions,
+  as on the portal; a lookup the request sends still is.
+- A write that includes a calculated column succeeds and ignores its value (warning `CALCULATED_WRITE_IGNORED`), as
+  Dataverse and the portal do; before, Mirage refused it.
+- `PATCH /_sim/api/config` no longer fails with 409 `StateConflict` while a background job commits.
+- A Bootstrap 3 `data-dismiss="modal"` control inside nested `.modal` markup closes the dialog that is shown.
+- Portal associations check the table permissions the way the portal does: a lookup bind, a `$ref` and a many-to-many
+  `$ref` need Append To on the table of the request and Append on the related table, and either refusal is 403
+  `90040106`. A collection-valued `$ref` also needs Write on its own row (403 `90040103`) and its navigation listed in
+  `Webapi/<table>/fields`, which listing the table's key no longer stands in for. Before, Mirage required Append and
+  Append To the other way round and, for grants from an export, did not check them at all for a lookup bind.
+
+### Upgrade notes
+
+- Grants from a portal export now enforce Append and Append To on lookup binds and associations. A project whose
+  local grants were set for Mirage's former direction now gets the portal's 403 `90040106`; set the flags as on the
+  portal (Append To on the table that holds the lookup, Append on the related table). The state setting
+  `settings.associationPermissions: "compatibility"` keeps the former read-or-Append-To check for local experiments.
 
 ## 0.9.8
 

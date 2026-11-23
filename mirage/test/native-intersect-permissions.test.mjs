@@ -1,4 +1,4 @@
-// @test-kind security: privilege checks: Append/AppendTo grants gate N:N association; denied or direct intersect writes leave links unchanged
+// @test-kind security: privilege checks: Append To on the request's table and Append on the related table gate N:N association (native direction, paqvilo-developer feedback-251-252-parity q7/q8); denied or direct intersect writes leave links unchanged
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -31,8 +31,9 @@ async function fixture(t, { append = true, appendTo = true, manual = false, self
         adx_write: true,
         adx_create: false,
         adx_delete: false,
-        adx_append: entity === 'widget' ? append : false,
-        adx_appendto: entity === 'label' || self ? appendTo : false,
+        // Native: the request's table (widget) needs Append To, the related table (label) Append.
+        adx_append: entity === 'label' || self ? append : false,
+        adx_appendto: entity === 'widget' ? appendTo : false,
       })),
     ),
   );
@@ -153,7 +154,7 @@ test('imported intersect associations use endpoint grants, idempotent native HTT
   assert.equal(directCreate.status, 403);
   assert.equal(f.edge().length, 0);
 });
-test('false source Append and false target AppendTo deny association and disassociation without changing links', async (t) => {
+test('false related Append and false source AppendTo deny association and disassociation without changing links', async (t) => {
   for (const [append, appendTo] of [
     [false, true],
     [true, false],
@@ -216,16 +217,20 @@ test('qualified self N:N portal denials preserve the exact observed envelope for
       error.details.operation === 'append' &&
       !error.details.portalSelfNnAssociation,
   );
+  // Unqualified sites answer the same native code (q5-q7: every missing Append or Append To grant is 90040106).
   const defaultSelf = await fixture(t, { self: true, append: false });
-  assert.equal((await (await defaultSelf.post()).json()).error.code, '90040105');
+  assert.equal((await (await defaultSelf.post()).json()).error.code, '90040106');
   const otherSchema = await fixture(t, {
     self: true,
     append: false,
     observed: { ...profile, webApiSelfNnPermissionErrors: { other_relation: 'native-classic' } },
   });
-  assert.equal((await (await otherSchema.post()).json()).error.code, '90040105');
+  assert.equal((await (await otherSchema.post()).json()).error.code, '90040106');
   const otherTable = await fixture(t, { append: false, observed: profile });
-  assert.equal((await (await otherTable.post()).json()).error.code, '90040105');
+  assert.deepEqual(
+    (await (await otherTable.post()).json()).error.message,
+    'You don’t have permission to associate or disassociate table label to widget',
+  );
 });
 
 // @test-kind unproven: local model of self N:N navigation direction after a pre-operation identity replacement

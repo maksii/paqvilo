@@ -5621,11 +5621,11 @@ export class DataStore {
       }
   }
   /**
-   * The lookups a portal write's relationship checks cover, with the value the pipeline left. `sentOnly` (Create): only
-   * the lookups the request sends. Native (captured 2026-11-23, Create through the portal /_api): the portal checks the
-   * request's lookups against table permissions before Dataverse runs the pipeline, so a lookup only a server-side
-   * plug-in sets is not checked (the create succeeds without Append or AppendTo for it), while the same lookup sent by
-   * the client is refused (90040106). Without it (Update) the plug-in's changes are checked too.
+   * The lookups a portal write's relationship checks cover, with the value the pipeline left. `sentOnly` (Create and
+   * Update): only the lookups the request sends. Native (captured 2026-11-23 through the portal /_api, Create and
+   * Update): the portal checks the request's lookups against table permissions before Dataverse runs the pipeline, so a
+   * lookup only a server-side plug-in sets or changes is not checked (the write succeeds without AppendTo for it), while
+   * the same lookup sent by the client is refused (90040106). Without it every lookup the Target carries is checked.
    */
   pluginBindingInput(mapping, input, target, identity, { sentOnly = false } = {}) {
     const relationships = this.relationshipsFor(mapping, identity);
@@ -5641,7 +5641,7 @@ export class DataStore {
   }
   validateBindings(mapping, input, row, identity, previous = null, nativeContactAssociation = null) {
     const relationships = this.relationshipsFor(mapping, identity);
-    if (this.state.settings.associationPermissions === 'enforce')
+    if (this.associationEnforced())
       for (const key of Object.keys(input).filter((key) => key.endsWith('@odata.bind')))
         if (!relationships[key.slice(0, -11)])
           throw new DataError('Lookup binding requires a known navigation relationship', 400, 'MissingRelationship');
@@ -5737,24 +5737,51 @@ export class DataStore {
       this.assertBindingTarget(mapping, row, targetMapping, target, identity);
   }
   /**
-   * Binding a lookup (create, update or $ref) needs Append on the source and
-   * AppendTo on the target (Power Pages 90040105/90040106); read on the target
-   * record isn't required. Exported portal grants rely on this: global
-   * AppendTo-only contact permissions let co-authors from other
-   * organisations be added. Without association enforcement, the binding
-   * still needs read or AppendTo access to the target.
+   * Whether lookup bindings and associations check Append/Append To: the explicit `associationPermissions` setting, else
+   * on whenever the table permissions come from a portal export, because the portal always checks them (and
+   * buildPermissionModel reports an exported model as enforcing). `compatibility` keeps the read-or-AppendTo check.
+   */
+  associationEnforced() {
+    const mode = this.state.settings?.associationPermissions;
+    if (mode !== undefined) return mode === 'enforce';
+    return (this.state.permissions ?? []).some((rule) => rule.imported === true);
+  }
+  /**
+   * Binding a lookup (create, update or $ref) or associating records checks the table permissions of both tables.
+   * Without association enforcement, the binding still needs read or AppendTo access to the target.
    */
   assertBindingTarget(mapping, row, targetMapping, target, identity) {
-    if (this.state.settings.associationPermissions === 'enforce') {
-      this.assertAllowed(mapping.logicalName, 'append', row, identity, targetMapping.logicalName);
-      this.assertAllowed(targetMapping.logicalName, 'appendTo', target, identity, mapping.logicalName);
-      return;
-    }
+    if (this.associationEnforced())
+      return this.assertAssociationPermissions(mapping, row, targetMapping, target, identity);
     if (
       !this.allowed(targetMapping.logicalName, 'read', target, identity) &&
       !this.allowed(targetMapping.logicalName, 'appendTo', target, identity)
     )
       this.assertAllowed(targetMapping.logicalName, 'appendTo', target, identity, mapping.logicalName);
+  }
+  /**
+   * Power Pages table permissions define Append as attaching another record to the specified record and Append To as
+   * appending the specified record to another record (Learn, mspp_entitypermission). An association therefore needs
+   * Append To on the table of the request (the row that holds the lookup, or the URL row of a $ref) and Append on the
+   * related table; read on the related row isn't required. Native, captured 2026-11-23 through the portal /_api for a
+   * lookup bind on create and update, single- and collection-valued $ref and a many-to-many $ref: either missing grant
+   * is 403 90040106 "...associate or disassociate table <related> to <request table>".
+   */
+  assertAssociationPermissions(mapping, row, targetMapping, target, identity) {
+    for (const [logical, operation, record, related] of [
+      [mapping.logicalName, 'appendTo', row, targetMapping.logicalName],
+      [targetMapping.logicalName, 'append', target, mapping.logicalName],
+    ])
+      try {
+        this.assertAllowed(logical, operation, record, identity, related);
+      } catch (error) {
+        if (error?.code === 'PermissionDenied')
+          error.details = {
+            ...error.details,
+            association: { table: targetMapping.logicalName, to: mapping.logicalName },
+          };
+        throw error;
+      }
   }
   /** Dataverse row version for @odata.etag and If-Match checks. */
   etag(row) {
@@ -6379,12 +6406,8 @@ export class DataStore {
       }
     }
     if (onBehalf && options.assignOwner) row.modifiedonbehalfby = clone(row.modifiedby);
-    const platformStamps = {};
     for (const name of UPDATE_TARGET_STAMPS)
-      if (authorizedWrite && !own(target, name) && own(row, name)) {
-        target[name] = clone(row[name]);
-        platformStamps[name] = clone(row[name]);
-      }
+      if (authorizedWrite && !own(target, name) && own(row, name)) target[name] = clone(row[name]);
     if (assigneeName !== null) target.owneridyominame = assigneeName;
     // A write of a date-time value also stamps the row's time zone rule version (native Update 20/40 and async).
     if (
@@ -6422,14 +6445,9 @@ export class DataStore {
     if (onBehalf) row.modifiedonbehalfby = clone(row.modifiedby);
     if (authorizedWrite && this.pluginPipeline) {
       this.assertAllowed(mapping.logicalName, 'update', row, identity);
-      const bindingInput = this.pluginBindingInput(mapping, rawInput, target, identity);
-      // Retain the native stamped Target for observers, but authorize only
-      // caller bindings and changes observers made to the platform baseline.
-      // Raw navigation bindings remain in bindingInput even if their value
-      // happens to equal the platform's stamp.
-      for (const [name, value] of Object.entries(platformStamps))
-        if (!own(rawInput, name) && isDeepStrictEqual(target[name], value) && isDeepStrictEqual(row[name], value))
-          delete bindingInput[name];
+      // Only the caller's bindings are authorized: platform stamps and lookups a plug-in sets
+      // or changes in the Target are not visitor-authored associations.
+      const bindingInput = this.pluginBindingInput(mapping, rawInput, target, identity, { sentOnly: true });
       this.validateBindings(mapping, bindingInput, row, identity, latest);
     }
     options.mainOperation?.(mapping, 'update', row, latest, target, { identity, options });
@@ -6883,6 +6901,22 @@ export class DataStore {
     );
   }
   *changeAssociationSteps(entity, id, navigation, targetId, identity, associate, options = {}) {
+    const context = this.authorizedAssociation(entity, id, navigation, targetId, identity, options);
+    yield* this.applyAssociationSteps({ ...context, associate, identity, options });
+    return {
+      associated: associate,
+      entity: context.mapping.logicalName,
+      recordId: id,
+      navigation,
+      targetId,
+    };
+  }
+  /**
+   * The association's rows and relationship once its table permissions allow it: Append To and Append (or the
+   * intersect rules), then Write on the request's row, in the native order. The portal Web API runs this before its
+   * navigation field check and the pipeline (webapi-handler reference), and the write repeats it.
+   */
+  authorizedAssociation(entity, id, navigation, targetId, identity, options = {}) {
     const mapping = this.resolveMapping(entity);
     const relationship = this.relationshipsFor(mapping, identity)[safeName(navigation)];
     if (!relationship) throw new DataError('Association navigation has no mapping', 400, 'MissingRelationship');
@@ -6891,7 +6925,6 @@ export class DataStore {
       throw new DataError('Use a lookup binding for a single-valued navigation', 400, 'InvalidAssociation');
     const row = (this.state.tables[mapping.logicalName] ?? []).find((record) => equal(record[mapping.idColumn], id));
     if (!row) throw new DataError('Association source record not found', 404, 'NotFound');
-    this.assertAllowed(mapping.logicalName, 'update', row, identity);
     const targetMapping = this.resolveMapping(relationship.entity);
     const target = (this.state.tables[targetMapping.logicalName] ?? []).find((record) =>
       equal(record[targetMapping.idColumn], targetId),
@@ -6917,31 +6950,21 @@ export class DataStore {
       options,
       identity,
     });
-    yield* this.applyAssociationSteps({
-      mapping,
-      row,
-      target,
-      targetMapping,
-      edgeMapping,
-      relationship,
-      associate,
-      identity,
-      options,
-      nativeIntersect,
-    });
-    return {
-      associated: associate,
-      entity: mapping.logicalName,
-      recordId: id,
-      navigation,
-      targetId,
-    };
+    // After the association check (native order): Write on the request's row. The portal reports its absence on a
+    // collection-valued $ref as 403 90040103 "...create records for <table> table." (captured 2026-11-23).
+    try {
+      this.assertAllowed(mapping.logicalName, 'update', row, identity);
+    } catch (error) {
+      if (error?.code === 'PermissionDenied' && !relationship.intersect)
+        error.details = { ...error.details, associationSourceWrite: true };
+      throw error;
+    }
+    return { mapping, row, target, targetMapping, edgeMapping, relationship, nativeIntersect };
   }
   authorizeAssociation({ mapping, row, targetMapping, target, relationship, nativeIntersect, options, identity }) {
     if (!nativeIntersect) return this.assertBindingTarget(mapping, row, targetMapping, target, identity);
     try {
-      this.assertAllowed(mapping.logicalName, 'append', row, identity, targetMapping.logicalName);
-      this.assertAllowed(targetMapping.logicalName, 'appendTo', target, identity, mapping.logicalName);
+      this.assertAssociationPermissions(mapping, row, targetMapping, target, identity);
     } catch (error) {
       if (
         options.portalRequest === true &&

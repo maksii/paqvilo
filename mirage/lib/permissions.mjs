@@ -627,8 +627,13 @@ export function buildPermissionModel(
     personas,
     diagnostics,
     settings: {
+      // The portal always checks Append/Append To: grants from a portal export enforce them unless a configured model
+      // explicitly asks for compatibility; only locally authored grants default to compatibility.
       associationPermissions:
-        source === 'configured' ? (state.settings?.associationPermissions ?? 'compatibility') : 'enforce',
+        source === 'configured'
+          ? (state.settings?.associationPermissions ??
+            (permissions.some((rule) => rule.imported === true) ? 'enforce' : 'compatibility'))
+          : 'enforce',
     },
   };
 }
