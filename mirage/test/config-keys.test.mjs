@@ -49,6 +49,7 @@ const NEW_KEYS = [
   'sourceMaps',
   'trace',
   'logs',
+  'uploadedAssemblies',
 ];
 const PRE_MIGRATION_CATALOGUE = [
   'project',

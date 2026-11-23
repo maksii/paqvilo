@@ -1336,7 +1336,12 @@ export function pluginCatalogue({
   runtimes = new Map(),
   descriptors = new Map(),
   overrides = {},
+  // The catalogue or project setting uploadedAssemblies: clr runs uploaded assembly bytes, as native runs registered
+  // plug-ins; placeholder keeps such a step a placeholder until a /_sim/ choice selects another mode.
+  uploadedAssemblies = 'clr',
 }) {
+  if (!['clr', 'placeholder'].includes(uploadedAssemblies))
+    throw new Error('uploadedAssemblies must be clr or placeholder');
   return (plugins?.steps ?? []).map((step) => {
     const key = `plugin-step:${step.id}`,
       configuration = overrides[key] ?? null,
@@ -1360,7 +1365,9 @@ export function pluginCatalogue({
           () => 'handler',
           () =>
             chooseLazily(
-              () => uploaded || (clrAvailable && (runtime?.descriptor ?? descriptor)?.defaultMode === 'clr'),
+              () =>
+                (uploaded && uploadedAssemblies === 'clr') ||
+                (clrAvailable && (runtime?.descriptor ?? descriptor)?.defaultMode === 'clr'),
               () => 'clr',
               () => 'placeholder',
             ),
@@ -1377,6 +1384,10 @@ export function pluginCatalogue({
       clrProvenance: runtime?.provenance ?? null,
       mode: configuration?.mode ?? defaultMode,
       defaultMode,
+      // What chose defaultMode when the uploadedAssemblies setting did; absent otherwise.
+      ...(uploaded && uploadedAssemblies !== 'clr' && defaultMode === 'placeholder'
+        ? { defaultModeSource: 'uploadedAssemblies' }
+        : {}),
       configuration,
       configurable: step.enabled,
       definitionAvailable: clrAvailable,

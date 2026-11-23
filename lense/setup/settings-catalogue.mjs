@@ -59,6 +59,12 @@ const MIRAGE = {
     stage: 2,
     example: 'platform:\n  QueryLinkEntityLimit: 15\n  evidence: Invented support note\n',
   },
+  uploadedAssemblies: {
+    kind: 'choice',
+    choices: ['clr', 'placeholder'],
+    stage: 9,
+    example: 'uploadedAssemblies: placeholder\n',
+  },
   dataverse: {
     kind: 'object',
     stage: 9,

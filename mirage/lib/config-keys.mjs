@@ -407,6 +407,13 @@ export const MIRAGE_SETTINGS = Object.freeze({
     doc: 'Platform settings with their evidence.',
     parse: (value, label) => platformConfig(value, label),
   },
+  uploadedAssemblies: {
+    scopes: ['catalogue', 'project'],
+    option: 'uploadedAssemblies',
+    identity: true,
+    doc: 'clr (default) or placeholder: the default mode of a plug-in step whose type is in an uploaded assembly.',
+    parse: choice(['clr', 'placeholder'], 'must be clr or placeholder'),
+  },
   dataverse: {
     scopes: ['catalogue', 'project'],
     option: 'dataverse',

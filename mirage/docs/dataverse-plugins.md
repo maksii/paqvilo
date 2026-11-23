@@ -442,6 +442,12 @@ trust step (mode `clr`; pack handlers, web hooks and a `/_sim/` choice keep prec
 registered plug-in. A custom API main operation whose type is in such an assembly runs the same way. This is a local
 contract: the host is the local CLR host described below, not the platform sandbox.
 
+A project that models this logic itself, or runs without the SDK, sets `uploadedAssemblies: placeholder` in the
+catalogue's `mirage` section or the project file ([configuration](../../docs/configuration.md)): such steps then start
+as placeholders in every state, `/_sim/api/operations` reports them with `defaultMode: "placeholder"` and
+`defaultModeSource: "uploadedAssemblies"`, and a `/_sim/` choice still selects `clr` for one step. Pack handlers and
+web hooks keep their precedence. A custom API main operation is not a configurable operation and is not affected.
+
 On first run Mirage writes the stored bytes, with the package's other `lib/` assemblies of the same target framework,
 into an owned directory under the project's ignored `.paqvilo/plugin-assemblies`, and compiles the host there. Steps on
 the same content share it; changed content is prepared again; a deleted step, assembly or package closes its runtime and

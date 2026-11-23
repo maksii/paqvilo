@@ -1323,6 +1323,7 @@ export async function createSimulator(options) {
     codeApps: () => codeAppRecords,
     projectRoot,
     config: {
+      uploadedAssemblies: settingOptionsRest.uploadedAssemblies ?? 'clr',
       connections: settingOptionsRest.connections,
       secrets: settingOptionsRest.secrets,
       providers: settingOptionsRest.providers,

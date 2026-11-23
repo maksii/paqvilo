@@ -1395,6 +1395,7 @@ function hostCatalogues(c) {
       runtimes: c.runtimes,
       descriptors: c.descriptors,
       overrides: overrides() ?? {},
+      uploadedAssemblies: c.config.uploadedAssemblies,
     });
     // A deleted step or assembly, or changed uploaded content, closes the uploaded runtime it prepared.
     if (!store.isolatedCount) releaseStaleUploadedRuntimes(store, c.runtimes, steps, c.diagnostic);
