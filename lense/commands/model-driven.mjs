@@ -151,21 +151,23 @@ export function publishModelDrivenReload(overlay, next, mappings) {
   overlay.replace(next, mappings);
 }
 
+/** The options model-driven inspect accepts; its validation and the CLI's check beside --help both read it. */
+export const MODEL_DRIVEN_INSPECT_OPTIONS = new Set([
+  'config',
+  'project',
+  'env',
+  'url',
+  'path',
+  'resource-map',
+  'local-simulation',
+  'json',
+  'event-cursor',
+  'include-event-parameters',
+]);
+
 function validateInspectOptions(args) {
-  const allowed = new Set([
-    'config',
-    'project',
-    'env',
-    'url',
-    'path',
-    'resource-map',
-    'local-simulation',
-    'json',
-    'event-cursor',
-    'include-event-parameters',
-  ]);
   for (const option of Object.keys(args))
-    if (!allowed.has(option))
+    if (!MODEL_DRIVEN_INSPECT_OPTIONS.has(option))
       throw Object.assign(new Error(`--${option} is not supported by model-driven inspect`), {
         code: 'unsupported_option',
       });

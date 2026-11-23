@@ -165,3 +165,56 @@ test(
     }
   },
 );
+
+// An option of another command or action, each beside --help and without it: the refusal, its JSON and its exit code are
+// the same either way (docs/cli.md, argument errors); an option the action takes still shows its help.
+const OTHER_ACTION_OPTIONS = [
+  [['mirage', 'status', '--port', '1'], '--port is not supported by mirage status'],
+  [['mirage', 'stop', '--headed'], '--headed is not supported by mirage stop'],
+  [['lense', 'list', '--limit', '5'], '--limit is not supported by list'],
+  [['lense', 'status', '--limit', '5'], '--limit is not supported by status'],
+  [['lense', 'model-driven', 'inspect', '--headed'], '--headed is not supported by model-driven inspect'],
+  [['lense', 'agent', 'events', '--width', '5'], '--width is not supported by agent events'],
+];
+
+test(
+  'an option of another action beside --help fails exactly as without --help',
+  commandBatch(OTHER_ACTION_OPTIONS.length * 3 + 3),
+  async (t) => {
+    const results = await Promise.all(
+      OTHER_ACTION_OPTIONS.flatMap(([args]) => [
+        run(t, args),
+        run(t, [...args, '--help']),
+        run(t, [...args, '--help', '--json']),
+      ]),
+    );
+    for (const [index, [args, message]] of OTHER_ACTION_OPTIONS.entries()) {
+      const [alone, withHelp, json] = results.slice(index * 3, index * 3 + 3);
+      const label = args.join(' ');
+      const agent = args[1] === 'agent';
+      assert.equal(alone.status, 1, `${label}: ${alone.stderr}${alone.stdout}`);
+      assert.equal(withHelp.status, 1, `${label} --help: ${withHelp.stdout}`);
+      assert.equal(json.status, 1, `${label} --help --json`);
+      if (agent) assert.equal(withHelp.stdout, alone.stdout, label);
+      else {
+        assert.equal(withHelp.stderr, alone.stderr, label);
+        assert.equal(withHelp.stderr.trimEnd(), `paqvilo: ${message}`, label);
+        assert.equal(withHelp.stdout, '', label);
+      }
+      const document = JSON.parse(json.stdout);
+      assert.deepEqual(document.error, { code: 'unsupported_option', message }, label);
+    }
+    // The options an action takes keep their help, with or without values beside them.
+    const [status, list, events] = await Promise.all([
+      run(t, ['mirage', 'status', '--help']),
+      run(t, ['lense', 'list', '--site', 'invented', '--help']),
+      run(t, ['lense', 'agent', 'events', '--limit', '5', '--help']),
+    ]);
+    assert.equal(status.status, 0, status.stderr);
+    assert.match(status.stdout, /^paqvilo mirage status/);
+    assert.equal(list.status, 0, list.stderr);
+    assert.match(list.stdout, /^paqvilo lense list/);
+    assert.equal(events.status, 0, events.stderr);
+    assert.equal(JSON.parse(events.stdout).command, 'help');
+  },
+);

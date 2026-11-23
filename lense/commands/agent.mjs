@@ -350,12 +350,12 @@ function assertAgentArguments(action, args, pageActions) {
   if (pageActions.has(action)) integer(args['page-id'], '--page-id', undefined, 1, Number.MAX_SAFE_INTEGER);
 }
 
-function validateAgentAction(action, args) {
-  if (!AGENT_ACTIONS.includes(action))
-    throw argument(`Unknown agent action "${action}". Expected ${AGENT_ACTIONS.join(', ')}`);
+const PAGE_ACTIONS = new Set(['state', 'snapshot', 'screenshot', 'viewport', 'coverage', 'navigate', 'reload']);
+
+/** The options an agent action accepts; its validation and the CLI's check beside --help both read it. */
+export function agentActionOptions(action) {
   const allowed = new Set(['config', 'json', 'help', 'timeout', ...(action === 'sessions' ? [] : ['session'])]);
-  const pageActions = new Set(['state', 'snapshot', 'screenshot', 'viewport', 'coverage', 'navigate', 'reload']);
-  if (pageActions.has(action)) allowed.add('page-id');
+  if (PAGE_ACTIONS.has(action)) allowed.add('page-id');
   for (const option of {
     events: ['after', 'limit'],
     snapshot: ['selector', 'limit', 'styles'],
@@ -365,9 +365,16 @@ function validateAgentAction(action, args) {
     navigate: ['path'],
   }[action] ?? [])
     allowed.add(option);
+  return allowed;
+}
+
+function validateAgentAction(action, args) {
+  if (!AGENT_ACTIONS.includes(action))
+    throw argument(`Unknown agent action "${action}". Expected ${AGENT_ACTIONS.join(', ')}`);
+  const allowed = agentActionOptions(action);
   for (const option of Object.keys(args))
     if (!allowed.has(option)) throw argument(`--${option} is not supported by agent ${action}`, 'unsupported_option');
-  return pageActions;
+  return PAGE_ACTIONS;
 }
 
 // Hang guard for the client's own HTTP request. The server answers at its action deadline (the --timeout the client
