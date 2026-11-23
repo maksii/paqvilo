@@ -1,3 +1,4 @@
+// @test-kind contract: the page registry's admission of parser originals and response descriptors is Paqvilo's designed provenance behaviour, exercised with invented markup on routed loopback addresses
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -69,6 +70,7 @@ test('early private registry admits actual parser originals and echoes caller li
   assert.doesNotMatch(JSON.stringify(result), /Invented|innerHTML|textContent|backend-only/);
 });
 
+// @test-kind security: a page script cannot forge, transfer or edit the registry's literal identity
 test('public query edits cannot change private literal or include-invocation source regions', async (t) => {
   const fixture = await pageFixture(t, '', {
     source: '<!doctype html><html><body>{% include "Partial" %}</body></html>',
@@ -106,6 +108,7 @@ test('public query edits cannot change private literal or include-invocation sou
   );
 });
 
+// @test-kind security: a page script cannot forge, transfer or edit the registry's literal identity
 test('clone and original removal before DOMContentLoaded cannot transfer source identity', async (t) => {
   const fixture = await pageFixture(
     t,
@@ -135,6 +138,7 @@ test('early template content moves preserve actual originals while cloned inert 
   assert.equal(restored, true, 'dispose restores the native getter when no later author override replaced it');
 });
 
+// @test-kind security: a page script cannot forge, transfer or edit the registry's literal identity
 test('marker removal before MutationObserver callback cannot produce late false admission', async (t) => {
   const fixture = await pageFixture(
     t,
@@ -143,6 +147,7 @@ test('marker removal before MutationObserver callback cannot produce late false 
   assert.equal((await fixture.query()).facts.length, 0);
 });
 
+// @test-kind security: a page script cannot forge, transfer or edit the registry's literal identity
 test('visual toggles and reparenting retain original creation source; identity repurposing invalidates it', async (t) => {
   const fixture = await pageFixture(t);
   await fixture.page.evaluate(() => {
@@ -159,6 +164,7 @@ test('visual toggles and reparenting retain original creation source; identity r
   assert.equal((await fixture.query('repurposed')).facts.length, 0);
 });
 
+// @test-kind security: a page script cannot forge, transfer or edit the registry's literal identity
 test('untrusted page markers and public reader cannot publish fabricated proof', async (t) => {
   const fixture = await pageFixture(t);
   await fixture.page.evaluate(() => {
@@ -172,6 +178,50 @@ test('untrusted page markers and public reader cannot publish fabricated proof',
   assert.equal(await fixture.page.evaluate(() => window.__inventedPortalProvenance.claim('wrong')), null);
 });
 
+// @test-kind security: a page script can neither read the registry's marks from the DOM nor gain proof by writing one
+test('parser marks are gone before the next inline script runs, and a script writing one gains no proof', async (t) => {
+  // An inline script right after the marked element: the parser runs it after the microtask checkpoint where the
+  // registry's MutationObserver remembered and removed the marks.
+  const source =
+    '<!doctype html><html><body><div id="box"><button id="original">Invented</button><button id="sibling">Other</button>' +
+    '<script>window.seen={marks:document.querySelectorAll("[data-paqvilo-source]").length,html:document.documentElement.outerHTML.includes("data-paqvilo"+"-source=")};</script>' +
+    '</div></body></html>';
+  const fixture = await pageFixture(t, '', { source });
+  assert.deepEqual(await fixture.page.evaluate(() => window.seen), { marks: 0, html: false });
+  assert.equal(await fixture.page.evaluate(() => document.querySelectorAll('[data-paqvilo-source]').length), 0);
+  // The registry still knows the element by its remembered mark.
+  const known = await fixture.query();
+  assert.deepEqual([known.facts.length, known.facts[0]?.kind], [1, 'render-literal']);
+  // The mark a sibling carried in the served response, read from the response text (the DOM no longer holds it).
+  const served = await fixture.page.evaluate(async () => (await fetch(location.href)).text());
+  const siblingMark =
+    /<button id="sibling" data-paqvilo-source="([^"]+)"|<button data-paqvilo-source="([^"]+)" id="sibling"/.exec(
+      served,
+    );
+  assert.ok(siblingMark, 'the served response carries the sibling’s mark');
+  // A clone carries no mark and no proof; a script writing the sibling's mark onto the original, any mark onto the
+  // sibling, or the sibling's real mark onto an element it makes gains nothing: no element takes another's identity,
+  // and the elements the parser made keep their own (a written mark changes nothing, so it cannot suppress them).
+  await fixture.page.evaluate((mark) => {
+    const original = document.getElementById('original');
+    const clone = original.cloneNode(true);
+    clone.id = 'clone';
+    document.body.append(clone);
+    original.setAttribute('data-paqvilo-source', mark);
+    document.getElementById('sibling').setAttribute('data-paqvilo-source', 'invented-forged-mark');
+    const made = document.createElement('button');
+    made.id = 'made';
+    made.setAttribute('data-paqvilo-source', mark);
+    document.body.append(made);
+  }, siblingMark[1] ?? siblingMark[2]);
+  assert.equal((await fixture.query('clone')).facts.length, 0, 'a clone never inherits proof');
+  assert.equal((await fixture.query('made')).facts.length, 0, 'a copied mark never gains proof');
+  const own = async (id) => (await fixture.query(id)).facts.map((fact) => [fact.kind, fact.region?.start]);
+  assert.deepEqual(await own('original'), [['render-literal', source.indexOf('<button id="original"')]]);
+  assert.deepEqual(await own('sibling'), [['render-literal', source.indexOf('<button id="sibling"')]]);
+});
+
+// @test-kind security: a page script cannot forge, transfer or edit the registry's literal identity
 test('authored prototype overrides cannot replace the registry reader or fabricate publication', async (t) => {
   const fixture = await pageFixture(
     t,
@@ -337,6 +387,7 @@ test('external script proofs match actual CDP decoding for BOM, Unicode and CRLF
   assert.equal(proof.scriptProofs[0].generatedHash, scripts[0].hash);
 });
 
+// @test-kind security: a page script cannot forge, transfer or edit the registry's literal identity
 test('actual PCF render hosts retain private semantic ownership through toolkit ID assignment while authored lookalikes cannot claim it', async (t) => {
   const fx = inspectionFixture();
   ownedFixture(t).remove(fx.cleanup);

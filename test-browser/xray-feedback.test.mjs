@@ -112,10 +112,11 @@ test('advanced-form editor hosts follow the rendered step table and layout acros
       evidence.enclosing.some((row) => row.component?.key === 'advanced-form:wizard' && row.status === 'exact'),
     );
     if (id === 'layout-b') assert.ok(evidence.enclosing.some((row) => row.component?.key === 'form:layout-b'));
+    // The portal renders a step's layout with the empty GUID; the step form is then the only one on that table.
     if (id.startsWith('0000'))
       assert.ok(
-        !evidence.enclosing.some((row) => row.component?.kind === 'form'),
-        'An empty ID cannot choose between configured step layouts',
+        evidence.enclosing.some((row) => row.component?.key === 'form:layout-b'),
+        'An empty ID joins the only step layout on the rendered table',
       );
   }
   await page
@@ -132,9 +133,9 @@ test('native generic modal layouts join only their rendered list or subgrid acti
     `<section class="modal-form modal-form-${kind}"><iframe id="${id}" data-page="${modalPath}" src="${modalPath}"></iframe></section>`;
   const { page, inspect, data, report } = await fixture(
     t,
-    `<div data-listid="first"><div class="entity-grid" data-selected-view="view-one">${modal('insert', 'create')}${modal('edit', 'edit')}${modal('details', 'details')}</div></div>` +
-      `<div data-listid="second"><div class="entity-grid" data-selected-view="view-two">${modal('edit', 'second')}</div></div>` +
-      `<div data-formid="basic-a"><div id="ChildRows" class="subgrid"><div class="entity-grid">${modal('edit', 'subgrid')}</div></div></div>`,
+    `<div id="EntityListControl_first"><div class="entity-grid" data-selected-view="view-one">${modal('insert', 'create')}${modal('edit', 'edit')}${modal('details', 'details')}</div></div>` +
+      `<div id="EntityListControl_second"><div class="entity-grid" data-selected-view="view-two">${modal('edit', 'second')}</div></div>` +
+      `<div data-form-layout="{&quot;Id&quot;:&quot;basic-a&quot;}"><div id="ChildRows" class="subgrid"><div class="entity-grid">${modal('edit', 'subgrid')}</div></div></div>`,
   );
   const targets = ['create', 'edit', 'details', 'other'].map((id) => ({
     id,
@@ -175,7 +176,7 @@ test('native generic modal layouts join only their rendered list or subgrid acti
     page.locator('#' + id).evaluate((frame, entity) => {
       const doc = frame.contentDocument;
       doc.body.innerHTML =
-        '<div id="EntityFormControl"><div id="EntityFormPanel"><div id="EntityFormControl_EntityFormView"><span data-form-layout></span><input id="x_title"></div></div></div>';
+        '<div id="EntityFormControl"><div id="EntityFormPanel"><div id="EntityFormControl_EntityFormView"><span data-form-layout></span><table class="section"><tbody><tr><td class="cell"><div class="control" data-logical-name="x_title"><input id="x_title"></div></td></tr></tbody></table></div></div></div>';
       doc
         .querySelector('[data-form-layout]')
         .setAttribute(
@@ -214,7 +215,7 @@ test('native generic modal layouts join only their rendered list or subgrid acti
   await populate('edit');
   exactColumn(await inspect(field('edit')), 'x_first', 'x_title');
   await page
-    .locator('[data-listid=first] > .entity-grid')
+    .locator('#EntityListControl_first > .entity-grid')
     .evaluate((node) => node.setAttribute('data-selected-view', 'view-two'));
   assert.notEqual(
     (await inspect(field('edit'))).owner.status,
@@ -222,7 +223,7 @@ test('native generic modal layouts join only their rendered list or subgrid acti
     'A rendered view contradicting its list cannot prove modal ownership',
   );
   await page
-    .locator('[data-listid=first] > .entity-grid')
+    .locator('#EntityListControl_first > .entity-grid')
     .evaluate((node) => node.setAttribute('data-selected-view', 'view-one'));
   // Moving the frame element reloads it from its address. Until that commits the element holds a blank, already
   // complete document, so the reload is awaited as a navigation whose listener exists before the move.
@@ -246,7 +247,7 @@ test('native generic modal layouts join only their rendered list or subgrid acti
       changed.componentIndex.forms = changed.componentIndex.forms.filter((form) => form.id !== 'edit');
     if (mode === 'duplicate') changed.componentIndex.lists[0].actions.push({ name: 'EditAction', formId: 'other' });
     if (mode === 'ambiguous-list') {
-      await page.locator('[data-listid=first]').evaluate((node) => node.removeAttribute('data-listid'));
+      await page.locator('#EntityListControl_first').evaluate((node) => node.removeAttribute('id'));
       changed.componentIndex.lists[1].viewIds = ['view-one'];
     }
     await page.evaluate(({ data, report }) => document.getElementById('paqvilo-xray').__px.update(data, report), {
@@ -309,7 +310,7 @@ test('view-only modal placements are exact only for a page-referenced list and o
   for (const id of ['edit', 'unclassed', 'both'])
     await page.locator('#' + id).evaluate((frame) => {
       frame.contentDocument.body.innerHTML =
-        '<div id="EntityFormControl"><div id="EntityFormPanel"><div id="EntityFormControl_EntityFormView"><span data-form-layout></span><input id="x_title"></div></div></div>';
+        '<div id="EntityFormControl"><div id="EntityFormPanel"><div id="EntityFormControl_EntityFormView"><span data-form-layout></span><table class="section"><tbody><tr><td class="cell"><div class="control" data-logical-name="x_title"><input id="x_title"></div></td></tr></tbody></table></div></div></div>';
       frame.contentDocument
         .querySelector('[data-form-layout]')
         .setAttribute(
@@ -352,7 +353,11 @@ test('crowded native pages keep picked native fields and unknown elements ahead 
   const { page, inspect, data, report } = await fixture(
     t,
     '<div id="EntityFormControl_basica"><div id="EntityFormControl_basica_EntityFormView" style="display:grid;grid-template-columns:repeat(6,1fr);gap:4px">' +
-      names.map((name) => `<div class="control"><input id="${name}" aria-label="${name}"></div>`).join('') +
+      names
+        .map(
+          (name) => `<div class="control" data-logical-name="${name}"><input id="${name}" aria-label="${name}"></div>`,
+        )
+        .join('') +
       '</div></div>' +
       Array.from(
         { length: 240 },
@@ -468,7 +473,7 @@ test('two declared grids retain exact declared columns across clones, reordering
     '<table id="first" data-paqvilo-table="x_first"><thead><tr><th id="head">Title</th></tr></thead><tbody><tr><td id="cell"><b>Custom renderer</b></td></tr></tbody></table>' +
       '<table id="second" data-paqvilo-table="x_second"><tr><td id="other" data-paqvilo-column="x_title">Other</td></tr></table>' +
       '<table data-paqvilo-grid="first"><tr><th id="clone" data-dt-column="1">Clone</th></tr></table>' +
-      '<form data-formid="basic-a"><table><tr><td id="unbound" data-paqvilo-column="x_title">Unbound</td></tr></table></form>',
+      '<form data-form-layout="{&quot;Id&quot;:&quot;basic-a&quot;}"><table><tr><td id="unbound" data-paqvilo-column="x_title">Unbound</td></tr></table></form>',
   );
   await page.evaluate(() => {
     window.businessCalls = 0;
@@ -503,7 +508,7 @@ test('two declared grids retain exact declared columns across clones, reordering
   });
   for (const selector of ['#cell span', '#clone'])
     exactColumn(await inspect(page.locator(selector)), 'x_first', 'x_title');
-  await page.locator('#other').evaluate((node) => node.setAttribute('data-entityname', 'x_first'));
+  await page.locator('#other').evaluate((node) => node.setAttribute('data-paqvilo-table', 'x_first'));
   assert.equal((await inspect(page.locator('#other'))).owner.status, 'conflicting');
   assert.equal(await page.evaluate(() => window.businessCalls), 0);
 });
@@ -514,7 +519,8 @@ test('a linked grid clone preserves conflicting declarations on its original tab
     '<table id="original" data-paqvilo-table="x_first"><tr><th id="direct" data-paqvilo-column="x_title">Direct</th></tr></table>' +
       '<table data-paqvilo-grid="original"><tr><th id="clone" data-paqvilo-column="x_title">Clone</th></tr></table>',
   );
-  for (const attribute of ['data-entityname', 'data-entity']) {
+  // A live portal declares a row's table with data-entity; Mirage's own data-entityname is read on Mirage pages only.
+  for (const attribute of ['data-entity']) {
     await page.locator('#original').evaluate((node, attribute) => node.setAttribute(attribute, 'x_second'), attribute);
     for (const id of ['direct', 'clone'])
       assert.equal(
@@ -525,7 +531,7 @@ test('a linked grid clone preserves conflicting declarations on its original tab
     await page.locator('#original').evaluate((node, attribute) => node.removeAttribute(attribute), attribute);
     for (const id of ['direct', 'clone']) exactColumn(await inspect(page.locator('#' + id)), 'x_first', 'x_title');
   }
-  await page.locator('#clone').evaluate((node) => node.closest('table').setAttribute('data-entityname', 'x_second'));
+  await page.locator('#clone').evaluate((node) => node.closest('table').setAttribute('data-paqvilo-table', 'x_second'));
   assert.equal((await inspect(page.locator('#clone'))).owner.status, 'conflicting');
   exactColumn(await inspect(page.locator('#direct')), 'x_first', 'x_title');
 });
@@ -560,7 +566,8 @@ for (const count of [4, 900]) {
     exactColumn(await inspect(editors[0]), 'x_first', 'x_notes');
     exactColumn(await inspect(editors[1]), 'x_first', 'x_summary');
     assert.notEqual((await inspect(editors[2])).owner.status, 'exact');
-    assert.notEqual((await inspect(page.locator('#chrome'))).owner.status, 'exact');
+    // Everything inside a code component host <column>_Container is part of that column's control.
+    exactColumn(await inspect(page.locator('#chrome')), 'x_first', 'x_notes');
     const notes = await inspect(editors[0]);
     assert.ok(notes.enclosing.some((item) => item.component.key === 'form:layout-a'));
     assert.ok(notes.enclosing.some((item) => item.component.key === 'basic-form:basic-a'));
@@ -571,8 +578,8 @@ for (const count of [4, 900]) {
     const replacement = editors[0].locator('textarea');
     exactColumn(await inspect(replacement), 'x_first', 'x_notes');
     for (const [attribute, value] of [
-      ['data-fieldname', 'x_summary'],
-      ['data-entityname', 'x_second'],
+      ['data-attribute', 'x_summary'],
+      ['data-paqvilo-table', 'x_second'],
     ]) {
       await page
         .frameLocator('#notes')
@@ -589,7 +596,7 @@ for (const count of [4, 900]) {
         .evaluate((node, attribute) => node.removeAttribute(attribute), attribute);
       exactColumn(await inspect(replacement), 'x_first', 'x_notes');
     }
-    await replacement.evaluate((node) => node.setAttribute('data-fieldname', 'editor'));
+    await replacement.evaluate((node) => node.setAttribute('data-attribute', 'editor'));
     assert.equal((await inspect(replacement)).owner.status, 'conflicting');
     await page.evaluate(
       ({ data, report }) =>
@@ -608,7 +615,7 @@ for (const count of [4, 900]) {
 test('rendered modal/quick-view identities survive replacement and source changes while URL-only fixtures remain candidates', async (t) => {
   const { page, inspect, data, report } = await fixture(
     t,
-    '<div id="EntityFormControl_basica"><input id="x_title"></div><iframe id="first" src="/quick?formid=basic-a"></iframe><iframe id="second" src="/quick?formid=basic-b"></iframe>',
+    '<div id="EntityFormControl_basica"><table class="section"><tbody><tr><td class="cell"><div class="control" data-logical-name="x_title"><input id="x_title"></div></td></tr></tbody></table></div><iframe id="first" src="/quick?formid=basic-a"></iframe><iframe id="second" src="/quick?formid=basic-b"></iframe>',
   );
   for (const [id, form, entity] of [
     ['first', 'basic-a', 'x_first'],
@@ -617,7 +624,11 @@ test('rendered modal/quick-view identities survive replacement and source change
     const frame = page.frameLocator('#' + id);
     await frame
       .locator('body')
-      .evaluate((body) => (body.innerHTML = '<div id="EntityFormControl"><input id="x_title"></div>'));
+      .evaluate(
+        (body) =>
+          (body.innerHTML =
+            '<div id="EntityFormControl"><table class="section"><tbody><tr><td class="cell"><div class="control" data-logical-name="x_title"><input id="x_title"></div></td></tr></tbody></table></div>'),
+      );
     assert.equal((await inspect(frame.locator('input'))).owner.status, 'candidate');
     await frame
       .locator('#EntityFormControl')
@@ -630,7 +641,9 @@ test('rendered modal/quick-view identities survive replacement and source change
   await first
     .locator('body')
     .evaluate(
-      (body) => (body.innerHTML = '<div id="EntityFormControl" data-formid="basic-b"><input id="x_title"></div>'),
+      (body) =>
+        (body.innerHTML =
+          '<div id="EntityFormControl"><span data-form-layout="{&quot;Id&quot;:&quot;basic-b&quot;}"></span><table class="section"><tbody><tr><td class="cell"><div class="control" data-logical-name="x_title"><input id="x_title"></div></td></tr></tbody></table></div>'),
     );
   exactColumn(await inspect(first.locator('input')), 'x_second', 'x_title');
   await first
@@ -655,7 +668,7 @@ test('rendered modal/quick-view identities survive replacement and source change
 test('native quick-view placements join their observed parent and exported target without URL or record-value proof', async (t) => {
   const { page, inspect, data, report } = await fixture(
     t,
-    '<div id="EntityFormControl_basica"><input id="x_title">' +
+    '<div id="EntityFormControl_basica"><table class="section"><tbody><tr><td class="cell"><div class="control" data-logical-name="x_title"><input id="x_title"></div></td></tr></tbody></table>' +
       '<iframe class="quickform" id="one" data-path="/quick-one" data-controlid="one" data-lookup-element="first_lookup" data-formname="First layout" src="/quick-one?entityid=PRIVATE_ROW_SENTINEL&amp;access_token=PRIVATE_TOKEN_SENTINEL"></iframe>' +
       '<iframe class="quickform" id="two" data-path="/quick-two" data-controlid="two" data-lookup-element="second_lookup" data-formname="Second layout" src="/quick-two"></iframe></div>',
   );
@@ -704,7 +717,8 @@ test('native quick-view placements join their observed parent and exported targe
   ]) {
     const frame = page.frameLocator('#' + id);
     await frame.locator('body').evaluate((body) => {
-      body.innerHTML = '<div><input id="x_title"></div>';
+      body.innerHTML =
+        '<div><table class="section"><tbody><tr><td class="cell"><div class="control" data-logical-name="x_title"><input id="x_title"></div></td></tr></tbody></table></div>';
       Object.defineProperty(HTMLInputElement.prototype, 'value', {
         get() {
           throw Error('No record values');
@@ -715,42 +729,51 @@ test('native quick-view placements join their observed parent and exported targe
     exactColumn(evidence, entity, 'x_title');
     assert.ok(evidence.enclosing.some((row) => row.component.key === 'form:' + formId));
   }
-  await page.locator('#two').evaluate((node) => node.setAttribute('data-entityname', 'x_second'));
+  await page.locator('#two').evaluate((node) => node.setAttribute('data-paqvilo-table', 'x_second'));
   exactColumn(await inspect(page.frameLocator('#two').locator('input')), 'x_second', 'x_title');
-  await page.locator('#two').evaluate((node) => node.setAttribute('data-entityname', 'x_first'));
+  await page.locator('#two').evaluate((node) => node.setAttribute('data-paqvilo-table', 'x_first'));
   assert.equal(
     (await inspect(page.frameLocator('#two').locator('input'))).owner.status,
     'conflicting',
     'the frame target declaration must agree with its exported quick-view target, not its parent table',
   );
   await page.locator('#two').evaluate((node) => {
-    node.setAttribute('data-entityname', 'x_second');
-    node.setAttribute('data-formid', 'basic-b');
+    node.setAttribute('data-paqvilo-table', 'x_second');
     node.setAttribute('data-form-layout', JSON.stringify({ Id: 'layout-b', EntityName: 'x_second' }));
   });
   exactColumn(await inspect(page.frameLocator('#two').locator('input')), 'x_second', 'x_title');
-  await page.locator('#two').evaluate((node) => node.setAttribute('data-formid', 'unknown'));
+  await page
+    .locator('#two')
+    .evaluate((node) => node.setAttribute('data-form-layout', JSON.stringify({ Id: 'unknown' })));
   assert.notEqual((await inspect(page.frameLocator('#two').locator('input'))).owner.status, 'exact');
   await page.locator('#two').evaluate((node) => {
-    node.removeAttribute('data-formid');
+    node.removeAttribute('data-form-layout');
     node.setAttribute('data-form-layout', 'invalid');
   });
   assert.notEqual((await inspect(page.frameLocator('#two').locator('input'))).owner.status, 'exact');
   await page.locator('#two').evaluate((node) => {
     node.removeAttribute('data-form-layout');
-    node.removeAttribute('data-entityname');
+    node.removeAttribute('data-paqvilo-table');
   });
   await navigateFrame(page, '#one', '/quick-one?navigation=next');
   await page
     .frameLocator('#one')
     .locator('body')
-    .evaluate((body) => (body.innerHTML = '<input id="x_title">'));
+    .evaluate(
+      (body) =>
+        (body.innerHTML =
+          '<table class="section"><tbody><tr><td class="cell"><div class="control" data-logical-name="x_title"><input id="x_title"></div></td></tr></tbody></table>'),
+    );
   exactColumn(await inspect(page.frameLocator('#one').locator('input')), 'x_first', 'x_title');
   await navigateFrame(page, '#two', '/quick-two?entityname=x_first');
   await page
     .frameLocator('#two')
     .locator('body')
-    .evaluate((body) => (body.innerHTML = '<input id="x_title">'));
+    .evaluate(
+      (body) =>
+        (body.innerHTML =
+          '<table class="section"><tbody><tr><td class="cell"><div class="control" data-logical-name="x_title"><input id="x_title"></div></td></tr></tbody></table>'),
+    );
   assert.equal(
     (await inspect(page.frameLocator('#two').locator('input'))).owner.status,
     'conflicting',
@@ -760,7 +783,11 @@ test('native quick-view placements join their observed parent and exported targe
   await page
     .frameLocator('#two')
     .locator('body')
-    .evaluate((body) => (body.innerHTML = '<input id="x_title">'));
+    .evaluate(
+      (body) =>
+        (body.innerHTML =
+          '<table class="section"><tbody><tr><td class="cell"><div class="control" data-logical-name="x_title"><input id="x_title"></div></td></tr></tbody></table>'),
+    );
   await page.locator('#two').evaluate((node) => node.setAttribute('sandbox', 'allow-scripts allow-same-origin'));
   assert.notEqual(
     (await inspect(page.frameLocator('#two').locator('input'))).owner.status,
@@ -771,14 +798,14 @@ test('native quick-view placements join their observed parent and exported targe
   await page
     .frameLocator('#one')
     .locator('input')
-    .evaluate((node) => node.setAttribute('data-entityname', 'x_second'));
+    .evaluate((node) => node.setAttribute('data-paqvilo-table', 'x_second'));
   assert.equal((await inspect(page.frameLocator('#one').locator('input'))).owner.status, 'conflicting');
   await page
     .frameLocator('#one')
     .locator('input')
     .evaluate((node) => {
-      node.removeAttribute('data-entityname');
-      node.parentElement.setAttribute('data-formid', 'unknown');
+      node.removeAttribute('data-paqvilo-table');
+      node.parentElement.setAttribute('data-form-layout', JSON.stringify({ Id: 'unknown' }));
     });
   assert.notEqual((await inspect(page.frameLocator('#one').locator('input'))).owner.status, 'exact');
   await page.locator('#two').evaluate((node) => node.setAttribute('data-lookup-element', 'wrong_lookup'));

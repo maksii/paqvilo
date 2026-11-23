@@ -310,8 +310,9 @@ test('background X-ray refresh shows progress while retaining source details, an
   const context = await browser.newContext();
   ownedFixture(t).add(() => context.close());
   const page = await context.newPage();
+  // The form's data-entityname is Mirage's own marker: the fixture models a Mirage page (mirageMode).
   await page.setContent('<form data-entityname="fx_widget"><input id="fx_title" name="fx_title"></form>');
-  await page.evaluate(xrayUi, { origin: 'null', token: 'invented-progress' });
+  await page.evaluate(xrayUi, { origin: 'null', token: 'invented-progress', mirageMode: true });
   await page.evaluate(() => {
     window.fixtureReport = {
       columns: [{ name: 'fx_title', entity: 'fx_widget', type: 'string', label: 'Title' }],
@@ -322,6 +323,7 @@ test('background X-ray refresh shows progress while retaining source details, an
       {
         origin: 'null',
         token: 'invented-progress',
+        mirageMode: true,
         inspection: { active: true, version: 1 },
         inspectionLoading: false,
       },
@@ -340,6 +342,7 @@ test('background X-ray refresh shows progress while retaining source details, an
       {
         origin: 'null',
         token: 'invented-progress',
+        mirageMode: true,
         inspection: { active: true, version: 1, loading: true, loadingId: 2, phase: 'Reading updated metadata' },
         inspectionLoading: true,
       },
@@ -359,6 +362,7 @@ test('background X-ray refresh shows progress while retaining source details, an
       {
         origin: 'null',
         token: 'invented-progress',
+        mirageMode: true,
         inspection: { active: true, version: 1, loading: true, loadingId: 2 },
         inspectionLoading: false,
       },
@@ -376,6 +380,7 @@ test('background X-ray refresh shows progress while retaining source details, an
       {
         origin: 'null',
         token: 'invented-progress',
+        mirageMode: true,
         inspection: { active: true, version: 1, loading: true, loadingId: 3 },
         inspectionLoading: true,
       },

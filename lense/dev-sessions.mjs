@@ -43,6 +43,8 @@ async function initializeDevelopmentTarget(origin, context) {
   const session = await OverlaySession.create(cfg);
   session.provenanceSlot = context.provenance.slot;
   session.domProvenanceSlot = context.provenance.domSlot;
+  // A script the page runs that is byte for byte a script of the export is followed to that file, whoever served it.
+  context.provenance.registerScriptSources?.(cfg.origin, (route) => session.sourceInspector?.sourceIndexFor(route));
   const record = { session };
   context.records.add(record);
   try {

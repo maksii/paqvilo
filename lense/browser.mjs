@@ -731,6 +731,8 @@ export async function attachSession(context, session) {
   const provenance = createInspectionProvenanceTransport(context, [session.cfg]);
   session.provenanceSlot = provenance.slot;
   session.domProvenanceSlot = provenance.domSlot;
+  // A script the page runs that is byte for byte a script of the export is followed to that file, whoever served it.
+  provenance.registerScriptSources?.(session.cfg.origin, (route) => session.sourceInspector?.sourceIndexFor(route));
   return interceptOrigin(context, session.cfg.origin, session.route, {
     bypassCSP: Boolean(session.cfg.browser?.bypassCSP),
     onAttach: provenance.onAttach,

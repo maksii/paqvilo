@@ -105,6 +105,12 @@ async function fixture(t, source, { scriptFor } = {}) {
   return { page, query, domProof, portalProof, transport, source, scope, errors };
 }
 
+// The registry removes its marks from the DOM before any later script runs, and no mark can be predicted from another
+// (each is random), so an attacker reads the very mark the later parser original carries from the response the portal
+// served (the same document, fetched again) and puts it on an element of its own before that original arrives.
+const SERVED_MARK =
+  '<script>window.servedMark=()=>{const x=new XMLHttpRequest();x.open("GET",location.href,false);x.send();' +
+  'return [...x.responseText.matchAll(/<button id="claimed" data-paqvilo-source="([^"$]+)"/g)].at(-1)[1]}</script>';
 for (const [name, source, relationship, call, original] of [
   [
     'inert-template clone',
@@ -114,15 +120,19 @@ for (const [name, source, relationship, call, original] of [
     '#pattern',
   ],
   [
-    'predicted future literal marker',
-    '<!doctype html><html><body><p>Earlier literal</p><script>const marker=document.currentScript.getAttribute("data-paqvilo-source"),cut=marker.lastIndexOf(":");window.scriptNode=document.createElement("button");scriptNode.id="claimed";scriptNode.setAttribute("data-paqvilo-source",marker.slice(0,cut+1)+(Number(marker.slice(cut+1))+1));document.body.append(scriptNode);document.write("<!--")</script><button id="claimed">Future literal</button></body></html>',
+    'future literal marker',
+    '<!doctype html><html><body><p>Earlier literal</p>' +
+      SERVED_MARK +
+      '<script>window.scriptNode=document.createElement("button");scriptNode.id="claimed";scriptNode.setAttribute("data-paqvilo-source",servedMark());document.body.append(scriptNode);document.write("<!--")</script><button id="claimed">Future literal</button></body></html>',
     'created-by',
     'createElement',
     'p',
   ],
   [
     'DOMParser future-marker insertion',
-    '<!doctype html><html><body><p>Earlier literal</p><script>const marker=document.currentScript.getAttribute("data-paqvilo-source"),cut=marker.lastIndexOf(":"),next=marker.slice(0,cut+1)+(Number(marker.slice(cut+1))+1);window.scriptNode=new DOMParser().parseFromString(`<button id="claimed" data-paqvilo-source="${next}">Created</button>`,"text/html").body.firstChild;document.body.append(scriptNode);document.write("<!--")</script><button id="claimed">Future literal</button></body></html>',
+    '<!doctype html><html><body><p>Earlier literal</p>' +
+      SERVED_MARK +
+      '<script>const next=servedMark();window.scriptNode=new DOMParser().parseFromString(`<button id="claimed" data-paqvilo-source="${next}">Created</button>`,"text/html").body.firstChild;document.body.append(scriptNode);document.write("<!--")</script><button id="claimed">Future literal</button></body></html>',
     'attached-by',
     'append',
     'p',

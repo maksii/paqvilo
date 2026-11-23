@@ -25,6 +25,16 @@ import { boundedJsonBody, observeHttpErrors } from './http-errors.mjs';
 import { consoleLocation } from './console-location.mjs';
 import { annotateRuntimeSources } from './runtime-sources.mjs';
 import { selectionEvidenceCurrent } from './inspection-source-open.mjs';
+import { PLATFORM_CDN_ORIGIN, REQUEST_RULES } from './request-classes.mjs';
+
+// The platform rules in a form a page can hold: X-ray names an element that loads a file of the portal itself.
+const PLATFORM_RULES = REQUEST_RULES.map((rule) => ({
+  class: rule.class,
+  platform: rule.platform,
+  source: rule.path.source,
+  flags: rule.path.flags,
+  cdn: Boolean(rule.cdn),
+}));
 
 // Compose the two self-contained browser functions on the Node side. A redraw remains one
 // bounded browser evaluation, including when the tab is paused at a debugger breakpoint.
@@ -114,21 +124,32 @@ const toLines = (text) =>
     .split('\n');
 const clippedDiffLine = (text) => (text.length > 500 ? text.slice(0, 500) + ' ...' : text);
 function createPageHitItem(hit, source, isFile, changed, fresh, session, sourceFile) {
+  // A Solution file (a code component resource at /_pcfwebresource/<guid>): named by its file, outside the export.
+  const solution = isFile ? (session.solutionSource?.(source.rel) ?? null) : null;
+  const named = solution ? source.rel : hit.url;
   return {
     kind: source.kind ?? (isFile ? 'web-file' : 'other'),
-    group: isFile ? webFileGroup(hit.url) : (GROUP_OF[source.kind] ?? 'other'),
+    group: isFile ? webFileGroup(named) : (GROUP_OF[source.kind] ?? 'other'),
     rel: source.rel,
     url: isFile ? hit.url : null,
-    title: isFile ? readableName(hit.url.split('/').pop() || hit.url) : null,
+    title: isFile ? readableName(named.split('/').pop() || named) : null,
     count: hit.count ?? 1,
-    edited: changed.has(sourceFile(source.rel)),
+    edited: solution ? session.solutionEdited(source.rel) === true : changed.has(sourceFile(source.rel)),
     fresh: fresh.has(session.rel(sourceFile(source.rel))),
     canPause: true,
     canDiff: !BINARY_EXT.test(source.rel),
+    ...(solution
+      ? {
+          path: solution.file,
+          ...(solution.control ? { control: solution.control, componentKey: solution.componentKey } : {}),
+        }
+      : {}),
   };
 }
 function annotatePageHitItem(item, hit, source, isFile, webFileState) {
-  if (isFile) Object.assign(item, webFileState(hit.url), { note: source.action === 'web-file' ? null : source.action });
+  if (item.path && isFile) Object.assign(item, webFileState(hit.url), { note: null });
+  else if (isFile)
+    Object.assign(item, webFileState(hit.url), { note: source.action === 'web-file' ? null : source.action });
   else
     Object.assign(item, {
       differs: !/^injected/.test(source.action), // NOSONAR: preserve coercion for absent action metadata
@@ -167,8 +188,16 @@ function collectPageItems(hits, items, changed, fresh, session, sourceFile, webF
   }
 }
 
-function syncedItems(document, shown, disabled, changed) {
-  return (document?.matched ?? [])
+/** Inline sources the page's documents (the top-level one and its frames) hold, first per source. */
+function matchedSources(documents) {
+  const matched = new Map();
+  for (const document of documents)
+    for (const match of document?.matched ?? []) if (!matched.has(match.rel)) matched.set(match.rel, match);
+  return [...matched.values()];
+}
+
+function syncedItems(documents, shown, disabled, changed) {
+  return matchedSources(documents)
     .filter((match) => match.identical && !shown.has(match.rel) && !disabled.has(match.rel))
     .map((match) => ({
       kind: match.kind,
@@ -181,21 +210,49 @@ function syncedItems(document, shown, disabled, changed) {
     }));
 }
 
-function pausedItems(disabled, indexSources, changed, sourceFile) {
+/**
+ * Inline blocks the page holds that differ from the local source and that the overlay did not apply: not paused (that
+ * is the paused list) and not shown otherwise. `reason`: out-of-scope (scope "changed vs Git" and the source matches
+ * the baseline, so the deployed block differs from Git) or inactive.
+ */
+function notAppliedItems(documents, shown, disabled, changed, scope) {
+  return matchedSources(documents)
+    .filter((match) => !match.identical && !match.active && !shown.has(match.rel) && !disabled.has(match.rel))
+    .map((match) => ({
+      kind: match.kind,
+      group: 'not-applied',
+      state: 'differs-not-applied',
+      rel: match.rel,
+      differs: true,
+      applied: false,
+      reason: scope === 'changed' && !changed.has(match.file) ? 'out-of-scope' : 'inactive',
+      canDiff: false,
+      canPause: false,
+      edited: changed.has(match.file),
+    }));
+}
+
+function pausedItems(disabled, indexSources, changed, sourceFile, session) {
   return [...disabled].map((rel) => {
     const index = indexSources();
     const webFile = index.webByRel.get(rel);
     const source = index.inlineByRel.get(rel);
+    // A paused Solution file (a code component resource): its address and file, as the session maps them.
+    const solution = !webFile && !source ? (session?.solutionSource?.(rel) ?? null) : null;
+    let title = null;
+    if (webFile) title = webFile.url.split('/').pop();
+    else if (solution) title = rel.split('/').pop();
     return {
-      kind: source?.kind ?? 'web-file',
+      kind: source?.kind ?? solution?.kind ?? 'web-file',
       group: 'paused',
       rel,
-      url: webFile?.url ?? null,
-      title: webFile ? webFile.url.split('/').pop() : null,
+      url: webFile?.url ?? solution?.url ?? null,
+      title,
       paused: true,
       canPause: true,
       canDiff: !BINARY_EXT.test(rel),
-      edited: changed.has(sourceFile(rel)),
+      edited: solution ? session.solutionEdited(rel) === true : changed.has(sourceFile(rel)),
+      ...(solution ? { path: solution.file, ...(solution.control ? { control: solution.control } : {}) } : {}),
     };
   });
 }
@@ -415,14 +472,17 @@ function inlineComparisonBase(page, rel, file, src, session, cfg) {
   else before = raw;
   return { before, against: `git ${session.baseline.spec}` };
 }
-function onlineComparisonAddress(origin, url, resolver, file) {
+function onlineComparisonAddress(origin, url, resolver, file, session) {
   let address;
   try {
     address = new URL(portalResourceUrl(origin, url));
   } catch {
     /* invalid URL */
   }
-  const matched = address?.origin === origin && resolver.resolve(address.pathname);
+  // A code component resource or Solution web resource: the address the session maps to this Solution file.
+  const matched =
+    address?.origin === origin &&
+    (resolver.resolve(address.pathname) || session?.solutionSourceForUrl?.(address.pathname));
   return matched && path.resolve(matched.file) === file ? address : null;
 }
 const sameOrigin = (address, origin) => {
@@ -809,7 +869,12 @@ export function enablePanel(context, session, opts = {}) {
   };
   const sourceFile = (rel) => {
     const index = indexSources();
-    return index.inlineByRel.get(rel)?.file ?? index.webByRel.get(rel)?.file ?? path.resolve(cfg.sourceDir, rel);
+    return (
+      index.inlineByRel.get(rel)?.file ??
+      index.webByRel.get(rel)?.file ??
+      session.solutionSource?.(rel)?.file ??
+      path.resolve(cfg.sourceDir, rel)
+    );
   };
   const listeners = new Set();
   const on = (target, event, handler) => {
@@ -821,6 +886,8 @@ export function enablePanel(context, session, opts = {}) {
     listeners.add(remove);
     return remove;
   };
+  // Every request of each page fills its ledger, including those interception never pauses (request-classes.mjs).
+  if (typeof session.observeRequests === 'function') listeners.add(session.observeRequests(context));
 
   const log = (entry) => {
     activity.unshift({ at: Date.now(), ...entry });
@@ -866,12 +933,15 @@ export function enablePanel(context, session, opts = {}) {
     const source = index.inlineByRel.get(rel);
     const webFile = index.webByRel.get(rel);
     const runtimeFile = runtimeFilesByPage.get(page)?.get(rel) ?? null;
-    if (cfg.mirage && !source && !webFile && !runtimeFile) return null;
-    const file = source?.file ?? webFile?.file ?? runtimeFile ?? path.resolve(cfg.sourceDir, rel);
+    // A Solution file the session maps to a portal address (a code component resource): inside its Solution root.
+    const solution = source || webFile || runtimeFile ? null : (session.solutionSource?.(rel) ?? null);
+    if (cfg.mirage && !source && !webFile && !runtimeFile && !solution) return null;
+    const file = source?.file ?? webFile?.file ?? runtimeFile ?? solution?.file ?? path.resolve(cfg.sourceDir, rel);
     const roots = [
       ...(source || webFile ? [cfg.sourceDir] : []),
       ...(cfg.site.routes ?? []).filter((r) => r.dir).map((r) => path.resolve(cfg.sourceDir, r.dir)),
       ...(runtimeFile ? (runtimeByPage.get(page)?.roots ?? []) : []),
+      ...(solution ? [solution.solutionRoot] : []),
     ];
     try {
       const real = fs.realpathSync.native(file);
@@ -900,6 +970,33 @@ export function enablePanel(context, session, opts = {}) {
     return {
       differs,
       isNew: state === 'not online (local only)',
+    };
+  };
+
+  /** What the portal serves against the baseline: every file with its places on the page shown, pages elsewhere counted. */
+  const servedState = (snapshot, pathname) => {
+    if (!snapshot.files.length) return null;
+    const here = (url) => pageKey(url, session.model) === pageKey(pathname, session.model);
+    return {
+      baseline: snapshot.baseline,
+      differs: snapshot.differs,
+      deployed: snapshot.deployed,
+      search: snapshot.search ?? null,
+      files: snapshot.files.map((file) => {
+        const page = file.pages.find((entry) => here(entry.url));
+        return {
+          rel: file.rel,
+          kind: file.kind,
+          name: file.name,
+          state: file.state,
+          changed: file.changed,
+          onPage: Boolean(page),
+          places: page?.places ?? [],
+          count: page?.count ?? 0,
+          pages: file.pages.map((entry) => entry.url),
+          versions: file.versions ?? null,
+        };
+      }),
     };
   };
 
@@ -1528,9 +1625,23 @@ export function enablePanel(context, session, opts = {}) {
     collectPageItems(hits, items, changed, fresh, session, sourceFile, webFileState);
     const shown = new Set([...items.values()].map((i) => i.rel));
     const document = hits.findLast((h) => h.type === 'html' && h.navigation) ?? hits.findLast((h) => h.type === 'html');
-    const insync = syncedItems(document, shown, session.disabled, changed);
-    const paused = pausedItems(session.disabled, indexSources, changed, sourceFile);
+    // The top-level document and its frames' documents (E5): each holds blocks of this page.
+    const documents = [document, ...hits.filter((h) => h.type === 'html' && h.frame && h !== document)];
+    const insync = syncedItems(documents, shown, session.disabled, changed);
+    const notApplied = notAppliedItems(documents, shown, session.disabled, changed, cfg.site.scope);
     const pathname = currentPagePath(page);
+    const requests = session.requestSummary ? session.requestSummary(page) : null;
+    // Paused sources this page uses (E18): loaded, recognised in its documents or bound to the page. Sources paused
+    // for other pages are only counted, so the page's counts and lists agree.
+    const pageRels = new Set([
+      ...hits.flatMap((hit) => (hit.sources ?? []).map((source) => source.rel)),
+      ...matchedSources(documents).map((match) => match.rel),
+      ...(requests?.items ?? []).map((item) => item.rel).filter(Boolean),
+      ...(pageInfo(pathname)?.sources ?? []).map((source) => source.rel),
+    ]);
+    const allPaused = pausedItems(session.disabled, indexSources, changed, sourceFile, session);
+    const paused = allPaused.filter((item) => pageRels.has(item.rel));
+    const listed = [...items.values()];
     return {
       token,
       origin: cfg.origin,
@@ -1566,6 +1677,10 @@ export function enablePanel(context, session, opts = {}) {
       localSimulation: cfg.mirage !== true && servedByLocalMirage(cfg),
       scope: cfg.site.scope,
       sourceDir: cfg.sourceDir.replaceAll('\\', '/'),
+      // What X-ray needs to name an element that loads a file of the portal itself.
+      platformRules: PLATFORM_RULES,
+      platformCdnOrigin: PLATFORM_CDN_ORIGIN,
+      languageCodes: [...(session.model.languageCodes ?? [])],
       online: cfg.mirage ? false : session.bypass,
       live: cfg.mirage ? false : session.liveReload !== false,
       now: Date.now(),
@@ -1573,9 +1688,23 @@ export function enablePanel(context, session, opts = {}) {
       keys: Object.fromEntries(Object.entries(KEYS).map(([k, code]) => [k, keyName(code)])),
       keyCodes: KEYS,
       page: pageInfo(pathname),
-      items: [...items.values()],
+      items: listed,
       insync,
       paused,
+      pausedElsewhere: allPaused.length - paused.length,
+      notApplied,
+      // How many rows each list holds: computed from the lists themselves, so counts and lists cannot disagree.
+      counts: {
+        items: listed.length,
+        edited: listed.filter((item) => item.edited).length,
+        differs: listed.filter((item) => item.differs === true || item.isNew).length,
+        insync: insync.length,
+        paused: paused.length,
+        pausedElsewhere: allPaused.length - paused.length,
+        notApplied: notApplied.length,
+      },
+      // Every request of the current document and where it came from (request-classes.mjs RequestLedger.summary).
+      requests,
       needsDeploy: cfg.mirage || session.bypass ? [] : session.rewriter.unsupported,
       notes: [
         ...hits.flatMap((h) => h.notes ?? []),
@@ -1586,6 +1715,13 @@ export function enablePanel(context, session, opts = {}) {
       pending: [...pendingFor(page)],
       pendingBaseline: !cfg.mirage && pendingBaseline.has(page),
       git: cfg.mirage ? null : gitState(),
+      // Files the pages opened show in another version than the comparison baseline holds: the checkout is ahead of
+      // the portal or behind it. With the places on this page, and the Git refs whose versions explain the pages.
+      // Not in front of a local Mirage (it renders the working copy) and not while overrides are off.
+      served:
+        servedByLocalMirage(cfg) || session.bypass || !session.served
+          ? null
+          : servedState(session.served.snapshot(), pathname),
       catalogVersion,
       lastChange: pageChanges.get(page) ?? lastChange,
       stats: {
@@ -1795,6 +1931,10 @@ export function enablePanel(context, session, opts = {}) {
     schedule(page);
   });
   on(session, 'head', scheduleAll);
+  // Files the portal serves in another version than the baseline, and what Git says about them (served-version.mjs).
+  on(session, 'served', scheduleAll);
+  // A local Mirage renders the working copy: there is no other version for a page to show.
+  if (session.served) session.served.suppressed = servedByLocalMirage(cfg);
   on(session, 'refreshed', ({ files, how, baselineChanged = false, pageResults }) => {
     sourceInspector.invalidate();
     catalogVersion++;
@@ -1835,7 +1975,7 @@ export function enablePanel(context, session, opts = {}) {
     let against;
     let served;
     if (!src && url) {
-      const address = onlineComparisonAddress(cfg.origin, url, session.resolver, file);
+      const address = onlineComparisonAddress(cfg.origin, url, session.resolver, file, session);
       if (!address) return { ok: false, error: 'this URL does not map to the selected local source' };
       // a web file: against what the environment serves right now, with the sign-in of the browser
       let res;
@@ -1999,6 +2139,27 @@ export function enablePanel(context, session, opts = {}) {
       log({ type: 'switch', text: body.off ? 'Override paused' : 'Override back on', files: [body.rel] });
       return { ok: true };
     },
+    // Compare with the Git ref whose versions the portal serves, as a restart with --baseline would.
+    baseline: async (body) => {
+      if (typeof session.useBaseline !== 'function')
+        return { ok: false, error: 'the baseline of this session cannot be moved' };
+      const ref = typeof body?.ref === 'string' ? body.ref.trim() : '';
+      if (!ref) return { ok: false, error: 'no Git ref was given' };
+      // Only a ref Lense itself found to hold what the pages show can be chosen from the page: the request comes
+      // from the portal's origin, and any other baseline is the command line's to set.
+      const offered = (session.served?.snapshot().search?.refs ?? []).map((found) => found.ref ?? found.name);
+      if (!offered.includes(ref))
+        return { ok: false, error: 'this ref is not one the pages opened were found to show' };
+      let used;
+      try {
+        used = await session.useBaseline(ref);
+      } catch (error) {
+        return { ok: false, error: String(error?.message ?? error).split(/\r?\n/)[0] };
+      }
+      log({ type: 'switch', text: `Comparing with ${used.spec} ${String(used.commit ?? '').slice(0, 7)}` });
+      session.emit('refreshed', { files: [], how: 'none', baselineChanged: true });
+      return { ok: true, baseline: used };
+    },
     rebaseline: async () => {
       if (typeof session.repinBaseline !== 'function')
         return { ok: false, error: 'the baseline of this session cannot be moved' };
@@ -2087,8 +2248,15 @@ export function enablePanel(context, session, opts = {}) {
           };
         progress.phase = 'Matching rendered elements to local sources';
         schedule(page);
-        const rendered = await page.evaluate(inspectRenderedPage).catch(() => ({ assets: [], controls: [] }));
+        let renderedReadFailed = false;
+        const rendered = await page.evaluate(inspectRenderedPage).catch(() => {
+          renderedReadFailed = true;
+          return { assets: [], controls: [] };
+        });
         const merged = apiRoutesByPage.get(page).merge(rendered);
+        // The code component resources the page declared, as the session mapped them (lense/pcf-resources.mjs).
+        const pcfResources = session.pcfResourcesFor?.(page) ?? [];
+        if (pcfResources.length) merged.pcfResources = pcfResources;
         if (!cfg.mirage) {
           const answer = await sourceInspector.inspect(runtime.path, merged);
           runtime.report = answer.report;
@@ -2115,6 +2283,15 @@ export function enablePanel(context, session, opts = {}) {
           return {
             ok: false,
             error: 'The page changed during source inspection. Refresh inspection for the current page.',
+          };
+        // What the inspection could not read: the page itself, or past the bounds of the source search.
+        if (runtime.report)
+          runtime.report.inputLimits = {
+            assetsTruncated: false,
+            webFilesTruncated: false,
+            roundsTruncated: false,
+            ...runtime.report.inputLimits,
+            renderedReadFailed,
           };
         progress.phase = 'Linking source files';
         schedule(page);
@@ -2446,6 +2623,29 @@ export function enablePanel(context, session, opts = {}) {
       return Promise.all([...errorObservers].map((observer) => observer.ready.catch(() => {})));
     },
     readyFor: (page) => errorsByPage.get(page)?.ready.catch(() => {}),
+    /**
+     * How much of the page is identified: every element asked what a selection is asked (X-ray's own answer), after
+     * the page's inspection report is loaded. Tags and counts only.
+     */
+    coverageFor: async (page, { limit, samples } = {}) => {
+      const inspected = await actions.inspect({}, page).catch((error) => ({ ok: false, error: error.message }));
+      const coverage = await page.evaluate(
+        ({ report, options }) => {
+          const xray = globalThis.__paqviloXrayUi ?? document.getElementById('paqvilo-xray')?.__px;
+          if (typeof xray?.coverage !== 'function') return null;
+          if (report) xray.setReport?.(report);
+          return xray.coverage(options);
+        },
+        { report: inspected.ok ? inspected.report : null, options: { limit, samples } },
+      );
+      if (!coverage)
+        return { available: false, reason: 'The page has no Lense panel yet: load it in the dev browser first.' };
+      return {
+        available: true,
+        ...coverage,
+        ...(inspected.ok ? {} : { inspection: { ok: false, error: String(inspected.error ?? '').split('\n')[0] } }),
+      };
+    },
     stateFor,
     draw,
     dispose,

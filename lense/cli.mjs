@@ -108,6 +108,7 @@ Agent session access
   --width <n>       agent viewport: viewport width
   --height <n>      agent viewport: viewport height
   --styles <list>  agent snapshot: comma-separated computed CSS properties
+  --samples <n>    agent coverage: how many unidentified elements to list (0-200, default 40)
   --sign-in-timeout <ms> verify: sign-in deadline
   --project <file>  mirage: Mirage multi-source project configuration
                     (default: the site's catalogued mirage.project, when configured)

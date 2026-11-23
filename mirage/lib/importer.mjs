@@ -792,8 +792,8 @@ function prioritizeUrlClaims(entries, kind, diagnostics) {
       translations[variantLanguage] = {
         title:
           [field(variant, 'title'), field(variant, 'name'), field(r, 'title'), field(r, 'name')]
-            .map((value) => String(localized(value, lcid) ?? '').trim())
-            .find(Boolean) ?? '',
+            .map((value) => String(localized(value, lcid) ?? ''))
+            .find((value) => value.trim()) ?? '',
         html: await source(variant, 'copy.html', 'copy'),
         css: await source(variant, 'custom_css.css', 'customcss'),
         js: await source(variant, 'custom_javascript.js', 'customjavascript'),
@@ -813,11 +813,12 @@ function prioritizeUrlClaims(entries, kind, diagnostics) {
     pages.push({
       id: r.id,
       name: field(r, 'name', ''),
-      // The node title is adx_title, else adx_name, of the language content page.
+      // The node title is adx_title, else adx_name, of the language content page: the first that is not blank, with
+      // the spaces the record holds around it (the portal writes them out).
       title:
         [field(copy, 'title'), field(copy, 'name'), field(r, 'title'), field(r, 'name')]
-          .map((value) => String(localized(value, lcid) ?? '').trim())
-          .find(Boolean) ?? '',
+          .map((value) => String(localized(value, lcid) ?? ''))
+          .find((value) => value.trim()) ?? '',
       url,
       parentId: id(field(r, 'parentpageid')),
       pageTemplateId: id(field(merged, 'pagetemplateid')),
@@ -844,11 +845,8 @@ function prioritizeUrlClaims(entries, kind, diagnostics) {
     templates[t.name] = t;
   }
   const snippets = {};
-  const snippetRows = byKind('contentsnippet').sort(
-    (a, b) =>
-      Number(id(field(a, 'contentsnippetlanguageid')) === language) -
-      Number(id(field(b, 'contentsnippetlanguageid')) === language),
-  );
+  const snippetRank = snippetLanguageRank(language, id(field(website, 'defaultlanguage')));
+  const snippetRows = byKind('contentsnippet').sort((a, b) => snippetRank(a) - snippetRank(b));
   const snippetTranslations = {};
   for (const r of snippetRows) {
     const value = await source(r, 'value.html', 'value');
@@ -1284,18 +1282,39 @@ function prioritizeUrlClaims(entries, kind, diagnostics) {
 
 export { field as portalField };
 
-/** Shared effective snippet identity, matching last-wins importer language selection. */
-export function effectiveSnippetRecords(records, languageId) {
+/**
+ * Order of preference between content snippets that share a name: a snippet in the selected
+ * language, else one without a language (Content Snippet Language left blank), else one in the
+ * site's default language, else any other. Higher ranks sort later and win, because the
+ * importer keeps the last value per name; equal ranks keep export order. Microsoft Learn
+ * ("Customize content by using content snippets", "Enable multiple-language website support")
+ * documents the snippet language column but states no fallback order; this order is a
+ * deterministic local model, not native evidence.
+ */
+export function snippetLanguageRank(languageId, defaultLanguageId = null) {
   const selected = id(languageId),
-    winners = new Map(),
+    fallback = id(defaultLanguageId);
+  return (record) => {
+    const language = id(field(record, 'contentsnippetlanguageid'));
+    if (selected && language === selected) return 3;
+    if (!language) return 2;
+    if (fallback && language === fallback) return 1;
+    return 0;
+  };
+}
+
+/** Shared effective snippet identity, matching last-wins importer language selection. */
+export function effectiveSnippetRecords(records, languageId, defaultLanguageId) {
+  const website = records.find((record) => record.kind === 'website');
+  const rank = snippetLanguageRank(
+    languageId,
+    defaultLanguageId === undefined ? field(website ?? {}, 'defaultlanguage') : defaultLanguageId,
+  );
+  const winners = new Map(),
     exact = new Map();
   const rows = records
     .filter((record) => record.kind === 'contentsnippet' && Number(field(record, 'statecode', 0)) !== 1)
-    .sort(
-      (a, b) =>
-        Number(id(field(a, 'contentsnippetlanguageid')) === selected) -
-        Number(id(field(b, 'contentsnippetlanguageid')) === selected),
-    );
+    .sort((a, b) => rank(a) - rank(b));
   for (const record of rows) {
     exact.set(String(record.name), record);
     if (record._originalName) exact.set(record._originalName, record);

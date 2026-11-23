@@ -32,6 +32,11 @@ function renderInspectionEvidenceImpl(evidence, options = {}) /* NOSONAR */ {
       candidate:
         'Found through the configuration in your sources, not identified on this page. Check it before you edit.',
     },
+    // A template, snippet or page that included the selected element where it rendered.
+    context: {
+      exact: 'This file included the selected element on this page.',
+      candidate: 'This file included the selected element where it rendered. Check it before you edit.',
+    },
     source: {
       exact: 'This file defines or renders the selected element.',
       candidate:
@@ -95,6 +100,13 @@ function renderInspectionEvidenceImpl(evidence, options = {}) /* NOSONAR */ {
     return /^[a-z\d]+(?:-[a-z\d]+)+$/.test(label ?? '') ? '' : label;
   };
   const labelOf = (item) => words(typeof item === 'string' ? item : item?.label);
+  // The relationships of a place where a script's DOM call was observed (lense/dom-provenance.mjs).
+  const callsiteColumn = (relationship, region) =>
+    ['created-by', 'cloned-by', 'attached-by', 'moved-by', 'changed-by', 'called-from', 'dom-call', 'through'].includes(
+      relationship,
+    ) &&
+    Number.isSafeInteger(region?.column) &&
+    region.column > 1;
   const labels = (items) =>
     (Array.isArray(items) ? items : [])
       .map(labelOf)
@@ -119,7 +131,56 @@ function renderInspectionEvidenceImpl(evidence, options = {}) /* NOSONAR */ {
     section: 'Section',
     tab: 'Tab',
     subgrid: 'Subgrid',
+    'form-tab': 'Form tab',
+    'form-section': 'Form section',
+    'form-control': 'Form control',
+    'quick-view': 'Quick view',
+    'lookup-view': 'Lookup view',
+    'list-view': 'List view',
+    'liquid-tag': 'Liquid tag',
+    'builtin-template': 'Built-in template',
+    'content-snippet': 'Content snippet',
+    'webpage-field': 'Web page field',
+    'page-template': 'Page template',
+    template: 'Web template',
+    markup: 'Markup',
+    'platform-shell': 'Portal page shell',
+    'platform-asset': 'Portal runtime file',
+    'portal-endpoint': 'Portal endpoint',
+    'web-file': 'Web file',
+    'external-resource': 'File from another site',
   };
+  // The kind of an exported file, by the record kind its source reference carries.
+  const refKindLabel = {
+    webtemplate: 'Web template',
+    pagetemplate: 'Page template',
+    contentsnippet: 'Content snippet',
+    webpage: 'Web page',
+    webfile: 'Web file',
+    advancedformstep: 'Multistep form step',
+  };
+  // A part of a component (a key "<component>#<part>", Mirage's form and list renderers) in words:
+  // "validation-summary" reads "validation summary", "action:create" reads "action: create".
+  const partWords = {
+    'custom-javascript': 'custom JavaScript',
+    'client-validation': 'client validation',
+    captcha: 'CAPTCHA',
+    'empty-maker': 'empty message for makers',
+    empty: 'empty message',
+    'access-denied': 'access denied message',
+    error: 'error message',
+    loading: 'loading message',
+  };
+  const partOf = (item) => {
+    const key = typeof item?.key === 'string' ? item.key : '';
+    const at = key.indexOf('#');
+    return at < 0 ? '' : key.slice(at + 1);
+  };
+  const partText = (part) =>
+    String(part)
+      .split(':')
+      .map((piece) => partWords[piece] ?? piece.replaceAll('-', ' '))
+      .join(': ');
   // How a component relates to the selected element: a short badge on the row, the full sentence in its tooltip.
   const relationLabel = {
     'configured-webpage': ['Contains it', 'The web page of this address, which contains this element'],
@@ -197,9 +258,13 @@ function renderInspectionEvidenceImpl(evidence, options = {}) /* NOSONAR */ {
 
   /* NOSONAR: markup template composed inline, kept as authored */ const component = (item, row) => {
     const kind = kindLabel[item.kind] ?? item.kind;
+    // A part is named in words; its code name (the part itself) is not shown.
+    const part = partOf(item);
+    const ownName = part && item.name === part ? '' : human(item.name);
     // One name format everywhere (the X-ray header, the hover summary, the panel): display name · logical name.
     const name =
-      [...new Set([human(item.label), human(item.name)].filter(Boolean))].join(' · ') ||
+      [...new Set([human(item.label), ownName].filter(Boolean))].join(' · ') ||
+      (part ? partText(part) : '') ||
       humanName(item) ||
       kind ||
       'Unnamed component';
@@ -288,6 +353,7 @@ function renderInspectionEvidenceImpl(evidence, options = {}) /* NOSONAR */ {
       seen(observations.served) ? 'Loaded by this page' : '',
       seen(observations.executed) ? 'Ran on this page' : '',
       seen(observations.mounted) ? 'Mounted on this page' : '',
+      ref.servedVersion === 'differs' ? 'The portal serves another version of this file than your baseline' : '',
     ].filter(Boolean);
     const identityDetails = [
       ref.recordId ? `Record: ${ref.recordId}` : '',
@@ -296,8 +362,17 @@ function renderInspectionEvidenceImpl(evidence, options = {}) /* NOSONAR */ {
       ref.lcid ? `LCID: ${ref.lcid}` : '',
       ref.profileId ? `Profile: ${ref.profileId}` : '',
     ].filter(Boolean);
-    // The part of a shared file that opens stays visible; record, language and profile IDs are in the tooltip.
-    const shownIdentity = identityDetails.filter((item) => /^(?:Field|LCID):/.test(item));
+    // The part of a shared file that opens stays visible; record, language and profile IDs are in the tooltip. The
+    // line of the matching place (the Liquid code that generated the element) is shown when the producer knows it.
+    // A place a script's DOM call was observed also names its column: in a minified one-line bundle the line alone
+    // does not say where.
+    let lineText = '';
+    if (ref.region?.line) {
+      lineText = `Line ${ref.region.line}`;
+      if (callsiteColumn(ref.relationship, ref.region)) lineText += `, column ${ref.region.column}`;
+    }
+    if (lineText) identityDetails.unshift(lineText);
+    const shownIdentity = identityDetails.filter((item) => /^(?:Field|LCID|Line)\b/.test(item));
     const name = ref.name ?? ref.label ?? ref.kind ?? 'Source file';
     return rowHtml({
       attrs: ` data-evidence-source data-rel="${escape(ref.ref)}" data-path="${escape(ref.path)}"`,
@@ -324,6 +399,8 @@ function renderInspectionEvidenceImpl(evidence, options = {}) /* NOSONAR */ {
     'node-document-origin-boundary': 'This element is in a frame from another site. Open the frame in its own tab.',
     'native-structure-generation-changed': 'The app redrew the form. Select the element again.',
     'native-read-timed-out': 'The app did not answer in time. Click Refresh.',
+    'script-hash-conflict':
+      'The script that made this element is the same as several of your files, so none of them is named.',
   };
   const notices = [
     ...new Set([
@@ -351,8 +428,39 @@ function renderInspectionEvidenceImpl(evidence, options = {}) /* NOSONAR */ {
       name: !item.reason || item.reason === 'index-omission' ? 'Skipped file' : item.reason,
       path: item.ref ?? '',
     });
+  // What a limit cut, in words, when the reason says it; any other limit keeps the general line.
+  const limitWords = {
+    'export-source-hint-index-truncated':
+      'Your sources were searched in part: some files are too large or name too many elements.',
+    'additional-source-candidates-omitted': 'More files match this element than are listed.',
+    'registry-limit': 'This page has more elements than Lense records; this one was not recorded.',
+    'dom-evidence-limit':
+      'Scripts on this page added more elements than Lense records; how this one was made was not recorded. Reload the page to record it again.',
+    'dom-evidence-transport-limit':
+      'Scripts on this page changed it faster than Lense could read; how this element was made was not read. Reload the page to read it again.',
+    'dom-observation-failed':
+      'Lense could not watch the scripts of this page, so it does not know which script made an element. Reload the page to try again.',
+    'script-provenance-limit':
+      'Scripts on this page added more elements than Lense records; whether a script made this one is not known.',
+    'response-proof-too-large':
+      'The page the portal sent is too large to compare with your sources, so its elements are not matched to your files.',
+    'response-proof-incomplete':
+      'Only the first part of the page the portal sent was compared with your sources; this element comes after it.',
+    'sign-in-page-untouched':
+      'This is a sign-in page: Lense leaves it exactly as the portal sends it and marks nothing on it, so elements here are matched by their markup only.',
+  };
+  const limitLines = [
+    ...new Set(
+      (valid && Array.isArray(evidence.limits?.reasons) ? evidence.limits.reasons : [])
+        .map((reason) => limitWords[reason])
+        .filter(Boolean),
+    ),
+  ];
   let limitsBody = '';
-  if (truncated) limitsBody += '<div class="banner">Not all matches are shown.</div>';
+  if (truncated)
+    limitsBody += (limitLines.length ? limitLines : ['Not all matches are shown.'])
+      .map((line) => `<div class="banner">${escape(line)}</div>`)
+      .join('');
   limitsBody += subLine(omissions.map(omissionText).join(' · '));
   if (limitSources.length)
     limitsBody += '<h4 class="gh">Files skipped by the search</h4>' + limitSources.map(skippedRow).join('');
@@ -419,6 +527,46 @@ function renderInspectionEvidenceImpl(evidence, options = {}) /* NOSONAR */ {
         compact: options.context === 'xray',
       })
     : '';
+  // The template, snippet or page that included the element: its name, file and line, with open and copy.
+  const contextRefRow = (item, ref) => {
+    const certainty = status(ref.status ?? item.status);
+    const name = human(ref.name) || human(ref.label) || refKindLabel[ref.kind] || 'Source file';
+    const region = item.region?.line ? item.region : ref.region;
+    let line = null;
+    if (region?.line) {
+      line = String(region.line);
+      if (callsiteColumn(item.relationship, region)) line += ', column ' + region.column;
+    }
+    return rowHtml({
+      attrs: ` data-evidence-context data-rel="${escape(ref.ref)}"`,
+      name,
+      what: refKindLabel[ref.kind] && refKindLabel[ref.kind] !== name ? refKindLabel[ref.kind] : '',
+      chips: badge(certainty, 'context', labelOf(item)),
+      path: ref.ref,
+      subs: [subLine([labelOf(item), line ? `line ${line}` : ''].filter(Boolean).join(' · '))],
+      actions: sourceActions(
+        ref,
+        certainty,
+        'evidence-context-' +
+          encodeURIComponent((ref.sourceKey ?? ref.key ?? ref.ref) + '\0' + (item.region?.start ?? '')),
+        name,
+      ),
+    });
+  };
+  const contextRow = (item) => {
+    // A context component without a name a person recognises adds a row that says nothing.
+    if (item.component && !humanName(item.component)) return '';
+    if (item.component)
+      return component(item.component, {
+        status: item.status,
+        kind: 'enclosing',
+        relationship: item.relationship,
+        how: labelOf(item),
+      });
+    const ref = bestRef(item.refs);
+    if (ref) return contextRefRow(item, ref);
+    return labelOf(item) ? rowHtml({ subs: [`<div>${escape(labelOf(item))}</div>`] }) : '';
+  };
   return `<section class="inspection-evidence" data-inspection-evidence data-owner-status="${ownerStatus}" data-source-status="${sourceStatus}" aria-label="Selected element details">
     ${ownerRow || (owner.component ? `<div data-evidence-role="owner" data-hierarchy-kind="${escape(owner.component.kind)}"></div>` : '')}
     ${disclosure(
@@ -447,22 +595,7 @@ function renderInspectionEvidenceImpl(evidence, options = {}) /* NOSONAR */ {
         }),
       ),
     )}
-    ${disclosure(
-      'context',
-      'Context',
-      rows(valid ? evidence.facts : [], (item) => {
-        // A context component without a name a person recognises adds a row that says nothing.
-        if (item.component && !humanName(item.component)) return '';
-        if (item.component)
-          return component(item.component, {
-            status: item.status,
-            kind: 'enclosing',
-            relationship: item.relationship,
-            how: labelOf(item),
-          });
-        return labelOf(item) ? rowHtml({ subs: [`<div>${escape(labelOf(item))}</div>`] }) : '';
-      }),
-    )}
+    ${disclosure('context', 'Context', rows(valid ? evidence.facts : [], contextRow))}
     ${disclosure('limits', 'Search limits' + notShown, limitsBody)}
   </section>`;
 }

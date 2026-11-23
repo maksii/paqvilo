@@ -17,6 +17,7 @@ export const AGENT_ACTIONS = [
   'snapshot',
   'screenshot',
   'viewport',
+  'coverage',
   'navigate',
   'reload',
   'stop',
@@ -353,13 +354,14 @@ function validateAgentAction(action, args) {
   if (!AGENT_ACTIONS.includes(action))
     throw argument(`Unknown agent action "${action}". Expected ${AGENT_ACTIONS.join(', ')}`);
   const allowed = new Set(['config', 'json', 'help', 'timeout', ...(action === 'sessions' ? [] : ['session'])]);
-  const pageActions = new Set(['state', 'snapshot', 'screenshot', 'viewport', 'navigate', 'reload']);
+  const pageActions = new Set(['state', 'snapshot', 'screenshot', 'viewport', 'coverage', 'navigate', 'reload']);
   if (pageActions.has(action)) allowed.add('page-id');
   for (const option of {
     events: ['after', 'limit'],
     snapshot: ['selector', 'limit', 'styles'],
     screenshot: ['output', 'full-page', 'include-panel'],
     viewport: ['width', 'height'],
+    coverage: ['limit', 'samples'],
     navigate: ['path'],
   }[action] ?? [])
     allowed.add(option);
@@ -414,6 +416,14 @@ function agentActionRequest(action, args, timeout) {
       body = {
         width: integer(args.width, '--width', 1440, 320, 4096),
         height: integer(args.height, '--height', 900, 240, 4096),
+        timeoutMs: timeout,
+      };
+      break;
+    case 'coverage':
+      route = `${page}/coverage`;
+      body = {
+        limit: integer(args.limit, '--limit', 20_000, 1, 50_000),
+        samples: integer(args.samples, '--samples', 40, 0, 200),
         timeoutMs: timeout,
       };
       break;

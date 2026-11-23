@@ -32,6 +32,10 @@ import {
   setBindingFragment,
   getBindingFragment,
   objectSourceFragment,
+  withPlatformRegion,
+  withRenderRecords,
+  recordSourcesOf,
+  mergeRecordContexts,
 } from './render-provenance.mjs';
 
 export { LiquidError, LiquidSyntaxError };
@@ -264,6 +268,9 @@ function lookupPlainObjectMember(object, key, context) {
   const value = object[property];
   const origin = objectSourceFragment(object, property, value);
   if (origin && context) context.resolvedFragment = origin;
+  // A member of a data-record object (a web link, a page, a site marker) is rendered for that record.
+  const records = context?.provenance ? recordSourcesOf(object) : null;
+  if (records) context.resolvedRecords = mergeRecordContexts(context.resolvedRecords, records);
   return { found: true, value: typeof value === 'function' ? undefined : value };
 }
 /** Symbols marking drop property names (case-insensitive) and host-only keys. */
@@ -402,7 +409,7 @@ function tokenizeTokens(text, rawTags, offsets, stats) {
   const spans = [];
   const add = (token, from, to) => {
     tokens.push(token);
-    spans.push(offsets && to > from ? { start: offsets[from], end: offsets[to - 1] + 1 } : null);
+    spans.push(offsets && to > from ? tokenSpan(offsets, from, to) : null);
   };
   const start = /(\{\{|\{%)(-)?/g;
   let position = 0;
@@ -429,6 +436,22 @@ function tokenizeTokens(text, rawTags, offsets, stats) {
     },
   });
   return tokens;
+}
+
+// The source span of a token. The whitespace-control pre-pass removes characters anywhere in the text (DotLiquid
+// Template.Tokenize applies its regex to the whole source, literal text included), so a token's characters may come
+// from several source runs: `segments` then lists each run ({ start, end } in the token, sourceStart in the source).
+function tokenSpan(offsets, from, to) {
+  const span = { start: offsets[from], end: offsets[to - 1] + 1 };
+  let runStart = from;
+  const segments = [];
+  for (let index = from + 1; index <= to; index++)
+    if (index === to || offsets[index] !== offsets[index - 1] + 1) {
+      segments.push({ start: runStart - from, end: index - from, sourceStart: offsets[runStart] });
+      runStart = index;
+    }
+  if (segments.length > 1) span.segments = segments;
+  return span;
 }
 
 function stripTrailingSpacesAndTabs(value) {
@@ -510,6 +533,7 @@ export class Variable {
   async evaluate(context) {
     if (this.name == null) return null;
     context.resolvedFragment = null;
+    context.resolvedRecords = null;
     let output = await context.resolve(this.name);
     const fragment = context.resolvedFragment ?? getBindingFragment(context, this.name);
     context.variableFragments ??= new WeakMap();
@@ -521,34 +545,40 @@ export class Variable {
     const root = /^[^.[\s]+/.exec(this.name)?.[0]?.toLowerCase();
     const previous = context.encodedFilterSource;
     context.encodedFilterSource = Boolean(roots && root && roots.has(root));
+    // filterInput: the fragment of the value a filter receives (the variable's origin, then a filter's own output
+    // fragment); a filter that renders it (liquid) leaves its output fragment in filterOutput.
+    let input = fragment;
     try {
       for (const filter of this.filters) {
         const args = [];
         for (const arg of filter.args) args.push(await context.resolve(arg));
+        context.filterInput = input && input.text === output ? input : null;
+        context.filterOutput = null;
         output = await context.invokeFilter(filter.name, output, args, this.markup);
+        input = context.filterOutput && context.filterOutput.text === output ? context.filterOutput : null;
       }
     } finally {
       context.encodedFilterSource = previous;
+      context.filterInput = null;
+      context.filterOutput = null;
     }
+    context.variableFilterFragments ??= new WeakMap();
+    context.variableFilterFragments.set(this, input);
     return output;
   }
   async render(context, out) {
     const value = await this.evaluate(context);
+    if (context.provenance?.node && context.resolvedRecords?.length)
+      context.provenance.node.recordContexts = context.resolvedRecords;
     let text = formatOutput(value);
     const roots = context.engine.autoEncodeRoots?.(context);
-    if (text && roots && this.name) {
-      const root = /^[^.[\s]+/.exec(this.name)?.[0]?.toLowerCase();
-      const last = this.filters.at(-1)?.name.toLowerCase();
-      // Power Pages 9.3.8.x+: user/request output is HTML encoded by default.
-      if (
-        (roots.has(root) ||
-          (context.engine.runtimeCompatibility === 'observed' && context.isEncodedVariable(this.name))) &&
-        !ENCODING_FILTERS.has(last)
-      )
-        text = htmlEncode(text);
-    }
+    text = autoEncodedOutput(context, this.name, this.filters, text, roots);
     const origin = context.variableFragments?.get(this);
-    const fragment = !this.filters.length && text === value ? origin : null;
+    // A filter that rendered its input as Liquid (| liquid) has the fragment of its own output.
+    const filtered = this.filters.length ? context.variableFilterFragments?.get(this) : null;
+    let fragment = null;
+    if (!this.filters.length) fragment = text === value ? origin : null;
+    else if (filtered?.text === text) fragment = filtered;
     if (fragment && fragment.text === text) appendRenderFragment(out, fragment);
     else {
       if (context.provenance?.node && origin)
@@ -558,6 +588,18 @@ export class Variable {
   }
 }
 
+// Power Pages 9.3.8.x+: user/request output is HTML encoded by default.
+function autoEncodedOutput(context, name, filters, text, roots) {
+  if (!(text && roots && name)) return text;
+  const root = /^[^.[\s]+/.exec(name)?.[0]?.toLowerCase();
+  const last = filters.at(-1)?.name.toLowerCase();
+  if (
+    (roots.has(root) || (context.engine.runtimeCompatibility === 'observed' && context.isEncodedVariable(name))) &&
+    !ENCODING_FILTERS.has(last)
+  )
+    return htmlEncode(text);
+  return text;
+}
 // ---- Conditions (DotLiquid Condition.cs)
 function equalVariables(left, right, clock) {
   if (left instanceof LiquidSymbol) return left.test(right);
@@ -1427,7 +1469,8 @@ class ForTag extends Block {
           }),
         );
         try {
-          await renderAll(this.forBlock, context, out);
+          // An item that stands for a data record (a web link, a page) names it for the output of its iteration.
+          await withRenderRecords(context, recordSourcesOf(item), () => renderAll(this.forBlock, context, out));
         } catch (error) {
           if (error instanceof BreakInterrupt) break;
           if (!(error instanceof ContinueInterrupt)) throw error;
@@ -1559,7 +1602,9 @@ class TableRowTag extends Block {
         );
         column++;
         const buffer = createRenderBuffer(context);
-        await renderAll(this.nodeList, context, buffer);
+        await withRenderRecords(context, recordSourcesOf(collection[index]), () =>
+          renderAll(this.nodeList, context, buffer),
+        );
         out.push(`<td class="col${column}">`);
         appendRenderFragment(out, renderFragment(buffer));
         out.push('</td>');
@@ -1591,7 +1636,7 @@ class IncludeTag extends Tag {
       if (isEnumerable(variable)) {
         for (const item of toList(variable)) {
           context.set(shortened, item);
-          await partial.renderInto(context, out);
+          await withRenderRecords(context, recordSourcesOf(item), () => partial.renderInto(context, out));
         }
         return;
       }
@@ -1748,7 +1793,10 @@ export class Template {
     this.sourceRef = sourceRef;
   }
   async renderInto(context, out) {
-    await withRenderSource(context, this.sourceRef, () => this.root.render(context, out));
+    const render = () => withRenderSource(context, this.sourceRef, () => this.root.render(context, out));
+    // A runtime template without an exported source (a built-in) binds the elements it writes to itself.
+    if (this.platform) await withPlatformRegion(context, out, this.platform, render);
+    else await render();
   }
   async render(context) {
     const out = createRenderBuffer(context);
@@ -1837,6 +1885,12 @@ export class LiquidEngine {
     if (name != null) resolvedName = typeof name === 'string' ? name : formatItem(name);
     const source = await this.loadTemplateSource(resolvedName, context);
     const sourceRef = this.templateSourceRef?.(resolvedName, context);
-    return this.prepareTemplate ? this.prepareTemplate(source, sourceRef) : this.parse(source, sourceRef);
+    const template = this.prepareTemplate ? this.prepareTemplate(source, sourceRef) : this.parse(source, sourceRef);
+    // The host names the platform component of a runtime template (renderSlot.platform); parsed templates are shared.
+    const platform = !sourceRef && context?.provenance ? context.renderSlot?.platform : null;
+    if (!platform) return template;
+    const own = new Template(this, template.root, template.source, null);
+    own.platform = platform;
+    return own;
   }
 }

@@ -2,8 +2,22 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { recordedStamp } from '../../lense/file-cache.mjs';
 import { normalizePortalPath, portalField, pageTemplateKind, effectiveSnippetRecords } from './importer.mjs';
-import { stripLiquidLiteralBlocks } from './liquid-source.mjs';
+import { stripLiquidLiteralBlocks, scanLiquidTokens, findWebTemplate } from './liquid-source.mjs';
 import { pageRuleMatcher } from './page-access.mjs';
+import { tagAttributes } from './liquid-engine.mjs';
+import { runtimeTemplateFallback } from './liquid.mjs';
+import { rewritePageLayout } from './platform-manifest.mjs';
+import { advancedFormGraph } from './advanced-form-graph.mjs';
+import { authRoute } from './auth-session.mjs';
+import {
+  deniedPageRoute,
+  languageRoute,
+  loginPath,
+  requestTargetUrl,
+  resolveUnmatchedRoute,
+  servicePages,
+  siteMarkerRoute,
+} from './redirects.mjs';
 
 const id = (value) =>
   String(value?.id ?? value ?? '')
@@ -22,15 +36,6 @@ const unique = (items, key = (item) => JSON.stringify(item)) => {
     return true;
   });
 };
-const builtinTemplates = new Set([
-  'page copy',
-  'snippet',
-  'entity_list',
-  'entity_form',
-  'poll',
-  'ad',
-  'side_navigation',
-]);
 const recordDescriptor = (record, kind, name, fieldPath) => ({
   kind,
   name: String(name ?? ''),
@@ -47,6 +52,7 @@ const sourceFile = (record, suffix) => {
   return fs.existsSync(body) ? body : record._file;
 };
 const field = (record, name, fallback = null) => portalField(record ?? {}, name, fallback);
+const active = (record) => Number(field(record, 'statecode', 0)) !== 1;
 const lookup = (rows, value) => {
   const key = id(value);
   if (!key) return null;
@@ -58,359 +64,888 @@ const expression = (text) =>
     .trim()
     .slice(0, 240);
 const guid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-function componentReference(args, keys) {
-  const values = new Map();
-  for (const match of args.matchAll(/\b(\w+)\s*:\s*('[^']*'|"[^"]*"|[^\s,]+)/g)) {
-    const value = match[2],
-      quoted = value.startsWith("'") || value.startsWith('"');
-    values.set(match[1].toLowerCase(), { reference: quoted ? value.slice(1, -1) : value.replace(/-?%}$/, ''), quoted });
+
+/**
+ * Certainty of a usage row (usages[].certainty; unresolved[].certainty and component
+ * descriptors carry it too when they are not 'declared'):
+ *   'declared'     the reference sits in a source the route renders, outside if/unless/case/for/tablerow;
+ *   'conditional'  it renders only on one branch or loop iteration (usages[].conditional is true);
+ *   'not-rendered' the row is listed although the runtime does not render it: page copy that no
+ *                  rendered template outputs, a page-record form/list lookup that no rendered source
+ *                  uses, an entityform/webform tag after the page's first one or under a rewrite page
+ *                  template (liquid.mjs claimFormTag), a form tag that names no form.
+ */
+const CERTAINTY_RANK = { 'not-rendered': 0, conditional: 1, declared: 2 };
+const strongest = (a, b) => ((CERTAINTY_RANK[a] ?? 2) >= (CERTAINTY_RANK[b] ?? 2) ? a : b);
+const certaintyOf = (frame, token) => {
+  if (frame.notRendered) return 'not-rendered';
+  return frame.conditional || token?.conditional ? 'conditional' : 'declared';
+};
+const MAX_INCLUDE_DEPTH = 64;
+// Shell snippets the runtime renders when they exist and skips otherwise (liquid.mjs renderPage:
+// Head/Bottom and Browser Title Suffix with `?? ''`, Head/Bootstrap when present).
+const SHELL_SNIPPETS = ['Head/Bottom', 'Head/Bootstrap', 'Browser Title Suffix'];
+/** Parameters that the runtime's built-in templates read (liquid-builtins.mjs bodies), by template name. */
+const BUILTIN_PARAMETERS = {
+  snippet: [{ names: ['snippet_name'], kind: 'snippet' }],
+  entity_list: [{ names: ['key'], kind: 'list' }],
+  weblink_list_group: [{ names: ['weblink_set_name'], kind: 'web-link-set' }],
+  poll: [
+    { names: ['poll_name'], kind: 'poll' },
+    { names: ['poll_placement_name'], kind: 'pollplacement' },
+  ],
+  ad: [
+    { names: ['ad_name'], kind: 'ad' },
+    { names: ['ad_placement_name'], kind: 'adplacement' },
+  ],
+  random_poll: [{ names: ['id', 'name'], kind: 'pollplacement' }],
+  random_ad: [{ names: ['id', 'name'], kind: 'adplacement' }],
+};
+const UNRESOLVED_KIND = {
+  snippet: 'content-snippet',
+  list: 'entitylist',
+  'web-link-set': 'web-link-set',
+  poll: 'poll',
+  pollplacement: 'poll-placement',
+  ad: 'ad',
+  adplacement: 'ad-placement',
+};
+const PAGE_LOOKUP = /^page\s*\.\s*(?:adx_|mspp_)?(entityform|entitylist|webform|navigation)(?:\s*\.\s*(?:id|name))?$/i;
+const PAGE_LOOKUP_USE =
+  /(?<![\p{L}\p{Nd}_.])page\s*\.\s*(?:adx_|mspp_)?(entityform|entitylist|webform|navigation)\b/giu;
+// `page.copy` and `page['copy']` (either attribute prefix), as two expressions so each stays simple.
+const PAGE_COPY_MEMBER = /(?<![\p{L}\p{Nd}_.])page\s*\.\s*(?:adx_|mspp_)?copy\b/iu;
+const PAGE_COPY_INDEX = /(?<![\p{L}\p{Nd}_.])page\s*\[\s*(['"])(?:adx_|mspp_)?copy\1\s*\]/iu;
+const usesPageCopy = (markup) => PAGE_COPY_MEMBER.test(markup) || PAGE_COPY_INDEX.test(markup);
+const OBJECT_ROOT = /(?<![\p{L}\p{Mn}\p{Nd}\p{Pc}.\-\]])(snippets|settings|weblinks|sitemarkers|entities|sitemap)\b/giu;
+const MEMBER = /[\p{L}\p{Mn}\p{Nd}\p{Pc}-]+/uy;
+const QUOTED = /^\s*(['"])([\s\S]*)\1\s*$/;
+
+/** A tag attribute as a literal (quoted, or an unquoted GUID) or as a dynamic Liquid expression. */
+function attributeValue(attributes, names) {
+  for (const name of names) {
+    const attribute = attributes.get(name);
+    if (!attribute) continue;
+    const value = String(attribute.value).trim();
+    const quoted = /^(['"])([\s\S]*)\1$/.exec(value);
+    if (quoted) return { literal: quoted[2], raw: value };
+    if (guid.test(value.replace(/[{}]/g, ''))) return { literal: value.replace(/[{}]/g, ''), raw: value };
+    return { dynamic: value, raw: value };
   }
-  const value = keys.map((key) => values.get(key)).find(Boolean);
-  return { reference: value?.reference, dynamic: Boolean(value && !value.quoted && !guid.test(value.reference)) };
+  return null;
 }
 
-function addStaticReference(collection, unresolved, value, type, text) {
-  if (value) collection.push(value);
-  else unresolved.push({ kind: type, expression: text, reason: 'Reference is dynamic or has no literal name.' });
+const maskQuotes = (text) => text.replace(/'[^']*'|"[^"]*"/g, (quoted) => ' '.repeat(quoted.length));
+
+/** The first index at or after `from` that is not a space or a tab. */
+function skipBlanks(text, from) {
+  let position = from;
+  while (text[position] === ' ' || text[position] === '\t') position++;
+  return position;
 }
 
-function collectTemplateReferences(source, exportedTemplateNames, templates, lists, unresolved, usages) {
-  const tagRegex = /{%-?\s*(?:include|render|extends|layout)\s+(?:'([^']+)'|"([^"]+)")[^%]*%}/gi;
-  for (const match of source.matchAll(tagRegex)) {
-    addStaticReference(templates, unresolved, match[1] ?? match[2], 'web-template', match[0]);
-    usages.push({ kind: 'include', reference: match[1] ?? match[2], expression: expression(match[0]) });
-    if (
-      (match[1] ?? match[2]).toLowerCase() === 'entity_list' &&
-      !exportedTemplateNames.has('entity_list') &&
-      /^\{%-?\s*include\b/i.test(match[0])
-    ) {
-      const args = match[0].replace(/^\{%-?\s*include\s+(?:'[^']+'|"[^"]+")/i, '');
-      const { reference, dynamic } = componentReference(args, ['key']);
-      if (dynamic)
-        unresolved.push({
-          kind: 'entitylist',
-          expression: match[0],
-          reason: 'Built-in list key uses a Liquid variable and cannot be resolved statically.',
-        });
-      else addStaticReference(lists, unresolved, reference, 'entitylist', match[0]);
-      usages.push({
-        kind: 'entitylist',
-        reference: dynamic ? null : (reference ?? null),
-        expression: expression(match[0]),
-        via: 'built-in entity_list',
-      });
-    }
-  }
-}
-
-function collectDynamicTemplateReferences(source, unresolved, usages) {
-  /* NOSONAR */ for (const match of source.matchAll(/{%-?\s*(?:include|render|extends|layout)\s[^%]*%}/gi))
-    if (!/^\{%-?\s*(?:include|render|extends|layout)\s+(?:'[^']+'|"[^"]+")[^%]*%}$/.test(match[0])) {
-      unresolved.push({
-        kind: 'web-template',
-        expression: match[0],
-        reason: 'Template reference is dynamic and cannot be resolved statically.',
-      });
-      usages.push({ kind: 'include', reference: null, expression: expression(match[0]) });
-    }
-}
-
-// Find candidate closers once, instead of rescanning the suffix for every
-// unterminated quoted lookup. The old dot in the value did not cross line breaks.
-function* literalReferences(source, candidates) {
-  const closers = { "'": [], '"': [] };
-  for (const match of source.matchAll(/(['"])\s*\]/g))
-    closers[match[1]].push({ start: match.index, end: match.index + match[0].length });
-  const lineBreaks = [...source.matchAll(/[\r\n\u2028\u2029]/g)].map((match) => match.index);
-  const firstAtOrAfter = (items, position, key = (value) => value) => {
-    let low = 0,
-      high = items.length;
-    while (low < high) {
-      const middle = (low + high) >>> 1;
-      if (key(items[middle]) < position) low = middle + 1;
-      else high = middle;
-    }
-    return items[low];
+/** Global object lookups (snippets, settings, weblinks, sitemarkers, entities, sitemap) in one Liquid markup. */
+function* objectReferences(markup) {
+  const masked = maskQuotes(markup);
+  let found = -2;
+  const closeAt = (from) => {
+    if (found === -2 || (found !== -1 && found < from)) found = markup.indexOf(']', from);
+    return found;
   };
-  for (let match; (match /* NOSONAR */ = candidates.exec(source));) {
-    // NOSONAR: preserve cursor and state initialization order
-    if (match[2] !== undefined) {
-      yield { text: match[0], reference: match[2] };
-      continue;
-    }
-    const start = candidates.lastIndex;
-    const close = firstAtOrAfter(closers[match[1]], start, (item) => item.start);
-    const lineBreak = firstAtOrAfter(lineBreaks, start);
-    if (!close || (lineBreak !== undefined && close.start > lineBreak)) {
-      candidates.lastIndex = match.index + 1;
-      continue;
-    }
-    candidates.lastIndex = close.end;
-    yield { text: source.slice(match.index, close.end), reference: source.slice(start, close.start) };
-  }
-}
-
-function collectSnippetReferences(source, snippets, usages) {
-  for (const match of literalReferences(source, /snippets\s*(?:\[\s*(['"])|\.([\w.-]+))/gi)) {
-    snippets.push(match.reference);
-    usages.push({ kind: 'snippet', reference: match.reference, expression: expression(match.text) });
-  }
-}
-
-function collectDynamicSnippetReferences(source, unresolved, usages) {
-  // A match must end at a closing bracket. Excluding the unmatched suffix also
-  // prevents each opening bracket in that suffix from rescanning the rest.
-  const bracketedSource = source.slice(0, source.lastIndexOf(']') + 1);
-  for (const match of bracketedSource.matchAll(/snippets\s*\[([^\]]+)\]/gi))
-    if (!/^\s*(['"])[\s\S]*\1\s*$/.test(match[1])) {
-      unresolved.push({
-        kind: 'content-snippet',
-        expression: match[0],
-        reason: 'Snippet key is dynamic and cannot be resolved statically.',
-      });
-      usages.push({ kind: 'snippet', reference: null, expression: expression(match[0]) });
-    }
-}
-
-function collectEditableReferences(source, snippets, unresolved, usages) {
-  for (const match of source.matchAll(/{%-?\s*editable\s+([\w.]+)\b[^%]*%}/gi)) {
-    const target = match[1].toLowerCase();
-    if (target === 'snippets') {
-      const literal = /\bsnippets\s+(?:'([^']+)'|"([^"]+)")/i.exec(match[0]);
-      if (literal) addStaticReference(snippets, unresolved, literal[1] ?? literal[2], 'content-snippet', match[0]);
-      else
-        unresolved.push({
-          kind: 'content-snippet',
-          expression: match[0],
-          reason: 'Editable snippet name is dynamic and cannot be resolved statically.',
-        });
-      usages.push({
-        kind: 'editable',
-        reference: literal ? (literal[1] ?? literal[2]) : null,
-        target: 'snippet',
-        expression: expression(match[0]),
-      });
-    } else {
-      const attribute = /^[\w.]+\s+(?:'([^']+)'|"([^"]+)")/i.exec(match[0].replace(/^{%-?\s*editable\s+/i, ''));
-      usages.push({
-        kind: 'editable',
-        reference: attribute ? (attribute[1] ?? attribute[2]) : null,
-        target: match[1],
-        expression: expression(match[0]),
-      });
+  OBJECT_ROOT.lastIndex = 0;
+  for (const match of masked.matchAll(OBJECT_ROOT)) {
+    const position = skipBlanks(markup, match.index + match[0].length);
+    const object = match[1].toLowerCase();
+    if (markup[position] === '.') {
+      MEMBER.lastIndex = position + 1;
+      const member = MEMBER.exec(markup);
+      if (!member) continue;
+      yield { object, literal: member[0], member: true, text: markup.slice(match.index, MEMBER.lastIndex) };
+    } else if (markup[position] === '[') {
+      const close = closeAt(position + 1);
+      if (close < 0) continue;
+      const content = markup.slice(position + 1, close);
+      const quoted = QUOTED.exec(content);
+      const text = markup.slice(match.index, close + 1);
+      if (quoted) yield { object, literal: quoted[2], text };
+      else if (content.trim()) yield { object, dynamic: content.trim(), text };
     }
   }
 }
 
-function collectSettingsReferences(source, settings) {
-  for (const match of literalReferences(source, /settings\s*(?:\[\s*(['"])|\.([\w./-]+))/gi))
-    settings.push(match.reference);
+function pageLookupId(page, expressionText) {
+  const kind = PAGE_LOOKUP.exec(String(expressionText ?? '').trim())?.[1]?.toLowerCase();
+  if (!kind) return null;
+  if (kind === 'entityform') return { kind, id: page?.formId || null };
+  if (kind === 'entitylist') return { kind, id: page?.listId || null };
+  if (kind === 'webform') return { kind, id: page?.advancedFormId || null };
+  return { kind, id: id(field(page?.metadata, 'navigation')) || null };
 }
 
-function collectComponentReferences(source, forms, lists, views, unresolved, usages) {
-  const component = /{%-?\s*(entityform|entitylist|webform|entityview)\b([^%]*)%}/gi;
-  for (const match of source.matchAll(component)) {
+// ---- Graph walk: every rendered source is scanned where the runtime renders it (depth first).
+
+function usage(context, frame, token, row) {
+  const certainty = row.certainty ?? certaintyOf(frame, token);
+  const entry = {
+    ...row,
+    expression: expression(row.expression ?? token?.text),
+    owner: frame.owner,
+    conditional: certainty === 'conditional',
+    certainty,
+  };
+  context.usages.push(entry);
+  return entry;
+}
+
+function unresolvedRow(context, frame, token, row) {
+  if (frame.builtin && row.dynamic) return;
+  const { dynamic: _dynamic, ...rest } = row; // NOSONAR: binding is excluded from the rest object
+  const certainty = certaintyOf(frame, token);
+  context.unresolved.push({
+    ...rest,
+    expression: rest.expression ?? token?.text,
+    owner: frame.owner,
+    ...(certainty === 'declared' ? {} : { certainty }),
+  });
+}
+
+function childFrame(frame, token, owner, extra = {}) {
+  return {
+    owner,
+    conditional: Boolean(frame.conditional || token?.conditional),
+    notRendered: Boolean(frame.notRendered),
+    builtin: false,
+    depth: frame.depth + 1,
+    ...extra,
+  };
+}
+
+function walkSource(text, frame, context) {
+  if (frame.depth > MAX_INCLUDE_DEPTH || !text) return;
+  const key = `${frame.owner}\u0000${frame.builtin ? 'b' : ''}\u0000${text}`;
+  const rank = CERTAINTY_RANK[certaintyOf(frame)];
+  if ((context.seen.get(key) ?? -1) >= rank) return;
+  context.seen.set(key, rank);
+  const source = stripLiquidLiteralBlocks(text);
+  const lists = [];
+  for (const token of scanLiquidTokens(source)) {
+    if (token.name === 'endentitylist') lists.pop();
+    visitToken(token, frame, context, lists);
+  }
+  collectFetchReferences(source, frame, context);
+}
+
+function visitToken(token, frame, context, lists) {
+  const { name, markup } = token;
+  if (token.type === 'tag') {
+    if (['include', 'render', 'extends', 'layout'].includes(name)) visitInclude(token, frame, context);
+    else if (name === 'editable') visitEditable(token, frame, context);
+    else if (['entityform', 'webform', 'entitylist', 'entityview'].includes(name))
+      visitComponent(token, frame, context, lists);
+    else if (['chart', 'powerbi', 'searchindex', 'redirect', 'rating'].includes(name))
+      visitPlatformTag(token, frame, context);
+  }
+  if (token.type === 'output' || (name && !name.startsWith('end')))
+    for (const reference of objectReferences(markup)) visitObjectReference(reference, token, frame, context);
+  visitPageMarkers(markup, token, frame, context);
+}
+
+function visitPageMarkers(markup, token, frame, context) {
+  const masked = maskQuotes(markup);
+  PAGE_LOOKUP_USE.lastIndex = 0;
+  for (const match of masked.matchAll(PAGE_LOOKUP_USE)) {
     const kind = match[1].toLowerCase();
-    let list = forms;
-    if (kind === 'entitylist') list = lists;
-    else if (kind === 'entityview') list = views;
-    const { reference, dynamic } = componentReference(match[2], ['id', 'key', 'name']);
-    if (dynamic)
-      unresolved.push({
-        kind,
-        expression: match[0],
-        reason: 'Component reference uses a Liquid variable and cannot be resolved statically.',
+    const certainty = certaintyOf(frame, token);
+    context.pageLookupsUsed.set(kind, strongest(context.pageLookupsUsed.get(kind) ?? 'not-rendered', certainty));
+  }
+  if (usesPageCopy(markup)) renderPageCopy(token, frame, context);
+}
+
+function renderPageCopy(token, frame, context) {
+  if (!context.page || frame.owner === 'page') return;
+  context.pageCopyRendered = true;
+  walkSource(context.page.html ?? '', childFrame(frame, token, 'page', { field: 'copy' }), context);
+}
+
+function visitInclude(token, frame, context) {
+  const literal = /^\s*(?:'([^']*)'|"([^"]*)")/.exec(token.markup);
+  if (!literal) {
+    unresolvedRow(context, frame, token, {
+      kind: 'web-template',
+      expression: token.text,
+      reason: 'Template reference is dynamic and cannot be resolved statically.',
+      dynamic: true,
+    });
+    if (!frame.builtin) usage(context, frame, token, { kind: 'include', reference: null });
+    return;
+  }
+  const name = literal[1] ?? literal[2];
+  usage(context, frame, token, { kind: 'include', reference: name });
+  const args = token.markup.slice(literal[0].length);
+  const record = findWebTemplate(context.portal, name);
+  const fallback = runtimeTemplateFallback(name, record ?? null);
+  if (record) addWebTemplate(record, 'Liquid include/layout', token, frame, context, fallback);
+  if (fallback) {
+    addBuiltinTemplate(fallback, name, token, frame, context);
+    applyBuiltinParameters(fallback.name, args, token, frame, context);
+  }
+  if (!record && !fallback)
+    unresolvedRow(context, frame, token, {
+      kind: 'web-template',
+      expression: name,
+      via: 'Liquid include/layout',
+      reason: 'No imported web template matches this static reference.',
+    });
+}
+
+function addWebTemplate(found, via, token, frame, context, fallback = null) {
+  const owner = frame.owner;
+  let descriptor = context.webTemplates.find((item) => id(item.id) === id(found.id));
+  if (descriptor) {
+    if (owner && !descriptor.includedBy.includes(owner)) descriptor.includedBy.push(owner);
+  } else {
+    const file = sourceFile(found.metadata, 'source.html') ?? found.metadata?._file ?? null;
+    descriptor = {
+      ...recordDescriptor(found.metadata, 'web-template', found.name, 'source'),
+      id: found.id,
+      via,
+      includedBy: owner ? [owner] : [],
+      sourceFile: file,
+      file,
+      ...(fallback ? { runtimeSource: `built-in ${fallback.name}` } : {}),
+    };
+    context.webTemplates.push(descriptor);
+    context.dependencies.push(descriptor);
+  }
+  if (!fallback) walkSource(found.source ?? '', childFrame(frame, token, `web-template:${id(found.id)}`), context);
+}
+
+function addBuiltinTemplate(fallback, reference, token, frame, context) {
+  let descriptor = context.builtinTemplates.find((item) => item.name === fallback.name);
+  if (!descriptor) {
+    descriptor = {
+      kind: 'builtin-template',
+      name: fallback.name,
+      reference: String(reference),
+      origin: fallback.origin,
+      includedBy: [],
+      sourceFile: null,
+    };
+    context.builtinTemplates.push(descriptor);
+  }
+  if (!descriptor.includedBy.includes(frame.owner)) descriptor.includedBy.push(frame.owner);
+  walkSource(
+    fallback.source,
+    childFrame(frame, token, `builtin-template:${fallback.name}`, { builtin: true, optional: true }),
+    context,
+  );
+}
+
+function applyBuiltinParameters(managed, args, token, frame, context) {
+  const groups = BUILTIN_PARAMETERS[managed];
+  if (!groups) return;
+  const attributes = tagAttributes(args);
+  let passed = false;
+  for (const group of groups) {
+    const value = attributeValue(attributes, group.names);
+    if (!value) continue;
+    passed = true;
+    resolveNamedReference(group.kind, value, token, frame, context, `built-in ${managed}`);
+  }
+  if (!passed)
+    unresolvedRow(context, frame, token, {
+      kind: UNRESOLVED_KIND[groups[0].kind],
+      expression: token.text,
+      reason: `The built-in ${managed} template reads ${groups.flatMap((group) => group.names).join(' or ')} from the calling scope; no literal value is passed.`,
+    });
+}
+
+function resolveNamedReference(kind, value, token, frame, context, via) {
+  if (kind === 'snippet') return resolveSnippetReference(value, token, frame, context, via);
+  if (kind === 'list') return resolveNamedListReference(value, token, frame, context, via);
+  if (kind === 'web-link-set') return resolveWebLinkSetReference(value, token, frame, context, via);
+  if (value.literal !== undefined) addCommunityRecord(kind, value.literal, via, token, frame, context);
+  else
+    unresolvedRow(context, frame, token, {
+      kind: UNRESOLVED_KIND[kind],
+      expression: token.text,
+      reason: `The ${UNRESOLVED_KIND[kind]} name is dynamic and cannot be resolved statically.`,
+    });
+}
+
+function resolveSnippetReference(value, token, frame, context, via) {
+  if (value.literal !== undefined) {
+    usage(context, frame, token, { kind: 'snippet', reference: value.literal, via });
+    addSnippet(value.literal, via, token, frame, context);
+  } else {
+    unresolvedRow(context, frame, token, {
+      kind: 'content-snippet',
+      expression: token.text,
+      reason: 'Snippet key is dynamic and cannot be resolved statically.',
+    });
+    usage(context, frame, token, { kind: 'snippet', reference: null, via });
+  }
+}
+
+function resolveNamedListReference(value, token, frame, context, via) {
+  const page = value.dynamic === undefined ? null : pageLookupId(context.page, value.dynamic);
+  const reference = value.literal ?? page?.id ?? null;
+  if (value.dynamic !== undefined && !page)
+    unresolvedRow(context, frame, token, {
+      kind: 'entitylist',
+      expression: token.text,
+      reason: 'Built-in list key uses a Liquid variable and cannot be resolved statically.',
+    });
+  const row = usage(context, frame, token, {
+    kind: 'entitylist',
+    reference,
+    via,
+    ...(page ? { pageLookup: 'entitylist' } : {}),
+  });
+  if (reference) context.references.lists.push({ ref: reference, usage: row });
+}
+
+function resolveWebLinkSetReference(value, token, frame, context, via) {
+  if (value.literal !== undefined) addWebLinkSet(value.literal, via, token, frame, context);
+  else
+    unresolvedRow(context, frame, token, {
+      kind: 'web-link-set',
+      expression: token.text,
+      reason: 'Web link set name is dynamic and cannot be resolved statically.',
+    });
+}
+
+function visitEditable(token, frame, context) {
+  const markup = token.markup;
+  const target = /^\s*([\w.]+)/.exec(markup)?.[1];
+  if (!target) return;
+  const rest = markup.slice(markup.indexOf(target) + target.length);
+  const literal = /^\s*(?:'([^']*)'|"([^"]*)")/.exec(rest);
+  const reference = literal ? (literal[1] ?? literal[2]) : null;
+  if (target.toLowerCase() === 'snippets') {
+    if (reference !== null) addSnippet(reference, 'Liquid snippet', token, frame, context);
+    else
+      unresolvedRow(context, frame, token, {
+        kind: 'content-snippet',
+        expression: token.text,
+        reason: 'Editable snippet name is dynamic and cannot be resolved statically.',
+        dynamic: true,
       });
-    else addStaticReference(list, unresolved, reference, kind, match[0]);
-    usages.push({ kind, reference: dynamic ? null : (reference ?? null), expression: expression(match[0]) });
+    usage(context, frame, token, { kind: 'editable', reference, target: 'snippet' });
+    return;
+  }
+  usage(context, frame, token, { kind: 'editable', reference, target });
+  if (target.toLowerCase() === 'page' && /^(?:adx_|mspp_)?copy$/i.test(reference ?? ''))
+    renderPageCopy(token, frame, context);
+}
+
+/** What an entitylist/entityform/webform tag references: the reference, its page lookup, and why nothing renders. */
+function componentReference(kind, value, token, frame, context) {
+  let reference = value?.literal ?? null,
+    pageLookup = null,
+    reason = null,
+    certainty;
+  if (!value) {
+    certainty = 'not-rendered';
+    reason = `The ${kind} tag names no ${kind === 'entitylist' ? 'list' : 'form'}; the runtime renders nothing.`;
+  } else if (value.dynamic !== undefined) {
+    const page = pageLookupId(context.page, value.dynamic);
+    if (page) {
+      pageLookup = page.kind;
+      reference = page.id;
+      if (!reference) {
+        certainty = 'not-rendered';
+        reason = `The page record has no ${page.kind} lookup; the runtime renders nothing.`;
+      }
+    } else
+      unresolvedRow(context, frame, token, {
+        kind,
+        expression: token.text,
+        reason: 'Component reference uses a Liquid variable and cannot be resolved statically.',
+        dynamic: true,
+      });
+  }
+  return { reference, pageLookup, reason, certainty };
+}
+
+function visitComponent(token, frame, context, lists) {
+  const kind = token.name;
+  const attributes = tagAttributes(token.markup);
+  if (kind === 'entityview') {
+    visitEntityView(token, frame, context, lists, attributes);
+    return;
+  }
+  const value = attributeValue(attributes, ['name', 'id', 'key']);
+  const pageControl = /^(['"]?)true\1$/i.test(String(attributes.get('pp_page_control')?.value ?? ''));
+  const { reference, pageLookup, reason, certainty } = componentReference(kind, value, token, frame, context);
+  const row = usage(context, frame, token, {
+    kind,
+    reference,
+    ...(pageLookup ? { pageLookup } : {}),
+    ...(reason ? { reason } : {}),
+    ...(certainty ? { certainty } : {}),
+  });
+  if (kind === 'entitylist') {
+    lists.push(reference);
+    if (reference) context.references.lists.push({ ref: reference, usage: row });
+    return;
+  }
+  if (value) context.formTags.push({ usage: row, pageControl });
+  if (reference) context.references.forms.push({ kind, ref: reference, usage: row });
+}
+
+function visitEntityView(token, frame, context, lists, attributes) {
+  if (token.blocks.includes('entitylist')) {
+    // Inside an entitylist block the runtime renders the enclosing list's view model and ignores the arguments.
+    usage(context, frame, token, { kind: 'entityview', reference: lists.at(-1) ?? null, via: 'enclosing entitylist' });
+    return;
+  }
+  const viewId = attributeValue(attributes, ['id']);
+  const table = attributeValue(attributes, ['logical_name', 'logicalname']);
+  const name = attributeValue(attributes, ['name']);
+  if (viewId?.literal !== undefined) {
+    usage(context, frame, token, { kind: 'entityview', reference: viewId.literal });
+    context.references.views.push({ ref: viewId.literal });
+  } else if (!viewId && table?.literal !== undefined && name?.literal !== undefined) {
+    usage(context, frame, token, { kind: 'entityview', reference: name.literal, entity: table.literal.toLowerCase() });
+    context.references.views.push({ ref: name.literal, entity: table.literal.toLowerCase() });
+  } else if (viewId || table?.dynamic !== undefined || name?.dynamic !== undefined) {
+    unresolvedRow(context, frame, token, {
+      kind: 'entityview',
+      expression: token.text,
+      reason: 'Component reference uses a Liquid variable and cannot be resolved statically.',
+      dynamic: true,
+    });
+    usage(context, frame, token, { kind: 'entityview', reference: null });
+  } else {
+    unresolvedRow(context, frame, token, {
+      kind: 'entityview',
+      expression: token.text,
+      reason: 'Outside an entitylist block the runtime selects a view by id, or by logical_name and name.',
+    });
+    usage(context, frame, token, { kind: 'entityview', reference: null, certainty: 'not-rendered' });
   }
 }
 
-function consumeFetchToken(item, entityStack, tables, queryTables) {
-  if (/^<\/(?:entity|link-entity)/i.test(item[0])) {
-    entityStack.pop();
-    return;
-  }
-  const attrs = item[1] ?? item[2] ?? item[3] ?? '';
-  const entity = /\bname\s*=\s*(['"])(.*?)\1/i.exec(attrs)?.[2];
-  if (/^<entity/i.test(item[0]) || /^<link-entity/i.test(item[0])) {
-    const current = entity?.toLowerCase() ?? null;
-    entityStack.push(current);
-    if (current && !tables.has(current)) tables.set(current, new Set());
-    if (current) queryTables.push(current);
-    return;
-  }
-  const column = /\bname\s*=\s*(['"])(.*?)\1/i.exec(attrs)?.[2];
-  const current = entityStack.at(-1);
-  if (current && column) tables.get(current).add(column);
+function visitChartTag(token, frame, context, attributes) {
+  const kind = token.name;
+  const chart = attributeValue(attributes, ['id']);
+  const view = attributeValue(attributes, ['viewid']);
+  usage(context, frame, token, {
+    kind,
+    reference: chart?.literal ?? null,
+    view: view?.literal ?? null,
+  });
+  if (view?.literal) context.references.views.push({ ref: view.literal });
+  if (chart?.dynamic !== undefined || view?.dynamic !== undefined)
+    unresolvedRow(context, frame, token, {
+      kind: 'chart',
+      expression: token.text,
+      reason: 'Chart or view id is dynamic and cannot be resolved statically.',
+      dynamic: true,
+    });
 }
 
-function collectFetchReferences(source, tables, unresolved, usages) {
-  const xml = /<fetch\b[\s\S]*?<\/fetch>/gi;
-  for (const match of source.matchAll(xml)) {
+function visitRedirectTag(token, frame, context, attributes) {
+  const kind = token.name;
+  // RedirectTag (liquid.mjs) strips quotes and a ['...'] wrapper from the sitemarker attribute.
+  const marker = attributes.get('sitemarker')?.value;
+  const quoted = marker == null ? null : /^\[?\s*(['"])([\s\S]*)\1\s*\]?$/.exec(String(marker).trim());
+  usage(context, frame, token, { kind, reference: quoted ? quoted[2] : null });
+  if (quoted) addSiteMarker(quoted[2], 'redirect tag', token, frame, context);
+  else if (marker != null)
+    unresolvedRow(context, frame, token, {
+      kind: 'site-marker',
+      expression: token.text,
+      reason: 'Site marker name is dynamic and cannot be resolved statically.',
+      dynamic: true,
+    });
+}
+
+function visitPlatformTag(token, frame, context) {
+  const kind = token.name;
+  const attributes = tagAttributes(token.markup);
+  if (kind === 'chart') return visitChartTag(token, frame, context, attributes);
+  if (kind === 'redirect') return visitRedirectTag(token, frame, context, attributes);
+  if (kind === 'searchindex') {
+    const names = attributeValue(attributes, ['logical_names']);
+    const tables = String(names?.literal ?? '')
+      .split(',')
+      .map((item) => item.trim().toLowerCase())
+      .filter(Boolean);
+    usage(context, frame, token, { kind, reference: null, tables });
+    for (const table of tables) addTable(context, table);
+    return;
+  }
+  const reference = attributeValue(attributes, kind === 'powerbi' ? ['path'] : ['id', 'name']);
+  usage(context, frame, token, { kind, reference: reference?.literal ?? null });
+}
+
+function visitSnippetsObject({ literal, text }, token, frame, context) {
+  if (literal !== undefined) {
+    usage(context, frame, token, { kind: 'snippet', reference: literal, expression: text });
+    addSnippet(literal, 'Liquid snippet', token, frame, context);
+  } else {
+    unresolvedRow(context, frame, token, {
+      kind: 'content-snippet',
+      expression: text,
+      reason: 'Snippet key is dynamic and cannot be resolved statically.',
+      dynamic: true,
+    });
+    if (!frame.builtin) usage(context, frame, token, { kind: 'snippet', reference: null, expression: text });
+  }
+}
+
+function visitSettingsObject({ literal, text }, token, frame, context) {
+  if (literal !== undefined) {
+    usage(context, frame, token, { kind: 'setting', reference: literal, expression: text });
+    context.references.settings.push({ name: literal, optional: Boolean(frame.optional) });
+  } else
+    unresolvedRow(context, frame, token, {
+      kind: 'site-setting',
+      expression: text,
+      reason: 'Site setting key is dynamic and cannot be resolved statically.',
+      dynamic: true,
+    });
+}
+
+function visitWeblinksObject({ literal, dynamic, text }, token, frame, context) {
+  const page = dynamic === undefined ? null : pageLookupId(context.page, dynamic);
+  if (literal !== undefined) addWebLinkSet(literal, 'Liquid weblinks', token, frame, context, text);
+  else if (page?.kind === 'navigation' && page.id)
+    addWebLinkSet(page.id, 'page navigation', token, frame, context, text);
+  else
+    unresolvedRow(context, frame, token, {
+      kind: 'web-link-set',
+      expression: text,
+      reason: 'Web link set key is dynamic and cannot be resolved statically.',
+      dynamic: true,
+    });
+}
+
+function visitSitemarkersObject({ literal, text }, token, frame, context) {
+  if (literal !== undefined) addSiteMarker(literal, 'Liquid sitemarkers', token, frame, context, text);
+  else
+    unresolvedRow(context, frame, token, {
+      kind: 'site-marker',
+      expression: text,
+      reason: 'Site marker name is dynamic and cannot be resolved statically.',
+      dynamic: true,
+    });
+}
+
+function visitEntitiesObject({ literal, text }, token, frame, context) {
+  if (literal !== undefined) {
+    usage(context, frame, token, { kind: 'table', reference: literal.toLowerCase(), expression: text });
+    addTable(context, literal.toLowerCase());
+  } else
+    unresolvedRow(context, frame, token, {
+      kind: 'table',
+      expression: text,
+      reason: 'Table name is dynamic and cannot be resolved statically.',
+      dynamic: true,
+    });
+}
+
+const OBJECT_VISITORS = {
+  snippets: visitSnippetsObject,
+  settings: visitSettingsObject,
+  weblinks: visitWeblinksObject,
+  sitemarkers: visitSitemarkersObject,
+  entities: visitEntitiesObject,
+  sitemap: visitSitemap,
+};
+
+function visitObjectReference(reference, token, frame, context) {
+  OBJECT_VISITORS[reference.object]?.(reference, token, frame, context);
+}
+
+function visitSitemap({ literal, dynamic, member, text }, token, frame, context) {
+  if (member) {
+    usage(context, frame, token, { kind: 'sitemap', reference: literal, expression: text });
+    return;
+  }
+  if (dynamic !== undefined) {
+    unresolvedRow(context, frame, token, {
+      kind: 'sitemap',
+      expression: text,
+      reason: 'Site map path is dynamic and cannot be resolved statically.',
+      dynamic: true,
+    });
+    return;
+  }
+  const key = normalizePortalPath(literal);
+  const page = (context.portal.pages ?? []).find((candidate) => normalizePortalPath(candidate.url) === key);
+  usage(context, frame, token, {
+    kind: 'sitemap',
+    reference: literal,
+    expression: text,
+    page: page ? { id: page.id, name: page.name ?? null, url: page.url } : null,
+  });
+  if (!page)
+    unresolvedRow(context, frame, token, {
+      kind: 'page',
+      expression: literal,
+      reason: 'No imported page has this site map path.',
+    });
+}
+
+function addTable(context, table) {
+  if (!table) return;
+  if (!context.references.tables.has(table)) context.references.tables.set(table, new Set());
+}
+
+function addSnippet(reference, via, token, frame, context) {
+  const key = String(reference ?? '');
+  const record = context.snippetRecords.resolve(key);
+  if (!record) {
+    if (frame.optional || token?.optional)
+      context.optionalAbsent.push({ kind: 'content-snippet', name: key, via, owner: frame.owner });
+    else
+      unresolvedRow(context, frame, token, {
+        kind: 'content-snippet',
+        expression: key,
+        via,
+        reason: 'No imported content snippet matches this static reference.',
+      });
+    return;
+  }
+  let descriptor = context.snippets.find((item) => item.name === record.name);
+  if (descriptor) {
+    if (frame.owner && !descriptor.usedBy.includes(frame.owner)) descriptor.usedBy.push(frame.owner);
+  } else {
+    descriptor = {
+      ...recordDescriptor(record, 'content-snippet', record.name, 'value'),
+      usedBy: frame.owner ? [frame.owner] : [],
+    };
+    descriptor.sourceFile = sourceFile(record, 'value.html') ?? record._file;
+    descriptor.file = descriptor.sourceFile;
+    context.snippets.push(descriptor);
+    context.dependencies.push(descriptor);
+  }
+  const translated = context.languageId
+    ? context.portal.snippetTranslations?.[context.languageId]?.[record.name]
+    : null;
+  walkSource(
+    translated ?? context.portal.snippets?.[record.name] ?? '',
+    childFrame(frame, token, `content-snippet:${record.name}`),
+    context,
+  );
+}
+
+/** The web link set a Liquid key selects (liquid.mjs buildWeblinks): a GUID by id, else the first active set of that exact name. */
+function findWebLinkSet(portal, key, languageId, byId = false) {
+  const languages = new Map(
+    (portal.records ?? [])
+      .filter((record) => record.kind === 'weblinkset')
+      .map((record) => [id(record.id), id(field(record, 'websitelanguageid'))]),
+  );
+  const inLanguage = (set) => !languageId || !languages.get(id(set.id)) || languages.get(id(set.id)) === id(languageId);
+  const sets = [...(portal.weblinkSets ?? []), ...Object.values(portal.weblinks ?? {})].filter(
+    (set) => set && inLanguage(set),
+  );
+  const text = String(key ?? '').trim();
+  if (byId || guid.test(text.replace(/[{}]/g, ''))) return sets.find((set) => id(set.id) === id(text)) ?? null;
+  return sets.find((set) => set.name === String(key)) ?? null;
+}
+
+function addWebLinkSet(key, via, token, frame, context, text = null) {
+  const set = findWebLinkSet(
+    context.portal,
+    key,
+    context.languageId ?? context.siteLanguageId,
+    via === 'page navigation',
+  );
+  usage(context, frame, token, {
+    kind: 'web-link-set',
+    reference: String(key),
+    via,
+    ...(text ? { expression: text } : {}),
+  });
+  if (!set) {
+    if (frame.optional)
+      context.optionalAbsent.push({ kind: 'web-link-set', name: String(key), via, owner: frame.owner });
+    else
+      unresolvedRow(context, frame, token, {
+        kind: 'web-link-set',
+        expression: String(key),
+        via,
+        reason: 'No imported web link set matches this static reference.',
+      });
+    return;
+  }
+  let descriptor = context.webLinkSets.find((item) => id(item.id) === id(set.id));
+  if (descriptor) {
+    if (!descriptor.usedBy.includes(frame.owner)) descriptor.usedBy.push(frame.owner);
+    return;
+  }
+  const links = [];
+  const flatten = (items, parentId = null) => {
+    for (const link of items ?? []) {
+      links.push({
+        id: link.id,
+        name: link.name,
+        parentId,
+        pageId: link.pageId || null,
+        url: link.url ?? null,
+        sourceFile: link.metadata?._file ?? null,
+      });
+      flatten(link.weblinks, link.id);
+    }
+  };
+  flatten(set.weblinks);
+  descriptor = {
+    ...recordDescriptor(set.metadata, 'web-link-set', set.name, 'name'),
+    id: set.id,
+    usedBy: [frame.owner],
+    links,
+  };
+  context.webLinkSets.push(descriptor);
+  context.dependencies.push(descriptor);
+  for (const link of links)
+    context.dependencies.push({
+      kind: 'web-link',
+      name: String(link.name ?? ''),
+      sourceFile: link.sourceFile,
+      file: link.sourceFile,
+      relativePath: link.sourceFile ? path.basename(link.sourceFile) : null,
+      recordId: link.id,
+      fieldPath: 'name',
+      setId: set.id,
+    });
+}
+
+function addSiteMarker(name, via, token, frame, context, text = null) {
+  const marker = (context.portal.siteMarkers ?? []).find((item) => item.name === name);
+  usage(context, frame, token, { kind: 'site-marker', reference: name, via, ...(text ? { expression: text } : {}) });
+  if (!marker) {
+    if (frame.optional) context.optionalAbsent.push({ kind: 'site-marker', name, via, owner: frame.owner });
+    else
+      unresolvedRow(context, frame, token, {
+        kind: 'site-marker',
+        expression: name,
+        via,
+        reason: 'No imported site marker matches this static reference.',
+      });
+    return;
+  }
+  const existing = context.siteMarkers.find((item) => id(item.id) === id(marker.id));
+  if (existing) {
+    if (!existing.usedBy.includes(frame.owner)) existing.usedBy.push(frame.owner);
+    return;
+  }
+  const record = (context.portal.records ?? []).find(
+    (item) => item.kind === 'sitemarker' && id(item.id) === id(marker.id),
+  );
+  const page = (context.portal.pages ?? []).find((item) => id(item.id) === id(marker.pageId));
+  const descriptor = {
+    ...recordDescriptor(record, 'site-marker', marker.name, 'pageid'),
+    id: marker.id,
+    usedBy: [frame.owner],
+    page: page ? { id: page.id, name: page.name ?? null, url: page.url } : null,
+  };
+  context.siteMarkers.push(descriptor);
+  context.dependencies.push(descriptor);
+  if (!page)
+    unresolvedRow(context, frame, token, {
+      kind: 'page',
+      expression: marker.pageId ?? name,
+      via: `site marker ${name}`,
+      reason: 'The site marker points at no imported page.',
+    });
+}
+
+function addCommunityRecord(kind, name, via, token, frame, context) {
+  const record = (context.portal.records ?? []).find(
+    (item) => item.kind === kind && active(item) && (item.name === name || id(item.id) === id(name)),
+  );
+  const label = UNRESOLVED_KIND[kind];
+  usage(context, frame, token, { kind: label, reference: name, via });
+  if (!record) {
+    unresolvedRow(context, frame, token, {
+      kind: label,
+      expression: name,
+      via,
+      reason: `No imported ${label.replace('-', ' ')} matches this static reference.`,
+    });
+    return;
+  }
+  if (context.components.some((item) => item.kind === label && id(item.recordId) === id(record.id))) return;
+  const descriptor = recordDescriptor(record, label, record.name, 'name');
+  context.components.push(descriptor);
+  context.dependencies.push(descriptor);
+}
+
+/** The attribute `name` of a FetchXML tag's attribute text (its quoted value), if present. */
+const fetchAttribute = (attrs, name) => new RegExp(String.raw`\b${name}\s*=\s*(['"])(.*?)\1`, 'i').exec(attrs)?.[2];
+/** A FetchXML attribute value that is a literal: non-empty and free of Liquid. */
+const fetchLiteral = (value) => (value && !/\{\{|\{%/.test(value) ? value : null);
+
+/** An entity or link-entity tag: the table it names (or a dynamic name), its join columns, the entity nesting. */
+function scanFetchEntity(tagName, attrs, state, context) {
+  const name = fetchAttribute(attrs, 'name');
+  const current = fetchLiteral(name)?.toLowerCase() ?? null;
+  if (name && !current) state.dynamic = true;
+  if (current) {
+    addTable(context, current);
+    state.queryTables.push(current);
+    if (tagName === 'link-entity') {
+      const parent = state.entityStack.at(-1);
+      const from = fetchLiteral(fetchAttribute(attrs, 'from'));
+      const to = fetchLiteral(fetchAttribute(attrs, 'to'));
+      if (from) context.references.tables.get(current).add(from);
+      if (to && parent) context.references.tables.get(parent).add(to);
+    }
+  }
+  if (!/\/\s*$/.test(attrs)) state.entityStack.push(current);
+}
+
+/** An attribute, condition or order tag: the column it names on its entity (a condition's own, else the enclosing). */
+function scanFetchColumn(tagName, attrs, state, context) {
+  const column = fetchLiteral(fetchAttribute(attrs, tagName === 'attribute' ? 'name' : 'attribute'));
+  const owner =
+    tagName === 'condition' ? (fetchLiteral(fetchAttribute(attrs, 'entityname'))?.toLowerCase() ?? null) : null;
+  const table = owner && context.references.tables.has(owner) ? owner : state.entityStack.at(-1);
+  if (table && column) context.references.tables.get(table).add(column);
+}
+
+/** The tables of one FetchXML query, adding the tables and columns it reads to the references. */
+function scanFetchQuery(query, context) {
+  const state = { entityStack: [], queryTables: [], dynamic: false };
+  const token = /<(\/?)(entity|link-entity|attribute|condition|order)\b([^>]*)>/gi;
+  for (const item of query.matchAll(token)) {
+    const [, closing, tag, attrs] = item;
+    const tagName = tag.toLowerCase();
+    if (closing) {
+      if (tagName === 'entity' || tagName === 'link-entity') state.entityStack.pop();
+    } else if (tagName === 'entity' || tagName === 'link-entity') scanFetchEntity(tagName, attrs, state, context);
+    else scanFetchColumn(tagName, attrs, state, context);
+  }
+  return state;
+}
+
+function collectFetchReferences(source, frame, context) {
+  for (const match of source.matchAll(/<fetch\b[\s\S]*?<\/fetch>/gi)) {
     const query = match[0];
-    const entityStack = [];
-    const queryTables = [];
-    const token = /<entity\b([^>]*)>|<link-entity\b([^>]*)>|<attribute\b([^>]*)>|<\/entity\s*>|<\/link-entity\s*>/gi;
-    for (const item of query.matchAll(token)) consumeFetchToken(item, entityStack, tables, queryTables);
-    if (!/<entity\b/i.test(query))
-      unresolved.push({
+    const { queryTables, dynamic } = scanFetchQuery(query, context);
+    if (!queryTables.length || dynamic)
+      unresolvedRow(context, frame, null, {
         kind: 'fetchxml-table',
         expression: query.slice(0, 120),
-        reason: 'FetchXML entity name could not be resolved statically.',
+        reason: dynamic
+          ? 'FetchXML entity name is a Liquid expression and cannot be resolved statically.'
+          : 'FetchXML entity name could not be resolved statically.',
       });
-    usages.push({
+    usage(context, frame, null, {
       kind: 'fetchxml',
       reference: queryTables[0] ?? null,
       tables: [...new Set(queryTables)],
-      expression: expression(query),
+      expression: query,
     });
   }
 }
 
-function extractReferences(source, exportedTemplateNames = new Set()) {
-  source = stripLiquidLiteralBlocks(source);
-  const templates = [],
-    snippets = [],
-    settings = [],
-    forms = [],
-    lists = [],
-    views = [];
-  const unresolved = [],
-    usages = [],
-    tables = new Map();
-  collectTemplateReferences(source, exportedTemplateNames, templates, lists, unresolved, usages);
-  collectDynamicTemplateReferences(source, unresolved, usages);
-  collectSnippetReferences(source, snippets, usages);
-  collectDynamicSnippetReferences(source, unresolved, usages);
-  collectEditableReferences(source, snippets, unresolved, usages);
-  collectSettingsReferences(source, settings);
-  collectComponentReferences(source, forms, lists, views, unresolved, usages);
-  collectFetchReferences(source, tables, unresolved, usages);
-  return { templates, snippets, settings, forms, lists, views, tables, unresolved, usages };
-}
-
-function addPageTemplate(reference, via, owner, context) {
-  const { templateRows, unresolved, webTemplates, dependencies, queue } = context;
-  const found = templateRows.find(
-    (item) => id(item.id) === id(reference) || item.name?.toLowerCase() === String(reference).toLowerCase(),
-  );
-  if (!found) {
-    unresolved.push({
-      kind: 'web-template',
-      expression: reference,
-      via,
-      ...(owner ? { owner } : {}),
-      reason: 'No imported web template matches this static reference.',
-    });
-    return;
-  }
-  const existing = webTemplates.find((item) => id(item.id) === id(found.id));
-  if (existing) {
-    if (owner && !existing.includedBy.includes(owner)) existing.includedBy.push(owner);
-    return;
-  }
-  const descriptor = {
-    ...recordDescriptor(found.metadata, 'web-template', found.name, 'source'),
-    id: found.id,
-    via,
-    includedBy: owner ? [owner] : [],
-    sourceFile: sourceFile(found.metadata, 'source.html') ?? found.metadata?._file ?? null,
-    file: sourceFile(found.metadata, 'source.html') ?? found.metadata?._file ?? null,
-  };
-  webTemplates.push(descriptor);
-  dependencies.push(descriptor);
-  queue.push({ text: found.source ?? '', owner: `web-template:${id(found.id)}` });
-}
-
-function addPageSnippet(reference, via, owner, context) {
-  const { snippetRecords, unresolved, snippets, dependencies, sources, portal } = context;
-  const key = String(reference ?? '');
-  const record = snippetRecords.resolve(key);
-  if (!record) {
-    unresolved.push({
-      kind: 'content-snippet',
-      expression: key,
-      via,
-      ...(owner ? { owner } : {}),
-      reason: 'No imported content snippet matches this static reference.',
-    });
-    return;
-  }
-  const existing = snippets.find((item) => item.name === record.name);
-  if (existing) {
-    if (owner && !existing.usedBy.includes(owner)) existing.usedBy.push(owner);
-    return;
-  }
-  const descriptor = {
-    ...recordDescriptor(record, 'content-snippet', record.name, 'value'),
-    usedBy: owner ? [owner] : [],
-  };
-  descriptor.sourceFile = sourceFile(record, 'value.html') ?? record._file;
-  descriptor.file = descriptor.sourceFile;
-  snippets.push(descriptor);
-  dependencies.push(descriptor);
-  sources.push({ text: portal.snippets?.[record.name] ?? '', owner: `content-snippet:${record.name}` });
-}
-
-function addPageTemplateReference(pageTemplate, unresolved, context) {
-  if (pageTemplateKind(pageTemplate) === 'rewrite') return;
-  if (pageTemplate?.webTemplateId)
-    addPageTemplate(pageTemplate.webTemplateId, 'page-template', `page-template:${id(pageTemplate.id)}`, context);
-  else if (pageTemplate)
-    unresolved.push({
-      kind: 'web-template',
-      expression: pageTemplate.name,
-      via: 'page-template',
-      reason: 'Page template has no resolved web-template ID.',
-    });
-}
-
-function addPageShellReferences(pageTemplate, portal, references, context) {
-  if (pageTemplateKind(pageTemplate) !== 'rewrite' && pageTemplate?.useHeaderFooter === false) return;
-  const headerId = field(portal.website, 'headerwebtemplateid');
-  const footerId = field(portal.website, 'footerwebtemplateid');
-  if (headerId) addPageTemplate(headerId, 'website header', 'website-header', context);
-  if (footerId) addPageTemplate(footerId, 'website footer', 'website-footer', context);
-  for (const name of ['Head/Bottom', 'Browser Title Suffix']) {
-    references.snippets.push(name);
-    addPageSnippet(name, 'rendered page shell', 'page-shell', context);
-  }
-}
-
-function addPageComponentReferences(page, references) {
-  if (page.formId) references.forms.push(page.formId);
-  if (page.advancedFormId) references.forms.push(page.advancedFormId);
-  if (page.listId) references.lists.push(page.listId);
-}
-
-function scanPageResourceSource(source, context) {
-  const { seenSources, templateRows, references, usages, unresolved } = context;
-  const { text, owner } = source;
-  const key = `${owner}\u0000${text}`;
-  if (seenSources.has(key)) return;
-  seenSources.add(key);
-  const refs = extractReferences(text, new Set(templateRows.map((item) => item.name?.toLowerCase())));
-  references.templates.push(...refs.templates);
-  references.snippets.push(...refs.snippets);
-  references.settings.push(...refs.settings);
-  references.forms.push(...refs.forms);
-  references.lists.push(...refs.lists);
-  references.views.push(...refs.views);
-  for (const usage of refs.usages) usages.push({ ...usage, owner });
-  for (const reference of refs.snippets) addPageSnippet(reference, 'Liquid snippet', owner, context);
-  refs.unresolved.forEach((item) => unresolved.push({ ...item, owner }));
-  for (const [entity, fields] of refs.tables) {
-    if (!references.tables.has(entity)) references.tables.set(entity, new Set());
-    fields.forEach((name) => references.tables.get(entity).add(name));
-  }
-  for (const ref of refs.templates)
-    if (
-      !builtinTemplates.has(ref.toLowerCase()) ||
-      templateRows.some((item) => item.name?.toLowerCase() === ref.toLowerCase())
-    )
-      addPageTemplate(ref, 'Liquid include/layout', owner, context);
-}
+// ---- Components (forms, lists, views), tables and settings
 
 function appendSchemaColumns(component, schema, solutionMetadata, entityNames, columns) {
   for (const item of schema?.fields ?? [])
@@ -435,85 +970,112 @@ function appendSchemaColumns(component, schema, solutionMetadata, entityNames, c
   }
 }
 
-function appendRecordStepEntities(portal, component, entityNames) {
-  for (const step of (portal.records ?? []).filter(
-    (record) => record.kind === 'advancedformstep' && id(field(record, 'webform')) === id(component.id),
-  )) {
+/** Active steps of an advanced form, including steps of other forms that its step references select (advanced-form-graph.mjs). */
+const advancedFormSteps = (portal, component) => advancedFormGraph(component, portal.records ?? []).steps;
+
+const componentFrame = (owner, certainty) => ({
+  owner,
+  conditional: certainty === 'conditional',
+  notRendered: certainty === 'not-rendered',
+  builtin: false,
+  depth: 1,
+});
+
+/** The active steps of an advanced form: their tables, custom JavaScript and component descriptors. */
+function appendAdvancedFormSteps(portal, component, certainty, context) {
+  const { components, entityNames, dependencies } = context;
+  for (const step of advancedFormSteps(portal, component)) {
     const entity = field(step, 'targetentitylogicalname', field(step, 'entityname'));
     if (entity) entityNames.add(String(entity).toLowerCase());
-  }
-}
-
-function appendAdvancedFormSteps(portal, component, sources, components, dependencies) {
-  for (const step of (portal.records ?? []).filter(
-    (record) => record.kind === 'advancedformstep' && id(field(record, 'webform')) === id(component.id),
-  )) {
     const stepFile = sourceFile(step, 'custom_javascript.js') ?? step._file ?? null;
     if (step.customJavascript)
-      sources.push({ text: step.customJavascript, owner: `advanced-form-step:${id(step.id)}` });
-    const descriptor = {
+      walkSource(step.customJavascript, componentFrame(`advanced-form-step:${id(step.id)}`, certainty), context);
+    const stepDescriptor = {
       ...recordDescriptor(step, 'advanced-form-step', step.name, 'customjavascript'),
       sourceFile: stepFile,
       file: stepFile,
     };
-    components.push(descriptor);
-    dependencies.push(descriptor);
+    components.push(stepDescriptor);
+    dependencies.push(stepDescriptor);
   }
 }
 
-function resolveFormReference(ref, context) {
-  const { portal, solutionMetadata, unresolved, forms, components, columns, entityNames, sources, dependencies } =
-    context;
-  const component = [...(portal.forms ?? []), ...(portal.advancedForms ?? [])].find(
-    (item) => id(item.id) === id(ref) || item.name?.toLowerCase() === String(ref).toLowerCase(),
+function resolveFormReference(entry, context) {
+  const { portal, solutionMetadata, unresolved, forms, components, columns, entityNames, dependencies } = context;
+  const advancedTag = entry.kind === 'webform' || entry.kind === 'page-webform';
+  // The runtime looks an entityform up among basic forms and a webform among advanced forms, by exact name or id.
+  const component = (advancedTag ? portal.advancedForms : portal.forms)?.find(
+    (item) => id(item.id) === id(entry.ref) || item.name === String(entry.ref),
   );
+  const certainty = entry.usage?.certainty ?? 'declared';
   if (!component) {
-    unresolved.push({ kind: 'form', expression: ref, reason: 'No imported form matches this static reference.' });
+    unresolved.push({
+      kind: 'form',
+      expression: entry.ref,
+      reason: advancedTag
+        ? 'No imported advanced form matches this static reference.'
+        : 'No imported form matches this static reference.',
+      ...(entry.usage?.owner ? { owner: entry.usage.owner } : {}),
+      ...(certainty === 'declared' ? {} : { certainty }),
+    });
     return;
   }
-  if (forms.some((item) => id(item.id) === id(component.id))) return;
+  const advanced = component.metadata?.kind === 'advancedform' || advancedTag;
+  const kind = advanced ? 'advanced-form' : 'basic-form';
+  const existing = components.find((item) => item.kind === kind && id(item.recordId) === id(component.id));
+  if (existing) {
+    existing.certainty = strongest(existing.certainty, certainty);
+    return;
+  }
   forms.push(component);
-  const advanced = component.metadata?.kind === 'advancedform';
-  const owner = `${advanced ? 'advanced-form' : 'basic-form'}:${id(component.id)}`;
-  if (component.js) sources.push({ text: component.js, owner });
+  const owner = `${kind}:${id(component.id)}`;
   if (component.entityName) entityNames.add(component.entityName.toLowerCase());
-  const schema =
-    solutionMetadata.componentSchemas?.[component.id] ?? solutionMetadata.componentSchemas?.[component.name];
+  const schema = solutionMetadata.componentSchemas?.[component.id];
   appendSchemaColumns(component, schema, solutionMetadata, entityNames, columns);
-  appendRecordStepEntities(portal, component, entityNames);
-  const descriptor = recordDescriptor(
-    component.metadata,
-    advanced ? 'advanced-form' : 'basic-form',
-    component.name,
-    'customjavascript',
-  );
+  const descriptor = recordDescriptor(component.metadata, kind, component.name, 'customjavascript');
   descriptor.sourceFile = sourceFile(component.metadata, 'custom_javascript.js') ?? component.metadata?._file ?? null;
   descriptor.file = descriptor.sourceFile;
+  descriptor.certainty = certainty;
   components.push(descriptor);
   dependencies.push(descriptor);
-  if (advanced) appendAdvancedFormSteps(portal, component, sources, components, dependencies);
+  if (component.js) walkSource(component.js, componentFrame(owner, certainty), context);
+  if (advanced) appendAdvancedFormSteps(portal, component, certainty, context);
 }
 
-/* NOSONAR */ function resolveListReference(ref, context) {
-  const { portal, unresolved, components, entityNames, sources, references, dependencies } = context;
+/* NOSONAR */ function resolveListReference(entry, context) {
+  const { portal, unresolved, components, entityNames, references, dependencies } = context;
+  const ref = String(entry.ref);
+  const certainty = entry.usage?.certainty ?? 'declared';
+  // findList (platform.mjs): by id, exact name or the list's key.
   const component = (portal.lists ?? []).find(
-    (item) => id(item.id) === id(ref) || item.name?.toLowerCase() === String(ref).toLowerCase(),
+    (item) => id(item.id) === id(ref) || item.name === ref || field(item.metadata, 'key') === ref,
   );
   if (!component) {
-    unresolved.push({ kind: 'list', expression: ref, reason: 'No imported list matches this static reference.' });
+    unresolved.push({
+      kind: 'list',
+      expression: ref,
+      reason: 'No imported list matches this static reference.',
+      ...(entry.usage?.owner ? { owner: entry.usage.owner } : {}),
+      ...(certainty === 'declared' ? {} : { certainty }),
+    });
     return;
   }
-  if (components.some((item) => item.kind === 'list' && id(item.recordId) === id(component.id))) return;
-  if (component.js) sources.push({ text: component.js, owner: `list:${id(component.id)}` });
+  const existing = components.find((item) => item.kind === 'list' && id(item.recordId) === id(component.id));
+  if (existing) {
+    existing.certainty = strongest(existing.certainty, certainty);
+    return;
+  }
   if (component.entityName) entityNames.add(component.entityName.toLowerCase());
   const descriptor = {
     ...recordDescriptor(component.metadata, 'list', component.name, 'customjavascript'),
     entity: component.entityName ?? null,
     sourceFile: sourceFile(component.metadata, 'custom_javascript.js') ?? component.metadata?._file ?? null,
     file: sourceFile(component.metadata, 'custom_javascript.js') ?? component.metadata?._file ?? null,
+    certainty,
   };
   components.push(descriptor);
   dependencies.push(descriptor);
+  if (component.js) walkSource(component.js, componentFrame(`list:${id(component.id)}`, certainty), context);
   const viewValues = [];
   for (let value of [field(component.metadata, 'view'), field(component.metadata, 'views')]) {
     if (typeof value === 'string') {
@@ -531,17 +1093,22 @@ function resolveFormReference(ref, context) {
   for (const viewId of viewValues) {
     const value =
       viewId && typeof viewId === 'object' ? (viewId.ViewId ?? viewId.viewId ?? viewId.id ?? viewId.value) : viewId;
-    if (value) references.views.push(String(value));
+    if (value) references.views.push({ ref: String(value) });
   }
 }
 
-function resolveViewReference(reference, context) {
+function resolveViewReference(entry, context) {
   const { solutionMetadata, unresolved, views, components, entityNames, columns, dependencies } = context;
-  const view = (solutionMetadata.views ?? []).find((item) => id(item.id) === id(reference) || item.name === reference);
+  const reference = entry.ref;
+  const view = (solutionMetadata.views ?? []).find((item) =>
+    entry.entity
+      ? item.entity?.toLowerCase() === entry.entity && item.name === reference
+      : id(item.id) === id(reference) || item.name === reference,
+  );
   if (!view) {
     unresolved.push({
       kind: 'view',
-      expression: reference,
+      expression: entry.entity ? `${entry.entity}/${reference}` : reference,
       reason: 'View source is absent from imported solution metadata.',
     });
     return;
@@ -615,50 +1182,239 @@ function addTableDescriptors(entityNames, solutionMetadata, tables, columns, unr
   }
 }
 
-function resolveSettingReferences(settingNames, tableNames, portal, unresolved, siteSettings, dependencies) {
-  for (const name of Object.keys(portal.settings ?? {}))
-    if (/^webapi\//i.test(name) && tableNames.has(name.split('/')[1].toLowerCase())) settingNames.add(name);
-  for (const name of settingNames) {
-    const record = (portal.records ?? []).find((item) => item.kind === 'sitesetting' && item.name === name);
+/** The active site setting record a reference resolves to (exact name, else the first case-insensitive match). */
+function settingRecord(name, lower, portal, settings, records) {
+  const key = Object.hasOwn(portal.settings ?? {}, name)
+    ? name
+    : (settings.find((item) => item.toLowerCase() === lower) ??
+      records.find((item) => String(item.name).toLowerCase() === lower)?.name);
+  return key === undefined ? undefined : records.findLast((item) => item.name === key);
+}
+
+/**
+ * Site settings by the name the runtime resolves (redirects.mjs siteSetting: exact name, else the first
+ * case-insensitive match) and the active record whose value the importer keeps (the last of that name).
+ */
+function resolveSettingReferences(settingEntries, tableNames, portal, context) {
+  const { unresolved, siteSettings, dependencies, optionalAbsent } = context;
+  const entries = [
+    ...settingEntries,
+    ...Object.keys(portal.settings ?? {})
+      .filter((name) => /^webapi\//i.test(name) && tableNames.has(name.split('/')[1].toLowerCase()))
+      .map((name) => ({ name, optional: false })),
+  ];
+  const records = (portal.records ?? []).filter((item) => item.kind === 'sitesetting' && active(item));
+  const settings = Object.keys(portal.settings ?? {});
+  const seen = new Set();
+  for (const { name, optional } of entries) {
+    const lower = String(name).toLowerCase();
+    const record = settingRecord(name, lower, portal, settings, records);
     if (!record) {
-      unresolved.push({
-        kind: 'site-setting',
-        expression: name,
-        reason: 'No imported site setting matches this static reference.',
-      });
+      if (seen.has(`missing:${lower}`)) continue;
+      seen.add(`missing:${lower}`);
+      if (optional) optionalAbsent.push({ kind: 'site-setting', name });
+      else
+        unresolved.push({
+          kind: 'site-setting',
+          expression: name,
+          reason: 'No imported site setting matches this static reference.',
+        });
       continue;
     }
+    if (seen.has(`record:${id(record.id)}:${record.name}`)) continue;
+    seen.add(`record:${id(record.id)}:${record.name}`);
     const descriptor = recordDescriptor(record, 'site-setting', record.name, 'value');
     siteSettings.push(descriptor);
     dependencies.push(descriptor);
   }
 }
 
-function drainPageSources(sources, queue, context) {
-  let scanned = 0;
-  for (; scanned < sources.length || queue.length; scanned++) {
-    if (scanned >= sources.length) sources.push(queue.shift());
-    while (queue.length) sources.push(queue.shift());
-    scanPageResourceSource(sources[scanned], context);
+/**
+ * Settle form-tag certainty as the runtime claims forms (liquid.mjs claimFormTag): under a rewrite page
+ * template no Liquid form tag renders; otherwise the first rendered entityform/webform tag claims the page
+ * and later tags render nothing. Tags before the first unconditional one may or may not be that tag.
+ */
+function settleFormTags(context) {
+  const tags = context.formTags.filter((tag) => tag.usage.certainty !== 'not-rendered' && !tag.pageControl);
+  if (context.rewrite) {
+    for (const tag of tags) {
+      tag.usage.certainty = 'not-rendered';
+      tag.usage.conditional = false;
+      tag.usage.reason = 'A rewrite-based page template renders no Liquid entityform or webform tag.';
+    }
+    return;
+  }
+  const first = tags.findIndex((tag) => tag.usage.certainty === 'declared');
+  if (first < 0) return;
+  if (first > 0) {
+    tags[first].usage.certainty = 'conditional';
+    tags[first].usage.reason = 'An earlier conditional form tag may claim the page first.';
+  }
+  for (const tag of tags.slice(first + 1)) {
+    tag.usage.certainty = 'not-rendered';
+    tag.usage.conditional = false;
+    tag.usage.reason = 'The page renders only its first entityform or webform tag.';
   }
 }
 
-function makeRelativeSource(portal, file) {
-  return file && portal.sourceDir ? path.relative(portal.sourceDir, file) : null;
+function addPageLookups(page, context) {
+  for (const [kind, value, target] of [
+    ['entityform', page.formId, 'forms'],
+    ['webform', page.advancedFormId, 'forms'],
+    ['entitylist', page.listId, 'lists'],
+  ]) {
+    if (!value) continue;
+    const pageAttribute = kind === 'webform' ? 'adx_webform' : `adx_${kind}`;
+    const row = {
+      kind,
+      reference: value,
+      expression: `page.${pageAttribute}`,
+      via: 'page record',
+      owner: 'page',
+      conditional: false,
+      certainty: 'not-rendered',
+      pageLookup: kind,
+    };
+    context.pageLookupRows.push(row);
+    context.usages.push(row);
+    if (target === 'forms')
+      context.references.forms.push({
+        kind: kind === 'webform' ? 'page-webform' : 'page-entityform',
+        ref: value,
+        usage: row,
+      });
+    else context.references.lists.push({ ref: value, usage: row });
+  }
 }
 
-function applyResourceRelativePaths(descriptors, portal) {
-  for (const descriptor of descriptors)
-    if (descriptor.sourceFile && portal.sourceDir)
-      descriptor.relativePath = path.relative(portal.sourceDir, descriptor.sourceFile);
+/** A page-record lookup renders when a rendered source reads it (page.adx_*) or a rendered tag names the same record. */
+function settlePageLookups(context) {
+  for (const row of context.pageLookupRows) {
+    const read = context.pageLookupsUsed.get(row.kind) ?? 'not-rendered';
+    const named = context.usages
+      .filter((item) => item !== row && item.kind === row.kind && id(item.reference) === id(row.reference))
+      .reduce((best, item) => strongest(best, item.certainty), 'not-rendered');
+    row.certainty = strongest(read, named);
+    row.conditional = row.certainty === 'conditional';
+    if (row.certainty === 'not-rendered')
+      row.reason = 'No rendered source reads this page-record lookup, so the runtime does not render it.';
+  }
 }
+
+// ---- Routes
+
+/** The platform sign-in page renders the Login (or Sign In) site-marker page's copy in the site shell. */
+function signInMarkerPage(portal, pages) {
+  const marker = ['Login', 'Sign In']
+    .map((name) => (portal.siteMarkers ?? []).find((item) => item.name === name))
+    .find(Boolean);
+  return marker ? (pages.find((item) => item.id === marker.pageId) ?? null) : null;
+}
+
+/** Language code, sign-in, modal form, web file, page and unmatched-route resolution for a raw request path. */
+function resolveInspectionRoute(portal, rawRoute) {
+  let url;
+  try {
+    url = requestTargetUrl(String(rawRoute || '/'), 'http://localhost/');
+  } catch {
+    url = new URL('http://localhost/');
+  }
+  if (url.pathname.includes('//')) url.pathname = url.pathname.replace(/\/{2,}/g, '/');
+  // The requested path is reported without its query, so query values never reach the report.
+  const route = { requested: url.pathname };
+  applyLanguageRoute(portal, url, route);
+  const pathname = url.pathname;
+  const key = normalizePortalPath(pathname);
+  const pages = portal.pages ?? [];
+  const signIn = authRoute(pathname, 'GET', { loginPath: loginPath(portal) });
+  const exported = pages.find((page) => normalizePortalPath(page.url) === key);
+  if (signIn?.kind === 'sign-out') return { ...route, kind: 'sign-out', path: key, page: null };
+  if (signIn || (/^\/register\/?$/i.test(pathname) && !exported)) {
+    return { ...route, kind: 'sign-in', path: key, page: signInMarkerPage(portal, pages), signInPage: true };
+  }
+  if (/^\/_portal\/modal-form-template-path(?:\/[^/]+)?\/?$/i.test(pathname))
+    return {
+      ...route,
+      kind: 'modal-form',
+      path: key,
+      page: null,
+      formId: url.searchParams.get('entityformid') ?? url.searchParams.get('entityform'),
+    };
+  const pageFirst = pathname.endsWith('/') && Boolean(exported);
+  const webFile = pageFirst ? null : (portal.webFiles ?? []).find((file) => normalizePortalPath(file.url) === key);
+  if (webFile) return { ...route, kind: 'web-file', path: key, page: null, webFile };
+  if (exported && (pathname.endsWith('/') || key === '/')) return { ...route, kind: 'page', path: key, page: exported };
+  if (key === '/' && servicePages(portal).home)
+    return { ...route, kind: 'page', path: key, page: servicePages(portal).home };
+  const marker = siteMarkerRoute(portal, url);
+  if (marker) return { ...route, kind: 'page', path: key, page: marker.page, source: 'site-marker' };
+  return unmatchedRoute(route, key, resolveUnmatchedRoute(portal, url, {}), pages, exported);
+}
+
+/** The route of a path no exported page, file or marker serves: a canonical or other redirect, not found or unmapped. */
+function unmatchedRoute(route, key, unmatched, pages, exported) {
+  if (unmatched.kind === 'redirect' && unmatched.source === 'canonical') {
+    const page = pages.find((item) => item.id === unmatched.pageId) ?? exported;
+    return {
+      ...route,
+      kind: 'page',
+      path: key,
+      page,
+      redirect: { status: unmatched.status, location: unmatched.location, source: 'canonical' },
+    };
+  }
+  if (unmatched.kind === 'redirect')
+    return {
+      ...route,
+      kind: 'redirect',
+      path: key,
+      page: null,
+      redirect: {
+        status: unmatched.status,
+        location: unmatched.location,
+        source: unmatched.source,
+        id: unmatched.id ?? null,
+      },
+    };
+  if (unmatched.kind === 'render')
+    return { ...route, kind: 'not-found', path: key, page: unmatched.page, status: unmatched.status };
+  return { ...route, kind: 'unmapped', path: key, page: null, status: unmatched.status };
+}
+
+/** Moves `url` to the path inside its language prefix and records the language on `route`. */
+function applyLanguageRoute(portal, url, route) {
+  const language = languageRoute(portal, url, 'GET');
+  if (!language) return;
+  const pathname =
+    language.kind === 'redirect'
+      ? language.location.slice(0, language.location.length - url.search.length)
+      : language.pathname;
+  const record = (portal.websiteLanguages ?? []).find(
+    (item) => String(item.code).toLowerCase() === String(language.code).toLowerCase(),
+  );
+  route.language = { code: language.code, id: record?.id ?? null, redirected: language.kind === 'redirect' };
+  url.pathname = pathname || '/';
+}
+
+function routeSummary(route) {
+  const summary = { kind: route.kind, requested: route.requested };
+  if (route.language) summary.language = route.language;
+  if (route.status) summary.status = route.status;
+  if (route.redirect) summary.redirect = route.redirect;
+  if (route.source) summary.source = route.source;
+  if (route.page) summary.page = { id: route.page.id, name: route.page.name ?? null, url: route.page.url };
+  if (route.webFile) summary.webFile = { id: route.webFile.id, name: route.webFile.name, url: route.webFile.url };
+  if (route.formId !== undefined) summary.formId = route.formId ?? null;
+  return summary;
+}
+
+// ---- Report
 
 function describeFormResource(item, portal, solutionMetadata) {
   const relative = (file) => makeRelativeSource(portal, file);
-  const schema = solutionMetadata.componentSchemas?.[item.id] ?? solutionMetadata.componentSchemas?.[item.name];
-  const sourceSteps = (portal.records ?? []).filter(
-    (record) => record.kind === 'advancedformstep' && id(field(record, 'webform')) === id(item.id),
-  );
+  const schema = solutionMetadata.componentSchemas?.[item.id];
+  const advanced = item.metadata?.kind === 'advancedform';
+  const sourceSteps = advanced ? advancedFormSteps(portal, item) : [];
   const steps = unique(
     [
       ...sourceSteps.map((step) => ({
@@ -681,7 +1437,6 @@ function describeFormResource(item, portal, solutionMetadata) {
     (step) => id(step.id),
   );
   const source = item.metadata?._file ?? null;
-  const advanced = item.metadata?.kind === 'advancedform';
   return {
     id: item.id,
     name: item.name,
@@ -709,6 +1464,16 @@ function describeFormResource(item, portal, solutionMetadata) {
   };
 }
 
+function makeRelativeSource(portal, file) {
+  return file && portal.sourceDir ? path.relative(portal.sourceDir, file) : null;
+}
+
+function applyResourceRelativePaths(descriptors, portal) {
+  for (const descriptor of descriptors)
+    if (descriptor.sourceFile && portal.sourceDir)
+      descriptor.relativePath = path.relative(portal.sourceDir, descriptor.sourceFile);
+}
+
 function describeViewResource(item, portal) {
   return {
     id: item.id,
@@ -720,18 +1485,193 @@ function describeViewResource(item, portal) {
   };
 }
 
-/** Resolve the static imported runtime graph for a portal route without rendering or writing. */
-export function resolvePageResources(portal, route, { solutionMetadata = {} } = {}) {
-  const normalized = normalizePortalPath(route);
-  let page = (portal.pages ?? []).find((candidate) => normalizePortalPath(candidate.url) === normalized);
-  const missingPage = !page;
-  page ??= { id: null, url: normalized, html: '', js: '', css: '' };
+/** The page body the runtime renders (liquid.mjs renderPage): the page template's web template, a rewrite layout or the page copy. */
+function walkPageBody(page, pageTemplate, context) {
+  const root = { owner: 'page-layout', conditional: false, notRendered: false, builtin: false, depth: 0 };
+  if (pageTemplate && pageTemplateKind(pageTemplate) === 'rewrite') {
+    const layout = rewritePageLayout(page, pageTemplate);
+    walkSource(
+      layout?.source ?? "{% include 'Page Copy' %}",
+      { ...root, owner: `page-template:${id(pageTemplate.id)}` },
+      context,
+    );
+    return;
+  }
+  const template = pageTemplate?.webTemplateId ? lookup(context.templateRows, pageTemplate.webTemplateId) : null;
+  if (template) {
+    addWebTemplate(
+      template,
+      'page-template',
+      null,
+      { ...root, owner: `page-template:${id(pageTemplate.id)}` },
+      context,
+    );
+    return;
+  }
+  if (pageTemplate?.webTemplateId)
+    context.unresolved.push({
+      kind: 'web-template',
+      expression: pageTemplate.webTemplateId,
+      via: 'page-template',
+      owner: `page-template:${id(pageTemplate.id)}`,
+      reason: 'No imported web template matches this static reference.',
+    });
+  else if (pageTemplate)
+    context.unresolved.push({
+      kind: 'web-template',
+      expression: pageTemplate.name,
+      via: 'page-template',
+      reason: 'Page template has no resolved web-template ID.',
+    });
+  // Without a web template the runtime renders the page copy layout ({% include 'Page Copy' %}).
+  walkSource("{% include 'Page Copy' %}", root, context);
+}
 
+function walkPageShell(pageTemplate, context) {
+  const { portal } = context;
+  if (pageTemplateKind(pageTemplate) !== 'rewrite' && pageTemplate?.useHeaderFooter === false) return;
+  const root = { conditional: false, notRendered: false, builtin: false, depth: 0 };
+  for (const [fieldName, via, owner] of [
+    ['headerwebtemplateid', 'website header', 'website-header'],
+    ['footerwebtemplateid', 'website footer', 'website-footer'],
+  ]) {
+    const value = field(portal.website, fieldName);
+    if (!value) continue;
+    const template = lookup(context.templateRows, value) ?? findWebTemplate(portal, value);
+    if (template) addWebTemplate(template, via, null, { ...root, owner }, context);
+    else
+      context.unresolved.push({
+        kind: 'web-template',
+        expression: value,
+        via,
+        owner,
+        reason: 'No imported web template matches this static reference.',
+      });
+  }
+  for (const name of SHELL_SNIPPETS) {
+    context.references.snippets.push(name);
+    addSnippet(name, 'rendered page shell', null, { ...root, owner: 'page-shell', optional: true }, context);
+  }
+}
+
+/** Resolve the static imported runtime graph for a portal route without rendering or writing. */
+export function resolvePageResources(portal, route, options = {}) {
+  return resolveRouteResources(portal, route, options).report;
+}
+
+/** Walks a page route: the page, its template, body, style, script, shell and lookups; returns the page template. */
+function walkPageRoute(route, page, pageDescriptor, context) {
+  const { portal, components, dependencies, unresolved } = context;
+  components.push(pageDescriptor);
+  dependencies.push(pageDescriptor);
+  // The sign-in page renders the marker page's copy without its page template.
+  const pageTemplate = route.signInPage ? null : lookup(portal.pageTemplates ?? [], page.pageTemplateId);
+  if (!route.signInPage && page.pageTemplateId && !pageTemplate)
+    unresolved.push({
+      kind: 'page-template',
+      expression: page.pageTemplateId,
+      reason: 'The page template ID is absent from the imported portal.',
+    });
+  if (pageTemplate) {
+    const descriptor = {
+      ...recordDescriptor(pageTemplate.metadata, 'page-template', pageTemplate.name, 'pagetemplate'),
+      id: pageTemplate.id,
+      webTemplateId: pageTemplate.webTemplateId,
+    };
+    components.push(descriptor);
+    dependencies.push(descriptor);
+  }
+  context.rewrite = pageTemplateKind(pageTemplate) === 'rewrite';
+  walkPageBody(page, pageTemplate, context);
+  const pageFrame = { owner: 'page', conditional: false, notRendered: false, builtin: false, depth: 0 };
+  walkSource(page.css ?? '', pageFrame, context);
+  walkSource(page.js ?? '', pageFrame, context);
+  walkPageShell(pageTemplate, context);
+  // Page copy that no rendered template outputs is still listed, as not rendered.
+  if (!context.pageCopyRendered)
+    walkSource(page.html ?? '', { ...pageFrame, notRendered: true, field: 'copy' }, context);
+  if (!route.signInPage) addPageLookups(page, context);
+  return pageTemplate;
+}
+
+/** Walks the route kinds that are not a page: the sign-in shell, a modal form, a web file, a redirect, an unmapped path. */
+function walkOtherRoute(route, pageRoute, context) {
+  const { portal, components, dependencies, unresolved } = context;
+  if (pageRoute && route.kind === 'sign-in') {
+    walkPageShell(null, context);
+  } else if (route.kind === 'modal-form') {
+    if (route.formId) context.references.forms.push({ kind: 'entityform', ref: route.formId });
+    else
+      unresolved.push({
+        kind: 'form',
+        expression: route.requested,
+        reason: 'A modal form document needs an entityformid query parameter.',
+      });
+  } else if (route.kind === 'web-file') {
+    const file = route.webFile;
+    const descriptor = {
+      ...recordDescriptor(file.metadata, 'web-file', file.name, 'filecontent'),
+      id: file.id,
+      url: file.url,
+      sourceFile: file.file ?? file.metadata?._file ?? null,
+      file: file.file ?? file.metadata?._file ?? null,
+    };
+    components.push(descriptor);
+    dependencies.push(descriptor);
+  } else if (route.kind === 'redirect') {
+    const redirect = (portal.redirects ?? []).find((item) => id(item.id) === id(route.redirect.id));
+    if (redirect) {
+      const descriptor = {
+        kind: 'redirect',
+        name: String(redirect.name ?? redirect.inboundUrl ?? ''),
+        sourceFile: redirect.file ?? null,
+        file: redirect.file ?? null,
+        relativePath: redirect.file ? path.basename(redirect.file) : null,
+        recordId: redirect.id,
+        fieldPath: 'inboundurl',
+        location: route.redirect.location,
+        statusCode: route.redirect.status,
+      };
+      components.push(descriptor);
+      dependencies.push(descriptor);
+    }
+  } else if (route.kind === 'unmapped')
+    unresolved.push({ kind: 'page', expression: route.path, reason: 'No imported page matches this route.' });
+}
+
+/** Resolves the forms and lists the walked sources name, including those their own JavaScript names, until none is new. */
+function resolveQueuedReferences(context) {
+  for (let formIndex = 0, listIndex = 0; ;) {
+    if (formIndex < context.references.forms.length)
+      resolveFormReference(context.references.forms[formIndex++], context);
+    else if (listIndex < context.references.lists.length)
+      resolveListReference(context.references.lists[listIndex++], context);
+    else break;
+  }
+}
+
+/** The report entry of the page's template, with its source path relative to the source directory. */
+function describePageTemplate(pageTemplate, portal) {
+  if (!pageTemplate) return null;
+  const described = {
+    ...recordDescriptor(pageTemplate.metadata, 'page-template', pageTemplate.name, 'pagetemplate'),
+    id: pageTemplate.id,
+    webTemplateId: pageTemplate.webTemplateId,
+    useHeaderFooter: pageTemplate.useHeaderFooter !== false,
+  };
+  if (described.sourceFile && portal.sourceDir)
+    described.relativePath = path.relative(portal.sourceDir, described.sourceFile);
+  return described;
+}
+
+function resolveRouteResources(portal, rawRoute, { solutionMetadata = {} } = {}) {
+  const route = resolveInspectionRoute(portal, rawRoute);
+  const page = route.page ?? null;
+  const pageRoute = ['page', 'not-found', 'sign-in'].includes(route.kind);
   const dependencies = [],
-    unresolved = missingPage
-      ? [{ kind: 'page', expression: normalized, reason: 'No imported page matches this route.' }]
-      : [],
+    unresolved = [],
     webTemplates = [],
+    builtinTemplates = [],
     snippets = [],
     siteSettings = [],
     forms = [],
@@ -739,114 +1679,89 @@ export function resolvePageResources(portal, route, { solutionMetadata = {} } = 
     tables = [],
     columns = [],
     components = [],
-    usages = [];
-  const add = (collection, descriptor) => {
-    if (!descriptor) return;
-    collection.push(descriptor);
-    dependencies.push(descriptor);
-  };
-  const pageRecord = page.metadata;
-  const pageDescriptor = {
-    ...recordDescriptor(pageRecord, 'page', page.title || page.name, 'copy'),
-    id: page.id,
-    url: page.url,
-    sourceFile: sourceFile(pageRecord, 'copy.html') ?? pageRecord?._file ?? null,
-    file: sourceFile(pageRecord, 'copy.html') ?? pageRecord?._file ?? null,
-  };
-  if (!missingPage) add(components, pageDescriptor);
-
-  const pageTemplate = lookup(portal.pageTemplates ?? [], page.pageTemplateId);
-  if (page.pageTemplateId && !pageTemplate)
-    unresolved.push({
-      kind: 'page-template',
-      expression: page.pageTemplateId,
-      reason: 'The page template ID is absent from the imported portal.',
-    });
-  if (pageTemplate)
-    add(components, {
-      ...recordDescriptor(pageTemplate.metadata, 'page-template', pageTemplate.name, 'pagetemplate'),
-      id: pageTemplate.id,
-      webTemplateId: pageTemplate.webTemplateId,
-    });
-
-  // Every scanned source keeps its owner so inspections can present include chains.
-  const queue = [];
-  const templateRows = unique(Object.values(portal.templates ?? {}), (item) => id(item.id));
-  const graphContext = {
+    usages = [],
+    webLinkSets = [],
+    siteMarkers = [],
+    optionalAbsent = [];
+  const languageId =
+    route.language?.id ?? portal.selectedLanguageId ?? id(field(portal.website ?? {}, 'defaultlanguage'));
+  const context = {
     portal,
+    page,
     solutionMetadata,
     dependencies,
     unresolved,
     webTemplates,
+    builtinTemplates,
     snippets,
     views,
-    queue,
-    templateRows,
-  };
-  addPageTemplateReference(pageTemplate, unresolved, graphContext);
-
-  const sources = [
-    { text: page.html ?? '', owner: 'page' },
-    { text: page.js ?? '', owner: 'page' },
-    { text: page.css ?? '', owner: 'page' },
-  ];
-  const references = { templates: [], snippets: [], settings: [], forms: [], lists: [], views: [], tables: new Map() };
-  const snippetRecords = effectiveSnippetRecords(
-    portal.records ?? [],
-    portal.selectedLanguageId ?? field(portal.website ?? {}, 'defaultlanguage'),
-  );
-  Object.assign(graphContext, {
-    snippetRecords,
-    sources,
-    references,
+    forms,
+    components,
+    columns,
     usages,
-    seenSources: new Set(),
-  });
-  addPageShellReferences(pageTemplate, portal, references, graphContext);
-  addPageComponentReferences(page, references);
-  drainPageSources(sources, queue, graphContext);
-
-  const entityNames = new Set(references.tables.keys());
-  Object.assign(graphContext, { forms, components, columns, entityNames });
-  for (const ref of references.forms) resolveFormReference(ref, graphContext);
-  for (const ref of references.lists) resolveListReference(ref, graphContext);
-  drainPageSources(sources, queue, graphContext);
-  const settingNames = new Set(references.settings);
-  for (const entity of references.tables.keys()) entityNames.add(entity);
-  for (const reference of unique(references.views)) resolveViewReference(reference, graphContext);
-  appendTableColumns(references, columns, entityNames, solutionMetadata);
-  addTableDescriptors(entityNames, solutionMetadata, tables, columns, unresolved, dependencies);
-  const tableNames = new Set(entityNames);
-  resolveSettingReferences(settingNames, tableNames, portal, unresolved, siteSettings, dependencies);
-  const allColumns = unique(columns, (item) => `${item.entity}/${item.name}`);
-  applyResourceRelativePaths(
-    [
-      ...dependencies,
-      ...forms,
-      ...views,
-      ...columns,
-      ...tables,
-      pageDescriptor,
-      ...(pageTemplate ? [pageTemplate] : []),
-    ],
-    portal,
-  );
-  const resolvedPageTemplate = pageTemplate
+    webLinkSets,
+    siteMarkers,
+    optionalAbsent,
+    siteSettings,
+    languageId: route.language?.id ?? null,
+    siteLanguageId: languageId || null,
+    templateRows: unique(
+      Object.values(portal.templates ?? {}).filter((item) => item && typeof item === 'object'),
+      (item) => id(item.id),
+    ),
+    snippetRecords: effectiveSnippetRecords(
+      portal.records ?? [],
+      languageId,
+      field(portal.website ?? {}, 'defaultlanguage'),
+    ),
+    references: { snippets: [], settings: [], forms: [], lists: [], views: [], tables: new Map() },
+    seen: new Map(),
+    formTags: [],
+    pageLookupRows: [],
+    pageLookupsUsed: new Map(),
+    pageCopyRendered: false,
+    rewrite: false,
+  };
+  const entityNames = new Set();
+  context.entityNames = entityNames;
+  const pageRecord = page?.metadata;
+  const pageDescriptor = page
     ? {
-        ...recordDescriptor(pageTemplate.metadata, 'page-template', pageTemplate.name, 'pagetemplate'),
-        id: pageTemplate.id,
-        webTemplateId: pageTemplate.webTemplateId,
-        useHeaderFooter: pageTemplate.useHeaderFooter !== false,
+        ...recordDescriptor(pageRecord, 'page', page.title || page.name, 'copy'),
+        id: page.id,
+        url: page.url,
+        sourceFile: sourceFile(pageRecord, 'copy.html') ?? pageRecord?._file ?? null,
+        file: sourceFile(pageRecord, 'copy.html') ?? pageRecord?._file ?? null,
       }
     : null;
-  if (resolvedPageTemplate?.sourceFile && portal.sourceDir)
-    resolvedPageTemplate.relativePath = path.relative(portal.sourceDir, resolvedPageTemplate.sourceFile);
-  return {
-    path: normalized,
+  let pageTemplate = null;
+  if (pageRoute && page) pageTemplate = walkPageRoute(route, page, pageDescriptor, context);
+  else walkOtherRoute(route, pageRoute, context);
+
+  settleFormTags(context);
+  settlePageLookups(context);
+  // Form and list JavaScript can name further forms and lists; resolve until no new reference appears.
+  resolveQueuedReferences(context);
+  for (const entity of context.references.tables.keys()) entityNames.add(entity);
+  for (const entry of unique(context.references.views, (item) => `${item.entity ?? ''}/${item.ref}`))
+    resolveViewReference(entry, context);
+  appendTableColumns(context.references, columns, entityNames, solutionMetadata);
+  addTableDescriptors(entityNames, solutionMetadata, tables, columns, unresolved, dependencies);
+  resolveSettingReferences(context.references.settings, new Set(entityNames), portal, context);
+  const allColumns = unique(columns, (item) => `${item.entity}/${item.name}`);
+  applyResourceRelativePaths(
+    [...dependencies, ...forms, ...views, ...columns, ...tables, ...(pageDescriptor ? [pageDescriptor] : [])],
+    portal,
+  );
+  const resolvedPageTemplate = describePageTemplate(pageTemplate, portal);
+  const report = {
+    path: route.path,
+    route: routeSummary(route),
     sourceRoots: [...new Set([portal.sourceDir, ...(solutionMetadata.roots ?? [])].filter(Boolean))],
-    page: missingPage ? null : pageDescriptor,
+    page: pageRoute && page ? pageDescriptor : null,
     pageTemplate: resolvedPageTemplate,
     webTemplates,
+    builtinTemplates,
     snippets,
     siteSettings,
     forms: unique(forms, (item) => id(item.id)).map((item) => describeFormResource(item, portal, solutionMetadata)),
@@ -854,10 +1769,26 @@ export function resolvePageResources(portal, route, { solutionMetadata = {} } = 
     tables,
     columns: allColumns,
     components,
-    usages: unique(usages, (item) => `${item.owner}/${item.kind}/${item.expression}`),
+    webLinkSets,
+    siteMarkers,
+    usages: strongestRows(usages, (item) => `${item.owner}/${item.kind}/${item.expression}`),
     dependencies: unique(dependencies, (item) => `${item.kind}/${item.recordId ?? item.sourceFile}/${item.fieldPath}`),
-    unresolved: unique(unresolved),
+    unresolved: strongestRows(unresolved, ({ certainty: _certainty, ...rest }) => JSON.stringify(rest)), // NOSONAR: binding is excluded from the key
+    optionalAbsent: unique(optionalAbsent, (item) => `${item.kind}/${item.name}`),
   };
+  return { report, page: pageRoute ? page : null, route };
+}
+
+/** First row per key, upgraded to the strongest certainty any duplicate carries. */
+function strongestRows(rows, key) {
+  const byKey = new Map();
+  for (const row of rows) {
+    const value = key(row);
+    const existing = byKey.get(value);
+    if (!existing || CERTAINTY_RANK[row.certainty ?? 'declared'] > CERTAINTY_RANK[existing.certainty ?? 'declared'])
+      byKey.set(value, row);
+  }
+  return [...byKey.values()];
 }
 
 const displayNameCache = new Map();
@@ -1027,24 +1958,31 @@ function templateChain(report) {
       }
     return map;
   };
-  const templatesByOwner = byOwner(report.webTemplates, 'includedBy');
+  const templatesByOwner = byOwner(
+    [...report.webTemplates, ...(report.builtinTemplates ?? []).map((item) => ({ ...item, builtin: true }))],
+    'includedBy',
+  );
   const snippetsByOwner = byOwner(report.snippets, 'usedBy');
   const visited = new Set();
   const descend = (owner, depth) => {
     for (const template of templatesByOwner.get(owner) ?? []) {
-      const key = `web-template:${id(template.id)}`;
+      const key = template.builtin ? `builtin-template:${template.name}` : `web-template:${id(template.id)}`;
       const repeated = visited.has(key);
-      rows.push({
-        depth,
-        kind: 'web-template',
-        name: template.name,
-        id: template.id,
-        via: template.via,
-        sourceFile: template.sourceFile,
-        relativePath: template.relativePath,
-        fieldPath: template.fieldPath ?? null,
-        repeated,
-      });
+      rows.push(
+        template.builtin
+          ? { depth, kind: 'builtin-template', name: template.name, origin: template.origin, repeated }
+          : {
+              depth,
+              kind: 'web-template',
+              name: template.name,
+              id: template.id,
+              via: template.via,
+              sourceFile: template.sourceFile,
+              relativePath: template.relativePath,
+              fieldPath: template.fieldPath ?? null,
+              repeated,
+            },
+      );
       if (repeated) continue;
       visited.add(key);
       descend(key, depth + 1);
@@ -1081,6 +2019,7 @@ function templateChain(report) {
     ['website-header', 'Website header'],
     ['website-footer', 'Website footer'],
     ['page-shell', 'Rendered page shell'],
+    ['page-layout', 'Page copy layout'],
     ['page', 'Page copy, JavaScript and CSS'],
   ]) {
     if (!templatesByOwner.has(owner) && !snippetsByOwner.has(owner)) continue;
@@ -1166,6 +2105,51 @@ function applySettingInspection(report, portal, sourcePortal, overrides) {
   }
 }
 
+/** The response a persona the page denies receives (the sign-in redirect or the Access Denied page), as reported. */
+function deniedOutcome(portal, resolvedRoute, identity, denial) {
+  const outcome = deniedPageRoute(
+    portal,
+    new URL(`http://localhost${resolvedRoute.requested}`),
+    identity ?? {},
+    denial,
+  );
+  return {
+    kind: outcome.kind,
+    status: outcome.status,
+    ...(outcome.code ? { code: outcome.code } : {}),
+    ...(outcome.source ? { source: outcome.source } : {}),
+    ...(outcome.page ? { page: { id: outcome.page.id, name: outcome.page.name ?? null, url: outcome.page.url } } : {}),
+  };
+}
+
+/** The publishing state a page names (null when it names none) and whether the export contains it. */
+function publishingStateSummary(portal, page) {
+  const publishingStateId = id(field(page.metadata, 'publishingstateid'));
+  if (!publishingStateId) return null;
+  const publishingState = (portal.records ?? []).find(
+    (record) => record.kind === 'publishingstate' && id(record.id) === publishingStateId,
+  );
+  return {
+    id: publishingStateId,
+    name: publishingState?.name ?? null,
+    visible: publishingState ? truth(field(publishingState, 'isvisible', true)) : null,
+    resolved: Boolean(publishingState),
+  };
+}
+
+/** The persona's access result to the page as reported; empty when access was not evaluated. */
+function accessSummary(accessResult) {
+  if (!accessResult) return {};
+  return {
+    allowed: accessResult.allowed,
+    status: accessResult.status,
+    code: accessResult.code ?? null,
+    reason: accessResult.reason ?? null,
+    ruleIds: accessResult.ruleIds ?? [],
+    diagnostics: accessResult.diagnostics ?? [],
+  };
+}
+
 /**
  * Inspect a route for development tools: the static dependency graph plus the current
  * persona's runtime view (page access, table permissions), effective local values and
@@ -1184,41 +2168,36 @@ export function inspectPage(
     tablePermissions = () => null,
   } = {},
 ) {
-  const report = resolvePageResources(portal, route, { solutionMetadata });
-  const page = (portal.pages ?? []).find((candidate) => normalizePortalPath(candidate.url) === report.path);
+  const { report, page, route: resolvedRoute } = resolveRouteResources(portal, route, { solutionMetadata });
   if (!page)
-    return { ...report, templateChain: [], related: { weblinks: [], sitemarkers: [], redirects: [], shortcuts: [] } };
-  const publishingStateId = id(field(page.metadata, 'publishingstateid'));
-  const publishingState = publishingStateId
-    ? (portal.records ?? []).find((record) => record.kind === 'publishingstate' && id(record.id) === publishingStateId)
-    : null;
+    return {
+      ...report,
+      templateChain: templateChain(report),
+      related: { weblinks: [], sitemarkers: [], redirects: [], shortcuts: [] },
+    };
   const parent = (portal.pages ?? []).find((candidate) => candidate.id === page.parentId);
   const accessResult = access ? access(page) : null;
+  // A page the persona may not read is answered with the sign-in redirect or the Access Denied page;
+  // the Profile site-marker page requires a signed-in visitor (as mirage/server.mjs routes it).
+  const profile = servicePages(portal).profile;
+  const signInRequired = accessResult?.allowed && profile && id(profile.id) === id(page.id) && !identity?.contactId;
+  if ((accessResult && !accessResult.allowed) || signInRequired) {
+    report.route.outcome = deniedOutcome(
+      portal,
+      resolvedRoute,
+      identity,
+      signInRequired ? { code: 'PROFILE_SIGN_IN_REQUIRED' } : accessResult,
+    );
+  }
   report.page = {
     ...report.page,
     title: page.title ?? null,
     pageName: page.name ?? null,
     parent: parent ? { id: parent.id, name: parent.name, url: parent.url } : null,
     pageTemplateName: report.pageTemplate?.name ?? null,
-    publishingState: publishingStateId
-      ? {
-          id: publishingStateId,
-          name: publishingState?.name ?? null,
-          visible: publishingState ? truth(field(publishingState, 'isvisible', true)) : null,
-          resolved: Boolean(publishingState),
-        }
-      : null,
+    publishingState: publishingStateSummary(portal, page),
     access: {
-      ...(accessResult
-        ? {
-            allowed: accessResult.allowed,
-            status: accessResult.status,
-            code: accessResult.code ?? null,
-            reason: accessResult.reason ?? null,
-            ruleIds: accessResult.ruleIds ?? [],
-            diagnostics: accessResult.diagnostics ?? [],
-          }
-        : {}),
+      ...accessSummary(accessResult),
       rules: pageAccessRules(portal, page, identity ?? {}, overrides),
     },
   };

@@ -165,6 +165,9 @@ function indexPortalRecord(record, fieldOrigin, add) {
     advancedformstep: 'advanced-form-step',
     list: 'list',
     pagetemplate: 'page-template',
+    // Form metadata rows configure one field, section, tab, subgrid, notes or timeline of a basic or advanced form.
+    basicformmetadata: 'basic-form-metadata',
+    advancedformmetadata: 'advanced-form-metadata',
   }[record.kind];
   if (configurationKind) {
     const text = JSON.stringify(Object.fromEntries(Object.entries(record).filter(([key]) => !key.startsWith('_'))));
@@ -279,6 +282,45 @@ function indexWebFiles(portal, add) {
     }
   }
   return diagnostics;
+}
+
+// Data records whose values the page shell and Liquid objects render (web links and sets, site markers, website
+// languages, web pages, site settings, shortcuts, web roles, ads, polls and their placements and options): each record
+// is one source ($record), named by its component key, so a rendered element can name the record it was generated for
+// (render provenance recordContexts).
+const DATA_RECORD_KINDS = {
+  weblink: 'web-link',
+  weblinkset: 'web-link-set',
+  sitemarker: 'site-marker',
+  websitelanguage: 'website-language',
+  webpage: 'webpage',
+  sitesetting: 'site-setting',
+  shortcut: 'shortcut',
+  webrole: 'web-role',
+  ad: 'ad',
+  adplacement: 'ad-placement',
+  poll: 'poll',
+  pollplacement: 'poll-placement',
+  polloption: 'poll-option',
+};
+function indexDataRecords(portal, add) {
+  for (const record of portal.records ?? []) {
+    const kind = DATA_RECORD_KINDS[record.kind];
+    if (!kind) continue;
+    const text = JSON.stringify(Object.fromEntries(Object.entries(record).filter(([key]) => !key.startsWith('_'))));
+    const ref = add(record, '$record', text, {
+      componentKey: `${kind}:${norm(record.id)}`,
+      relationship: 'data-record',
+      semanticConfiguration: true,
+      ...(record._deploymentProfile ? { profileId: record._deploymentProfile } : {}),
+    });
+    if (ref)
+      configurationGuards.set(ref, {
+        sourceRevision: record._sourceRevision,
+        profiles: record._profileRevisions ?? {},
+        unbacked: Object.keys(record._profileFields ?? {}).some((field) => !record._profileSourceFiles?.[field]),
+      });
+  }
 }
 
 function indexableWebFile(resource) {
@@ -430,6 +472,7 @@ export function buildPortalSourceIndex({
   const effectiveSnippets = indexSnippets(portal, language, fieldOrigin, add, records, snippets);
   indexComponentSchemas(metadata, add);
   const resourceDiagnostics = indexWebFiles(portal, add);
+  indexDataRecords(portal, add);
   const revision = portalSourceRevision(sourceRevision, portal, profileId, sources);
   updateSourceEditorRefs(sources, revision, portal);
   const pcf = codeCatalogue
@@ -455,6 +498,21 @@ export function buildPortalSourceIndex({
   const componentKeys = componentSourceKeys(metadata, pcf);
   for (const ref of metadataIndex.sourceRefsFor(componentKeys))
     sources.set(ref.id, { ...ref, file: ref.ref, sourceDir: portal.sourceDir });
+  const formSourceEntries = new Map();
+  // The placements of one form: its refs (added to `sources`), controls and structure, from the metadata index.
+  const loadFormSources = (key) => {
+    const refs = new Map();
+    const known = Boolean(metadataIndex.component(key));
+    for (const ref of known ? metadataIndex.sourceRefsForForm(key) : []) {
+      if (!sources.has(ref.id)) sources.set(ref.id, { ...ref, file: ref.ref, sourceDir: portal.sourceDir });
+      if (!refs.has(ref.componentKey)) refs.set(ref.componentKey, ref.id);
+    }
+    return {
+      refs,
+      controls: known ? metadataIndex.formControls(key) : [],
+      structure: known ? (metadataIndex.formStructure?.(key) ?? []) : [],
+    };
+  };
   return {
     sourceRevision: revision,
     sources,
@@ -472,6 +530,19 @@ export function buildPortalSourceIndex({
         records.get(`${norm(record?.id)}:${field}` + (selection.lcid === undefined ? '' : `:lcid:${selection.lcid}`)) ??
         null
       );
+    },
+    /**
+     * The FormXml placements of one exported form, loaded once per form when a rendered form first names it: every
+     * control, tab and section the Solution metadata index locates in the form's FormXml becomes a source of this
+     * index (its own ref with the element's region), so render provenance can name where in the FormXml a rendered
+     * field, tab or section is configured. `controls` and `structure` are the compiled form's (formControls and
+     * formStructure of lense/model-driven-metadata.mjs), `refs` maps their component keys to source ids.
+     */
+    formSources(formId) {
+      const key = 'form:' + norm(formId);
+      if (!norm(formId)) return null;
+      if (!formSourceEntries.has(key)) formSourceEntries.set(key, loadFormSources(key));
+      return formSourceEntries.get(key);
     },
     snapshot(report = null) {
       return portalSourceSnapshot({ report, sources, metadataIndex, portal });

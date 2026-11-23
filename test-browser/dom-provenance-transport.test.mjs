@@ -347,7 +347,8 @@ for (const sourceMaps of [false, true])
       parser = await fx.proved('parser');
     assert.equal(clone.sourceRefs[0].relationship, 'cloned-by');
     assert.equal(markup.sourceRefs[0].relationship, 'created-by');
-    assert.equal(parser.sourceRefs[0].relationship, 'attached-by');
+    // A parser element a script moves keeps its template identity: the move is recorded, not an insertion.
+    assert.equal(parser.sourceRefs[0].relationship, 'moved-by');
     assert.equal(
       await fx.page.evaluate(
         (slot) => window[slot].isScriptCreated(document.getElementById('parser')),
@@ -357,7 +358,11 @@ for (const sourceMaps of [false, true])
     );
     const serialized = JSON.stringify([created, clone, markup, parser]);
     assert.doesNotMatch(serialized, /PRIVATE_QUERY_SENTINEL|Invented parser markup|paqvilo-dom-response-/);
-    assert.equal((await fx.query('markup')).facts.length, 0);
+    // The parser element whose children the script replaced gains no creation: only the change, as context.
+    assert.deepEqual(
+      (await fx.query('markup')).facts.map((fact) => [fact.dimension, fact.predicate, fact.label]),
+      [['context', 'changed-by', 'Changed by this script: children']],
+    );
   });
 
 test('unacknowledged response bytes cannot become exact script evidence', async (t) => {
@@ -482,26 +487,61 @@ test('page calls and malformed authenticated binding packets cannot crash the ob
   fx.malformedBinding();
   await fx.page.evaluate(() => window.cloneWidget());
   assert.equal((await fx.proved('clone')).sourceRefs[0].relationship, 'cloned-by');
-  assert.equal((await fx.query('created')).facts.length, 1);
+  // One creator fact; the top-level call of makeWidget() is a caller step of the chain (a context fact).
+  assert.equal((await fx.query('created')).facts.filter((fact) => fact.dimension === 'source').length, 1);
 });
+
+// 3000 calls of makeWidget from places of their own: calls of one place share one notification until it is sent, and
+// an inserted inline script has no address of its own, so the calls come from a script file.
+const burst = async (fx) => {
+  await fx.page.route(fx.origin + '/burst.js', (route) =>
+    route.fulfill({ contentType: 'application/javascript', body: 'makeWidget();'.repeat(3000) }),
+  );
+  await fx.page.evaluate(
+    (src) =>
+      new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = src;
+        script.onload = resolve;
+        script.onerror = reject;
+        document.head.append(script);
+      }),
+    fx.origin + '/burst.js',
+  );
+};
 
 test('a burst beyond the transport budget remains bounded and reports the omitted evidence', async (t) => {
   const fx = await fixture(t, { bulk: 3000, holdResolution: true });
   await fx.proved('created');
   fx.holdNextResolution();
-  await fx.page.evaluate(() => {
-    for (let index = 0; index < 3000; index++) window.makeWidget();
-  });
+  await burst(fx);
   await fx.resolutionHeld;
   await fx.bindingsReceived;
   fx.releaseResolution();
+  // The oldest waiting callsites were pushed out of the transport's bound (the first burst nodes after the held batch
+  // of at most 64): such a node is told so; nodes proved before the burst keep their evidence without a limit.
+  const evicted = (index) =>
+    fx.page.evaluate(
+      ({ slot, scope, index }) =>
+        window[slot].query(document.querySelectorAll('#created')[index], { scope, anchorGeneration: 3 }),
+      { slot: fx.transport.domSlot, scope, index },
+    );
   await fx.page.waitForFunction(
     ({ slot, scope }) =>
-      window[slot].query(document.getElementById('created'), { scope, anchorGeneration: 3 }).limits.truncated,
+      window[slot].query(document.querySelectorAll('#created')[500], { scope, anchorGeneration: 3 }).limits.truncated,
     { slot: fx.transport.domSlot, scope },
   );
-  const packet = await fx.query('created');
+  const packet = await evicted(500);
   assert.ok(packet.limits.reasons.includes('dom-evidence-transport-limit'));
+  assert.equal(packet.availability[0].reason, 'dom-evidence-transport-limit');
+  assert.equal(packet.facts.length, 0);
+  const first = await fx.query('created');
+  assert.equal(
+    first.facts.filter((fact) => fact.dimension === 'source').length,
+    1,
+    'a node proved before the burst keeps its proof',
+  );
+  assert.equal(first.limits.truncated, false, 'and is not reported as truncated');
   assert.equal(await fx.page.locator('#created').count(), 3001, 'instrumentation preserves all native DOM operations');
 });
 
@@ -509,9 +549,7 @@ test('a rejected limit report closes the document record instead of resending to
   const fx = await fixture(t, { bulk: 3000, holdResolution: true, rejectLimit: true });
   await fx.proved('created');
   fx.holdNextResolution();
-  await fx.page.evaluate(() => {
-    for (let index = 0; index < 3000; index++) window.makeWidget();
-  });
+  await burst(fx);
   await fx.resolutionHeld;
   await fx.bindingsReceived;
   fx.releaseResolution();

@@ -4,6 +4,9 @@ import { EventEmitter } from 'node:events';
 export function fakeBrowser(online = {}) {
   const sent = [];
   const fetched = [];
+  // requests the browser itself sent to the portal with their response paused (Fetch.continueRequest interceptResponse)
+  const staged = [];
+  const pausedUrls = new Map();
   const context = Object.assign(new EventEmitter(), {
     tabs: [],
     pages: () => context.tabs.map((t) => t.page),
@@ -28,6 +31,30 @@ export function fakeBrowser(online = {}) {
     const cdp = Object.assign(new EventEmitter(), {
       send: async (method, params) => {
         sent.push({ method, ...params });
+        // The browser sends the request itself and pauses once more when the portal has answered.
+        if (method === 'Fetch.continueRequest' && params.interceptResponse) {
+          const url = pausedUrls.get(params.requestId);
+          const answer = online[url];
+          staged.push({ url, requestId: params.requestId });
+          queueMicrotask(() =>
+            cdp.emit('Fetch.requestPaused', {
+              requestId: params.requestId,
+              frameId: 'main',
+              request: { url },
+              ...(answer
+                ? {
+                    responseStatusCode: answer.status ?? 200,
+                    responseHeaders: Object.entries(answer.headers ?? {}).map(([name, value]) => ({ name, value })),
+                  }
+                : { responseErrorReason: 'Failed' }),
+            }),
+          );
+          return {};
+        }
+        if (method === 'Fetch.getResponseBody') {
+          const answer = online[pausedUrls.get(params.requestId)];
+          return { body: Buffer.from(answer?.body ?? '').toString('base64'), base64Encoded: true };
+        }
         if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'main' } } };
         if (method === 'Runtime.evaluate' && params.expression === 'document')
           return { result: { objectId: 'document' } };
@@ -67,17 +94,40 @@ export function fakeBrowser(online = {}) {
     const tab = {
       page,
       cdp,
-      pause: (requestId, url, { type = 'XHR', method = 'GET', frameId = 'main', headers = {}, postData } = {}) =>
-        cdp.emit('Fetch.requestPaused', {
+      pause: (requestId, url, { type = 'XHR', method = 'GET', frameId = 'main', headers = {}, postData } = {}) => {
+        pausedUrls.set(requestId, url);
+        return cdp.emit('Fetch.requestPaused', {
           requestId,
           frameId,
           resourceType: type,
           request: { url, method, headers, postData, hasPostData: postData != null },
-        }),
+        });
+      },
     };
     context.tabs.push(tab);
     return tab;
   };
   const answers = (requestId) => sent.filter((s) => s.requestId === requestId && s.method.startsWith('Fetch.'));
-  return { context, openTab, sent, fetched, answers };
+  return { context, openTab, sent, fetched, staged, answers };
+}
+
+/**
+ * Interception answers each paused request with one Fetch.* command for its request ID. The function this returns
+ * pauses a request on `tab` and resolves once that answer was sent.
+ */
+export function pausedAnswers(tab) {
+  const waiting = new Map();
+  const send = tab.cdp.send;
+  tab.cdp.send = async (method, params) => {
+    const result = await send(method, params);
+    // A request the browser sends itself is paused once more at its response: the answer is what follows that.
+    if (method.startsWith('Fetch.') && !params?.interceptResponse && method !== 'Fetch.getResponseBody')
+      waiting.get(params?.requestId)?.();
+    return result;
+  };
+  return (requestId, url, options) => {
+    const answered = new Promise((resolve) => waiting.set(requestId, resolve));
+    tab.pause(requestId, url, options);
+    return answered;
+  };
 }

@@ -528,11 +528,18 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
               const excluded =
                 'script,style,textarea,title,template,noscript,iframe,xmp,noembed,noframes,#paqvilo-panel';
               const tags = 'div,section,footer,header,nav,ul,p,h1,h2,h3,h4,h5,h6';
+              // The element as the portal sent it: without the mark Lense puts on an element it has identified.
+              const asServed = (node) => {
+                if (!node.hasAttribute('data-paqvilo-source')) return node.outerHTML;
+                const copy = node.cloneNode(true);
+                copy.removeAttribute('data-paqvilo-source');
+                return copy.outerHTML;
+              };
               const original = new DOMParser().parseFromString(html, 'text/html');
               const literals = new Set(
                 [...original.querySelectorAll(tags)]
                   .filter((node) => !node.childElementCount && !node.closest(excluded))
-                  .map((node) => node.outerHTML),
+                  .map(asServed),
               );
               const visibility = new WeakMap();
               const visible = (node) => {
@@ -554,7 +561,7 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
                     if (node.childElementCount || node.closest(excluded)) return false;
                     return node.getClientRects().length > 0 && visible(node);
                   })
-                  .map((node) => node.outerHTML),
+                  .map(asServed),
               );
               return candidates
                 .filter((candidate) => {
@@ -642,7 +649,11 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
       }
       return snippet;
     };
-    const chooseEdits = async (rawHtml) => {
+    const chooseEdits = async (overlaid) => {
+      // The document as the portal sent it: Lense marks every element it has identified, and a template line is
+      // looked up in the page text as the template spells it.
+      const rawHtml =
+        typeof overlaid === 'string' ? overlaid.replace(/ data-paqvilo-source="[^"<>]{0,200}"/g, '') : overlaid;
       // ---- choose what to edit, from what this page really uses
       const used = [...requested].map((p) => model.findWebFile(p)).filter((w) => w?.file);
       const cssFile =

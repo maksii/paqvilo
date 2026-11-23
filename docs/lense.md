@@ -227,16 +227,47 @@ baseline** and **Issues** lists **Comparison unavailable** with the reason and w
 Git's own message. Shared sources reload the affected portal's tabs, page sources that page. Pausing reload preserves
 an unsaved form while saves accumulate.
 
+### A checkout ahead of the portal, or behind it
+
+Lense lays over a page the difference between the baseline and your working copy, and takes the baseline for what the
+portal has. That does not hold when you check out a development branch whose commits are not deployed (ahead), or an
+older branch or release against a newer deployment (behind). Lense checks it on every page: the response as the portal
+sent it is compared with the baseline's version of each template, snippet and page copy, between two tags of the file
+found in the page with no Liquid code in between that prints. What the two do not have in common is reported per file
+and place: **only in the served page**, **only in your file** or **differs**.
+
+- Overrides lists **Served in another version than the baseline** with the places on the open page, and a banner counts
+  the files. The terminal prints one `NOTE` line, and `agent status` carries the same under `served`
+  (`baseline`, `differs`, `deployed`, `files[].pages[].places[]`, `search`).
+- Lense then asks Git which version the pages show: the file's earlier commits, and the branches and tags that hold such
+  a version of every differing file (`served.search.refs`). When one is found the banner offers **Compare with
+  \<ref\>**, which is `--baseline <ref>` without a restart: the whole difference between that ref and your checkout is
+  laid over the portal, so a branch that is ahead shows its undeployed work and an older checkout shows the older
+  version. This compares only what the opened pages show of those files; it does not name a deployment. The newest 40
+  versions of a file and 400 branches and tags are compared; the banner says when Git could not be asked or when that
+  was only part of the history. From the page only a ref found this way can be chosen; any other baseline is set with
+  `--baseline`.
+- When no version in the repository is what the portal serves (deployed from elsewhere, edited in the studio, or a
+  component the portal renders from its own copy), the list says so and nothing is laid over those places.
+- A changed file whose working copy the portal already serves (uploaded, not committed) is marked **already served** and
+  is not laid over a second time.
+- X-ray names an element the served page has and your file does not as **Not in your local copy of this file**, at the
+  place it would stand, and marks every source row of such a file with **The portal serves another version of this
+  file than your baseline**.
+
+A change on a line that also holds Liquid code is laid over by position: where the page shows the file's markup between
+two of its tags, the file's text goes there. Text right beside what Liquid code prints, and a change to the Liquid
+code itself, stay under **Needs deploy**. The portal closing an element a template leaves open is not a difference.
+
 Panel keys: **Alt+Shift+P** panel, **Alt+Shift+L** hide/show, **Alt+Shift+O** Online/Local, **Alt+Shift+X** X-ray;
 **Esc** closes a comparison, then clears the filter, then collapses the panel. When the environment is the site's own
 local Mirage (a loopback origin on the port in `sites.<id>.mirage.port`, or on Mirage's default port 8787 when the site
 sets none; `mirage dev`; or a model-driven `--local-simulation`), the panel has no **Local**/**Online** switch and
 Alt+Shift+O does nothing: Mirage already serves your local sources. Started with `--no-overrides` there, the banner's
-**Back to local** still turns the overrides on. X-ray turned on from the open panel takes its place; turning X-ray off brings the panel back on the
-same tab. **Inspect** works for live and Mirage
-sessions; **Tweaks** changes local Mirage identity and scenarios; **Mirage** (under `mirage dev`) shows the runtime,
-its diagnostics and content policy, and opens the Mirage admin pages for the current page. Targets stay isolated by origin,
-environment and source selection.
+**Back to local** still turns the overrides on. X-ray turned on from the open panel takes its place; turning X-ray off
+brings the panel back on the same tab. **Inspect** works for live and Mirage sessions; **Tweaks** changes local Mirage
+identity and scenarios; **Mirage** (under `mirage dev`) shows the runtime, its diagnostics and content policy, and opens
+the Mirage admin pages for the current page. Targets stay isolated by origin, environment and source selection.
 
 The panel, X-ray and the model-driven panel follow the operating system's light or dark colour scheme, whatever the
 page's own theme.
@@ -263,6 +294,15 @@ The first column names a row's kind in words (Template, Snippet, Script, Style, 
 tooltip, unless the row's own name already says it. A Solution file named by an ID shows `{…}` in its place
 (`FormXml/main/{…}.xml`); the full path is its tooltip and what Copy copies.
 
+**Page requests** lists every request of the open page by where its answer came from: **From your sources**,
+**Pages**, **In your sources, not laid over** (under Mirage: **Served by Mirage**), **Portal data**, **Portal runtime
+files**, **Other sites** and **Not identified**, each with its count. A row of your sources that was not laid over
+says why (the scope is changed vs Git, the override is paused, a route passes it to the portal, several web files have
+the address, only reads are laid over, ...). A code component bundle or style sheet (`/_pcfwebresource/<id>`) and a
+Solution web resource (`/_webresource/<name>`) are served from your Solution roots when the page declares them and
+the Solution holds the file. The button on a row selects the element that loads the file. **Differs from deployed, not
+applied** lists page blocks that differ from your file and are not laid over, with the reason on each row.
+
 In **Inspect**, the icon buttons beside the filter refresh the inspection, select an element and expand or collapse
 every group; the section chips sit on one line under the filter. **Page & templates** covers page copy, scripts,
 styles and template dependencies; **Forms & controls** joins exported forms, lists, views and fields to rendered
@@ -274,7 +314,11 @@ its own copy button.
 **Tables & access** shows the table permissions, scopes, relationships and web roles of your sources, each operation
 as a word (**read**, **no create**, **update, scoped**) and each reason once; an exported grant does not prove the
 signed-in user can use it, and on a live portal Inspect says that web-role membership is not known.
-Components are named, never shown by ID; rendered controls without a source match are one count line.
+Components are named, never shown by ID; **Rendered controls without a source** lists each control that matches no
+source or several, with its locate button. **Check identification** asks X-ray about every element of the page and
+counts the answers (identified, inside an identified element, likely, in conflict, not identified), with the
+elements that have no answer listed for selection; `paqvilo lense agent coverage` returns the same counts. A banner
+says when Inspect read only part of the page or of your sources.
 
 With only a portal export, Inspect resolves portal components, snippets, web files and access rules. Add
 `mirage.solutionRoots` or `mirage.project` to resolve Solution FormXml, views, table fields, PCF manifests/resources and
@@ -298,6 +342,28 @@ component's name, kind and certainty; the X-ray card names the selected componen
 logical name) with its badge. The relation (for example "The view shown here") is the row's tooltip; screen readers
 announce each badge's meaning.
 
+On a live portal every element of a page gets an answer. Lense aligns the page the portal sent with the markup of
+your export (web templates, content snippets, page copy and summary, web link set copy, site setting values, form
+instructions) tag by tag, and X-ray reads the result:
+
+- **Found at this place in the served page**: the tag is the file's own tag, at that line. A tag with Liquid code
+  inside it is the template's tag with the values the portal wrote.
+- **Generated by this Liquid code**: the element stands where a Liquid tag or output of the file wrote it (a form or
+  list tag, an include, an editable region, a loop); the row opens that code.
+- **Loaded by this element**: a web file of your sources, a code component file of your Solution, a portal runtime
+  file or a file of another site, named by the address the element loads.
+- **Added by the portal around your templates**: the page shell (document, head, the portal's own scripts and bars).
+- **Inside a known element**: an element a script created at runtime is named by the identified element it stands
+  in, with the script that made it when that was observed.
+- **Not in your local copy of this file**: the served page holds a tag where the file holds none, because the portal
+  serves [another version](#a-checkout-ahead-of-the-portal-or-behind-it) of the file.
+
+A source is named only by a sequence of its markup that no other source explains as well; short markup that merely
+looks the same (a link of the header inside a menu, the portal's own breadcrumb) is not attributed, and a template
+the page does not reach needs a long sequence. Markup two sources hold alike is a **Conflict** that lists both; the
+same markup in several places of one file names the file and says that the line is one of several. Under Mirage the
+same answers come from the local render itself.
+
 Rules that decide attribution:
 
 - **Power Pages fields** read **column → Solution form (FormXml) → table → basic form → host webpage**; each level keeps
@@ -309,8 +375,40 @@ Rules that decide attribution:
   table and the declared action forms on it stay candidates. An all-zero form ID never identifies a form by itself; a
   unique verified basic-form wrapper can.
 - **Script-created elements** link to local code through an observed callsite, labelled **Created by this script**,
-  **Copied by this script** or **Inserted by this script**, only when the acknowledged response bytes and the parsed
-  script version agree. Anonymous evaluation, custom stack formatting and ambiguous versions stay unavailable.
+  **Copied by this script** or **Inserted by this script** with the file, line and column, only when the acknowledged
+  response bytes and the parsed script version agree. Code a script evaluates reads **Created by code that this script
+  evaluated**; a call through a helper your sources do not hold names the caller; a script of another site or of the
+  portal is said to be that. Custom stack formatting and ambiguous versions stay unavailable. An element a script
+  creates is answered by the identified element it stands in, with the script as a row. Rows, cells, captions, heads
+  and options that a table or select call makes (`insertRow`, `insertCell`, `createCaption`, `select.length = n`)
+  are created by that line; an element a constructor makes (`new Option()`, `new Image()`) is inserted by the line
+  that puts it into the page. An option assigned by index (`select.options[2] = option`) has no call to observe: X-ray
+  names the select it stands in and no line.
+- **Script-changed elements** stay what the template wrote. An element of the served page that a script moves keeps
+  its template line and gains **Moved by this script**, also when it travels through a document fragment, inside a
+  wrapper the script builds first, out of a range, or by `moveBefore`; one whose attributes, classes, style, data
+  attributes, value, text or children a script changes gains **Changed by this script: \<what\>**, newest first, with
+  file and line when the call was observed. An element whose `id`, `name` or `type` (or a data attribute that names a
+  table, form, view, list or control) a script changes is repurposed: it loses its template line and reads as an
+  element inside the template markup around it, with no source of its own; its **Changed by this script** rows stay.
+  A copy a script makes of a template element (`cloneNode`, `importNode`) is never the template's element. A change
+  with no call to observe (`el.style.color = …`, `el.dataset.x = …`, code another script runs inside the call) reads
+  **Changed without a recorded script call** and names no script: `style` and `dataset` stay the browser's own
+  objects. A look-alike a script renders in place of template markup is the script's. The record is bounded (2,000
+  elements per call, 5,000 recorded calls per task, four rows per element); past a bound the row says the script was
+  not recorded and no script is named.
+- **Sign-in pages** reach the browser exactly as the portal sends them: Lense reads and marks nothing on them, so
+  X-ray matches their elements by markup only and says so.
+- **Marks.** Lense marks each element of a page it has compared with one random `data-paqvilo-source` value and
+  removes it as soon as the element is known; a page's own change observers are not told about it. Code that runs
+  while the parser inserts an element (a custom element's callbacks) can still read that one value; it names nothing
+  else and cannot be used to forge or revoke an answer.
+- **Liquid conditions, loops and includes** on a live page: each row of a loop is the loop body's line, a rendered
+  branch is its own line, a partial included several times names its line with each include tag as context, and what
+  an output or a form or list tag prints reads **Generated by this Liquid code** (for one tag: **Generated by the
+  \<tag\> tag**). Where the served page cannot show which of several identical places wrote a tag, the row says it is
+  one of them. Under Mirage a form or list also names the tag that rendered it, and a printed snippet the output that
+  printed it.
 - **Custom grids** declare bindings with `data-paqvilo-table="logical_table"` on the table and
   `data-paqvilo-column="logical_column"` on cells or headers; DataTables column `name` (`sName`) is read without running
   renderers. A scroll-head clone can point at its grid with `data-paqvilo-grid="original-table-id"` and
@@ -341,11 +439,12 @@ host disappears, the selection clears instead of moving to another element. **Cl
 #### X-ray
 
 Toggle X-ray with the target button in the panel header or **Alt+Shift+X** (also from inside an accessible same-origin
-frame). Green outlines mark controls, blue form/view containers, amber source markup; colors identify layers, not
-certainty. While Inspect mode is on, keyboard and pointer activation is intercepted in the page, accessible same-origin
-frames and open shadow roots. **Tap Ctrl** (alone) or click **Inspect** to switch to Interact and back; holding Ctrl
-no longer interacts. When focus moves into a cross-origin or sandboxed frame, X-ray reclaims it one task later, so one
-keystroke can reach that frame.
+frame). An outline's colour comes from the element's evidence, as the legend says: **Markup from your sources**,
+**Generated by Liquid**, **Forms, lists & fields**, **Added by the portal**, **Created at runtime** and **Not
+identified** (dashed). While Inspect mode is on, keyboard and pointer activation is intercepted in the page, accessible
+same-origin frames and open shadow roots. **Tap Ctrl** (alone) or click **Inspect** to switch to Interact and back;
+holding Ctrl no longer interacts. When focus moves into a cross-origin or sandboxed frame, X-ray reclaims it one task
+later, so one keystroke can reach that frame.
 
 A hover summary appears beside the element, left of it when there is room, else right, below or above; it hides over
 the selected element while its card is open, and wherever it would cover the card. An element with no matching
@@ -361,9 +460,10 @@ details to the other side** button or dragging its header keeps it where you put
 **Details**, **Tab / Shift+Tab**; **Esc** clears the selection, then turns off X-ray. Context and
 permission lists page eight entries at a time. X-ray is removed when the session detaches.
 
-Limits: a markup source above 1,048,576 UTF-16 code units is skipped and reported; discovery and drawing stop at 800
-candidate elements and 250 background outlines; details show up to 60 source matches. Selection still inspects the
-element under the pointer. **Search limits** reports omissions, and the agent API reports them in
+Limits: a markup source above 1,048,576 UTF-16 code units is skipped and reported; outlines are searched among the 800
+elements in view and 250 are drawn per view (scroll or zoom in for the rest; the legend says when a view is cut);
+details show up to 60 source matches. Selection still inspects the element under the pointer, **Parent** and **Child**
+reach `<head>` resources and hidden parts. **Search limits** reports omissions, and the agent API reports them in
 `elementSourceLimits`. Inspection reports are cached until sources change; a refresh rescans source stamps and reimports
 a changed export, so its time grows with export size.
 
@@ -405,11 +505,13 @@ Returns `sessions` (`id`, `pid`, `site`, `environment`, `startedAt`, `portalOrig
 ### agent status
 
 Returns the session (without token), readiness, browser scope, access counts, debugger port, baseline, Git state,
-overlay, pages and truncation flags. While the tab is away from the portal origin (for example on the sign-in page)
-`pages` is empty, `access.externalTabCount` counts the tab and page routes for it answer `404 page_not_found`. A
-[model-driven](model-driven-actions.md#targets-and-agent-sessions) session instead reports `inspection.suspended: true`
-and answers `409 session_suspended`. A model-driven status has no access counts, baseline or Git state; it reports
-`kind`, `browserScope`, `overlay` (revision, applied counts and resources) and `inspection`.
+`served` (files the opened pages show in [another version](#a-checkout-ahead-of-the-portal-or-behind-it) than the
+baseline, with the refs that explain them), overlay, pages and truncation flags. While the tab is away from the portal
+origin (for example on the sign-in page) `pages` is empty, `access.externalTabCount` counts the tab and page routes for
+it answer `404 page_not_found`. A [model-driven](model-driven-actions.md#targets-and-agent-sessions) session instead
+reports `inspection.suspended: true` and answers `409 session_suspended`. A model-driven status has no access counts,
+baseline or Git state; it reports `kind`, `browserScope`, `overlay` (revision, applied counts and resources) and
+`inspection`.
 
 ### agent pages
 
@@ -447,6 +549,15 @@ PNG. Paths are forward-slash and relative to the catalogue directory (or working
 
 `--width` (320–4096, default 1440), `--height` (240–4096, default 900). Returns page and viewport.
 
+### agent coverage
+
+`--limit` (1–50000 elements, default 20000), `--samples` (0–200, default 40). Asks every element of the page, of its
+accessible same-origin frames and of open shadow roots what a selection is asked, and returns `page` and `coverage`:
+`total`, `truncated`, `counts` (`direct`: the element itself is identified; `contained`: it stands inside an identified
+element; `likely`; `conflict`; `none`), `kinds` (how many elements each kind of answer names) and `unidentified` (the
+tag and tag path of up to `--samples` elements that are not identified). Tags only: no text and no attribute values. A
+session without the dev panel answers `coverage_unavailable` (409).
+
 ### agent navigate
 
 `--path <portal path>` (required). Performs a GET on the portal origin and returns page and HTTP status. Other origins
@@ -469,9 +580,9 @@ Client: `session_not_found` (no discovery file), `session_stale` (owner process 
 `session_unavailable`, `request_timeout`, `invalid_response`, `response_too_large`, plus the generic CLI codes. Server:
 `invalid_argument`, `invalid_selector`, `invalid_json`, `invalid_url`, `body_too_large`, `content_type`, `unauthorized`,
 `browser_request`, `foreign_origin`, `origin_changed`, `not_found`, `page_not_found`, `method_not_allowed`, `page_busy`,
-`session_busy`, `session_suspended`, `unsafe_reload`, `image_too_large`, `response_too_large`, `action_timeout`,
-`action_failed` and `stopping`. HTTP failures keep their status in the error object; messages omit browser stacks, ANSI
-controls and call logs.
+`session_busy`, `session_suspended`, `coverage_unavailable`, `unsafe_reload`, `image_too_large`, `response_too_large`,
+`action_timeout`, `action_failed` and `stopping`. HTTP failures keep their status in the error object; messages omit
+browser stacks, ANSI controls and call logs.
 
 ## Local source debugging
 

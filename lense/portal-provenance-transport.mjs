@@ -286,21 +286,39 @@ export function createPortalProvenanceTransport(context, configs, { onDescriptor
         return map;
       };
       const currentLoader = async (frameId) => frames((await send('Page.getFrameTree'))?.frameTree).get(frameId);
-      const validProof = (proof) => {
+      const validShape = (proof) =>
+        proof?.version === 1 &&
+        ['lense-applied-response', 'mirage-render'].includes(proof.channel) &&
+        typeof proof.proofId === 'string' &&
+        proof.proofId.length <= 256 &&
+        Array.isArray(proof.bindings) &&
+        Array.isArray(proof.sourceRefs);
+      // 'valid', 'too-large' or 'invalid'.
+      const checkProof = (proof) => {
         try {
-          return (
-            proof?.version === 1 &&
-            ['lense-applied-response', 'mirage-render'].includes(proof.channel) &&
-            typeof proof.proofId === 'string' &&
-            proof.proofId.length <= 256 &&
-            Array.isArray(proof.bindings) &&
-            Array.isArray(proof.sourceRefs) &&
-            Buffer.byteLength(JSON.stringify(proof)) <= MAX_DESCRIPTOR_BYTES
-          );
+          if (!validShape(proof)) return 'invalid';
+          return Buffer.byteLength(JSON.stringify(proof)) <= MAX_DESCRIPTOR_BYTES ? 'valid' : 'too-large';
         } catch {
-          return false;
+          return 'invalid';
         }
       };
+      // What the registry of a document whose descriptor is too large to deliver receives instead: that fact alone,
+      // so the X-ray says "provenance too large" for its elements rather than "not proved".
+      const tooLargeProof = (channel, proofId) => ({
+        version: 1,
+        channel,
+        proofId,
+        bindings: [],
+        sourceRefs: [],
+        complete: false,
+        unavailable: 'response-proof-too-large',
+      });
+      const reportTooLarge = () =>
+        lost(
+          new Error(
+            `the provenance of a document is larger than ${MAX_DESCRIPTOR_BYTES / 1024 / 1024} MiB, so its elements are not identified`,
+          ),
+        );
       const flush = async (record) => {
         if (closed || record.closed || !record.objectId || !record.loaderId) return;
         const key = record.frameId + ':' + record.loaderId;
@@ -319,8 +337,13 @@ export function createPortalProvenanceTransport(context, configs, { onDescriptor
         }
       };
       const admit = async (frameId, loaderId, proof, request) => {
-        if (closed || !frameId || !loaderId || !validProof(proof)) return false;
-        await onDescriptor?.({ cdp, frameId, loaderId, proof, request });
+        if (closed || !frameId || !loaderId) return false;
+        const state = checkProof(proof);
+        if (state === 'invalid') return false;
+        if (state === 'too-large') {
+          reportTooLarge();
+          proof = tooLargeProof(proof.channel, proof.proofId);
+        } else await onDescriptor?.({ cdp, frameId, loaderId, proof, request });
         if (closed) return false;
         const key = frameId + ':' + loaderId;
         if (pending.size >= 64 && !pending.has(key)) pending.delete(pending.keys().next().value);
@@ -456,21 +479,24 @@ export function createPortalProvenanceTransport(context, configs, { onDescriptor
             timeout: COMMAND_HANG_MS,
             failOnStatusCode: false,
           });
+          const request = requests.get(event.requestId);
+          const own = request?.frameId === event.frameId && request.loaderId === event.loaderId;
+          // A descriptor over the bound is not read: its document is told so (see tooLargeProof).
+          const oversized = async () => {
+            reportTooLarge();
+            if (own && !closed)
+              await admit(request.frameId, request.loaderId, tooLargeProof('mirage-render', header), request);
+          };
           try {
-            if (
-              closed ||
-              answer.status() !== 200 ||
-              !/application\/json/i.test(answer.headers()['content-type'] ?? '') ||
-              Number(answer.headers()['content-length'] ?? 0) > MAX_DESCRIPTOR_BYTES
-            )
+            if (closed || answer.status() !== 200 || !/application\/json/i.test(answer.headers()['content-type'] ?? ''))
               return;
+            if (Number(answer.headers()['content-length'] ?? 0) > MAX_DESCRIPTOR_BYTES) return await oversized();
             const bytes = await answer.body();
-            if (bytes.length > MAX_DESCRIPTOR_BYTES || closed) return;
+            if (closed) return;
+            if (bytes.length > MAX_DESCRIPTOR_BYTES) return await oversized();
             const proof = JSON.parse(bytes.toString('utf8'));
             if (proof.proofId !== header || proof.channel !== 'mirage-render') return;
-            const request = requests.get(event.requestId);
-            if (request?.frameId === event.frameId && request.loaderId === event.loaderId)
-              await admit(request.frameId, request.loaderId, proof, request);
+            if (own) await admit(request.frameId, request.loaderId, proof, request);
           } finally {
             await answer.dispose?.();
           }
@@ -530,6 +556,12 @@ export function createPortalProvenanceTransport(context, configs, { onDescriptor
         dispose,
         async publishProvenance(event, proof) {
           if (closed || event.resourceType !== 'Document' || proof?.channel !== 'lense-applied-response') return false;
+          // The acknowledgement queue holds descriptors within the bound only: one over it is reported now and its
+          // document receives the fact that it was too large.
+          if (checkProof(proof) === 'too-large') {
+            reportTooLarge();
+            return acknowledgements.fulfill(event, tooLargeProof(proof.channel, proof.proofId));
+          }
           return acknowledgements.fulfill(event, proof);
         },
       };

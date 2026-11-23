@@ -25,6 +25,7 @@ const commands = {
       'navigate',
       'reload',
       'viewport',
+      'coverage',
       'stop',
     ],
   },

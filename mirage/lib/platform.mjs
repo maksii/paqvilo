@@ -517,6 +517,8 @@ export function injectRuntime(
   traceId = null,
   languages = null,
   rootTraceId = null,
+  // shown the document as it leaves here (the caller's record of what it answers); it changes nothing
+  sent = null,
 ) {
   // The trace id travels in the x-sim-trace-id header and the runtime script only: a meta
   // element would shift every head child the platform renders (charset, viewport, links).
@@ -555,7 +557,11 @@ export function injectRuntime(
   const grid = `<script src="${NATIVE_GRID_SCRIPT}" data-paqvilo-mirage-native></script>`;
   if (!html.includes(NATIVE_GRID_SCRIPT) && !hasPlatformBundles(html))
     html = /<\/body>/i.test(html) ? html.replace(/<\/body>(?![\s\S]*<\/body>)/i, `${grid}$&`) : html + grid;
-  return /<head\b[^<>]*>/i.test(html) ? html.replace(/<head\b[^<>]*>/i, (head) => head + script) : script + html;
+  const answered = /<head\b[^<>]*>/i.test(html)
+    ? html.replace(/<head\b[^<>]*>/i, (head) => head + script)
+    : script + html;
+  sent?.(answered);
+  return answered;
 }
 
 /**
@@ -2064,6 +2070,13 @@ function findList(portal, args, name) {
   return null;
 }
 
+/** The layout a list renders in: map, calendar, modern or the classic grid. */
+function entityListLayout(listMetadata, model, modern) {
+  if (truthy(fieldOf(listMetadata, 'map_enabled'))) return 'map';
+  if (model.calendar) return 'calendar';
+  return modern ? 'modern' : 'grid';
+}
+
 async function renderEntityList(name, context, options) {
   const list = findList(options.portal, options.args, name);
   if (!list) {
@@ -2116,6 +2129,20 @@ async function renderEntityList(name, context, options) {
     notice = `<div role="alert" data-mirage-component="codecomponent">${escape(message)}</div>`;
   }
   if (!builtin) return { context: { entitylist: drop }, html: '' };
+  // Render provenance (lib/component-provenance.mjs): the list, its views and its action settings.
+  const modern = /^true$/i.test(String(context.isModern ?? options.args?.isModern ?? ''));
+  const listMetadata = list.metadata ?? {};
+  const listLayout = entityListLayout(listMetadata, model, modern);
+  options.onComponentRendered?.({
+    type: 'list',
+    id: canonicalId(list.id),
+    name: list.name,
+    entity: model.entity,
+    views: model.views.map((view) => canonicalId(view.id)),
+    layout: listLayout,
+    settings: model.settings ?? {},
+    scriptRecord: list.js != null ? list.metadata : null,
+  });
   // The design studio's Modern list toggle is exported as the include's isModern argument (platform-changes.mjs).
   if (/^true$/i.test(String(context.isModern ?? options.args?.isModern ?? ''))) {
     // The same rule preflight applies (platform-changes.mjs modernListFallback); page controls are a render-time case.
@@ -2744,6 +2771,34 @@ function prepopulateValue(row, identity, now) {
   const websiteId = canonicalId(portal.website?.id);
   const N = compactId(definition?.id ?? name);
   const ids = options.referenceForm?.ids ?? nativeFormControlIds(kind, definition?.id ?? name, { modal, pageControl });
+  // Render provenance (lib/component-provenance.mjs): the form this markup comes from and, filled while the layout
+  // renders, the tabs, sections and cells in the order their elements are written. Metadata beside the markup only.
+  const renderedLayout = { tabs: [], sections: [], cells: [] };
+  let scriptRecord = null;
+  if (schema.js != null) scriptRecord = schema.metadata;
+  else if (definition?.js != null) scriptRecord = definition.metadata;
+  options.onComponentRendered?.({
+    type: kind === 'webform' ? 'advanced-form' : 'basic-form',
+    id: canonicalId(definition?.id ?? name),
+    name: definition?.name ?? name,
+    reference: Boolean(options.referenceForm),
+    stepId: kind === 'webform' ? canonicalId(schema.stepId) || null : null,
+    stepName: kind === 'webform' ? (fieldOf(schema.metadata ?? {}, 'name') ?? null) : null,
+    entity: schema.entity,
+    formId: schema.formId ? canonicalId(schema.formId) : null,
+    ids: { wrapper: ids.wrapper, panel: ids.panel, view: ids.view },
+    scriptRecord,
+    metadataRows: metadataRows.map((row) => ({
+      id: canonicalId(row.id),
+      type: Number(fieldOf(row, 'type') ?? 100000000),
+      attribute: fieldOf(row, 'attributelogicalname') ?? null,
+      subgrid: fieldOf(row, 'subgrid_name') ?? null,
+      subgridSettings: fieldOf(row, 'subgrid_settings') ?? null,
+      section: fieldOf(row, 'sectionname') ?? null,
+      tab: fieldOf(row, 'tabname') ?? null,
+    })),
+    layout: renderedLayout,
+  });
 
   const startupScript = async () => {
     const source = schema.js ?? definition?.js;
@@ -3887,9 +3942,27 @@ function prepopulateValue(row, identity, now) {
     repeated.sort((a, b) => [...seen].indexOf(a) - [...seen].indexOf(b));
     if (repeated.length)
       layoutHtml += `<div class="alert alert-danger alert-block">${escape(repeated.join(', '))} field is present multiple times on this form. Only first field will be rendered in the UI</div>`;
+    // Each written tab, section and cell element, in document order (the form's render provenance).
+    const layoutCell = (cell, field) =>
+      renderedLayout.cells.push({
+        name: cell.name ?? null,
+        id: field?.id ?? cell.id ?? null,
+        field: field?.name ?? null,
+        type: cell.type ?? null,
+        entity: cell.entity ?? null,
+        viewId: cell.viewId ?? null,
+        lookup: cell.lookup ?? null,
+        quickFormId: cell.schema?.formId ?? null,
+        createFormId: field?.createFormId ?? null,
+      });
     for (const tab of autoSteps ? [autoSteps.tabs[autoSteps.index]] : schema.layout) {
       const tabRow = tabMetadata(tab.name);
       const tabLabel = formLabel(fieldOf(tabRow, 'label'), tab.label ?? '');
+      renderedLayout.tabs.push({
+        name: tab.name ?? null,
+        label: tabLabel,
+        metadataId: canonicalId(tabRow?.id) || null,
+      });
       let tabHtml = tab.showLabel ? `<h2 class="tab-title">${escape(tabLabel)}</h2>` : '';
       tabHtml += `<div${tabNameAttribute(tab.name)} class="tab clearfix${fieldOf(tabRow, 'cssclass') ? ' ' + attr(fieldOf(tabRow, 'cssclass')) : ''}">`;
       for (const column of tab.columns) {
@@ -3897,12 +3970,18 @@ function prepopulateValue(row, identity, now) {
         for (const section of column.sections) {
           // A hidden section leaves an empty fieldset.
           if (section.hidden) {
+            renderedLayout.sections.push({ name: section.name ?? null, hidden: true });
             tabHtml += '<fieldset></fieldset>';
             continue;
           }
           const sectionRow = sectionMetadata(section.name);
           const sectionLabel = formLabel(fieldOf(sectionRow, 'label'), section.label ?? '');
           const widths = section.columnWidths ?? [100];
+          renderedLayout.sections.push({
+            name: section.name ?? null,
+            label: sectionLabel,
+            metadataId: canonicalId(sectionRow?.id) || null,
+          });
           // A visible section always names itself, an unlabelled one with an empty name.
           tabHtml += `<fieldset aria-label="${attr(plainText(sectionLabel))}">${sectionLegend(section.showLabel, sectionLabel)}<table role="presentation"${sectionNameAttribute(section.name)} class="section${fieldOf(sectionRow, 'cssclass') ? ' ' + attr(fieldOf(sectionRow, 'cssclass')) : ''}"><colgroup>${sectionColumnWidths(widths)}<col></colgroup><tbody>`;
           for (const row of section.rows) {
@@ -3926,6 +4005,7 @@ function prepopulateValue(row, identity, now) {
                 // With ShowUnsupportedFields the cell names the column, its label, type and format.
                 const type = String(field.dataverseType ?? '');
                 const message = `Unsupported: DataFieldName="${field.name}" Label="${field.label}", AttributeType="${UNSUPPORTED_TYPE_NAMES[type.toLowerCase()] ?? type}", Format="${field.format ?? ''}"`;
+                layoutCell(cell, field);
                 tabHtml += `<td colspan="${cell.colspan ?? 1}" rowspan="${cell.rowspan ?? 1}" class="clearfix cell unsupported-cell"><div class="info"><label for="${attr(field.id)}" class="field-label">${escape(field.label)}</label><div class="validators"></div></div><div class="control" data-logical-name="${attr(field.name)}"><span id="${attr(field.id)}">${escape(message)}</span></div></td>`;
                 continue;
               }
@@ -3934,6 +4014,7 @@ function prepopulateValue(row, identity, now) {
                 field?.ownerHidden ||
                 (field && UNSUPPORTED_FORM_TYPES.test(String(field.dataverseType ?? '')))
               ) {
+                layoutCell(cell, field);
                 tabHtml += `<td colspan="${cell.colspan ?? 1}" rowspan="${cell.rowspan ?? 1}" class="clearfix cell"></td>`;
                 continue;
               }
@@ -3946,10 +4027,12 @@ function prepopulateValue(row, identity, now) {
                 const cut = full.indexOf('<div class="validators">');
                 const partial =
                   cut >= 0 ? full.slice(0, cut + '<div class="validators">'.length) : `<div class="${bs.info}">`;
+                layoutCell(cell, field);
                 tabHtml += `<td colspan="${cell.colspan ?? 1}" rowspan="${cell.rowspan ?? 1}" class="clearfix cell${suffix ? ' ' + suffix : ''}">${partial}<div class="alert alert-block alert-danger"><p class="text-danger"><span class="fa fa-exclamation-triangle" aria-hidden="true"></span> ${escape(failure.message)}</p></div> </div>${TRUNCATED_ACTIONS} </td></tr></tbody></table></fieldset></div>${progress?.position === 'bottom' ? progress.html + '</div>' : ''}</div></div>${TRUNCATED_CLOSE}`;
                 truncated = true;
                 break;
               }
+              layoutCell(cell, field);
               tabHtml += `<td colspan="${cell.colspan ?? 1}" rowspan="${cell.rowspan ?? 1}" class="clearfix cell${suffix ? ' ' + suffix : ''}"${hidden ? ' style="display: none;"' : ''}>${await cellControl(cell)}</td>`;
             }
             if (truncated) break;
@@ -5379,15 +5462,30 @@ function numericCellClass(field) {
   return `${field.control} form-control-cell`;
 }
 
-function findQuickForm(schemas, entity, controlId, params) {
+function findQuickForm(schemas, entity, controlId, params, onHost = null) {
   let quick = null;
-  for (const schema of Object.values(schemas ?? {})) {
-    for (const candidate of [schema, ...(schema?.steps ?? [])]) {
-      for (const cell of formCells(candidate)) {
-        if (isQuickFormCell(cell, entity, controlId, params)) quick = cell;
+  for (const [hostId, schema] of Object.entries(schemas ?? {})) {
+    quick = findHostedQuickForm(hostId, schema, entity, controlId, params, onHost);
+    if (quick) break;
+  }
+  return quick;
+}
+
+/** The last quick view cell of one host form (or of its steps) that matches, reporting each match's host. */
+function findHostedQuickForm(hostId, schema, entity, controlId, params, onHost) {
+  let quick = null;
+  for (const candidate of [schema, ...(schema?.steps ?? [])]) {
+    for (const cell of formCells(candidate)) {
+      if (isQuickFormCell(cell, entity, controlId, params)) {
+        quick = cell;
+        // Render provenance: the form (and its basic form or advanced form step) that hosts the quick view.
+        onHost?.({
+          hostId,
+          stepId: candidate === schema ? null : (candidate.stepId ?? null),
+          formId: candidate.formId ?? null,
+        });
       }
     }
-    if (quick) break;
   }
   return quick;
 }
@@ -5453,10 +5551,22 @@ function progressStepIcon(completed, bs) {
 }
 
 /** Native quick view form document (/_portal/quickform-template-path/{websiteId}). */
-export async function renderQuickForm({ portal, schemas, store, readProvider, identity, params, metadata }) {
+export async function renderQuickForm({
+  portal,
+  schemas,
+  store,
+  readProvider,
+  identity,
+  params,
+  metadata,
+  onComponentRendered = null,
+}) {
   const entity = canonicalId(params.entityname);
   const controlId = params.controlid;
-  const quick = findQuickForm(schemas, entity, controlId, params);
+  let host = null;
+  const quick = findQuickForm(schemas, entity, controlId, params, (found) => {
+    host = found;
+  });
   if (!quick)
     throw componentError('The quick view form is not part of an exported form layout.', 404, 'QUICKFORM_NOT_FOUND');
   const record = params.entityid ? await readProvider.get(entity, params.entityid, identity) : null;
@@ -5469,6 +5579,21 @@ export async function renderQuickForm({ portal, schemas, store, readProvider, id
   // The platform renders the quick view as a read-only entity form view named by the control id
   // (ContentContainer_FormPanel > #<controlid>.form-readonly.entity-form.crmEntityFormView).
   const view = String(quick.id);
+  // Render provenance (lib/component-provenance.mjs): the quick view, its form and the host form control.
+  onComponentRendered?.({
+    type: 'quick-view',
+    id: view,
+    entity,
+    formId: quick.schema.formId ? canonicalId(quick.schema.formId) : null,
+    lookup: quick.lookup ?? null,
+    host: host
+      ? {
+          id: canonicalId(host.hostId),
+          stepId: canonicalId(host.stepId) || null,
+          formId: canonicalId(host.formId) || null,
+        }
+      : null,
+  });
   const { html } = await renderForm(
     'entityform',
     view,
@@ -5497,6 +5622,7 @@ export async function renderQuickForm({ portal, schemas, store, readProvider, id
         },
         className: ' crmEntityFormView',
       },
+      onComponentRendered,
     },
   );
   return `<div id="ContentContainer_FormPanel">${html}</div>`;

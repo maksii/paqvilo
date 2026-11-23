@@ -14,6 +14,9 @@ export function createInspectionProvenanceTransport(context, configs) {
   return {
     slot: portal.slot,
     domSlot: dom.slot,
+    // `(origin, (route) => portal source index)`: parsed scripts of that origin are admitted by content hash against
+    // the export (dom-provenance-transport.mjs registerScriptSources).
+    registerScriptSources: dom.registerScriptSources,
     async onAttach(options) {
       const scripts = await dom.onAttach(options);
       attachments.set(options.cdp, scripts);

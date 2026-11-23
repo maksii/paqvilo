@@ -3,6 +3,48 @@
 Each version lists what changed for users of the package and what to do when upgrading. Update with
 `npm install --save-dev paqvilo@^<version>`, commit the lockfile and run your project's tests.
 
+## 0.9.9
+
+### New
+
+- **Every element of a live page is identified.** Lense aligns the page the portal sent with your export: X-ray names
+  an element's own tag in the template, snippet or page copy that wrote it, the Liquid code that generated it, the
+  form, list, column or code component it belongs to, the web file or portal file it loads, the portal's page shell,
+  or the identified element a script created it in. `paqvilo lense agent coverage` and the panel's **Check
+  identification** count the answers for a whole page. See [selection evidence](lense.md#selection-evidence).
+- **Page requests.** Overrides lists every request of the page by where its answer came from (your sources, the
+  page, portal data, portal runtime files, other sites, not identified) and says why a file of your sources was not
+  laid over. `agent state` carries the same under `requests`.
+- **A checkout ahead of the portal, or behind it.** Lense tells when the portal serves another version of a
+  template, snippet or page copy than your baseline holds, lists the places, asks Git which branch or tag holds the
+  served version and offers **Compare with \<ref\>**. A file the portal already serves from your working copy is not
+  laid over twice. See [a checkout ahead of the portal, or behind it](lense.md#a-checkout-ahead-of-the-portal-or-behind-it).
+- **Code component files.** A bundle or style sheet the page loads from `/_pcfwebresource/` is served from your
+  Solution's `Controls/<name>` folder, and a Solution web resource from `WebResources/`, when the page declares them.
+
+### Improved
+
+- A change on a template line that also holds Liquid code is laid over where the page shows the file's markup between
+  two of its tags; before, such a line always waited for a deployment.
+- A form post with a file, a fragment a page fetches and a page the portal answers with an error status are laid
+  over and identified like any page; the upload is sent once.
+- A local change is laid over a place only when the changed file wrote it: the same line in another template, or in
+  another language's copy, keeps the served text.
+- X-ray says what page scripts did to the page. An element of the template that a script moves keeps its template
+  line and gains **Moved by this script**, also through a document fragment, a new wrapper, a range or `moveBefore`;
+  one a script changes gains **Changed by this script: \<what\>**; rows, cells, captions and options that table and
+  select calls make name the calling line.
+
+### Fixed
+
+- A script a web template writes itself is no longer taken for a form's or page's custom script that shares its lines.
+- Short markup that merely looks like a template (a link of the header inside a menu, the portal's own breadcrumb) is
+  no longer named as that template.
+- Mirage writes the portal's own breadcrumb on pages whose page template is a rewrite layout (`FullPage.aspx`,
+  `WebForm.aspx`): every page of the path with its whole title, in the site's Bootstrap build. Before, it rendered
+  the site's Breadcrumbs web template there, and page inspection listed that template for such pages. A page title
+  keeps the spaces its record holds around it.
+
 ## 0.9.8
 
 This release lets you see and debug what the local runtime does: every request becomes a trace, original C#

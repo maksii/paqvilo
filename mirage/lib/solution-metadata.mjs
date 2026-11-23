@@ -549,10 +549,14 @@ function selectFormTabs(tree, definition, lcid) {
       .update('\0');
   }
   // Table columns come from the merged schema; only tables with exported definitions are listed.
-  const tables = {};
+  // tableCatalog names every table the selected sources define, loaded or not, with its entity set, so a caller can
+  // tell a table these sources lack from one this import did not request (and request it on demand).
+  const tables = {},
+    tableCatalog = {};
   for (const [name, table] of Object.entries(schema.tables)) {
-    if (names && !names.has(name)) continue;
     if (!table.layers?.length && table.origin !== 'dataverse-reference') continue;
+    tableCatalog[name] = { entitySet: table.entitySet ?? null, entitySetSource: table.entitySetSource ?? null };
+    if (names && !names.has(name)) continue;
     tables[name] = {
       entity: name,
       label: table.labels?.[String(lcid)] ?? Object.values(table.labels ?? {})[0],
@@ -625,6 +629,9 @@ function selectFormTabs(tree, definition, lcid) {
     roots: scan.inputs.filter((input) => !['missing', 'unsupported'].includes(input.type)).map((input) => input.input),
     layers: schema.layers,
     entities: tables,
+    tableCatalog,
+    // The table names this import was limited to (null: every table).
+    requestedTables: names ? [...names] : null,
     forms: dedupe(forms, 'form'),
     views: dedupe(views, 'view'),
     sourceComponents: [
@@ -807,10 +814,10 @@ function mapPortalForms(portal, componentSchemas, diagnostics, resolve) {
     try {
       const diagnosticStart = diagnostics.length;
       const schema = resolve(definition);
-      if (schema) {
-        componentSchemas[definition.id] = schema;
-        componentSchemas[definition.name] = schema;
-      } else if (!diagnostics.slice(diagnosticStart).some((item) => item.code === 'SYSTEMFORM_INELIGIBLE_TYPE'))
+      // Keyed by record ID only: a name is not unique across basic forms and lists, so a name key let a form
+      // without its own FormXml pick up a same-named list's view (or another form's layout).
+      if (schema) componentSchemas[definition.id] = schema;
+      else if (!diagnostics.slice(diagnosticStart).some((item) => item.code === 'SYSTEMFORM_INELIGIBLE_TYPE'))
         diagnostics.push({
           code: 'SYSTEMFORM_UNRESOLVED',
           id: definition.id,
@@ -844,7 +851,6 @@ function mapPortalLists(portal, metadata, componentSchemas, diagnostics) {
         sourceFile: view.file,
       };
       componentSchemas[list.id] = schema;
-      componentSchemas[list.name] = schema;
     } else
       diagnostics.push({
         code: 'SYSTEMVIEW_UNRESOLVED',

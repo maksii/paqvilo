@@ -9,6 +9,8 @@ import { pcfAdmission } from './model-driven/pcf-runtime.mjs';
 
 /** The one PCF admission rule of the Power Pages and model-driven hosts (control type, dataset, platform libraries). */
 export { pcfAdmission };
+/** The local PCF host script each rendered code component loads before its host element. */
+export const PCF_HOST_SCRIPT = '/__sim-static/pcf-host.js';
 
 const escape = (value) =>
   String(value ?? '').replace(
@@ -642,15 +644,26 @@ export function renderCodeComponent({
     ),
     id,
   };
-  const prefix = '<script src="/__sim-static/pcf-host.js"></script>';
+  const prefix = `<script src="${PCF_HOST_SCRIPT}"></script>`;
   const opening = `<div data-mirage-component="codecomponent" data-pcf-schema="${escape(schema)}" aria-busy="true">`;
+  const component = { kind: 'pcf', key: 'pcf:' + schema.toLowerCase(), name: schema };
+  // The host element and the two scripts that load and mount it all belong to the code component.
+  const mountStart = prefix.length + opening.length + '</div>'.length;
+  onRendered?.({
+    start: 0,
+    end: prefix.length - '</script>'.length,
+    tag: 'script',
+    component,
+    attributes: [{ name: 'src', value: PCF_HOST_SCRIPT }],
+  });
   onRendered?.({
     start: prefix.length,
     end: prefix.length + opening.length,
     tag: 'div',
-    component: { kind: 'pcf', key: 'pcf:' + schema.toLowerCase(), name: schema },
+    component,
     attributes: [{ name: 'data-pcf-schema', value: schema }],
   });
+  onRendered?.({ start: mountStart, end: mountStart + '<script>'.length, tag: 'script', component, attributes: [] });
   // When the host script did not run, the container reports that outcome instead of waiting for ever.
   return (
     prefix +

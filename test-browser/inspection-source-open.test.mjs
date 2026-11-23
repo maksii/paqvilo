@@ -20,7 +20,8 @@ test('guarded opening reads a retained control before paint instead of trusting 
   await page.route(origin + '/**', (route) =>
     route.fulfill({
       contentType: 'text/html',
-      body: '<form data-formid="invented-form" data-entityname="sample_entry"><input id="selected" data-field="title" value="PRIVATE_VALUE"></form>',
+      // The control as a live portal renders it: the basic form wrapper with its layout span, the cell's logical name.
+      body: '<div id="EntityFormControl_a1b2c3d40000400080000000000f0001"><div id="EntityFormControl_a1b2c3d40000400080000000000f0001_EntityFormView"><span data-form-layout=\'{"EntityName":"sample_entry","Id":"00000000-0000-0000-0000-000000000000"}\'></span><div class="control" data-logical-name="title"><input id="selected" value="PRIVATE_VALUE"></div></div></div>',
     }),
   );
   await page.goto(origin);
@@ -57,7 +58,14 @@ test('guarded opening reads a retained control before paint instead of trusting 
       const tools = document.getElementById('paqvilo-xray').__px;
       tools.update(data, {
         sourceRevision: data.sourceRevision,
-        forms: [{ id: 'invented-form', entity: 'sample_entry', name: 'Invented form' }],
+        forms: [
+          {
+            id: 'a1b2c3d4-0000-4000-8000-0000000f0001',
+            kind: 'basic-form',
+            entity: 'sample_entry',
+            name: 'Invented form',
+          },
+        ],
         columns: ['title', 'other'].map((name) => ({ name, entity: 'sample_entry' })),
         sourceRefs: refs,
       });
@@ -85,7 +93,7 @@ test('guarded opening reads a retained control before paint instead of trusting 
   assert.equal(captured.identity.evidence.source.status, 'exact');
   assert.equal(await selectionEvidenceCurrent(page, old), true);
 
-  await page.locator('#selected').evaluate((node) => node.setAttribute('data-field', 'other'));
+  await page.locator('#selected').evaluate((node) => node.parentElement.setAttribute('data-logical-name', 'other'));
   assert.equal(
     await page.evaluate(() => {
       const tools = document.getElementById('paqvilo-xray').__px;

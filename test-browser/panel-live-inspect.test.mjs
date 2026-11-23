@@ -80,7 +80,7 @@ test('live Inspect works without Mirage and opens exact project Solution sources
     response
       .writeHead(200, { 'content-type': 'text/html' })
       .end(
-        `<!doctype html><html><head><title>Widget fixture</title><link rel="stylesheet" href="/widget.css?private=excluded"></head><body><h1>Widgets</h1><form data-formid="widget-edit" data-entityname="fx_widget"><span data-form-layout='{"Id":"widget-edit","EntityName":"fx_widget"}'></span><label for="fx_title">Title</label><input id="fx_title" name="fx_title" value="private-value-must-not-be-inspected"><input type="password" id="password" value="private-password"></form><div class="subgrid" id="ChildGrid"><div class="entity-grid" data-selected-view="child-view"></div></div><a href="/other/" id="other">Other page</a><script src="/widget.js"></script></body></html>`,
+        `<!doctype html><html><head><title>Widget fixture</title><link rel="stylesheet" href="/widget.css?private=excluded"></head><body><h1>Widgets</h1><div id="EntityFormControl_widgetedit"><div id="EntityFormControl_widgetedit_EntityFormView"><span data-form-layout='{"Id":"widget-edit","EntityName":"fx_widget"}'></span><table class="section"><tbody><tr><td class="cell"><div class="table-info"><label for="fx_title">Title</label></div><div class="control" data-logical-name="fx_title"><input id="fx_title" name="fx_title" value="private-value-must-not-be-inspected"></div></td></tr></tbody></table><input type="password" id="password" value="private-password"></div></div><div class="subgrid" id="ChildGrid"><div class="entity-grid" data-selected-view="child-view"></div></div><a href="/other/" id="other">Other page</a><script src="/widget.js"></script></body></html>`,
       );
   });
   let browser, panel, detach;

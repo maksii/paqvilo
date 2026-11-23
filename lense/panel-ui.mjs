@@ -183,6 +183,7 @@ function panelBrowserImpl(data) {
       .tw { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 6px 0; }
       .who { margin: 4px 0 2px; }
       .srcs .dim { overflow-wrap: anywhere; }
+      .cov { display: inline-flex; align-items: center; gap: 6px; min-width: 0; flex: 1 1 200px; }
       @media (prefers-reduced-motion: reduce) { .row.fresh { animation: none; } }
     `;
     const { ICON, icon, kindLabel, displayPath } = kit;
@@ -402,6 +403,7 @@ function panelBrowserImpl(data) {
           'toggle',
           'scope',
           'rebaseline',
+          'baseline',
           'clear',
           'ui',
         ].includes(name);
@@ -495,6 +497,7 @@ function panelBrowserImpl(data) {
       toggle: 'Updating override…',
       scope: 'Updating source scope…',
       rebaseline: 'Pinning the comparison baseline…',
+      baseline: 'Changing the comparison baseline…',
       clear: 'Clearing the list…',
     };
     const mutationActions = new Set([
@@ -508,6 +511,7 @@ function panelBrowserImpl(data) {
       'toggle',
       'scope',
       'rebaseline',
+      'baseline',
     ]);
     const pendingFeedback = () => {
       const jobs = [...S.pendingActions.values()];
@@ -771,6 +775,7 @@ function panelBrowserImpl(data) {
             differsTitle: 'Your local file differs from the version this site serves',
             sameTitle: 'Same content as the served file: this override changes nothing',
             pause: 'Pause this override: show the served version',
+            notApplied: 'Differs from served version, not applied',
           }
         : {
             differs: 'differs from deployed',
@@ -783,7 +788,15 @@ function panelBrowserImpl(data) {
             differsTitle: 'Your local file differs from the deployed one that Online shows',
             sameTitle: 'Same content as the deployed file: this override changes nothing',
             pause: 'Pause this override: show the online version',
+            notApplied: 'Differs from deployed, not applied',
           };
+    const NOT_APPLIED = {
+      'out-of-scope': [
+        'not laid over: same as Git',
+        'Local files is set to changed vs Git and this file matches the Git baseline, so the page keeps its own block',
+      ],
+      inactive: ['not laid over', 'Lense recognised this block of the page but did not lay your local file over it'],
+    };
     const chips = (it) => {
       const words = servedWords();
       let out = '';
@@ -792,6 +805,11 @@ function panelBrowserImpl(data) {
       if (it.isNew) out += `<span class="c ok" title="${words.isNew}">new</span>`;
       else if (it.differs === true) out += `<span class="c warn" title="${words.differsTitle}">${words.differs}</span>`;
       else if (it.differs === false) out += `<span class="c muted" title="${words.sameTitle}">${words.same}</span>`;
+      // A block that differs from your local file and is not laid over says why.
+      if (it.state === 'differs-not-applied') {
+        const [label, title] = NOT_APPLIED[it.reason] ?? NOT_APPLIED.inactive;
+        out += `<span class="c muted" title="${esc(title)}">${esc(label)}</span>`;
+      }
       if (it.note) out += `<span class="c act">${esc(it.note)}</span>`;
       if (it.count > 1)
         out += `<span class="c act" title="This page requested the file ${it.count} times">${it.count} requests</span>`;
@@ -826,6 +844,114 @@ function panelBrowserImpl(data) {
       return `<div class="group"><button class="gh${closed ? '' : ' openg'}" data-act="fold" data-id="${id}" aria-expanded="${!closed}">${icon('right')}<span>${esc(title)}</span><span class="n dimn">${count ?? rows.length}</span><span class="line"></span></button>${closed ? '' : rows.join('')}</div>`;
     };
     const emptyState = (title, text) => `<div class="empty"><b>${esc(title)}</b>${text}</div>`;
+    // ---- the portal serves another version than the baseline (the checkout is ahead of it, or behind it)
+    const servedDiffering = (d) => (d.served?.files ?? []).filter((file) => file.state === 'differs');
+    const baselineName = (d) => {
+      const spec = d.served?.baseline?.spec ?? 'HEAD';
+      const commit = (d.served?.baseline?.commit ?? '').slice(0, 7);
+      return /^[0-9a-f]{40,}$/.test(spec) || !commit ? esc(spec.slice(0, 7)) : `${esc(spec)} ${esc(commit)}`;
+    };
+    const servedBanner = (d) => {
+      const differing = servedDiffering(d);
+      if (!differing.length || d.online) return '';
+      const search = d.served.search;
+      const words = (list) => {
+        const count = list.length === 1 ? '<b>1</b> file is' : `<b>${list.length}</b> files are`;
+        return `${count} served in another version than your baseline <b>${baselineName(d)}</b> holds`;
+      };
+      const banner = (text, button = '') => `<div class="banner"><span class="grow">${text}</span>${button}</div>`;
+      if (!search || search.state === 'searching')
+        return banner(`${words(differing)}. Looking in Git for the version the portal serves…`);
+      if (search.state === 'unavailable')
+        return banner(`${words(differing)}. Git could not be asked which version that is.`);
+      // A file no version of the repository explains is listed below; the banner is about the files Git explains.
+      const files = differing.filter((file) => file.versions?.fits?.length);
+      // Only part of the history was compared: "none holds it" would say more than was looked at.
+      const partly = search.limited ? ' Only the newest versions and refs were compared.' : '';
+      if (!files.length) return partly ? banner(`${words(differing)}.${partly}`) : '';
+      const lead = words(files);
+      const it = files.length === 1 ? 'it' : 'them';
+      const ref = search.refs?.[0];
+      if (ref) {
+        const others =
+          search.refs.length > 1
+            ? ` (also ${search.refs
+                .slice(1, 4)
+                .map((other) => esc(other.name))
+                .join(', ')})`
+            : '';
+        // The full ref name goes to the session: a branch and a tag can share the short one.
+        const target = ref.ref ?? ref.name;
+        return banner(
+          `${lead}. The pages opened show ${it} as <b>${esc(ref.name)}</b> ${esc(ref.commit.slice(0, 7))} has ${it}${others}: compare with that to lay your checkout over the version served.`,
+          `<button class="btn" data-act="baseline" data-v="${esc(target)}" title="Compare with ${esc(target)} from now on, as a restart with that --baseline would">Compare with ${esc(ref.name)}</button>`,
+        );
+      }
+      return banner(
+        `${lead}. No branch or tag ${search.limited ? 'among those compared ' : ''}holds ${files.length === 1 ? 'it' : 'all of them'} as served; the commit each one matches is listed below.`,
+      );
+    };
+    const SERVED_CHANGE = {
+      'served-only': 'only in the served page',
+      'local-only': 'only in your file',
+      changed: 'differs',
+    };
+    const servedPlace = (place) => {
+      const sides = [place.served ? `served: ${place.served}` : '', place.local ? `yours: ${place.local}` : ''].filter(
+        Boolean,
+      );
+      return `<div class="sub">Line ${place.line} · ${SERVED_CHANGE[place.change] ?? 'differs'}${sides.map((side) => '<br>' + esc(side)).join('')}</div>`;
+    };
+    const servedVersion = (file, deployed, fits) => {
+      if (deployed) return 'the portal already serves your working copy, nothing is laid over';
+      if (file.versions && !fits && file.versions.limited)
+        return `none of the ${file.versions.searched} newest versions in this repository is what the portal serves`;
+      if (fits) {
+        const date = fits.date ? ' of ' + fits.date.slice(0, 10) : '';
+        return `served as in commit ${fits.commit.slice(0, 7)}${date}`;
+      }
+      if (file.versions)
+        return 'no version in this repository is what the portal serves (deployed from elsewhere, edited in the studio, or rendered by the portal from its own copy)';
+      return '';
+    };
+    const servedWhere = (file) => {
+      if (file.onPage) {
+        const plural = file.count === 1 ? '' : 's';
+        return `${file.count} place${plural} on this page`;
+      }
+      const more = file.pages.length > 2 ? ' …' : '';
+      return `not on this page; seen on ${file.pages.slice(0, 2).join(', ')}${more}`;
+    };
+    const servedRow = (file) => {
+      const title = baseName(file.rel);
+      const deployed = file.state === 'deployed';
+      const version = servedVersion(file, deployed, file.versions?.fits?.[0]);
+      const where = servedWhere(file);
+      const chip = deployed
+        ? '<span class="c muted" title="The portal rendered this page from your working copy of the file">already served</span>'
+        : '<span class="c warn" title="The portal rendered this page from another version of the file than your baseline holds">other version</span>';
+      const line = file.places[0]?.line;
+      const lineAttr = line ? ` data-line="${line}"` : '';
+      const more = file.count > 6 ? `<div class="sub">${file.count - 6} more on this page.</div>` : '';
+      return `<div class="row" data-rel="${esc(file.rel)}" data-label="${esc(title)}"${lineAttr}>
+        ${ico(fileKind({ rel: file.rel, kind: file.kind }))}
+        <button class="main" data-act="open" title="Open ${esc(title)} in the editor">
+          <div class="name"><span>${hl(title)}</span>${chip}</div>
+          ${pathLine(file.rel, hl(displayPath(file.rel)))}
+          <div class="sub">${esc(where)}${version ? ' · ' + esc(version) : ''}</div>
+          ${file.places.slice(0, 6).map(servedPlace).join('')}${more}
+        </button>
+        <div class="acts">${fileActs()}</div>
+      </div>`;
+    };
+    const servedGroup = (d) => {
+      const files = (d.served?.files ?? []).filter((file) => matches(file.rel));
+      if (!files.length) return '';
+      // The files of this page first, the ones the portal serves differently before the ones already deployed.
+      const order = (file) => (file.onPage ? 0 : 2) + (file.state === 'differs' ? 0 : 1);
+      files.sort((a, b) => order(a) - order(b));
+      return group('served-version', 'Served in another version than the baseline', files.map(servedRow));
+    };
     const loadingState = (title, text) =>
       `<div class="loading-state" role="status"><span class="spinner" aria-hidden="true"></span><div><strong>${esc(title)}</strong>${esc(text)}</div></div>`;
     // Loading epochs let a completed response retire a delayed progress push without
@@ -837,6 +963,218 @@ function panelBrowserImpl(data) {
           ? inspection.loadingId > S.completedInspectionLoadingId
           : !S.inspect?.report),
       );
+
+    // ---- Page requests: every request of the current document, by where it came from (lense/request-classes.mjs).
+    // [class, summary words (one, many), group title]
+    const REQUEST_CLASSES = [
+      ['local', ['from your sources', 'from your sources'], 'From your sources'],
+      ['document', ['page', 'pages'], 'Pages'],
+      [
+        'export',
+        ['in your sources, not laid over', 'in your sources, not laid over'],
+        'In your sources, not laid over',
+      ],
+      ['portal-data', ['portal data', 'portal data'], 'Portal data'],
+      ['platform-asset', ['portal runtime', 'portal runtime'], 'Portal runtime files'],
+      ['external', ['other site', 'other sites'], 'Other sites'],
+      ['unidentified', ['unidentified', 'unidentified'], 'Not identified'],
+    ];
+    // Why a request was answered as it was, in words: the ledger's reasons are codes.
+    const REQUEST_REASONS = {
+      'out-of-scope': 'not laid over: Local files is set to changed vs Git',
+      paused: 'not laid over: the override is paused',
+      excluded: 'not laid over: excluded by your configuration',
+      'passthrough-route': 'not laid over: a route passes it to the portal',
+      'duplicate-url': 'not laid over: several web files have this address',
+      inactive: 'not laid over: the web file is not active',
+      'no-content-file': 'not laid over: the web file has no content file',
+      'page-first': 'not laid over: a page has the same address',
+      'outside-export': 'not laid over: the file is outside your sources',
+      'read-failed': 'not laid over: the local file could not be read',
+      'not-served': 'not laid over',
+      method: 'not laid over: only reads are laid over',
+      bypass: 'not laid over: overrides are off (Online)',
+      mirage: 'served by Mirage',
+      'not-intercepted': 'loaded before Lense could lay it over',
+      pending: 'waiting for an answer',
+      'not-found': 'not found',
+      failed: 'the request failed',
+      'fetch-failed': 'the request failed',
+      unmapped: 'not in your sources',
+      'not-in-export': 'not in your sources',
+      'not-200': 'the portal did not answer it as a page',
+      'not-text': 'not a text file',
+      download: 'a download',
+      'not-html': 'not a page',
+      'rewrite-failed': 'your sources could not be laid over it',
+    };
+    // What a portal request is, in words.
+    const PLATFORM_WORDS = {
+      'server-logic': 'server logic',
+      'cloud-flow': 'cloud flow',
+      'file-upload': 'file upload',
+      'web-api': 'Web API',
+      odata: 'OData feed',
+      'auth-token': 'sign-in token',
+      'ads-polls': 'ads and polls',
+      'portal-service': 'portal service',
+      'anti-forgery-token': 'anti-forgery token',
+      'resource-manager': 'portal text resources',
+      'form-dialog': 'form in a pop-up',
+      'note-attachment': 'note attachment',
+      'portal-documents': 'documents',
+      'external-sign-in': 'external sign-in',
+      'aspnet-resource': 'ASP.NET resource',
+      'xrm-adx': 'portal script or icon',
+      areas: 'portal area file',
+      glyphicons: 'icon font',
+      blockui: 'page blocking script',
+      'web-resource': 'web resource',
+    };
+    const platformWords = (value) =>
+      PLATFORM_WORDS[value] ?? (/\.[a-z0-9]+$/i.test(value ?? '') ? value : String(value ?? '').replaceAll('-', ' '));
+    // Elements of the page (its accessible frames and open shadow roots too) that load a file, by address: the
+    // pathname for this site, the origin for another site (the ledger keeps only the origin of those).
+    const LOADERS =
+      'script[src],link[href],img[src],img[srcset],source[src],source[srcset],video[src],video[poster],audio[src],iframe[src],embed[src],object[data],input[type=image][src],track[src]';
+    const addressKey = (value, base = location.href) => {
+      try {
+        const url = new URL(String(value), base);
+        if (!/^https?:$/.test(url.protocol)) return '';
+        if (url.origin !== location.origin) return 'origin:' + url.origin;
+        let path = url.pathname;
+        try {
+          path = decodeURIComponent(path);
+        } catch {
+          /* a malformed escape keeps the raw path */
+        }
+        const lowered = path.toLowerCase();
+        let end = lowered.length;
+        while (end > 0 && lowered.charCodeAt(end - 1) === 47) end--;
+        return 'path:' + (lowered.slice(0, end) || '/');
+      } catch {
+        return '';
+      }
+    };
+    // The documents a node opens: its shadow root and, when same-origin, its frame's document.
+    const queueSurfaces = (roots, node) => {
+      if (node.shadowRoot) roots.push(node.shadowRoot);
+      if (node.localName === 'iframe')
+        try {
+          if (node.contentDocument?.documentElement) roots.push(node.contentDocument);
+        } catch {
+          /* a frame of another site is a boundary */
+        }
+    };
+    const loaderAddresses = (node) =>
+      [
+        node.getAttribute('src'),
+        node.getAttribute('href'),
+        node.getAttribute('data'),
+        node.getAttribute('poster'),
+        ...String(node.getAttribute('srcset') ?? '')
+          .split(',')
+          .map((part) => part.trim().split(/\s+/)[0]),
+      ].filter(Boolean);
+    const indexSurface = (surface, roots, index) => {
+      for (const node of surface.querySelectorAll('*')) {
+        if (node.closest('#paqvilo-panel,#paqvilo-xray,#paqvilo-handle')) continue;
+        queueSurfaces(roots, node);
+        if (!node.matches(LOADERS)) continue;
+        const base = node.ownerDocument.baseURI;
+        for (const value of loaderAddresses(node)) {
+          const key = addressKey(value, base);
+          if (key && !index.has(key)) index.set(key, node);
+        }
+      }
+    };
+    const loaderIndex = () => {
+      const index = new Map();
+      const roots = [document];
+      for (let at = 0; at < roots.length && at < 200; at++) indexSurface(roots[at], roots, index);
+      return index;
+    };
+    let loaders = null;
+    const loaderOf = (url) => {
+      loaders ??= loaderIndex();
+      return loaders.get(addressKey(url)) ?? null;
+    };
+    /** The button that selects the element loading `url`, when the page has one. */
+    const loaderButton = (url, name) =>
+      url && loaderOf(url)
+        ? `<button class="ib" data-act="select-loader" data-url="${esc(url)}" aria-label="${esc('Select the element that loads ' + name)}" title="Select the element that loads this file">${icon('locate')}</button>`
+        : '';
+    const requestRow = (item) => {
+      const reason = REQUEST_REASONS[item.reason] ?? '';
+      let status = `HTTP ${item.status}`;
+      if (item.status == null) status = 'no answer yet';
+      else if (item.status === 'failed') status = 'failed';
+      const what = item.platform ? platformWords(item.platform) : '';
+      const facts = [
+        item.method && item.method !== 'GET' ? item.method : '',
+        item.type && item.type !== 'other' ? item.type : '',
+        what,
+        status,
+        reason,
+      ]
+        .filter(Boolean)
+        .join(' · ');
+      const count =
+        item.count > 1
+          ? `<span class="c act" title="This page requested it ${item.count} times">${item.count} requests</span>`
+          : '';
+      const name = item.rel ? shortName(item.rel) : String(item.url ?? '');
+      const kind = item.rel
+        ? fileKind({ url: item.url, rel: item.rel })
+        : ({ document: 'page', unidentified: 'unidentified-request' }[item.class] ?? item.class);
+      const body = `<div class="name"><span>${hl(name)}</span>${count}</div>${item.rel ? pathLine(item.rel, hl(displayPath(item.rel))) : ''}<div class="sub">${hl(facts)}</div>`;
+      const main = item.rel
+        ? `<button class="main" data-act="open" data-rel="${esc(item.rel)}" title="Open ${esc(name)} in the editor">${body}</button>`
+        : `<div class="main" title="${esc(item.url ?? '')}">${body}</div>`;
+      const copyButton = item.rel
+        ? `<button class="ib" data-act="copy" data-rel="${esc(item.rel)}" title="Copy the file path">${icon('copy')}</button>`
+        : '';
+      return `<div class="row wrapt" data-request="${esc(item.class)}" data-request-rel="${esc(item.rel ?? '')}" data-url="${esc(item.url ?? '')}" data-label="${esc(name)}">${ico(kind, '', name)}${main}<div class="acts">${loaderButton(item.url, name)}${copyButton}</div></div>`;
+    };
+    const requestsHtml = (d) => {
+      const requests = d.requests;
+      if (!requests || typeof requests !== 'object' || !requests.counts) return '';
+      const words = (id, one, many) => {
+        if (id === 'export' && d.mirageMode) return ['served by Mirage', 'served by Mirage'];
+        return [one, many];
+      };
+      const parts = REQUEST_CLASSES.filter(([id]) => requests.counts[id] > 0).map(([id, [one, many]]) => {
+        const n = requests.counts[id];
+        return `${n.toLocaleString('en-US')} ${words(id, one, many)[n === 1 ? 0 : 1]}`;
+      });
+      const total = Number(requests.total) || 0;
+      const plural = total === 1 ? '' : 's';
+      const summary = total
+        ? `${total.toLocaleString('en-US')} request${plural}: ${parts.join(', ')}`
+        : 'No request of this page was recorded yet.';
+      const items = (requests.items ?? []).filter((item) =>
+        matches(item.url ?? '', item.rel ?? '', item.platform ?? '', item.reason ?? ''),
+      );
+      const listed = (requests.items ?? []).length;
+      const notes = [
+        requests.truncated && listed < total
+          ? `Only the first ${listed.toLocaleString('en-US')} addresses are listed; the counts include every request.`
+          : '',
+        requests.uncounted ? `${requests.uncounted.toLocaleString('en-US')} more requests could not be recorded.` : '',
+      ].filter(Boolean);
+      const noteRows = notes.map((note) => `<div class="sub group-note">${esc(note)}</div>`).join('');
+      let out = `<div class="group" data-group="requests"><h4 class="gh">Page requests</h4><div class="sub group-note" data-requests-summary>${esc(summary)}</div>${noteRows}</div>`;
+      for (const [id, , title] of REQUEST_CLASSES) {
+        const rows = items.filter((item) => item.class === id);
+        const groupTitle = id === 'export' && d.mirageMode ? 'Served by Mirage' : title;
+        // What needs a look is open: files of your sources that were not laid over and requests nothing names.
+        out += rgroup(`requests-${id}`, groupTitle, rows, requestRow, {
+          count: requests.counts[id],
+          collapsed: !['export', 'unidentified'].includes(id),
+        });
+      }
+      return out;
+    };
 
     /* NOSONAR: single-pass routine, splitting it would change shared state */ const overridesHtml = () => {
       const d = S.d;
@@ -868,12 +1206,21 @@ function panelBrowserImpl(data) {
       if (git.headMoved && git.baseline?.pinned) {
         out += `<div class="banner"><span class="grow">Git HEAD moved to <b>${esc(git.branch ?? 'detached')} ${esc((git.commit ?? '').slice(0, 7))}</b> after the baseline was pinned at <b>${esc((git.baseline.commit ?? '').slice(0, 7))}</b>: edited markers and template patches still compare with that commit.</span>${git.canRepin ? '<button class="btn" data-act="rebaseline" title="Compare with the current HEAD from now on, as a restart would">Pin HEAD</button>' : ''}</div>`;
       }
+      out += servedBanner(d);
       if (d.pending.length) {
         out += `<div class="banner"><span class="grow"><b>${d.pending.length}</b> file${d.pending.length > 1 ? 's' : ''} changed since this page loaded: ${esc(d.pending.slice(0, 2).map(baseName).join(', '))}${d.pending.length > 2 ? ' ...' : ''}</span><button class="btn" data-act="reload">Reload</button></div>`;
       }
       const all = d.items;
-      // Model-driven rows not observed on this revision are listed under the same filters, so they count too.
-      const counted = d.modelDriven ? [...all, ...(d.unobserved ?? [])] : all;
+      // Every row a filter lists counts under it: model-driven rows not observed on this revision, paused overrides,
+      // blocks that differ and are not applied, and blocks that are the same as deployed. The counts are counted from
+      // the lists themselves, so a count never names rows its list leaves out.
+      const counted = [
+        ...all,
+        ...(d.modelDriven ? (d.unobserved ?? []) : []),
+        ...(d.paused ?? []),
+        ...(d.notApplied ?? []),
+        ...(d.insync ?? []),
+      ];
       const counts = {
         all: counted.length,
         edited: counted.filter((i) => i.edited).length,
@@ -931,7 +1278,8 @@ function panelBrowserImpl(data) {
       const shown = all.filter((i) => inFilter(i) && matches(i.rel, i.url ?? '', i.title ?? ''));
       let lists = '';
       for (const [id, title] of GROUPS) lists += group(id, title, shown.filter((i) => i.group === id).map(itemRow));
-      const paused = d.paused.filter((i) => matches(i.rel, i.url ?? ''));
+      // The active filter applies to every group, so the lists show what the filter counts.
+      const paused = (d.paused ?? []).filter((i) => inFilter(i) && matches(i.rel, i.url ?? ''));
       lists += group('paused', 'Paused overrides', paused.map(itemRow));
       if (d.modelDriven)
         lists += group(
@@ -939,8 +1287,17 @@ function panelBrowserImpl(data) {
           'Not loaded by this page',
           (d.unobserved ?? []).filter((i) => inFilter(i) && matches(i.rel, i.url ?? '', i.title ?? '')).map(itemRow),
         );
-      const insync = d.insync.filter((i) => matches(i.rel));
+      lists += servedGroup(d);
+      // Blocks of the page that differ from your local file but are not laid over: why is on each row.
+      const notApplied = (d.notApplied ?? []).filter((i) => inFilter(i) && matches(i.rel, i.url ?? ''));
+      lists += group('not-applied', servedWords().notApplied, notApplied.map(itemRow));
+      const insync = (d.insync ?? []).filter((i) => inFilter(i) && matches(i.rel));
       lists += group('insync', servedWords().group, insync.map(itemRow));
+      // Paused overrides of other pages are not this page's rows: they are only counted.
+      const pausedWords = d.pausedElsewhere === 1 ? '1 more override is' : d.pausedElsewhere + ' more overrides are';
+      const elsewhere =
+        d.pausedElsewhere > 0 && !S.q ? `<div class="sub group-note">${pausedWords} paused on other pages.</div>` : '';
+      const requests = elsewhere + requestsHtml(d);
       if (!lists) {
         if (S.q || filter !== 'all')
           out += emptyState('Nothing matches', 'Clear the filter to see every override of this page.');
@@ -962,7 +1319,7 @@ function panelBrowserImpl(data) {
             : emptyState('Nothing on this page comes from local sources', hint);
         }
       }
-      return out + lists;
+      return out + lists + requests;
     };
 
     // ---- Mirage: Inspect and Tweaks
@@ -1072,6 +1429,116 @@ function panelBrowserImpl(data) {
       const recordId = pageRecordId();
       const idQuery = recordId ? `&id=${encodeURIComponent(recordId)}` : '';
       return `records?entity=${encodeURIComponent(entity)}${idQuery}`;
+    };
+    const count = (n, one, many = one + 's') =>
+      `${Number(n ?? 0).toLocaleString('en-US')} ${Number(n) === 1 ? one : many}`;
+    // What Inspect did not read of this page or of your sources: a list is complete only when nothing was cut.
+    const inspectionLimitsHtml = (report) => {
+      const limits = report.elementSourceLimits ?? {};
+      const read = report.inputLimits ?? {};
+      const names = (refs, max = 3) => {
+        const list = (refs ?? []).map((ref) => baseName(ref)).filter(Boolean);
+        if (!list.length) return '';
+        const more = list.length > max ? ' ...' : '';
+        return `: ${list.slice(0, max).join(', ')}${more}`;
+      };
+      const lines = [
+        read.renderedReadFailed && 'The page itself could not be read: only your sources were inspected.',
+        limits.renderedTruncated &&
+          'Only part of the page was read: it has more elements or controls than Inspect reads.',
+        read.assetsTruncated && 'Only the first 300 files the page loads were read.',
+        read.webFilesTruncated && 'Only the first 100 scripts and stylesheets of your web files were searched.',
+        read.roundsTruncated && 'Web files that other web files load were followed eight levels deep, not further.',
+        limits.candidateTruncated &&
+          `Only the first ${Number(limits.renderedCandidates ?? 1200).toLocaleString('en-US')} markup matches were compared.`,
+        limits.markupOmittedSourceCount > 0 &&
+          `${count(limits.markupOmittedSourceCount, 'source file')} too large to search ${limits.markupOmittedSourceCount === 1 ? 'was' : 'were'} skipped${names(limits.markupOmittedSources)}.`,
+        limits.scriptTruncated &&
+          `Some scripts name more elements than are read (${limits.scriptHintsPerSource ?? 120} per file)${names(limits.scriptTruncatedSources)}.`,
+      ].filter(Boolean);
+      if (!lines.length) return '';
+      return `<div class="banner" data-inspection-limits role="note"><span class="grow"><b>Not everything was read.</b> ${lines.map(esc).join(' ')}</span></div>`;
+    };
+    // How much of the page is identified, asked of X-ray on request: it reads every element, so it never runs by
+    // itself.
+    const runCoverage = () => {
+      const xray = document.getElementById('paqvilo-xray')?.__px;
+      if (S.coverage?.running) return;
+      if (!xray?.coverage) {
+        S.coverage = { error: 'X-ray is not available on this page.' };
+        render();
+        return;
+      }
+      S.coverage = { running: true };
+      render();
+      let done = false;
+      const go = () => {
+        if (done || lifetime.signal.aborted) return;
+        done = true;
+        try {
+          S.coverage = { result: xray.coverage(), at: Date.now() };
+        } catch (error) {
+          S.coverage = { error: 'The check could not finish: ' + String(error?.message ?? error).split('\n')[0] };
+        }
+        render();
+      };
+      // The progress line is drawn before the check takes the page's main thread.
+      requestAnimationFrame(() => setTimeout(go));
+      setTimeout(go, 250);
+    };
+    const COVERAGE_STATE = {
+      none: ['not identified', 'muted'],
+      likely: ['likely', 'warn'],
+      conflict: ['conflict', 'bad'],
+      // X-ray could not read the element (its answer failed): said as that, never as "not identified".
+      failed: ['could not be read', 'bad'],
+    };
+    const coverageSampleRow = (sample, index) => {
+      const [state, tone] = COVERAGE_STATE[sample.state] ?? COVERAGE_STATE.none;
+      const where = [sample.path, sample.frame ? 'in a frame' : ''].filter(Boolean).join(' · ');
+      const label = `Select ${sample.tag} element ${index + 1} in X-ray`;
+      return `<div class="row" data-coverage-sample="${index}">${ico('element', '', sample.tag)}<div class="main"><div class="name"><span>${esc(sample.tag)}</span><span class="c ${tone}">${esc(state)}</span></div><div class="sub">${esc(where)}</div></div><div class="acts"><button class="ib" data-act="coverage-select" data-index="${index}" aria-label="${esc(label)}" title="Select this element in X-ray">${icon('locate')}</button></div></div>`;
+    };
+    // The summary line and the sample rows of a finished identification check.
+    const coverageResultHtml = (r) => {
+      const k = r.counts ?? {};
+      const extra = [
+        k.likely ? `${Number(k.likely).toLocaleString('en-US')} likely` : '',
+        k.conflict ? `${Number(k.conflict).toLocaleString('en-US')} in conflict` : '',
+        k.failed ? `${Number(k.failed).toLocaleString('en-US')} could not be read` : '',
+      ].filter(Boolean);
+      const extraText = extra.length ? ', ' + extra.join(', ') : '';
+      const summary = `${count(r.total, 'element')}: ${Number(k.direct ?? 0).toLocaleString('en-US')} identified, ${Number(k.contained ?? 0).toLocaleString('en-US')} inside an identified element, ${Number(k.none ?? 0).toLocaleString('en-US')} not identified${extraText}`;
+      const line = `<span data-coverage-summary>${esc(summary)}</span>`;
+      const notes = [
+        r.truncated ? `Only the first ${count(r.total, 'element')} were checked.` : '',
+        r.report ? '' : 'X-ray has not read this page’s inspection yet: check again once Inspect has loaded.',
+      ].filter(Boolean);
+      const samples = r.unidentified ?? [];
+      const open = (k.none ?? 0) + (k.likely ?? 0) + (k.conflict ?? 0);
+      if (samples.length && samples.length < open)
+        notes.push(`The first ${count(samples.length, 'of them is', 'of them are')} listed.`);
+      const body =
+        notes.map((note) => `<div class="sub group-note">${esc(note)}</div>`).join('') +
+        samples.map(coverageSampleRow).join('');
+      return { line, body };
+    };
+    const identificationHtml = () => {
+      const c = S.coverage;
+      const elements = document.getElementsByTagName('*').length;
+      const button = `<button class="btn sec" data-act="coverage-run" title="Check how X-ray identifies every element of this page, its frames and open shadow roots. On a large page this takes a moment."${c?.running ? ' disabled aria-busy="true"' : ''}>${c?.result ? 'Check again' : 'Check identification'}</button>`;
+      const intro = `Checks every element of this page (about ${count(elements, 'element')}) the way X-ray identifies a selection.`;
+      let line = `<span class="dim">${esc(intro)}</span>`;
+      let body = '';
+      if (c?.running)
+        line = '<span class="spinner" aria-hidden="true"></span><span>Checking every element of this page…</span>';
+      else if (c?.error) line = `<span class="dim">${esc(c.error)}</span>`;
+      else if (c?.result) {
+        const shown = coverageResultHtml(c.result);
+        line = shown.line;
+        body = shown.body;
+      }
+      return `<div class="card" data-identification><div class="srcs"><span class="lbl2">Identification</span><span class="cov" role="status" aria-live="polite">${line}</span>${button}</div>${body}</div>`;
     };
     /* NOSONAR: single-pass routine, splitting it would change shared state */ const runtimeHtml = () => {
       const runtime = S.d.inspection ?? S.d.mirage;
@@ -1185,6 +1652,7 @@ function panelBrowserImpl(data) {
           ${accessLine}</div>`;
       } else if (!report.modelDriven)
         out += `<div class="card"><div class="path">${esc(location.pathname)} <span class="dim">&nbsp;no web page in your sources has this address</span></div></div>`;
+      out += inspectionLimitsHtml(report) + identificationHtml();
       const keep = (...texts) => matches(...texts.map((text) => String(text ?? '')));
       const groups = [];
       // Names, never IDs: a record the report names by ID is looked up among the records it lists.
@@ -1564,12 +2032,34 @@ function panelBrowserImpl(data) {
         keep(item.id, item.name, item.field, item.entity),
       );
       const controls = allControls.filter((item) => item.evidence === 'rendered-and-source');
-      const unmatched = allControls.length - controls.length;
-      const unmatchedNote = (count) => {
-        if (!count) return '';
-        return count > 1
-          ? `${count} more controls on this page match no source`
-          : '1 more control on this page matches no source';
+      const unmatched = allControls.filter((item) => item.evidence !== 'rendered-and-source');
+      const locateButton = (item) =>
+        item.id || item.name
+          ? `<button class="ib" data-act="inspect-locate" data-field="${esc(item.id || item.name)}" title="Find this control on the page">${icon('locate')}</button>`
+          : '';
+      // A control without a source says why: nothing matches it (Not found), or several definitions claim it
+      // (Conflict, with the columns that match).
+      const unmatchedRow = (item) => {
+        const candidates = item.candidates ?? [];
+        let chip =
+          '<span class="c muted" title="No column or form of your sources matches this control">not found</span>';
+        let why = 'matches no source';
+        if (item.evidence === 'rendered-conflict') {
+          chip =
+            '<span class="c bad" title="The page address names more than one form, so this control has no single source">conflict</span>';
+          why = 'the page address names more than one form';
+        } else if (candidates.length > 1) {
+          chip = '<span class="c bad" title="Several columns of your sources match this control">conflict</span>';
+          why = 'matches several columns: ' + candidates.join(', ');
+        }
+        return rrow(item, {
+          kind: 'control',
+          title: item.name ?? item.id ?? item.tag,
+          sub: [renderedSub(item), why].filter(Boolean).join(' · '),
+          chips: chip,
+          wrap: true,
+          acts: locateButton(item),
+        });
       };
       groups.push(
         rgroup(
@@ -1581,16 +2071,15 @@ function panelBrowserImpl(data) {
               kind: 'control',
               title: item.field ?? item.name ?? item.id ?? item.tag,
               sub: renderedSub(item),
-              acts:
-                item.id || item.name
-                  ? `<button class="ib" data-act="inspect-locate" data-field="${esc(item.id || item.name)}" title="Find this control on the page">${icon('locate')}</button>`
-                  : '',
+              acts: locateButton(item),
             }),
-          {
-            collapsed: controls.length > 25,
-            note: unmatchedNote(unmatched),
-          },
+          { collapsed: controls.length > 25 },
         ),
+      );
+      groups.push(
+        rgroup('runtime-rendered-unmatched', 'Rendered controls without a source', unmatched, unmatchedRow, {
+          collapsed: unmatched.length > 25,
+        }),
       );
       const apiSub = (item) => {
         const target = item.entity ? `table ${item.entity}` : 'table not found in your Solution sources';
@@ -1715,6 +2204,7 @@ function panelBrowserImpl(data) {
               kind: assetKind(item),
               title: item.url,
               sub: `${item.evidence === 'rendered-asset' ? 'loaded on this page' : 'referenced in source'} · ${item.ref ?? 'no local file'}`,
+              acts: report.modelDriven ? '' : loaderButton(item.url, item.name ?? item.url),
             }),
         ),
       );
@@ -1840,6 +2330,7 @@ function panelBrowserImpl(data) {
         'runtime-columns': 'components',
         'runtime-components': 'components',
         'runtime-rendered': 'components',
+        'runtime-rendered-unmatched': 'components',
         'runtime-logic': 'components',
         'runtime-pcf': 'components',
         'runtime-assets': 'assets',
@@ -2654,6 +3145,8 @@ function panelBrowserImpl(data) {
       if (lifetime.signal.aborted) return;
       const d = S.d;
       if (!d) return;
+      // The elements that load files are looked up again for each draw: the page may have changed them.
+      loaders = null;
       const ui = S.ui;
       const localOnly = sourcesOnly(d);
       const errs = d.problems.filter((p) => p.type === 'error' || p.type === 'console').length;
@@ -3141,12 +3634,45 @@ function panelBrowserImpl(data) {
       S.pickEscape = null;
       S.pickingElement = false;
     };
+    /**
+     * The element with this ID or name in the page, its accessible frames and open shadow roots: a visible control
+     * first, then any visible element, then a hidden one (a hidden input carries the same name as its field).
+     */
+    const scanForControl = (surface, roots, found, field) => {
+      for (const node of surface.querySelectorAll('*')) {
+        if (node.closest('#paqvilo-panel,#paqvilo-xray,#paqvilo-handle')) continue;
+        if (node.shadowRoot) roots.push(node.shadowRoot);
+        if (node.localName === 'iframe')
+          try {
+            if (node.contentDocument?.documentElement) roots.push(node.contentDocument);
+          } catch {
+            /* a frame of another site is a boundary */
+          }
+        // getAttribute: a form's id property can be a control named "id".
+        if (node.getAttribute('id') === field || node.getAttribute('name') === field) found.push(node);
+      }
+    };
+    const findControl = (field) => {
+      const found = [];
+      const roots = [document];
+      for (let at = 0; at < roots.length && at < 200; at++) scanForControl(roots[at], roots, found, field);
+      const visible = (node) =>
+        !(node.localName === 'input' && node.type === 'hidden') &&
+        node.getClientRects().length > 0 &&
+        node.ownerDocument.defaultView.getComputedStyle(node).visibility !== 'hidden';
+      const control = (node) => node.matches('input,select,textarea,button,[contenteditable=true]');
+      return found.find((node) => visible(node) && control(node)) ?? found.find(visible) ?? found[0] ?? null;
+    };
     const locateElement = (field) => {
-      const nodes = [...document.querySelectorAll('input,select,textarea,[id],[name]')];
-      const node = nodes.find(
-        (item) => !item.closest('#paqvilo-panel') && (item.id === field || item.getAttribute('name') === field),
-      );
+      const node = findControl(field);
       if (!node) return toast('This field is not present in the rendered page.', true);
+      // A control inside a frame: the frame comes into view first.
+      for (
+        let frame = node.ownerDocument.defaultView?.frameElement;
+        frame;
+        frame = frame.ownerDocument.defaultView?.frameElement
+      )
+        frame.scrollIntoView({ block: 'center' });
       node.scrollIntoView({ block: 'center', behavior: 'smooth' });
       const prior = { outline: node.style.outline, offset: node.style.outlineOffset };
       node.style.outline = '3px solid #c38a2e';
@@ -3262,6 +3788,33 @@ function panelBrowserImpl(data) {
         case 'inspect-locate':
           locateElement(t.dataset.field);
           break;
+        case 'select-loader': {
+          // The element that loads a file: X-ray selects it, also one that is not rendered (a script, a stylesheet
+          // link); Inspect shows what it is.
+          loaders = null;
+          const node = loaderOf(t.dataset.url);
+          const xray = document.getElementById('paqvilo-xray')?.__px;
+          if (!node) toast('The element that loads this file is no longer on the page.', true);
+          else if (!xray?.select)
+            toast('X-ray is not available on this page, so the element cannot be selected.', true);
+          else {
+            xray.select(node);
+            S.ui.tab = 'runtime';
+            saveUi();
+            render();
+          }
+          break;
+        }
+        case 'coverage-run':
+          runCoverage();
+          break;
+        case 'coverage-select': {
+          const xray = document.getElementById('paqvilo-xray')?.__px;
+          if (!xray?.selectCoverageSample?.(Number(t.dataset.index)))
+            toast('This element is no longer on the page. Check identification again.', true);
+          else render();
+          break;
+        }
         case 'inspect-pick': {
           const xray = document.getElementById('paqvilo-xray')?.__px;
           if (xray) {
@@ -3286,7 +3839,7 @@ function panelBrowserImpl(data) {
             event.stopImmediatePropagation();
             S.selectedElement = {
               tag: node.tagName.toLowerCase(),
-              id: node.id.slice(0, 160),
+              id: (node.getAttribute('id') ?? '').slice(0, 160),
               name: (node.getAttribute('name') ?? '').slice(0, 160),
               classes: String(node.className ?? '').slice(0, 160),
             };
@@ -3521,6 +4074,12 @@ function panelBrowserImpl(data) {
           const r = await api('scope', { scope: t.dataset.v });
           if (r.ok) reloadPage();
           else toast(r.error ?? 'failed', true);
+          break;
+        }
+        case 'baseline': {
+          const r = await api('baseline', { ref: t.dataset.v });
+          if (r.ok) reloadPage();
+          else toast(r.error ?? 'Could not change the baseline', true);
           break;
         }
         case 'rebaseline': {

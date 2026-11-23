@@ -45,7 +45,15 @@ const sent = (tab, matches) => {
 };
 /** Pauses a request in `tab` and resolves once interception has answered it. */
 const pause = (tab, requestId, url, options) => {
-  const answered = sent(tab, (method, params) => method.startsWith('Fetch.') && params?.requestId === requestId);
+  // A request the browser sends itself is paused once more at its response: the answer is what follows that.
+  const answered = sent(
+    tab,
+    (method, params) =>
+      method.startsWith('Fetch.') &&
+      params?.requestId === requestId &&
+      !params.interceptResponse &&
+      method !== 'Fetch.getResponseBody',
+  );
   tab.pause(requestId, url, options);
   return answered;
 };
@@ -85,7 +93,8 @@ test('document rewrite waits for its current source index and sends provenance o
   current.rewriter.rewrite = (_body, route, options) => {
     rewritten++;
     assert.equal(route, '/document');
-    assert.deepEqual(options, { html: true, isDocument: true, sourceIndex: index });
+    // `provenance`: the session has an inspector the panel shares, so the document's elements are named for it.
+    assert.deepEqual(options, { html: true, isDocument: true, sourceIndex: index, provenance: true });
     return { html: '<p>Changed local response</p>', applied: [], notes: [], matched: [], provenance: proof };
   };
   const detach = await interceptOrigin(fake.context, ORIGIN, current.route, {
@@ -168,9 +177,16 @@ test('snippet changes patch fetched HTML fragments while preserving JSON payload
     pause(tab, 'polling', `${ORIGIN}/data`, { type: 'XHR' }),
     pause(tab, 'fragment', `${ORIGIN}/fragment`, { type: 'XHR' }),
   ]);
-  assert.equal(b.fetched.length, 2);
-  assert.equal(Buffer.from(b.answers('polling')[0].body, 'base64').toString(), json);
-  assert.match(Buffer.from(b.answers('fragment')[0].body, 'base64').toString(), /Changed footer text/);
+  // The browser sends both requests itself; only their responses are paused and read.
+  assert.equal(b.fetched.length, 0);
+  assert.deepEqual(b.staged.map((entry) => entry.requestId).toSorted(), ['fragment', 'polling']);
+  const polling = b.answers('polling').at(-1);
+  assert.deepEqual(
+    [polling.method, polling.body],
+    ['Fetch.continueRequest', undefined],
+    'JSON goes on as the portal sent it',
+  );
+  assert.match(Buffer.from(b.answers('fragment').at(-1).body, 'base64').toString(), /Changed footer text/);
 });
 
 // @test-kind contract: asynchronous startup preserves the synchronous model and rewrite result
@@ -385,6 +401,13 @@ test('background HTML history deduplicates polling and bounds retained inline bo
       headers: () => ({}),
     }),
     fetch: async () => ({
+      headers: () => ({ 'content-type': 'text/html' }),
+      status: () => 200,
+      text: async () => 'original',
+    }),
+    response: async () => ({
+      staged: true,
+      error: null,
       headers: () => ({ 'content-type': 'text/html' }),
       status: () => 200,
       text: async () => 'original',

@@ -39,13 +39,18 @@ export function createFrameReadiness({ diagnostic = () => {}, timeoutMs = 5000, 
   // (a site policy without 'unsafe-inline') never asks: its entry ends after a longer lifetime from decoration and
   // reports that the load was not held. `limit` bounds how many entries are kept until then.
   return {
-    decorate(html, { path = '/', observed, head = false } = {}) {
+    decorate(html, { path = '/', observed, head = false, sent = null } = {}) {
+      // `sent` is shown the document as it leaves here (the caller's record of what it answers); it changes nothing.
+      const answered = (document) => {
+        sent?.(document);
+        return document;
+      };
       // A HEAD answer is no document a browser loads: it gets no blocker.
-      if (head || observed?.modalLoadOrdering === 'immediate') return html;
+      if (head || observed?.modalLoadOrdering === 'immediate') return answered(html);
       // Native documents have a final body tag. Authored scripts can contain an
       // earlier literal "</body>"; preserve their bytes when adding the blocker.
       const bodyEnd = html.toLowerCase().lastIndexOf('</body>');
-      if (bodyEnd < 0) return html;
+      if (bodyEnd < 0) return answered(html);
       if (pending.size >= limit) {
         const oldest = pending.keys().next().value;
         finish(oldest, pending.get(oldest).response ? 'timeout' : 'aborted');
@@ -63,7 +68,7 @@ export function createFrameReadiness({ diagnostic = () => {}, timeoutMs = 5000, 
       // throwing ready handler does not prevent the global ready promise settling. Once the
       // frame has loaded, the marker leaves the document (the platform frame has no such image).
       const markup = `<img hidden alt="" aria-hidden="true" data-paqvilo-frame-ready><script data-paqvilo-frame-ready>(function(){try{var image=document.querySelector('img[data-paqvilo-frame-ready]');if(image)image.src='${route}';}finally{document.addEventListener('DOMContentLoaded',function(){var jq=window.jQuery;function release(reason){window.__portalSimulation=window.__portalSimulation||{};window.__portalSimulation.frameLoadOrdering=reason;fetch('${route}?reason='+reason,{method:'POST',credentials:'same-origin'}).then(function(response){return response.arrayBuffer();}).catch(function(){});}if(jq&&jq.ready&&typeof jq.ready.then==='function'){jq.ready.then(function(){setTimeout(function(){release('jquery-ready');},0);});}else release('dom-ready');},{once:true});}window.addEventListener('load',function(){document.querySelectorAll('[data-paqvilo-frame-ready]').forEach(function(node){node.remove();});},{once:true});})();</script>`;
-      return html.slice(0, bodyEnd) + markup + html.slice(bodyEnd);
+      return answered(html.slice(0, bodyEnd) + markup + html.slice(bodyEnd));
     },
     handle(req, res, url) {
       if (!url.pathname.startsWith(prefix)) return false;

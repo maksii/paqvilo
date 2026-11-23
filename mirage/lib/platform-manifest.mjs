@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { stripTrailingCharacter } from './text-scanning.mjs';
+import { antiXssHtmlEncode } from './liquid-dotnet.mjs';
 
 /*
  * Native Power Pages platform resource manifest.
@@ -420,12 +421,18 @@ export function webFormsForm({
   // form (the footer) is unaffected.
   const aborted = String(content ?? '').indexOf(RENDER_ABORT_MARKER);
   let trailing = '';
+  // The removals from the content, in the content's own coordinates (onContent): render provenance re-bases on them.
+  const contentEdits = [];
   if (aborted >= 0) {
     trailing = /^(?:\s*<\/[a-z][a-z0-9]*>)*/i.exec(content.slice(aborted + RENDER_ABORT_MARKER.length))?.[0] ?? '';
+    contentEdits.push({ start: aborted, end: content.length, text: '' });
     content = content.slice(0, aborted);
   }
   const componentState = /\sdata-pp-viewstate="([^"]*)"/.exec(String(content ?? ''));
-  if (componentState) content = String(content).replace(componentState[0], '');
+  if (componentState) {
+    contentEdits.push({ start: componentState.index, end: componentState.index + componentState[0].length, text: '' });
+    content = String(content).replace(componentState[0], '');
+  }
   const viewState = componentState
     ? componentState[1].replaceAll('&quot;', '"').replaceAll('&amp;', '&')
     : `/wE${stripTrailingCharacter(opaque('viewstate', action), '=')}`;
@@ -458,7 +465,7 @@ export function webFormsForm({
     `<div class="aspNetHidden">\n${hidden('__EVENTTARGET', '')}\n${hidden('__EVENTARGUMENT', '')}\n${hidden('__VIEWSTATE', viewState)}\n</div>\n\n` +
     `<script type="text/javascript">\n//<![CDATA[\nvar theForm = document.forms['${id}'];\nif (!theForm) {\n    theForm = document.${id};\n}\nfunction __doPostBack(eventTarget, eventArgument) {\n    if (!theForm.onsubmit || (theForm.onsubmit() != false)) {\n        theForm.__EVENTTARGET.value = eventTarget;\n        theForm.__EVENTARGUMENT.value = eventArgument;\n        theForm.submit();\n    }\n}\n//]]>\n</script>\n\n` +
     `${resources}\n${formScripts}\n${captchaScripts}${extraScripts ? extraScripts + '\n' : ''}${onSubmit}`;
-  onContent?.({ offset: prefix.length, length: content.length });
+  onContent?.({ offset: prefix.length, length: content.length, edits: contentEdits });
   const generator = createHash('sha256').update(`generator\u0000${id}`).digest('hex').slice(0, 8).toUpperCase();
   const eventValidationHtml = eventValidation
     ? hidden('__EVENTVALIDATION', `/wE${stripTrailingCharacter(opaque('validation', action), '=')}`) + '\n'
@@ -577,6 +584,9 @@ function rewritePageMain(layout, entityControls, pageMetadata, placements) {
  * metadata and child navigation; WebForm.aspx uses the master as is. Blank.aspx renders the
  * page copy without the server form. Returns null for templates without a rewrite URL or
  * with another legacy page (the caller keeps its own rendering).
+ *
+ * The heading's breadcrumb is the master page's own control ({% mirage_site_map_path %}, `siteMapPathMarkup`), not
+ * the site's Breadcrumbs web template: a site that customises that template sees no change on these pages.
  */
 export function rewritePageLayout(page, pageTemplate) {
   const rewrite = String(pageTemplate?.rewriteUrl ?? '')
@@ -594,13 +604,33 @@ export function rewritePageLayout(page, pageTemplate) {
   }[rewrite];
   if (!layout) return null;
   const components = rewriteComponents(page);
-  const heading = `<div class="page-heading"><div class="container">{% include 'Breadcrumbs' %}<div class="page-header"><h1>{{ page.title | h }}</h1></div><div class="notifications"></div></div></div>`;
+  const heading = `<div class="page-heading"><div class="container">{% mirage_site_map_path %}<div class="page-header"><h1>{{ page.title | h }}</h1></div><div class="notifications"></div></div></div>`;
   const pageMetadata = `<div class="page-metadata clearfix">${snippetDiv('Social Share Widget Code Page Bottom')}</div>`;
   const placements =
     "{% assign poll_placement_name = 'Sidebar' %}{% mirage_poll_placement %}{% assign ad_placement_name = 'Sidebar Bottom' %}{% mirage_ad_placement %}";
   if (layout === 'fullpage') return fullPageLayout(heading, pageMetadata, components);
   const main = rewritePageMain(layout, components.entityControls, pageMetadata, placements);
   return { source: `${heading}<div class="container">${main}</div>`, serverFormId: 'content_form' };
+}
+
+/**
+ * The breadcrumb the WebForms master pages write above a rewrite page layout's title: one linked item per ancestor,
+ * from the home page down, then the page itself as the active item. Every page of the path is listed, also one hidden
+ * from the site map, with its whole title (no shortening, no title attribute), written with the AntiXSS encoder. The
+ * BootstrapV5 build adds the Bootstrap 5 item class; the active item's class value is attribute-encoded there, so
+ * its space reads &#32;. Line ends are the control's.
+ * @param {{ url: string, title: string }[]} ancestors the pages above the current one, the home page first
+ * @param {string} title the current page's title
+ * @param {'BootstrapV5' | 'BootstrapV3'} variant the site's Bootstrap build (`bootstrapVariant`)
+ */
+export function siteMapPathMarkup(ancestors, title, variant) {
+  const v5 = variant === 'BootstrapV5';
+  const item = v5 ? '<li class="breadcrumb-item">' : '<li>';
+  const active = v5 ? '<li class="active&#32;breadcrumb-item">' : '<li class="active">';
+  let markup = '<ul class="breadcrumb">';
+  for (const crumb of ancestors)
+    markup += `${item}<a href="${antiXssHtmlEncode(crumb.url)}">${antiXssHtmlEncode(crumb.title)}</a></li>\r\n`;
+  return `${markup}${active}${antiXssHtmlEncode(title)}</li>\r\n</ul>`;
 }
 
 // Platform bundle ordering used by the local shell, including modal form documents.
@@ -945,6 +975,8 @@ export function platformShell({
       captured: captured.has(bundle.id),
     })),
     headStart: `${resourceManager}${bootstrapMarkup}${slot('head-start')}`,
+    // Where the Bootstrap stylesheet markup sits in headStart (render provenance of a Head/Bootstrap snippet).
+    bootstrapRange: { start: resourceManager.length, end: resourceManager.length + bootstrapMarkup.length },
     headEnd: slot('head-end'),
     controlsStyle: slot('controls-style'),
     bodyOpen: slot('body-open'),

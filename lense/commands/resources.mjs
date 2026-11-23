@@ -40,6 +40,32 @@ const byId = (a, b) => compare(a.id, b.id);
 const invalidArgument = (message) => Object.assign(new Error(message), { code: 'invalid_argument' });
 const normalizePath = (file) => file.replaceAll('\\', '/');
 
+/**
+ * The resources the page inspection (the Inspect report's static model: templates, snippets, forms, lists, web files,
+ * settings) lists for the --page filter, as a path set; resources whose files it names are used by that page.
+ */
+function inspectionFiles(report) {
+  const files = new Set();
+  const visit = (value, depth) => {
+    if (!value || typeof value !== 'object' || depth > 8 || files.size >= 5000) return;
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item, depth + 1);
+      return;
+    }
+    for (const key of ['sourceFile', 'file', 'metadataSource'])
+      if (typeof value[key] === 'string') files.add(path.resolve(value[key]).toLowerCase());
+    for (const [key, child] of Object.entries(value)) if (key !== 'portalSources') visit(child, depth + 1);
+  };
+  visit(report, 0);
+  return { has: (file) => Boolean(file) && files.has(path.resolve(file).toLowerCase()), size: files.size };
+}
+
+function inspectedOn(context, files) {
+  return context.inspected && context.inspectedPage && files.some((file) => context.inspected.has(file))
+    ? { inspectedPageUrls: [context.inspectedPage] }
+    : {};
+}
+
 function optionalInlineFields(source) {
   return {
     ...(source.fieldPath
@@ -83,7 +109,12 @@ function addInlineSource(source, context) {
   const { filters, model } = context;
   if (filters.kinds.length && !filters.kinds.includes(source.kind)) return;
   const knownPages = source.pageUrl ? [source.pageUrl] : (source.usedOn ?? []);
-  if (filters.page && !knownPages.some((url) => pageKey(url, model) === filters.page)) return;
+  if (
+    filters.page &&
+    !knownPages.some((url) => pageKey(url, model) === filters.page) &&
+    !context.inspected?.has(source.file)
+  )
+    return;
   if (filters.changed && !context.changedAt(source.file)) return;
   appendInlineResource(source, knownPages, context);
 }
@@ -120,6 +151,7 @@ function appendInlineResource(source, knownPages, context) {
     url: null,
     relatedPageUrls: [...new Set(knownPages)].sort(compare),
     changed: context.changedAt(source.file),
+    ...inspectedOn(context, [source.file]),
     preview: inlinePreview(source, readable, renders, configured, pageResolved, cfg, { baseline, changed }),
   };
   resources.push(resource);
@@ -149,6 +181,7 @@ function appendWebFileResource(file, context) {
     url: file.url,
     relatedPageUrls: model.pagePath(file.parentPageId) ? [model.pagePath(file.parentPageId)] : [],
     changed: baseline.available ? changed(file.file) || changed(file.yml) : null,
+    ...inspectedOn(context, [file.file, file.yml]),
     preview: {
       strategy: 'local-response',
       supported: Boolean(file.file && file.url && !file.problem),
@@ -240,6 +273,7 @@ function appendPageResource(page, context) {
     url,
     relatedPageUrls: url ? [url] : [],
     configuredComponentIds: [...(pageComponents.get(page.id) ?? [])].sort(compare),
+    ...inspectedOn(context, metadataPaths),
     changed: baseline.available ? metadataPaths.some((file) => changed(file)) : null,
     preview: {
       strategy: 'portal-page',
@@ -340,7 +374,9 @@ function addRouteResources(cfg, context) {
 function matchesResource(resource, filters, needle) {
   return (
     (!filters.kinds.length || filters.kinds.includes(resource.kind)) &&
-    (!filters.page || resource.relatedPageUrls.some((url) => pageKey(url) === filters.page)) &&
+    (!filters.page ||
+      resource.relatedPageUrls.some((url) => pageKey(url) === filters.page) ||
+      (resource.inspectedPageUrls ?? []).some((url) => pageKey(url) === filters.page)) &&
     (!filters.changed || resource.changed) &&
     (!needle ||
       [resource.id, resource.name, resource.relativePath, resource.url, resource.pattern, ...resource.relatedPageUrls]
@@ -387,9 +423,41 @@ export function resourceFilters(args = {}) {
   };
 }
 
+/** Resources the static page inspection lists are used by the inspected page's records. */
+function addInspectedPageRelationships(resources, relationships, pagesByUrl, page) {
+  for (const resource of resources) {
+    if (!resource.inspectedPageUrls || resource.kind === 'page') continue;
+    for (const targetId of pagesByUrl.get(page) ?? [])
+      relationships.push({
+        sourceId: resource.id,
+        targetId,
+        kind: 'used-by-page',
+        evidence: { type: 'static-page-inspection', paths: [] },
+      });
+  }
+}
+
+function summarizePageInspection(pageInspection, page) {
+  return {
+    path: pageInspection.requestPath ?? pageInspection.path ?? page,
+    page: pageInspection.page ? { id: pageInspection.page.id ?? null, url: pageInspection.page.url ?? null } : null,
+    unresolved: (pageInspection.unresolved ?? []).length,
+  };
+}
+
 /** Describe only relationships established by the existing portal model, not inferred runtime use. */
-export function describeResources(cfg, model, baseline, changed, filters = resourceFilters()) {
+export function describeResources(
+  cfg,
+  model,
+  baseline,
+  changed,
+  filters = resourceFilters(),
+  { pageInspection = null } = {},
+) {
   filters = { ...filters, page: filters.page == null ? null : pageKey(filters.page, model) };
+  // The static page inspection of --page (resources() computes it): resources it lists are used by that page.
+  const inspected = filters.page && pageInspection ? inspectionFiles(pageInspection) : null;
+  const inspection = inspected ? { inspected, inspectedPage: filters.page } : {};
   if (filters.changed && !baseline.available)
     throw new Error('Cannot select changed resources: the requested Git baseline is unavailable');
   const relative = (file) => relativeResourcePath(cfg, file);
@@ -405,6 +473,7 @@ export function describeResources(cfg, model, baseline, changed, filters = resou
   const pageComponents = new Map();
   indexPageComponents(model, pageComponents);
   addPageResources(model, {
+    ...inspection,
     cfg,
     model,
     baseline,
@@ -417,8 +486,13 @@ export function describeResources(cfg, model, baseline, changed, filters = resou
     relationships,
   });
   const relationshipContext = { relationships, pagesByUrl, pageResources };
+  // Related page URLs are the page records' own URLs (trailing slash kept), not the filter key.
+  if (inspected)
+    inspection.inspectedPage =
+      [...pageResources.values()].find((row) => row.url && pageKey(row.url) === filters.page)?.url ?? filters.page;
   addWebFileResources(model, {
     ...relationshipContext,
+    ...inspection,
     model,
     relative,
     resolver,
@@ -428,6 +502,7 @@ export function describeResources(cfg, model, baseline, changed, filters = resou
   });
   addInlineResources(model, {
     ...relationshipContext,
+    ...inspection,
     filters,
     model,
     cfg,
@@ -439,6 +514,7 @@ export function describeResources(cfg, model, baseline, changed, filters = resou
     resources,
   });
   addRouteResources(cfg, { cfg, relative, changed: changedAt, resources });
+  addInspectedPageRelationships(resources, relationships, pagesByUrl, filters.page);
   resources.sort(byId);
   relationships.sort((a, b) =>
     compare(`${a.sourceId}\0${a.targetId}\0${a.kind}`, `${b.sourceId}\0${b.targetId}\0${b.kind}`),
@@ -475,8 +551,12 @@ export function describeResources(cfg, model, baseline, changed, filters = resou
     },
     resources: selected,
     relationships: relationships.filter((edge) => selectedIds.has(edge.sourceId)),
-    relationshipScope:
-      'Indexed page hierarchy and configured form/list usage only. Runtime requests, Liquid includes, template inheritance and dynamic dependencies are not inferred.',
+    relationshipScope: inspected
+      ? 'Indexed page hierarchy, configured form/list usage and the static page inspection of --page (the Inspect report: templates, snippets, forms, lists, web files and settings). Runtime requests and dynamic dependencies are not inferred.'
+      : 'Indexed page hierarchy and configured form/list usage only. Runtime requests, Liquid includes, template inheritance and dynamic dependencies are not inferred.',
+    ...(pageInspection && filters.page
+      ? { pageInspection: summarizePageInspection(pageInspection, filters.page) }
+      : {}),
     diagnostics: { warnings: [...model.warnings].sort(compare) },
   };
 }
@@ -486,7 +566,11 @@ export default async function resources(cfg, args) {
   const model = await PortalModel.create(cfg.sourceDir);
   const baseline = new GitBaseline(cfg.sourceDir, cfg.site.markup.baseline);
   const changed = await baseline.changedFilesAsync({ refreshRef: false });
-  const report = describeResources(cfg, model, baseline, changed, filters);
+  // --page uses the same static page inspection as the Inspect report (offline: sources only, nothing rendered).
+  const pageInspection = filters.page
+    ? (await (await import('../source-inspection.mjs')).createSourceInspector(cfg).inspect(args.page)).report
+    : null;
+  const report = describeResources(cfg, model, baseline, changed, filters, { pageInspection });
   if (args.json) console.log(JSON.stringify(report, null, 2));
   else {
     console.log(`${report.site} @ ${report.environment}: ${report.pagination.total} matching resources (offline)`);

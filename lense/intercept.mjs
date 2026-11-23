@@ -274,6 +274,9 @@ export async function interceptOrigins(
     record.page.off('crash', record.onCrash);
     if (record.late) record.page.off('domcontentloaded', record.late);
     record.cdp.off('Fetch.requestPaused', record.onPaused);
+    // A request whose response was asked for and has not arrived stops being waited for.
+    for (const waiting of record.staged?.values() ?? []) waiting.reject(new Error('Browser page closed'));
+    record.staged?.clear();
     if (record.onDraftSignal) record.cdp.off('Runtime.bindingCalled', record.onDraftSignal);
     for (const [name, listener] of record.repairListeners ?? []) record.cdp.off(name, listener);
     record.closing = (async () => {
@@ -369,11 +372,28 @@ export async function interceptOrigins(
       return;
     }
     // `ending` aborts when the page closes or interception stops, which ends every wait of this setup at once.
-    const record = { page, cdp, routes: new Set(), closed: false, ending: new AbortController() };
+    const record = {
+      page,
+      cdp,
+      routes: new Set(),
+      // requests the browser sent itself whose response is to be paused (route.response()), by request id
+      staged: new Map(),
+      closed: false,
+      ending: new AbortController(),
+    };
     sessions.set(cdp, record);
     let mainFrameId = null;
     let sawDocument = false;
     record.onPaused = (event) => {
+      // The second pause of one request: its response, which route.response() asked to see. A response nobody waits
+      // for any more (the wait ended) goes on to the browser as it is.
+      if (event.responseStatusCode !== undefined || event.responseErrorReason !== undefined) {
+        const waiting = record.staged.get(event.requestId);
+        record.staged.delete(event.requestId);
+        if (waiting) waiting.resolve(event);
+        else cdp.send('Fetch.continueRequest', { requestId: event.requestId }).catch(() => {});
+        return;
+      }
       const isMainDocument =
         event.resourceType === 'Document' && (mainFrameId === null || event.frameId === mainFrameId);
       if (isMainDocument) sawDocument = true;
@@ -383,6 +403,11 @@ export async function interceptOrigins(
         page,
         event,
         isMainDocument,
+        stageResponse: () =>
+          new Promise((resolve, reject) => {
+            record.staged.set(event.requestId, { resolve, reject });
+          }),
+        unstageResponse: () => record.staged.delete(event.requestId),
         onFulfilled: (proof) => record.attachment?.publishProvenance?.(event, proof),
         // A refusal while this tab is released is part of releasing it, not a tab failure.
         onAnswerRejected: (method, error) =>
@@ -697,9 +722,20 @@ export async function interceptOrigins(
   }
 }
 
-function makeRoute({ cdp, context, page, event, isMainDocument, onFulfilled, onAnswerRejected }) {
+function makeRoute({
+  cdp,
+  context,
+  page,
+  event,
+  isMainDocument,
+  stageResponse,
+  unstageResponse,
+  onFulfilled,
+  onAnswerRejected,
+}) {
   const { requestId, request } = event;
   let fetched = false,
+    staged = false,
     headersChanged = false;
   const responses = new Set();
   const headers = Object.fromEntries(Object.entries(request.headers ?? {}).map(([k, v]) => [k.toLowerCase(), v]));
@@ -802,6 +838,64 @@ function makeRoute({ cdp, context, page, event, isMainDocument, onFulfilled, onA
         },
       });
     },
+    /**
+     * Lets the browser send the request itself, once, and pauses its response. Nothing is sent a second time, so a
+     * request that must not be repeated (a file upload, any POST) can still have its response read and replaced.
+     * The result answers like what fetch() returns: status(), headers(), headersArray(), body(), text().
+     */
+    async response({ timeout = 120_000 } = {}) {
+      if (route.answered || fetched || staged) throw new Error('Request already answered');
+      if (!stageResponse) throw new Error('This request cannot be paused at its response');
+      staged = true;
+      const arrival = stageResponse();
+      // Observed here so an arrival that loses the race below is not an unhandled rejection.
+      arrival.catch(() => {});
+      try {
+        await cdp.send('Fetch.continueRequest', {
+          requestId,
+          interceptResponse: true,
+          ...(headersChanged
+            ? { headers: Object.entries(headers).map(([name, value]) => ({ name, value: String(value) })) }
+            : {}),
+        });
+      } catch (error) {
+        unstageResponse?.();
+        throw error;
+      }
+      let timer;
+      let stage;
+      try {
+        stage = await Promise.race([
+          arrival,
+          new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error('The response did not arrive in time')), timeout);
+            timer.unref?.();
+          }),
+        ]);
+      } catch (error) {
+        // The request is with the portal; when its response arrives it goes on to the browser untouched.
+        unstageResponse?.();
+        route.answered = true;
+        throw error;
+      } finally {
+        clearTimeout(timer);
+      }
+      const names = Object.fromEntries((stage.responseHeaders ?? []).map((h) => [h.name.toLowerCase(), h.value]));
+      let bytes;
+      const readBody = () =>
+        (bytes ??= cdp
+          .send('Fetch.getResponseBody', { requestId })
+          .then((answer) => Buffer.from(answer.body ?? '', answer.base64Encoded ? 'base64' : 'utf8')));
+      return {
+        staged: true,
+        error: stage.responseErrorReason ?? null,
+        status: () => stage.responseStatusCode ?? 0,
+        headers: () => names,
+        headersArray: () => stage.responseHeaders ?? [],
+        body: readBody,
+        text: () => readBody().then((body) => body.toString('utf8')),
+      };
+    },
     /** Answers from `response` (what fetch() returned), optionally with another body, or from status/headers/body. */
     /* NOSONAR */ async fulfill({ response, status, headers: given, body, provenance } = {}) {
       if (route.answered) return false;
@@ -831,6 +925,9 @@ function makeRoute({ cdp, context, page, event, isMainDocument, onFulfilled, onA
       else if (Buffer.isBuffer(payload)) bytes = payload;
       else bytes = Buffer.from(payload ?? '', 'utf8');
       if (!noBody) responseHeaders.push({ name: 'content-length', value: String(bytes.length) });
+      // A local HEAD answer announces the length its GET would send.
+      else if (request.method === 'HEAD' && !response && /^\d+$/.test(String(given?.['content-length'] ?? '')))
+        responseHeaders.push({ name: 'content-length', value: String(given['content-length']) });
       const acknowledged = await send('Fetch.fulfillRequest', {
         responseCode: code,
         responseHeaders,
@@ -845,6 +942,8 @@ function makeRoute({ cdp, context, page, event, isMainDocument, onFulfilled, onA
     /** Lets the request go to the online portal untouched. */
     fallback: () => {
       if (fetched && !SAFE_METHODS.has(request.method)) return route.abort();
+      // A request paused at its response: the response goes on as the portal sent it.
+      if (staged) return send('Fetch.continueRequest', {});
       return send(
         'Fetch.continueRequest',
         headersChanged

@@ -139,6 +139,12 @@ export function lenseUiKit() {
     runtime: ['Runtime', 'Local Mirage runtime'],
     diagnostics: ['Findings', 'Runtime findings'],
     requests: ['Requests', 'Requests of this page'],
+    // Rows of the page's request list and of Inspect's identification samples.
+    'portal-data': ['Data', 'Portal data request'],
+    'platform-asset': ['Runtime', 'File of the portal runtime'],
+    external: ['Site', 'Request to another site'],
+    'unidentified-request': ['Unknown', 'Request not identified'],
+    element: ['Element', 'Page element'],
     policy: ['Policy', 'Content policy'],
     identity: ['Personas', 'Personas and permissions'],
     administration: ['Admin', 'Mirage administration'],

@@ -1351,3 +1351,78 @@ test('a release that overtakes the answer of a draft tracker command still undoe
     assert.equal(tab.cdp.listenerCount('Runtime.bindingCalled'), 0);
   }
 });
+
+test('a request that must not be sent twice is sent by the browser itself and only its response is read and replaced', async () => {
+  const fake = fakeBrowser({
+      [URL]: { status: 200, headers: { 'content-type': 'text/html', etag: 'w-1' }, body: '<p>saved</p>' },
+    }),
+    tab = fake.openTab();
+  let seen;
+  const done = new Promise((resolve) => {
+    interceptOrigin(fake.context, ORIGIN, async (route) => {
+      const response = await route.response();
+      seen = { status: response.status(), type: response.headers()['content-type'], text: await response.text() };
+      await route.fulfill({ response, body: seen.text.replace('saved', 'saved, with local sources') });
+      resolve();
+    });
+  });
+  await setImmediate();
+  tab.pause('upload', URL, {
+    type: 'Document',
+    method: 'POST',
+    headers: { 'content-type': 'multipart/form-data; boundary=b' },
+  });
+  await done;
+  assert.deepEqual(seen, { status: 200, type: 'text/html', text: '<p>saved</p>' });
+  assert.equal(fake.fetched.length, 0, 'nothing was asked from the portal a second time');
+  assert.deepEqual(
+    fake.answers('upload').map((answer) => [answer.method, Boolean(answer.interceptResponse)]),
+    [
+      ['Fetch.continueRequest', true],
+      ['Fetch.getResponseBody', false],
+      ['Fetch.fulfillRequest', false],
+    ],
+  );
+  const fulfilled = fake.answers('upload').at(-1);
+  assert.equal(Buffer.from(fulfilled.body, 'base64').toString(), '<p>saved, with local sources</p>');
+  assert.equal(
+    fulfilled.responseHeaders.some((header) => header.name === 'etag'),
+    false,
+    'validators of the replaced body are not sent with another body',
+  );
+});
+
+test('a paused response that is left alone, or that nobody waits for any more, goes on to the browser as the portal sent it', async () => {
+  const fake = fakeBrowser({ [URL]: { status: 302, headers: { location: '/next' }, body: '' } }),
+    tab = fake.openTab();
+  const done = new Promise((resolve) => {
+    interceptOrigin(fake.context, ORIGIN, async (route) => {
+      const response = await route.response();
+      assert.equal(response.status(), 302);
+      await route.fallback();
+      resolve();
+    });
+  });
+  await setImmediate();
+  tab.pause('redirected', URL, { type: 'Document', method: 'POST' });
+  await done;
+  assert.deepEqual(
+    fake.answers('redirected').map((answer) => [answer.method, Boolean(answer.interceptResponse)]),
+    [
+      ['Fetch.continueRequest', true],
+      ['Fetch.continueRequest', false],
+    ],
+  );
+  // A response stage of a request this session never asked to see is continued, not routed as a new request.
+  tab.cdp.emit('Fetch.requestPaused', {
+    requestId: 'stray',
+    frameId: 'main',
+    request: { url: URL },
+    responseStatusCode: 200,
+  });
+  await setImmediate();
+  assert.deepEqual(
+    fake.answers('stray').map((answer) => answer.method),
+    ['Fetch.continueRequest'],
+  );
+});

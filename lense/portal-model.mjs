@@ -829,6 +829,8 @@ const componentField = (field) => (xml) => {
 };
 
 // powerpagecomponenttype values of the enhanced data model that matter here
+// powerpagecomponenttype of a site setting (mirage/lib/portal-component-types.mjs).
+const ENHANCED_SITE_SETTING = 9;
 const COMPONENT = {
   WEB_PAGE: 2,
   WEB_FILE: 3,
@@ -1028,6 +1030,10 @@ export class PortalModel {
     this.fileInventory = new Set();
     this.currentYaml = new Map();
     this.duplicateWebFileUrls = new Set();
+    /** URL key -> {file, rel} of web files the export holds as inactive (statecode 1): the portal does not serve them */
+    this.inactiveWebFileUrls = new Map();
+    /** site setting name -> value; read for the HTTP/* response headers of local web files */
+    this.siteSettings = {};
     /** root pages that are inactive: their language copies are not served either */
     this.inactivePages = new Set();
     this.inactiveForms = new Set();
@@ -1048,6 +1054,7 @@ export class PortalModel {
     this.#loadWebFiles();
     this.#loadInlineSources();
     this.#loadLanguages();
+    this.#loadSiteSettings();
     for (const file of this.yamlCache.keys()) {
       if (!this.currentYaml.has(file)) this.yamlCache.delete(file);
     }
@@ -1084,6 +1091,20 @@ export class PortalModel {
         /\.([a-z]{2,3}(?:-[a-z0-9]{2,8})+)\.(?:webpage|contentsnippet)\./i.exec(source.rel)?.[1] ??
           /\/content-pages\/([a-z]{2,3}(?:-[a-z0-9]{2,8})+)\//i.exec(source.rel)?.[1],
       );
+  }
+
+  // Site settings of a PAC export: sitesetting.yml (a list), or one .sitesetting.yml per setting (.powerpages-site).
+  #loadSiteSettings() {
+    const rows = [];
+    const list = path.join(this.sourceDir, 'sitesetting.yml');
+    if (fs.existsSync(list)) rows.push(...[this.#readYaml(list, true)].flat());
+    for (const file of this.#files(path.join(this.sourceDir, 'site-settings')))
+      if (/\.sitesetting\.ya?ml$/i.test(file)) rows.push(this.#readYaml(file));
+    for (const row of rows) {
+      if (!row || row.__error || Number(yamlValue(row, 'statecode') ?? 0) === 1) continue;
+      const name = yamlValue(row, 'name');
+      if (typeof name === 'string' && name) this.siteSettings[name] = String(yamlValue(row, 'value') ?? '');
+    }
   }
 
   #readLanguageRows() {
@@ -1193,9 +1214,19 @@ export class PortalModel {
     this.webFiles = [];
     this.webFileByUrl = new Map();
     this.inlineSources = [];
+    this.inactiveWebFileComponents = [];
     const components = this.#readEnhancedComponents();
     this.#indexEnhancedPages(components);
     for (const component of components) this.#indexEnhancedSource(component);
+    for (const { content, rel } of this.inactiveWebFileComponents) {
+      const parentPath = this.pagePath(content.parentpageid);
+      if (parentPath == null || content.partialurl == null) continue;
+      const key = urlKey(joinUrl(parentPath, content.partialurl));
+      if (!this.webFileByUrl.has(key))
+        this.inactiveWebFileUrls.set(key, {
+          file: path.join(this.sourceDir, 'powerpagecomponents', rel, 'powerpagecomponent.xml'),
+        });
+    }
     this.webFiles.sort((a, b) => String(a.url).localeCompare(String(b.url), 'en'));
   }
 
@@ -1238,8 +1269,23 @@ export class PortalModel {
       return;
     }
     const type = Number(/<powerpagecomponenttype>\s*(\d+)\s*</.exec(xml)?.[1]);
+    const inactive = /<statecode>\s*1\s*<\/statecode>/.test(xml);
+    // Site setting (component type 9): name and content.value; only read for local web file response headers.
+    if (type === ENHANCED_SITE_SETTING) {
+      const name = /<name>([\s\S]*?)<\/name>/.exec(xml)?.[1];
+      const value = componentContent(xml)?.value;
+      if (!inactive && name && value != null)
+        try {
+          this.siteSettings[xmlUnescape(name).trim()] = String(value);
+        } catch {
+          /* invalid XML character entity in the name */
+        }
+      return;
+    }
     if (!Object.values(COMPONENT).includes(type)) return;
-    if (/<statecode>\s*1\s*<\/statecode>/.test(xml)) {
+    if (inactive) {
+      if (type === COMPONENT.WEB_FILE)
+        this.inactiveWebFileComponents.push({ content: componentContent(xml) ?? {}, rel: entry.name });
       this.#markInactiveEnhancedComponent(type, entry.name, xml);
       return;
     }
@@ -1379,6 +1425,8 @@ export class PortalModel {
       parentPageId: c.content.parentpageid ?? null,
       url: parentPath == null || c.content.partialurl == null ? null : joinUrl(parentPath, c.content.partialurl),
       mimeType: c.attachment?.mimeType ?? null,
+      contentDisposition: c.content.contentdisposition ?? null,
+      fileName: c.attachment?.name ?? null,
       problem: null,
     };
     if (!entry.file) entry.problem = 'no regular content file safely inside filecontent/';
@@ -1577,8 +1625,11 @@ export class PortalModel {
       if (!name.endsWith('.webfile.yml')) continue;
       const ymlFile = path.join(folder, name);
       const y = this.#readYaml(ymlFile);
-      if (Number(y.statecode) === 1) continue;
       const base = name.slice(0, -'.webfile.yml'.length);
+      if (Number(y.statecode) === 1) {
+        this.#markInactiveWebFile(y, ymlFile);
+        continue;
+      }
       // pac writes the attachment next to the yml: normally under the yml's base name, otherwise
       // under the annotation's original file name
       const candidates = [base, y.filename, yamlValue(y, 'name')].filter(Boolean).map(String);
@@ -1594,12 +1645,24 @@ export class PortalModel {
         parentPageId: yamlValue(y, 'parentpageid') ?? null,
         url: parentPath == null || partialUrl == null ? null : joinUrl(parentPath, partialUrl),
         mimeType: y.mimetype,
+        // The record's Content-Disposition choice and annotation file name (mirage/lib/response-headers.mjs).
+        contentDisposition: yamlValue(y, 'contentdisposition') ?? y.mspp_contentdisposition ?? null,
+        fileName: y.filename ?? null,
         problem: null,
       };
       if (!entry.file) entry.problem = 'no content file on disk next to the .webfile.yml';
       else if (entry.url == null) entry.problem = 'parent page not found in web-pages/, cannot build the URL';
       this.#addWebFile(entry, path.relative(this.sourceDir, ymlFile).replaceAll('\\', '/'));
     }
+  }
+
+  /** An inactive web file is not served by the portal; its URL is kept to say why a request is not overridden. */
+  #markInactiveWebFile(y, ymlFile) {
+    const parentPath = this.pagePath(yamlValue(y, 'parentpageid'));
+    const partialUrl = yamlValue(y, 'partialurl');
+    if (parentPath == null || partialUrl == null) return;
+    const key = urlKey(joinUrl(parentPath, partialUrl));
+    if (!this.webFileByUrl.has(key)) this.inactiveWebFileUrls.set(key, { file: ymlFile });
   }
 
   #loadInlineSources() {

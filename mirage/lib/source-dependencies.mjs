@@ -219,16 +219,32 @@ export function runtimeCompatibilityPaths(dependencies, configuredScripts = []) 
  * so they are never repeated. A document that already references Bootstrap
  * (any core, bundle or hashed platform build) keeps its own plugins. */
 export function injectRuntimeCompatibility(html, dependencies, configuredScripts = []) {
-  if (!isHtmlDocument(html)) return html;
+  const edits = runtimeCompatibilityEdits(html, dependencies, configuredScripts);
+  if (!edits.length) return html;
+  let output = '',
+    cursor = 0;
+  for (const edit of edits) {
+    output += html.slice(cursor, edit.start) + edit.text;
+    cursor = edit.end;
+  }
+  return output + html.slice(cursor);
+}
+
+/**
+ * The insertions injectRuntimeCompatibility makes, in document order and in the coordinates of `html`
+ * ({ start, end: start, text }), so a caller that tracks render provenance can apply them precisely.
+ */
+export function runtimeCompatibilityEdits(html, dependencies, configuredScripts = []) {
+  if (!isHtmlDocument(html)) return [];
   // The platform bundles' local equivalents include these adapters (lib/platform-manifest.mjs).
-  if (hasPlatformBundles(html)) return html;
+  if (hasPlatformBundles(html)) return [];
   // Idempotent: the renderer and the HTTP layer may both prepare the same document.
   const sources = scriptSources(html);
   const present = new Set(sources);
   const paths = runtimeCompatibilityPaths(dependencies, [...configuredScripts, ...sources]).filter(
     (src) => src && !present.has(src),
   );
-  let output = html;
+  const edits = [];
   if (paths.length) {
     const includes = [
       ...String(html).matchAll(/<script\b[^>]*\bsrc\s*=\s*(["'])([^"']+)\1[^>]*>\s*<\/script>/gi),
@@ -236,20 +252,24 @@ export function injectRuntimeCompatibility(html, dependencies, configuredScripts
     const last = includes.at(-1);
     if (last) {
       const at = last.index + last[0].length;
-      const tags = paths.map((src) => `<script src="${src}"></script>`).join('');
-      output = `${html.slice(0, at)}${tags}${html.slice(at)}`;
+      edits.push({ start: at, end: at, text: paths.map((src) => `<script src="${src}"></script>`).join('') });
     }
   }
   // Inline page templates can contain a semantic footer even when source
   // dependency scanning only sees external files and shared metadata.
   if (
     dependencies.compat?.footerSpacing !== false &&
-    (dependencies.footerSpacing || /<footer\b|\brole\s*=\s*["']contentinfo["']/i.test(output)) &&
+    (dependencies.footerSpacing || /<footer\b|\brole\s*=\s*["']contentinfo["']/i.test(html)) &&
     !present.has('/__sim-static/vendor/footer-spacing-compat.js')
   ) {
-    const closingBody = output.toLowerCase().lastIndexOf('</body>');
+    // The inserted adapters contain no closing body tag: the last one of the document is the same.
+    const closingBody = html.toLowerCase().lastIndexOf('</body>');
     if (closingBody >= 0)
-      output = `${output.slice(0, closingBody)}<script src="/__sim-static/vendor/footer-spacing-compat.js"></script>${output.slice(closingBody)}`;
+      edits.push({
+        start: closingBody,
+        end: closingBody,
+        text: '<script src="/__sim-static/vendor/footer-spacing-compat.js"></script>',
+      });
   }
-  return output;
+  return edits.sort((a, b) => a.start - b.start);
 }

@@ -90,8 +90,19 @@ import {
   normalizeMockLiquidRecord,
   normalizeMockLiquidFetchXml,
 } from './lib/data.mjs';
-import { DATA_MODELS, importPortal, normalizePortalPath } from './lib/importer.mjs';
-import { choiceColumnsOf, choiceTextRow, createPortalRenderer, renderShellResource } from './lib/liquid.mjs';
+import { DATA_MODELS, importPortal, normalizePortalPath, portalField } from './lib/importer.mjs';
+import {
+  choiceColumnsOf,
+  choiceTextRow,
+  createPortalRenderer,
+  renderShellResource,
+  accountPageEdits,
+  applyMarkupEdits,
+  platformDocumentFragment,
+  shellComponent,
+  shellTags,
+  headStartFragment,
+} from './lib/liquid.mjs';
 import { formContentStyles } from './lib/form-head.mjs';
 import { emptyUnmappedLiquidFetchXml, observedLiquidEntityRead } from './lib/liquid-missing-data.mjs';
 import { observedPageQueryValidation } from './lib/page-query-validation.mjs';
@@ -100,7 +111,14 @@ import { initialState } from './lib/bootstrap.mjs';
 import { contentPolicyDefaults as resolvePolicyDefaults } from './lib/content-policy-defaults.mjs';
 import { withFileSourceMap, identityMapUrl } from '../lense/source-map.mjs';
 import { runWithSourceDebugging } from './lib/source-debug.mjs';
-import { refreshScriptProofLocations, scriptLineStarts } from './lib/render-provenance.mjs';
+import {
+  refreshScriptProofLocations,
+  scriptLineStarts,
+  finalizePortalProvenance,
+  platformFragment,
+  joinRenderFragments,
+  applyRenderEdits,
+} from './lib/render-provenance.mjs';
 import { assetKind } from './lib/asset-type.mjs';
 import { listPresets } from './lib/presets.mjs';
 import {
@@ -127,6 +145,7 @@ import {
   injectRuntimeDependencies,
   injectRuntimeCompatibility,
   isHtmlDocument,
+  runtimeCompatibilityEdits,
 } from './lib/source-dependencies.mjs';
 import { resolveLocalOverrides, injectLocalHead } from './lib/local-overrides.mjs';
 import { platformStylesStatus, formStyleDiagnostics } from './lib/platform-styles.mjs';
@@ -154,6 +173,8 @@ import {
   withSolutionOperations,
 } from './lib/operation-catalogue.mjs';
 import { importCodeComponents, renderCodeComponent } from './lib/code-components.mjs';
+import { componentRenderResult, serverFormFragment } from './lib/component-provenance.mjs';
+import { signInPartTags } from './lib/sign-in-provenance.mjs';
 import { mergeShellProfile } from './lib/shell-profile.mjs';
 import { captureRichTextAssets } from './lib/richtext-assets.mjs';
 import { captureObservedSnippetComposition } from './lib/observed-snippet-composition.mjs';
@@ -699,6 +720,50 @@ function recordListenerErrorOnce(record, name) {
     reported = true;
     record({ code: 'LISTENER_ERROR', severity: 'error', listener: name, message: error.message });
   };
+}
+
+const RENDER_SPAN_SCAN = 50,
+  RENDER_TREE_LIMIT = 4000;
+
+/** The newest retained render span of this session whose request is `GET <requested>`, else null. */
+function latestPageRender(traces, sessionKey, requested) {
+  for (const span of traces.spans({ kind: 'render', sessionKey, order: 'desc', pageSize: RENDER_SPAN_SCAN }).items) {
+    const root = traces.ancestry(span.spanId)[0];
+    if (root?.kind === 'http' && root.name.toLowerCase() === `get ${requested.toLowerCase()}`) return span;
+  }
+  return null;
+}
+
+/** The render span and, breadth first, the template spans below it (bounded by RENDER_TREE_LIMIT). */
+function renderTemplateSpans(traces, render) {
+  const tree = traces.tree(render.traceId);
+  const children = new Map();
+  for (const span of tree?.spans ?? []) {
+    if (!children.has(span.parentSpanId)) children.set(span.parentSpanId, []);
+    children.get(span.parentSpanId).push(span);
+  }
+  const spans = [render];
+  for (let index = 0; index < spans.length && spans.length < RENDER_TREE_LIMIT; index++)
+    for (const child of children.get(spans[index].spanId) ?? [])
+      if (child.kind === 'render-template') spans.push(child);
+  return spans;
+}
+
+/** The exported sources the render spans ran from, the template slots without one and the component events. */
+function renderedSources(spans, index, fallback) {
+  const sources = [],
+    slots = [],
+    components = [];
+  for (const span of spans) {
+    const refId = span.attributes?.sourceRefId;
+    const source = refId ? (index.sources.get(refId) ?? fallback.sources.get(refId)) : null;
+    if (source) sources.push(source);
+    else if (span.kind === 'render-template')
+      slots.push({ name: span.name, origin: span.attributes?.sourceOrigin ?? 'built-in' });
+    for (const event of span.events ?? [])
+      if (event.type === 'platform-component' && components.length < 200) components.push(event.attributes ?? {});
+  }
+  return { sources, slots, components };
 }
 
 export async function createSimulator(options) {
@@ -2466,8 +2531,19 @@ export async function createSimulator(options) {
           config().observed ?? source.observed,
         ),
       renderComponent: async (kind, args, context) => {
+        // Render provenance of the component's markup (lib/component-provenance.mjs): what the renderer reports it
+        // rendered (components) and the elements it bound by offset (bindings).
+        const components = [],
+          bindings = [];
+        const provenance = (result) =>
+          componentRenderResult(result, {
+            components,
+            explicit: bindings,
+            index: renderer.sourceIndex(context?.__language?.id),
+            tag: kind,
+            args,
+          });
         if (kind === 'codecomponent') {
-          const bindings = [];
           const html = renderCodeComponent({
             name: args?.name ?? args?.id,
             args,
@@ -2480,16 +2556,8 @@ export async function createSimulator(options) {
             diagnostic: (entry) => recordDiagnostic({ ...entry, path: context?.request?.path }),
             onRendered: (binding) => bindings.push(binding),
           });
-          const index = renderer.sourceIndex(context?.__language?.id);
-          return {
-            html,
-            renderProvenance: bindings.map((binding) => ({
-              ...binding,
-              sourceRefIds: index.metadataIndex.sourceRefsFor([binding.component.key]).map((ref) => ref.id),
-            })),
-          };
+          return provenance(html);
         }
-        const progressBindings = [];
         const renderedComponent = await renderComponent(
           kind,
           typeof args === 'string' ? args : (args?.name ?? args?.id ?? args?.key ?? ''),
@@ -2529,23 +2597,13 @@ export async function createSimulator(options) {
                 ? (item) => trace.getStore()?.nativePostbacks?.push(item)
                 : undefined,
             nativePostbackState: trace.getStore()?.nativePostbackState,
-            onProgressRendered: (binding) => progressBindings.push(binding),
+            onProgressRendered: (binding) => bindings.push(binding),
+            onComponentRendered: (component) => components.push(component),
             // Component diagnostics name the page that rendered the component.
             diagnostic: (entry) => recordDiagnostic({ ...entry, path: entry.path ?? context?.request?.path }),
           },
         );
-        if (!progressBindings.length) return renderedComponent;
-        const index = renderer.sourceIndex(context?.__language?.id);
-        const renderProvenance = progressBindings.map((binding) => ({
-          ...binding,
-          sourceRefIds: binding.sourceSelectors.flatMap((selector) => {
-            const source = index.source({ id: selector.recordId }, selector.field, selector);
-            return source && !source.ambiguous ? [source.id] : [];
-          }),
-        }));
-        return typeof renderedComponent === 'string'
-          ? { html: renderedComponent, renderProvenance }
-          : { ...renderedComponent, renderProvenance };
+        return provenance(renderedComponent);
       },
       user: currentIdentity(),
       shellProfile: config().shellProfile,
@@ -3305,6 +3363,33 @@ export async function createSimulator(options) {
   };
   const inspectionCache = new Map();
   const renderProofs = new Map();
+  // Render provenance is established for documents a browser parses: top-level and framed navigations, never data
+  // callers (XHR fragments keep their original bytes).
+  const provenanceDestination = (req) => ['document', 'iframe', 'frame'].includes(req.headers['sec-fetch-dest']);
+  // Stores a document's provenance proof, names it in the response headers and returns a function that revalidates
+  // its script proofs against the final response body (after the toolkit's own injections).
+  const publishRenderProof = (headers, proof) => {
+    if (!proof) return (body) => body;
+    const access = randomBytes(32).toString('hex');
+    renderProofs.set(proof.proofId, { proof, access });
+    while (renderProofs.size > 64) renderProofs.delete(renderProofs.keys().next().value);
+    headers['x-paqvilo-provenance-access'] = access;
+    headers['x-paqvilo-provenance'] = proof.proofId;
+    return (body) => {
+      const entry = renderProofs.get(proof.proofId);
+      if (entry) entry.proof = refreshScriptProofLocations(body, proof);
+      return body;
+    };
+  };
+  // The provenance of a document the runtime generates outside the page layout (platform-shell:<part>).
+  const platformDocumentProof = (req, html, part, sourceRefIds = []) => {
+    if (!provenanceDestination(req) || !isHtmlDocument(html)) return null;
+    const index = renderer.sourceIndex();
+    return finalizePortalProvenance({
+      fragment: platformDocumentFragment(html, { portal, index, part, sourceRefIds }),
+      index,
+    });
+  };
   const scriptProofs = new Map();
   // Page inspection answers with the identity that a portal request for the inspected page,
   // carrying the same cookies, would get (requestAuth): the session, otherwise anonymous.
@@ -3338,6 +3423,9 @@ export async function createSimulator(options) {
     });
     const value = {
       ...report,
+      // The address as requested (case, trailing slash and language prefix kept, query dropped): relative
+      // references in the page resolve against it, and Lense selects the served language from it.
+      requestPath: new URL(route, 'http://mirage.invalid').pathname, // NOSONAR: reserved or loopback placeholder host, not a real transport
       sourceRevision: renderer.sourceIndex().sourceRevision,
       portalSources: renderer.sourceIndex().snapshot(report),
       portalProfile: {
@@ -3361,6 +3449,125 @@ export async function createSimulator(options) {
     inspectionCache.set(key, value);
     if (inspectionCache.size > 24) inspectionCache.delete(inspectionCache.keys().next().value);
     return value;
+  };
+  /**
+   * What the last render of the inspected address for this session ran, from the trace store: the render span of the
+   * session's latest GET of that address and its render-template spans (each names its source) and platform-component
+   * events. Added to a copy of the static report; the static rows stay. Every web template, snippet, the page, form
+   * and list row gets `observed`: 'rendered' (that render ran it), 'not-rendered' (that render did not) or 'unknown'
+   * (no render of this address is retained for this session, or tracing is off). `observedRender` describes the
+   * render: the page actually rendered (404, access denied and site-marker routes render another page), its language,
+   * the rendered sources the static graph does not list (dynamic includes) and the built-in or missing templates.
+   */
+  const inspectedId = (value) =>
+    String(value?.id ?? value ?? '')
+      .replace(/[{}]/g, '')
+      .toLowerCase();
+  const observedPageRender = (req, report, identity) => {
+    const requested = String(report.requestPath ?? '/');
+    const unknown = (reason) => ({ state: 'unknown', reason });
+    if (!traces.enabled) return unknown('Tracing is off, so no render is retained.');
+    const visitor = readVisitor(req.headers.cookie, visitorName());
+    const sessionKey = traceSessionKey(identity?.contactId ?? identity?.id ?? null, visitor);
+    if (!sessionKey) return unknown('The request carries no session, so no render belongs to it.');
+    const render = latestPageRender(traces, sessionKey, requested);
+    if (!render) return unknown('No render of this address is retained for this session.');
+    const spans = renderTemplateSpans(traces, render);
+    const language = (portal.websiteLanguages ?? []).find(
+      (row) => String(row.code ?? '').toLowerCase() === String(render.attributes.language ?? '').toLowerCase(),
+    );
+    const index = renderer.sourceIndex(language?.id ?? null);
+    const fallback = renderer.sourceIndex();
+    const { sources, slots, components } = renderedSources(spans, index, fallback);
+    const ids = (kind) =>
+      new Set(sources.filter((source) => source.kind === kind).map((source) => inspectedId(source.recordId)));
+    const templates = ids('webtemplate'),
+      snippetIds = ids('contentsnippet'),
+      pageRecords = ids('webpage');
+    const slotNames = new Set(slots.map((slot) => slot.name.toLowerCase()));
+    const componentMatches = (row) =>
+      components.some((component) =>
+        [inspectedId(row.id ?? row.recordId), String(row.name ?? '').toLowerCase()].includes(
+          String(component.reference ?? '')
+            .replace(/[{}]/g, '')
+            .toLowerCase(),
+        ),
+      );
+    const pageRendered = (page) =>
+      Boolean(
+        page &&
+        (pageRecords.has(inspectedId(page.id)) ||
+          (portal.records ?? []).some(
+            (record) =>
+              record.kind === 'webpage' &&
+              pageRecords.has(inspectedId(record.id)) &&
+              inspectedId(portalField(record, 'rootwebpageid')) === inspectedId(page.id),
+          )),
+      );
+    const listed = new Set((report.webTemplates ?? []).map((row) => inspectedId(row.recordId ?? row.id)));
+    const listedSnippets = new Set((report.snippets ?? []).map((row) => inspectedId(row.recordId)));
+    const renderedPage = (portal.pages ?? []).find(
+      (row) => inspectedId(row.id) === inspectedId(render.attributes.pageId),
+    );
+    return {
+      state: 'observed',
+      traceId: render.traceId,
+      renderedAt: render.startedAt ?? null,
+      renderedPage: renderedPage
+        ? {
+            id: renderedPage.id,
+            name: renderedPage.name,
+            url: renderedPage.url,
+            status: render.attributes.status ?? null,
+          }
+        : null,
+      language: render.attributes.language ?? null,
+      template: render.attributes.template ?? null,
+      // Rendered exported sources the static graph does not list (an include whose name is computed at run time).
+      additionalSources: sources
+        .filter(
+          (source) =>
+            (source.kind === 'webtemplate' && !listed.has(inspectedId(source.recordId))) ||
+            (source.kind === 'contentsnippet' && !listedSnippets.has(inspectedId(source.recordId))),
+        )
+        .slice(0, 100)
+        .map((source) => ({
+          kind: source.kind,
+          name: source.name,
+          recordId: source.recordId,
+          sourceFile: source.file ?? null,
+        })),
+      // Templates the render ran from a built-in body, or found missing (an empty slot or an unknown include).
+      builtInOrMissing: slots.filter((slot) => slot.origin !== 'export').slice(0, 100),
+      rows: {
+        template: (row) => templates.has(inspectedId(row.recordId ?? row.id)),
+        snippet: (row) =>
+          snippetIds.has(inspectedId(row.recordId)) || slotNames.has(`snippet ${String(row.name).toLowerCase()}`),
+        page: pageRendered,
+        component: componentMatches,
+      },
+    };
+  };
+  const withObservedRender = (report, observedRender) => {
+    const { rows, ...render } = observedRender;
+    const mark = (test) => (row) => {
+      let observed = 'unknown';
+      if (rows) observed = test(row) ? 'rendered' : 'not-rendered';
+      return { ...row, observed };
+    };
+    return {
+      ...report,
+      observedRender: render,
+      page: report.page ? mark(() => rows?.page(report.page))(report.page) : report.page,
+      webTemplates: (report.webTemplates ?? []).map(mark((row) => rows.template(row))),
+      snippets: (report.snippets ?? []).map(mark((row) => rows.snippet(row))),
+      forms: (report.forms ?? []).map(mark((row) => rows.component(row))),
+      components: (report.components ?? []).map((row) =>
+        ['list', 'basic-form', 'advanced-form'].includes(row.kind)
+          ? mark((item) => rows.component({ id: item.recordId, name: item.name }))(row)
+          : row,
+      ),
+    };
   };
   const allDiagnostics = (cfg = config()) => [
     ...packConfigurations.diagnostics,
@@ -4140,12 +4347,14 @@ export async function createSimulator(options) {
       const route = url.searchParams.get('path') ?? '/';
       if (!route.startsWith('/') || route.startsWith('//') || route.includes('\\'))
         throw error('A portal-relative page path is required.');
-      const report = inspectRoute(route, inspectionIdentity(req, route));
+      const identity = inspectionIdentity(req, route);
+      const report = inspectRoute(route, identity);
       // view=summary: what a tool needs on every navigation; the full report stays on request.
       if (url.searchParams.get('view') === 'summary') {
         return json(res, 200, inspectionSummary(report));
       }
-      return json(res, 200, report);
+      // The static report is cached; the observed render is read per request and added to a copy.
+      return json(res, 200, withObservedRender(report, observedPageRender(req, report, identity)));
     }
     if (method === 'GET' && relative === '/verification-witness') {
       if (
@@ -5376,7 +5585,13 @@ export async function createSimulator(options) {
       listId: null,
       metadata: { adx_copy: html },
     };
-    signInShell = { renderer, page, value: buildRenderer({ ...portal, pages: [page, ...portal.pages] }) };
+    signInShell = {
+      renderer,
+      page,
+      value: buildRenderer({ ...portal, pages: [page, ...portal.pages] }),
+      // The exported sign-in page copy the account layout embeds (render provenance: derived from it).
+      copySourceRefId: exported ? (renderer.sourceIndex().source(exported.metadata, 'copy')?.id ?? null) : null,
+    };
     return signInShell;
   };
   const anonymousCanRead = (target) => {
@@ -5384,33 +5599,20 @@ export async function createSimulator(options) {
     if (!page || page.id === servicePages(portal).profile?.id) return false;
     return pageAccess(portal, page, identityFor({ contactId: null }), { now: store.clock.now() }).allowed;
   };
-  const applyAccountPageContent = (html, content) => {
-    const marker = html.indexOf(SIGN_IN_MARKER);
-    // A content function is an account layout region (the sign-in page, lib/auth-session.mjs
-    // signInContent): it replaces the page's main region and receives the rendered page copy.
-    const main = marker >= 0 ? html.lastIndexOf('<main id="mainContent">', marker) : -1;
-    if (typeof content === 'function' && main >= 0) {
-      const valueOpen = '<div class="xrm-attribute-value">';
-      const valueStart = html.indexOf(valueOpen, main);
-      const copy =
-        valueStart >= 0 && valueStart < marker ? html.slice(valueStart + valueOpen.length, marker).trim() : '';
-      const mainEnd = html.indexOf('</main>', marker);
-      html =
-        html.slice(0, main) +
-        content(copy) +
-        html.slice(mainEnd < 0 ? marker + SIGN_IN_MARKER.length : mainEnd + '</main>'.length);
-      // Account pages link the platform's account stylesheet after the platform styles (live head).
-      html = html.replace(
-        /<link href="[^"]*\/privatemode\.bundle-[^"]*"[^>]*>/,
-        (link) => `${link}<link rel="stylesheet" href="/Areas/Account/css/account.css">`,
-      );
-    } else {
-      const markup = typeof content === 'function' ? content('') : content;
-      if (marker >= 0) html = html.replace(SIGN_IN_MARKER, () => markup);
-      else if (/<body[^>]*>/i.test(html)) html = html.replace(/<body[^>]*>/i, (tag) => tag + markup);
-      else html += markup;
-    }
-    return html;
+  // The account page content edits (lib/liquid.mjs accountPageEdits): the content is the platform sign-in page's, each
+  // part of it (a provider tile, local sign-in, registration, invitation) named with the authentication site settings
+  // that configure that part (lib/sign-in-provenance.mjs).
+  const applyAccountPageContent = (html, content, shell) => {
+    const index = renderer.sourceIndex();
+    const copySourceRefId = shell?.copySourceRefId ?? null;
+    const edits = accountPageEdits(html, content, {
+      marker: SIGN_IN_MARKER,
+      contentPlatform: signInPartTags({ portal, index, providers: externalSignIn?.signInProviders() ?? [] }),
+      resourcePlatform: shellTags(portal, index, null),
+      copySourceRefId,
+      copySource: copySourceRefId ? (index.sources.get(copySourceRefId) ?? null) : null,
+    });
+    return { html: applyMarkupEdits(html, edits), edits };
   };
   /** A platform account page (sign-in, invitation redemption) inside the site's shell. */
   async function renderAccountPage(req, res, url, { status = 200, content, route = 'sign-in-page' }) {
@@ -5422,11 +5624,19 @@ export async function createSimulator(options) {
       request: { url: url.href, path: url.pathname, params: requestParams(req, url, {}), method: req.method },
     });
     for (const diagnostic of rendered.diagnostics ?? []) recordDiagnostic({ ...diagnostic, path: url.pathname });
-    let html = String(rendered.html ?? '');
-    html = applyAccountPageContent(html, content);
+    const applied = applyAccountPageContent(String(rendered.html ?? ''), content, shell);
+    let html = applied.html;
+    // A browser document gets the render provenance of the composed page: the exported header, footer and copy keep
+    // their sources, the account content is the sign-in page's (platform-shell:sign-in).
+    const traced = provenanceDestination(req) ? shell.value.provenanceForEdited(rendered, applied.edits) : null;
+    if (traced) html = traced.html;
     if (rendered.isDocument !== false) {
       html = injectRuntimeDependencies(html, sourceDependencies);
-      html = injectLocalHead(injectRuntimeCompatibility(html, sourceDependencies), localOverrides);
+      html = injectLocalHead(
+        injectRuntimeCompatibility(html, sourceDependencies),
+        localOverrides,
+        traced?.provenance ?? null,
+      );
       html = injectRuntime(
         html,
         csrf,
@@ -5437,13 +5647,15 @@ export async function createSimulator(options) {
         trace.getStore()?.traceSpan?.traceId,
       );
     }
-    res.writeHead(status, {
+    const headers = {
       'content-type': 'text/html; charset=utf-8',
       ...PAGE_HEADERS,
       ...siteHeaders(portal, { confinement: confinementPolicy(), kind: 'page' }),
       'x-sim-route': route,
-    });
-    return res.end(html);
+    };
+    const refreshProof = publishRenderProof(headers, traced?.provenance);
+    res.writeHead(status, headers);
+    return res.end(refreshProof(html));
   }
   // The platform's sign-in page: the site's external providers (lib/sign-in-flow.mjs) and,
   // when local sign-in is enabled or the site configures no provider, the local personas.
@@ -6102,13 +6314,25 @@ export async function createSimulator(options) {
         diagnostic: (entry) => recordDiagnostic({ ...entry, path: url.pathname }),
       });
       // The same page response headers as every portal page: site HTTP/* settings, the confinement CSP, nosniff.
-      res.writeHead(200, {
+      const searchHeaders = {
         'content-type': 'text/html; charset=utf-8',
         ...PAGE_HEADERS,
         ...siteHeaders(portal, { confinement: confinementPolicy(), kind: 'page' }),
         'x-sim-route': 'portal-search-local',
-      });
-      return res.end(html);
+      };
+      // The default search page is the platform's (platform-shell:search-page), configured by the Search/* settings.
+      const index = renderer.sourceIndex();
+      const traced = platformDocumentProof(
+        req,
+        html,
+        'search-page',
+        (portal.records ?? [])
+          .filter((record) => record.kind === 'sitesetting' && /^search\//i.test(String(record.name ?? '')))
+          .map((record) => index.source(record, '$record')?.id),
+      );
+      const refreshProof = publishRenderProof(searchHeaders, traced?.provenance);
+      res.writeHead(200, searchHeaders);
+      return res.end(refreshProof(traced?.html ?? html));
     }
     const flow = operationPortal().cloudFlows.find(
       (record) =>
@@ -6206,6 +6430,7 @@ export async function createSimulator(options) {
           if (abandoned) return;
         }
         const quickIdentity = currentIdentity();
+        const quickComponents = [];
         const body = await renderQuickForm({
           portal,
           store,
@@ -6214,6 +6439,7 @@ export async function createSimulator(options) {
           params: Object.fromEntries(url.searchParams),
           metadata: modelMetadata(),
           schemas: { ...solutionMetadata.componentSchemas, ...config().componentSchemas },
+          onComponentRendered: (item) => quickComponents.push(item),
         });
         const quickRequest = {
           url: url.href,
@@ -6238,7 +6464,6 @@ export async function createSimulator(options) {
           renderStyles: (paths) => paths.map(resource).join(''),
         });
         const styles =
-          quickPlatform.headStart +
           quickPlatform.remaining.stylesheets.map(resource).join('') +
           formContentStyles(sourceStyles.content, config().shellProfile) +
           layout.head +
@@ -6247,6 +6472,7 @@ export async function createSimulator(options) {
           recordDiagnostic({ ...item, path: url.pathname });
         // The form posts back to the document's own path (./{websiteId}?query); only the entity form view script loads.
         const quickAntiForgeryPath = `/_portal/${quickSite}/Layout/GetAntiForgeryToken`;
+        let quickContent = null;
         const form = webFormsForm({
           id: 'content_form',
           action: `./${quickSite}${url.search}`,
@@ -6254,19 +6480,62 @@ export async function createSimulator(options) {
           validators: true,
           formScriptPaths: ['/xrm-adx/js/crmentityformview.js'],
           variant: quickPlatform.variant,
+          onContent: (range) => {
+            quickContent = range;
+          },
         });
-        const document = `<!doctype html>${layout.html}<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta http-equiv="X-UA-Compatible" content="IE=edge"><title>${layout.title}</title>${styles}</head>${layout.body}${quickPlatform.bodyOpen}${layout.chrome}${antiForgeryHolder(quickAntiForgeryPath)}${quickPlatform.bodyStart}<div id="content-container" class="container quickform"><div id="content">${form}</div></div>${quickPlatform.afterContent}${quickPlatform.afterFooter}</body></html>`;
-        res.writeHead(200, {
+        const quickIndex = renderer.sourceIndex();
+        // The quick view's own markup names the quick view form, its fields and the host form control
+        // (lib/component-provenance.mjs); the document around it is the platform's (platform-shell:quick-view), its
+        // chrome and anti-forgery holder their own shell parts.
+        const quickForm = provenanceDestination(req)
+          ? serverFormFragment(
+              form,
+              componentRenderResult(body, { components: quickComponents, index: quickIndex, tag: 'quickform' }),
+              quickContent,
+            )
+          : form;
+        const quickFragment = joinRenderFragments(
+          `<!doctype html>${layout.html}<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta http-equiv="X-UA-Compatible" content="IE=edge"><title>${layout.title}</title>`,
+          headStartFragment(quickPlatform, {
+            index: quickIndex,
+            bootstrapMarkup: sourceStyles.bootstrapSnippet ? sourceStyles.bootstrap : null,
+          }),
+          `${styles}</head>${layout.body}${quickPlatform.bodyOpen}`,
+          layout.chromeFragment ?? layout.chrome,
+          platformFragment(antiForgeryHolder(quickAntiForgeryPath), { component: shellComponent('antiforgery') }),
+          `${quickPlatform.bodyStart}<div id="content-container" class="container quickform"><div id="content">`,
+          quickForm,
+          `</div></div>${quickPlatform.afterContent}${quickPlatform.afterFooter}</body></html>`,
+        );
+        const quickTraced = provenanceDestination(req)
+          ? finalizePortalProvenance({
+              fragment: platformDocumentFragment(quickFragment, { portal, index: quickIndex, part: 'quick-view' }),
+              index: quickIndex,
+            })
+          : null;
+        // The local head goes in here, once, with its proof. The statement that answers below keeps the text its
+        // reviewed CodeQL disposition is matched by: its own injectLocalHead call finds every asset already there, and
+        // the proof is shown the document through `sent`.
+        const document = injectLocalHead(
+          quickTraced?.html ?? quickFragment.text,
+          localOverrides,
+          quickTraced?.provenance ?? null,
+        );
+        const quickHeaders = {
           'content-type': 'text/html; charset=utf-8',
           ...PAGE_HEADERS,
           'x-frame-options': siteHeaders(portal)['x-frame-options'],
-        });
+        };
+        const refreshQuickProof = publishRenderProof(quickHeaders, quickTraced?.provenance);
+        res.writeHead(200, quickHeaders);
         return res.end(
           req.method === 'HEAD'
             ? undefined
             : frameReadiness.decorate(injectLocalHead(document, localOverrides), {
                 path: url.pathname,
                 observed: config().observed ?? portal.observed,
+                sent: refreshQuickProof,
               }),
         );
       } catch (cause) {
@@ -6604,8 +6873,16 @@ export async function createSimulator(options) {
         context.sitemap.current = null;
       }
       const collected = [];
-      const renderModalForm = () =>
-        renderComponent('entityform', definition.id, context, {
+      // The form's render provenance reports (lib/component-provenance.mjs), of the form's last render.
+      let modalComponents = [],
+        modalExplicit = [],
+        modalFormHtml = '';
+      const renderModalForm = async () => {
+        modalComponents = [];
+        modalExplicit = [];
+        modalFormHtml = await renderComponent('entityform', definition.id, context, {
+          onComponentRendered: (item) => modalComponents.push(item),
+          onProgressRendered: (item) => modalExplicit.push(item),
           portal,
           store,
           readProvider,
@@ -6637,6 +6914,8 @@ export async function createSimulator(options) {
           },
           renderLiquid: (source, ctx) => modalRenderer.renderString(source, ctx),
         });
+        return modalFormHtml;
+      };
       let html = await renderModalForm();
       if (nativeEntries) {
         const submission = resolveNativeFormSubmission(nativeEntries, collected, url.href);
@@ -6724,7 +7003,6 @@ export async function createSimulator(options) {
           : {}),
       };
       Object.assign(headers, siteHeaders(portal, { confinement: confinementPolicy(), kind: 'page' }));
-      res.writeHead(200, headers);
       // Native modal form page (Form.aspx): content_form wraps the static
       // EntityFormControl; its empty anti-forgery holder uses the portal-scoped URL.
       // The platform serves it through the layout master (live evidence): the layout frame of a
@@ -6737,13 +7015,77 @@ export async function createSimulator(options) {
         languageCode: language?.code ?? null,
       });
       const modalAntiForgeryPath = `/_portal/${scopedSite}/Layout/GetAntiForgeryToken`;
-      const document = injectRuntimeCompatibility(
-        `<!doctype html>${layout.html}<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta http-equiv="X-UA-Compatible" content="IE=edge"><title>${layout.title}</title>${modalPlatform.headStart}${styles}${headScripts}${layout.head}${modalPlatform.headEnd}</head>${layout.body}${modalPlatform.bodyOpen}${layout.chrome}${antiForgeryHolder(modalAntiForgeryPath)}${modalPlatform.bodyStart}<div id="content-container" class="container wrapper-body" role="main"><div id="content"><div id="mainContent">${webFormsForm({ id: 'content_form', action: url.pathname + url.search, content: html, aspNetScripts })}</div></div></div>${modalPlatform.afterContent}${bodyScripts}${modalPlatform.afterFooter}</body></html>`,
-        sourceDependencies,
-        configuredHeadScripts,
+      const modalIndex = renderer.sourceIndex();
+      let modalContent = null;
+      const modalForm = webFormsForm({
+        id: 'content_form',
+        action: url.pathname + url.search,
+        content: html,
+        aspNetScripts,
+        onContent: (range) => {
+          modalContent = range;
+        },
+      });
+      // The form's own markup names its basic form, FormXml controls, tabs, sections and columns
+      // (lib/component-provenance.mjs); the modal form document around it is the platform's (platform-shell:modal-form),
+      // its chrome, anti-forgery holder and the local compatibility adapters their own shell parts.
+      const modalFormFragment = provenanceDestination(req)
+        ? serverFormFragment(
+            modalForm,
+            {
+              html,
+              renderProvenance:
+                componentRenderResult(modalFormHtml, {
+                  components: modalComponents,
+                  explicit: modalExplicit,
+                  index: modalIndex,
+                  tag: 'entityform',
+                  args: { id: definition.id },
+                })?.renderProvenance ?? [],
+            },
+            modalContent,
+          )
+        : modalForm;
+      const modalFragment = joinRenderFragments(
+        `<!doctype html>${layout.html}<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta http-equiv="X-UA-Compatible" content="IE=edge"><title>${layout.title}</title>`,
+        headStartFragment(modalPlatform, {
+          index: modalIndex,
+          bootstrapMarkup: sourceStyles.bootstrapSnippet ? sourceStyles.bootstrap : null,
+        }),
+        `${styles}${headScripts}${layout.head}${modalPlatform.headEnd}</head>${layout.body}${modalPlatform.bodyOpen}`,
+        layout.chromeFragment ?? layout.chrome,
+        platformFragment(antiForgeryHolder(modalAntiForgeryPath), { component: shellComponent('antiforgery') }),
+        `${modalPlatform.bodyStart}<div id="content-container" class="container wrapper-body" role="main"><div id="content"><div id="mainContent">`,
+        modalFormFragment,
+        `</div></div></div>${modalPlatform.afterContent}${bodyScripts}${modalPlatform.afterFooter}</body></html>`,
       );
-      for (const item of formStyleDiagnostics(document, config().shellProfile))
+      const modalAdapters = runtimeCompatibilityEdits(modalFragment.text, sourceDependencies, configuredHeadScripts)
+        .map((edit) => ({
+          ...edit,
+          ...platformFragment(edit.text, { component: shellComponent('compatibility-adapter') }),
+        }))
+        .reverse();
+      const modalComposed = applyRenderEdits(modalFragment, modalAdapters);
+      const modalTraced = provenanceDestination(req)
+        ? finalizePortalProvenance({
+            fragment: platformDocumentFragment(modalComposed, { portal, index: modalIndex, part: 'modal-form' }),
+            index: modalIndex,
+          })
+        : null;
+      const modalDocument = injectRuntimeCompatibility(modalFragment.text, sourceDependencies, configuredHeadScripts);
+      const traceModal = modalTraced && modalComposed.text === modalDocument;
+      const refreshModalProof = publishRenderProof(headers, traceModal ? modalTraced.provenance : null);
+      res.writeHead(200, headers);
+      for (const item of formStyleDiagnostics(modalDocument, config().shellProfile))
         recordDiagnostic({ ...item, path: url.pathname });
+      // The local head goes in here, once, with its proof. The statement that answers below keeps the text its
+      // reviewed CodeQL disposition is matched by: its own injectLocalHead call finds every asset already there, and
+      // the proof is shown the document through `sent`.
+      const document = injectLocalHead(
+        traceModal ? modalTraced.html : modalDocument,
+        localOverrides,
+        traceModal ? modalTraced.provenance : null,
+      );
       return res.end(
         injectRuntime(
           frameReadiness.decorate(injectLocalHead(document, localOverrides), {
@@ -6757,6 +7099,7 @@ export async function createSimulator(options) {
           trace.getStore()?.spanId,
           siteLanguageCodes(),
           trace.getStore()?.traceSpan?.traceId,
+          refreshModalProof,
         ),
       );
     }
@@ -7131,9 +7474,9 @@ export async function createSimulator(options) {
     // the live portal serves their template output verbatim, so prepending scripts
     // would corrupt JSON.parse() and jQuery .load() consumers.
     const isDocument = contentType.includes('text/html') && (rendered.isDocument ?? isHtmlDocument(html));
-    // A bare HTML template may be a native browser navigation or an XHR fragment. Only
-    // the document destination establishes parser-node proof; data callers keep original bytes.
-    if (contentType.includes('text/html') && req.headers['sec-fetch-dest'] === 'document' && !rendered.provenance) {
+    // A bare HTML template may be a native browser navigation or an XHR fragment. Only a
+    // document destination (top-level or framed) establishes parser-node proof; data callers keep original bytes.
+    if (contentType.includes('text/html') && provenanceDestination(req) && !rendered.provenance) {
       const traced = renderedSource.renderer.provenanceFor(rendered);
       if (traced) {
         html = traced.html;
@@ -7142,7 +7485,11 @@ export async function createSimulator(options) {
     }
     if (isDocument) {
       html = injectRuntimeDependencies(html, sourceDependencies);
-      html = injectLocalHead(injectRuntimeCompatibility(html, sourceDependencies), localOverrides);
+      html = injectLocalHead(
+        injectRuntimeCompatibility(html, sourceDependencies),
+        localOverrides,
+        rendered.provenance ?? null,
+      );
       for (const item of formStyleDiagnostics(html, config().shellProfile))
         recordDiagnostic({ ...item, path: url.pathname });
       if (localOverrides.assets.length || Object.keys(localOverrides.compat).length)
@@ -7234,16 +7581,27 @@ export async function createSimulator(options) {
       error: err,
       observed: config().observed ?? portal.observed,
     });
+    // An error document is the runtime's (platform-shell:error-page); a failure to trace it never replaces the answer.
+    const errorProof = (body) => {
+      try {
+        return typeof body === 'string' ? platformDocumentProof(req, body, 'error-page') : null;
+      } catch {
+        return null;
+      }
+    };
     if (presentation) {
-      res.writeHead(presentation.status, presentation.headers);
-      return res.end(presentation.body);
+      const traced = errorProof(presentation.body);
+      const headers = { ...presentation.headers };
+      const refreshProof = publishRenderProof(headers, traced?.provenance);
+      res.writeHead(presentation.status, headers);
+      return res.end(traced ? refreshProof(traced.html) : presentation.body);
     }
-    res.writeHead(status, {
+    const headers = {
       'content-type': 'text/html; charset=utf-8',
       ...(err.code === 'REDIRECT_SITE_MARKER_NULL_REFERENCE' && observed.siteMarkerRedirect === 'null-reference'
         ? { 'cache-control': PAGE_CACHE_CONTROL }
         : {}),
-    });
+    };
     const invalidReturnUrl = err.code === 'InvalidPersonaCatalog' && err.invalidParameter === 'returnUrl';
     let requestTitle = null;
     if (invalidReturnUrl) requestTitle = 'Invalid returnUrl';
@@ -7252,9 +7610,11 @@ export async function createSimulator(options) {
         err.status === 404 || /persona/i.test(err.message)
           ? 'Invalid persona parameter'
           : 'Local sign-in request failed';
-    res.end(
-      `<!doctype html><title>${requestTitle ?? 'Portal simulation diagnostic'}</title><main style="font:16px system-ui;max-width:900px;margin:50px auto"><h1>${requestTitle ?? 'Portal rendering needs attention'}</h1><p>${escaped(err.message)}</p><p><a href="/__sim/">Open simulator admin</a></p></main>`,
-    );
+    const body = `<!doctype html><title>${requestTitle ?? 'Portal simulation diagnostic'}</title><main style="font:16px system-ui;max-width:900px;margin:50px auto"><h1>${requestTitle ?? 'Portal rendering needs attention'}</h1><p>${escaped(err.message)}</p><p><a href="/__sim/">Open simulator admin</a></p></main>`;
+    const traced = errorProof(body);
+    const refreshProof = publishRenderProof(headers, traced?.provenance);
+    res.writeHead(status, headers);
+    res.end(traced ? refreshProof(traced.html) : body);
   };
   // A request that takes a JSON error envelope: the portal and administration APIs, native form posts, a pack endpoint,
   // and any request whose Accept names JSON and not HTML (a script's fetch, a client library).

@@ -711,3 +711,148 @@ export class GitBaseline {
     return pending;
   }
 }
+
+const relativeTo = (sourceDir, file) =>
+  path.relative(path.resolve(sourceDir), path.resolve(file)).replaceAll('\\', '/');
+const OBJECT_ID = /^[0-9a-f]{40,64}$/;
+// Git ran and said no (no repository, no such object): an empty answer. Git that could not be asked (not installed,
+// no answer within the hang guard) is an error the caller reports as such.
+const unanswered = (error) => {
+  if (!gitAnswered(error)) throw error;
+};
+
+/**
+ * The versions one file has had in the repository, newest first: every commit on a branch or tag that changed the
+ * file (followed through renames), with the blob the file was after it. A blob that several commits gave the file is
+ * listed once, with the newest of them. Read-only; an empty list when Git has no history for the file (no
+ * repository, an untracked file). Throws when Git could not be asked.
+ * @returns {Promise<Array<{blob: string, commit: string, date: string}> & {limited?: boolean}>} `limited` when
+ *   the history holds more commits than `limit`
+ */
+export async function fileVersions(sourceDir, file, { limit = 40 } = {}) {
+  const rel = relativeTo(sourceDir, file);
+  if (!rel || rel.startsWith('..')) return [];
+  let output;
+  try {
+    output = await gitAsync(path.resolve(sourceDir), [
+      'log',
+      '--all',
+      '--follow',
+      '-n',
+      String(limit),
+      '--format=%x00%H%x09%cI',
+      '--raw',
+      '--no-abbrev',
+      '--end-of-options',
+      '--',
+      rel,
+    ]);
+  } catch (error) {
+    unanswered(error);
+    return [];
+  }
+  const versions = [];
+  const seen = new Set();
+  let commits = 0;
+  for (const chunk of output.split('\0')) {
+    const lines = chunk.split('\n');
+    const [commit, date] = (lines[0] ?? '').split('\t');
+    if (!OBJECT_ID.test(commit ?? '')) continue;
+    commits++;
+    for (const line of lines) {
+      if (!line.startsWith(':')) continue;
+      const blob = line.split(/[ \t]/)[3];
+      if (!OBJECT_ID.test(blob ?? '') || /^0+$/.test(blob) || seen.has(blob)) continue;
+      seen.add(blob);
+      versions.push({ blob, commit, date: date ?? '' });
+    }
+  }
+  if (commits >= limit) versions.limited = true;
+  return versions;
+}
+
+/** The text of one blob; null when Git does not have it. Throws when Git could not be asked. */
+export async function blobText(sourceDir, blob) {
+  if (!OBJECT_ID.test(blob)) return null;
+  try {
+    return await gitAsync(path.resolve(sourceDir), ['cat-file', 'blob', blob]);
+  } catch (error) {
+    unanswered(error);
+    return null;
+  }
+}
+
+/**
+ * Branches and tags, the most recently created first, with the blob each one holds for the given files (null where
+ * the ref does not have the file). `ref` is the full name (`refs/heads/main`), which names one ref whatever else is
+ * called the same; `name` is the short one. A tag is given with the commit it points at. Read-only; an empty list
+ * when Git has no refs. Throws when Git could not be asked.
+ * @returns {Promise<Array<{name: string, ref: string, commit: string, date: string,
+ *   blobs: Map<string, string|null>}> & {limited?: boolean}>} `blobs` is keyed by the file as given
+ */
+export async function refVersions(sourceDir, files, { limit = 400 } = {}) {
+  const cwd = path.resolve(sourceDir);
+  const rels = files.map((file) => relativeTo(sourceDir, file));
+  let output;
+  try {
+    output = await gitAsync(cwd, [
+      'for-each-ref',
+      '--sort=-creatordate',
+      `--count=${limit}`,
+      '--format=%(objectname)%09%(*objectname)%09%(creatordate:iso-strict)%09%(refname)',
+      'refs/heads',
+      'refs/remotes',
+      'refs/tags',
+    ]);
+  } catch (error) {
+    unanswered(error);
+    return [];
+  }
+  const { refs, listed } = parseRefList(output, files);
+  if (refs.length && rels.length && !(await fillRefBlobs(cwd, refs, files, rels))) return [];
+  if (listed >= limit) refs.limited = true;
+  return refs;
+}
+
+/** The refs `for-each-ref` listed (without remote HEADs and names with control characters) and how many it listed. */
+function parseRefList(output, files) {
+  const refs = [];
+  let listed = 0;
+  for (const line of output.split('\n')) {
+    const [object, peeled, date, refname] = line.split('\t');
+    if (!OBJECT_ID.test(object ?? '') || !refname) continue;
+    listed++;
+    if (/^refs\/remotes\/[^/]+\/HEAD$/.test(refname) || /[\0\r\n]/.test(refname)) continue;
+    refs.push({
+      name: refname.replace(/^refs\/(?:heads|remotes|tags)\//, ''),
+      ref: refname,
+      commit: OBJECT_ID.test(peeled ?? '') ? peeled : object,
+      date: date ?? '',
+      blobs: new Map(files.map((file) => [file, null])),
+    });
+  }
+  return { refs, listed };
+}
+
+/** Sets the blob each ref holds for each file; false when Git could not be asked. */
+async function fillRefBlobs(cwd, refs, files, rels) {
+  // One Git process says which blob every ref holds at every path: a line per ref and file, answered in order.
+  const asked = [];
+  for (const ref of refs) for (let at = 0; at < rels.length; at++) asked.push([ref, at]);
+  let answers;
+  try {
+    answers = await gitAsync(cwd, ['cat-file', '--batch-check=%(objectname) %(objecttype)'], {
+      // `<commit>:./<path>`: the path is read from the source folder, wherever the repository starts.
+      input: asked.map(([ref, at]) => `${ref.commit}:./${rels[at]}\n`).join(''),
+    });
+  } catch (error) {
+    unanswered(error);
+    return false;
+  }
+  const lines = answers.split('\n');
+  for (let index = 0; index < asked.length; index++) {
+    const match = /^([0-9a-f]{40,64}) blob$/.exec(lines[index] ?? '');
+    if (match) asked[index][0].blobs.set(files[asked[index][1]], match[1]);
+  }
+  return true;
+}

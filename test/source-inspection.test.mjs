@@ -33,11 +33,14 @@ test('the route observer records entity sets and server logic routes from reques
   observer.record('not a url', document);
   const rendered = { assets: [], controls: [], apiSets: ['x_fromPage'] };
   const merged = observer.merge(rendered);
+  // requestPaths (C27): every same-origin request path, pathname only, so web files, server logic and cloud-flow
+  // endpoints the session requested are marked; the query value of the first request is not kept.
   assert.deepEqual(merged, {
     assets: [],
     controls: [],
     apiSets: ['x_fromPage', 'x_things', 'serverlogics'],
     serverLogicPaths: ['/_api/serverlogics/x_logic'],
+    requestPaths: ['/_api/x_things(1)', '/_api/serverlogics/x_logic', '/other'],
   });
   assert.deepEqual(rendered, { assets: [], controls: [], apiSets: ['x_fromPage'] });
   observer.navigationRequested(document);
@@ -602,6 +605,12 @@ test('project-selected Solution metadata provides exact FormXml and field paths;
     report.forms[0].formXml.sourceFile,
     path.join(fx.solution, 'Entities/fx_widget/FormXml/main/widget-form.xml'),
   );
+  // The FormXml tabs and sections, by name, for the node observer to prove a rendered tab or section.
+  assert.deepEqual(report.forms[0].formXml.layout, [{ name: 'GENERAL', sections: ['main'] }]);
+  assert.deepEqual(report.componentIndex.forms.find((form) => form.formXml?.id === 'widget-form')?.formXml.layout, [
+    { name: 'GENERAL', sections: ['main'] },
+  ]);
+  assert.equal(report.page.webFormId, null, 'the home page renders no multistep form');
   assert.equal(report.columns[0].name, 'fx_title');
   assert.equal(report.renderedControls[0].field, 'fx_widget.fx_title');
   assert.equal(report.renderedControls[0].sourceFile, path.join(fx.solution, 'Entities/fx_widget/Entity.xml'));
@@ -641,10 +650,12 @@ test('the rendered-page reader runs self-contained in a page realm and keeps onl
       ],
     },
   };
+  // requestPaths (C27) keeps the same-origin request path without its query; the foreign request stays excluded.
   assert.deepEqual(structuredClone(vm.runInNewContext(`(${inspectRenderedPage})()`, page)), {
     assets: [],
     controls: [],
     apiSets: ['fx_widgets'],
+    requestPaths: ['/_api/fx_widgets'],
     ids: [],
     markupTokens: [],
     truncated: false,

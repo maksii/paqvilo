@@ -74,6 +74,11 @@ Omitting a setting keeps the default.
   uses the ASP.NET layout and its page copy; the web template header/footer switch applies only to web template
   responses, and resource inspection leaves an unselected web template out of the include chain. A populated portal
   route is not a physical rewrite target and answers a route-handler error; other `.aspx` layouts are not rendered.
+  The breadcrumb above a rewrite layout's title is the portal's own control, not the site's Breadcrumbs web template:
+  one linked item per page of the path, hidden pages included, each with its whole title and no `title` attribute,
+  written with the AntiXSS encoder, with the Bootstrap 5 item classes when `Site/BootstrapV5Enabled` is true. It is
+  proven by the `page-layout` replay surface (`mirage/test/parity/cases/page-layout`) for `FullPage.aspx`,
+  `WebForm.aspx` and `WebFormNoValidation.aspx`.
 - **Children and associations.** Language children, component envelopes, binary attachments and role associations are
   imported as their own records. A successful association request alone does not create an effective relationship or
   permission.

@@ -49,10 +49,13 @@ async function fixture(
   const page = await context.newPage();
   const origin = 'http://127.0.0.1:11883',
     packets = [],
+    // Moves and changes of parser elements notify too: kept apart, so `packets` counts the elements scripts made.
+    changes = [],
     scripts = new Map(),
     arrivals = [];
   await page.exposeBinding(options.binding, (_source, payload) => {
-    packets.push(JSON.parse(payload));
+    const packet = JSON.parse(payload);
+    (['moved-by', 'changed-by'].includes(packet.relationship) ? changes : packets).push(packet);
     for (const arrived of arrivals.splice(0)) arrived();
   });
   // Resolves once the binding has delivered at least `count` packets.
@@ -120,21 +123,29 @@ async function fixture(
     while (position() < 0) await new Promise((arrived) => arrivals.push(arrived));
     return packets.slice(0, position()).filter((packet) => !barriers.has(packet.frames[0]?.url));
   };
-  const resolve = async (count) => {
+  // Resolves every creation packet (exactly `count`) and every change packet that arrived, once `changed` (a test of
+  // the change packets) holds.
+  const resolve = async (count, changed = () => true) => {
     await packetsReach(count);
+    while (!changed(changes)) await new Promise((arrived) => arrivals.push(arrived));
     assert.equal(packets.length, count);
-    for (const packet of packets)
+    for (const packet of [...packets, ...changes])
       await writer.evaluate((writer, { id, proof }) => writer.resolve(id, proof), {
         id: packet.id,
         proof: proofFor(packet.id),
       });
   };
-  return { page, writer, packets, packetsReach, script, query, resolve, barrier, origin };
+  return { page, writer, packets, changes, packetsReach, script, query, resolve, barrier, origin };
 }
 
 test('the writer lists the newest pending notifications as sent, without resolved ones', async (t) => {
   const fx = await fixture(t);
-  await fx.script(`for(let i=0;i<2100;i++)document.body.append(document.createElement('i'));`);
+  // 2100 calls at their own places (calls of one place share a record until it is sent), into an element no recorded
+  // call made and no document holds, so they change no parser element.
+  await fx.script(
+    "const box=Reflect.apply(nativeDom.createElement,document,['div']);" +
+      "box.append(document.createElement('i'));".repeat(2100),
+  );
   await fx.packetsReach(2100);
   const sent = fx.packets.map((packet) => JSON.stringify(packet));
   const first = fx.packets[0];
@@ -172,12 +183,14 @@ test('creation, cloning, insertion and moves retain actual-node identity without
   assert.ok(pending.availability.some((item) => item.reason === 'creation-proof-pending'));
   assert.deepEqual(pending.scope, scope);
   assert.equal(pending.anchorGeneration, 7);
-  await fx.resolve(6);
+  // The copied section and its copied input share the copy's record. The parser element the script moves is no
+  // creation: it is moved, and keeps no creation record.
+  await fx.resolve(4, (changes) => changes.some((packet) => packet.relationship === 'moved-by'));
   for (const [name, relationship] of [
     ['created', 'created-by'],
     ['cloned', 'cloned-by'],
     ['inserted', 'created-by'],
-    ['parser', 'attached-by'],
+    ['parser', 'moved-by'],
   ]) {
     const result = await fx.query(name);
     assert.equal(result.facts.length, 1, name);
@@ -187,7 +200,7 @@ test('creation, cloning, insertion and moves retain actual-node identity without
   assert.equal(
     await fx.page.evaluate((slot) => window[slot].isScriptCreated(window.parser), options.slot),
     false,
-    'attachment does not relabel a parser node as script-created',
+    'a move does not relabel a parser node as script-created',
   );
   const original = (await fx.query('created')).facts[0].subject;
   await fx.script(`created.remove();`, '/detach.js');
@@ -208,6 +221,8 @@ test('creation, cloning, insertion and moves retain actual-node identity without
       packet.frames.some((frame) => frame.url === fx.origin + '/application.js' && frame.urlKey === expected),
     ),
   );
+  for (const packet of fx.changes)
+    assert.ok(packet.relationship === 'moved-by' ? !('what' in packet) : packet.what.length);
   for (const packet of fx.packets) {
     assert.deepEqual(Object.keys(packet).sort(), ['frames', 'id', 'key', 'relationship', 'version']);
     for (const frame of packet.frames)
@@ -422,8 +437,13 @@ test('bounded changes never attribute untouched huge-parent siblings or continue
       proof: proofFor(packet.id),
     });
   assert.equal(await release(fx.packets[0]), true);
+  // The removal changed the parser's huge element: that change waits for its proof too, and is released.
+  for (const packet of fx.changes) assert.equal(await release(packet), true);
   await fx.script(
-    `window.digestCalls=0;window.created=[];for(let i=0;i<1000;i++)created.push(document.createElement('b'));document.body.append(...created);window.overflow=created.at(-1);`,
+    // 1000 calls at their own places: past the pending limit (one place's calls would share one record).
+    'window.digestCalls=0;window.created=[];' +
+      "created.push(document.createElement('b'));".repeat(1000) +
+      'document.body.append(...created);window.overflow=created.at(-1);',
     '/bounded.js',
   );
   // Hashes are requested while the script runs; the barrier below requests its own afterwards.
@@ -450,7 +470,9 @@ test('bounded changes never attribute untouched huge-parent siblings or continue
 test('batch resolution admits at most128records and sends one source-ready event with the reader slot', async (t) => {
   const fx = await fixture(t);
   await fx.script(
-    `window.created=[];for(let i=0;i<4;i++){const node=document.createElement('i');created.push(node);document.body.append(node)};window.ready=[];document.addEventListener('paqvilo-provenance-ready',event=>ready.push(event.detail));`,
+    'window.created=[];' +
+      "{const node=document.createElement('i');created.push(node);document.body.append(node)};".repeat(4) +
+      "window.ready=[];document.addEventListener('paqvilo-provenance-ready',event=>ready.push(event.detail));",
   );
   await fx.packetsReach(4);
   assert.equal(fx.packets.length, 4);

@@ -288,7 +288,7 @@ test('X-ray case-by-case adversarial browser audit', { concurrency: 4 }, async (
   scenario(
     'I01',
     'Explicit form, FormXml, table and column',
-    '<form data-formid="form-a"><input id="audit_first"></form>',
+    '<form data-form-layout="{&quot;Id&quot;:&quot;form-a&quot;}"><input id="audit_first"></form>',
     async ({ xray, pick, field }) => {
       await pick('#audit_first');
       await field('audit_a.audit_first');
@@ -299,7 +299,7 @@ test('X-ray case-by-case adversarial browser audit', { concurrency: 4 }, async (
   scenario(
     'I02',
     'Label child resolves its associated column',
-    '<div data-entityname="audit_a"><label for="audit_first"><span id="caption">Title</span></label><input id="audit_first"></div>',
+    '<div data-paqvilo-table="audit_a"><label for="audit_first"><span id="caption">Title</span></label><input id="audit_first"></div>',
     async ({ pick, field }) => {
       await pick('#caption');
       await field('audit_a.audit_first');
@@ -308,7 +308,7 @@ test('X-ray case-by-case adversarial browser audit', { concurrency: 4 }, async (
   scenario(
     'I03',
     'Implicit label resolves its column',
-    '<div data-entityname="audit_a"><label><span id="caption">Title</span><input id="audit_first"></label></div>',
+    '<div data-paqvilo-table="audit_a"><label><span id="caption">Title</span><input id="audit_first"></label></div>',
     async ({ pick, field }) => {
       await pick('#caption');
       await field('audit_a.audit_first');
@@ -317,7 +317,7 @@ test('X-ray case-by-case adversarial browser audit', { concurrency: 4 }, async (
   scenario(
     'I04',
     'Field annotation on wrapper survives a generated input ID',
-    '<div data-entityname="audit_a"><div data-fieldname="audit_first"><input id="generated"></div></div>',
+    '<div data-paqvilo-table="audit_a"><div data-attribute="audit_first"><input id="generated"></div></div>',
     async ({ pick, field }) => {
       await pick('#generated');
       await field('audit_a.audit_first');
@@ -326,7 +326,7 @@ test('X-ray case-by-case adversarial browser audit', { concurrency: 4 }, async (
   scenario(
     'I05',
     'Compatible nested metadata retains form identity',
-    '<form data-formid="form-a"><div data-entityname="audit_a"><input id="audit_first"></div></form>',
+    '<form data-form-layout="{&quot;Id&quot;:&quot;form-a&quot;}"><div data-paqvilo-table="audit_a"><input id="audit_first"></div></form>',
     async ({ pick, field, xray }) => {
       await pick('#audit_first');
       await field('audit_a.audit_first');
@@ -336,7 +336,7 @@ test('X-ray case-by-case adversarial browser audit', { concurrency: 4 }, async (
   scenario(
     'I06',
     'Nested view overrides enclosing native form table',
-    '<div id="EntityFormControl_forma" data-formid="form-a"><div data-viewid="view-b"><input id="audit_shared"></div></div>',
+    '<div id="EntityFormControl_forma" data-form-layout="{&quot;Id&quot;:&quot;form-a&quot;}"><div class="entity-grid" data-selected-view="view-b"><input id="audit_shared"></div></div>',
     async ({ pick, field, xray }) => {
       await pick('#audit_shared');
       await field('audit_b.audit_shared');
@@ -346,7 +346,7 @@ test('X-ray case-by-case adversarial browser audit', { concurrency: 4 }, async (
   scenario(
     'I07',
     'Compatible table annotations retain enclosing view/list',
-    '<section data-entityname="audit_a" data-viewid="view-a" data-listid="list-a"><div data-entityname="audit_a"><input id="audit_first"></div></section>',
+    '<section data-paqvilo-table="audit_a" data-selected-view="view-a" id="EntityListControl_lista"><div data-paqvilo-table="audit_a"><input id="audit_first"></div></section>',
     async ({ pick, field, xray }) => {
       await pick('#audit_first');
       await field('audit_a.audit_first');
@@ -366,17 +366,23 @@ test('X-ray case-by-case adversarial browser audit', { concurrency: 4 }, async (
   scenario(
     'I09',
     'Deep wrappers retain form/table context',
-    `<form data-formid="form-a">${'<div>'.repeat(40)}<input id="audit_shared">${'</div>'.repeat(40)}</form>`,
+    `<form data-form-layout="{&quot;Id&quot;:&quot;form-a&quot;}">${'<div>'.repeat(40)}<input id="audit_shared">${'</div>'.repeat(40)}</form>`,
     async ({ pick, field }) => {
       await pick('#audit_shared');
       await field('audit_a.audit_shared');
     },
   );
-  scenario('I10', 'Ambiguous column remains ambiguous', '<input id="audit_shared">', async ({ pick, xray }) => {
-    await pick('#audit_shared');
-    assert.equal(await xray.locator('[data-inspection-evidence]').getAttribute('data-owner-status'), 'candidate');
-    assert.equal(await xray.locator('[data-evidence-role=alternatives] .ie-row').count(), 2);
-  });
+  // A hand-written input outside any rendered table context is no column of the tables that have its name (B20).
+  scenario(
+    'I10',
+    'A column name shared by two tables names no column without table context',
+    '<input id="audit_shared">',
+    async ({ pick, xray }) => {
+      await pick('#audit_shared');
+      assert.equal(await xray.locator('[data-inspection-evidence]').getAttribute('data-owner-status'), 'unavailable');
+      assert.equal(await xray.locator('[data-evidence-role=alternatives] .ie-row').count(), 0);
+    },
+  );
   scenario(
     'I11',
     'Unrelated button ID is not a Dataverse column',
@@ -389,7 +395,7 @@ test('X-ray case-by-case adversarial browser audit', { concurrency: 4 }, async (
   scenario(
     'I12',
     'Conflicting explicit table and view are not presented as a certain column',
-    '<div data-entityname="audit_a" data-viewid="view-b"><input id="audit_shared"></div>',
+    '<div class="entity-grid" data-paqvilo-table="audit_a" data-selected-view="view-b"><input id="audit_shared"></div>',
     async ({ pick, xray }) => {
       await pick('#audit_shared');
       assert.equal(await xray.locator('[data-inspection-evidence]').getAttribute('data-owner-status'), 'conflicting');
@@ -399,7 +405,7 @@ test('X-ray case-by-case adversarial browser audit', { concurrency: 4 }, async (
   scenario(
     'D01',
     'Selected field name updates in place',
-    '<div data-entityname="audit_a"><input id="field" name="audit_first"></div>',
+    '<div data-paqvilo-table="audit_a"><input id="field" name="audit_first"></div>',
     async ({ pick, field, page }) => {
       await pick('#field');
       await field('audit_a.audit_first');
@@ -410,7 +416,7 @@ test('X-ray case-by-case adversarial browser audit', { concurrency: 4 }, async (
   scenario(
     'D02',
     'Selected label for updates in place',
-    '<div data-entityname="audit_a"><label id="caption" for="audit_first">Label</label><input id="audit_first"><input id="audit_second"></div>',
+    '<div data-paqvilo-table="audit_a"><label id="caption" for="audit_first">Label</label><input id="audit_first"><input id="audit_second"></div>',
     async ({ pick, field, page }) => {
       await pick('#caption');
       await field('audit_a.audit_first');
@@ -420,12 +426,13 @@ test('X-ray case-by-case adversarial browser audit', { concurrency: 4 }, async (
   );
   scenario(
     'D03',
-    'Selected grid cell data-th updates in place',
-    '<div data-entityname="audit_a"><span id="cell" data-th="audit_first">Cell</span></div>',
+    // A list cell's data-th is its column's display label; data-attribute names the column.
+    'Selected grid cell column attribute updates in place',
+    '<div data-paqvilo-table="audit_a"><span id="cell" data-attribute="audit_first" data-th="First">Cell</span></div>',
     async ({ pick, field, page }) => {
       await pick('#cell');
       await field('audit_a.audit_first');
-      await page.locator('#cell').evaluate((node) => node.setAttribute('data-th', 'audit_second'));
+      await page.locator('#cell').evaluate((node) => node.setAttribute('data-attribute', 'audit_second'));
       await field('audit_a.audit_second');
     },
   );
@@ -436,7 +443,7 @@ test('X-ray case-by-case adversarial browser audit', { concurrency: 4 }, async (
     async ({ page, pick, field }) => {
       await page.locator('#component').evaluate((node) => {
         node.attachShadow({ mode: 'open' }).innerHTML =
-          '<div data-entityname="audit_a"><input id="shadow-field" data-attribute="audit_first"></div>';
+          '<div data-paqvilo-table="audit_a"><input id="shadow-field" data-attribute="audit_first"></div>';
       });
       await pick('#shadow-field');
       await field('audit_a.audit_first');
@@ -447,7 +454,7 @@ test('X-ray case-by-case adversarial browser audit', { concurrency: 4 }, async (
   scenario(
     'D05',
     'Moving a selected field changes table context',
-    '<div id="one" data-entityname="audit_a"><input id="audit_shared"></div><div id="two" data-entityname="audit_b"></div>',
+    '<div id="one" data-paqvilo-table="audit_a"><input id="audit_shared"></div><div id="two" data-paqvilo-table="audit_b"></div>',
     async ({ page, pick, field }) => {
       await pick('#audit_shared');
       await field('audit_a.audit_shared');
@@ -660,7 +667,7 @@ test('X-ray case-by-case adversarial browser audit', { concurrency: 4 }, async (
   scenario(
     'L04',
     'Keyboard parent selection works after using inspector controls',
-    '<form data-formid="form-a"><input id="audit_first"></form>',
+    '<form data-form-layout="{&quot;Id&quot;:&quot;form-a&quot;}"><input id="audit_first"></form>',
     async ({ page, pick, xray }) => {
       await pick('#audit_first');
       await xray.getByRole('button', { name: 'Reveal', exact: true }).click();
@@ -740,7 +747,7 @@ test('X-ray case-by-case adversarial browser audit', { concurrency: 4 }, async (
   scenario(
     'S03',
     'Input values are absent from inspector content',
-    '<div data-entityname="audit_a"><input id="audit_first" value="VALUE_MUST_NOT_APPEAR"><textarea id="notes">TEXT_MUST_NOT_APPEAR</textarea></div>',
+    '<div data-paqvilo-table="audit_a"><input id="audit_first" value="VALUE_MUST_NOT_APPEAR"><textarea id="notes">TEXT_MUST_NOT_APPEAR</textarea></div>',
     async ({ pick, xray }) => {
       await pick('#audit_first');
       assert.doesNotMatch(await xray.textContent(), /VALUE_MUST_NOT_APPEAR|TEXT_MUST_NOT_APPEAR/);
@@ -777,7 +784,7 @@ test('X-ray case-by-case adversarial browser audit', { concurrency: 4 }, async (
   scenario(
     'I13',
     'Shared system form identifies both candidate basic forms',
-    '<div data-formid="system-a" data-entityname="audit_a"><input id="audit_first"></div>',
+    '<div data-form-layout="{&quot;Id&quot;:&quot;system-a&quot;}" data-paqvilo-table="audit_a"><input id="audit_first"></div>',
     async ({ pick, xray, painted }) => {
       await pick('#audit_first');
       await xray.getByText('Form A', { exact: true }).first().waitFor({ state: 'attached' });
@@ -799,7 +806,7 @@ test('X-ray case-by-case adversarial browser audit', { concurrency: 4 }, async (
   scenario(
     'I14',
     'Explicit form table conflict remains unresolved',
-    '<form data-formid="form-a" data-entityname="audit_b"><input id="audit_shared"></form>',
+    '<form data-form-layout="{&quot;Id&quot;:&quot;form-a&quot;}" data-paqvilo-table="audit_b"><input id="audit_shared"></form>',
     async ({ pick, xray }) => {
       await pick('#audit_shared');
       assert.equal(await xray.locator('[data-inspection-evidence]').getAttribute('data-owner-status'), 'conflicting');
@@ -823,7 +830,7 @@ test('X-ray case-by-case adversarial browser audit', { concurrency: 4 }, async (
   scenario(
     'I16',
     'List identity does not match a different component kind',
-    '<div data-listid="list-a"><input id="audit_first"></div>',
+    '<div id="EntityListControl_lista"><input id="audit_first"></div>',
     async ({ pick, xray }) => {
       await pick('#audit_first');
       await xray.getByText('List A', { exact: true }).first().waitFor({ state: 'attached' });
@@ -846,7 +853,7 @@ test('X-ray case-by-case adversarial browser audit', { concurrency: 4 }, async (
   scenario(
     'I17',
     'Multistep form identity retains its FormXml and column',
-    '<div data-formid="advanced-a"><input id="audit_first"></div>',
+    '<div data-form-layout="{&quot;Id&quot;:&quot;advanced-a&quot;}"><input id="audit_first"></div>',
     async ({ pick, xray, field }) => {
       await pick('#audit_first');
       await field('audit_a.audit_first');
@@ -865,21 +872,30 @@ test('X-ray case-by-case adversarial browser audit', { concurrency: 4 }, async (
   );
   scenario(
     'I18',
-    'Code component schema resolves its exported source',
-    '<div data-pcf-schema="audit.Control"><button id="control">Control</button></div>',
+    'Code component host resolves the component its form configures',
+    // The portal's code component host: PcfControlConfig_<column> names the control the column renders with.
+    '<div id="EntityFormControl_forma"><span data-form-layout="{&quot;Id&quot;:&quot;form-a&quot;,&quot;EntityName&quot;:&quot;audit_a&quot;}"></span><span id="audit_first_Container"><span id="PcfControlConfig_audit_first" data-pcf-control="{}" pcf-controlcontext="{&quot;ControlId&quot;:&quot;audit_first&quot;,&quot;ControlName&quot;:&quot;audit.Control&quot;}"></span><div id="audit_first_ControlView"><button id="control">Control</button></div></span></div>',
     async ({ pick, xray }) => {
       await pick('#control');
-      await xray
-        .locator('[data-evidence-role=alternatives]')
-        .getByText('audit.Control', { exact: true })
-        .waitFor({ state: 'attached' });
-      assert.notEqual(await xray.locator('[data-inspection-evidence]').getAttribute('data-owner-status'), 'exact');
-      await xray.getByText('controls/a.yml', { exact: false }).first().waitFor({ state: 'attached' });
+      assert.equal(await xray.locator('[data-inspection-evidence]').getAttribute('data-owner-status'), 'exact');
+      // The card header names the component (the owner row is compact: it keeps what the header does not say).
+      assert.match(await xray.locator('.title').innerText(), /^audit\.Control\b/);
+      assert.match(await xray.locator('[data-evidence-role=owner]').innerText(), /Column: audit_first/);
     },
     {
       ...base,
       codeComponents: [
-        { schemaName: 'audit.Control', entity: 'audit_a', name: 'Custom control', ref: 'controls/a.yml' },
+        {
+          schemaName: 'audit.Control',
+          entity: 'audit_a',
+          name: 'audit.Control',
+          ref: 'controls/a.yml',
+          binding: 'native-formxml',
+          formId: 'form-a',
+          field: 'audit_first',
+          selectedDesktop: true,
+          enablement: 'configured',
+        },
       ],
     },
   );
@@ -890,7 +906,7 @@ test('X-ray case-by-case adversarial browser audit', { concurrency: 4 }, async (
     async ({ page, pick, field }) => {
       await page.locator('#component').evaluate((node) => {
         node.attachShadow({ mode: 'open' }).innerHTML =
-          '<section data-entityname="audit_a"><slot name="a"></slot></section><section data-entityname="audit_b"><slot name="b"></slot></section>';
+          '<section data-paqvilo-table="audit_a"><slot name="a"></slot></section><section data-paqvilo-table="audit_b"><slot name="b"></slot></section>';
       });
       await pick('#audit_shared');
       await field('audit_a.audit_shared');
@@ -1025,7 +1041,8 @@ test('X-ray case-by-case adversarial browser audit', { concurrency: 4 }, async (
   scenario(
     'S05',
     'Failed refresh clears previous source identities',
-    '<input id="audit_first">',
+    // A named input needs a rendered table context to name a column.
+    '<div data-paqvilo-table="audit_a"><input id="audit_first"></div>',
     async ({ pick, xray, field }) => {
       await pick('#audit_first');
       await field('audit_a.audit_first');
@@ -1047,7 +1064,8 @@ test('X-ray case-by-case adversarial browser audit', { concurrency: 4 }, async (
   scenario(
     'S06',
     'Inactive source inspection clears an older report',
-    '<input id="audit_first">',
+    // A named input needs a rendered table context to name a column.
+    '<div data-paqvilo-table="audit_a"><input id="audit_first"></div>',
     async ({ pick, xray, field }) => {
       await pick('#audit_first');
       await field('audit_a.audit_first');
@@ -1101,7 +1119,7 @@ test('X-ray case-by-case adversarial browser audit', { concurrency: 4 }, async (
       const { setupMs } = await withoutPaddingShadowTraversal(page, () =>
         page.locator('css:light=#component').evaluate((node) => {
           node.attachShadow({ mode: 'open' }).innerHTML =
-            '<div data-entityname="audit_a"><input id="late-field" data-field="audit_first"></div>';
+            '<div data-paqvilo-table="audit_a"><input id="late-field" data-attribute="audit_first"></div>';
         }),
       );
       await selectLateShadow({ pick, field, xray });
@@ -1119,7 +1137,7 @@ test('X-ray case-by-case adversarial browser audit', { concurrency: 4 }, async (
       await page.locator('css:light=#padding').evaluate((node) => (node.innerHTML = '<i></i>'.repeat(9000)));
       await page.locator('css:light=#component').evaluate((node) => {
         node.attachShadow({ mode: 'open' }).innerHTML =
-          '<div data-entityname="audit_a"><input id="late-field" data-field="audit_first"></div>';
+          '<div data-paqvilo-table="audit_a"><input id="late-field" data-attribute="audit_first"></div>';
       });
       assert.equal(await page.locator('css:light=#padding').evaluate((node) => node.childElementCount), 9000);
       assert.ok(
@@ -1137,19 +1155,19 @@ test('X-ray case-by-case adversarial browser audit', { concurrency: 4 }, async (
   );
   scenario(
     'I19',
-    'A unique column name without table context is only a candidate',
+    'A unique column name without table context names no column',
     '<input id="audit_first">',
     async ({ pick, xray }) => {
       await pick('#audit_first');
-      assert.equal(await xray.locator('[data-inspection-evidence]').getAttribute('data-owner-status'), 'candidate');
-      assert.equal(await xray.locator('[data-evidence-role=alternatives] .ie-row').count(), 1);
+      assert.equal(await xray.locator('[data-inspection-evidence]').getAttribute('data-owner-status'), 'unavailable');
+      assert.equal(await xray.locator('[data-evidence-role=alternatives] .ie-row').count(), 0);
     },
   );
 
   scenario(
     'D11',
     'The actual fixture DOM is inspectable before an unrelated parser-blocking script finishes',
-    '<div data-entityname="audit_a"><input id="fixture-field" data-field="audit_first"></div>',
+    '<div data-paqvilo-table="audit_a"><input id="fixture-field" data-attribute="audit_first"></div>',
     async ({ page, pick, field, painted, fixtureControl }) => {
       await fixtureControl.requested;
       assert.equal(await page.evaluate(() => document.readyState), 'loading');

@@ -1087,6 +1087,8 @@ export function createModelDrivenMetadataIndex(imported, { sourceRevision = '1' 
     sourceRefsForForm: (key, options) => withSourceReads(() => sourceRefsForForm(key, options)),
     formControls,
     controlKeysForForm: (key) => formControls(key).map((control) => control.key),
+    // The compiled form's tabs and sections ({ key, kind, name, tab, region }) in FormXml order.
+    formStructure: (key) => compile(key)?.structure ?? [],
     sourceRevision,
     component: (key) => components.get(key),
     counts: () => ({ components: components.size, forms: formDefinitions.size }),

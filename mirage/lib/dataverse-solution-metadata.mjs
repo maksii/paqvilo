@@ -489,7 +489,9 @@ export function createSolutionMetadataOverlay({ appsOf = () => [], parseDocument
         if (
           (formxml != null && formxml !== form.xml) ||
           (name != null && name !== form.name) ||
-          (type != null && type !== form.systemFormType)
+          // A systemform without a <type> imports as type 2 (lib/dataverse-solution-components.mjs): that row type is
+          // the import's own, not a change of the exported form.
+          (type != null && type !== (form.systemFormType ?? 2))
         )
           form.sourceOriginVerified = false;
         Object.assign(form, {
