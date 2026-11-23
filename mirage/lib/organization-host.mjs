@@ -1615,6 +1615,7 @@ function hostLifecycle(c) {
         diagnostic,
         addonHandlers: handlers.addons,
         timeoutMs: c.timeoutMs,
+        uploadedAssemblies: c.config.uploadedAssemblies,
       });
       if (!c.organization) {
         c.installed = c.extensions;

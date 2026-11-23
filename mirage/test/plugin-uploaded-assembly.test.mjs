@@ -126,6 +126,7 @@ describe('uploaded plug-in assemblies run by default', { skip: CLR_SKIP }, () =>
     bytes.v2 = build('Contoso.Uploaded', stamp('Contoso.Uploaded', 'name + "-v2"'), { keyFile: key, folder: 'v2' });
     bytes.unloadable = build('Contoso.Unloadable', stamp('Contoso.Unloadable', 'name + "-never"'), { keyFile: key });
     bytes.placeholder = build('Contoso.Placeholder', stamp('Contoso.Placeholder', 'name + "-never"'), { keyFile: key });
+    bytes.unrun = build('Contoso.Unrun', stamp('Contoso.Unrun', 'name + "-never"'), { keyFile: key });
     bytes.platform = build('Contoso.Platform', platform, { keyFile: key });
     const helper = path.join(work, 'Contoso.Packaged.Helpers.dll');
     bytes.helpers = build(
@@ -175,7 +176,16 @@ describe('uploaded plug-in assemblies run by default', { skip: CLR_SKIP }, () =>
         ...EXTENSIONS,
         {
           name: 'customapi',
-          install: (installed) => installCustomApis({ ...installed, change: (fn) => fn() }, { runtimes }).ready,
+          install: (installed) =>
+            installCustomApis(
+              { ...installed, change: (fn) => fn() },
+              {
+                runtimes,
+                get uploadedAssemblies() {
+                  return setting.uploadedAssemblies;
+                },
+              },
+            ).ready,
         },
       ],
     });
@@ -339,6 +349,27 @@ describe('uploaded plug-in assemblies run by default', { skip: CLR_SKIP }, () =>
     assert.ok(runtimes.get(api.customapiid).directory.startsWith(fs.realpathSync(uploads.cacheRoot)));
     releaseStaleUploadedRuntimes(store, runtimes, items());
     assert.ok(runtimes.has(api.customapiid), 'the host sweep keeps the main operation runtime of a live custom API');
+  });
+
+  // @test-kind contract: the uploadedAssemblies setting: placeholder answers a custom API main operation on uploaded bytes as one without a plug-in type
+  it('uploadedAssemblies placeholder answers a custom API on uploaded bytes without running them', async () => {
+    const assembly = await post('pluginassemblies', { content: bytes.unrun.toString('base64') });
+    await customApi('contoso_Unrun', assembly, 'Contoso.Unrun.NameStamp');
+    const previous = uploads.sdkAssembly;
+    uploads.sdkAssembly = path.join(uploads.cacheRoot, 'missing', 'Microsoft.Xrm.Sdk.dll');
+    setting.uploadedAssemblies = 'placeholder';
+    try {
+      const answer = await call('contoso_Unrun', { method: 'POST', body: { Text: 'hello' } });
+      assert.equal(answer.status, 200, await answer.clone().text());
+      assert.equal((await answer.json()).Reply ?? null, null, 'no main operation output without its bytes');
+      setting.uploadedAssemblies = 'clr';
+      const run = await call('contoso_Unrun', { method: 'POST', body: { Text: 'hello' } });
+      assert.equal(run.status, 400, 'clr runs the bytes, which cannot load without the SDK');
+      assert.equal((await run.json()).error.code, '0x80040224');
+    } finally {
+      uploads.sdkAssembly = previous;
+      setting.uploadedAssemblies = 'clr';
+    }
   });
 
   // @test-kind observation: native recorder capture native-r2 (crud, depth, upsert, bulk; every ChangedEntityTypes value, Create/40 at depth 1 included) types it System.Collections.Generic.Dictionary<System.String,System.String>; the first capture predates value typing

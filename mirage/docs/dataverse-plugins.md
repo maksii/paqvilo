@@ -446,7 +446,9 @@ A project that models this logic itself, or runs without the SDK, sets `uploaded
 catalogue's `mirage` section or the project file ([configuration](../../docs/configuration.md)): such steps then start
 as placeholders in every state, `/_sim/api/operations` reports them with `defaultMode: "placeholder"` and
 `defaultModeSource: "uploadedAssemblies"`, and a `/_sim/` choice still selects `clr` for one step. Pack handlers and
-web hooks keep their precedence. A custom API main operation is not a configurable operation and is not affected.
+web hooks keep their precedence; preflight names the setting as each step's `resolution.modeSource` (`runtime state`
+once a `/_sim/` choice replaces it). A custom API main operation on such bytes answers as a custom API without a
+plug-in type: its registered steps run and it returns no output values of its own.
 
 On first run Mirage writes the stored bytes, with the package's other `lib/` assemblies of the same target framework,
 into an owned directory under the project's ignored `.paqvilo/plugin-assemblies`, and compiles the host there. Steps on

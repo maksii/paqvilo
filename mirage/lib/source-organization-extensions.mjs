@@ -152,6 +152,8 @@ export async function sourceOrganizationExtensions({
   diagnostic = () => {},
   addonHandlers = new Map(),
   timeoutMs = () => 120000,
+  // clr or placeholder: whether a custom API main operation on uploaded assembly bytes runs them (organization-host).
+  uploadedAssemblies = 'clr',
   base = EXTENSIONS,
 } = {}) {
   const layersOf = () => (typeof layers === 'function' ? layers() : layers) ?? [];
@@ -246,6 +248,7 @@ export async function sourceOrganizationExtensions({
           runtimes: pluginRuntimeCache,
           prepareRuntime,
           timeoutMs: timeoutMs,
+          uploadedAssemblies,
         },
       );
       syncCustomApis = installation.sync;

@@ -593,6 +593,9 @@ function clrRegistration(store, row, options) {
   const descriptor = options.pluginRuntimes?.get(id);
   const typeId = row.plugintypeid?.id ?? row.plugintypeid;
   const uploaded = !descriptor && typeId ? uploadedAssemblyOfType(store, typeId) : null;
+  // uploadedAssemblies placeholder (catalogue or project): the main operation does not run uploaded bytes and answers
+  // as a custom API without a plug-in type does, with its registered steps and no output values of its own.
+  if (uploaded && options.uploadedAssemblies === 'placeholder') return { id, placeholder: true };
   if (!descriptor && !uploaded) return null;
   const type = store.tableRows('plugintype').find((entry) => key(entry.plugintypeid) === key(typeId));
   if (!uploaded && (!type || descriptor.typeName !== type.typename))
@@ -784,7 +787,14 @@ function resolveApiInvocation(api, name, c, options, handlers, pluginTypes) {
   if (!properties.length && row.isfunction) throw notFound(name);
   const registration = handlers.get(key(name)) ?? typeRegistration(store, row, pluginTypes);
   const original = !registration && !fxIdOf(row) ? clrRegistration(store, row, options) : null;
-  if (row.plugintypeid && !registration && !fxIdOf(row) && !original?.descriptor && !original?.uploaded)
+  if (
+    row.plugintypeid &&
+    !registration &&
+    !fxIdOf(row) &&
+    !original?.descriptor &&
+    !original?.uploaded &&
+    !original?.placeholder
+  )
     throw new DataError(
       `Custom API '${row.uniquename}' names an original main-operation plug-in with no trusted local implementation.`,
       501,
@@ -2069,6 +2079,10 @@ export function install(api, options = {}) {
     mainRuntimeIds: previous?.mainRuntimeIds ?? new Set(),
     prepareRuntime: options.prepareRuntime,
     preparing: previous?.preparing,
+    // Read from the caller's options when a main operation runs (organization-host passes the catalogue or project value).
+    get uploadedAssemblies() {
+      return options.uploadedAssemblies ?? 'clr';
+    },
   };
   executionConfigurations.set(store, resolved);
   seed(store);

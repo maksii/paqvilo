@@ -77,6 +77,10 @@ function addOperationRequirements(operations, push) {
           () => (item.mode === 'exported' ? 'source' : null),
         ),
         mode: item.mode,
+        // What set the mode when a project setting chose the default (uploadedAssemblies), or a /_sim/ choice over it.
+        ...(item.defaultModeSource
+          ? { modeSource: item.configuration ? 'runtime state' : item.defaultModeSource }
+          : {}),
       },
       message: chooseLazily(
         () => item.unsupported,
