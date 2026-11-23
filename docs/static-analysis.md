@@ -97,7 +97,11 @@ Solution's packed app (the folder name, case-insensitive; see [Canvas apps](../m
 the packed copy is listed under the Canvas domain's `superseded` instead of being inspected.
 
 Hidden state, discovery files, dependencies, deployment-profile directories and build outputs are
-excluded; `.powerpages-site` is the export-source exception. Links/junctions, unreadable or unsupported
+excluded; `.powerpages-site` is the export-source exception. Dependencies are `node_modules` and
+restored NuGet packages (a folder that holds a `.nupkg`, as `packages.config` restores and the
+global packages folder keep one); an authored folder named `packages` is inventoried. Build outputs
+are `bin`, `obj`, `dist`, `build`, `out`, `coverage`, `artifacts`, `logs`, `metrics` and `tmp`,
+except under exported portal content folders. Links/junctions, unreadable or unsupported
 sources, parse failures, unknown source-only inputs and exhausted budgets are explicit gaps. Ribbon
 definitions, formula definitions, web resource content, Custom API request parameters and response
 properties, and table chart definitions are recognized without rules: they are listed as limitations

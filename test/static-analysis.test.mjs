@@ -148,6 +148,27 @@ test('temporary source projects are analyzed while nested temporary and output f
   assert.deepEqual(analyzeProject(root), report);
 });
 
+test('.NET build outputs and restored NuGet packages are excluded while an authored packages folder is inventoried', (t) => {
+  const root = project(t, {
+    'plugins/Plugin.cs': 'class Plugin {}',
+    'plugins/bin/Release/Plugin.deps.json': '{}',
+    'plugins/obj/project.assets.json': '{}',
+    'packages/Some.Lib.1.0.0/Some.Lib.1.0.0.nupkg': 'invented package archive',
+    ...Object.fromEntries(
+      Array.from({ length: 30 }, (_, index) => [`packages/Some.Lib.1.0.0/lib/net462/f${index}.xml`, '<doc/>']),
+    ),
+    'packages/web/body.html': '<img>',
+  });
+  const report = analyzeProject(root);
+  assert.equal(report.complete, true);
+  assert.equal(report.coverage.files, 2, 'the plug-in source and the authored packages/web page');
+  assert.deepEqual(report.coverage.skipped, []);
+  assert.deepEqual(
+    report.findings.map(({ file }) => file),
+    ['packages/web/body.html'],
+  );
+});
+
 test('portal content under output-named folders is inventoried while root output folders stay excluded', (t) => {
   const image = '<img src="a.png">';
   const root = project(t, {

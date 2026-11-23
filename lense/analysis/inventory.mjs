@@ -30,7 +30,8 @@ function analysisLimits(overrides = {}) {
   return limits;
 }
 const privateNames = new Set(['node_modules', '.git', '.paqvilo', '.portalconfig', 'deployment-profiles']);
-const outputNames = new Set(['dist', 'build', 'out', 'coverage', 'artifacts', 'logs', 'metrics', 'tmp']);
+// Build outputs: bundlers and test tools (dist, build, out, coverage, ...) and .NET project builds (bin, obj).
+const outputNames = new Set(['dist', 'build', 'out', 'coverage', 'artifacts', 'logs', 'metrics', 'tmp', 'bin', 'obj']);
 // These folders hold authored records whose names the author chooses.
 const sourceContentFolders = new Set([
   'web-pages',
@@ -367,9 +368,14 @@ function inspectEntry(state, root, directory, pending, entry) {
   return true;
 }
 
+// A restored NuGet package: NuGet keeps the package's .nupkg in the folder it extracts it to (packages.config
+// `packages/<id>.<version>/`, the global and fallback package folders). A folder named packages without one is
+// authored source (a JavaScript workspace, for example) and is inventoried.
+const restoredPackage = (entries) => entries.some((entry) => entry.isFile() && /\.nupkg$/i.test(entry.name));
+
 function inspectDirectory(state, root, directory, pending) {
   const entries = readDirectoryEntries(state, root, directory);
-  if (!entries) return;
+  if (!entries || restoredPackage(entries)) return;
   for (const entry of entries) {
     if (!inspectEntry(state, root, directory, pending, entry)) return;
   }
