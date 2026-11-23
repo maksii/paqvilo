@@ -98,6 +98,13 @@ form posts, pack endpoints and any request whose `Accept` names JSON but not HTM
 | `/reset`, `/reload`                                                             | Power Pages | `POST`: reset state, reload sources                                                                                  |
 | `/shutdown`                                                                     | both        | `POST`: stop the runtime (202)                                                                                       |
 
+Configuration changes and background writes: `PATCH /config` and `PATCH`/`DELETE /operations/<key>` apply their
+change to the state as it is when they commit, in the queue that asynchronous plug-in jobs and SDK writes commit
+through. A job that commits while the change prepares keeps its rows, and the change answers 200. A replacement of the
+whole state from a snapshot answers 409 `StateConflict` (`Local state changed before replacement; no imported state
+was applied`) when another write committed after that snapshot, and applies nothing; wait for pending jobs
+(`backend.settle()`, see [asynchronous steps](dataverse-plugins.md)) and send it again.
+
 Outside `/_sim/api`: `/_sim/events` (server-sent `logs` and `trace` channels), `/__sim/sign-in`,
 `/__sim/session-token/<ticket>` and the other portal paths in the [allow-list](#portal-address-allow-list).
 

@@ -3047,6 +3047,8 @@ export class DataStore {
       returnSnapshot = true,
       cloneInput = true,
       skipSaveIfUnchanged = false,
+      // Inside a transaction this replacement joins it (the caller built the state from that transaction's state).
+      nested = false,
     } = {},
   ) {
     return this.transact(
@@ -3089,7 +3091,7 @@ export class DataStore {
         releaseStamps(this);
         return returnSnapshot ? this.state : undefined;
       },
-      { cloneResult: returnSnapshot, lazyReadSnapshot: true, skipSaveIfUnchanged },
+      { cloneResult: returnSnapshot, lazyReadSnapshot: true, skipSaveIfUnchanged, nested },
     );
   }
   /**

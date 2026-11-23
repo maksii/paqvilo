@@ -1215,7 +1215,7 @@ export async function createSimulator(options) {
   // Every replacement keeps solution-derived mappings, column metadata and seeded rows current.
   const replaceCompiledState = async (
     state,
-    { expectedRevision = store.snapshotRevision(state) ?? store.revision } = {},
+    { expectedRevision = store.snapshotRevision(state) ?? store.revision, nested = false } = {},
   ) => {
     const candidate = compilePermissions(
       applySolutions(state, {
@@ -1231,6 +1231,7 @@ export async function createSimulator(options) {
       returnSnapshot: false,
       cloneInput: false,
       skipSaveIfUnchanged: true,
+      nested,
     });
     appliedPermissionModel = candidate.model;
   };
@@ -2806,7 +2807,11 @@ export async function createSimulator(options) {
     mutation = next.catch(() => {});
     return next;
   };
-  const persistState = async (state, { reload = true } = {}) => {
+  // `rebase` (a configuration change) applies the change again to the live state at commit time: the configured state
+  // is taken, compiled and replaced in one store transaction, which asynchronous jobs queue with, so a job that commits
+  // while the change prepares keeps its rows and neither side conflicts. Without it the replacement expects the
+  // snapshot's revision and refuses (409) a state that changed meanwhile.
+  const persistState = async (state, { reload = true, rebase = null } = {}) => {
     // Keep the snapshot's original revision across source/profile I/O. SDK
     // transactions can commit outside the host mutation queue during that work.
     const expectedRevision = store.snapshotRevision(state) ?? store.revision;
@@ -2849,7 +2854,20 @@ export async function createSimulator(options) {
         store.presetLibrary = generatedPresets;
         fingerprint = await calculateFingerprint();
       }
-      await replaceCompiledState(state, { expectedRevision });
+      if (rebase)
+        await store.transact(
+          async () => {
+            const latest = store.snapshot(undefined, { forkTables: true });
+            rebase(latest);
+            portal = applyPortalOverrides(
+              await environmentBound(sourcePortal, latest),
+              latest.simulator?.portalOverrides,
+            );
+            await replaceCompiledState(latest, { expectedRevision: store.revision, nested: true });
+          },
+          { cloneResult: false, lazyReadSnapshot: true },
+        );
+      else await replaceCompiledState(state, { expectedRevision });
     } catch (cause) {
       ({
         portal,
@@ -4949,19 +4967,25 @@ export async function createSimulator(options) {
             403,
             'LIVE_WRITES_DISABLED',
           );
-        if (patch.permissionMode) {
-          state.settings.permissionMode = patch.permissionMode;
-          delete patch.permissionMode;
-        }
-        state.simulator = {
-          ...state.simulator,
-          ...patch,
-          ...(['confinePortalPages', 'externalAssets', 'externalFrameOrigins'].some((key) => Object.hasOwn(patch, key))
-            ? { contentPolicySource: 'runtime state' }
-            : {}),
-          live: { ...config().live, ...patch.live },
+        const { permissionMode } = patch;
+        delete patch.permissionMode;
+        // The change as a function of a state: checked on this snapshot, applied again to the live state when it
+        // commits (persistState rebase), so a job's commit in between is kept.
+        const configure = (target) => {
+          if (permissionMode) target.settings.permissionMode = permissionMode;
+          target.simulator = {
+            ...target.simulator,
+            ...structuredClone(patch),
+            ...(['confinePortalPages', 'externalAssets', 'externalFrameOrigins'].some((key) =>
+              Object.hasOwn(patch, key),
+            )
+              ? { contentPolicySource: 'runtime state' }
+              : {}),
+            live: { ...config(target.simulator).live, ...structuredClone(patch.live) },
+          };
+          if (patch.platformOverrides || patch.portalOverrides) delete target.simulator.activeExperiment;
         };
-        if (patch.platformOverrides || patch.portalOverrides) delete state.simulator.activeExperiment;
+        configure(state);
         validateConfig(state.simulator);
         if (patch.contactRoles || patch.identity?.roleSource === 'memberships') {
           const model = buildPermissionModel(portal, state, {
@@ -4978,7 +5002,7 @@ export async function createSimulator(options) {
         }
         // An operations map is refused like PATCH /_sim/api/operations/<key>; saveState applies it.
         if (Object.hasOwn(patch, 'operations')) checkOperationOverrides(patch.operations, operations, error);
-        await saveState(state);
+        await saveState(state, { rebase: configure });
         void stateResponse(req, res);
       });
     if (relative === '/assets/capture' && method === 'POST') {
