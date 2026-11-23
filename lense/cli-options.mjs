@@ -352,3 +352,43 @@ export const MIRAGE_ACTION_OPTIONS = {
     'json',
   ],
 };
+
+export const AGENT_PAGE_ACTIONS = new Set([
+  'state',
+  'snapshot',
+  'screenshot',
+  'viewport',
+  'coverage',
+  'navigate',
+  'reload',
+]);
+
+/** The options an agent action accepts; its validation and the CLI's check beside --help both read it. */
+export function agentActionOptions(action) {
+  const allowed = new Set(['config', 'json', 'help', 'timeout', ...(action === 'sessions' ? [] : ['session'])]);
+  if (AGENT_PAGE_ACTIONS.has(action)) allowed.add('page-id');
+  for (const option of {
+    events: ['after', 'limit'],
+    snapshot: ['selector', 'limit', 'styles'],
+    screenshot: ['output', 'full-page', 'include-panel'],
+    viewport: ['width', 'height'],
+    coverage: ['limit', 'samples'],
+    navigate: ['path'],
+  }[action] ?? [])
+    allowed.add(option);
+  return allowed;
+}
+
+/** The options model-driven inspect accepts; its validation and the CLI's check beside --help both read it. */
+export const MODEL_DRIVEN_INSPECT_OPTIONS = new Set([
+  'config',
+  'project',
+  'env',
+  'url',
+  'path',
+  'resource-map',
+  'local-simulation',
+  'json',
+  'event-cursor',
+  'include-event-parameters',
+]);

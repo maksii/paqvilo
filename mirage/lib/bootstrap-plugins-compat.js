@@ -564,6 +564,13 @@
     $(menuToggle).dropdown('toggle');
     return true;
   }
+  /** Hides every shown modal that holds `element`, innermost first (Bootstrap 3's delegated dismiss of each). */
+  function hideShownModalsAround(element, $) {
+    const shown = [];
+    for (let node = element.parentElement; node; node = node.parentElement)
+      if (instance(node, 'modal')?.shown) shown.push(node);
+    for (const node of shown) $(node).modal('hide');
+  }
   function handleDismissCompatibilityClick(click, source, $) {
     const dismiss = source.closest('[data-dismiss="modal"],[data-bs-dismiss="modal"]');
     if (dismiss) {
@@ -573,10 +580,7 @@
       // [data-dismiss="modal"]): the click closes every shown modal that holds the button, whatever markup with the
       // modal class sits between. Bootstrap 5 closes the nearest .modal (util/component-functions.js).
       if (dismiss.matches('[data-dismiss="modal"]')) {
-        const shown = [];
-        for (let element = dismiss.parentElement; element; element = element.parentElement)
-          if (instance(element, 'modal')?.shown) shown.push(element);
-        for (const element of shown) $(element).modal('hide');
+        hideShownModalsAround(dismiss, $);
         return true;
       }
       const element = dismiss.closest('.modal');

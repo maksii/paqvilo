@@ -7,6 +7,8 @@ import {
   LENSE_OPTIONS as options,
   LENSE_COMMAND_OPTIONS as allowed,
   MIRAGE_ACTION_OPTIONS,
+  MODEL_DRIVEN_INSPECT_OPTIONS,
+  agentActionOptions,
 } from './cli-options.mjs';
 import { lenseCommandHelp } from './cli-help.mjs';
 import { failureDocument, jsonEnvelope } from './cli-envelope.mjs';
@@ -224,7 +226,7 @@ if (!Object.hasOwn(commands, command)) {
  * An option the command, or its named action, does not take is refused beside --help as without it (docs/cli.md,
  * argument errors): only whether each option belongs is checked here, not its value.
  */
-async function refuseOptionsOfOtherActions(action) {
+function refuseOptionsOfOtherActions(action) {
   const given = Object.keys(values).filter((option) => option !== 'help');
   const refuse = (option, owner) => {
     throw Object.assign(new Error(`--${option} is not supported by ${owner}`), { code: 'unsupported_option' });
@@ -233,21 +235,19 @@ async function refuseOptionsOfOtherActions(action) {
   let actionOptions = null;
   if (command === 'mirage' && Object.hasOwn(MIRAGE_ACTION_OPTIONS, action ?? 'status'))
     actionOptions = new Set(MIRAGE_ACTION_OPTIONS[action ?? 'status']);
-  else if (command === 'agent')
-    actionOptions = (await import('./commands/agent.mjs')).agentActionOptions(action ?? 'sessions');
-  else if (command === 'model-driven' && action === 'inspect')
-    actionOptions = (await import('./commands/model-driven.mjs')).MODEL_DRIVEN_INSPECT_OPTIONS;
+  else if (command === 'agent') actionOptions = agentActionOptions(action ?? 'sessions');
+  else if (command === 'model-driven' && action === 'inspect') actionOptions = MODEL_DRIVEN_INSPECT_OPTIONS;
   const owner = `${command} ${action ?? (command === 'agent' ? 'sessions' : 'status')}`;
   if (actionOptions) for (const option of given) if (!actionOptions.has(option)) refuse(option, owner);
 }
 
 if (values.help) {
   try {
-    await refuseOptionsOfOtherActions(positionals[1]);
-  } catch (err) {
+    refuseOptionsOfOtherActions(positionals[1]);
+  } catch (error) {
     if (values.json || command === 'agent')
-      console.log(JSON.stringify(failureDocument(err, { command, phase: 'arguments' })));
-    else console.error(`paqvilo: ${err.message}`);
+      console.log(JSON.stringify(failureDocument(error, { command, phase: 'arguments' })));
+    else console.error(`paqvilo: ${error.message}`);
     process.exit(1);
   }
   const usage = lenseCommandHelp(command, positionals[1], HELP);

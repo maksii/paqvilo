@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import { MODEL_DRIVEN_INSPECT_OPTIONS } from '../cli-options.mjs';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { createHash } from 'node:crypto';
@@ -150,20 +151,6 @@ export function publishModelDrivenReload(overlay, next, mappings) {
   if (failed) throw new Error(`Local resource reload failed (${failed.code}); the previous overlay remains active.`);
   overlay.replace(next, mappings);
 }
-
-/** The options model-driven inspect accepts; its validation and the CLI's check beside --help both read it. */
-export const MODEL_DRIVEN_INSPECT_OPTIONS = new Set([
-  'config',
-  'project',
-  'env',
-  'url',
-  'path',
-  'resource-map',
-  'local-simulation',
-  'json',
-  'event-cursor',
-  'include-event-parameters',
-]);
 
 function validateInspectOptions(args) {
   for (const option of Object.keys(args))

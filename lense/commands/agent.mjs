@@ -1,6 +1,7 @@
 // Structured access to an explicitly owned paqvilo dev browser. Credentials stay in its
 // ignored discovery file and are never printed or forwarded through HTTP redirects.
 import fs from 'node:fs/promises';
+import { AGENT_PAGE_ACTIONS as PAGE_ACTIONS, agentActionOptions } from '../cli-options.mjs';
 import path from 'node:path';
 import { readLocalFile } from '../local-file.mjs';
 import { discoveryOwnerGone } from '../agent-discovery.mjs';
@@ -348,24 +349,6 @@ function assertAgentArguments(action, args, pageActions) {
   if (action === 'screenshot' && (!args.output || path.extname(args.output).toLowerCase() !== '.png'))
     throw argument('agent screenshot requires --output <file.png>');
   if (pageActions.has(action)) integer(args['page-id'], '--page-id', undefined, 1, Number.MAX_SAFE_INTEGER);
-}
-
-const PAGE_ACTIONS = new Set(['state', 'snapshot', 'screenshot', 'viewport', 'coverage', 'navigate', 'reload']);
-
-/** The options an agent action accepts; its validation and the CLI's check beside --help both read it. */
-export function agentActionOptions(action) {
-  const allowed = new Set(['config', 'json', 'help', 'timeout', ...(action === 'sessions' ? [] : ['session'])]);
-  if (PAGE_ACTIONS.has(action)) allowed.add('page-id');
-  for (const option of {
-    events: ['after', 'limit'],
-    snapshot: ['selector', 'limit', 'styles'],
-    screenshot: ['output', 'full-page', 'include-panel'],
-    viewport: ['width', 'height'],
-    coverage: ['limit', 'samples'],
-    navigate: ['path'],
-  }[action] ?? [])
-    allowed.add(option);
-  return allowed;
 }
 
 function validateAgentAction(action, args) {
