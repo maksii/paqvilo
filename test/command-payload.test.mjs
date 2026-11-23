@@ -69,21 +69,50 @@ test('existing nonmatching payload and directory targets are preserved instead o
   assert.ok(fs.statSync(file).isDirectory());
 });
 
-test('failed publication preserves a regular user file that replaced the temporary inode', (t) => {
-  const { directory } = fixture(t);
-  let replaced;
+/** Publication fails after a regular user file took the temporary file's name; `replaced` is that name once it has. */
+function userFileReplacesTemporary(t, directory) {
+  const user = { replaced: undefined };
   t.mock.method(fs, 'linkSync', (temporary) => {
     const replacement = path.join(directory, 'user-replacement.tmp');
     fs.writeFileSync(replacement, 'unfamiliar user content');
     fs.unlinkSync(temporary);
     fs.renameSync(replacement, temporary);
-    replaced = temporary;
+    user.replaced = temporary;
     throw Object.assign(new Error('Injected publication failure'), { code: 'EIO' });
   });
+  return user;
+}
+
+test('failed publication preserves a regular user file that replaced the temporary inode', (t) => {
+  const { directory } = fixture(t);
+  const user = userFileReplacesTemporary(t, directory);
   assert.throws(() => persistCommandPayload(directory, payload()), { code: 'COMMAND_PAYLOAD_WRITE' });
-  assert.ok(replaced);
-  assert.equal(fs.readFileSync(replaced, 'utf8'), 'unfamiliar user content');
-  assert.deepEqual(fs.readdirSync(directory), [path.basename(replaced)]);
+  assert.ok(user.replaced);
+  assert.equal(fs.readFileSync(user.replaced, 'utf8'), 'unfamiliar user content');
+  assert.deepEqual(fs.readdirSync(directory), [path.basename(user.replaced)]);
+});
+
+test('a user file whose file number differs from the temporary file only beyond number precision is preserved', (t) => {
+  const { directory } = fixture(t);
+  // NTFS file numbers are above 2^53: as JavaScript numbers these two are equal, as file numbers they are two files.
+  const temporaryNumber = 2n ** 60n + 1n,
+    replacementNumber = 2n ** 60n + 2n;
+  assert.equal(Number(temporaryNumber), Number(replacementNumber));
+  const descriptorStat = fs.fstatSync,
+    nameStat = fs.lstatSync;
+  const numbered = (info, options, number) =>
+    info && Object.defineProperty(info, 'ino', { value: options?.bigint ? number : Number(number) });
+  const user = userFileReplacesTemporary(t, directory);
+  t.mock.method(fs, 'fstatSync', (handle, options) =>
+    numbered(descriptorStat(handle, options), options, temporaryNumber),
+  );
+  t.mock.method(fs, 'lstatSync', (name, options) => {
+    const info = nameStat(name, options);
+    return String(name) === user.replaced ? numbered(info, options, replacementNumber) : info;
+  });
+  assert.throws(() => persistCommandPayload(directory, payload()), { code: 'COMMAND_PAYLOAD_WRITE' });
+  assert.ok(user.replaced);
+  assert.equal(fs.readFileSync(user.replaced, 'utf8'), 'unfamiliar user content');
 });
 
 test('descriptor-first reuse rejects a pathname replaced after acquisition and preserves both files', (t) => {
@@ -220,7 +249,7 @@ test('concurrent identical publishers reuse the completed canonical payload afte
       const unlink = fs.unlinkSync, stat = fs.fstatSync;
       fs.fstatSync = (fd, ...args) => {
         const info = stat(fd, ...args);
-        if (info.nlink === 2) {
+        if (Number(info.nlink) === 2) {
           Atomics.store(new Int32Array(workerData.retire), 0, 1);
           Atomics.notify(new Int32Array(workerData.retire), 0);
           parentPort.postMessage({ observedLink: true });
@@ -445,7 +474,7 @@ test('collision reuse rechecks a canonical link count changing between descripto
       injected = true;
       link(file, temporaryLink);
       const during = stat(file, ...args);
-      assert.equal(during.nlink, 2);
+      assert.equal(Number(during.nlink), 2);
       fs.unlinkSync(temporaryLink);
       // Model an inspection delayed past the publication window, without a
       // scheduler-dependent sleep. The returned observation is already stale.
