@@ -516,9 +516,9 @@ export function injectRuntime(
   identity = {},
   traceId = null,
   languages = null,
-  rootTraceId = null,
-  // shown the document as it leaves here (the caller's record of what it answers); it changes nothing
-  sent = null,
+  // rootTraceId: the page's trace-store trace id; sent: shown the document as it leaves here (the caller's record of
+  // what it answers), it changes nothing
+  { rootTraceId = null, sent = null } = {},
 ) {
   // The trace id travels in the x-sim-trace-id header and the runtime script only: a meta
   // element would shift every head child the platform renders (charset, viewport, links).

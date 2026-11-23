@@ -5637,15 +5637,9 @@ export async function createSimulator(options) {
         localOverrides,
         traced?.provenance ?? null,
       );
-      html = injectRuntime(
-        html,
-        csrf,
-        renderedRevision,
-        identity,
-        trace.getStore()?.spanId,
-        siteLanguageCodes(),
-        trace.getStore()?.traceSpan?.traceId,
-      );
+      html = injectRuntime(html, csrf, renderedRevision, identity, trace.getStore()?.spanId, siteLanguageCodes(), {
+        rootTraceId: trace.getStore()?.traceSpan?.traceId,
+      });
     }
     const headers = {
       'content-type': 'text/html; charset=utf-8',
@@ -7098,8 +7092,7 @@ export async function createSimulator(options) {
           formIdentity,
           trace.getStore()?.spanId,
           siteLanguageCodes(),
-          trace.getStore()?.traceSpan?.traceId,
-          refreshModalProof,
+          { rootTraceId: trace.getStore()?.traceSpan?.traceId, sent: refreshModalProof },
         ),
       );
     }
@@ -7545,7 +7538,7 @@ export async function createSimulator(options) {
           pageIdentity,
           trace.getStore()?.spanId,
           siteLanguageCodes(),
-          trace.getStore()?.traceSpan?.traceId,
+          { rootTraceId: trace.getStore()?.traceSpan?.traceId },
         )
       : html;
     if (rendered.provenance) {

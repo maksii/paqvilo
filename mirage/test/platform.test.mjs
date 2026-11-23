@@ -417,7 +417,9 @@ test('page trace propagation correlates same-origin fetch/XHR and preserves expl
   assert.deepEqual(requests[5].headers, {});
   // The trace ids never reach the DOM: the platform head has no meta element for them and the raw
   // audit id appears only inside the runtime script, escaped.
-  const injected = injectRuntime('<head></head>', 'token', 'rev', {}, 'trace<id', undefined, 'root<trace');
+  const injected = injectRuntime('<head></head>', 'token', 'rev', {}, 'trace<id', undefined, {
+    rootTraceId: 'root<trace',
+  });
   assert.doesNotMatch(injected, /<meta[^>]*trace/i);
   assert.doesNotMatch(injected, /trace<id|root<trace/);
 });
