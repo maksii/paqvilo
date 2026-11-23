@@ -124,6 +124,19 @@ function retireEndedLease(directory) {
   }
 }
 
+/** Moves a claim or lease folder aside. Windows refuses to move a folder while another process has a file inside it
+ * open, and a run that waits for the folder reads its holder record: the move is made again once that read has ended.
+ * Any other refusal is an error. */
+async function moveAside(from, to) {
+  for (;;) {
+    try {
+      return fs.renameSync(from, to);
+    } catch (error) {
+      if (!['EPERM', 'EACCES', 'EBUSY'].includes(error.code)) throw error;
+    }
+    await setTimeout(10);
+  }
+}
 /** True in the process that acquired the lease, not in a member that inherited its marker. Only the acquirer reaps the
  * lanes of the run it owns; an inherited marker names the owner's PID. */
 export function leaseAcquiredHere(environment = process.env) {
@@ -192,7 +205,7 @@ export async function acquireCiWorkspaceLease(checkout, environment = process.en
     }
     const generation = read(ownerFile)?.token;
     try {
-      return operation();
+      return await operation();
     } finally {
       const holder = read(path.join(guard, 'owner.json'));
       // The owner may have moved its entire directory during a successful release; a guard of another holder stays.
@@ -204,7 +217,7 @@ export async function acquireCiWorkspaceLease(checkout, environment = process.en
         // Moved aside first: the guard path is free at once and a guard never exists without its holder record, whatever
         // happens to the removal. An aside left behind holds nothing.
         const released = `${guard}.released-${randomUUID()}`;
-        fs.renameSync(guard, released);
+        await moveAside(guard, released);
         try {
           fs.rmSync(released, { recursive: true, force: true });
         } catch {
@@ -252,12 +265,12 @@ export async function acquireCiWorkspaceLease(checkout, environment = process.en
   let released = false;
   return async () => {
     if (released) return;
-    await membership(() => {
+    await membership(async () => {
       if (read(ownerFile)?.token !== owner.token) throw new Error('CI workspace lease ownership changed.');
       if (fs.readdirSync(members).some((file) => memberAlive(read(path.join(members, file)))))
         throw new Error('CI workspace workers still own their lease; retaining it for inspection.');
       const retired = `${directory}.released-${owner.token}`;
-      fs.renameSync(directory, retired);
+      await moveAside(directory, retired);
       fs.rmSync(retired, { recursive: true, force: true });
     });
     released = true;
