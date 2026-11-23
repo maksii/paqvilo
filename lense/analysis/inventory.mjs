@@ -8,26 +8,12 @@ import { componentPayload, componentContentSpan, componentIdentity, componentEnv
 import { COMPONENT_KINDS } from '../../mirage/lib/portal-component-types.mjs';
 import { readSolutionAssetEntries, SOLUTION_ASSET_LIMITS } from '../../mirage/lib/dataverse-solution-assets.mjs';
 
-export const ANALYSIS_LIMITS = Object.freeze({
-  roots: 128,
-  files: 10000,
-  directories: 10000,
-  entries: 100000,
-  fileBytes: 2 * 1024 * 1024,
-  totalBytes: 64 * 1024 * 1024,
-});
+import { ANALYSIS_LIMITS, parseAnalysisLimits } from './limits.mjs';
+
+export { ANALYSIS_LIMITS };
+// A caller may lower a ceiling or raise it up to its maximum (limits.mjs ANALYSIS_LIMIT_MAXIMUMS).
 function analysisLimits(overrides = {}) {
-  const limits = { ...ANALYSIS_LIMITS, ...overrides };
-  for (const [key, value] of Object.entries(limits)) {
-    if (
-      !Object.hasOwn(ANALYSIS_LIMITS, key) ||
-      !Number.isSafeInteger(value) ||
-      value < 1 ||
-      value > ANALYSIS_LIMITS[key]
-    )
-      throw new Error('Invalid static analysis limit');
-  }
-  return limits;
+  return { ...ANALYSIS_LIMITS, ...parseAnalysisLimits(overrides ?? {}) };
 }
 const privateNames = new Set(['node_modules', '.git', '.paqvilo', '.portalconfig', 'deployment-profiles']);
 // Build outputs: bundlers and test tools (dist, build, out, coverage, ...) and .NET project builds (bin, obj).

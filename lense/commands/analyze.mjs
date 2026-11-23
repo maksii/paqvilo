@@ -1,6 +1,12 @@
 import { CONFIGURATION_ERROR_CODES, loadCatalogue, loadConfig, mirageOnlySite } from '../config.mjs';
 import { analyzeProject, validateAnalysisPolicy } from '../analysis/index.mjs';
 import { analysisLabelPath, analysisLabelRoots } from '../analysis/inventory.mjs';
+import {
+  ANALYSIS_LIMIT_MAXIMUMS,
+  LIMIT_REASONS,
+  parseAnalysisLimitOptions,
+  parseAnalysisLimits,
+} from '../analysis/limits.mjs';
 import { configuredAnalysisRoots } from '../analysis/project.mjs';
 import { standaloneCatalogueConfiguration } from '../standalone-mirage.mjs';
 import path from 'node:path';
@@ -16,10 +22,31 @@ const displayPath = (value) =>
 
 const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
 
+/**
+ * The analysis budget of one run: the site's catalogue `analysis.limits`, then --analysis-limit, each ceiling with where
+ * it was set (reported in coverage.limitOverrides).
+ */
+export function analysisBudget(args = {}, site = null) {
+  const limits = {},
+    limitSources = {};
+  if (site?.analysis?.limits) {
+    const label = `sites.${site.name}.analysis.limits`;
+    for (const [key, value] of Object.entries(parseAnalysisLimits(site.analysis.limits, label))) {
+      limits[key] = value;
+      limitSources[key] = label;
+    }
+  }
+  for (const [key, value] of Object.entries(parseAnalysisLimitOptions(args['analysis-limit']))) {
+    limits[key] = value;
+    limitSources[key] = '--analysis-limit';
+  }
+  return { limits, limitSources };
+}
+
 /** Runs the analysis for a configuration; the label roots come back beside it for the text report. */
-export function analyzeConfigured(cfg, failOn) {
+export function analyzeConfigured(cfg, failOn, budget = {}) {
   const sourceRoots = configuredAnalysisRoots(cfg);
-  const analysis = analyzeProject(cfg.sourceDir, { failOn, sourceRoots });
+  const analysis = analyzeProject(cfg.sourceDir, { failOn, sourceRoots, ...budget });
   return { analysis, labelRoots: analysisLabelRoots(sourceRoots) };
 }
 
@@ -48,7 +75,11 @@ function skipReporter(shown) {
     const key = JSON.stringify([skip.file, skip.reason]);
     if (reported.has(key)) return;
     reported.add(key);
-    console.log(`  SKIPPED: ${shown(skip.file)}: ${skip.reason}`);
+    const ceiling = LIMIT_REASONS[skip.reason];
+    const raise = ceiling
+      ? ` (the ${ceiling} ceiling; raise it with --analysis-limit ${ceiling}=<n> up to ${ANALYSIS_LIMIT_MAXIMUMS[ceiling]}, or sites.<id>.analysis.limits)`
+      : '';
+    console.log(`  SKIPPED: ${shown(skip.file)}: ${skip.reason}${raise}`);
   };
 }
 
@@ -73,6 +104,10 @@ export function printAnalysis(analysis, labelRoots) {
   console.log(
     `  analysis: ${analysis.complete ? 'inventory complete' : 'INCOMPLETE'}, ${plural(analysis.counts.error, 'error')}, ${plural(analysis.counts.warning, 'warning')}, ${plural(analysis.counts.hint, 'hint')} (fail on ${analysis.failOn})`,
   );
+  for (const override of analysis.coverage.limitOverrides ?? [])
+    console.log(
+      `  budget: ${override.limit} ${override.value} (default ${override.default}; set by ${override.source})`,
+    );
   const shown = fileText(labelRoots);
   for (const finding of analysis.findings) printFinding(finding, shown);
   const skipLine = skipReporter(shown);
@@ -108,7 +143,9 @@ async function analyzeSiteReport(catalogue, site, args, failOn) {
       ? standaloneCatalogueConfiguration(catalogue, name, {})
       : await loadConfig(analysisSiteArgs(catalogue, site, args));
     if (args.project) cfg.mirageConfig.project = path.resolve(args.project);
-    const { analysis, labelRoots } = analyzeConfigured(cfg, failOn);
+    const siteName = cfg.siteName ?? name;
+    const budget = analysisBudget(args, { name: siteName, analysis: catalogue.sites[siteName]?.analysis });
+    const { analysis, labelRoots } = analyzeConfigured(cfg, failOn, budget);
     return withLabelRoots(
       {
         site: cfg.siteName,
@@ -143,7 +180,7 @@ function localAnalysisReport(args, failOn) {
     configDir: projectFile ? path.dirname(projectFile) : process.cwd(),
     mirageConfig: { project: projectFile },
   };
-  const { analysis, labelRoots } = analyzeConfigured(cfg, failOn);
+  const { analysis, labelRoots } = analyzeConfigured(cfg, failOn, analysisBudget(args));
   return withLabelRoots(
     {
       site: 'local-project',
@@ -215,6 +252,8 @@ function refuseStandaloneCombinations(args) {
 export default async function analyze(_cfg, args) {
   refuseStandaloneCombinations(args);
   const failOn = validateAnalysisPolicy(args['fail-on'] ?? 'error');
+  // Checked before any source is read.
+  parseAnalysisLimitOptions(args['analysis-limit']);
   const local = (args.source || args.project) && !args.config && !args.site && !args.all;
   const reports = local ? [localAnalysisReport(args, failOn)] : await catalogueAnalysisReports(args, failOn);
   const ok = reports.length > 0 && reports.every((report) => report.ready);

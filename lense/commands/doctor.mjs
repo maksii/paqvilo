@@ -10,7 +10,8 @@ import { scaffoldWarning } from '../project-check.mjs';
 import YAML from 'yaml';
 import { jsonErrorLocation } from '../../mirage/lib/json-diagnostics.mjs';
 import { validateAnalysisPolicy } from '../analysis/index.mjs';
-import { analyzeConfigured, printAnalysis, analysisFailure, withLabelRoots } from './analyze.mjs';
+import { analysisBudget, analyzeConfigured, printAnalysis, analysisFailure, withLabelRoots } from './analyze.mjs';
+import { parseAnalysisLimitOptions } from '../analysis/limits.mjs';
 
 const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
 
@@ -233,7 +234,7 @@ async function standaloneDoctorReport(catalogue, name, args, dependencies, failO
   const cfg = (await import('../standalone-mirage.mjs')).standaloneCatalogueConfiguration(catalogue, name, {});
   const mirage = await mirageReadiness(cfg, { dependencies });
   const report = standaloneSiteReport(name, cfg, mirage, args);
-  addProjectAnalysis(report, cfg, failOn);
+  addProjectAnalysis(report, cfg, failOn, analysisBudget(args, { name, analysis: catalogue.sites[name]?.analysis }));
   return report;
 }
 
@@ -242,16 +243,16 @@ async function portalDoctorReport(cfg, args, dependencies, failOn) {
   const report = inspectCheckout(cfg, { started, session: await OverlaySession.create(cfg) });
   report.lenseReady = report.ready;
   addSourceReportDiagnostics(report, cfg, args);
-  addProjectAnalysis(report, cfg, failOn);
+  addProjectAnalysis(report, cfg, failOn, analysisBudget(args, { name: cfg.siteName, analysis: cfg.site?.analysis }));
   report.mirage = await mirageReadiness(cfg, { dependencies });
   addProfileDiagnosticsWhenRequested(report, cfg, args);
   applyMirageReadinessGate(report, args);
   return report;
 }
 
-function addProjectAnalysis(report, cfg, failOn) {
+function addProjectAnalysis(report, cfg, failOn, budget) {
   try {
-    const { analysis, labelRoots } = analyzeConfigured(cfg, failOn);
+    const { analysis, labelRoots } = analyzeConfigured(cfg, failOn, budget);
     report.analysis = analysis;
     withLabelRoots(report, labelRoots);
     report.analysisReady = analysis.ready;
@@ -290,6 +291,8 @@ async function doctorSiteReport(catalogue, site, args, processEnv, dependencies,
 
 export async function collectDoctor(args, { processEnv = process.env } = {}) {
   const failOn = validateAnalysisPolicy(args['fail-on'] ?? 'none');
+  // Checked before any source is read.
+  parseAnalysisLimitOptions(args['analysis-limit']);
   const catalogue = loadCatalogue(args, processEnv);
   if (args.site && !Object.hasOwn(catalogue.sites, args.site))
     throw Object.assign(

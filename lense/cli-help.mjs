@@ -107,6 +107,12 @@ const sharedOptionHelp = {
     analyze: "  --all             review every catalogue site's declared sources separately",
     audit: "  --all             inventory every configured site's default environment offline",
   },
+  'analysis-limit': {
+    doctor:
+      '  --analysis-limit <ceiling>=<n> raise or lower one static analysis ceiling (files, directories, entries, fileBytes, totalBytes, roots; repeatable)',
+    analyze:
+      '  --analysis-limit <ceiling>=<n> raise or lower one ceiling (files, directories, entries, fileBytes, totalBytes, roots; repeatable)',
+  },
   'fail-on': {
     doctor: '  --fail-on <none|error|warning|hint> static analysis threshold (default: none, advisory)',
     analyze: '  --fail-on <none|error|warning|hint> static analysis threshold (default: error)',

@@ -1,5 +1,6 @@
 // Validate configuration before it can become a browser URL, path, or routing rule.
 import { catalogueKeys, parseSetting } from '../mirage/lib/config-keys.mjs';
+import { parseAnalysisLimits } from './analysis/limits.mjs';
 const BLOCK_KINDS = ['page-js', 'page-css', 'basic-form-js', 'advanced-form-step-js', 'list-js'];
 const MARKUP_KINDS = ['web-template', 'content-snippet', 'page-copy', 'page-summary', 'metadata-markup'];
 const chooseLazily = (condition, yes, no) => {
@@ -17,6 +18,7 @@ const SITE_KEYS = [
   'scope',
   'routes',
   'mirage',
+  'analysis',
 ];
 // Every catalogue mirage key is a row of mirage/lib/config-keys.mjs (the one registration point).
 const MIRAGE_KEYS = catalogueKeys();
@@ -129,6 +131,10 @@ export function mirageSettings(value, name) {
 
 function siteSettings(site, name) {
   if (site.startPath !== undefined) startPath(site.startPath, `${name}.startPath`);
+  if (site.analysis !== undefined) {
+    keys(site.analysis, ['limits'], `${name}.analysis`);
+    if (site.analysis.limits !== undefined) parseAnalysisLimits(site.analysis.limits, `${name}.analysis.limits`);
+  }
   if (site.mirage != null) mirageSettings(site.mirage, `${name}.mirage`);
   if (site.scope !== undefined && !['all', 'changed'].includes(site.scope))
     throw new Error(`${name}.scope must be 'all' or 'changed'`);
