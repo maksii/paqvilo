@@ -385,6 +385,21 @@ function requestErrorResponse({ internal, error, details, respond }) {
   return null;
 }
 
+// Native portal association refusals (captured 2026-11-23): a missing Append To or Append grant names the related
+// table "to" the request's table; a collection-valued $ref without Write on its own row reads as a create refusal.
+function associationErrorResponse(details, table, respond) {
+  if (details.association)
+    return respond(
+      403,
+      '90040106',
+      `You don’t have permission to associate or disassociate table ${details.association.table} to ${details.association.to}`,
+      undefined,
+    );
+  if (details.associationSourceWrite)
+    return respond(403, '90040103', `You don’t have permission to create records for ${table} table.`, undefined);
+  return null;
+}
+
 function permissionErrorResponse({ internal, details, respond, selfNnPermissionErrors, mutationPermissionText }) {
   if (internal !== 'PermissionDenied') return null;
   const plain = undefined;
@@ -407,17 +422,8 @@ function permissionErrorResponse({ internal, details, respond, selfNnPermissionE
       response.body.error.innererror.type = 'EntityPermissionAppendToIsMissingDuringAssociationChange';
     return response;
   }
-  // Native portal association refusals (captured 2026-11-23): a missing Append To or Append grant names the related
-  // table "to" the request's table; a collection-valued $ref without Write on its own row reads as a create refusal.
-  if (details.association)
-    return respond(
-      403,
-      '90040106',
-      `You don’t have permission to associate or disassociate table ${details.association.table} to ${details.association.to}`,
-      plain,
-    );
-  if (details.associationSourceWrite)
-    return respond(403, '90040103', `You don’t have permission to create records for ${table} table.`, plain);
+  const association = associationErrorResponse(details, table, respond);
+  if (association) return association;
   if (operation === 'create')
     return respond(403, '90040103', `You don't have permission to create ${table} entity.`, plain);
   if (operation === 'update' || operation === 'write')

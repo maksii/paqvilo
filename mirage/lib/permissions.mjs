@@ -626,16 +626,19 @@ export function buildPermissionModel(
     memberships: identityModel.memberships,
     personas,
     diagnostics,
-    settings: {
-      // The portal always checks Append/Append To: grants from a portal export enforce them unless a configured model
-      // explicitly asks for compatibility; only locally authored grants default to compatibility.
-      associationPermissions:
-        source === 'configured'
-          ? (state.settings?.associationPermissions ??
-            (permissions.some((rule) => rule.imported === true) ? 'enforce' : 'compatibility'))
-          : 'enforce',
-    },
+    settings: { associationPermissions: associationMode(source, state, permissions) },
   };
+}
+
+/**
+ * The portal always checks Append/Append To: grants from a portal export enforce them unless a configured model
+ * explicitly asks for compatibility; only locally authored grants default to compatibility.
+ */
+function associationMode(source, state, permissions) {
+  if (source !== 'configured') return 'enforce';
+  const configured = state.settings?.associationPermissions;
+  if (configured !== undefined) return configured;
+  return permissions.some((rule) => rule.imported === true) ? 'enforce' : 'compatibility';
 }
 
 /**
