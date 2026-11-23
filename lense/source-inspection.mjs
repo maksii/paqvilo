@@ -551,7 +551,7 @@ function actionRelations(action, owner, portal) {
   if (target === 2 && action.RedirectUrl)
     relations.push({ kind: 'action-url', url: String(action.RedirectUrl).slice(0, 2048), owner: via, action: name });
   const workflow = action.Workflow?.Id ?? action.Workflow?.id ?? action.WorkflowId;
-  if (/WorkflowAction$/.test(String(action?.Type ?? '')))
+  if (String(action?.Type ?? '').endsWith('WorkflowAction'))
     relations.push({
       kind: 'workflow',
       workflowId: workflow ? norm(workflow) : null,

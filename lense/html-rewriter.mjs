@@ -470,13 +470,14 @@ function documentLanguage(html, urlPath, model) {
 }
 
 // The language a source is the copy of: an LCID entry of a localized field, the language in a classic file name, the
-// language layer of an enhanced-model page; null for a root record.
+// language layer of an enhanced-model page; null for a root record. An LCID entry is told by its number (`lcid`), the
+// others by their language code (`code`).
 function variantLanguage(src) {
-  if (src.lcid != null) return Number(src.lcid);
+  if (src.lcid != null) return { lcid: Number(src.lcid) };
   const named = /\.([a-z]{2,3}(?:-[a-z0-9]{2,8})+)\.(?:webpage|contentsnippet)\./i.exec(src.rel)?.[1];
-  if (named) return named.toLowerCase();
+  if (named) return { code: named.toLowerCase() };
   if (src.pageLayer && src.pageLayer !== 'root' && !src.pageLayer.startsWith('localized '))
-    return String(src.pageLayer).toLowerCase();
+    return { code: String(src.pageLayer).toLowerCase() };
   return null;
 }
 
@@ -506,7 +507,8 @@ function servedLanguageVariants(candidates, language) {
   const dropped = new Set();
   const served = (src) => {
     const value = variantLanguage(src);
-    return typeof value === 'number' ? value === language.lcid : value != null && value === language.code;
+    if (!value) return false;
+    return value.lcid === undefined ? value.code === language.code : value.lcid === language.lcid;
   };
   for (const group of groups.values()) {
     if (group.length < 2 || !group.some(served)) continue;
@@ -1652,7 +1654,11 @@ export class HtmlRewriter {
     let out = html
       ? this.#rewriteBlocks(body, urlPath, applied, matched, notes, provenance, { markupBlocks, absent })
       : body;
-    out = this.#applyPatches(out, applied, notes, html, urlPath, provenance, scope, served?.deployed);
+    out = this.#applyPatches(
+      out,
+      { applied, notes, provenance },
+      { isHtml: html, urlPath, scope, deployed: served?.deployed },
+    );
     if (served?.drift.files.length) this.#driftNotes(served.drift.files, scope, notes);
     // Markup a changed file spells out that the page still shows differently: laid over where it stands.
     if (scope && this.changedMarkup.length) out = this.#layLiteral(out, scope, applied, notes, provenance);
@@ -2086,7 +2092,7 @@ export class HtmlRewriter {
     return { replacement, ...state };
   }
 
-  #patchHunkEdits(patch, hunk, text, original, eol, sourceRef, notes, locate = null) {
+  #patchHunkEdits(patch, hunk, { text, original, eol }, sourceRef, notes, locate = null) {
     const all = findMatches(hunk.pattern, text);
     if (!all.length) return [];
     let found = all.filter((match) => standsAlone(hunk.pattern, text, match));
@@ -2474,7 +2480,9 @@ export class HtmlRewriter {
     return kept;
   }
 
-  #applyPatch(out, patch, applied, notes, isHtml, urlPath, provenance, scope = null) {
+  // `record` is where the result is written ({applied, notes, provenance}); `page` is the response being rewritten
+  // ({isHtml, urlPath, scope, deployed}).
+  #applyPatch(out, patch, { applied, notes, provenance }, { isHtml, urlPath, scope = null }) {
     const sourceRef = this.#patchSourceReference(patch, provenance);
     if (!isHtml && patch.kind !== 'web-template') return out;
     if (patch.pageUrl && urlKey(patch.pageUrl) !== pageKey(urlPath, this.model)) return out;
@@ -2491,14 +2499,15 @@ export class HtmlRewriter {
     };
     const locate = scope && isHtml ? (matches, hunk, at) => this.#placedMatches(viewOf(), matches, hunk, at) : null;
     for (const hunk of patch.hunks) {
-      const hunkEdits = this.#patchHunkEdits(patch, hunk, text, original, eol, sourceRef, notes, locate);
+      const hunkEdits = this.#patchHunkEdits(patch, hunk, { text, original, eol }, sourceRef, notes, locate);
       for (const edit of hunkEdits) edits.push(edit);
     }
     const scoped = scope && isHtml && edits.length ? this.#scopedEdits(viewOf(), patch, edits, scope, notes) : edits;
     return this.#applyPatchEdits(out, patch, scoped, applied, notes, provenance);
   }
 
-  #applyPatches(body, applied, notes, isHtml, urlPath, provenance, scope = null, deployed = null) {
+  #applyPatches(body, record, page) {
+    const { scope = null, deployed = null } = page;
     let out = body;
     for (const patch of this.patches) {
       let current = patch;
@@ -2517,7 +2526,7 @@ export class HtmlRewriter {
         if (!hunks.length) continue;
         if (hunks.length !== patch.hunks.length) current = { ...patch, hunks };
       }
-      out = this.#applyPatch(out, current, applied, notes, isHtml, urlPath, provenance, scope);
+      out = this.#applyPatch(out, current, record, page);
     }
     return out;
   }

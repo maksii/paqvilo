@@ -121,8 +121,8 @@ function parsedScriptText(text, start, end, inline) {
   for (let index = start; index < end; index++) {
     if (text.charCodeAt(index) !== 13) continue; // NOSONAR: UTF-16 code unit semantics are required
     close(index);
-    if (text.charCodeAt(index + 1) === 10 && index + 1 < end) {
-      // NOSONAR: UTF-16 code unit semantics are required
+    const lineFeedFollows = text.charCodeAt(index + 1) === 10 && index + 1 < end; // NOSONAR: UTF-16 code unit semantics are required
+    if (lineFeedFollows) {
       runStart = index + 1; // The LF stays and maps to itself.
     } else {
       mappings.push({

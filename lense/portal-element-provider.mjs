@@ -63,7 +63,7 @@ export function installPortalProvenanceRegistry({
       return left ?? records;
     };
     const Observer = function MutationObserver(callback) {
-      if (new.target === undefined) return apply(NativeObserver, this, [callback]);
+      if (!new.target) return apply(NativeObserver, this, [callback]);
       if (typeof callback !== 'function') return construct(NativeObserver, [callback], new.target);
       const delivered = function (records, observer) {
         const left = kept(records);
@@ -242,12 +242,12 @@ export function installPortalProvenanceRegistry({
         if (proved) admit(first.node, id, first.owner);
         else {
           contested.add(id);
-          for (let i = 0; i < list.length; i++) contestedNodes.add(list[i].node);
+          for (let i = 0; i < list.length; i++) contestedNodes.add(list[i].node); // NOSONAR: array-like or mutated collection, index loop kept
         }
       },
     ]);
     for (let i = 0; i < batch.marked.length; i++) strip(batch.marked[i]); // NOSONAR: array-like or mutated collection, index loop kept
-    for (let i = 0; i < batch.scripts.length; i++)
+    /* NOSONAR: array-like or mutated collection, index loop kept */ for (let i = 0; i < batch.scripts.length; i++)
       if (attribute(batch.scripts[i], scriptMarker) !== null)
         try {
           apply(removeNamed, read(attributesOf, batch.scripts[i]), [scriptMarker]);
@@ -374,7 +374,7 @@ export function installPortalProvenanceRegistry({
     for (let i = 0; i < records.length; i++) {
       if (recordValue(records[i], 'type') !== 'childList') continue;
       const added = recordValue(records[i], 'addedNodes');
-      for (let j = 0; j < added.length; j++)
+      /* NOSONAR: array-like or mutated collection, index loop kept */ for (let j = 0; j < added.length; j++)
         if (apply(mapGet, batch.direct, [added[j]]) === undefined) apply(mapSet, batch.direct, [added[j], i]);
     }
     for (let i = 0; i < records.length; i++) {

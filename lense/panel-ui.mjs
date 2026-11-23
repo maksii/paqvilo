@@ -1050,7 +1050,7 @@ function panelBrowserImpl(data) {
         }
         const lowered = path.toLowerCase();
         let end = lowered.length;
-        while (end > 0 && lowered.charCodeAt(end - 1) === 47) end--;
+        while (end > 0 && lowered[end - 1] === '/') end--;
         return 'path:' + (lowered.slice(0, end) || '/');
       } catch {
         return '';
@@ -2075,8 +2075,6 @@ function panelBrowserImpl(data) {
             }),
           { collapsed: controls.length > 25 },
         ),
-      );
-      groups.push(
         rgroup('runtime-rendered-unmatched', 'Rendered controls without a source', unmatched, unmatchedRow, {
           collapsed: unmatched.length > 25,
         }),

@@ -735,7 +735,8 @@ function branchSteps(items) {
     let inner = 0;
     const other = [];
     let unknown = false;
-    for (let guard = 0; guard < items.length; guard++) {
+    // Every pass moves to another item, so the walk makes at most one pass for each of them.
+    for (let passes = items.length; passes > 0; passes--) {
       const tokens = items[index].liquid;
       let jumped = false;
       let target = null;

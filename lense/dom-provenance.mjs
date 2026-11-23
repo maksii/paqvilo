@@ -15,14 +15,8 @@
 // `secret` only unlocks the writer and never leaves this closure. Notifications carry `notifyKey`, which admits a
 // notification and nothing else, and every value page code could observe is built from own properties of
 // null-prototype objects, primitives and captured natives, so page accessors and `toJSON` hooks never see either key.
-/* NOSONAR: serialized into the page as one function; its captured natives and recorder state exist only inside it */ export function installDomProvenance({
-  slot,
-  secret,
-  notifyKey,
-  binding,
-  releaseKey,
-  limit = 10000,
-} = {}) {
+// Serialized into the page as one function: its captured natives and recorder state exist only inside it.
+export function installDomProvenance({ slot, secret, notifyKey, binding, releaseKey, limit = 10000 } = {}) {
   // A slot that already exists belongs to the page (it cannot be replaced): the registry is refused for this document.
   // The transport finds no function of this bootstrap there, so it claims nothing and reports the document.
   if (!slot || !secret || !notifyKey || secret === notifyKey || !binding || Object.hasOwn(window, slot)) return; // NOSONAR: preserve the page window receiver and binding
@@ -696,7 +690,7 @@
   };
   const addWord = (words, word) => {
     if (!word) return;
-    for (let i = 0; i < words.length; i++) if (words[i] === word) return;
+    for (let i = 0; i < words.length; i++) if (words[i] === word) return; // NOSONAR: array-like or mutated collection, index loop kept
     if (words.length >= CHANGE_WORDS) words.more = true;
     else words[words.length++] = word;
   };
@@ -704,7 +698,7 @@
   const copyWords = (what) => {
     if (!what) return null;
     const copy = newWords();
-    for (let i = 0; i < what.length; i++) copy[copy.length++] = what[i];
+    for (let i = 0; i < what.length; i++) copy[copy.length++] = what[i]; // NOSONAR: array-like or mutated collection, index loop kept
     copy.more = what.more;
     return copy;
   };
@@ -730,7 +724,7 @@
       front = entries.length ? entries[0] : null;
     // The same call again (a loop), or calls past the same limit: one row.
     if (front && entry.record && front.record === entry.record) {
-      if (entry.what) for (let i = 0; i < entry.what.length; i++) addWord(front.what, entry.what[i]);
+      if (entry.what) for (let i = 0; i < entry.what.length; i++) addWord(front.what, entry.what[i]); // NOSONAR: array-like or mutated collection, index loop kept
       if (entry.what?.more) front.what.more = true;
       return;
     }
@@ -741,7 +735,7 @@
       front.reason === entry.reason &&
       front.relationship === entry.relationship
     ) {
-      if (entry.what) for (let i = 0; i < entry.what.length; i++) addWord(front.what, entry.what[i]);
+      if (entry.what) for (let i = 0; i < entry.what.length; i++) addWord(front.what, entry.what[i]); // NOSONAR: array-like or mutated collection, index loop kept
       if (entry.what?.more) front.what.more = true;
       return;
     }
@@ -765,7 +759,7 @@
     }
     // One record per call and change: the elements one call changes alike share it.
     let key = relationship;
-    if (what) for (let i = 0; i < what.length; i++) key += ' ' + what[i];
+    if (what) for (let i = 0; i < what.length; i++) key += ' ' + what[i]; // NOSONAR: array-like or mutated collection, index loop kept
     if (what?.more) key += ' +';
     scope.shared ??= new NativeMap();
     let record = get(scope.shared, key);
@@ -903,12 +897,22 @@
       }
     }
     if (scope?.extra?.node) add(true, scope.extra.node, scope.extra.word);
-    for (let i = 0; unattributed && i < unattributed.order.length; i++)
-      recordChange(unattributed.order[i], 'changed-by', get(unattributed.map, unattributed.order[i]), null);
-    for (let i = 0; credited && i < credited.order.length; i++)
-      recordChange(credited.order[i], 'changed-by', get(credited.map, credited.order[i]), scope);
+    if (unattributed) {
+      /* NOSONAR: array-like or mutated collection, index loop kept */ for (
+        let i = 0;
+        i < unattributed.order.length;
+        i++
+      )
+        recordChange(unattributed.order[i], 'changed-by', get(unattributed.map, unattributed.order[i]), null);
+    }
+    if (credited) {
+      /* NOSONAR: array-like or mutated collection, index loop kept */ for (let i = 0; i < credited.order.length; i++)
+        recordChange(credited.order[i], 'changed-by', get(credited.map, credited.order[i]), scope);
+    }
     const moves = scope?.moves;
-    for (let i = 0; moves && i < moves.length; i++) recordChange(moves[i], 'moved-by', null, scope);
+    if (moves) {
+      for (let i = 0; i < moves.length; i++) recordChange(moves[i], 'moved-by', null, scope); // NOSONAR: array-like or mutated collection, index loop kept
+    }
   };
   // The elements a native call inserted that no recorded call made, for an entry point that inserts without naming
   // what (a range's insertNode, execCommand, setHTML): recorded with the call's relationship; a parser element it took
@@ -1113,7 +1117,7 @@
   const markWrittenChanges = (written, capture) => {
     let budget = INSERTION_ELEMENTS;
     const region = regionFor('created-by', capture);
-    for (let i = 0; i < written.length; i++) {
+    /* NOSONAR: array-like or mutated collection, index loop kept */ for (let i = 0; i < written.length; i++) {
       const added = apply(mutationAdded, written[i], []),
         length = apply(nodeListLength, added, []);
       for (let j = 0; j < length; j++) {
@@ -1144,48 +1148,51 @@
     const changes = apply(observerTake, writeObserver, []);
     if (capture) markWrittenChanges(changes, capture);
   };
-  for (const name of ['write', 'writeln']) {
-    const descriptor = describe(Document.prototype, name);
-    if (typeof descriptor?.value !== 'function' || !descriptor.configurable) continue;
-    const original = descriptor.value;
-    const write = (receiver, args) => {
-      const previous = writeCapture;
-      if (!closed)
-        try {
-          collectWritten(previous);
-        } catch {
-          /* Native write remains authoritative. */
-        }
-      writeCapture = lazyStack(wrapper);
-      try {
-        return apply(original, receiver, args);
-      } finally {
+  const wrapDocumentWritesAndCopies = () => {
+    for (const name of ['write', 'writeln']) {
+      const descriptor = describe(Document.prototype, name);
+      if (typeof descriptor?.value !== 'function' || !descriptor.configurable) continue;
+      const original = descriptor.value;
+      const write = (receiver, args) => {
+        const previous = writeCapture;
         if (!closed)
           try {
-            collectWritten(writeCapture);
+            collectWritten(previous);
           } catch {
-            failed = true;
+            /* Native write remains authoritative. */
           }
-        writeCapture = previous;
-      }
-    };
-    const wrapper = shaped(methodLike(name, write), original);
-    define(Document.prototype, name, { ...descriptor, value: wrapper });
-    restorers[restorers.length] = () => restoreProperty(Document.prototype, name, 'value', wrapper, original);
-  }
-  restorers[restorers.length] = () => apply(observerStop, writeObserver, []);
-  for (const name of ['createElement', 'createElementNS'])
-    wrapMethod(Document.prototype, name, {
-      after: (_receiver, node, _prior, _args, capture) => remember(node, 'created-by', capture),
-    });
-  for (const [prototype, name] of [
-    [Node.prototype, 'cloneNode'],
-    [Document.prototype, 'importNode'],
-  ])
-    wrapMethod(prototype, name, {
-      after: (_receiver, node, _prior, _args, capture) =>
-        markNodes(descendants(node, INSERTION_ELEMENTS, regionFor('cloned-by', capture)).nodes, 'cloned-by', capture),
-    });
+        writeCapture = lazyStack(wrapper);
+        try {
+          return apply(original, receiver, args);
+        } finally {
+          if (!closed)
+            try {
+              collectWritten(writeCapture);
+            } catch {
+              failed = true;
+            }
+          writeCapture = previous;
+        }
+      };
+      const wrapper = shaped(methodLike(name, write), original);
+      define(Document.prototype, name, { ...descriptor, value: wrapper });
+      restorers[restorers.length] = () => restoreProperty(Document.prototype, name, 'value', wrapper, original);
+    }
+    restorers[restorers.length] = () => apply(observerStop, writeObserver, []);
+    for (const name of ['createElement', 'createElementNS'])
+      wrapMethod(Document.prototype, name, {
+        after: (_receiver, node, _prior, _args, capture) => remember(node, 'created-by', capture),
+      });
+    for (const [prototype, name] of [
+      [Node.prototype, 'cloneNode'],
+      [Document.prototype, 'importNode'],
+    ])
+      wrapMethod(prototype, name, {
+        after: (_receiver, node, _prior, _args, capture) =>
+          markNodes(descendants(node, INSERTION_ELEMENTS, regionFor('cloned-by', capture)).nodes, 'cloned-by', capture),
+      });
+  };
+  wrapDocumentWritesAndCopies();
   // Markup parsed outside the document (a fragment of a range, a document of DOMParser) is not recorded where it is
   // parsed: the call that inserts it into the document is ("Inserted by this script").
   // The parent whose children a call changes, for a node (its parent) or an element (itself).
@@ -1208,35 +1215,38 @@
       : { __proto__: null, data: receiver };
   };
   const attributeOf = (node, name) => ({ __proto__: null, node, name });
-  for (const [prototype, name] of [
-    [Element.prototype, 'innerHTML'],
-    [Element.prototype, 'outerHTML'],
-    // A shadow root's markup: content a script writes there is script-made like anywhere else.
-    [NativeShadowRoot.prototype, 'innerHTML'],
-  ]) {
-    const outer = name === 'outerHTML';
-    wrapSetter(prototype, name, {
-      targets: outer ? ofParent : self,
-      claim: outer ? childrenOfParent : childrenOf,
-      before: (receiver) =>
-        outer
-          ? range(
-              readNode(receiver, 'parentNode'),
-              readNode(receiver, 'previousSibling'),
-              readNode(receiver, 'nextSibling'),
-            )
-          : range(receiver, null, null),
-      after: (_receiver, _value, prior, _args, capture) => markRange(prior, capture),
-    });
-  }
-  // setHTMLUnsafe replaces the children of an element or a shadow root with parsed markup, like innerHTML.
-  for (const prototype of [Element.prototype, NativeShadowRoot.prototype])
-    wrapMethod(prototype, 'setHTMLUnsafe', {
-      targets: self,
-      claim: childrenOf,
-      before: (receiver) => range(receiver, null, null),
-      after: (_receiver, _value, prior, _args, capture) => markRange(prior, capture),
-    });
+  const wrapMarkupSetters = () => {
+    for (const [prototype, name] of [
+      [Element.prototype, 'innerHTML'],
+      [Element.prototype, 'outerHTML'],
+      // A shadow root's markup: content a script writes there is script-made like anywhere else.
+      [NativeShadowRoot.prototype, 'innerHTML'],
+    ]) {
+      const outer = name === 'outerHTML';
+      wrapSetter(prototype, name, {
+        targets: outer ? ofParent : self,
+        claim: outer ? childrenOfParent : childrenOf,
+        before: (receiver) =>
+          outer
+            ? range(
+                readNode(receiver, 'parentNode'),
+                readNode(receiver, 'previousSibling'),
+                readNode(receiver, 'nextSibling'),
+              )
+            : range(receiver, null, null),
+        after: (_receiver, _value, prior, _args, capture) => markRange(prior, capture),
+      });
+    }
+    // setHTMLUnsafe replaces the children of an element or a shadow root with parsed markup, like innerHTML.
+    for (const prototype of [Element.prototype, NativeShadowRoot.prototype])
+      wrapMethod(prototype, 'setHTMLUnsafe', {
+        targets: self,
+        claim: childrenOf,
+        before: (receiver) => range(receiver, null, null),
+        after: (_receiver, _value, prior, _args, capture) => markRange(prior, capture),
+      });
+  };
+  wrapMarkupSetters();
   // The element whose children an insertAdjacent* call changes.
   const adjacentParent = (receiver, args) => {
     if (typeof args[0] !== 'string') return [receiver]; // Never coerce an argument a second time.
@@ -1284,27 +1294,30 @@
     return { __proto__: null, children };
   };
   const siblingInsertion = new NativeSet(['before', 'after', 'replaceWith']);
-  for (const [prototype, names] of [
-    [Node.prototype, ['appendChild', 'insertBefore', 'replaceChild']],
-    [Element.prototype, ['append', 'prepend', 'before', 'after', 'replaceWith', 'replaceChildren', 'moveBefore']],
-    // A document fragment and a shadow root (one is a fragment) take children through these as well.
-    [DocumentFragment.prototype, ['append', 'prepend', 'replaceChildren', 'moveBefore']],
-    // Text and comment nodes take siblings too.
-    [CharacterData.prototype, ['before', 'after', 'replaceWith']],
-  ]) {
-    for (const name of names) {
-      // insertBefore, replaceChild and moveBefore (a move that keeps the element's state, where the browser has it)
-      // bring their first argument only: the second names a child that is already there.
-      const firstOnly = prototype === Node.prototype || name === 'moveBefore';
-      const sibling = apply(setHas, siblingInsertion, [name]);
-      wrapMethod(prototype, name, {
-        targets: (receiver, args) => insertionTargets(sibling ? parentOf(receiver) : receiver, args, firstOnly),
-        claim: (receiver, args) => insertionClaim(sibling ? parentOf(receiver) : receiver, args, firstOnly),
-        before: (_receiver, args, capture) => incoming(args, firstOnly, capture),
-        after: (_receiver, _value, prior, _args, capture) => markNodes(prior?.nodes ?? [], 'attached-by', capture),
-      });
+  const wrapChildInsertions = () => {
+    for (const [prototype, names] of [
+      [Node.prototype, ['appendChild', 'insertBefore', 'replaceChild']],
+      [Element.prototype, ['append', 'prepend', 'before', 'after', 'replaceWith', 'replaceChildren', 'moveBefore']],
+      // A document fragment and a shadow root (one is a fragment) take children through these as well.
+      [DocumentFragment.prototype, ['append', 'prepend', 'replaceChildren', 'moveBefore']],
+      // Text and comment nodes take siblings too.
+      [CharacterData.prototype, ['before', 'after', 'replaceWith']],
+    ]) {
+      for (const name of names) {
+        // insertBefore, replaceChild and moveBefore (a move that keeps the element's state, where the browser has it)
+        // bring their first argument only: the second names a child that is already there.
+        const firstOnly = prototype === Node.prototype || name === 'moveBefore';
+        const sibling = apply(setHas, siblingInsertion, [name]);
+        wrapMethod(prototype, name, {
+          targets: (receiver, args) => insertionTargets(sibling ? parentOf(receiver) : receiver, args, firstOnly),
+          claim: (receiver, args) => insertionClaim(sibling ? parentOf(receiver) : receiver, args, firstOnly),
+          before: (_receiver, args, capture) => incoming(args, firstOnly, capture),
+          after: (_receiver, _value, prior, _args, capture) => markNodes(prior?.nodes ?? [], 'attached-by', capture),
+        });
+      }
     }
-  }
+  };
+  wrapChildInsertions();
   wrapMethod(Element.prototype, 'insertAdjacentElement', {
     targets: (receiver, args) => [adjacentParent(receiver, args)[0], args[1], parentOf(args[1])],
     claim: (receiver, args) => insertionClaim(adjacentParent(receiver, args)[0], [args[1]], true),
@@ -1471,17 +1484,20 @@
     [HTMLOptionElement.prototype, 'selected', 'selected'],
   ];
   const elementPrototypes = [Element.prototype, HTMLElement.prototype];
-  /* NOSONAR: WindowProxy even if globalThis is reassigned */ for (const key of Object.getOwnPropertyNames(window))
-    if (/^HTML[A-Za-z]*Element$/.test(key) && key !== 'HTMLElement' && typeof window[key] === 'function')
-      elementPrototypes[elementPrototypes.length] = window[key].prototype;
-  for (const prototype of elementPrototypes)
-    for (const name of reflected)
-      if (prototype && hasOwn(prototype, name)) {
-        const attribute = reflectedNames[name] ?? apply(lower, name, []);
-        wrapSetter(prototype, name, { targets: self, claim: (receiver) => attributeOf(receiver, attribute) });
-      }
-  for (const [prototype, name, word] of formValues)
-    wrapSetter(prototype, name, { targets: self, extra: (receiver) => ({ __proto__: null, node: receiver, word }) });
+  const wrapReflectedAndFormSetters = () => {
+    /* NOSONAR: WindowProxy even if globalThis is reassigned */ for (const key of Object.getOwnPropertyNames(window))
+      if (/^HTML[A-Za-z]*Element$/.test(key) && key !== 'HTMLElement' && typeof window[key] === 'function')
+        elementPrototypes[elementPrototypes.length] = window[key].prototype;
+    for (const prototype of elementPrototypes)
+      for (const name of reflected)
+        if (prototype && hasOwn(prototype, name)) {
+          const attribute = reflectedNames[name] ?? apply(lower, name, []);
+          wrapSetter(prototype, name, { targets: self, claim: (receiver) => attributeOf(receiver, attribute) });
+        }
+    for (const [prototype, name, word] of formValues)
+      wrapSetter(prototype, name, { targets: self, extra: (receiver) => ({ __proto__: null, node: receiver, word }) });
+  };
+  wrapReflectedAndFormSetters();
   // Token lists and style declarations do not name their element: the getters that hand them out remember it, with
   // the attribute the object reflects. The getter returns the browser's own object, unchanged.
   const owners = new NativeWeakMap();
@@ -1511,12 +1527,15 @@
     define(prototype, name, { ...describe(prototype, name), get: getter });
     restorers[restorers.length] = () => restoreProperty(prototype, name, 'get', getter, original);
   };
-  rememberOwner(Element.prototype, 'classList', 'class');
-  for (const constructor of [HTMLAnchorElement, HTMLAreaElement, HTMLLinkElement, HTMLFormElement])
-    rememberOwner(constructor.prototype, 'relList', 'rel');
-  for (const name of ['add', 'remove', 'toggle', 'replace'])
-    wrapMethod(DOMTokenList.prototype, name, { targets: ownerOf, claim: ownedClaim });
-  wrapSetter(DOMTokenList.prototype, 'value', { targets: ownerOf, claim: ownedClaim });
+  const wrapTokenLists = () => {
+    rememberOwner(Element.prototype, 'classList', 'class');
+    for (const constructor of [HTMLAnchorElement, HTMLAreaElement, HTMLLinkElement, HTMLFormElement])
+      rememberOwner(constructor.prototype, 'relList', 'rel');
+    for (const name of ['add', 'remove', 'toggle', 'replace'])
+      wrapMethod(DOMTokenList.prototype, name, { targets: ownerOf, claim: ownedClaim });
+    wrapSetter(DOMTokenList.prototype, 'value', { targets: ownerOf, claim: ownedClaim });
+  };
+  wrapTokenLists();
   // Style: the declaration's own members (setProperty, removeProperty, cssText, cssFloat) are wrapped on its
   // prototype, so a call through them is attributed whatever object it is applied to; `element.style = text` is the
   // element's own setter. A named property write (`element.style.color = value`) and a dataset write have no hook: the
@@ -1525,23 +1544,26 @@
   // A table makes the rows, cells and sections it is asked for (and a body for the first row of a table without one):
   // what a call adds or removes below its receiver is the call's. A row or cell it returns is new, also in a table
   // outside the document, where no change record names it; a caption, head or foot it returns may be the template's.
-  const returnedNew = (_receiver, node, _prior, _args, capture) => remember(node, 'created-by', capture);
-  for (const [constructor, makers, removers] of [
-    [
-      HTMLTableElement,
-      ['insertRow', 'createCaption', 'createTHead', 'createTFoot', 'createTBody'],
-      ['deleteRow', 'deleteCaption', 'deleteTHead', 'deleteTFoot'],
-    ],
-    [HTMLTableSectionElement, ['insertRow'], ['deleteRow']],
-    [HTMLTableRowElement, ['insertCell'], ['deleteCell']],
-  ]) {
-    for (const name of makers) {
-      const hooks = { __proto__: null, targets: nothing, adds: 'created-by', claim: insideOf };
-      if (name === 'insertRow' || name === 'insertCell') hooks.after = returnedNew;
-      wrapMethod(constructor.prototype, name, hooks);
+  const wrapTableMembers = () => {
+    const returnedNew = (_receiver, node, _prior, _args, capture) => remember(node, 'created-by', capture);
+    for (const [constructor, makers, removers] of [
+      [
+        HTMLTableElement,
+        ['insertRow', 'createCaption', 'createTHead', 'createTFoot', 'createTBody'],
+        ['deleteRow', 'deleteCaption', 'deleteTHead', 'deleteTFoot'],
+      ],
+      [HTMLTableSectionElement, ['insertRow'], ['deleteRow']],
+      [HTMLTableRowElement, ['insertCell'], ['deleteCell']],
+    ]) {
+      for (const name of makers) {
+        const hooks = { __proto__: null, targets: nothing, adds: 'created-by', claim: insideOf };
+        if (name === 'insertRow' || name === 'insertCell') hooks.after = returnedNew;
+        wrapMethod(constructor.prototype, name, hooks);
+      }
+      for (const name of removers) wrapMethod(constructor.prototype, name, { targets: self, claim: insideOf });
     }
-    for (const name of removers) wrapMethod(constructor.prototype, name, { targets: self, claim: insideOf });
-  }
+  };
+  wrapTableMembers();
   // A select inserts the option or group `add` is given (into the group of the option it goes before), takes one out
   // with `remove(index)`, and a shorter or longer `length` removes options or makes empty ones. Its option list does
   // the same and does not name its select: the `options` getter remembers it. (An option assigned by index,
@@ -1577,14 +1599,20 @@
     targets: (receiver) => [selectOf(receiver)],
     claim: (receiver) => insideOf(selectOf(receiver)),
   });
-  for (const constructor of [HTMLElement, SVGElement, globalThis.MathMLElement]) {
-    rememberOwner(constructor?.prototype, 'style', 'style');
-    wrapSetter(constructor?.prototype, 'style', { targets: self, claim: (receiver) => attributeOf(receiver, 'style') });
-  }
-  for (const name of ['setProperty', 'removeProperty'])
-    wrapMethod(CSSStyleDeclaration.prototype, name, { targets: ownerOf, claim: ownedClaim });
-  wrapSetter(CSSStyleDeclaration.prototype, 'cssText', { targets: ownerOf, claim: ownedClaim });
-  wrapSetter(CSSStyleDeclaration.prototype, 'cssFloat', { targets: ownerOf, claim: ownedClaim });
+  const wrapStyleMembers = () => {
+    for (const constructor of [HTMLElement, SVGElement, globalThis.MathMLElement]) {
+      rememberOwner(constructor?.prototype, 'style', 'style');
+      wrapSetter(constructor?.prototype, 'style', {
+        targets: self,
+        claim: (receiver) => attributeOf(receiver, 'style'),
+      });
+    }
+    for (const name of ['setProperty', 'removeProperty'])
+      wrapMethod(CSSStyleDeclaration.prototype, name, { targets: ownerOf, claim: ownedClaim });
+    wrapSetter(CSSStyleDeclaration.prototype, 'cssText', { targets: ownerOf, claim: ownedClaim });
+    wrapSetter(CSSStyleDeclaration.prototype, 'cssFloat', { targets: ownerOf, claim: ownedClaim });
+  };
+  wrapStyleMembers();
   const query = (node, { scope, anchorGeneration } = {}) => /* NOSONAR: answer built in order into shared result */ {
     settle();
     const record = stored(node),
@@ -1633,7 +1661,7 @@
     if (!state) return result;
     if (state.limited) limited('dom-change-limit');
     if (state.dropped) limited('dom-change-history-limit');
-    for (let i = 0; i < state.entries.length; i++) {
+    /* NOSONAR: array-like or mutated collection, index loop kept */ for (let i = 0; i < state.entries.length; i++) {
       const entry = state.entries[i];
       if (entry.record) {
         const reason = addCallsite(result, entry.record, scope, entry);
@@ -1696,9 +1724,13 @@
     const reason = own(proof, 'reason'),
       limits = own(proof, 'limits');
     const refs = own(proof, 'sourceRefs') ?? [];
-    for (let i = 0; i < refs.length; i++) {
+    /* NOSONAR: array-like or mutated collection, index loop kept */ for (let i = 0; i < refs.length; i++) {
       let known = false;
-      for (let j = 0; j < result.sourceRefs.length; j++)
+      /* NOSONAR: array-like or mutated collection, index loop kept */ for (
+        let j = 0;
+        j < result.sourceRefs.length;
+        j++
+      )
         if (own(result.sourceRefs[j], 'id') === own(refs[i], 'id')) known = true;
       if (!known) result.sourceRefs[result.sourceRefs.length] = refs[i];
     }
@@ -1713,7 +1745,7 @@
     // The creator's fact takes the node's relationship and its words; a step of the call chain (or a creator that is
     // the portal's own script) carries its own, which the writer's transport set. A move or change keeps the
     // relationship and label the transport gave it, which names what changed.
-    for (let i = 0; i < facts.length; i++) {
+    /* NOSONAR: array-like or mutated collection, index loop kept */ for (let i = 0; i < facts.length; i++) {
       const predicate = own(facts[i], 'predicate'),
         label = own(facts[i], 'label');
       result.facts[result.facts.length] = {

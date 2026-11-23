@@ -538,7 +538,7 @@ class Classifier {
   // A native dialog under an owner (a list, a subgrid view, a lookup field): <owner>#action:<type>.
   modalScope(node, scope, owner, forms = new Map()) {
     const classes = classList(node);
-    if (!classes.has('modal') && !/^ModalToShowError/.test(attribute(node, 'id') ?? '')) return null;
+    if (!classes.has('modal') && !(attribute(node, 'id') ?? '').startsWith('ModalToShowError')) return null;
     if (classes.has('modal-lookup')) {
       const viewId = descendantGridView(node);
       if (viewId) {
@@ -566,7 +566,7 @@ class Classifier {
     const { owner } = scope;
     const classes = classList(node);
     const id = attribute(node, 'id') ?? '';
-    if (scope.root && (classes.has('entitylist') || /^EntityListControl/.test(id)) && !classes.has('entity-grid'))
+    if (scope.root && (classes.has('entitylist') || id.startsWith('EntityListControl')) && !classes.has('entity-grid'))
       return { ...scope, binding: owner, root: true };
     if (attribute(node, 'data-mirage-component') === 'codecomponent')
       return { ...scope, binding: withPart(owner, 'notice') };
@@ -670,7 +670,7 @@ class Classifier {
     }
   }
   classifyFormPart({ id, classes, owners, owner, next }) {
-    if (/_ProgressIndicator$/.test(id)) return { ...next, binding: withPart(owners.form, 'progress') };
+    if (id.endsWith('_ProgressIndicator')) return { ...next, binding: withPart(owners.form, 'progress') };
     if (classes.has('instructions')) return { ...next, binding: withPart(owner, 'instructions') };
     if (id === 'MessagePanel')
       return {
@@ -682,9 +682,12 @@ class Classifier {
       };
     if (classes.has('actions') || classes.has('form-custom-actions') || /^(?:Previous|Next)Button$/.test(id))
       return { ...next, binding: withPart(owner, 'actions') };
-    if (classes.has('validation-summary') || /^ValidationSummary/.test(id))
+    if (classes.has('validation-summary') || id.startsWith('ValidationSummary'))
       return { ...next, binding: withPart(owner, 'validation-summary') };
-    if (/_(?:EntityName|EntityID|EntityState|EntityStatus|EntityLayoutConfig)$/.test(id) || /^confirmOnExit/.test(id))
+    if (
+      /_(?:EntityName|EntityID|EntityState|EntityStatus|EntityLayoutConfig)$/.test(id) ||
+      id.startsWith('confirmOnExit')
+    )
       return { ...next, binding: withPart(owner, 'state') };
   }
   classifyFormMarker({ node, id, classes, owner, next }) {

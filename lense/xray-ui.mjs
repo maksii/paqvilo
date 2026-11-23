@@ -1752,7 +1752,7 @@ function xrayBrowserImpl(data) {
     }
     const lowered = value.toLowerCase();
     let end = lowered.length;
-    while (end > 0 && lowered.charCodeAt(end - 1) === 47) end--;
+    while (end > 0 && lowered[end - 1] === '/') end--;
     return lowered.slice(0, end) || '/';
   };
   let compiledRules = null,
@@ -1818,7 +1818,7 @@ function xrayBrowserImpl(data) {
     const assets = (report?.assets ?? []).filter((item) => pathKey(item.url) === key);
     // A file a code component's manifest declares (lense/pcf-resources.mjs): the component owns it, and the
     // declared file is its source.
-    if (assets.length === 1 && /^pcf:/.test(assets[0].componentKey ?? '')) {
+    if (assets.length === 1 && String(assets[0].componentKey ?? '').startsWith('pcf:')) {
       const name = assets[0].schemaName ?? assets[0].componentKey.slice(4);
       return {
         webFile: true,

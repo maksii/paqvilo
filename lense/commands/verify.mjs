@@ -530,9 +530,9 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
               const tags = 'div,section,footer,header,nav,ul,p,h1,h2,h3,h4,h5,h6';
               // The element as the portal sent it: without the mark Lense puts on an element it has identified.
               const asServed = (node) => {
-                if (!node.hasAttribute('data-paqvilo-source')) return node.outerHTML;
+                if (node.dataset.paqviloSource === undefined) return node.outerHTML;
                 const copy = node.cloneNode(true);
-                copy.removeAttribute('data-paqvilo-source');
+                delete copy.dataset.paqviloSource;
                 return copy.outerHTML;
               };
               const original = new DOMParser().parseFromString(html, 'text/html');

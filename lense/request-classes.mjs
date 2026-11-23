@@ -284,7 +284,7 @@ function publicItem(entry) {
   if (entry.provisional && entry.status == null && !entry.failed && entry.reason === 'not-intercepted')
     item.reason = 'pending';
   else if (item.class === 'unidentified') item.reason = unidentifiedReason(entry);
-  if (item.status === undefined) item.status = entry.failed ? 'failed' : null;
+  item.status ??= entry.failed ? 'failed' : null;
   if (entry.sources) item.sources = entry.sources;
   if (entry.matched) item.matched = entry.matched;
   item.count = Math.max(entry.seen, entry.routed, 1);

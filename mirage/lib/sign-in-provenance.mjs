@@ -66,7 +66,7 @@ function markerPart(element) {
   const href = attribute(element, 'href') ?? '';
   const src = attribute(element, 'src') ?? '';
   if (name.has('paqvilo-mirage-local-accounts') || name.has('paqvilo-mirage-sign-in')) return { part: 'local-sign-in' };
-  if (/^\/__sim\/persona-picker\./.test(href || src)) return { part: 'local-sign-in' };
+  if ((href || src).startsWith('/__sim/persona-picker.')) return { part: 'local-sign-in' };
   if (name.has('paqvilo-mirage-redeem-invitation')) return { part: 'invitation' };
   if (element.tagName === 'a' && /^\/Account\/Login\/Register\b/i.test(href)) return { part: 'registration' };
   if (element.tagName === 'a' && /^\/Register\b/i.test(href)) return { part: 'invitation' };

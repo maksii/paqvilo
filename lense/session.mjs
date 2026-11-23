@@ -45,7 +45,7 @@ const SRI_ALGORITHMS = ['sha256', 'sha384', 'sha512'];
  * The byte range a Range header asks of a body of `size` bytes: {start, end}; false when it cannot be satisfied (416);
  * null when there is none or it is not one bytes range (the whole body is sent, as RFC 9110 allows).
  */
-export function byteRange(header, size) {
+export function byteRange(header, size) /* NOSONAR: a range, false and null are its documented answers */ {
   // The digits before the dash are optional with their trailing blanks, so no blank run can be split two ways.
   const match = /^bytes\s*=\s*(?:(\d+)\s*)?-\s*(\d*)$/i.exec(String(header ?? '').trim());
   const first = match?.[1] ?? '';

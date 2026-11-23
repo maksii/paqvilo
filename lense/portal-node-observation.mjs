@@ -80,7 +80,7 @@ import { definitionQuery } from './definition-query.mjs';
     if (!encoded) return [];
     if (encoded.length > 262144) return null;
     try {
-      const parsed = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(encoded), (c) => c.charCodeAt(0))));
+      const parsed = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(encoded), (c) => c.codePointAt(0))));
       return Array.isArray(parsed) ? parsed.filter((item) => item && typeof item === 'object').slice(0, 32) : null;
     } catch {
       return null;
@@ -340,7 +340,7 @@ import { definitionQuery } from './definition-query.mjs';
       }
       break;
     }
-    if (call(current, 'matches', '.entitylist') || /^EntityList/.test(get(current, 'id') ?? '')) {
+    if (call(current, 'matches', '.entitylist') || idOf(current).startsWith('EntityList')) {
       // A list's wrapper and the parts around its grid (filter panel, list chrome) belong to that list only.
       const found = listOf(current);
       if (found.missing) result.availability.push({ reason: 'nearest-component-definition-missing' });
@@ -1361,10 +1361,7 @@ import { definitionQuery } from './definition-query.mjs';
 
   // The form's progress indicator, validation summary, message, actions and spam protection; true when one is named.
   function nameFormChrome(form) {
-    if (
-      /_ProgressIndicator$/.test(get(boundary, 'id') ?? '') ||
-      closestWithin('[id$="_ProgressIndicator"],ol.progress')
-    ) {
+    if (idOf(boundary).endsWith('_ProgressIndicator') || closestWithin('[id$="_ProgressIndicator"],ol.progress')) {
       namedPart(form, 'progress', 'Progress indicator of this form');
       return true;
     }
