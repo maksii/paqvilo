@@ -155,7 +155,7 @@
         document.head.prepend(overlayStyle);
       }
       state.overlay ??= Object.assign(document.createElement('div'), { className: 'ui-widget-overlay ui-front' });
-      state.overlay.setAttribute('data-paqvilo-dialog-overlay', '');
+      state.overlay.dataset.paqviloDialogOverlay = '';
       state.overlay.style.cssText = `position:fixed;inset:0;z-index:${zIndex - 1}`;
       state.wrapper.before(state.overlay);
     }

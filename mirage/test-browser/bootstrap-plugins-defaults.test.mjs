@@ -203,7 +203,7 @@ test('Bootstrap 5 dismiss resolves an explicit target outside its modal', async 
   await page.evaluate(() => {
     document.body.insertAdjacentHTML(
       'beforeend',
-      '<a id="externalDismiss" class="disabled" href="#bs5" data-dismiss="" data-target="#plain" data-bs-dismiss="modal" data-bs-target="#bs5">Dismiss</a>',
+      '<a id="externalDismiss" class="disabled" href="#plain" data-dismiss="" data-target="#plain" data-bs-dismiss="modal" data-bs-target="#bs5">Dismiss</a>',
     );
   });
   await page.locator('#externalDismiss').click();
@@ -215,6 +215,8 @@ test('Bootstrap 5 dismiss resolves an explicit target outside its modal', async 
   await page.locator('#bs5Open').click();
   await modal.evaluate((element) => {
     element.insertAdjacentHTML('beforeend', '<a id="internalDismiss" href="body" data-bs-dismiss="modal">Close</a>');
+    const datasetPrototype = Object.getPrototypeOf(element.dataset);
+    Object.defineProperty(datasetPrototype, 'bsTarget', { configurable: true, value: '#plain' });
   });
   await page.locator('#internalDismiss').click();
   assert.equal(await modal.isVisible(), false);

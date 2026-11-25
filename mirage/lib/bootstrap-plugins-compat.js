@@ -74,7 +74,8 @@
     }
   }
   function bootstrap5DismissTarget(trigger) {
-    let selector = trigger.getAttribute('data-bs-target');
+    const { dataset } = trigger;
+    let selector = dataset && Object.hasOwn(dataset, 'bsTarget') ? dataset.bsTarget : undefined;
     if (!selector || selector === '#') {
       const href = trigger.getAttribute('href');
       selector = href?.includes('#') || href?.startsWith('.') ? fragmentSelector(href) : null;
