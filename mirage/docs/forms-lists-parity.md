@@ -89,11 +89,21 @@ the attach-file control) successful controls to the form action, including modal
 - Native subgrid quick-find visibility follows the exported FormXml flag. Native PCF fields need explicit portal
   attribute enablement and a desktop binding; list and subgrid PCF hosting keeps the native grid
   ([code components](code-components.md)).
+- On sites where a signed-in page opens an authored modal iframe, configure `observed.modalFormShell` with site
+  evidence. `signed-in-zero-website` allows the all-zero website ID with a non-empty query.
+  `signed-in-exported-or-zero-website` also allows the current exported website ID and permits either ID without a
+  query. The broader mode was observed on an Enhanced site. Both modes apply to signed-in reads with pages and data
+  served locally. The route is `/_portal/modal-form-template-path/<website-id>/`. Its query cannot include
+  `entityformid` or `entityform` in any case. The document provides the platform assets and `#content-container` for
+  the host's controls. A non-empty `pageid` still requires access to the exported page and uses the exact lowercase key.
+  When `observed.requestValidation` is `aspnet-query`, GET query values are validated before rendering the shell.
+  URLs that supply a form continue through the usual exported Basic Form lookup and permission checks.
 - Modal and quick-view documents hold the browser's `load` event with a pending image until jQuery's ready promise and
   one more macrotask (DOMContentLoaded without jQuery); a throwing ready callback does not block others. A marker script
   at the end of the body requests the image once every parser-blocking script before it has arrived and run, so
   delivery time does not count: the hold fails open 5 s after that request with `FRAME_READY_TIMEOUT`, and
-  `FRAME_LOAD_ORDERING` records the release order. A page whose inline script is blocked (a site
+  `FRAME_LOAD_ORDERING` records the release order. If `connect-src` blocks the ready notification, a same-origin image
+  request releases the hold. A page whose inline script is blocked (a site
   `Content-Security-Policy` without `'unsafe-inline'`) is not held; after 60 s `FRAME_READY_TIMEOUT` with ordering
   `never-requested` reports it. Set
   `observed.modalLoadOrdering: immediate` (with evidence) to opt out. This stabilizes local timing only.

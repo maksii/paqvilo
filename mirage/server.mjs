@@ -2048,6 +2048,7 @@ export async function createSimulator(options) {
               right: fetchOptions.right,
               fetchCache: fetchOptions.fetchCache,
               diagnostic: fetchOptions.diagnostic,
+              liquidTag: fetchOptions.liquidTag,
             }),
           ),
           xml,
@@ -6850,25 +6851,45 @@ export async function createSimulator(options) {
         throw error('Malformed modal website identifier.');
       }
       const websiteId = normalizeId(websiteSegment);
-      if (
-        websiteId &&
-        websiteId !== '00000000-0000-0000-0000-000000000000' &&
-        websiteId !== normalizeId(portal.website.id ?? portal.website.adx_websiteid ?? portal.website.mspp_websiteid)
-      )
+      const zeroWebsiteId = '00000000-0000-0000-0000-000000000000';
+      const exportedWebsiteId = normalizeId(
+        portal.website.id ?? portal.website.adx_websiteid ?? portal.website.mspp_websiteid,
+      );
+      if (websiteId && websiteId !== zeroWebsiteId && websiteId !== exportedWebsiteId)
         throw error('The modal website is not exported by this portal.', 404);
       const requestedForm = url.searchParams.get('entityformid') ?? url.searchParams.get('entityform');
       const definition = portal.forms.find((form) => normalizeId(form.id) === normalizeId(requestedForm));
-      if (!requestedForm || !definition) throw error('An exported entityformid is required.', 404);
+      const formIdentity = currentIdentity();
+      const modalConfig = config();
+      const shellMode = modalConfig.observed?.modalFormShell;
+      const zeroWebsite = websiteSegment === zeroWebsiteId;
+      const shellWebsiteAllowed =
+        shellMode === 'signed-in-zero-website'
+          ? zeroWebsite && url.searchParams.size > 0
+          : shellMode === 'signed-in-exported-or-zero-website' &&
+            (zeroWebsite || (exportedWebsiteId && websiteSegment.toLowerCase() === exportedWebsiteId));
+      const emptyModal =
+        requestedForm === null &&
+        shellWebsiteAllowed &&
+        ['GET', 'HEAD'].includes(req.method) &&
+        modalConfig.mode === 'local' &&
+        formIdentity.contactId &&
+        trace.getStore()?.auth?.session?.contactId &&
+        ![...url.searchParams.keys()].some((key) => key !== 'pageid' && /^(?:entityform(?:id)?|pageid)$/i.test(key));
+      if ((!requestedForm || !definition) && !emptyModal) throw error('An exported entityformid is required.', 404);
       const requestedPage = url.searchParams.get('pageid');
       const explicitPage = requestedPage
         ? portal.pages.find((page) => normalizeId(page.id) === normalizeId(requestedPage))
         : null;
       if (requestedPage && !explicitPage) throw error('The modal parent page is not exported.', 404);
-      const formIdentity = currentIdentity();
       if (explicitPage) {
         const access = pageAccess(portal, explicitPage, formIdentity, { now: store.clock.now() });
         if (!access.allowed)
           throw error(access.diagnostics?.[0]?.message || 'Page access denied.', access.status ?? 403, access.code);
+      }
+      if (emptyModal && req.method === 'GET') {
+        const queryValidation = observedPageQueryValidation(url, modalConfig.observed);
+        if (queryValidation) throw error(queryValidation.message, queryValidation.status, queryValidation.code);
       }
       const page = explicitPage ?? {
         id: null,
@@ -6897,6 +6918,7 @@ export async function createSimulator(options) {
         modalExplicit = [],
         modalFormHtml = '';
       const renderModalForm = async () => {
+        if (!definition) return '';
         modalComponents = [];
         modalExplicit = [];
         modalFormHtml = await renderComponent('entityform', definition.id, context, {
@@ -7048,23 +7070,24 @@ export async function createSimulator(options) {
       // The form's own markup names its basic form, FormXml controls, tabs, sections and columns
       // (lib/component-provenance.mjs); the modal form document around it is the platform's (platform-shell:modal-form),
       // its chrome, anti-forgery holder and the local compatibility adapters their own shell parts.
-      const modalFormFragment = provenanceDestination(req)
-        ? serverFormFragment(
-            modalForm,
-            {
-              html,
-              renderProvenance:
-                componentRenderResult(modalFormHtml, {
-                  components: modalComponents,
-                  explicit: modalExplicit,
-                  index: modalIndex,
-                  tag: 'entityform',
-                  args: { id: definition.id },
-                })?.renderProvenance ?? [],
-            },
-            modalContent,
-          )
-        : modalForm;
+      const modalFormFragment =
+        definition && provenanceDestination(req)
+          ? serverFormFragment(
+              modalForm,
+              {
+                html,
+                renderProvenance:
+                  componentRenderResult(modalFormHtml, {
+                    components: modalComponents,
+                    explicit: modalExplicit,
+                    index: modalIndex,
+                    tag: 'entityform',
+                    args: { id: definition.id },
+                  })?.renderProvenance ?? [],
+              },
+              modalContent,
+            )
+          : modalForm;
       const modalFragment = joinRenderFragments(
         `<!doctype html>${layout.html}<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta http-equiv="X-UA-Compatible" content="IE=edge"><title>${layout.title}</title>`,
         headStartFragment(modalPlatform, {
@@ -7141,6 +7164,7 @@ export async function createSimulator(options) {
         new URL('./lib/bootstrap-plugins-compat.js', import.meta.url),
       ],
       ['/__sim-static/vendor/jqueryui-dialog-compat.js', new URL('./lib/jqueryui-dialog-compat.js', import.meta.url)],
+      ['/__sim-static/jqueryui-dialog-compat.css', new URL('./lib/jqueryui-dialog-compat.css', import.meta.url)],
       ['/__sim-static/vendor/date-format-compat.js', new URL('./lib/date-format-compat.js', import.meta.url)],
       ['/__sim-static/vendor/footer-spacing-compat.js', new URL('./lib/footer-spacing-compat.js', import.meta.url)],
       [PAGES_CLIENT_API_SCRIPT, PAGES_CLIENT_API_FILE],
@@ -7161,7 +7185,7 @@ export async function createSimulator(options) {
       else if (fontName?.endsWith('.ttf')) fontMime = 'font/ttf';
       else if (fontName?.endsWith('.eot')) fontMime = 'application/vnd.ms-fontobject';
       res.writeHead(200, {
-        'content-type': fontRuntimeAsset ? fontMime : 'application/javascript; charset=utf-8',
+        'content-type': fontRuntimeAsset ? fontMime : `${mime(url.pathname)}; charset=utf-8`,
         'cache-control': 'no-cache',
         'x-sim-resource-provider': 'local-compatibility',
       });

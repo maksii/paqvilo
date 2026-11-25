@@ -15,6 +15,7 @@
     return;
   }
   const states = new WeakMap();
+  let overlayStyle;
   let sequence = 0;
   const defaults = {
     autoOpen: true,
@@ -29,11 +30,14 @@
     width: 300,
   };
   const fire = (state, name, event) => {
-    const $ = globalThis.jQuery;
     const callback = state.options[name];
-    if (typeof callback === 'function') callback.call(state.element, event ?? $.Event(`dialog${name}`), {});
     // A DOM event reaches both jQuery handlers and addEventListener listeners.
-    state.element.dispatchEvent(new CustomEvent(`dialog${name}`, { bubbles: true }));
+    const action = new CustomEvent(`dialog${name.toLowerCase()}`, { bubbles: true, cancelable: true });
+    state.element.dispatchEvent(action);
+    if (typeof callback !== 'function') return !action.defaultPrevented;
+    const callbackEvent = state.jquery.Event(action);
+    if (event) callbackEvent.originalEvent = event;
+    return callback.call(state.element, callbackEvent, {}) !== false && !callbackEvent.isDefaultPrevented();
   };
   const buttonList = (buttons) =>
     Array.isArray(buttons)
@@ -63,7 +67,7 @@
     );
     state.buttonpane.hidden = !buttons.length;
   }
-  function create(element, options) {
+  function create(element, options, jquery) {
     const id = element.id || `ui-id-${++sequence}`;
     const wrapper = document.createElement('div');
     wrapper.setAttribute('role', 'dialog');
@@ -96,6 +100,10 @@
     ((options.appendTo && document.querySelector(options.appendTo)) || document.body).append(wrapper);
     const state = {
       element,
+      jquery,
+      originalDisplay: element.style.display,
+      originalDisplayPriority: element.style.getPropertyPriority('display'),
+      originalHidden: element.getAttribute('hidden'),
       options,
       wrapper,
       title,
@@ -104,6 +112,7 @@
       buttonset,
       placeholder,
       overlay: null,
+      opener: null,
       open: false,
     };
     close.addEventListener('click', (event) => {
@@ -111,82 +120,113 @@
       hide(state, event);
     });
     wrapper.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape' && state.options.closeOnEscape) hide(state, event);
+      if (event.key === 'Escape' && state.options.closeOnEscape && !event.defaultPrevented) {
+        event.preventDefault();
+        hide(state, event);
+      }
     });
     render(state);
     return state;
   }
+  function moveToTop(wrapper, gap = 1) {
+    // Leave room for a new modal's overlay above earlier dialogs, even when reopening an older wrapper.
+    const top = Array.from(wrapper.parentElement?.children ?? []).reduce(
+      (zIndex, sibling) => {
+        if (sibling === wrapper || !sibling.classList.contains('ui-front') || !sibling.getClientRects().length)
+          return zIndex;
+        return Math.max(zIndex, Number(getComputedStyle(sibling).zIndex) || 0);
+      },
+      (Number(wrapper.style.zIndex) || 1060) - gap,
+    );
+    wrapper.style.zIndex = String(top + gap);
+    return top + gap;
+  }
   function show(state) {
     if (state.open) return;
+    state.opener = document.activeElement;
+    const zIndex = moveToTop(state.wrapper, state.options.modal ? 2 : 1);
     if (state.options.modal) {
+      if (!overlayStyle && globalThis.location.origin !== 'null') {
+        // The fallback layer precedes page layers and loads under a same-origin style policy.
+        overlayStyle = document.createElement('link');
+        overlayStyle.rel = 'stylesheet';
+        overlayStyle.href = `${globalThis.location.origin}/__sim-static/jqueryui-dialog-compat.css`;
+        overlayStyle.setAttribute('blocking', 'render');
+        document.head.prepend(overlayStyle);
+      }
       state.overlay ??= Object.assign(document.createElement('div'), { className: 'ui-widget-overlay ui-front' });
-      state.overlay.style.cssText = 'position:fixed;inset:0;z-index:1059;background:rgba(0,0,0,.3)';
+      state.overlay.setAttribute('data-paqvilo-dialog-overlay', '');
+      state.overlay.style.cssText = `position:fixed;inset:0;z-index:${zIndex - 1}`;
       state.wrapper.before(state.overlay);
     }
     state.element.hidden = false;
     state.wrapper.style.display = '';
+    state.jquery(state.element).show();
     state.open = true;
-    fire(state, 'open');
     state.wrapper.focus?.();
+    fire(state, 'open');
   }
   function hide(state, event) {
     if (!state.open) return;
-    const $ = globalThis.jQuery;
-    const before = $.Event('dialogbeforeClose');
-    if (
-      typeof state.options.beforeClose === 'function' &&
-      state.options.beforeClose.call(state.element, before, {}) === false
-    )
-      return;
+    const allowed = fire(state, 'beforeClose', event);
+    if (!allowed || !state.open) return;
     state.wrapper.style.display = 'none';
     state.overlay?.remove();
     state.open = false;
+    state.opener?.focus?.();
     fire(state, 'close', event);
   }
-  function initializeDialog(element, argument) {
+  function initializeDialog(element, argument, jquery) {
     let state = states.get(element);
     if (state) {
       // Re-initialising an existing dialog sets its options and opens it as jQuery UI's _init does.
       Object.assign(state.options, argument ?? {});
       render(state);
     } else {
-      state = create(element, { ...defaults, ...argument });
+      state = create(element, { ...defaults, ...argument }, jquery);
       states.set(element, state);
     }
     if (state.options.autoOpen !== false) show(state);
     else if (!state.open) state.wrapper.style.display = 'none';
   }
-  function runDialogCommand(command, args, element, state) {
+  function destroy(state) {
+    const { element, overlay, originalDisplay, originalDisplayPriority, originalHidden, placeholder, wrapper } = state;
+    state.open = false;
+    overlay?.remove();
+    element.classList.remove('ui-dialog-content', 'ui-widget-content');
+    element.style.setProperty('display', originalDisplay, originalDisplayPriority);
+    if (originalHidden === null) element.removeAttribute('hidden');
+    else element.setAttribute('hidden', originalHidden);
+    if (placeholder.parentNode) placeholder.replaceWith(element);
+    else element.remove();
+    wrapper.remove();
+    states.delete(element);
+  }
+  function runDialogCommand(command, args, state) {
     if (!state) return;
     if (command === 'open') show(state);
     else if (command === 'close') hide(state);
-    else if (command === 'moveToTop')
-      state.wrapper.style.zIndex = String(Number(state.wrapper.style.zIndex || 1060) + 1);
+    else if (command === 'moveToTop') moveToTop(state.wrapper);
     else if (command === 'option') {
       if (args.length === 2) state.options[args[0]] = args[1];
       else if (args[0] && typeof args[0] === 'object') Object.assign(state.options, args[0]);
       render(state);
-    } else if (command === 'destroy') {
-      hide(state);
-      element.classList.remove('ui-dialog-content', 'ui-widget-content');
-      state.placeholder.replaceWith(element);
-      state.wrapper.remove();
-      states.delete(element);
-    }
+    } else if (command === 'destroy') destroy(state);
   }
   const plugin = function (argument, ...args) {
+    const jquery = this.constructor;
     const command = typeof argument === 'string' ? argument : null;
     if (command === 'isOpen') return this.length ? Boolean(states.get(this[0])?.open) : false;
     if (command === 'instance') return this.length ? states.get(this[0]) : undefined;
     if (command === 'option' && args.length === 1 && typeof args[0] === 'string')
       return this.length ? states.get(this[0])?.options[args[0]] : undefined;
-    if (command === 'widget') return globalThis.jQuery(this.length ? (states.get(this[0])?.wrapper ?? []) : []);
+    if (command === 'widget') return jquery(this.length ? (states.get(this[0])?.wrapper ?? []) : []);
     return this.each(function () {
       if (!command) {
-        initializeDialog(this, argument);
+        initializeDialog(this, argument, jquery);
         return;
       }
-      runDialogCommand(command, args, this, states.get(this));
+      runDialogCommand(command, args, states.get(this));
     });
   };
   plugin.__ppSimCompat = true;

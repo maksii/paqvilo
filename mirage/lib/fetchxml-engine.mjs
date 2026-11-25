@@ -178,13 +178,23 @@ const fail = (message, status = 400, code = 'InvalidFetchXml', details) => {
 };
 const children = (node, name) => node.children.filter((child) => child.name === name);
 const bool = (value) => /^(?:true|1)$/i.test(String(value ?? '').trim());
+const unsignedInteger = (raw) => {
+  const text = String(raw).trim();
+  if (!/^\d+$/.test(text)) return null;
+  const value = Number(text);
+  return Number.isSafeInteger(value) ? value : null;
+};
+
+export function hasValidFetchTop(fetch) {
+  const value = unsignedInteger(fetch.attrs.top);
+  return value !== null && value >= 1 && value <= FETCH_LIMITS.top;
+}
+
 const integerAttribute = (fetch, name, { min = 1, max } = {}) => {
   const raw = fetch.attrs[name];
   if (raw == null) return null;
-  const text = String(raw).trim();
-  if (!/^\d+$/.test(text) || !Number.isSafeInteger(Number(text)))
-    fail(`The '${name}' attribute value '${raw}' is not a valid integer.`, 400, 'InvalidFetchXml');
-  const value = Number(text);
+  const value = unsignedInteger(raw);
+  if (value === null) fail(`The '${name}' attribute value '${raw}' is not a valid integer.`, 400, 'InvalidFetchXml');
   if (value < min) fail(`The '${name}' attribute must be at least ${min}.`, 400, 'InvalidFetchXml');
   if (max != null && value > max) fail(`The '${name}' attribute can't exceed ${max}.`, 400, 'InvalidFetchXml');
   return value;
@@ -493,6 +503,7 @@ export function planFetch(
     generatedAnyAllAliases = [],
     linkBudgetError = 'documented',
     dataverseIdentity = false,
+    zeroCountUsesDefault = false,
   } = {},
 ) {
   const limits = { ...FETCH_LIMITS, ...overrides };
@@ -590,7 +601,7 @@ export function planFetch(
   indexParents(root, root);
   const aggregate = bool(fetch.attrs.aggregate);
   const top = integerAttribute(fetch, 'top', { min: 1, max: FETCH_LIMITS.top });
-  const count = integerAttribute(fetch, 'count', { min: 1 });
+  const count = integerAttribute(fetch, 'count', { min: zeroCountUsesDefault ? 0 : 1 });
   const page = integerAttribute(fetch, 'page', { min: 1 });
   const returnTotal = bool(fetch.attrs.returntotalrecordcount);
   if (top != null && (count != null || page != null || returnTotal))
@@ -619,7 +630,7 @@ export function planFetch(
     diagnostics,
     distinct: bool(fetch.attrs.distinct),
     top,
-    pageSize: count != null ? Math.min(count, limits.pageSize) : limits.pageSize,
+    pageSize: count ? Math.min(count, limits.pageSize) : limits.pageSize,
     totalRecordCountLimit: limits.totalRecordCount,
     page: page ?? 1,
     pagingCookie: fetch.attrs['paging-cookie'] ?? null,

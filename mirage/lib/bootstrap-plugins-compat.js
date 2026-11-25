@@ -20,13 +20,12 @@
   // Per-element plugin state, as Bootstrap's $(element).data("bs.<plugin>") instances.
   const instances = new WeakMap();
   const instance = (element, name) => instances.get(element)?.[name];
-  const create = (element, name, value) => {
+  const create = (element, name, value, $ = globalThis.jQuery) => {
     let all = instances.get(element);
     if (!all) {
       all = {};
       instances.set(element, all);
     }
-    const $ = globalThis.jQuery;
     const Constructor = $.fn[name]?.Constructor;
     if (Constructor) Object.setPrototypeOf(value, Constructor.prototype);
     value.$element = $(element);
@@ -34,15 +33,14 @@
     all[name] = value;
     return value;
   };
-  const event = (element, name, properties) => {
-    const $ = globalThis.jQuery;
+  const event = (element, name, properties, $ = globalThis.jQuery) => {
     const value = $.Event(name, properties);
     $(element).trigger(value);
     return value;
   };
   // Options from data-* (Bootstrap 3) or data-bs-* (Bootstrap 5) attributes, converted as jQuery .data() does.
-  const dataOptions = (element, names) => {
-    const values = globalThis.jQuery(element).data();
+  const dataOptions = (element, names, $ = globalThis.jQuery) => {
+    const values = $(element).data();
     const result = {};
     for (const name of names) {
       const value = values[name] ?? values['bs' + name[0].toUpperCase() + name.slice(1)];
@@ -65,13 +63,24 @@
       const href = trigger.getAttribute('href');
       selector = href == null ? undefined : fragmentSelector(href);
     }
+    return selectTargets(selector);
+  };
+  function selectTargets(selector) {
     if (!selector || selector === '#') return [];
     try {
       return [...document.querySelectorAll(selector)];
     } catch {
       return [];
     }
-  };
+  }
+  function bootstrap5DismissTarget(trigger) {
+    let selector = trigger.getAttribute('data-bs-target');
+    if (!selector || selector === '#') {
+      const href = trigger.getAttribute('href');
+      selector = href?.includes('#') || href?.startsWith('.') ? fragmentSelector(href) : null;
+    }
+    return selectTargets(selector)[0] ?? trigger.closest('.modal');
+  }
   const dropdownMenu = (toggle) =>
     [...(toggle.parentElement?.children ?? [])].find((element) => element.classList.contains('dropdown-menu'));
   const setShown = (element, shown) => {
@@ -187,14 +196,12 @@
     else if (!command) bindHint(element, kind, state, options, show, hide);
   }
   const MODAL_DEFAULTS = { backdrop: true, keyboard: true, show: true };
+  const MODAL_DISMISS_V3 = '[data-dismiss="modal"]';
   const modal = {
     show(element, relatedTarget) {
-      const state =
-        instance(element, 'modal') ??
-        create(element, 'modal', {
-          options: { ...MODAL_DEFAULTS, ...dataOptions(element, ['backdrop', 'keyboard', 'show']) },
-        });
-      if (event(element, 'show.bs.modal', { relatedTarget }).isDefaultPrevented() || state.shown) return;
+      const state = instance(element, 'modal');
+      const $ = state.$element.constructor;
+      if (event(element, 'show.bs.modal', { relatedTarget }, $).isDefaultPrevented() || state.shown) return;
       state.shown = true;
       const bs5 = element.hasAttribute('data-bs-backdrop') || element.hasAttribute('data-bs-toggle'); // NOSONAR: actual attributes exclude inherited dataset values
       // Bootstrap 5 hides the page scrollbar and pads the body by its width (overflow: hidden; padding-right: 15px).
@@ -222,14 +229,23 @@
       state.keydown = (key) => {
         if (key.key === 'Escape' && state.options.keyboard) modal.hide(element);
       };
+      // Bootstrap 3 delegates dismiss on the shown modal, including through nested dialog markup.
+      state.dismiss = (click) => {
+        click.preventDefault();
+        if (typeof state.hide === 'function') state.hide();
+        else modal.hide(element);
+      };
+      state.$element.on('click.dismiss.bs.modal', MODAL_DISMISS_V3, state.dismiss);
       element.addEventListener('click', state.click);
       element.addEventListener('keydown', state.keydown);
       element.focus?.();
-      event(element, 'shown.bs.modal', { relatedTarget });
+      event(element, 'shown.bs.modal', { relatedTarget }, $);
     },
     hide(element) {
       const state = instance(element, 'modal');
-      if (event(element, 'hide.bs.modal').isDefaultPrevented() || !state?.shown) return;
+      if (!state) return;
+      const $ = state.$element.constructor;
+      if (event(element, 'hide.bs.modal', undefined, $).isDefaultPrevented() || !state.shown) return;
       state.shown = false;
       setShown(element, false);
       element.style.display = 'none';
@@ -238,6 +254,7 @@
       if (element.hasAttribute('data-bs-backdrop')) element.removeAttribute('role'); // NOSONAR: actual attributes exclude inherited dataset values
       element.removeEventListener('click', state.click);
       element.removeEventListener('keydown', state.keydown);
+      state.$element.off('click.dismiss.bs.modal', MODAL_DISMISS_V3, state.dismiss);
       state.backdrop?.remove();
       state.backdrop = null;
       if (!document.querySelector('.modal.in, .modal.show')) {
@@ -246,7 +263,7 @@
         document.body.style.removeProperty('padding-right');
         if (!document.body.getAttribute('style')) document.body.removeAttribute('style');
       }
-      event(element, 'hidden.bs.modal');
+      event(element, 'hidden.bs.modal', undefined, $);
     },
     toggle(element, relatedTarget) {
       if (instance(element, 'modal')?.shown) modal.hide(element);
@@ -417,14 +434,14 @@
   const plugins = {
     tooltip: (element, argument) => hint(element, 'tooltip', argument ?? {}),
     popover: (element, argument) => hint(element, 'popover', argument ?? {}),
-    modal(element, argument, relatedTarget) {
+    modal(element, argument, relatedTarget, $) {
       const command = typeof argument === 'string' ? argument : null;
       const options = {
         ...MODAL_DEFAULTS,
-        ...dataOptions(element, ['backdrop', 'keyboard', 'show']),
+        ...dataOptions(element, ['backdrop', 'keyboard', 'show'], $),
         ...(argument && typeof argument === 'object' ? argument : {}),
       };
-      if (!instance(element, 'modal')) create(element, 'modal', { options });
+      if (!instance(element, 'modal')) create(element, 'modal', { options }, $);
       if (command) modal[command]?.(element, relatedTarget);
       else if (options.show) modal.show(element, relatedTarget);
     },
@@ -497,13 +514,13 @@
       }[name];
       for (const method of methods)
         Constructor.prototype[method] = function (relatedTarget) {
-          run(this.$element[0], method, relatedTarget);
+          run(this.$element[0], method, relatedTarget, $);
         };
       const plugin = function (argument, relatedTarget) {
         return this.each(function () {
           if (typeof argument === 'string' && Constructor.prototype[argument]) {
             if (!instance(this, name)) {
-              run(this, { show: false, toggle: false });
+              run(this, { show: false, toggle: false }, undefined, $);
               if (!instance(this, name)) create(this, name, new Constructor(this));
             }
             // noConflict permits registering this same plugin under another name.
@@ -511,7 +528,7 @@
               Object.setPrototypeOf(instance(this, name), Constructor.prototype);
             instance(this, name)[argument](relatedTarget);
           } else {
-            run(this, argument, relatedTarget);
+            run(this, argument, relatedTarget, $);
             if (!instance(this, name)) create(this, name, new Constructor(this, argument));
           }
         });
@@ -564,26 +581,14 @@
     $(menuToggle).dropdown('toggle');
     return true;
   }
-  /** Hides every shown modal that holds `element`, innermost first (Bootstrap 3's delegated dismiss of each). */
-  function hideShownModalsAround(element, $) {
-    const shown = [];
-    for (let node = element.parentElement; node; node = node.parentElement)
-      if (instance(node, 'modal')?.shown) shown.push(node);
-    for (const node of shown) $(node).modal('hide');
-  }
   function handleDismissCompatibilityClick(click, source, $) {
-    const dismiss = source.closest('[data-dismiss="modal"],[data-bs-dismiss="modal"]');
+    const dismiss = source.closest(`[data-bs-dismiss="modal"]:not(${MODAL_DISMISS_V3})`);
     if (dismiss) {
       if (!local('modal')) return true;
       click.preventDefault();
-      // Bootstrap 3.4.1 binds the dismiss on each modal it shows (js/modal.js, click.dismiss.bs.modal delegated to
-      // [data-dismiss="modal"]): the click closes every shown modal that holds the button, whatever markup with the
-      // modal class sits between. Bootstrap 5 closes the nearest .modal (util/component-functions.js).
-      if (dismiss.matches('[data-dismiss="modal"]')) {
-        hideShownModalsAround(dismiss, $);
-        return true;
-      }
-      const element = dismiss.closest('.modal');
+      if (dismiss.matches('.disabled, :disabled, [disabled]:not([disabled="false"])')) return true;
+      // Bootstrap 5's document handler accepts an explicit target, with the nearest modal as its fallback.
+      const element = bootstrap5DismissTarget(dismiss);
       if (element) $(element).modal('hide');
       return true;
     }

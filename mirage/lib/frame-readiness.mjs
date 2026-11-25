@@ -67,7 +67,8 @@ export function createFrameReadiness({ diagnostic = () => {}, timeoutMs = 5000, 
       // asynchronous; queue behind them and allow one further macrotask. A
       // throwing ready handler does not prevent the global ready promise settling. Once the
       // frame has loaded, the marker leaves the document (the platform frame has no such image).
-      const markup = `<img hidden alt="" aria-hidden="true" data-paqvilo-frame-ready><script data-paqvilo-frame-ready>(function(){try{var image=document.querySelector('img[data-paqvilo-frame-ready]');if(image)image.src='${route}';}finally{document.addEventListener('DOMContentLoaded',function(){var jq=window.jQuery;function release(reason){window.__portalSimulation=window.__portalSimulation||{};window.__portalSimulation.frameLoadOrdering=reason;fetch('${route}?reason='+reason,{method:'POST',credentials:'same-origin'}).then(function(response){return response.arrayBuffer();}).catch(function(){});}if(jq&&jq.ready&&typeof jq.ready.then==='function'){jq.ready.then(function(){setTimeout(function(){release('jquery-ready');},0);});}else release('dom-ready');},{once:true});}window.addEventListener('load',function(){document.querySelectorAll('[data-paqvilo-frame-ready]').forEach(function(node){node.remove();});},{once:true});})();</script>`;
+      // If CSP permits the blocking image but refuses fetch (connect-src), release through another image request.
+      const markup = `<img hidden alt="" aria-hidden="true" data-paqvilo-frame-ready><script data-paqvilo-frame-ready>(function(){try{var image=document.querySelector('img[data-paqvilo-frame-ready]');if(image)image.src='${route}';}finally{document.addEventListener('DOMContentLoaded',function(){var jq=window.jQuery;function release(reason){window.__portalSimulation=window.__portalSimulation||{};window.__portalSimulation.frameLoadOrdering=reason;function releaseByImage(){new Image().src='${route}?release='+reason;}fetch('${route}?reason='+reason,{method:'POST',credentials:'same-origin'}).then(function(response){if(response.ok===false)return releaseByImage();return response.arrayBuffer();}).catch(releaseByImage);}if(jq&&jq.ready&&typeof jq.ready.then==='function'){jq.ready.then(function(){setTimeout(function(){release('jquery-ready');},0);});}else release('dom-ready');},{once:true});}window.addEventListener('load',function(){document.querySelectorAll('[data-paqvilo-frame-ready]').forEach(function(node){node.remove();});},{once:true});})();</script>`;
       return answered(html.slice(0, bodyEnd) + markup + html.slice(bodyEnd));
     },
     handle(req, res, url) {
@@ -79,14 +80,22 @@ export function createFrameReadiness({ diagnostic = () => {}, timeoutMs = 5000, 
         res.end();
         return true;
       }
-      if (req.method === 'POST') {
+      const imageRelease = req.method === 'GET' && url.searchParams.has('release');
+      if (req.method === 'POST' || imageRelease) {
         const origin = req.headers.origin;
-        if (origin && origin !== url.origin) {
+        if (
+          (origin && origin !== url.origin) ||
+          (imageRelease &&
+            (req.headers['sec-fetch-site'] !== 'same-origin' ||
+              req.headers['sec-fetch-dest'] !== 'image' ||
+              req.headers['sec-fetch-mode'] !== 'no-cors'))
+        ) {
           res.writeHead(403);
           res.end();
           return true;
         }
-        const reason = url.searchParams.get('reason') === 'jquery-ready' ? 'jquery-ready' : 'dom-ready';
+        const reasonParam = imageRelease ? 'release' : 'reason';
+        const reason = url.searchParams.get(reasonParam) === 'jquery-ready' ? 'jquery-ready' : 'dom-ready';
         finish(id, reason);
         res.writeHead(204, { 'cache-control': 'no-store' });
         res.end();

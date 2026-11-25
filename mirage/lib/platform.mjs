@@ -41,7 +41,7 @@ import {
 import { formErrorPanel, createAccessDeniedForm } from './form-error-presentation.mjs';
 import { deniedPageRoute } from './redirects.mjs';
 import { approximateFormSchema, approximateAdvancedFormSchema } from './form-schema-fallback.mjs';
-import { systemFormSchemaFor } from './solution-metadata.mjs';
+import { isNativeTextarea, systemFormSchemaFor } from './solution-metadata.mjs';
 import { hasPlatformBundles, bootstrapVariant } from './platform-manifest.mjs';
 import { portalLanguage } from './portal-languages.mjs';
 import { clientPortalObjectRuntime } from './portal-client-object.mjs';
@@ -282,13 +282,15 @@ export function schemaFromFormXml(xml, { entity, title, fieldTypes = {}, lcid = 
     if (!name) continue;
     if (!/^[a-z]\w*$/i.test(name)) throw new Error(`Invalid form field ${name}`);
     const config = typeof fieldTypes[name] === 'object' ? fieldTypes[name] : { type: fieldTypes[name] };
+    const cellAttrs = attributes(cell[1]);
     fields.push({
       name,
       id: attrs.id ?? name,
       label: label(cell[2]) ?? name,
       type: config.type ?? 'text',
       readOnly: attrs.disabled === 'true',
-      hidden: attributes(cell[1]).visible === 'false',
+      hidden: cellAttrs.visible === 'false',
+      ...(Number(cellAttrs.rowspan) === 1 && isNativeTextarea(config) ? { rowspan: 1 } : {}),
       ...config,
     });
   }
@@ -650,12 +652,6 @@ function componentError(message, status, code) {
   if (field.type === 'number') return 'integer';
   if (field.type === 'email' || String(field.format ?? '').toLowerCase() === 'email') return 'email';
   return 'text';
-}
-
-function isNativeTextarea(field, type) {
-  return (
-    /^(memo|ntext)$/.test(type) || field.type === 'textarea' || String(field.format ?? '').toLowerCase() === 'textarea'
-  );
 }
 
 /** Native numeric range messages use the column's exported decimal precision. */
@@ -3101,7 +3097,7 @@ function prepopulateValue(row, identity, now) {
       return '';
     }
   };
-  /* NOSONAR: single-pass routine, splitting it would change shared state */ const nativeInput = async (field) => {
+  /* NOSONAR: shared state requires one pass. */ const nativeInput = async (field, cell) => {
     const current = value(field);
     const scalar = scalarValue(current);
     const disabled = field.readOnly;
@@ -3330,7 +3326,10 @@ function prepopulateValue(row, identity, now) {
           readOnly,
           origin: requestOrigin(context),
         });
-      case 'textarea':
+      case 'textarea': {
+        const text = String(scalar ?? '');
+        // HTML parsing consumes the first newline immediately after a textarea's opening tag.
+        const valueHtml = (/^[\r\n]/.test(text) ? '\n' : '') + escape(text);
         if (field.composite === 'address') {
           // The platform's address composite: the trigger box (its value the composed address) and
           // a hidden container with one box per address part, labelled by the platform's part
@@ -3353,12 +3352,23 @@ function prepopulateValue(row, identity, now) {
                 `<input name="${nameAttr(field, '_' + part)}" type="text" id="${attr(field.id)}_${part}" class=" content  text form-control"${valueAttr(scalarValue(record?.[prefix + '_' + part]))} aria-label="${label}" onchange="setIsDirty(this.id);"${readonlyAttr}>`,
             )
             .join('');
-          return `<textarea name="${nameAttr(field)}" rows="4" cols="20" id="${attr(field.id)}" class="trigger text form-control${css} addressCompositeControl${disabled ? ' readonly ' : ' '}" data-composite-control="" data-content-id="${contentId}" data-editable="${disabled ? 'False' : 'True'}" data-content-template="{${prefix}_composite_line1} {${prefix}_composite_line2} {${prefix}_composite_line3}{BREAK}{${prefix}_composite_city} {${prefix}_composite_stateorprovince} {${prefix}_composite_postalcode}{BREAK}{${prefix}_composite_country}" readonly="readonly">${escape(String(scalar ?? ''))}</textarea><div id="${contentId}" class="content d-none addressCompositeControlContainer">${boxes}<input id="popoverUpdateButton_${randomUUID()}" class="btn btn-primary w-100" role="button" aria-label="Done" readonly="true" value="Done"></div>`;
+          return `<textarea name="${nameAttr(field)}" rows="4" cols="20" id="${attr(field.id)}" class="trigger text form-control${css} addressCompositeControl${disabled ? ' readonly ' : ' '}" data-composite-control="" data-content-id="${contentId}" data-editable="${disabled ? 'False' : 'True'}" data-content-template="{${prefix}_composite_line1} {${prefix}_composite_line2} {${prefix}_composite_line3}{BREAK}{${prefix}_composite_city} {${prefix}_composite_stateorprovince} {${prefix}_composite_postalcode}{BREAK}{${prefix}_composite_country}" readonly="readonly">${valueHtml}</textarea><div id="${contentId}" class="content d-none addressCompositeControlContainer">${boxes}<input id="popoverUpdateButton_${randomUUID()}" class="btn btn-primary w-100" role="button" aria-label="Done" readonly="true" value="Done"></div>`;
         }
         // MemoControlTemplate: rows = rowspan * 3 - 2; a maximum length adds the platform's
         // LimitInput/LimitPaste handlers (crmentityformview.js).
-        // A one-row cell keeps the two-row (4 line) memo box.
-        return `<textarea name="${nameAttr(field)}" rows="${Math.max(Number(field.rowspan) || 2, 2) * 3 - 2}" cols="20"${field.maxLength ? ' maxlength="' + Number(field.maxLength) + '"' : ''} id="${attr(field.id)}" class="textarea form-control${css}${fieldLevel ? ' readonly' : ''}" onchange="setIsDirty(this.id);"${field.required && (bs.v5 || !disabled) ? ' aria-required="true" title="' + attr(field.requiredMessage || field.label + ' is a required field.') + '"' : ''} aria-label="${attr(field.label)}"${disabled ? ' readonly="readonly"' : ''}${field.maxLength ? ' onkeydown="javascript:return LimitInput(this, event);" oninput="javascript:return LimitInput(this, event);" onpaste="javascript:return LimitPaste(this, event);"' : ''}>${escape(scalar ?? '')}</textarea>`;
+        // Bootstrap 3 Basic Forms honor an explicitly authored one-row cell.
+        const layoutSpan = cell.rowspan == null ? field : cell;
+        const rowspan = Number(field.rowspan) || 2;
+        const rows =
+          !bs.v5 &&
+          kind === 'entityform' &&
+          !options.referenceForm &&
+          Number(layoutSpan.rowspan) === 1 &&
+          !layoutSpan.rowspanDefaulted
+            ? 1
+            : Math.max(rowspan, 2) * 3 - 2;
+        return `<textarea name="${nameAttr(field)}" rows="${rows}" cols="20"${field.maxLength ? ' maxlength="' + Number(field.maxLength) + '"' : ''} id="${attr(field.id)}" class="textarea form-control${css}${fieldLevel ? ' readonly' : ''}" onchange="setIsDirty(this.id);"${field.required && (bs.v5 || !disabled) ? ' aria-required="true" title="' + attr(field.requiredMessage || field.label + ' is a required field.') + '"' : ''} aria-label="${attr(field.label)}"${disabled ? ' readonly="readonly"' : ''}${field.maxLength ? ' onkeydown="javascript:return LimitInput(this, event);" oninput="javascript:return LimitInput(this, event);" onpaste="javascript:return LimitPaste(this, event);"' : ''}>${valueHtml}</textarea>`;
+      }
       case 'integer':
       case 'decimal':
       case 'double':
@@ -3453,9 +3463,9 @@ function prepopulateValue(row, identity, now) {
   };
 
   const renderedFields = new Set();
-  const input = async (field) => {
+  const input = async (field, cell) => {
     if (byName.has(field.name)) renderedFields.add(field.name);
-    const original = await nativeInput(field);
+    const original = await nativeInput(field, cell);
     // The portal's attribute metadata explicitly enables the desktop PCF from
     // FormXml. Model-driven defaults alone do not activate a portal component.
     if (field.controlStyle !== 756150001 || field.richText || field.hidden) return original;
@@ -3848,7 +3858,7 @@ function prepopulateValue(row, identity, now) {
     // read-only lookups and option sets focusable (lib/platform-app-compat.js).
     const fieldLevelReadOnly = resolved.fieldReadOnly ?? resolved.readOnly;
     // Bootstrap 5 marks a required column required even when it is read-only.
-    return `${descriptionHtml(100000002)}<div class="${bs.info}${resolved.required && (bs.v5 || !resolved.readOnly) ? ' required' : ''}">${labelHtml}${fieldValidatorsMarkup(fieldLevelReadOnly, resolved, fieldValidatorsList, readOnly)}</div>${descriptionHtml(100000000)}<div class="control" data-logical-name="${attr(resolved.name)}">${await input(resolved)}</div>${descriptionHtml(100000001)}`;
+    return `${descriptionHtml(100000002)}<div class="${bs.info}${resolved.required && (bs.v5 || !resolved.readOnly) ? ' required' : ''}">${labelHtml}${fieldValidatorsMarkup(fieldLevelReadOnly, resolved, fieldValidatorsList, readOnly)}</div>${descriptionHtml(100000000)}<div class="control" data-logical-name="${attr(resolved.name)}">${await input(resolved, cell)}</div>${descriptionHtml(100000001)}`;
   };
   const cellClass = (cell) => {
     if (cell.type === 'quickform') return 'crmquickform-cell';

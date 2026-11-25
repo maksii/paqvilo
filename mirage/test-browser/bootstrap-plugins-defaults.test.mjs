@@ -165,6 +165,86 @@ test('a dismiss closes the shown modal around it through nested modal-classed ma
   assert.deepEqual(errors, []);
 });
 
+// @test-kind observation: Bootstrap 3.4.1 js/modal.js delegates dismiss on a shown modal and removes the handler on hide; outer and unrelated clicks are outside that handler.
+test('Bootstrap 3 dismiss works inside an authored click boundary and preserves unrelated link navigation', async (t) => {
+  const { page, origin } = await open(t);
+  await page.goto(`${origin}/nested`);
+  await page.evaluate(() => {
+    const outer = document.querySelector('#outer');
+    const wrapper = document.createElement('div');
+    outer.before(wrapper);
+    wrapper.append(outer);
+    wrapper.addEventListener('click', (event) => event.stopPropagation());
+    document.body.insertAdjacentHTML(
+      'beforeend',
+      '<a id="outside" href="#elsewhere" data-dismiss="modal">Follow link</a>',
+    );
+    window.jQuery(outer).modal('show');
+  });
+  const modal = page.locator('#outer');
+  await page.locator('#outside').click();
+  assert.equal(new URL(page.url()).hash, '#elsewhere');
+  assert.equal(await modal.isVisible(), true);
+  await page.getByRole('button', { name: 'Close nested' }).click();
+  assert.equal(await modal.isVisible(), false);
+  await page.evaluate(() => window.jQuery('#outer').modal('show'));
+  await page.evaluate(() => window.jQuery('#outer button').trigger('click'));
+  assert.equal(await modal.isVisible(), false);
+  assert.deepEqual(await page.evaluate(() => window.hidden), ['outer', 'outer']);
+});
+
+// @test-kind observation: Bootstrap 5 util/component-functions.js ignores disabled dismiss controls and uses the explicit selector before its nearest-modal fallback.
+test('Bootstrap 5 dismiss resolves an explicit target outside its modal', async (t) => {
+  const { page, origin } = await open(t);
+  await page.goto(`${origin}/modal`);
+  await page.locator('#bs5Open').click();
+  const modal = page.locator('#bs5');
+  assert.equal(await modal.isVisible(), true);
+  await page.evaluate(() => {
+    document.body.insertAdjacentHTML(
+      'beforeend',
+      '<a id="externalDismiss" class="disabled" href="#bs5" data-dismiss="" data-target="#plain" data-bs-dismiss="modal" data-bs-target="#bs5">Dismiss</a>',
+    );
+  });
+  await page.locator('#externalDismiss').click();
+  assert.equal(await modal.isVisible(), true);
+  await page.locator('#externalDismiss').evaluate((link) => link.classList.remove('disabled'));
+  await page.locator('#externalDismiss').click();
+  assert.equal(await modal.isVisible(), false);
+  assert.equal(await page.locator('.modal-backdrop').count(), 0);
+  await page.locator('#bs5Open').click();
+  await modal.evaluate((element) => {
+    element.insertAdjacentHTML('beforeend', '<a id="internalDismiss" href="body" data-bs-dismiss="modal">Close</a>');
+  });
+  await page.locator('#internalDismiss').click();
+  assert.equal(await modal.isVisible(), false);
+});
+
+test('a Bootstrap 3 modal opened through a noConflict alias keeps its dismiss handler', async (t) => {
+  const { page, errors, origin } = await open(t);
+  await page.goto(`${origin}/nested`);
+  await page.evaluate(() => {
+    const $ = window.jQuery.noConflict(true);
+    $.fn.appModal = $.fn.modal.noConflict();
+    $('#outer').appModal();
+  });
+  await page.getByRole('button', { name: 'Close nested' }).click();
+  assert.equal(await page.locator('#outer').isVisible(), false);
+  assert.deepEqual(await page.evaluate(() => window.hidden), ['outer']);
+  assert.deepEqual(errors, []);
+});
+
+test('a Bootstrap 3 modal signals dismissal to the jQuery copy that opened it', async (t) => {
+  const { page, errors, origin } = await open(t);
+  await page.goto(`${origin}/nested`);
+  await page.evaluate(() => window.jQuery('#outer').modal('show').length);
+  await page.addScriptTag({ url: `${origin}/jquery.js` });
+  await page.getByRole('button', { name: 'Close nested' }).click();
+  assert.equal(await page.locator('#outer').isVisible(), false);
+  assert.deepEqual(await page.evaluate(() => window.hidden), ['outer']);
+  assert.deepEqual(errors, []);
+});
+
 test('local plugins expose patchable Bootstrap 3 constructors, instances, noConflict and button state', async (t) => {
   const { page, errors, origin } = await open(t);
   await page.goto(`${origin}/modal`);

@@ -226,9 +226,17 @@ function quickFormCell(cell, control, quickForms, context) {
   };
 }
 
+/** Identifies a bound column the portal can render as a standard textarea. */
+export function isNativeTextarea(field, type = String(field.dataverseType ?? '').toLowerCase()) {
+  return (
+    /^(memo|ntext)$/.test(type) || field.type === 'textarea' || String(field.format ?? '').toLowerCase() === 'textarea'
+  );
+}
+
 function fieldCell(cell, control, parameters, context, fields) {
   const { metadata, lcid, componentBindings, richTextControls, known, referenceFields } = context;
   const name = norm(control.attrs.datafieldname);
+  const rowspan = Number(cell.attrs.rowspan);
   const lookupViewId = norm(text(parameters, 'DefaultViewId'));
   const lookupView = metadata.views.find((view) => view.id === lookupViewId);
   const controlDefinition = {
@@ -262,8 +270,10 @@ function fieldCell(cell, control, parameters, context, fields) {
         }
       : {}),
     colspan: Number(cell.attrs.colspan) || 1,
-    rowspan: Number(cell.attrs.rowspan) || 1,
+    rowspan: rowspan || 1,
   };
+  // A default one-row table cell can still have a default-height textarea.
+  if (!rowspan && isNativeTextarea(controlDefinition)) controlDefinition.rowspanDefaulted = true;
   fields.push(controlDefinition);
   return controlDefinition;
 }

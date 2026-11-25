@@ -1058,6 +1058,7 @@ class LazyFetchXmlQueryDrop extends LiquidDrop {
         (await fetchXml.call(this.host, xml, user, request, {
           right,
           fetchCache: this.context.state.fetchCache,
+          liquidTag: true,
         })) ?? {};
     } catch (error) {
       fetchDiagnostics(this.context, error);
@@ -1106,7 +1107,10 @@ class FetchXmlTag extends Block {
       : undefined;
     if (host.observed?.liquidFetchExecution === 'lazy-query-drop') {
       if (!host.previewFetchXml) throw new LiquidError('Lazy FetchXML requires a source permission preview provider.');
-      const preview = await host.previewFetchXml(xml, host.user(context), host.request(context), { right });
+      const preview = await host.previewFetchXml(xml, host.user(context), host.request(context), {
+        right,
+        liquidTag: true,
+      });
       if (typeof preview?.xml !== 'string') throw new LiquidError('Lazy FetchXML preview has no compiled query.');
       context.assignGlobal(this.variable, new LazyFetchXmlQueryDrop({ xml, preview, host, context, right }));
       return;
@@ -1122,6 +1126,7 @@ class FetchXmlTag extends Block {
         (await fetchXml.call(host, xml, user, request, {
           right: queryRight,
           fetchCache: context.state.fetchCache,
+          liquidTag: true,
         })) ?? {};
     } catch (error) {
       fetchDiagnostics(context, error);

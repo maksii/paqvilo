@@ -7066,11 +7066,19 @@ export class DataStore {
     else if (right === 'appendto') operation = 'appendTo';
     return { operation, unscopedCreate: operation === 'create' };
   }
+  preparePortalFetchXml(xml, identity, options) {
+    const webapi = options.profile === 'webapi';
+    const linkTypes = webapi ? this.observed?.webApiFetchXmlLinkTypes : this.observed?.liquidFetchXmlLinkTypes;
+    return preparePortalFetchXml(xml, {
+      linkTypes: identity.admin ? undefined : linkTypes,
+      profile: webapi ? 'webapi' : 'liquid',
+      dropValidTop: !webapi && options.liquidTag === true && this.observed?.liquidFetchTop === 'drop-valid',
+    });
+  }
   previewPermissionFetchXml(xml, identity = {}, options = {}) {
     const authoredXml = xml,
       native = !identity.admin && this.observed?.tablePermissionQueryPipeline === 'native-classic';
-    if (!identity.admin)
-      xml = preparePortalFetchXml(xml, { linkTypes: this.observed?.liquidFetchXmlLinkTypes, profile: 'liquid' });
+    xml = this.preparePortalFetchXml(xml, identity, options);
     const preview = compilePermissionFetchXml(xml, {
       permissions: this.state.permissions,
       identity,
@@ -7119,14 +7127,7 @@ export class DataStore {
       return result;
     }
     const authoredXml = xml;
-    if (options.portalRequest === true && !identity.admin)
-      xml = preparePortalFetchXml(xml, {
-        linkTypes:
-          options.profile === 'webapi'
-            ? this.observed?.webApiFetchXmlLinkTypes
-            : this.observed?.liquidFetchXmlLinkTypes,
-        profile: options.profile === 'webapi' ? 'webapi' : 'liquid',
-      });
+    if (options.portalRequest === true) xml = this.preparePortalFetchXml(xml, identity, options);
     const authoredFetch = parseFetchXml(xml);
     const entity = authoredFetch.children.find((node) => node.name === 'entity')?.attrs.name;
     // Observers may mutate data inside a read transaction before its revision advances.
@@ -7391,6 +7392,7 @@ export class DataStore {
     else if (options.profile === 'webapi') profile = 'webapi';
     const planOptions = {
       profile,
+      zeroCountUsesDefault: options.portalRequest === true && options.liquidTag === true && profile !== 'webapi',
       limits: options.noBackendAdmission
         ? {
             ...tableLimits,

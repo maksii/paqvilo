@@ -1,12 +1,18 @@
 import { DataError } from './data-error.mjs';
-import { parseXmlDocument } from './fetchxml-engine.mjs';
+import { hasValidFetchTop, parseXmlDocument } from './fetchxml-engine.mjs';
 import { serializePermissionFetchXml } from './permission-query.mjs';
 
 /** Site-qualified portal authoring conversion, separate from Dataverse execution. */
-export function preparePortalFetchXml(xml, { linkTypes, profile = 'webapi' } = {}) {
-  if (linkTypes !== 'portal-classic') return xml;
+export function preparePortalFetchXml(xml, { linkTypes, profile = 'webapi', dropValidTop = false } = {}) {
+  const rewriteLinks = linkTypes === 'portal-classic';
+  if (!rewriteLinks && !dropValidTop) return xml;
   const tree = parseXmlDocument(xml, { root: 'fetch' });
   let changed = false;
+  // The observed Liquid authoring conversion discards an otherwise valid top before paging is compiled.
+  if (dropValidTop && hasValidFetchTop(tree)) {
+    delete tree.attrs.top;
+    changed = true;
+  }
   const visit = (node, parent) => {
     if (node.name === 'link-entity') {
       const type = node.attrs['link-type'];
@@ -27,6 +33,6 @@ export function preparePortalFetchXml(xml, { linkTypes, profile = 'webapi' } = {
     }
     for (const child of node.children) visit(child, node);
   };
-  visit(tree);
+  if (rewriteLinks) visit(tree);
   return changed ? serializePermissionFetchXml(tree) : xml;
 }

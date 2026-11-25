@@ -111,6 +111,7 @@ const OBSERVED_CHOICES = {
   odataPermissionQueryPipeline: ['modeled', 'native-classic'],
   odataSameTableParentAnchor: ['shared-root'],
   liquidFetchExecution: ['eager', 'lazy-query-drop'],
+  liquidFetchTop: ['drop-valid'],
   liquidFetchRights: ['read-only', 'native-classic'],
   liquidFetchErrorMessage: ['diagnostic', 'target-invocation'],
   // Some deployments return 302 for an explicitly configured 301 redirect record.
@@ -124,6 +125,7 @@ const OBSERVED_CHOICES = {
   // /_odata/<feed> answers the Page Not Found page) or "served" (a site observed still serving them).
   listODataFeeds: ['removed', 'served'],
   modalLoadOrdering: ['ready', 'immediate'],
+  modalFormShell: ['signed-in-zero-website', 'signed-in-exported-or-zero-website'],
   subgridLabelMarkup: ['encoded', 'sanitized'],
   webApiErrorStacks: ['diagnostic', 'response-template'],
   dataverseErrorStacks: ['diagnostic', 'response-template'],
