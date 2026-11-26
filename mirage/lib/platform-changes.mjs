@@ -28,7 +28,15 @@
  *   calendar or dataset code component lists, modernListFallback): the local runtime renders the classic list for it.
  * - MODERN_LIST_FEATURES_UNSERVED (warning, requirement portal:modern-list/<list>): a served modern list whose
  *   settings configure other action types (modernListUnservedActions); those actions are absent locally.
+ * - CMS_CONTENT_EDITOR_REMOVED (info, contract): pages and web templates whose authored Liquid uses the front-side
+ *   content editor's output: an {% editable %} tag or an `.editable` member check (a web link set's, say). Learn
+ *   (important changes and deprecations, "Portal content editor"): deprecated from June 2022, "This feature will be
+ *   removed by June 2026". Each page or template is listed once. The local runtime renders these as before (the editable
+ *   wrappers and the authorized editor's branches); what the hosted runtime emits for them after the removal is not
+ *   captured, so the rendered output is unchanged. Built-in templates (page_copy, snippet, ...) are not counted.
  */
+import { gridItemActions } from './grid-item-actions.mjs';
+
 const field = (record, name, fallback = null) =>
   record?.[`adx_${name}`] ?? record?.[`mspp_${name}`] ?? record?.[name] ?? fallback;
 const on = (value) => value === true || value === 1 || /^(?:true|1)$/i.test(String(value ?? ''));
@@ -64,7 +72,7 @@ export function modernListUnservedActions(list) {
     }
   return [
     ...new Set(
-      [...(settings?.ViewActions ?? []), ...(settings?.ItemActions ?? [])]
+      [...(settings?.ViewActions ?? []), ...gridItemActions(settings)]
         .map((action) => action?.Type)
         .filter((type) => type && !MODERN_LIST_ACTIONS.has(type)),
     ),
@@ -79,6 +87,71 @@ export const ENHANCED_AUTHORIZATION_STATES = Object.freeze({
 const ENHANCED_AUTHORIZATION_FIDELITY =
   'the privilege depth each table permission scope maps to and the model states 1 and 2 serve are not documented; the records a grant reaches are those its scope selects (portal-authorization.mjs).';
 const MODERN_LIST = /\{%-?\s*include\s+['"]entity_list['"][^%]*?\bisModern\s*:\s*['"]?true\b[^%]*-?%\}/gi;
+// The tag name of a Liquid markup and the editor's member check within it.
+const TAG_NAME = /^\{%-?\s*(\w+)/;
+const EDITABLE_MEMBER = /[\w\])]\.editable\b/gi;
+
+/** The `{{ ... }}` outputs and `{% ... %}` tags of a source, in order (an unclosed one ends the scan). */
+function* liquidMarkups(text) {
+  let index = text.indexOf('{');
+  while (index >= 0 && index < text.length - 1) {
+    const close = { '{': '}}', '%': '%}' }[text[index + 1]];
+    const end = close ? text.indexOf(close, index + 2) : index;
+    if (end < 0) return;
+    if (close) yield [text.slice(index, end + 2)];
+    index = text.indexOf('{', close ? end + 2 : index + 1);
+  }
+}
+
+/** The content editor uses of one Liquid source: { tags, checks } counts. Comment and raw blocks are never parsed. */
+function contentEditorUses(text) {
+  const uses = { tags: 0, checks: 0 };
+  let comments = 0;
+  let raw = false;
+  for (const [markup] of liquidMarkups(String(text ?? ''))) {
+    const tag = TAG_NAME.exec(markup)?.[1]?.toLowerCase();
+    if (raw) raw = tag !== 'endraw';
+    else if (tag === 'comment') comments++;
+    else if (tag === 'endcomment') comments = Math.max(0, comments - 1);
+    else if (!comments) {
+      raw = tag === 'raw';
+      if (tag === 'editable') uses.tags++;
+      uses.checks += markup.match(EDITABLE_MEMBER)?.length ?? 0;
+    }
+  }
+  return uses;
+}
+
+/** CMS_CONTENT_EDITOR_REMOVED for the pages (with their translations) and web templates that use the editor, or null. */
+function contentEditorDiagnostic(pages, templates) {
+  const owners = new Map();
+  const add = (owner, text) => {
+    const uses = contentEditorUses(text);
+    if (!uses.tags && !uses.checks) return;
+    const total = owners.get(owner) ?? { tags: 0, checks: 0 };
+    owners.set(owner, { tags: total.tags + uses.tags, checks: total.checks + uses.checks });
+  };
+  for (const page of pages) {
+    const owner = `page ${page.url ?? page.name}`;
+    add(owner, page.html);
+    for (const translation of Object.values(page.translations ?? {})) add(owner, translation?.html);
+  }
+  for (const template of new Set(Object.values(templates ?? {})))
+    if (template && typeof template === 'object') add(`web template ${template.name}`, template.source);
+  if (!owners.size) return null;
+  const items = [...owners].map(([owner, { tags, checks }]) => {
+    const uses = [tags && `${tags} editable tag(s)`, checks && `${checks} .editable check(s)`].filter(Boolean);
+    return `${owner}: ${uses.join(', ')}`;
+  });
+  return {
+    code: 'CMS_CONTENT_EDITOR_REMOVED',
+    severity: 'info',
+    level: 'contract',
+    count: owners.size,
+    items: listed(items),
+    message: `${owners.size} page(s) and web template(s) use the front-side content editor's output ({% editable %} tags or .editable checks). The portal content editor is deprecated, with its removal documented for June 2026 (Learn, important changes and deprecations); edit content in the design studio instead. The local runtime renders these as before; what the hosted runtime emits for them after the removal is not captured.`,
+  };
+}
 
 /** Diagnostics for the platform changes a portal export shows (see the header comment). */
 export function platformChangeDiagnostics({
@@ -176,6 +249,8 @@ export function platformChangeDiagnostics({
       items: modernListUnservedActions(list),
       message: `Modern list '${name}' (${owner}) configures action(s) the local modern list does not serve: ${modernListUnservedActions(list).join(', ')}. They are absent from the local list.`,
     });
+  const editor = contentEditorDiagnostic(pages, templates);
+  if (editor) diagnostics.push(editor);
   if (fallback.length)
     diagnostics.push({
       code: 'MODERN_LIST_RENDERED_CLASSIC',

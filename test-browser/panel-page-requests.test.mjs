@@ -118,6 +118,8 @@ const report = {
     markupOmittedSourceCount: 1,
     markupOmittedSources: ['web-templates/huge.html'],
   },
+  // Two frames of the page were cross-origin or sandboxed (lense/source-inspection.mjs inspectRenderedPage).
+  inputLimits: { inaccessibleFrames: 2 },
 };
 
 async function openPanel(t, { tab, extra = {} }) {
@@ -309,7 +311,7 @@ test('Inspect says how much of the page is identified, what it did not read and 
   await limits.waitFor();
   assert.match(
     await limits.innerText(),
-    /^Not everything was read\. Only part of the page was read: it has more elements or controls than Inspect reads\. 1 source file too large to search was skipped: huge\.html\.$/,
+    /^Not everything was read\. Only part of the page was read: it has more elements or controls than Inspect reads\. 2 frames could not be read: the browser keeps cross-origin and sandboxed frames closed to the page \(open a frame in its own tab to inspect it\)\. 1 source file too large to search was skipped: huge\.html\.$/,
   );
   // Identification runs only when asked.
   const card = panel('[data-identification]');

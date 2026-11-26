@@ -122,6 +122,10 @@ test('PCF debugger updates typed instances, native timestamp wires and contains 
     ],
   );
   assert.equal(new Set(mounted.map((item) => item.id)).size, 4);
+  // The field host calls getOutputs about 100 ms after the last notify (summary-F section 2): wait for it.
+  await page.waitForFunction(() =>
+    window.__paqviloPcf.inspect().every((item) => item.lifecycle.some((event) => event.stage === 'getOutputs')),
+  );
   const before = await page.evaluate(() => window.__paqviloPcf.inspect());
   assert.equal(before.length, 4);
   assert.ok(

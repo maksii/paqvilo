@@ -69,6 +69,9 @@ export function customTablePermissionFilter(source, table) {
   const entities = fetch.children.filter((element) => element.name === 'entity');
   if (entities.length !== 1 || String(entities[0].attrs.name ?? '').toLowerCase() !== String(table).toLowerCase())
     throw invalid('Custom Access FetchXML must name the permission table as its single root.');
+  // A linked-table predicate cannot be dropped without broadening the grant to every root-filter match.
+  if (entities[0].children.some((element) => element.name === 'link-entity'))
+    throw invalid('Custom Access FetchXML with link-entity joins is unsupported.');
   const filters = entities[0].children.filter((element) => element.name === 'filter').map(normalizeFilter);
   if (!filters.length) throw invalid('Custom Access FetchXML must contain a root filter.');
   return { name: 'filter', attrs: { type: 'and' }, children: filters, text: '' };

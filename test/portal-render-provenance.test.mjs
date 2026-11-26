@@ -405,7 +405,14 @@ test('the content of a declared shadow root is live markup: bound without a temp
     index: buildPortalSourceIndex({ portal: fixture({ Main: closed }) }),
   });
   const inside = sealed.html.slice(sealed.html.indexOf('<template'), sealed.html.indexOf('</template>'));
-  assert.match(sealed.html, /^<div id="host" data-paqvilo-source="[^"]+">/);
+  // The host element opens the output and carries exactly its id and its mark, in whichever order they are written.
+  assert.match(sealed.html, /^<div[\s>]/);
+  const host = parse(sealed.html).childNodes[0].childNodes[1].childNodes[0];
+  const hostAttributes = Object.fromEntries(host.attrs.map(({ name, value }) => [name, value]));
+  assert.equal(host.tagName, 'div');
+  assert.deepEqual(Object.keys(hostAttributes).sort(), ['data-paqvilo-source', 'id']);
+  assert.equal(hostAttributes.id, 'host');
+  assert.match(hostAttributes['data-paqvilo-source'], /^[^"]+$/);
   assert.doesNotMatch(inside.slice(inside.indexOf('>') + 1), /data-paqvilo-/);
 });
 

@@ -1,5 +1,6 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { siteSetting } from './redirects.mjs';
+import { corsPageDiagnostics } from './page-cors.mjs';
 
 const lower = (value) =>
   String(value ?? '')
@@ -8,29 +9,122 @@ const lower = (value) =>
 
 /**
  * The site's own Content-Security-Policy (HTTP/Content-Security-Policy), unless it is
- * empty, HTTP/Content-Security-Policy/Enabled or /InjectHeader is "false", or it uses
- * a 'nonce' source: per-request nonce injection into rendered scripts is not
- * simulated, so such a policy would block every inline script locally.
+ * empty or HTTP/Content-Security-Policy/Enabled or /InjectHeader is "false". A policy
+ * whose only nonce source is Learn's placeholder 'nonce' ("Manage your site's Content
+ * Security Policy": the platform generates a unique nonce for each page request) is a
+ * template, reason "nonce": siteHeaders substitutes the response's nonce. Any other
+ * nonce source (a fixed 'nonce-<value>', a malformed one) has no documented meaning
+ * and keeps being omitted (reason "nonce-unsupported", PORTAL_HTTP_CSP_NONCE_UNSUPPORTED).
  */
 export function sitePolicy(portal) {
-  const value = String(siteSetting(portal, 'HTTP/Content-Security-Policy') ?? '').trim();
+  const configured = siteSetting(portal, 'HTTP/Content-Security-Policy');
+  // The platform default applies only while the site has no such setting: Learn says to clear the value (not delete the
+  // setting) to disable CSP, so an empty exported value stays "unset".
+  const platformDefault = configured === undefined && portal.observed?.defaultContentSecurityPolicy === 'platform';
+  const value = String((platformDefault ? PLATFORM_DEFAULT_POLICY : configured) ?? '').trim();
   if (!value) return { policy: null, reason: 'unset' };
   if (lower(siteSetting(portal, 'HTTP/Content-Security-Policy/Enabled')) === 'false')
     return { policy: null, reason: 'disabled' };
   if (lower(siteSetting(portal, 'HTTP/Content-Security-Policy/InjectHeader')) === 'false')
     return { policy: null, reason: 'not-injected' };
-  if (nonceSource(value)) return { policy: null, reason: 'nonce' };
+  const nonce = nonceKind(value);
+  if (nonce === 'unsupported') return { policy: null, reason: 'nonce-unsupported' };
+  if (nonce === 'placeholder') return { policy: value, reason: 'nonce' };
   return { policy: value, reason: 'site-setting' };
 }
+/**
+ * The policy Learn ("Manage your site's Content Security Policy", Default CSP policy) documents for sites created after
+ * November 10, 2025, which have CSP enabled by default. The export does not show it: a site observed sending it records
+ * observed.defaultContentSecurityPolicy "platform". Learn prints the two directives on two lines; the exact header text
+ * is not documented, so they are joined with one space.
+ */
+const PLATFORM_DEFAULT_POLICY =
+  "script-src 'self' content.powerapps.com content.powerapps.us content.appsplatform.us content.powerapps.cn 'nonce'; style-src 'unsafe-inline' https:;";
 /** HTTP/* settings handled separately or not sent by the loopback runtime. */
 const SEPARATE = new Set(['content-security-policy', 'content-security-policy-report-only', 'x-frame-options']);
-// Access-Control-* answer cross-origin requests and are not echoed on loopback;
-// Strict-Transport-Security belongs to the HTTPS hosting front end.
+// Access-Control-* answer cross-origin requests and are not echoed on loopback (lib/page-cors.mjs answers the observed
+// CORS pages); Strict-Transport-Security belongs to the HTTPS hosting front end (observed.strictTransportSecurity).
 const NOT_ECHOED = /^(?:access-control-.*|strict-transport-security)$/;
-const nonceSource = (value) => /'nonce/i.test(value);
 const REPORT_ONLY_SETTING = 'HTTP/Content-Security-Policy-Report-Only';
+// The documented placeholder source expression, as one whole token of a directive.
+const NONCE_PLACEHOLDER = /(^|[\s;])'nonce'(?=[\s;]|$)/gi;
+/** "placeholder" when every nonce source of a policy is Learn's 'nonce', "unsupported" for any other, else null. */
+function nonceKind(value) {
+  const tokens = String(value)
+    .split(/[\s;]+/)
+    .filter((token) => /^'nonce/i.test(token));
+  if (!tokens.length) return null;
+  return tokens.every((token) => token.toLowerCase() === "'nonce'") ? 'placeholder' : 'unsupported';
+}
 
 const configuredValue = (portal, name) => String(siteSetting(portal, name) ?? '').trim();
+/** The report-only policy (HTTP/Content-Security-Policy-Report-Only) when it is sent: set and not an unsupported nonce. */
+const reportOnlyPolicy = (portal) => {
+  const value = configuredValue(portal, REPORT_ONLY_SETTING);
+  return value && nonceKind(value) !== 'unsupported' ? value : null;
+};
+
+/** A fresh per-response nonce: 128 random bits, base64 (a CSP base64-value). */
+export const cspNonce = () => randomBytes(16).toString('base64');
+
+/**
+ * True when a page response of the site sends a policy with the nonce placeholder
+ * (HTTP/Content-Security-Policy or HTTP/Content-Security-Policy-Report-Only): the page
+ * then needs one nonce (cspNonce) shared by its headers and its scripts.
+ */
+export function siteUsesScriptNonce(portal) {
+  return sitePolicy(portal).reason === 'nonce' || nonceKind(reportOnlyPolicy(portal) ?? '') === 'placeholder';
+}
+
+// Directives that govern inline event handlers (script-src-attr, then script-src, then default-src).
+const HANDLER_DIRECTIVE = /^\s*(?:script-src|script-src-attr|default-src)(?:\s|$)/i;
+/**
+ * The policy with each placeholder 'nonce' replaced by 'nonce-<nonce>'. In a directive that governs inline event
+ * handlers, the first placeholder is followed by 'unsafe-hashes' and one 'sha256-<hash>' per hash in
+ * `handlerHashes` (base64 SHA-256 of handler attribute values): Learn says the platform "secures inline event handlers
+ * separately through automatic hash generation"; the exact hosted header text of those hashes is not documented.
+ */
+function substituteScriptNonce(policy, nonce, handlerHashes = []) {
+  const source = `'nonce-${nonce}'`;
+  const hashes = [...new Set(handlerHashes)].map((hash) => `'sha256-${hash}'`);
+  return String(policy)
+    .split(';')
+    .map((directive) => {
+      let first = HANDLER_DIRECTIVE.test(directive) && hashes.length > 0;
+      return directive.replace(NONCE_PLACEHOLDER, (_match, lead) => {
+        const text = first ? [source, "'unsafe-hashes'", ...hashes].join(' ') : source;
+        first = false;
+        return lead + text;
+      });
+    })
+    .join(';');
+}
+
+// The hosted site is served over HTTPS, so an https: scheme source admits the site's own origin there. The local runtime
+// listens on http loopback, which https: does not match (CSP3 scheme-source matching only upgrades http: to https:).
+const HTTPS_SCHEME_SOURCE = /(?:^|\s)https:(?=\s|$)/i;
+const SELF_SOURCE = /(?:^|\s)'self'(?=\s|$)/i;
+/** The directive names of a policy whose https: scheme source the loopback transport adds 'self' to. */
+function loopbackTransportDirectives(policy) {
+  return String(policy ?? '')
+    .split(';')
+    .filter((directive) => HTTPS_SCHEME_SOURCE.test(directive) && !SELF_SOURCE.test(directive))
+    .map((directive) => directive.trim().split(/\s+/)[0].toLowerCase());
+}
+/**
+ * The policy for a response of the http loopback listener: each directive with an https: scheme source and without
+ * 'self' also gets 'self', the loopback origin that stands for the hosted https origin. Nothing else changes.
+ */
+function adaptLoopbackTransport(policy) {
+  return String(policy)
+    .split(';')
+    .map((directive) => {
+      if (!HTTPS_SCHEME_SOURCE.test(directive) || SELF_SOURCE.test(directive)) return directive;
+      const sources = directive.trimEnd();
+      return sources + " 'self'" + directive.slice(sources.length);
+    })
+    .join(';');
+}
 
 /** Report source-declared policies whose hosted handling is outside local HTTP header simulation. */
 export function siteHttpPolicyDiagnostics(portal) {
@@ -39,7 +133,7 @@ export function siteHttpPolicyDiagnostics(portal) {
     .filter((name) => /^http\/access-control-[a-z0-9-]+$/i.test(name) && configuredValue(portal, name))
     .map((name) => name.toLowerCase())
     .sort(/* NOSONAR: preserve default string coercion */);
-  if (cors.length)
+  if (cors.length && !portal.observed?.corsPages?.length)
     diagnostics.push({
       code: 'PORTAL_HTTP_CORS_UNSUPPORTED',
       severity: 'warning',
@@ -51,17 +145,42 @@ export function siteHttpPolicyDiagnostics(portal) {
       code: 'PORTAL_HTTP_HSTS_UNSUPPORTED',
       severity: 'warning',
       settings: ['http/strict-transport-security'],
-      message: 'The local HTTP listener cannot verify the configured HSTS policy of the hosted HTTPS front end.',
+      message:
+        'The local HTTP listener does not send the configured HSTS setting: the hosted HTTPS front end sets that header. Record the header a site sends as observed.strictTransportSecurity.',
+    });
+  diagnostics.push(...corsPageDiagnostics(portal));
+  if (sitePolicy(portal).reason === 'nonce' && siteSetting(portal, 'HTTP/Content-Security-Policy') === undefined)
+    diagnostics.push({
+      code: 'PORTAL_HTTP_CSP_PLATFORM_DEFAULT',
+      severity: 'info',
+      settings: ['http/content-security-policy'],
+      message:
+        'The site sets no HTTP/Content-Security-Policy and was observed with the platform default policy of sites created after November 10, 2025: the local portal sends that documented policy.',
     });
   const nonce = [];
-  if (sitePolicy(portal).reason === 'nonce') nonce.push('http/content-security-policy');
-  if (nonceSource(configuredValue(portal, REPORT_ONLY_SETTING))) nonce.push(REPORT_ONLY_SETTING.toLowerCase());
+  if (sitePolicy(portal).reason === 'nonce-unsupported') nonce.push('http/content-security-policy');
+  if (nonceKind(configuredValue(portal, REPORT_ONLY_SETTING)) === 'unsupported')
+    nonce.push(REPORT_ONLY_SETTING.toLowerCase());
+  const adapted = [
+    ['http/content-security-policy', sitePolicy(portal).policy],
+    [REPORT_ONLY_SETTING.toLowerCase(), reportOnlyPolicy(portal)],
+  ].filter(([, policy]) => loopbackTransportDirectives(policy).length);
+  if (adapted.length)
+    diagnostics.push({
+      code: 'PORTAL_HTTP_CSP_LOOPBACK_TRANSPORT',
+      severity: 'info',
+      settings: adapted.map(([name]) => name),
+      directives: [...new Set(adapted.flatMap(([, policy]) => loopbackTransportDirectives(policy)))],
+      message:
+        "The local portal is served over http loopback, which the policy's https: sources do not match: those directives also allow 'self' (the loopback origin) in local responses.",
+    });
   if (nonce.length)
     diagnostics.push({
       code: 'PORTAL_HTTP_CSP_NONCE_UNSUPPORTED',
       severity: 'warning',
       settings: nonce,
-      message: 'The local portal omits the configured nonce policy because it does not issue matching script nonces.',
+      message:
+        "The local portal omits the configured policy: its nonce source is not the documented 'nonce' placeholder.",
     });
   return diagnostics;
 }
@@ -73,16 +192,33 @@ export function siteHttpPolicyDiagnostics(portal) {
  * (default SAMEORIGIN), the site's Content-Security-Policy (sitePolicy) and
  * Content-Security-Policy-Report-Only. Nothing else: no CSP and no X-Content-Type-Options
  * unless the site defines them. Settings with a deeper name (HTTP/Content-Security-Policy/
- * Enabled, HTTP/SameSite/Default) are options, not headers; Access-Control-* and
- * Strict-Transport-Security are not sent. `confinement` (config.confinePortalPages) adds
+ * Enabled, HTTP/SameSite/Default) are options, not headers; Access-Control-* (lib/page-cors.mjs) and the
+ * HTTP/Strict-Transport-Security setting are not sent. observed.strictTransportSecurity is sent on the http loopback
+ * listener only; observed.defaultContentSecurityPolicy "platform" supplies the documented default policy
+ * (sitePolicy). `confinement` (config.confinePortalPages) adds
  * the loopback confinement policy as a separate Content-Security-Policy header. `kind`
  * ("page" or "webFile") adds the headers the site's observed configuration records for
  * that response kind (portal.observed.headers), where no site setting already sets them.
+ * A policy with the 'nonce' placeholder (sitePolicy reason "nonce", or the report-only one)
+ * is sent only with `nonce`, the nonce the response gave its scripts, and `handlerHashes`
+ * (substituteScriptNonce). A response that did not nonce its scripts (data, files, documents
+ * the runtime composes outside the page layout) omits such a policy, as before nonces were
+ * issued: a policy whose nonce no script carries would block every inline script locally.
+ * `loopback` (default true: the runtime's listener is http loopback) adapts the site's policies to that transport
+ * (adaptLoopbackTransport); the confinement policy is the runtime's own and is not adapted.
  */
-export function siteHeaders(portal, { confinement = null, kind = null } = {}) {
+export function siteHeaders(
+  portal,
+  { confinement = null, kind = null, nonce = null, handlerHashes = [], loopback = true } = {},
+) {
   const headers = {};
   appendConfiguredHeaders(headers, portal);
-  appendPolicyHeaders(headers, portal, confinement);
+  appendPolicyHeaders(headers, portal, confinement, { nonce, handlerHashes, loopback });
+  // The observed HSTS header, only on the plain-http loopback listener: RFC 6797 section 8.1 makes a browser ignore the
+  // header on a response that did not arrive over a secure transport, so it never pins localhost (HSTS is keyed by host,
+  // not port, and would force every other local server of that host to HTTPS).
+  const hsts = portal.observed?.strictTransportSecurity;
+  if (hsts && loopback) headers['strict-transport-security'] = hsts;
   appendObservedHeaders(headers, portal, kind);
   return headers;
 }
@@ -98,12 +234,17 @@ function appendConfiguredHeaders(headers, portal) {
   }
 }
 
-function appendPolicyHeaders(headers, portal, confinement) {
+function appendPolicyHeaders(headers, portal, confinement, { nonce, handlerHashes, loopback }) {
   headers['x-frame-options'] = String(siteSetting(portal, 'HTTP/X-Frame-Options') ?? '').trim() || 'SAMEORIGIN';
-  const policies = [sitePolicy(portal).policy, confinement].filter(Boolean);
+  const transported = (policy) => (policy && loopback ? adaptLoopbackTransport(policy) : policy);
+  const substituted = (policy) => {
+    if (!policy || nonceKind(policy) !== 'placeholder') return transported(policy);
+    return nonce ? transported(substituteScriptNonce(policy, nonce, handlerHashes)) : null;
+  };
+  const policies = [substituted(sitePolicy(portal).policy), confinement].filter(Boolean);
   if (policies.length) headers['content-security-policy'] = policies.length === 1 ? policies[0] : policies;
-  const reportOnly = configuredValue(portal, REPORT_ONLY_SETTING);
-  if (reportOnly && !nonceSource(reportOnly)) headers['content-security-policy-report-only'] = reportOnly;
+  const reportOnly = substituted(reportOnlyPolicy(portal));
+  if (reportOnly) headers['content-security-policy-report-only'] = reportOnly;
 }
 
 function appendObservedHeaders(headers, portal, kind) {

@@ -100,14 +100,16 @@ const typeView = (names) => ({
   fields: names.map((name) => ({ name })),
   fetchXml: '<fetch><entity name="tst_row"><attribute name="tst_title"/></entity></fetch>',
 });
-const typesOf = async (t, names) => {
+const typesOf = async (t, names, extraFields = {}) => {
   const catalog = await catalogWith(t, '<data-set name="rows"/>');
+  const exported = metadata(typeView(names));
+  Object.assign(exported.entities.tst_row.fields, extraFields);
   const spec = mountSpec(
     renderCodeComponent({
       name: 'tst_Synthetic.Grid',
       portal: {},
       catalog,
-      metadata: metadata(typeView(names)),
+      metadata: exported,
       mappings,
       nativeDataset,
     }),
@@ -161,16 +163,52 @@ test('dataset columns report the captured dataType of each attribute type', asyn
   );
 });
 
-// @test-kind unproven: attribute types and formats the capture did not include follow its naming (Q-045)
-test('uncaptured attribute types follow the captured naming or keep the manifest type names', async (t) => {
-  assert.deepEqual(await typesOf(t, ['ownerid', 'tst_parties', 'tst_site', 'tst_minutes', 'tst_file', 'tst_image']), {
-    ownerid: 'owner',
-    tst_parties: 'partylist',
-    tst_site: 'SingleLine.URL',
-    tst_minutes: 'Whole.Duration',
-    tst_file: 'File',
-    tst_image: 'Image',
-  });
+// @test-kind observation: owner, lookup, text formats, whole-number formats, file, image, rich text and party list column dataTypes on a Power Pages list, live captures paqvilo-developer pcf-parity summary-F section 7 (runs fa and fb, views-list-ny and activity-list-ny, 2026-11-26) replayed on an invented table
+test('owner, text-format, whole-number-format, file, image, rich text and party list columns report the captured dataType', async (t) => {
+  assert.deepEqual(
+    await typesOf(
+      t,
+      [
+        'ownerid',
+        'modifiedby',
+        'tst_site',
+        'tst_phone',
+        'tst_ticker',
+        'tst_area',
+        'tst_minutes',
+        'tst_zone',
+        'tst_lang',
+        'tst_file',
+        'tst_image',
+        'tst_rich',
+        'tst_parties',
+      ],
+      {
+        modifiedby: field('lookup', { targets: ['systemuser'] }),
+        tst_phone: field('nvarchar', { format: 'phone' }),
+        tst_ticker: field('nvarchar', { format: 'tickersymbol' }),
+        tst_area: field('nvarchar', { format: 'textarea' }),
+        tst_zone: field('int', { format: 'timezone' }),
+        tst_lang: field('int', { format: 'language' }),
+        tst_rich: field('memo', { format: 'richtext' }),
+      },
+    ),
+    {
+      ownerid: 'owner',
+      modifiedby: 'lookup',
+      tst_site: 'SingleLine.URL',
+      tst_phone: 'SingleLine.Phone',
+      tst_ticker: 'SingleLine.Ticker',
+      tst_area: 'SingleLine.TextArea',
+      tst_minutes: 'Whole.None',
+      tst_zone: 'Whole.None',
+      tst_lang: 'Whole.None',
+      tst_file: 'SingleLine.Text',
+      tst_image: 'SingleLine.Text',
+      tst_rich: 'SingleLine.Text',
+      tst_parties: 'partylist',
+    },
+  );
 });
 
 // @test-kind observation: list/subgrid column shape, property-set column and initial sorting, live capture paqvilo-developer pcf-parity summary-C (Columns, Sorting; r2 list-ny, r1 subgrid-actions-ny)

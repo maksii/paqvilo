@@ -59,13 +59,23 @@ export function identityProviderAssets(settings, root) {
   }));
 }
 
+/** The site setting prefix of each provider type (lib/external-login.mjs). */
+export const PROVIDER_PREFIXES = Object.freeze({
+  openidconnect: 'Authentication/OpenIdConnect/',
+  oauth2: 'Authentication/OpenAuth/',
+  saml2: 'Authentication/SAML2/',
+  wsfederation: 'Authentication/WsFederation/',
+});
+
 export function newUserPolicy(settings, authentication, provider, params = {}) {
   const disabled = [];
   if (authentication.registration === false) disabled.push('Authentication/Registration/Enabled');
   if (authentication.openRegistration === false && authentication.invitation === false)
     disabled.push('Authentication/Registration/OpenRegistrationEnabled and InvitationEnabled');
   if (provider.registration === false || provider.registrationEnabled === false)
-    disabled.push(`Authentication/OpenIdConnect/${provider.key}/RegistrationEnabled`);
+    disabled.push(
+      `${PROVIDER_PREFIXES[provider.type] ?? PROVIDER_PREFIXES.openidconnect}${provider.key}/RegistrationEnabled`,
+    );
   const requested = String(params.prompt ?? '')
     .split(/\s+/)
     .includes('create');

@@ -336,6 +336,15 @@ test('unqualified Custom Access source never becomes a blanket grant', async (t)
     [3, scope.replace('x_contactid', 'unknown_column'), 'PERMISSION_CUSTOM_ACCESS_FILTER_UNSUPPORTED'],
     [3, scope.replace('<filter>', '<filter><filter/>'), 'PERMISSION_CUSTOM_ACCESS_FILTER_UNSUPPORTED'],
     [3, scope.replace('name="x_item"', 'name="x_order"'), 'PERMISSION_CUSTOM_ACCESS_FILTER_UNSUPPORTED'],
+    // A linked-table filter is refused rather than dropped, which would grant every root-filter match.
+    [
+      3,
+      scope.replace(
+        '</entity>',
+        '<link-entity name="contact" from="contactid" to="x_contactid"><filter><condition attribute="lastname" operator="eq" value="Only"/></filter></link-entity></entity>',
+      ),
+      'PERMISSION_CUSTOM_ACCESS_FILTER_UNSUPPORTED',
+    ],
   ]) {
     const { sim, call } = await site(t, state, customAccess(filter), 'exported');
     assert.equal((await call('GET', '/_api/x_items')).status, 403);

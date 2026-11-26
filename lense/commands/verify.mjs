@@ -13,7 +13,7 @@ import { OverlaySession } from '../session.mjs';
 import { openBrowser, attachSession } from '../browser.mjs';
 import { enablePanel } from '../panel.mjs';
 import { watchSources } from './dev.mjs';
-import { pageKey } from '../html-rewriter.mjs';
+import { pageKey, sourcesForDocumentLanguage } from '../html-rewriter.mjs';
 import { PortalModel, sourceText, urlKey } from '../portal-model.mjs';
 import { GIT_HANG_GUARD_MS, GitBaseline } from '../git.mjs';
 import { editSource } from '../source-edit.mjs';
@@ -22,6 +22,7 @@ import { replaceDelimitedAlternatives } from '../../mirage/lib/text-scanning.mjs
 import { shutdownSignalCounter } from '../signal-forwarding.mjs';
 import { startPath as validateStartPath } from '../config-schema.mjs';
 import { inspectionSources } from '../source-inspection.mjs';
+import { deploymentDiagnosticCode } from '../resource-audit.mjs';
 
 /** Waits `ms`; an interrupt clears the timer at once and ends the wait with the interrupt reason. */
 function sleep(ms, signal) {
@@ -114,8 +115,12 @@ export function redactedPageUrl(value) {
   }
 }
 
-/** Copy only bounded diagnostic fields: never the panel token, activities, or source bodies. */
-export function diagnosticSnapshot(state) {
+/**
+ * Copy only bounded diagnostic fields: never the panel token, activities, or source bodies. Each needsDeploy row also
+ * gets the `deploymentCode` that `lense audit` reports for the same condition (deploymentDiagnosticCode of
+ * lense/resource-audit.mjs), or null; `sourceDir` (the verified source copy) lets inactive records be recognized.
+ */
+export function diagnosticSnapshot(state, { sourceDir } = {}) {
   const snapshot = { counts: {}, truncated: {} };
   for (const category of ['problems', 'notes', 'needsDeploy']) {
     const input = Array.isArray(state?.[category]) ? state[category] : [];
@@ -129,7 +134,13 @@ export function diagnosticSnapshot(state) {
         ),
       );
     snapshot[category] = input.slice(0, DIAGNOSTIC_LIMITS.entriesPerCategory).map((entry) => {
-      if (category !== 'problems') return { rel: diagnosticText(entry.rel), reason: diagnosticText(entry.reason) };
+      if (category === 'notes') return { rel: diagnosticText(entry.rel), reason: diagnosticText(entry.reason) };
+      if (category === 'needsDeploy')
+        return {
+          rel: diagnosticText(entry.rel),
+          reason: diagnosticText(entry.reason),
+          deploymentCode: deploymentDiagnosticCode(entry, { sourceDir }),
+        };
       const problem = {
         type: diagnosticText(entry.type),
         text: diagnosticText(entry.text),
@@ -194,6 +205,17 @@ export function assessVerification(checks, diagnostics, strict = false) {
       skipped: checks.filter((check) => check.ok === null).length,
     },
   };
+}
+
+/** Choose the page blocks that belong to the displayed document and its language. */
+export function verificationPageBlocks(model, html, urlPath) {
+  const docKey = pageKey(urlPath, model);
+  const candidates = model.inlineSources.filter(
+    (source) => source.mode === 'block' && source.pageUrl && pageKey(source.pageUrl) === docKey,
+  );
+  return sourcesForDocumentLanguage(candidates, html, urlPath, model).sort(
+    (a, b) => Number(b.rel.includes('/content-pages/')) - Number(a.rel.includes('/content-pages/')),
+  );
 }
 
 function git(cwd, ...args) {
@@ -378,7 +400,7 @@ export default async function verify(cfg, args, options) {
   };
   const captureDiagnostics = (phase) => {
     if (!panel || !page || page.isClosed()) return;
-    diagnostics[phase] = diagnosticSnapshot(panel.stateFor(page));
+    diagnostics[phase] = diagnosticSnapshot(panel.stateFor(page), { sourceDir: tempSource });
     diagnostics.comparison = compareDiagnostics(diagnostics.baseline, diagnostics.afterEdits);
   };
   const check = (name, ok, detail = '') => {
@@ -806,11 +828,11 @@ export default async function verify(cfg, args, options) {
       hits.every((h) => !(h.sources ?? []).length),
     );
     captureDiagnostics('baseline');
-    const docKey = pageKey(new URL(startPath, cfg.origin).pathname, model);
-    const pageSources = editable.filter((s) => s.pageUrl && pageKey(s.pageUrl) === docKey);
-    const preferLang = (a, b) => Number(b.rel.includes('/content-pages/')) - Number(a.rel.includes('/content-pages/'));
-    const pageCss = pageSources.filter((s) => s.kind === 'page-css').sort(preferLang);
-    const pageJs = pageSources.filter((s) => s.kind === 'page-js').sort(preferLang);
+    // The URL of the displayed document the edits were chosen from: the request the loop above proved is on display
+    // (isDisplayed compares response.request()); a Playwright response's url() is that request's URL.
+    const pageSources = verificationPageBlocks(model, started.html, new URL(started.response.request().url()).pathname);
+    const pageCss = pageSources.filter((s) => s.kind === 'page-css');
+    const pageJs = pageSources.filter((s) => s.kind === 'page-js');
     const cssBlock = pageCss.find((s) => workingText(s)?.trim()) ?? pageCss[0];
     const jsBlock = pageJs.find((s) => workingText(s)?.trim());
     const jsEmpty = pageJs.find((s) => !workingText(s)?.trim());

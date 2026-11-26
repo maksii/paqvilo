@@ -13,8 +13,9 @@ import { guidKey } from './dataverse-values.mjs';
 import { contentDisposition, fileNameHeader } from './response-headers.mjs';
 import { authorizeGrant, validateServiceProfile } from './local-organization-service.mjs';
 import { denied as fieldDenied } from './dataverse-fls.mjs';
-import { stripJpegExif } from './portal-jpeg.mjs';
+import { jpegThumbnail, orientJpeg, stripJpegExif } from './portal-jpeg.mjs';
 import { pngThumbnail, stripPngExif } from './portal-png.mjs';
+import { bmpThumbnail, gifThumbnail } from './portal-image-formats.mjs';
 
 const CHUNK_SIZE = 4194304;
 const BLOCK_LIMIT = 4194304; // The docs say a block is under 4 MB; the exact native bound is a guess.
@@ -216,7 +217,8 @@ const MIME_BY_EXTENSION = {
   mp3: 'audio/mpeg',
   mp4: 'video/mp4',
 };
-const mimeOfName = (name) => {
+/** The MIME type the built-in map gives a file name's extension, or null (file columns and the Azure file Web API). */
+export const mimeOfName = (name) => {
   const text = String(name ?? '');
   const extension = text.includes('.') ? text.slice(text.lastIndexOf('.') + 1).toLowerCase() : '';
   return Object.hasOwn(MIME_BY_EXTENSION, extension) ? MIME_BY_EXTENSION[extension] : null;
@@ -803,18 +805,27 @@ export function install(api) {
       return { status: 204 };
     // The bare portal image route and record projection use the same thumbnail bytes.
     const thumbnail = kind === 'image' && c.url.searchParams.get('size') !== 'full';
+    const shrink = {
+      'image/png': pngThumbnail,
+      'image/jpeg': jpegThumbnail,
+      'image/gif': gifThumbnail,
+      'image/bmp': bmpThumbnail,
+    };
     const preview =
-      c.portalImage && thumbnail && entry.mimeType === 'image/png'
-        ? pngThumbnail(await readStoredBytes(api, entry))
+      c.portalImage && thumbnail && Object.hasOwn(shrink, entry.mimeType)
+        ? shrink[entry.mimeType](await readStoredBytes(api, entry))
         : null;
     const size =
       preview?.length ?? (entry.data != null ? Buffer.from(String(entry.data), 'base64').length : entry.size);
+    // The type of the bytes served: a re-encoded thumbnail's own format (JPEG for JPEG, GIF and BMP), the stored type when
+    // the stored bytes are served (a full read, or an image that is already its thumbnail or could not be decoded).
+    const servedType = preview ? (sniffImage(preview) ?? entry.mimeType) : entry.mimeType;
     // Simple token names retain the organization file-column wire format. Other
     // names use the RFC 6266 fallback so Unicode and punctuation stay safe.
     const base = {
       'x-ms-file-size': String(size),
       'x-ms-file-name': fileNameHeader(entry.name),
-      mimetype: entry.mimeType,
+      mimetype: servedType,
       'Content-Disposition': contentDisposition('inline', entry.name, { tokenFilename: true }),
       'Access-Control-Expose-Headers': EXPOSE,
     };
@@ -825,6 +836,7 @@ export function install(api) {
         status: 200,
         headers: { ...(thumbnail ? {} : base), ...(kind === 'file' ? { 'OData-Version': undefined } : {}) },
         body: preview ?? (await readStoredBytes(api, entry)),
+        contentType: servedType,
       };
     const match = /^bytes=(\d+)-(\d*)$/.exec(String(range).trim());
     if (!match) throw plain(invalid('The Range header must be bytes=start-end.'));
@@ -852,6 +864,7 @@ export function install(api) {
         'Content-Range': `bytes ${start}-${end}/${size}`,
       },
       body: preview ? preview.subarray(start, end + 1) : await readStoredBytes(api, entry, { start, end }),
+      contentType: servedType,
     };
   }
 
@@ -908,14 +921,16 @@ export function install(api) {
       if (answer.status === 204) return { statusCode: 204, body: {} };
       const entry = filesRead(store)[row[column]];
       const bytes = Buffer.from(answer.body ?? []);
+      // The served bytes' type (a re-encoded thumbnail's format), not the stored type.
+      const type = answer.contentType ?? entry?.mimeType ?? 'application/octet-stream';
       // file: the stored entry's name, size and MIME type, for callers that send their own download headers (the portal /_api).
       return {
         statusCode: answer.status,
-        body: { '$content-type': entry?.mimeType ?? 'application/octet-stream', $content: bytes.toString('base64') },
+        body: { '$content-type': type, $content: bytes.toString('base64') },
         file: {
           name: entry?.name ?? column,
           size: answer.status === 206 ? Number(answer.headers['x-ms-file-size']) : bytes.length,
-          mimeType: entry?.mimeType ?? 'application/octet-stream',
+          mimeType: type,
         },
         ...(answer.status === 206 ? { headers: answer.headers } : {}),
       };
@@ -928,7 +943,7 @@ export function install(api) {
       Buffer.isBuffer(raw) || raw instanceof Uint8Array ? Buffer.from(raw) : Buffer.from(String(raw), 'base64');
     if (portalImage && found.kind === 'image') {
       assertSize(found.kind, maxBytes(found.kind, found.def), bytes.length);
-      bytes = sniffImage(bytes) === 'image/jpeg' ? stripJpegExif(bytes) : stripPngExif(bytes);
+      bytes = sniffImage(bytes) === 'image/jpeg' ? stripJpegExif(orientJpeg(bytes)) : stripPngExif(bytes);
     }
     // defaultName (the portal /_api, whose documented sample sends no name): the stored file's name, else <column>.bin.
     // The name the platform stores for a nameless portal upload is a guess.

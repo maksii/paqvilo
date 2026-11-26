@@ -72,7 +72,13 @@ test('portal API applies 5000/default and Prefer paging, follows signed cursors,
   const top = await read('/_api/items?$select=itemid&$top=1', 'odata.maxpagesize=2');
   assert.equal(top.body.value.length, 1);
   assert.equal(top.body['@odata.nextLink'], undefined);
-  const small = await read('/_api/items?$select=itemid', 'odata.maxpagesize=2');
+  // The portal honours odata.maxpagesize only with $top: without it every row of a bounded result arrives at once.
+  const ignored = await read("/_api/items?$select=itemid&$filter=itemid lt '00009'", 'odata.maxpagesize=2');
+  assert.equal(ignored.status, 200);
+  assert.equal(ignored.body.value.length, 9);
+  assert.equal(ignored.body['@odata.nextLink'], undefined);
+  // $top larger than the row count keeps later pages, whose signed cursor the refusals below follow.
+  const small = await read('/_api/items?$select=itemid&$top=6000', 'odata.maxpagesize=2');
   assert.equal(small.body.value.length, 2);
   assert.equal(small.preference, null); // sandbox sends no Preference-Applied header
   assert.equal((await read(small.body['@odata.nextLink'])).body.value.length, 2);

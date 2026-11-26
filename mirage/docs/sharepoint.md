@@ -68,8 +68,11 @@ platform's markup and `/_services/` wire format are not documented. The grid cal
   `LPT0`–`LPT9`, `.lock`, `desktop.ini`, `_private`, `~$…`, `_vti_`), else 400 `SharePointInvalidName`. An existing
   folder answers 409 `SharePointFolderExists`; a file and a folder cannot share a name (409 `SharePointNameExists`).
   Document requests using the same in-process storage adapter coordinate concurrent file and folder writes to the
-  same case-insensitive name. Independent provider adapters sharing a backend can condition individual keys only.
-  A file and a folder marker use distinct keys, so mixed creates across separate runtimes can still conflict.
+  same case-insensitive name. Runtimes whose adapters share one backend (a persona runtime, Azurite, a pack) agree
+  through a name claim: a `_name` key beside the name, created once with `If-None-Match: *` and holding the kind, so of
+  a simultaneous file and folder of one name one wins and the other answers 409. A claim goes with its file or folder,
+  never shows in a listing, and a claim nothing stands behind (its creator stopped) is taken over once a minute old. While an upload runs, its claim is renewed every 20 seconds on the runtime clock, so a long upload keeps its name.
+  Names stored before claims existed are still checked by their file or folder marker.
 - Permissions follow the documented Power Pages rules: the parent table permission needs Read and Append To (and Write
   to upload); the Document Location permission needs Read to list, Create, Write and Append to upload or create a
   folder, and Delete to delete (otherwise 403 `PermissionDenied`). Writes need the portal verification token in the

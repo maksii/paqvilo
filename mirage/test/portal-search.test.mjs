@@ -5,6 +5,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
+import { organizationRecord } from '../lib/organization-context.mjs';
+import { portalSearch } from '../lib/portal-search.mjs';
 import { compilePortalSearchQuery } from '../lib/portal-search-query.mjs';
 import { signInHeaders } from '../testing.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
@@ -141,6 +143,22 @@ async function searchSite(
   return { sim, page, id };
 }
 
+async function searchSiteWithDisabledIndex(t, siteSettings) {
+  const fixture = await searchSite(t, { settings: [['Search/EnableAdditionalEntities', 'true'], ...siteSettings] });
+  await fixture.sim.store.transact(() => {
+    const organization = organizationRecord(fixture.sim.store);
+    assert.ok(organization, 'the fixture has a configured organization row');
+    organization.isexternalsearchindexenabled = false;
+  });
+  return fixture;
+}
+
+async function defaultSearchHtml(sim) {
+  const response = await fetch(`${sim.url}/search/?q=lantern`);
+  assert.equal(response.status, 200);
+  return response.text();
+}
+
 test('searchindex returns permission-filtered results from the Portal Search views with site-marker urls', async (t) => {
   const { sim, page, id } = await searchSite(t);
   const anonymous = await page({ q: 'lantern' });
@@ -183,6 +201,57 @@ test('additional tables need Search/EnableAdditionalEntities and Search/Enabled 
   assert.equal((await disabled.page({ q: 'lantern' })).total, 0);
   const diagnostics = JSON.stringify(disabled.sim.state().diagnostics ?? []);
   assert.match(diagnostics, /PORTAL_SEARCH_DISABLED/);
+});
+
+test('legacy portal search scans readable rows with the Dataverse index disabled', async (t) => {
+  const { sim, page } = await searchSiteWithDisabledIndex(t, [['search/enableDataverseSearch', ' FALSE ']]);
+  const result = await page({ q: 'lantern' });
+  assert.equal(result.total, 1);
+  assert.deepEqual(
+    result.items.map((item) => item.title),
+    ['Invented lantern'],
+  );
+  const html = await defaultSearchHtml(sim);
+  assert.match(html, /role="status">1 result\(s\)<\/p>/);
+  assert.match(html, />Invented lantern<\/a>/);
+  assert.doesNotMatch(html, /x_secret|Invented lantern secret|Invented lantern spare/);
+});
+
+test('the organization index and site-wide switch still gate portal search', async (t) => {
+  for (const [mode, siteSettings, diagnostic] of [
+    ['omitted', [], 'PORTAL_SEARCH_UNAVAILABLE'],
+    ['Dataverse', [['Search/EnableDataverseSearch', 'true']], 'PORTAL_SEARCH_UNAVAILABLE'],
+    ['unknown', [['Search/EnableDataverseSearch', 'legacy']], 'PORTAL_SEARCH_UNAVAILABLE'],
+    [
+      'disabled legacy',
+      [
+        ['Search/EnableDataverseSearch', 'false'],
+        ['Search/Enabled', 'false'],
+      ],
+      'PORTAL_SEARCH_DISABLED',
+    ],
+  ]) {
+    await t.test(mode, async (check) => {
+      const { sim, page } = await searchSiteWithDisabledIndex(check, siteSettings);
+      assert.equal((await page({ q: 'lantern' })).total, 0);
+      assert.doesNotMatch(await defaultSearchHtml(sim), /Invented lantern/);
+      assert.ok(sim.state().diagnostics.some((entry) => entry.code === diagnostic));
+    });
+  }
+});
+
+test('legacy search availability applies only to the local portal and local data', async () => {
+  for (const config of [
+    { mode: 'live', pageMode: 'local' },
+    { mode: 'local', pageMode: 'live' },
+  ]) {
+    const found = await portalSearch({
+      portal: { settings: { 'Search/EnableDataverseSearch': 'false' } },
+      store: { tables: { organization: [{ isexternalsearchindexenabled: false }] } },
+      config,
+    });
+    assert.equal(found.unavailable, 'dataverse-search-off');
+  }
 });
 
 test('portal search keeps phrases, operators, wildcard matching and term boosts distinct', async (t) => {
@@ -291,7 +360,7 @@ test('the default /search/ page renders the search results markup and states a d
   assert.match(html, /data-mirage-component="portal-search"/);
   assert.match(html, /value="&lt;lantern&gt;"/);
   assert.match(html, /Search is not enabled for this site\./);
-  assert.deepEqual(diagnostics, ['PORTAL_SEARCH_QUERY_WEIGHTS_IGNORED', 'PORTAL_SEARCH_DISABLED']);
+  assert.deepEqual(diagnostics, ['PORTAL_SEARCH_QUERY_WEIGHTS_LOCAL', 'PORTAL_SEARCH_DISABLED']);
 });
 
 // Knowledge articles are searchable only when Published with Internal set to No, and the platform does not let a site

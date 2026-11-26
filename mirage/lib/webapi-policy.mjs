@@ -451,12 +451,12 @@ export function webApiPolicy(portal, store, entity) {
     assertActivityColumns(selection, mapping, portal, wildcardExempt);
     for (const spec of parseOrderBy(params.get('$orderby'), { dialect: 'dataverse' })) path(spec.path);
     const filter = params.get('$filter');
-    if (filter)
-      for (const segments of expressionPaths(parseODataExpression(filter, { dialect: 'dataverse', aliases })))
-        path(segments);
+    const filterPaths = filter ? expressionPaths(parseODataExpression(filter, { dialect: 'dataverse', aliases })) : [];
+    for (const segments of filterPaths) path(segments);
     const apply = params.get('$apply');
     if (apply) for (const segments of applyPaths(parseApply(apply, { dialect: 'dataverse', aliases }))) path(segments);
     for (const spec of parseExpand(params.get('$expand'))) expand(spec, aliases);
+    return filterPaths;
   };
   const expand = (spec, aliases) => {
     const rel = relation(spec.navigation);

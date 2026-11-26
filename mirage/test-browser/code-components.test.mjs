@@ -83,9 +83,11 @@ test('standard PCF host loads only declared local resources and preserves lifecy
     node.value = 'Output';
     node.dispatchEvent(new Event('input', { bubbles: true }));
   });
+  // The Liquid tag host takes the output about 100 ms after the notify and runs no updateView for it
+  // (paqvilo-developer pcf-parity summary-F section 2; the timing is asserted in pcf-notify-debounce.test.mjs).
+  await page.waitForFunction(() => window.output !== undefined);
   assert.deepEqual(await page.evaluate(() => window.output), { value: 'Output' });
-  // Mount runs init and updateView; the output's updateView follows in a microtask of the same dispatch.
-  assert.deepEqual(await page.evaluate(() => window.lifecycle), ['init', 'update', 'update']);
+  assert.deepEqual(await page.evaluate(() => window.lifecycle), ['init', 'update']);
   // The page loads the bundle from its native address; the host spec still names the catalogue path.
   assert.equal(await page.locator('script[src^="/_pcfwebresource/"]').count(), 1);
   const catalogPath = /\/__sim-static\/pcf\/[0-9a-f]+\/bundle\.js/.exec(await page.content())[0];
@@ -110,7 +112,11 @@ async function hostFixture(t) {
     if (request.url.startsWith('/_api/')) {
       requests.push({ url: request.url, method: request.method, headers: request.headers });
       response.setHeader('Content-Type', 'application/json');
-      if (request.method === 'POST') {
+      // As the portal Web API answers a pcf-entity-logical-name request naming no known table (summary-F section 1).
+      if (!/^\/_api\/tst_row(?=[(?]|$)/.test(request.url)) {
+        response.statusCode = 400;
+        response.end(JSON.stringify({ error: { code: '9004010A', message: 'An unexpected error occurred' } }));
+      } else if (request.method === 'POST') {
         response.statusCode = 204;
         response.setHeader('OData-EntityId', '/_api/tst_rows(d0000000-0000-4000-8000-000000000002)');
         response.end();
@@ -310,8 +316,8 @@ test('PCF repeated controls have separate instances and state, typed parameters,
   assert.deepEqual(errors, []);
 });
 
-// @test-kind unproven+contract: local Web API model on a loopback fixture; the rejection with undefined follows the live capture (paqvilo-developer pcf-parity capture r1 actions-save) and the reasons in inspect().webApiErrors are Paqvilo's own diagnostics
-test('PCF Web API honors entity mappings, CSRF, page size and native create IDs while rejecting navigation in queries and record IDs', async (t) => {
+// @test-kind observation+contract: the request form (/_api/<logical name> with pcf-entity-logical-name, the anti-forgery token, no Prefer for a maxPageSize, which is not validated, nextLink undefined) and the rejection with undefined follow live captures (paqvilo-developer pcf-parity capture r1 actions-save and summary-F section 1, runs fa and fb); the local refusals of foreign URLs, record ids and fragments without a request and the reasons in inspect().webApiErrors are Paqvilo's own diagnostics
+test('PCF Web API names the logical name, sends the token, ignores maxPageSize and keeps native create IDs while rejecting navigation in queries and record IDs', async (t) => {
   const { page, requests } = await hostFixture(t);
   await page.evaluate(async () => {
     window.shell = {
@@ -354,9 +360,11 @@ test('PCF Web API honors entity mappings, CSRF, page size and native create IDs 
     window.context.webAPI.retrieveMultipleRecords('TST_ROW', '?$select=tst_title', 2),
   );
   assert.equal(result.entities[0].tst_title, 'Visible row');
-  assert.equal(requests[0].url, '/_api/tst_rows?$select=tst_title');
+  assert.ok(Object.hasOwn(result, 'nextLink') && result.nextLink === undefined);
+  assert.equal(requests[0].url, '/_api/tst_row?$select=tst_title');
+  assert.equal(requests[0].headers['pcf-entity-logical-name'], 'tst_row');
   assert.equal(requests[0].headers.__requestverificationtoken, 'fixture-token');
-  assert.equal(requests[0].headers.prefer, 'odata.maxpagesize=2');
+  assert.equal(requests[0].headers.prefer, undefined);
   assert.deepEqual(await page.evaluate(() => window.context.webAPI.createRecord('tst_row', { tst_title: 'New row' })), {
     id: 'd0000000-0000-4000-8000-000000000002',
     entityType: 'tst_row',
@@ -368,9 +376,7 @@ test('PCF Web API honors entity mappings, CSRF, page size and native create IDs 
     for (const operation of [
       () => window.context.webAPI.retrieveMultipleRecords('tst_row', 'https://example.invalid/data'),
       () => window.context.webAPI.retrieveRecord('tst_row', '../admin', '?$select=tst_title'),
-      () => window.context.webAPI.retrieveMultipleRecords('missing', ''),
       () => window.context.webAPI.retrieveMultipleRecords('tst_row', '?x=1#fragment'),
-      () => window.context.webAPI.retrieveMultipleRecords('tst_row', '', 0),
     ]) {
       try {
         await operation();
@@ -383,15 +389,33 @@ test('PCF Web API honors entity mappings, CSRF, page size and native create IDs 
       messages: window.__paqviloPcf.inspect('api-1')[0].webApiErrors.map((entry) => entry.message),
     };
   });
-  assert.deepEqual(rejected.reasons, [true, true, true, true, true]);
+  assert.deepEqual(rejected.reasons, [true, true, true]);
   assert.deepEqual(rejected.messages, [
     'PCF Web API queries cannot target a different URL',
     'PCF Web API requires a record GUID',
-    'PCF Web API table has no imported mapping: missing',
     'PCF Web API options must be an OData or FetchXML query',
-    'PCF Web API maxPageSize must be between 1 and 5000',
   ]);
   assert.equal(requests.length, before);
+  // A table that is not mapped locally is still requested by its name, and the portal's refusal rejects with
+  // undefined; any maxPageSize, 0 included, is ignored (summary-F section 1).
+  assert.deepEqual(
+    await page.evaluate(async () => {
+      const missing = await window.context.webAPI.retrieveMultipleRecords('missing', '').then(
+        () => 'resolved',
+        (reason) => reason,
+      );
+      const ignored = await window.context.webAPI.retrieveMultipleRecords('tst_row', '', 0);
+      return { missing: missing === undefined, ignored: ignored.entities.length };
+    }),
+    { missing: true, ignored: 1 },
+  );
+  assert.deepEqual(
+    requests.slice(before).map((request) => [request.url, request.headers.prefer]),
+    [
+      ['/_api/missing', undefined],
+      ['/_api/tst_row', undefined],
+    ],
+  );
   assert.deepEqual(
     await page.evaluate(async () => {
       try {

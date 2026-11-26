@@ -2768,7 +2768,17 @@ function xrayBrowserImpl(data) {
     if (!preserve) cardMoved = false;
     // The header names the component once (display name and logical name) with its certainty badge.
     const heading = identity.title;
-    card.innerHTML = `<div class="cardhead"><div class="grow"><div class="eyebrow">${esc(identity.kind)}</div><div class="titlerow"><div class="title">${esc(heading)}</div>${renderInspectionEvidence(identity.evidence, { part: 'badge' })}</div></div><button class="ib" data-action="dock" title="Move details to the other side" aria-label="Move details">${kit.icon('swap')}</button><button class="ib" data-action="clear" aria-label="Clear selection" title="Clear selection">${kit.icon('close')}</button></div><div class="content">${get(selected, 'localName') === 'iframe' ? '<p class=note>Frame. Click inside it to select its controls. If that does not work, open the frame in its own tab.</p><button class="btn sec" data-action="frame-open">Open frame in new tab</button>' : ''}${sourcesHtml(selected)}<details class="ancestry"${identity.matched ? '' : ' open'}><summary>Parent elements</summary><div class="mono element-label">${esc(label(selected))}</div><p class="note">Select an enclosing element to inspect its source. [ and ] cycle overlapping elements.</p>${lineage(
+    // A frame the browser keeps closed to this page (cross-origin, sandboxed) cannot be entered by a click.
+    let frameNote = '';
+    if (get(selected, 'localName') === 'iframe') {
+      const boundary = frameSettled(selected) && !frameDocument(selected);
+      const note = boundary
+        ? 'Frame outside Inspect: the browser keeps a cross-origin or sandboxed frame closed to this page, so its controls cannot be selected here; open the frame in its own tab to inspect it.'
+        : 'Frame. Click inside it to select its controls. If that does not work, open the frame in its own tab.';
+      frameNote =
+        '<p class=note>' + note + '</p><button class="btn sec" data-action="frame-open">Open frame in new tab</button>';
+    }
+    card.innerHTML = `<div class="cardhead"><div class="grow"><div class="eyebrow">${esc(identity.kind)}</div><div class="titlerow"><div class="title">${esc(heading)}</div>${renderInspectionEvidence(identity.evidence, { part: 'badge' })}</div></div><button class="ib" data-action="dock" title="Move details to the other side" aria-label="Move details">${kit.icon('swap')}</button><button class="ib" data-action="clear" aria-label="Clear selection" title="Clear selection">${kit.icon('close')}</button></div><div class="content">${frameNote}${sourcesHtml(selected)}<details class="ancestry"${identity.matched ? '' : ' open'}><summary>Parent elements</summary><div class="mono element-label">${esc(label(selected))}</div><p class="note">Select an enclosing element to inspect its source. [ and ] cycle overlapping elements.</p>${lineage(
       selected,
     )
       .map(

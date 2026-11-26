@@ -7,6 +7,23 @@ Each version lists what changed for users of the package and what to do when upg
 
 ### New
 
+- **Classic workflows run their designer steps.** A classic workflow whose exported XAML stays within the supported
+  steps (conditions, field reads, create, update, set state and stop workflow) runs in Mirage, real-time or in the
+  background, as its run-as user, with one log row per step, as a hosted environment runs them. A failing step refuses
+  a real-time write or leaves a background job waiting with its error; a wait condition holds the job until a write of
+  a column it reads. You can create and activate designer workflows through the Web API; other XAML is refused as the
+  platform refuses it, and activation reports lookups to missing rows. Preflight counts these workflows as covered.
+  Other XAML keeps the placeholder and says which step it could not run. See
+  [Dataverse API](../mirage/docs/dataverse-api.md).
+- **Azure file downloads through a short-lived URL.** With `Site/FileManagement/DownloadViaSASUri` on, as it is by
+  default, a file Web API download redirects to a read URL that expires after `DownloadSASUriExpiryTimeSpan`, answers
+  byte ranges so a download can resume, and is refused in another browser. With the setting off the portal streams the
+  file in `DownloadChunkSizeInKB` reads. See [storage providers](../mirage/docs/storage-providers.md#azure-file-web-api).
+- **JPEG, GIF and BMP thumbnails.** Portal image reads of a JPEG, GIF or BMP get the documented 144-pixel thumbnail,
+  as PNG already did, and a JPEG uploaded with a rotation in its Exif data is stored upright.
+- **Publishing preview switch.** A contact allowed to preview unpublished content turns preview on or off in
+  `/_sim/` and in Lense **Tweaks**.
+
 - **Every element of a live page is identified.** Lense aligns the page the portal sent with your export: X-ray names
   an element's own tag in the template, snippet or page copy that wrote it, the Liquid code that generated it, the
   form, list, column or code component it belongs to, the web file or portal file it loads, the portal's page shell,
@@ -25,7 +42,13 @@ Each version lists what changed for users of the package and what to do when upg
   tag, basic and multistep form fields, lists and form subgrids (also many-to-many), each with the `context` of the
   Power Pages host. A form field holds the column value in a hidden JSON input and saves through both form transports;
   a list or subgrid reads its rows through the native grid services with their table permissions, and a list record
-  saves its changes. See [code components](../mirage/docs/code-components.md).
+  saves its changes. A list with several views, or a subgrid with its view picker on, draws its own view dropdown
+  above the control, and choosing a view destroys the control and starts a new one on that view. `context.webAPI`
+  calls `/_api/<table logical name>` with the `pcf-entity-logical-name` header, and `retrieveMultipleRecords` ignores
+  `maxPageSize` and resolves `{ entities, nextLink: undefined }`. See
+  [code components](../mirage/docs/code-components.md).
+- **Subgrid view picker.** A form subgrid that hosts a dataset code component, with `EnableViewPicker` on, offers
+  its `ViewIds` views in its toolbar, the default view first. An ordinary subgrid keeps its default view.
 - **The `pcf` setting.** `pcf.sources` serves pcf-scripts build outputs (an `out/controls` folder or a `.pcfproj`)
   under the name `pac pcf push` gives them, ahead of the exported controls, and a rebuild reloads only the code
   components. `pcf.platformLibraries` supplies React 16.14.0, ReactDOM 16.14.0 and Fluent UI 8.122.8 from project
@@ -43,9 +66,122 @@ Each version lists what changed for users of the package and what to do when upg
   main operations of an assembly with uploaded content run it (`clr`, the default) or start as placeholders; a choice
   in `/_sim/` still overrides it, and preflight says where a step's mode came from. See
   [configuration](configuration.md).
+- **Sessions that follow the site's sign-in settings.** With `Authentication/ApplicationCookie/SlidingExpiration`
+  explicitly `true` and an `ExpireTimeSpan`, a local browser session renews after more than half its window.
+  `Authentication/Registration/RememberMeEnabled` adds **Remember me?** to the local password form, and
+  `RememberBrowserEnabled` adds **Remember browser?** to the email code form (a later sign-in still needs the
+  password). An OpenID Connect provider with `UseTokenLifetime` ends the local session at the ID token's deadline. See
+  [sign-in and sessions](../mirage/docs/sim-administration.md#sign-in-and-sessions).
+- **SAML 2.0, WS-Federation and OAuth 2.0 sign-in.** Each exported provider now signs in with its own protocol
+  against the local identity provider: SAML 2.0 with an `AuthnRequest` and a signed response (also started by the
+  identity provider, with a `RelayState` `ReturnUrl`), WS-Federation with `wsignin1.0` and a signed token, and OAuth
+  2.0 with an authorization code and the user profile. The portal checks the signature with the provider's metadata
+  key, the issuer, audience (`ValidateAudience`, `ValidAudiences`), lifetime, reply URL and replay, and maps the issued
+  claims to the contact, also through `RegistrationClaimsMapping` and `LoginClaimsMapping`. SAML 2.0 sign-out sends a
+  signed `LogoutRequest` when `ExternalLogoutCertThumbprint` is set. Twitter signs in with OAuth 1.0a and signed
+  requests, and the local identity provider honours `IsPassive` and `ForceAuthn` in an `AuthnRequest`. See
+  [OAuth 2.0, SAML 2.0 and WS-Federation providers](../mirage/docs/sim-administration.md#oauth-20-saml-20-and-ws-federation-providers).
+- **Security stamp validation.** After `Authentication/ApplicationCookie/SecurityStampValidator/ValidateInterval`
+  (30 minutes by default), a persona or external sign-in session ends when its contact's `adx_identity_securitystamp`
+  changed. A private-site admission session ends after `ExpireTimeSpan` (24 hours by default). See
+  [sign-in and sessions](../mirage/docs/sim-administration.md#sign-in-and-sessions).
+- **Stable implicit grant tokens.** The project setting `implicitGrant.signingKeys` lists PEM RSA key files that sign
+  `/_services/auth/token`; a key with a `thumbprint` signs when `CustomCertificates/ImplicitGrantflow` names it, and
+  `/_services/auth/publickey` serves the signing key. See
+  [implicit grant tokens](../mirage/docs/sim-administration.md#implicit-grant-tokens).
+- **Publishing preview toggle.** `GET` and `POST /_sim/api/session/preview` read and set this browser's
+  `adxPreviewUnpublishedEntities` cookie for a contact with **Preview Unpublished Entities**. See
+  [publishing preview toggle](../mirage/docs/sim-administration.md#publishing-preview-toggle).
+- **Run workflow on a basic form.** A basic form's `WorkflowAction` shows its button and confirmation dialog and runs
+  an exported, published, on-demand real-time workflow through a trusted local `workflows` handler when the action's
+  filter matches the record; otherwise the form reports `FORM_WORKFLOW_UNRESOLVED`.
+- **Associate Current Portal User as an activity party.** With **Is Activity Party**, the save writes the contact as
+  an `activityparty` row of the configured party list column with the record, in the participation type that column
+  records. See [forms and lists](../mirage/docs/forms-lists-parity.md#submission).
+- **Rich text notes and the activity timeline.** `Timeline/RTEEnabled` gives the note dialogs the rich text editor,
+  with the note HTML sanitized when it is stored and when it is read. A notes control whose default tab is
+  `ActivitiesTab` lists the record's activities from the **Portal Timeline View**, each table through the visitor's
+  table permissions, and `CustomerSupport/DisplayAllUserActivitiesOnTimeline` decides whether a case timeline shows
+  more than portal comments. See
+  [notes and the activity timeline](../mirage/docs/forms-lists-parity.md#notes-and-the-activity-timeline).
+- **More of the portal search syntax.** Proximity (`"a b"~N`) and fuzzy (`term~`, `term~N`) queries, the
+  `Search/Query` template on the default search page, the `Search/Filters` drop-down and, with
+  `Search/IndexNotesAttachments` and `KnowledgeManagement/DisplayNotes`, the notes of knowledge articles. See
+  [search](../mirage/docs/liquid-parity.md#search).
+- **Knowledge content access levels.** With `KnowledgeManagement/ContentAccessLevel/Enabled`, search, its totals and
+  facets, search summary sources and `knowledge.articles` keep only the articles that share a content access level
+  with the visitor's web roles, contact or account. See [search](../mirage/docs/liquid-parity.md#search).
+- **Azure file Web API.** `/_api/file/InitializeUpload`, `UploadBlock`, `download` and `delete` store chunked uploads
+  on the `portalCloudAttachments` route with the `Site/FileManagement/*` settings, the table permissions and the
+  `FU000xx` errors of the platform. See [Azure file Web API](../mirage/docs/storage-providers.md#azure-file-web-api).
+- **Search summary and data summarization fixtures.** A trusted pack exports `portalSearchSummary` for
+  `POST /_api/search/v1.0/summary` or `portalDataSummary` for `POST /_api/summarization/data/v1.0/<set>(<id>)` and
+  `/_api/summarization/data/v1.0/<set>`; each receives only the rows and columns the visitor may read. A data
+  summary takes the Web API read options (`$filter`, `$orderby`, `$top`, `$count`, `$apply`, nested `$expand` options
+  and paging), addresses a record by its primary or alternate key, and answers recommendations whose `Config` replays
+  as `RecommendationConfig` for the same visitor and query. `observed.siteUserGenerativeAi: disabled` records Copilot
+  hub governance that blocks AI for site users: the API then answers 400 `90041001`. See
+  [portal search summary](../mirage/docs/data-packs.md#portal-search-summary-fixture) and
+  [data summarization](../mirage/docs/data-packs.md#portal-data-summarization-fixture).
+- **Nonce Content Security Policy.** A site policy (`HTTP/Content-Security-Policy` or its `-Report-Only` form) that
+  uses the `'nonce'` placeholder is sent with a fresh nonce per page response, and the scripts that the exported
+  source, the platform and Mirage wrote carry it, also in modal forms and quick views. Inline event handlers on those
+  elements are allowed by their hashes. A script that page data writes keeps no nonce and is blocked;
+  `PORTAL_CSP_NONCE_WITHHELD` names the page. A directive whose `https:` source would not match the loopback origin
+  also allows `'self'` locally (`PORTAL_HTTP_CSP_LOOPBACK_TRANSPORT`). See
+  [Content Security Policy](../mirage/docs/content-security-policy.md).
+- **Formula column rules.** A formula column that breaks a documented formula column restriction (`Text()` of a single
+  number, a number joined as text, a direct currency column, a formula over 1,000 characters and others) reads `null`
+  with `FORMULA_UNSUPPORTED` and the restriction; numeric functions are typed by their first argument, and a decimal
+  result outside the formula column range reads `null` with `FORMULA_OUT_OF_RANGE`. See
+  [formula columns](../mirage/docs/dataverse-contract-modules.md#formula-columns).
+- **Deployment codes and an output cache rule in Lense.** `audit` resources and `verify` needsDeploy rows carry the same
+  `deploymentCode` for the same condition, and `analyze` reports `PP-CACHE-001` when a cached header or footer reads
+  request-dependent values outside a substitution block. See [Lense](lense.md).
+- **A code site's local build over the live site.** With a code-site project as its source, Lense answers the files of
+  the build (`compiledPath`) at their addresses, ahead of the exported web file at the same address, and on an
+  application route lays the local landing page over the deployed one the portal served, keeping what the portal added
+  (its client context, `isSpaSite` included). A rebuild reloads the tabs, and a route that cannot take the local
+  landing page says why. See
+  [code sites](lense.md#code-sites-single-page-applications).
+- **Basic form postback replay.** The `portal-form-postback` replay surface posts back a basic form of the invented
+  baseline fixture in Mirage and compares status, redirect, message panel and validation summary with 18 scenarios
+  recorded twice on Power Pages (create, update, plug-in rejection at each stage, plug-in mutation, range error, CAPTCHA,
+  redirects), and with 2 creates that upload an attachment and post the form as multipart, comparing the attachments
+  the new record lists.
+- **Portal Web API replay.** The `portal-webapi` replay surface sends 308 recorded portal Web API requests of the demo
+  site to Mirage (column limits, typed values, malformed and raw bodies, request verification tokens, content types,
+  lookups and filtered queries) and compares status, error code and message and the read-back with two Power Pages
+  runs each.
+- **Publish to web Power BI reports.** A `{% powerbi %}` tag with the default `Anonymous` authentication type and a
+  Publish to web URL (`https://app.powerbi.com/view?r=…`) renders the report's iframe, and the browser loads the
+  public report. `AAD` and `powerbiembedded` reports keep the placeholder, whose diagnostic now says they need the
+  platform's embed token and points to Lense. See [service fixtures](../mirage/docs/service-fixtures.md#power-bi-in-liquid).
+- **HSTS, the default CSP and CORS for authored pages.** Observations a site records with evidence:
+  `strictTransportSecurity` sends the site's HSTS header on the http loopback listener, where browsers ignore it, so
+  `localhost` is never pinned to HTTPS. `defaultContentSecurityPolicy: platform` sends the default policy that Learn
+  documents for sites created after November 10, 2025, while the site has no CSP setting. `corsPages` answers
+  cross-origin GET, HEAD and preflight requests of authored pages from an exact allowed origin, with the literal page
+  source and no credentials; other cross-origin requests are still refused. See
+  [HTTP transport and CORS](../mirage/docs/http-headers.md).
+- **Edge controls of the live site.** `readPowerPagesEdge` from `paqvilo/dataverse` reads a site's visibility, WAF
+  status, custom and managed rules and IP restrictions with read-only PAC commands, and says what Mirage does not
+  emulate. See [Lense](lense.md#edge-controls-of-the-live-site).
+- **Calculated columns from the designer.** A calculated column exported from the column designer computes on read in
+  Mirage: the exported `Formulas` XAML is compiled (arithmetic, IF / ELSE IF / ELSE, conditions, typed literals, date
+  functions, text, a field of the row one lookup away) and its result keeps the column's precision. `$filter`,
+  `$orderby`, FetchXML and the portal see the computed value, and writing the column is ignored with 204. Before, every
+  designer column read null with `CALCULATED_UNSUPPORTED`. See
+  [calculated columns](../mirage/docs/dataverse-contract-modules.md#calculated-columns).
 
 ### Improved
 
+- Inspect names its frame boundary: selecting a cross-origin or sandboxed frame says the browser keeps it closed to the
+  page, and **Not everything was read** counts the frames the page read could not enter.
+- A Power Pages cloud flow request whose run waits before its Response now waits for that Response, up to the
+  120 seconds Power Automate allows, instead of answering 202 at once.
+- SharePoint document requests from different runtimes over one storage backend can no longer create a file and a
+  folder with the same name.
 - A change on a template line that also holds Liquid code is laid over where the page shows the file's markup between
   two of its tags; before, such a line always waited for a deployment.
 - A form post with a file, a fragment a page fetches and a page the portal answers with an error status are laid
@@ -57,18 +193,71 @@ Each version lists what changed for users of the package and what to do when upg
   without a readable name withdraws only the controls it could replace instead of the whole catalogue; strings come
   from one language per control. Lense lays over a control's bundle and its style sheets separately, lists a manifest
   difference under **Needs deployment or a source fix** and serves `pcf.sources` builds too.
-- The `codecomponent` tag follows the Power Pages Liquid host: an unquoted name or GUID (braced or without hyphens)
-  names the control, the `name` key takes any letter case, argument names match property names exactly, and each
-  argument reaches the control as the server writes it into the host's `ControlProperties`, in the host's markup.
+- The `codecomponent` tag follows the Power Pages Liquid host: an unquoted name or GUID (in either letter case, with or
+  without hyphens) names the control, a braced GUID renders nothing and ends the template (`PCF_LIQUID_NAME_BRACED`),
+  the `name` key takes any letter case, argument names match property names exactly, and each argument reaches the
+  control as the server writes it into the host's `ControlProperties`, in the host's markup.
 - `context.utils.getEntityMetadata` reads table and column metadata through `/_api/EntityDefinitions`, as on Power
   Pages, and the reason of a rejected `context.webAPI` call is kept in the debugger's `webApiErrors`.
 - X-ray says what page scripts did to the page. An element of the template that a script moves keeps its template
   line and gains **Moved by this script**, also through a document fragment, a new wrapper, a range or `moveBefore`;
   one a script changes gains **Changed by this script: \<what\>**; rows, cells, captions and options that table and
   select calls make name the calling line.
+- Number fields of basic forms and multistep form steps show, parse and validate numbers in the page language in every
+  mode (insert, edit, read-only and modal forms, and values carried between auto-generated steps), with localized
+  format and range messages; a range bound the metadata omits is the column type's supported limit. A field whose code
+  component mounts keeps its JSON value.
+- Constant sum, multiple choice and rank order groups of basic form metadata are validated on the server too
+  (`FormConstantSumInvalid`, `FormMultipleChoiceInvalid`, `FormRankOrderTie`). A Geolocation Lookup Validator reports
+  `FORM_GEOLOCATION_VALIDATOR_HOSTED` and Timeline metadata reports `FORM_TIMELINE_METADATA_UNSUPPORTED`.
+- Legacy search (`Search/EnableDataverseSearch` `false`) runs on local data even when the organization's Dataverse
+  search index is off.
+- Portal search orders results by the relevance factors Learn documents: how many query words match, how often and
+  how close together, how short the text holding them is, and term and phrase boosts. On the default search page the
+  `Search/Query` weights and boosts rank too, so `_title:(@Query)` lifts a title match. The scores are a local model
+  (`PORTAL_SEARCH_RANKING_LOCAL`), not the hosted ones. See [search](../mirage/docs/liquid-parity.md#search).
+- Source bootstrap reports `CMS_CONTENT_EDITOR_REMOVED` once for each page and web template whose Liquid still uses
+  the removed portal content editor (`{% editable %}` tags or `.editable` checks). Rendering is unchanged. See
+  [platform changes](../mirage/docs/dataverse-parity.md#platform-changes).
+- Portal reads of virtual tables load current provider rows for navigation paths in `$filter` (also `any` and `all`),
+  for `$filter` inside `$expand`, for `$apply` filters, groupings and aggregates and for `/$count`, and for the
+  intersect and identity tables that a table permission's many-to-many path joins. An `$orderby` through a navigation path answers 400
+  `UnsupportedQuery` before any provider is read.
+- A shortcut follows the documented target order, and a standard export's survey, event or forum target reports
+  `SHORTCUT_TARGET_UNSUPPORTED` and leaves the shortcut without a URL; a lower-priority web file does not take its
+  place.
+- A code component bundle that is an ES module reports `PCF_CODE_RESOURCE_MODULE` at import, since the page loads code
+  resources as classic scripts. A list's dataset `getTitle()` is the view's name, and an authored
+  `{% entitylist %}...{% endentitylist %}` block on a code-component list renders only its body.
+- `lense verify` edits the page script and style of the language the browser displays.
+- Code components follow the Power Pages hosts more closely: the field and Liquid tag hosts call `getOutputs` once,
+  100 ms after the last `notifyOutputChanged`; the field host then calls `updateView` unless the output repeats the
+  previous one, and the Liquid tag host not at all. `context.webAPI.retrieveRecord` resolves
+  `{ data, entityType, values }` and a read sends `accept: */*`. A list's or subgrid's data set has `aggregation` and
+  `grouping`, whole-number columns of every format are `Whole.None`, file and image columns `SingleLine.Text`, and a
+  party list column reads `null`. The Liquid tag host lists one string placeholder per RESX file (none without one), and
+  `/_pcfwebresource/` answers 403 for a control's images, HTML and RESX files.
+- Basic forms run the table-specific actions Microsoft Learn lists for cases, opportunities, quotes and orders: Close
+  Case, Resolve Case (asking for the resolution), Reopen Case, Cancel Case (which also cancels the case's open
+  activities), Close as Won, Close as Lost, Set On Hold, Calculate Value, Create Order, Create Invoice and Generate
+  Quote. Each checks the exported action and the visitor's rights again; the last four run the new local
+  `CalculateActualValueOpportunity`, `WinQuote`, `ConvertQuoteToSalesOrder`, `ConvertSalesOrderToInvoice` and
+  `GenerateQuoteFromOpportunity` messages, which the Dataverse API also answers.
+- Lists and subgrids offer the same actions as row actions, shown by the record's state and posted to the legacy
+  `/_services/action-*` routes.
+- Lists and subgrids include `ExtendedItemActions` after `ItemActions`, ordered by `ActionIndex`. The grid's workflow
+  dialog shows the first workflow action's dialog (title, title class, confirmation, buttons, size) on Bootstrap 3 and
+  5, and an action with its own dialog texts writes them into it; action labels and dialog texts follow the request
+  language.
+- A form's choices (multi-select) field bound to a global choice lists the published options in the page language and
+  refuses a value outside them; a list's dynamic choice filter on a choices column finds the rows holding the option.
+- With live data and `KnowledgeManagement/ContentAccessLevel/Enabled` true, search and `knowledge.articles` apply the
+  content access levels over rows read through the live data path.
 
 ### Fixed
 
+- With live data and `KnowledgeManagement/ContentAccessLevel/Enabled` true, knowledge articles are no longer shown
+  unfiltered: when the live level links cannot be read, every article is hidden (`KNOWLEDGE_CONTENT_ACCESS_LIVE_HIDDEN`).
 - A code component's date-only value no longer moves a day west of UTC, a number in a comma-decimal language saves
   its digits, and a Two Options output saves on every field style.
 - A page restored from the back/forward cache keeps working code components; before, they were destroyed and no
@@ -98,9 +287,64 @@ Each version lists what changed for users of the package and what to do when upg
   `90040106`. A collection-valued `$ref` also needs Write on its own row (403 `90040103`) and its navigation listed in
   `Webapi/<table>/fields`, which listing the table's key no longer stands in for. Before, Mirage required Append and
   Append To the other way round and, for grants from an export, did not check them at all for a lookup bind.
+- The portal Web API (`/_api`) applies `Prefer: odata.maxpagesize` only to a query with `$top`, as Power Pages does:
+  without `$top` the preference is ignored and a response holds up to 5,000 rows, as without the header. Before,
+  Mirage paged such a query. To page portal reads, add `$top`; the next link keeps it and the last page stops at it.
+  The Dataverse Web API still pages without `$top`. See
+  [input and rendering contracts](../mirage/docs/dataverse-parity.md#input-and-rendering-contracts).
+- A Custom Access table permission whose FetchXML has a `link-entity` is disabled
+  (`PERMISSION_CUSTOM_ACCESS_FILTER_UNSUPPORTED`); before, Mirage dropped the link and granted every row the root
+  filter matched.
+- A local account stays usable after its contact's email address changes. Email sign-in and password recovery use the
+  current address, a confirmation link is sent again when a reset replaces the credentials of an unconfirmed account or
+  its link has expired, wrong email two-factor codes count toward the lockout, and an unknown user name takes as long
+  to refuse as a wrong password.
+- The remaining file count and **Attach File Required** count every file of the record, also the notes the visitor
+  cannot read; before, a visitor with create-only note access got the full count again on each save.
+- A form or list action whose filter selects columns other than the primary key matches its record again; before, the
+  state actions and **Run Workflow** were refused.
+- A note's download, its size in the notes list and its Web API body come from the version of the note that the
+  visitor's read admitted, also while the note is being replaced.
+- A table with more than ten formula columns computes them all; before, some of them read `null` because each one
+  computed the others.
+- Designer rollups read Sum, Average, Minimum and Maximum, filters (option set and Boolean `Equal`, decimal
+  `GreaterThan`, `NotNull`, joined by `And`), hierarchical rollups over a parent and its descendants, and date
+  Minimum and Maximum, with the values hosted runs show: Average counts a null child as 0 and is 0 over none, Minimum and
+  Maximum are null over none and then absent from the `CalculateRollupField` response. A new parent is Calculated at
+  its creation time with the value of no children; a child write no longer changes the parent's `_state` or `_date`
+  (Mirage keeps its recalculation marks to itself, `api.rollups.isStale`); and a write to a rollup column answers 204
+  and is ignored instead of 400 `0x80048d19`. A rollup column whose designer Aggregate says `Min` or `Max` is refused
+  at create with 400 `0x80060417`. See [rollups](../mirage/docs/dataverse-contract-modules.md#rollup).
+- A designer Count rollup is marked for recalculation when a row of another table that a child's untyped lookup could name is
+  created, deleted, purged after its time to live (elastic targets, matched in the child's partition) or brought in by
+  replacing the whole table. A rollup on or over a virtual or elastic table stores state 2 with `ROLLUP_UNSUPPORTED`,
+  and a bare GUID of a lookup that also targets a virtual table is not counted (`ROLLUP_BARE_LOOKUP_UNRESOLVED`).
+- One malformed component file (for example a character reference outside Unicode) no longer stops Lense from loading
+  the whole Solution; it is skipped, as in Mirage.
+- Lense and Mirage read an enhanced site's site and language records from the same place, `Assets/` (or the root) of
+  the folder that holds `powerpagecomponents/`; Mirage reports copies elsewhere as `ENHANCED_SITE_METADATA_IGNORED`.
+- A compiled code site no longer serves a dotfile through a Windows short name (`ENV~1`) or a link.
+- Runtimes that start from the same imported export no longer share one runtime's `observed` settings.
+- A Power Pages management read that PAC answers with an "Error: … [HTTP 4xx]" text and exit code 0 now fails with
+  `POWER_PAGES_MANAGEMENT_FAILED` and its status; before, it failed as an answer without JSON. The text stays withheld.
+- The Power BI placeholder no longer shows a user name or password written in the report URL
+  (`https://user:password@…`); it shows `[redacted]`, as it already did for query values.
+- A calculated or rollup column loaded from a Solution serves its exported `Formulas` file unchanged as
+  `FormulaDefinition`, line ends and indentation included, as an imported column does. Before, Mirage added an XML
+  declaration and removed the whitespace between elements.
+- An exported relationship cascade `ActiveOnly` reads as `Active`: assigning a parent now reassigns the active rows
+  of a relationship whose Assign is Active Only, and the metadata Web API answers `Active`. Before, Mirage did not
+  cascade such an Assign, Share or Unshare.
+- A delete that a Restrict relationship holds is refused with the platform's full text: the deleted table and id, the
+  restricting row and the relationship. The status and code (405 `0x80040227`) are unchanged.
+- Creating a second parental relationship from a table through `RelationshipDefinitions` is refused with 400
+  `0x80047007`, and creating a calculated column whose designer XAML reads a literal without `SelectFirstNonNull` with
+  400 `0x80060424`, as Dataverse refuses them.
 
 ### Upgrade notes
 
+- A test that read a designer calculated column as null, or a rollup `FormulaDefinition` with an XML declaration,
+  now reads the computed value and the exported file text.
 - Write `codecomponent` names unquoted (`name:pub_Namespace.Control`). A quoted name, an unknown control and a second
   tag of the same control now render nothing and end the rest of the template, as on Power Pages; `lense audit` lists
   each one. Tag arguments reach the control only when their name equals the property name, letter case included.
@@ -116,6 +360,32 @@ Each version lists what changed for users of the package and what to do when upg
   local grants were set for Mirage's former direction now gets the portal's 403 `90040106`; set the flags as on the
   portal (Append To on the table that holds the lookup, Append on the related table). The state setting
   `settings.associationPermissions: "compatibility"` keeps the former read-or-Append-To check for local experiments.
+- A site policy with the `'nonce'` placeholder is now sent instead of omitted, so inline scripts that page data writes
+  are blocked locally. Write such scripts in a web template, snippet or page copy instead of printing them from data;
+  `PORTAL_CSP_NONCE_WITHHELD` lists the pages that have them. A fixed `'nonce-<value>'` source is still omitted
+  (`PORTAL_HTTP_CSP_NONCE_UNSUPPORTED`).
+- A business rule's **Set Business Required** action (`SetFieldRequiredLevelStep`) no longer fails a server-side save
+  with 400 `0x80040203`: it applies only to model-driven forms and reports `BUSINESS_RULE_CLIENT_ONLY`.
+- A formula column that uses a construct formula columns do not support now reads `null` with `FORMULA_UNSUPPORTED`
+  instead of a value.
+- Editing a local account's email address marks it unconfirmed and ends its sessions, remembered browsers and pending
+  links; with `RequiresConfirmation`, sign-in waits for the new confirmation.
+- A local OAuth 2.0 provider (`Authentication/OpenAuth/<Name>/*`) now needs its `ClientSecret` (`ConsumerSecret`,
+  `AppSecret`): the code is redeemed with it, and sign-in fails without it. Its answer comes back on the query string
+  of `CallbackPath` (default `/signin-<name>`), and its claims use the `ClaimTypes` names, so a claims mapping names
+  those types. SAML 2.0 and WS-Federation providers no longer accept OpenID Connect answers. A Twitter provider signs
+  in with OAuth 1.0a at `/signin-twitter` and needs `ConsumerSecret`.
+- A browser session that was signed in more than 30 minutes ago (or `ValidateInterval`) ends when its contact's
+  `adx_identity_securitystamp` changes, and a private-site admission session now ends after 24 hours (or
+  `ExpireTimeSpan`).
+- Lense with a code-site project answers a file of the local build ahead of the exported `.powerpages-site` web file at
+  the same address, as Mirage does; a rebuild reloads the tabs. Edit the build's sources rather than the exported copy
+  of a built file.
+- `PORTAL_SEARCH_QUERY_WEIGHTS_IGNORED` is now `PORTAL_SEARCH_QUERY_WEIGHTS_LOCAL`, because `Search/Query` weights now
+  rank the default search page. Results with the same matches can come back in another order than before.
+- A persona launched from the sign-in page picker, `POST /_sim/api/personas/launch` or `/_sim/sign-in` is now a browser
+  session like any sign-in: it follows the site's `ExpireTimeSpan` and sliding window and the security stamp check.
+  `signIn()` stays a programmatic session; pass `browserSession: true` for a browser session.
 
 ## 0.9.8
 

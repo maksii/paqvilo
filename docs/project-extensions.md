@@ -81,7 +81,8 @@ generic bug, add a minimal synthetic regression to Paqvilo and keep the complete
 Acceptance and parity plans can be project fixtures passed to the runtime tools; running them never authorizes live
 writes.
 
-Project management scripts can import `readPowerPagesSites`, `readPowerPagesSite` and `setPowerPagesSiteVisibility` from
+Project management scripts can import `readPowerPagesSites`, `readPowerPagesSite`, `readPowerPagesEdge` and
+`setPowerPagesSiteVisibility` from
 `paqvilo/dataverse`. They run the installed PAC `power-pages` commands with an explicit environment (GUID or HTTPS
 origin) and shell-free arguments. The executable is `PAQVILO_PAC_EXECUTABLE`, else `pac` found on PATH; an explicit
 `executable` must be named `pac`, `pac.exe` or `pac.launcher.exe` (on Windows, never the `pac.cmd` shim or a command

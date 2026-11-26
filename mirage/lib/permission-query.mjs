@@ -553,6 +553,21 @@ function primaryPermissionKey(context, entity) {
   return context.mappings[entity]?.idColumn ?? `${entity}id`;
 }
 
+/**
+ * Tables that one grant's own path step reads besides its table and its parent grant's table, as the generated joins
+ * (permissionJoin, permissionIntersectJoin) and the local evaluator follow them: the intersect of a many-to-many Parent
+ * relationship, and the identity table of an identity relationship with its intersect. Global, Custom Access and
+ * observed-orphan grants follow no relationship.
+ */
+export function permissionPathTables(grant) {
+  const scope = grant?.scope ?? 'global';
+  if (scope === 'global' || scope === 'custom' || grant.observedOrphanParent?.field) return [];
+  const identity = grant.identityRelationship;
+  if (identity) return [identity.entity, identity.intersect?.entity].filter(Boolean);
+  if (scope !== 'parent') return [];
+  return [grant.relationship?.intersect?.entity].filter(Boolean);
+}
+
 function describeGrantPath(grant, descriptors) {
   return {
     grantId: grant.id,

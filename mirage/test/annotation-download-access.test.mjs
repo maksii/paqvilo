@@ -104,6 +104,76 @@ const nativeLink = (id) => `/_entity/annotation/${id}/${website}`;
 const entityApi = (id) => `/_api/annotations(${id})?$select=annotationid,filename,documentbody`;
 const propertyApi = (id) => `/_api/annotations(${id})/documentbody/$value`;
 
+async function replaceAfterAttachmentRead(t, sim, send, id) {
+  const selected = Promise.withResolvers();
+  const resume = Promise.withResolvers();
+  t.signal.addEventListener('abort', resume.resolve, { once: true });
+  const read = sim.store.readOperation.bind(sim.store);
+  let first = true;
+  const gate = t.mock.method(sim.store, 'readOperation', async (fn) => {
+    const held = first;
+    first = false;
+    const result = await read(fn);
+    if (held) {
+      selected.resolve();
+      await resume.promise;
+    }
+    return result;
+  });
+  const response = send();
+  try {
+    await Promise.race([
+      selected.promise,
+      response.then(() => assert.fail('The attachment read never reached its boundary')),
+    ]);
+    await sim.store.transact(() => {
+      const row = sim.store.tableRows('annotation').find((item) => item.annotationid === id);
+      Object.assign(row, {
+        filename: 'replacement.txt',
+        documentbody: Buffer.from('replacement bytes').toString('base64'),
+        __blobkey: null,
+      });
+    });
+  } finally {
+    resume.resolve();
+    gate.mock.restore();
+  }
+  return response;
+}
+
+// @test-kind contract: an ordinary native link captures its attachment and filename in the same local read.
+test('native annotation download keeps a coherent authorized filename and inline body during replacement', async (t) => {
+  const { sim, read, signedIn } = await annotationFixture(t, 0);
+  const old = await replaceAfterAttachmentRead(t, sim, () => read(nativeLink(inline), signedIn), inline);
+  assert.equal(old.status, 200);
+  assert.match(old.headers.get('content-disposition'), /filename="fixture\.txt"/);
+  assert.equal(await old.text(), content);
+  const current = await read(nativeLink(inline), signedIn);
+  assert.match(current.headers.get('content-disposition'), /filename="replacement\.txt"/);
+  assert.equal(await current.text(), 'replacement bytes');
+});
+
+// @test-kind contract: portal Web API storage restoration uses the captured row version on both response shapes.
+test('portal Web API keeps entity and collection attachment metadata and bodies coherent during replacement', async (t) => {
+  const paths = [entityApi(routed), '/_api/annotations?$select=annotationid,filename,documentbody'];
+  for (const url of paths) {
+    await t.test(url.includes('(') ? 'entity' : 'collection', async (sub) => {
+      const { sim, read, signedIn } = await annotationFixture(sub, 0);
+      const routeBody = async (response) => {
+        assert.equal(response.status, 200);
+        const body = await response.json();
+        return Array.isArray(body.value) ? body.value.find((row) => row.annotationid === routed) : body;
+      };
+      const old = await routeBody(await replaceAfterAttachmentRead(sub, sim, () => read(url, signedIn), routed));
+      assert.equal(old.filename, 'fixture.txt');
+      assert.equal(old.documentbody, null, 'the source attachment changed before its stored body could be confirmed');
+      const current = await routeBody(await read(url, signedIn));
+      assert.equal(current.filename, 'replacement.txt');
+      assert.equal(Buffer.from(current.documentbody, 'base64').toString(), 'replacement bytes');
+    });
+  }
+});
+
 test('standard portal application-user reads preserve generic anonymous and authenticated attachment downloads', async (t) => {
   const { read, signedIn } = await annotationFixture(t, 0);
   for (const headers of [{}, signedIn]) {

@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 
 /**
  * Local browser sign-in sessions (mirage/docs/sim-administration.md). The session cookie (HttpOnly, SameSite=Lax, Path=/, browser-session
@@ -16,6 +16,29 @@ export const authCookieName = (port) => (port ? `${AUTH_COOKIE}-${port}` : AUTH_
 const encode = (value) => Buffer.from(JSON.stringify(value), 'utf8').toString('base64url');
 const decode = (value) => JSON.parse(Buffer.from(value, 'base64url').toString('utf8'));
 const validSessionId = (value) => typeof value === 'string' && /^[0-9a-f]{32}$/.test(value);
+const hasPersistentExpiry = (persistent, expiresAt) => persistent === true && Number.isSafeInteger(expiresAt);
+const hasIssueTime = (issuedAt, expiresAt) => Number.isSafeInteger(issuedAt) && issuedAt < expiresAt;
+
+/**
+ * The digest of a contact's security stamp (adx_identity_securitystamp) a session carries, '' for none. The stamp
+ * itself never leaves the data.
+ */
+export const securityStampDigest = (stamp) =>
+  typeof stamp === 'string' && stamp ? createHash('sha256').update(stamp, 'utf8').digest('base64url').slice(0, 22) : '';
+
+/** The session a verified, unexpired contact payload names. */
+const sessionOf = (data) => ({
+  contactId: data.c,
+  ...(Array.isArray(data.r) ? { roles: data.r.filter((role) => typeof role === 'string') } : {}),
+  ...(typeof data.p === 'string' && data.p ? { provider: data.p } : {}),
+  ...(typeof data.cs === 'string' && { credentialStamp: data.cs }),
+  ...(validSessionId(data.sid) && { sessionId: data.sid }),
+  ...(Number.isSafeInteger(data.exp) && { expiresAt: data.exp }),
+  ...(hasIssueTime(data.iat, data.exp) && { issuedAt: data.iat }),
+  ...(hasPersistentExpiry(data.persistent, data.exp) && { persistent: true }),
+  ...(typeof data.ss === 'string' && { securityStamp: data.ss }),
+  ...(Number.isSafeInteger(data.vt) && { validatedAt: data.vt }),
+});
 
 /** Cookie header to { name: value } (first occurrence wins). */
 export function parseCookies(header = '') {
@@ -34,14 +57,40 @@ export function createAuthSessions({
   secret = randomBytes(32),
   name = AUTH_COOKIE,
   clock = Date.now,
-  fixedLifetime = () => null,
+  lifetime = () => null,
   identifyIssuedSessions = false,
+  // (contactId) => the contact's security stamp: an issued contact session (not a local account's) carries its digest
+  // and the time it was validated, for the security stamp validator.
+  securityStamp = null,
 } = {}) {
   const cookieName = () => (typeof name === 'function' ? name() : name) || AUTH_COOKIE;
   const signature = (payload) => createHmac('sha256', secret).update(payload).digest('base64url');
-  const value = (session) => {
-    const lifetime = session?.contactId && session.expiresAt === undefined ? fixedLifetime() : null;
-    const expiresAt = session?.expiresAt ?? (lifetime === null ? null : clock() + lifetime);
+  const verifiedPayload = (raw) => {
+    if (!raw) return null;
+    const dot = raw.lastIndexOf('.');
+    if (dot < 1) return null;
+    const payload = raw.slice(0, dot);
+    const expected = Buffer.from(signature(payload));
+    const actual = Buffer.from(raw.slice(dot + 1));
+    return expected.length === actual.length && timingSafeEqual(expected, actual) ? payload : null;
+  };
+  const withLifetime = (session, allowSliding) => {
+    if (!session?.contactId || session.expiresAt !== undefined) return session;
+    const policy = lifetime();
+    if (!policy || (policy.sliding && !allowSliding)) return session;
+    const issuedAt = clock();
+    const expiresAt = issuedAt + policy.duration;
+    if (!Number.isSafeInteger(expiresAt)) return session;
+    return { ...session, expiresAt, ...(policy.sliding && { issuedAt }) };
+  };
+  const withStamp = (session) =>
+    securityStamp &&
+    session?.contactId &&
+    typeof session.credentialStamp !== 'string' &&
+    session.securityStamp === undefined
+      ? { ...session, securityStamp: securityStampDigest(securityStamp(session.contactId)), validatedAt: clock() }
+      : session;
+  const signed = (session) => {
     const payload = encode(
       session?.contactId
         ? {
@@ -51,11 +100,21 @@ export function createAuthSessions({
             ...(typeof session.provider === 'string' && session.provider ? { p: session.provider } : {}),
             ...(typeof session.credentialStamp === 'string' && { cs: session.credentialStamp }),
             ...(validSessionId(session.sessionId) && { sid: session.sessionId }),
-            ...(Number.isSafeInteger(expiresAt) && { exp: expiresAt }),
+            ...(Number.isSafeInteger(session.expiresAt) && { exp: session.expiresAt }),
+            ...(Number.isSafeInteger(session.issuedAt) && { iat: session.issuedAt }),
+            ...(hasPersistentExpiry(session.persistent, session.expiresAt) && { persistent: true }),
+            ...(typeof session.securityStamp === 'string' && { ss: session.securityStamp }),
+            ...(Number.isSafeInteger(session.validatedAt) && { vt: session.validatedAt }),
           }
         : { c: null },
     );
     return `${payload}.${signature(payload)}`;
+  };
+  const cookie = (session) => {
+    const header = `${cookieName()}=${signed(session)}; Path=/; HttpOnly; SameSite=Lax`;
+    if (!hasPersistentExpiry(session?.persistent, session?.expiresAt)) return header;
+    const expiry = new Date(session.expiresAt);
+    return Number.isFinite(expiry.getTime()) ? `${header}; Expires=${expiry.toUTCString()}` : header;
   };
   return {
     get name() {
@@ -63,39 +122,36 @@ export function createAuthSessions({
     },
     /** Session from a Cookie header: { contactId, roles?, provider? }, { contactId: null } (signed out) or null. */
     read(header) {
-      const raw = parseCookies(header)[cookieName()];
-      if (!raw) return null;
-      const dot = raw.lastIndexOf('.');
-      if (dot < 1) return null;
-      const payload = raw.slice(0, dot);
-      const expected = Buffer.from(signature(payload));
-      const actual = Buffer.from(raw.slice(dot + 1));
-      if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) return null;
+      const payload = verifiedPayload(parseCookies(header)[cookieName()]);
+      if (!payload) return null;
       try {
         const data = decode(payload);
         if (data.c === null) return { contactId: null };
         if (typeof data.c !== 'string' || !data.c) return null;
         if (Number.isSafeInteger(data.exp) && clock() >= data.exp) return { contactId: null };
-        return {
-          contactId: data.c,
-          ...(Array.isArray(data.r) ? { roles: data.r.filter((role) => typeof role === 'string') } : {}),
-          ...(typeof data.p === 'string' && data.p ? { provider: data.p } : {}),
-          ...(typeof data.cs === 'string' && { credentialStamp: data.cs }),
-          ...(validSessionId(data.sid) && { sessionId: data.sid }),
-          ...(Number.isSafeInteger(data.exp) && { expiresAt: data.exp }),
-        };
+        return sessionOf(data);
       } catch {
         return null;
       }
     },
-    value,
+    value: (session) => signed(withLifetime(session, false)),
     /** Set-Cookie for an issued session. Re-signing a validated session retains its private ID. */
-    cookie(session) {
+    cookie(session, { allowSliding = true } = {}) {
       const issued =
         identifyIssuedSessions && session?.contactId && !validSessionId(session.sessionId)
           ? { ...session, sessionId: randomBytes(16).toString('hex') }
           : session;
-      return `${cookieName()}=${value(issued)}; Path=/; HttpOnly; SameSite=Lax`;
+      return cookie(withLifetime(withStamp(issued), allowSliding));
+    },
+    /** Renew a validated sliding session using its original signed window and owner. */
+    renewalCookie(session) {
+      if (!session?.contactId || !Number.isSafeInteger(session.issuedAt) || !lifetime()?.sliding) return null;
+      const { issuedAt, expiresAt } = session;
+      const now = clock();
+      const duration = expiresAt - issuedAt;
+      const renewedExpiry = now + duration;
+      if (now >= expiresAt || expiresAt - now >= now - issuedAt || !Number.isSafeInteger(renewedExpiry)) return null;
+      return cookie({ ...session, issuedAt: now, expiresAt: renewedExpiry });
     },
   };
 }

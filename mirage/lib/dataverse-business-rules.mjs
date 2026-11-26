@@ -12,14 +12,18 @@
 // payload), so it adds no depth; its context carries UserId and InitiatingUserId as plug-in handlers do.
 //
 // Supported XAML subset (element local names, case-insensitive, prefixes ignored; the root element's children are the steps):
-//   <SetAttributeValueStep Attribute="x" Value="v"/>      set value
+//   <SetAttributeValueStep Attribute="x" Value="v"/>      set value; without Value it clears the column
 //   <SetDefaultValueStep Attribute="x" Value="v"/>        set default value (create only, when the merged value is empty)
 //   <SetMessageStep Message="text" Attribute="x"?/>       show error message: the write fails with 400
-//   <SetFieldRequiredLevelStep Attribute="x" RequiredLevel="required|none"/>  required: the write fails when x is empty
 //   <ConditionBranchStep Logic="and|or"> <Condition Attribute="x" Operator="eq|ne|gt|ge|lt|le|null|not-null" Value="v"/>…
 //     <Then>steps</Then> <Else>steps</Else>? </ConditionBranchStep>
 //   Client-only steps (no server behaviour; BUSINESS_RULE_CLIENT_ONLY once per rule): <SetVisibilityStep>,
-//   <SetDisplayModeStep> (lock/unlock), <RecommendationStep>. The rule's server steps still run.
+//   <SetDisplayModeStep> (lock/unlock), <SetFieldRequiredLevelStep Attribute="x" RequiredLevel="required|none"/> (set
+//   business required) and <RecommendationStep>. The rule's server steps still run. Learn "Create business rules to apply
+//   logic in a model-driven app form": Set Field Value, Set Default Value and Show Error Message apply to all scopes;
+//   Lock/Unlock, Set Visibility, Set Business Required and Recommendation apply to the model-driven app, and "actions that
+//   only apply to model-driven apps are ignored when the rule is run server-side". The required step stays in the parsed
+//   rule (kind 'required') for the model-driven host; the server never enforces it.
 // Value text is read as JSON when it parses (numbers, true/false, null), else as text.
 // The designer's exported XAML wraps steps in Windows Workflow ActivityReference/argument structures, and the
 // rule's clientdata is generated JavaScript. Neither is read: exported designer rules report BUSINESS_RULE_UNSUPPORTED and
@@ -42,16 +46,12 @@ const TYPE_DEFINITION = 1;
 const STATE_ACTIVATED = 1;
 const SCOPE_ENTITY = 2;
 const MAX_DEPTH = 64;
-const SERVER_STEPS = new Set([
-  'setattributevaluestep',
-  'setdefaultvaluestep',
-  'setmessagestep',
-  'setfieldrequiredlevelstep',
-  'conditionbranchstep',
-]);
+const SERVER_STEPS = new Set(['setattributevaluestep', 'setdefaultvaluestep', 'setmessagestep', 'conditionbranchstep']);
 const CLIENT_STEPS = new Set(['setvisibilitystep', 'setdisplaymodestep', 'recommendationstep']);
+// A client-only step the parsed rule keeps for the model-driven host (businessRulesFor); the server ignores it.
+const REQUIRED_STEP = 'setfieldrequiredlevelstep';
 const OPERATORS = new Set(['eq', 'ne', 'gt', 'ge', 'lt', 'le', 'null', 'not-null']);
-const OPERATIONS = ['SetAttributeValue', 'SetDefaultValue', 'ShowErrorMessage', 'SetRequiredLevel', 'Condition'];
+const OPERATIONS = ['SetAttributeValue', 'SetDefaultValue', 'ShowErrorMessage', 'Condition'];
 
 const bare = (value) =>
   String(value ?? '')
@@ -81,14 +81,6 @@ const unsupported = (message) => {
 // The native fault of a server-side rule's "Show error message" is not known; the plug-in fault code 0x80040265
 // (InvalidPluginExecutionException) stands in, with the rule's message as the error message.
 const ruleError = (message) => new DataError(String(message), 400, 'BusinessRuleError', { innerCode: '0x80040265' });
-// The native answer when a rule made a column required and the merged row leaves it empty is not known.
-const requiredError = (table, column) =>
-  new DataError(
-    `A value for the '${column}' column of '${table}' is required by a business rule.`,
-    400,
-    'InvalidRequest',
-    { innerCode: '0x80040203' },
-  );
 
 // ---- Parser
 
@@ -103,13 +95,15 @@ function parseStep(node, client, depth) {
     client.push(kind);
     return null;
   }
-  if (!SERVER_STEPS.has(kind)) unsupported(`Business rule step <${node.name}> is not supported.`);
+  if (!SERVER_STEPS.has(kind) && kind !== REQUIRED_STEP)
+    unsupported(`Business rule step <${node.name}> is not supported.`);
   const column = attr(node, 'Attribute')?.trim().toLowerCase();
+  if (kind === REQUIRED_STEP) client.push(kind);
   if (kind === 'conditionbranchstep') return parseConditionBranch(node, client, depth);
   if (kind === 'setmessagestep')
     return { kind: 'error', message: attr(node, 'Message') ?? node.text.trim(), column: column ?? null };
   if (!column) unsupported(`<${node.name}> names no Attribute.`);
-  if (kind === 'setfieldrequiredlevelstep')
+  if (kind === REQUIRED_STEP)
     return {
       kind: 'required',
       column,
@@ -189,22 +183,20 @@ function test(condition, row) {
   return actual <= expected;
 }
 
-// Applies the steps to the payload (data) and the merged row; collects required columns; throws a rule's error.
-function apply(steps, { data, merged, creating, required }) {
-  for (const step of steps) applyBusinessRuleStep(step, { data, merged, creating, required });
+// Applies the steps to the payload (data) and the merged row; throws a rule's error. A required step is client-only.
+function apply(steps, { data, merged, creating }) {
+  for (const step of steps) applyBusinessRuleStep(step, { data, merged, creating });
 }
 
 function applyBusinessRuleStep(step, context) {
-  const { data, merged, creating, required } = context;
+  const { data, merged, creating } = context;
   if (step.kind === 'condition') {
     const results = step.conditions.map((condition) => test(condition, merged));
     const passed = step.logic === 'or' ? results.some(Boolean) : results.every(Boolean);
     apply(passed ? step.then : step.else, context);
   } else if (step.kind === 'error') throw ruleError(step.message);
-  else if (step.kind === 'required') {
-    if (step.required) required.add(step.column);
-    else required.delete(step.column);
-  } else if (step.kind === 'set' || (creating && empty(merged[step.column]))) {
+  else if (step.kind === 'required') return;
+  else if (step.kind === 'set' || (creating && empty(merged[step.column]))) {
     data[step.column] = step.value;
     merged[step.column] = step.value;
   }
@@ -296,7 +288,7 @@ export function validateBusinessRules(map) {
 // ---- Extension
 
 // Runs one rule; answers how it ran: 'override' (a pack handler), 'unsupported' (not evaluated) or 'evaluated'.
-function runRule(state, c, mapping, rule, { operation, data, merged, creating, required }) {
+function runRule(state, c, mapping, rule, { operation, data, merged, creating }) {
   const override = state.overrides[rule.workflowId];
   if (override) {
     const result = override({
@@ -341,7 +333,7 @@ function runRule(state, c, mapping, rule, { operation, data, merged, creating, r
     });
     return 'unsupported';
   }
-  apply(rule.steps, { data, merged, creating, required });
+  apply(rule.steps, { data, merged, creating });
   return 'evaluated';
 }
 
@@ -399,11 +391,8 @@ function install(api, options = {}) {
     if (!rules.length) return;
     const creating = operation === 'create' || (operation === 'upsert' && !existing);
     const merged = { ...existing, ...data };
-    const required = new Set();
     const span = api.store.traces?.enabled ? api.store.traces.current() : null;
-    for (const rule of rules)
-      tracedRule(span, state, c, mapping, rule, { operation, data, merged, creating, required });
-    for (const column of required) if (empty(refId(merged[column]))) throw requiredError(mapping.logicalName, column);
+    for (const rule of rules) tracedRule(span, state, c, mapping, rule, { operation, data, merged, creating });
   });
 }
 

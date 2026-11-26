@@ -63,6 +63,11 @@ export async function operationFixture(t, { solutionComponents = false } = {}) {
     await fs.mkdir(path.dirname(file), { recursive: true });
     await fs.writeFile(file, body);
   }
+  return { dir, app: await operationSimulator(t, dir) };
+}
+
+/** A local simulator over <dir>/portal and the Solution <dir>/solution, whose configured identity holds the Runner role. */
+export async function operationSimulator(t, dir) {
   const app = await createSimulator({
     sourceDir: path.join(dir, 'portal'),
     solutionRoots: [path.join(dir, 'solution')],
@@ -85,5 +90,5 @@ export async function operationFixture(t, { solutionComponents = false } = {}) {
     },
   });
   ownedFixture(t).add(() => app.close());
-  return { dir, app };
+  return app;
 }

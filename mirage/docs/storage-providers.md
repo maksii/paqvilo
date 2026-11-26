@@ -52,10 +52,10 @@ always go through it.
 
 `local-disk` keeps immutable content-addressed bytes in `objects/<sha256>` and an `index.json` of key → metadata.
 Uploads stream to `tmp/` while hashing and are renamed into place; the index is written to a synced temporary file and
-renamed. Blocks stage under `staging/`. Every path derives from digests or generated ids and is checked against the
-root; objects are opened with `O_NOFOLLOW` where available. Unreferenced bytes are removed when their last key goes;
-`compact()` removes leftovers. SAS URLs are HMAC-SHA256 signed with a per-process secret under `/_sas/storage/<id>/`.
-Its preflight is ready once the root opens.
+renamed. Blocks stage under `staging/`; deleting a key also discards its staged blocks, committed object or not. Every
+path derives from digests or generated ids and is checked against the root; objects are opened with `O_NOFOLLOW` where
+available. Unreferenced bytes are removed when their last key goes; `compact()` removes leftovers. SAS URLs are
+HMAC-SHA256 signed with a per-process secret under `/_sas/storage/<id>/`. Its preflight is ready once the root opens.
 
 The in-memory provider loses its bytes on restart. A runtime without a state directory (`dry-run`, or no state file)
 creates every `local-disk` id, `local` included, as an in-memory provider under the same id, so every default route
@@ -68,13 +68,13 @@ or image column lives in `<stateDirectory>/blobs`, and the row keeps only its in
 
 ## Routes
 
-| Route                    | Default  | Consumer                                                                         | Unset or unavailable                             |
-| ------------------------ | -------- | -------------------------------------------------------------------------------- | ------------------------------------------------ |
-| `dataverseFiles`         | `local`  | Dataverse file and image columns                                                 | bytes stay inline base64 in state                |
-| `annotations`            | `local`  | `annotation.documentbody`, `activitymimeattachment.body`, portal staged uploads  | bytes stay inline base64 in state                |
-| `portalWebFiles`         | `export` | Web files when the site setting `WebFiles/StorageLocation` is `AzureBlobStorage` | 503 `WEBFILE_CLOUD_STORAGE_UNAVAILABLE`          |
-| `portalCloudAttachments` | unset    | Portal form attachments when `FileStorage/CloudStorageAccount` is set            | the save fails with 500 `PROVIDER_ROUTE_MISSING` |
-| `sharepointDocuments`    | `local`  | [SharePoint documents](sharepoint.md)                                            | 501 `SharePointStorageNotConfigured`             |
+| Route                    | Default  | Consumer                                                                                                             | Unset or unavailable                                                                 |
+| ------------------------ | -------- | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `dataverseFiles`         | `local`  | Dataverse file and image columns                                                                                     | bytes stay inline base64 in state                                                    |
+| `annotations`            | `local`  | `annotation.documentbody`, `activitymimeattachment.body`, portal staged uploads                                      | bytes stay inline base64 in state                                                    |
+| `portalWebFiles`         | `export` | Web files when the site setting `WebFiles/StorageLocation` is `AzureBlobStorage`                                     | 503 `WEBFILE_CLOUD_STORAGE_UNAVAILABLE`                                              |
+| `portalCloudAttachments` | unset    | Portal form attachments when `FileStorage/CloudStorageAccount` is set; the [Azure file Web API](#azure-file-web-api) | the save fails with 500 `PROVIDER_ROUTE_MISSING`; the file API answers 400 `FU00007` |
+| `sharepointDocuments`    | `local`  | [SharePoint documents](sharepoint.md)                                                                                | 501 `SharePointStorageNotConfigured`                                                 |
 
 `createStorageRouter({ config, providers })` takes the `storageSettings()` output and the created providers.
 `forRoute(name)` returns the guarded provider, `null` for `export`, throws `Unsupported` (`PROVIDER_ROUTE_MISSING`) for
@@ -126,11 +126,84 @@ install option, else `api.providers.storage`; both hosts pass one.
   place. Your project puts the objects; the importer still needs the web file record to know the URL.
 - **Cloud attachments.** With `FileStorage/CloudStorageAccount` set, a form attachment is put as
   `attachments/<uuid>/<file name>` before the record write, and the note is the placeholder `<name>.txt` whose body is
-  `{ Name, Type, Size, Url }` with the provider key as `Url`. A failed save deletes the object again.
+  `{ Name, Type, Size, Url }` with the provider key as `Url`. A failed save deletes the object again. Portal search
+  never indexes such a placeholder body (it names a storage key): a body of exactly that shape, with `Url` a key
+  `<container>/<guid>/<name>`, is recognised whatever the note's file name.
 - **Staged uploads.** `/_api/file/InitializeFileUpload/note` and `/_api/file/UploadFileBlock/note` stage blocks on route
   `annotations` under `staged/<id>`; the form save reads and deletes the object. The pending-upload list is
   process-local: at most 50 uploads, each for one hour, and a restart discards it. Blocks of an abandoned upload stay in
   the provider's staging area.
+- **Azure file Web API.** See [below](#azure-file-web-api).
+
+## Azure file Web API
+
+The routes of [Use Web API to upload files to Azure Blob Storage](https://learn.microsoft.com/power-pages/configure/webapi-azure-blob)
+answer locally (`lib/portal-file-api.mjs`); a `live` runtime forwards them with the rest of `/_api`. Bytes go to route
+`portalCloudAttachments` as `<container>/<annotationid>/<file name>` (lower case).
+
+| Route                                                                 | Answer                                                            |
+| --------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `POST /_api/file/InitializeUpload/<table>(<id>)/blob`                 | 200 with the new note's id as a JSON string: the upload token     |
+| `PUT /_api/file/UploadBlock/blob?offset=&fileSize=&chunkSize=&token=` | 204; the chunk is staged, and the file is committed once complete |
+| `GET /_api/file/download/annotation(<id>)/blob/$value`                | 302 to a short-lived read URL; 200 with the bytes when SAS is off |
+| `DELETE /_api/file/delete/annotation(<id>)/blob/$value`               | 204; the note and its file are deleted                            |
+
+Settings (Learn): `Site/FileManagement/EnableWebAPI` must be `true` (otherwise every route answers 501 `FU00009`);
+`BlobStorageAccountName` and `BlobStorageContainerName` are required (`FU00022`); `SupportedFileType` (comma separated
+extensions) and `SupportedMimeType` (`;` separated) are required (`FU00015`, `FU00016`) and checked against the file name
+and the MIME type of its extension (`FU00004`, `FU00005`); `MaxFileSize` is in KB, default 1048576, capped at the
+platform's 10 GB (`FU00006`).
+
+Downloads follow `DownloadViaSASUri` (default true). The download route answers 302 to a read URL that stands in for the
+Azure blob SAS URL: `/_api/file/sas/<container>/<annotationid>/<name>` on the portal origin, with the service SAS query
+names `se` (expiry), `sp=r`, `sr=b`, `rscd` and `rsct` (the file name and type) and `sig`. It expires after
+`DownloadSASUriExpiryTimeSpan`, a .NET TimeSpan (`[d.]hh:mm[:ss]` or whole days, default `00:10:00`); a value that is
+not a positive span keeps the default and records `FILE_API_SETTING_INVALID`, and a longer one than 7 days is held at
+7 days. The read URL answers as Azure Get Blob does: 200, or 206 with `Content-Range` for a `Range` or `x-ms-range` of
+`bytes=<start>-[<end>]` (so a download can resume), and HEAD as Get Blob Properties does (the same checks and headers, the whole length, no body), with `Accept-Ranges`, `ETag` and `x-ms-blob-type`; errors are
+Azure's XML body with `x-ms-error-code`: 403 `AuthenticationFailed` for a changed field, a wrong signature or an expired
+URL, 404 `BlobNotFound` once the note and its file are deleted, 416 `InvalidRange` with `Content-Range: bytes */<size>`.
+Unlike an Azure SAS, the signature also binds the URL to the visitor session and identity that asked for it: another
+browser, another contact or a restarted runtime gets 403. A browser without a visitor session gets one with the
+redirect. The 302 status and that binding are Mirage-own.
+
+With `DownloadViaSASUri` `false` the portal streams the bytes itself, reading the blob `DownloadChunkSizeInKB` (default
+4096, at most 100 MB) at a time. Each later read must see the first read's ETag, so a file replaced during the download
+ends the response instead of joining two versions. The stream honours backpressure and stops reading the provider when
+the client goes away.
+
+Requests and permissions:
+
+- `InitializeUpload` needs `x-ms-file-name` (`FU00008`) and `x-ms-file-size` (`FU00014`, 0 is `FU00001`), a record of
+  the named table by logical name (`FU00002`), and the table permissions of the walk-through: Read and Append to on the
+  record, Create, Append and Write on the note (`FU00003`). It creates the note `<file name>.azure.txt` (`text/plain`)
+  linked to the record, whose body is the placeholder `{ Name, Type, Size, Url }` with the provider key as `Url`.
+- `UploadBlock` takes the token, `fileSize` (`FU00014`) and the chunk in the body (`FU00001` when empty). `chunkSize`
+  is at most 100 MB (`FU00013`); without it the request carries the whole file, at most 128 MB (`FU00017`). A chunk
+  starts at a multiple of `chunkSize`, holds exactly `min(chunkSize, fileSize - offset)` bytes and keeps the first
+  chunk's `chunkSize`; chunks may arrive in any order, a repeated chunk replaces its staged block, and the file is
+  committed when every chunk is staged. Until then a download answers `FU00012`. Each chunk updates the note (Write).
+- The token is bound to the visitor session and identity that started the upload and to its `x-ms-file-name` and
+  `fileSize`; anything else, a finished upload or an expired one answers `FU00010` ("Requested file isn't available for
+  uploadblock"). Unfinished uploads are process-local: at most 50, each ending one hour after its last chunk (the staged
+  chunks are discarded; the note stays and downloads answer `FU00012`). A restart ends them.
+- Download needs Read on the note, delete needs Read and Delete. Both accept only an `annotation` whose file name ends
+  in `.azure.txt` and whose placeholder `Url` is stored under that note's own id (`FU00010` otherwise). Delete removes
+  the note first, then the object; a failed object delete reports `FILE_API_BLOB_DELETE_FAILED`.
+- Writes carry the page's `__RequestVerificationToken`: missing is 401 and another session's 403, `90040107`, as the
+  portal Web API answers.
+- An account or container name that Azure would refuse, or no provider on `portalCloudAttachments`, is `FU00007`; an
+  unauthorized provider is `FU00018`.
+
+Errors are `{ "error": { "code": "FU000xx", "message": "..." } }` with the documented status and message. Refusals that
+Learn does not document use the same envelope and name their code in `X-Sim-Error-Code`: `FileBlockOffsetInvalid`,
+`FileBlockSizeInvalid`, `FileBlockSizeInconsistent`, `FileBlockLengthInvalid`, `FileBlockCountExceeded` (50,000 chunks),
+`FileNameInvalid` and 409 `FileUploadLimit`. `FU00011`, `FU00019`, `FU00020` and `FU00021` describe Azure and tenant
+conditions that have no local equivalent and are never answered.
+
+Learn documents the routes, settings, error table, permissions, `.azure.txt` name and the note updates per chunk.
+Mirage infers the placeholder body, the response statuses and token encoding, the extension-based MIME type, Delete for
+delete, out-of-order chunks and `FU00010` for a token outside its binding.
 
 ## Configuration keys
 
@@ -204,6 +277,11 @@ Core implements the contract against Azurite's Blob REST API with native `fetch`
 - **Preflight** sends an authorized List Containers and is ready only on 200 with an `EnumerationResults` body. The
   exported `preflight({ blobEndpoint })` is only an unauthenticated reachability probe. `health()` holds the last
   observed state, shown on the dashboard's Azurite node as `ready`, `error`, `missing` or `declared`.
+- **Uncommitted blocks.** `delete` is Delete Blob only; for a key with staged blocks but no committed blob it answers
+  `false` and the blocks stay in the service. Azure Storage garbage-collects uncommitted blocks when no Put Block or Put
+  Block List follows within a week ([Put Block](https://learn.microsoft.com/rest/api/storageservices/put-block#remarks)),
+  so an abandoned upload's blocks are removed by the service, not by Paqvilo. The local-disk and in-memory providers
+  discard them on `delete`.
 - **Differences.** Metadata names must be C# identifiers (else `InvalidKey`) and come back lower-case; `commit()`
   reports no `sha256`. Azurite itself differs from Azure Storage as
   [documented](https://learn.microsoft.com/azure/storage/common/storage-use-azurite#differences-between-azurite-and-azure-storage).

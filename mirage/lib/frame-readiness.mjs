@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { documentAnchors, scriptMarker } from './document-injection.mjs';
 
 // A decorated document whose page never asks for the image is forgotten after this many limits.
 const NEVER_REQUESTED_FACTOR = 12;
@@ -39,7 +40,8 @@ export function createFrameReadiness({ diagnostic = () => {}, timeoutMs = 5000, 
   // (a site policy without 'unsafe-inline') never asks: its entry ends after a longer lifetime from decoration and
   // reports that the load was not held. `limit` bounds how many entries are kept until then.
   return {
-    decorate(html, { path = '/', observed, head = false, sent = null } = {}) {
+    // `injectedScripts` is the response's injected-script marker under a nonce policy (lib/document-injection.mjs).
+    decorate(html, { path = '/', observed, head = false, sent = null, injectedScripts = null } = {}) {
       // `sent` is shown the document as it leaves here (the caller's record of what it answers); it changes nothing.
       const answered = (document) => {
         sent?.(document);
@@ -47,9 +49,9 @@ export function createFrameReadiness({ diagnostic = () => {}, timeoutMs = 5000, 
       };
       // A HEAD answer is no document a browser loads: it gets no blocker.
       if (head || observed?.modalLoadOrdering === 'immediate') return answered(html);
-      // Native documents have a final body tag. Authored scripts can contain an
-      // earlier literal "</body>"; preserve their bytes when adding the blocker.
-      const bodyEnd = html.toLowerCase().lastIndexOf('</body>');
+      // Native documents have a final body tag: the blocker goes before the document's real one, never before the same
+      // text in an authored script or an attribute value (lib/document-injection.mjs).
+      const bodyEnd = documentAnchors(html).bodyEnd;
       if (bodyEnd < 0) return answered(html);
       if (pending.size >= limit) {
         const oldest = pending.keys().next().value;
@@ -68,7 +70,7 @@ export function createFrameReadiness({ diagnostic = () => {}, timeoutMs = 5000, 
       // throwing ready handler does not prevent the global ready promise settling. Once the
       // frame has loaded, the marker leaves the document (the platform frame has no such image).
       // If CSP permits the blocking image but refuses fetch (connect-src), release through another image request.
-      const markup = `<img hidden alt="" aria-hidden="true" data-paqvilo-frame-ready><script data-paqvilo-frame-ready>(function(){try{var image=document.querySelector('img[data-paqvilo-frame-ready]');if(image)image.src='${route}';}finally{document.addEventListener('DOMContentLoaded',function(){var jq=window.jQuery;function release(reason){window.__portalSimulation=window.__portalSimulation||{};window.__portalSimulation.frameLoadOrdering=reason;function releaseByImage(){new Image().src='${route}?release='+reason;}fetch('${route}?reason='+reason,{method:'POST',credentials:'same-origin'}).then(function(response){if(response.ok===false)return releaseByImage();return response.arrayBuffer();}).catch(releaseByImage);}if(jq&&jq.ready&&typeof jq.ready.then==='function'){jq.ready.then(function(){setTimeout(function(){release('jquery-ready');},0);});}else release('dom-ready');},{once:true});}window.addEventListener('load',function(){document.querySelectorAll('[data-paqvilo-frame-ready]').forEach(function(node){node.remove();});},{once:true});})();</script>`;
+      const markup = `<img hidden alt="" aria-hidden="true" data-paqvilo-frame-ready><script${scriptMarker(injectedScripts)} data-paqvilo-frame-ready>(function(){try{var image=document.querySelector('img[data-paqvilo-frame-ready]');if(image)image.src='${route}';}finally{document.addEventListener('DOMContentLoaded',function(){var jq=window.jQuery;function release(reason){window.__portalSimulation=window.__portalSimulation||{};window.__portalSimulation.frameLoadOrdering=reason;function releaseByImage(){new Image().src='${route}?release='+reason;}fetch('${route}?reason='+reason,{method:'POST',credentials:'same-origin'}).then(function(response){if(response.ok===false)return releaseByImage();return response.arrayBuffer();}).catch(releaseByImage);}if(jq&&jq.ready&&typeof jq.ready.then==='function'){jq.ready.then(function(){setTimeout(function(){release('jquery-ready');},0);});}else release('dom-ready');},{once:true});}window.addEventListener('load',function(){document.querySelectorAll('[data-paqvilo-frame-ready]').forEach(function(node){node.remove();});},{once:true});})();</script>`;
       return answered(html.slice(0, bodyEnd) + markup + html.slice(bodyEnd));
     },
     handle(req, res, url) {

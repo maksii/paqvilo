@@ -103,6 +103,13 @@ function tagRefusalFindings(reference, at, findings) {
       reason:
         'A quoted control name renders nothing and ends the rest of the template on Power Pages: write it unquoted.',
     });
+  if (reference.braced)
+    findings.push({
+      code: 'PCF_AUDIT_NAME_BRACED',
+      ...at,
+      reason:
+        'A control id in braces renders nothing and halts rendering there on Power Pages: the rest of the page content is cut off. Write the id without braces.',
+    });
   if (reference.duplicate)
     findings.push({
       code: 'PCF_AUDIT_DUPLICATE_CONTROL',

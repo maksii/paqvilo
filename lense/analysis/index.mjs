@@ -3,6 +3,7 @@ import { collectAnalysisInputs, ANALYSIS_LIMITS } from './inventory.mjs';
 import { LIMIT_REASONS } from './limits.mjs';
 import { recordRules, analyzeRecords } from './record-rules.mjs';
 import { contentRules, analyzeContent } from './content-rules.mjs';
+import { outputCacheRules, analyzeOutputCache } from './output-cache-rules.mjs';
 import { analysisSources } from './sources.mjs';
 import { dataverseRules, analyzeDataverse } from './dataverse-rules.mjs';
 import { appRules, analyzeApps } from './app-rules.mjs';
@@ -37,6 +38,7 @@ export const analysisRules = Object.freeze(
     sourceRule,
     payloadRule,
     ...recordRules,
+    ...outputCacheRules,
     ...contentRules,
     ...dataverseRules,
     ...appRules,
@@ -159,6 +161,7 @@ export function analyzeProject(
   for (const source of input.syntax) emit(sourceRule.id, source);
   for (const source of input.incomplete) emit(payloadRule.id, source);
   analyzeRecords(input.records, emit);
+  analyzeOutputCache(input.records, input.units, input.inputs, emit);
   input.skipped.push(...analyzeContent(input.units, emit));
   const adapters = [
     analyzeDataverse(input.inputs, emit),

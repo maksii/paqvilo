@@ -1,6 +1,7 @@
-import { DataError } from './data.mjs';
+import { DataError, parseFetchXml } from './data.mjs';
 import { portalField } from './importer.mjs';
 import { contextualViewFetchXml, schemaFromFormXml } from './platform.mjs';
+import { gridItemActions } from './grid-item-actions.mjs';
 
 const canonical = (value) =>
   String(value ?? '')
@@ -113,6 +114,25 @@ function /* NOSONAR */ subgridEntityTag(source) {
   return null;
 }
 
+// Whether the root entity of an action filter already returns its primary key under that name: no selected column
+// (every column), all-attributes, or an unaliased attribute element. A portal read is distinct by default (the
+// permission compiler qualifies it, lib/permission-query.mjs) and a distinct row carries only its selected columns.
+function subgridSelectsKey(source, idColumn) {
+  let root;
+  try {
+    root = parseFetchXml(source).children.find((node) => node.name === 'entity');
+  } catch {
+    return true; // The read provider reports the malformed filter itself.
+  }
+  const fields = root?.children.filter((node) => node.name === 'attribute') ?? [];
+  return (
+    !root ||
+    !fields.length ||
+    root.children.some((node) => node.name === 'all-attributes') ||
+    fields.some(({ attrs }) => !attrs.alias && canonical(attrs.name) === canonical(idColumn))
+  );
+}
+
 /** Author-owned action conditions are evaluated by the same permission-trimmed read provider. */
 export async function subgridActionApplies(
   action,
@@ -123,9 +143,10 @@ export async function subgridActionApplies(
   const match = subgridEntityTag(source);
   if (!match || canonical(match[2]) !== canonical(entity))
     fail('Subgrid action filter must target its exported table', 501, 'SUBGRID_FILTER_INVALID');
+  const keyAttribute = subgridSelectsKey(source, idColumn) ? '' : `<attribute name="${xmlEscape(idColumn)}"/>`;
   const xml = source.replace(
     match[0],
-    `${match[0]}<filter type="and"><condition attribute="${xmlEscape(idColumn)}" operator="eq" value="${xmlEscape(recordId)}"/></filter>`,
+    `${match[0]}${keyAttribute}<filter type="and"><condition attribute="${xmlEscape(idColumn)}" operator="eq" value="${xmlEscape(recordId)}"/></filter>`,
   );
   const result = await readProvider.fetchXml(contextualViewFetchXml(xml, { ...context, identity }), identity);
   return (result.entities ?? result.value ?? []).some((row) => canonical(row[idColumn]) === canonical(recordId));
@@ -219,7 +240,7 @@ export async function deletePortalSubgridRecord(
       canonical(scalar(parent[relation.from])) === canonical(scalar(row[relation.to]));
   if (!related) fail('Native grid row is not related to its selected parent', 403, 'SubgridRowNotRelated');
   const settings = subgridSettings(portal, definition, schema, gridId);
-  const actions = settings.ItemActions?.filter((action) => action.Type === 'CrmEntityFormView-DeleteAction') ?? [];
+  const actions = gridItemActions(settings).filter((action) => action.Type === 'CrmEntityFormView-DeleteAction');
   const targetMapping = store.resolveMapping(cell.entity);
   let enabled = false;
   for (const action of actions)

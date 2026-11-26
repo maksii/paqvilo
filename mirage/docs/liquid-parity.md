@@ -96,6 +96,13 @@ The selected page variant supplies its template, form/list bindings and publishi
 uses its `adx_meta_description` or `mspp_meta_description` when an authored head snippet has no meta description.
 Exported `robots.txt` and `sitemap.xml` web files follow ordinary web-file routing.
 
+A shortcut takes the first set target in the documented order: external URL, web page, survey, web file, event, forum.
+The enhanced `mspp_shortcut` table has only the external URL, web page and web file columns. A standard export whose
+shortcut selects a survey, event or forum reports `SHORTCUT_TARGET_UNSUPPORTED` with the target kind and ID. The shortcut
+then has no URL, and a lower-priority web file does not take its place. Mirage does not host those targets.
+[Shortcuts](https://learn.microsoft.com/power-pages/configure/place-child-nodes#manage-shortcuts) ·
+[mspp_shortcut](https://learn.microsoft.com/power-apps/developer/data-platform/reference/entities/mspp_shortcut).
+
 Authored `.webmanifest` files in an export or compiled code site use `application/manifest+json` when the source
 does not specify a media type. Mirage preserves the authored manifest link and file bytes. Template-site PWA setup,
 generated shell links and worker-managed offline pages remain open. [Web App Manifest specification](https://www.w3.org/TR/appmanifest/) ·
@@ -108,13 +115,17 @@ explicit landing path or fallback rules.
 
 The classic `adxPreviewUnpublishedEntities` cookie controls publishing preview for signed-in visitors with the exported
 **Preview Unpublished Entities** website right. Preview defaults to enabled for an eligible visitor when the cookie is
-absent. `false` and other values that cannot be read as `true` disable it. The same request preference governs exported
-page and web-file access, filtered navigation to that content and Liquid ads. A web file available only with preview uses
-`private, no-store`. See [publishing states](https://learn.microsoft.com/en-us/power-pages/configure/publishing-states)
+absent. `false` and other values that cannot be read as `true` disable it. The
+[local toggle](sim-administration.md#publishing-preview-toggle) sets or clears the cookie for an eligible browser. The
+same request preference governs exported page and web-file access, filtered navigation to that content and Liquid ads.
+A web file available only with preview uses `private, no-store`. See [publishing states](https://learn.microsoft.com/en-us/power-pages/configure/publishing-states)
 and [classic preview permission](https://github.com/Adoxio/xRM-Portals-Community-Edition/blob/868decd55a6f/Framework/Adxstudio.Xrm/Web/Security/PreviewPermission.cs#L35-L94).
 
 Web templates with Functional manifests still use ordinary Liquid `include` parameters. The manifest itself produces
-no markup. A malformed manifest reports `WEB_TEMPLATE_MANIFEST_INVALID` without suppressing the template's body.
+no markup. A malformed manifest reports `WEB_TEMPLATE_MANIFEST_INVALID` without suppressing the template's body. Each
+parameter is the value of its expression in the including template, so `count: 4`, `flag: false` or `items: list`
+reach the component as a number, a Boolean or an array; the design studio passes strings, which the component converts
+with filters such as `integer`.
 
 Web link sets keep their exported title, copy and logical attributes by name or ID; standard exports can supply copy in
 a separate file, and localized titles use the import LCID. Each set and link honors its own exported publishing state.
@@ -139,6 +150,19 @@ branch for an eligible persona. Front-side CMS controls, service links and opera
   outside the default set also need `Search/EnableAdditionalEntities`.
 - Rows come from the same secured view query as lists, so table permissions filter them. Knowledge articles must be
   published and not internal (both added to the view's FetchXML); a missing `isinternal` counts as not internal.
+- With `KnowledgeManagement/ContentAccessLevel/Enabled` true (default false), search results, totals, record-type facet
+  counts, search summary sources and `knowledge.articles` keep only the articles that share a content access level with
+  the visitor (`mirage/lib/content-access-levels.mjs`). Levels come from the visitor's web roles (the Default level
+  reaches visitors through the Anonymous Users and Authenticated Users roles), contact, parent contact and account. The
+  `adx_contentaccesslevel` N:N relationships are read from the Solution metadata, and the links from local data. Only
+  active levels, contacts, accounts and web roles grant. Without a level-to-article relationship every article is hidden
+  (`KNOWLEDGE_CONTENT_ACCESS_UNRESOLVED`). With live data the same rule runs over the visitor's contact, parent contact and
+  account, their levels and the articles of those levels, read through the live data path; when that read fails (for
+  example the live Web API does not expose the level tables to the visitor), every article is hidden and
+  `KNOWLEDGE_CONTENT_ACCESS_LIVE_HIDDEN` is reported once. Local model, not
+  documented: an article needs any one of its levels, and an article with no level is hidden. `entities`, the
+  `fetchxml` tag and the Knowledge Article page's "Article Unavailable" response are not filtered.
+  [Content access levels](https://learn.microsoft.com/en-us/power-pages/templates/dynamics-365-apps/manage-knowledge-articles-content-levels).
 - Each result has `entity`, `fragment`, `id`, `logical_name`, `number`, `score`, `title` and `url`. The URL comes from
   the site marker `<logicalname>_SearchResultPage` (`Case` for incident, `Knowledge Article` for knowledgearticle) with
   `?id=`, and is empty without a marker. The fragment is the first matching value, cut at 200 characters, with each
@@ -146,17 +170,69 @@ branch for an eligible persona. Front-side CMS controls, service links and opera
 - Parameters read: `query`, `filter` (`+column:value` and `-column:value` only; others answer 501
   `PORTAL_SEARCH_FILTER_UNSUPPORTED`), `logical_names`, `page` and `page_size` (default 10, at most 1000). Every page of
   each indexed view is read, so `approximate_total_hits` counts the matching rows the visitor may read.
-- The local scan accepts ordinary terms, quoted phrases, `*` and `?` within terms, Boolean clauses and groups, and
-  positive `^` boosts. The Liquid tag treats a query as plain text when this parser detects malformed syntax. The local
-  length and group-depth limits still apply. The score sums matching local term weights. Dataverse relevance, fuzzy and proximity ranking,
-  attachment indexing and `Search/Query` weights remain outside this scan (`PORTAL_SEARCH_QUERY_WEIGHTS_IGNORED`).
+- The local scan accepts ordinary terms, quoted phrases, `*` and `?` within terms, Boolean clauses and groups,
+  positive `^` boosts, proximity `"a b"~N` and fuzzy `term~` / `term~N`. The Liquid tag treats a query as plain text
+  when this parser detects malformed syntax (for example `term~1.5`); the default search page answers 400
+  `PORTAL_SEARCH_QUERY_INVALID`. The local length and group-depth limits still apply, and a proximity phrase may take
+  at most 2,000,000 steps (candidate positions times phrase words) per column. Stemming is not modelled
+  (`Search/Stemmer` is not read, so `lantern` does not match `lanterns`).
+- Results are ordered by a local relevance model (`mirage/lib/portal-search-rank.mjs`) built from the factors the
+  [search overview](https://learn.microsoft.com/en-us/power-pages/configure/search/overview#global-search) documents:
+  the number of query words matched, their proximity, and the amount of text they are found in, with `^` boosts
+  (below 1 too). A word scores in its best column, more by its count and less by the column's length; a fuzzy
+  expansion counts half as much as an exact word; a wildcard or prefix word ignores its count; a sloppy phrase
+  counts less for each position move it needs; matched words close together in one column add a bonus. Equal scores
+  are ordered by title, then id (hosted ties are random). Not modelled: inverse document frequency and other index
+  statistics, the hosted analysers and field weights, synonyms and natural-language interpretation. The `score`
+  field is the local score, and a search whose results have different scores reports `PORTAL_SEARCH_RANKING_LOCAL`.
+  - Proximity: the phrase words must fit within `N` position moves in one column (the Lucene sloppy phrase rule, so
+    reversed words need `~2`). `"a b"~` is an exact phrase. A slop may precede a boost (`"a b"~3^2`).
+  - Fuzzy, Dataverse search (the default): `N` is an edit distance, 2 when omitted and at most 2, with an adjacent
+    transposition counting once; a value below 1 is a similarity converted to edits as the Lucene parser does, and a
+    fractional value of 1 or more is a syntax error. Legacy Lucene .NET search (`Search/EnableDataverseSearch` false):
+    `N` is a minimum similarity below 1 (default 0.5), kept when `1 - distance / shorter length` exceeds it; 1 or more
+    is a syntax error. A wildcard term ignores `~`. Fuzzy matches are highlighted in fragments. Not modelled: the
+    50-term expansion limit. [Lucene query syntax](https://lucene.apache.org/core/old_versioned_docs/versions/2_9_1/queryparsersyntax.html) ·
+    [Dataverse search query syntax](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/search/query#parameters).
+- `Search/Query` applies to the default search page only, never to the Liquid tag. `@Query` stands for the visitor
+  query, parsed on its own (visitor text never changes the template's structure). The template supports the same
+  syntax plus fields: `_logicalname:` (the table logical name as one keyword, so `-_logicalname:adx_webfile~0.9`
+  excludes that table), `_title:` (the first indexed column) and any indexed column by logical name, each before a
+  term, phrase or group. Membership: required and prohibited clauses, and one optional clause when none is required.
+  Rank: the matched clauses add their scores with their boosts, an `@Query` clause scoring the visitor query over
+  its field, so the default `_title:(@Query)` weighs a title match again and `_logicalname:adx_webpage~0.9^0.2` adds
+  0.2 for web pages (`PORTAL_SEARCH_QUERY_WEIGHTS_LOCAL`).
+  An invalid template is reported (`PORTAL_SEARCH_QUERY_TEMPLATE_INVALID`) and the visitor query runs alone.
+- `Search/Filters` (`Label:logical,names;...`) adds a `logicalNames` drop-down to the default search page. An option
+  shows the plural display name of its first table from the Solution metadata, else its label; the first option is
+  the `Search/Default/FilterText` snippet (default All). A selected option restricts results like the record-type
+  facet. Without the setting the page has no drop-down. The documented default value is not applied: Learn shows two
+  different defaults.
+- With `Search/IndexNotesAttachments` and `KnowledgeManagement/DisplayNotes` both true (both must be set: Learn gives
+  conflicting defaults for `DisplayNotes`), the notes of the knowledge articles the visitor may find are searched as
+  results with `logical_name` `annotation` and a `parent` (the article's id, title and url); group them with
+  `Search/RecordTypeFacetsEntities` (`Downloads:annotation`). Only notes the visitor's annotation read returns, with
+  the `KnowledgeManagement/NotesFilter` prefix (default `*WEB*`, removed from the indexed text) and outside another
+  contact's private marker, are searched; subject, note text, file name and a text-typed body (`text/*`, JSON, XML, at
+  most 1 MiB) are indexed when column security lets the visitor read them. Binary bodies are skipped
+  (`PORTAL_SEARCH_ATTACHMENT_NOT_INDEXED`). The body of a cloud attachment note (an Azure file Web API `.azure.txt`
+  note, or a form attachment stored in cloud storage) is a placeholder `{ Name, Type, Size, Url }` that names the
+  file's storage key, so Mirage never indexes it; its subject, note text and file name are (Mirage-own). The Liquid tag
+  and the default search page read a body inline on the note row or from the annotations storage route, as the
+  visitor. A direct `portalSearch` caller without a body reader
+  searches only inline bodies and reports `PORTAL_SEARCH_ATTACHMENT_BODY_UNAVAILABLE` for the others. A note with a
+  file links to `/_entity/annotation/<id>/<website id>`, one without to its article. Web file notes are not searched:
+  [Search within knowledge article attachment content](https://learn.microsoft.com/en-us/power-pages/configure/search/file-attachment)
+  says they are not searchable, although the overview says otherwise.
 - The default local page supports readable record-type counts and filters with `Search/FacetedView` and
   `Search/RecordTypeFacetsEntities`. Modified date, product and rating facets remain unsupported. The Liquid
   `searchindex` results contain no facets.
-- With no indexed table, or Dataverse search off for the organization, search returns no results and
-  `PORTAL_SEARCH_UNAVAILABLE`; with `liquidServiceTags: observed` it renders the observed Liquid error. When the export
-  has no `/search/` page, the default local page keeps the selected language, query and record type while paging.
-  See [local portal routes](operations.md#local-portal-routes).
+- With no indexed table, or Dataverse search off for the organization (`isexternalsearchindexenabled` false), search
+  returns no results and `PORTAL_SEARCH_UNAVAILABLE`; with `liquidServiceTags: observed` it renders the observed Liquid
+  error. An export that selects legacy search (`Search/EnableDataverseSearch` false) still searches local data when
+  the organization's index is off, because the local scan needs no index; with live data or live pages it does not.
+  When the export has no `/search/` page, the default local page keeps the selected language, query and record type
+  while paging. See [local portal routes](operations.md#local-portal-routes).
 
 ## Error pages
 

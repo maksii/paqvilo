@@ -2,6 +2,7 @@
 // a Dataverse Function (custom API with fxexpressionid) reading and writing tables as the caller inside its transaction,
 // automated low-code plug-ins (Set on ThisRecord, Error refusing the write), delegation push-down against the in-memory
 // read with the delegation warning.
+// @test-kind unproven: local model of the Dataverse Power Fx host built from the Learn formula column, Dataverse function and low-code plug-in articles; the results are not each checked against native
 import { ownedFixture } from '../testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -74,7 +75,8 @@ async function organization(t) {
       x_fee: { dataverseType: 'decimal' },
       x_big: { dataverseType: 'bigint' },
       x_precise: { dataverseType: 'decimal' },
-      x_sum: formula('x_price + x_fee', 'decimal', { precision: 10 }),
+      // Learn 'Work with formula columns': a currency column is read through Decimal(), never directly.
+      x_sum: formula('Decimal(x_price) + x_fee', 'decimal', { precision: 10 }),
       x_bigger: formula('x_big + 1', 'bigint'),
       x_double: formula('x_precise * 2', 'decimal', { precision: 10 }),
       x_due: { dataverseType: 'datetime' },

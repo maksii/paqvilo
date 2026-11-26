@@ -165,6 +165,8 @@ test('nested, dynamic and navigated frames keep their own form context; cross-or
   assert.equal(selected.element.tag, 'iframe');
   assert.equal(selected.identity.forms.length, 0);
   assert.match(await page.locator('#paqvilo-xray .content').innerText(), /open the frame in its own tab/);
+  // The card says why the frame's controls cannot be selected: the browser boundary, not a missed click.
+  assert.match(await page.locator('#paqvilo-xray .content').innerText(), /^Frame outside Inspect: the browser keeps/);
   const popupPromise = page.waitForEvent('popup');
   await page.locator('#paqvilo-xray').getByRole('button', { name: 'Open frame in new tab' }).click();
   const popup = await popupPromise;
@@ -178,6 +180,8 @@ test('nested, dynamic and navigated frames keep their own form context; cross-or
     evidence.controls.some((row) => row.formId === 'X'),
     false,
   );
+  // The page read counts the frame it could not enter, so Inspect can say that part of the page was not read.
+  assert.equal(evidence.inaccessibleFrames, 1);
   assert.doesNotMatch(JSON.stringify(evidence), /PRIVATE_VALUE|PRIVATE_TEXT|PRIVATE_QUERY|token=/);
 });
 
@@ -242,6 +246,9 @@ test('inherited-origin srcdoc controls work while sandboxed frames remain inacce
   const boundary = await pick(page, page.locator('#sandbox'));
   assert.equal(boundary.element.tag, 'iframe');
   assert.equal(boundary.identity.forms.length, 0);
+  assert.match(await page.locator('#paqvilo-xray .content').innerText(), /^Frame outside Inspect: the browser keeps/);
+  // The sandboxed frame and the fixture's cross-origin frame are the two the page read could not enter.
+  assert.equal((await page.evaluate(inspectRenderedPage)).inaccessibleFrames, 2);
 });
 
 test('frame scrolling follows controls and clips highlights to the visible embedded viewport', async (t) => {

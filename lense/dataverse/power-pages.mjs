@@ -88,7 +88,11 @@ async function command(name, args, options) {
     throw error?.code === 'ENOENT' ? executableMissing() : managementFailure(error);
   }
   if (result.exitCode !== undefined && result.exitCode !== 0) throw managementFailure(result);
-  return typeof result.stdout === 'string' ? result.stdout : String(result.stdout ?? '');
+  const stdout = typeof result.stdout === 'string' ? result.stdout : String(result.stdout ?? '');
+  // PAC 2.13 reports a refused Power Platform API call (for example WAF on a trial site) as "Error: ... [HTTP 400
+  // (BadRequest)]" text with exit code 0; it is a failure, and its text stays withheld.
+  if (/^\s*Error:/i.test(stdout) && /\[HTTP\s+[45]\d\d\b/i.test(stdout)) throw managementFailure({ ...result, stdout });
+  return stdout;
 }
 function jsonResponse(output) {
   try {
@@ -196,5 +200,157 @@ export async function setPowerPagesSiteVisibility(
     requestedVisibility: options.visibility,
     commandCompleted: true,
     readbackVerified: false,
+  };
+}
+
+// The edge report: read-only PAC commands that wrap the Power Platform API Websites operations Get WAF Status, Get WAF
+// Rules and Get Allowed Ip Addresses (Learn, "Use Power Pages admin APIs"). Only bounded, documented fields are kept.
+const text = (value, max = 128) => (typeof value === 'string' && value.length <= max ? value : null);
+const integer = (value) => (Number.isSafeInteger(value) ? value : null);
+const pick = (row, ...keys) => {
+  for (const key of keys) if (row && typeof row === 'object' && Object.hasOwn(row, key)) return row[key];
+  return undefined;
+};
+const array = (value) => (Array.isArray(value) ? value : []);
+const choice = (value, choices) =>
+  choices.find((entry) => entry.toLowerCase() === String(value ?? '').toLowerCase()) ?? null;
+// Match values of these variables are addresses, methods, paths or country codes. Other variables (headers, cookies,
+// query strings, bodies) can hold shared secrets, so only their value count is reported.
+const REPORTED_MATCH_VALUES = new Set(['remoteaddr', 'socketaddr', 'requestmethod', 'requesturi']);
+const OPERATORS = ['Contains', 'EndsWith', 'Equals', 'GeoMatch', 'StartsWith'];
+function matchCondition(condition) {
+  const variable = text(pick(condition, 'matchVariable', 'MatchVariable'), 64);
+  const operator = choice(pick(condition, 'operator', 'Operator'), OPERATORS);
+  const values = array(pick(condition, 'matchValue', 'MatchValue'));
+  const reported = REPORTED_MATCH_VALUES.has(String(variable).toLowerCase()) || operator === 'GeoMatch';
+  return {
+    matchVariable: variable,
+    operator,
+    negateCondition: pick(condition, 'negateCondition', 'NegateCondition') === true,
+    selector: reported ? text(pick(condition, 'selector', 'Selector')) : null,
+    transforms: array(pick(condition, 'transforms', 'Transforms'))
+      .map((entry) => text(entry, 64))
+      .filter(Boolean)
+      .slice(0, 16),
+    valueCount: values.length,
+    values: reported ? values.slice(0, 100).map((entry) => text(entry, 256)) : null,
+  };
+}
+function customRule(rule) {
+  return {
+    name: text(pick(rule, 'name', 'Name')),
+    priority: integer(pick(rule, 'priority', 'Priority')),
+    enabledState: choice(pick(rule, 'enabledState', 'EnabledState'), ['Disabled', 'Enabled']),
+    action: choice(pick(rule, 'action', 'Action'), ['Allow', 'Block', 'Log']),
+    ruleType: choice(pick(rule, 'ruleType', 'RuleType'), ['MatchRule', 'RateLimitRule']),
+    rateLimitThreshold: integer(pick(rule, 'rateLimitThreshold', 'RateLimitThreshold')),
+    rateLimitDurationInMinutes: integer(pick(rule, 'rateLimitDurationInMinutes', 'RateLimitDurationInMinutes')),
+    matchConditions: array(pick(rule, 'matchConditions', 'MatchConditions'))
+      .slice(0, 32)
+      .map(matchCondition),
+  };
+}
+function managedRuleSet(set) {
+  const groups = array(pick(set, 'RuleGroupOverrides', 'ruleGroupOverrides'));
+  return {
+    ruleSetType: text(pick(set, 'RuleSetType', 'ruleSetType')),
+    ruleSetVersion: text(pick(set, 'RuleSetVersion', 'ruleSetVersion'), 32),
+    ruleSetAction: choice(pick(set, 'RuleSetAction', 'ruleSetAction'), ['Allow', 'Block', 'Log']),
+    ruleGroupOverrides: groups.length,
+    overriddenRules: groups.reduce((sum, group) => sum + array(pick(group, 'Rules', 'rules')).length, 0),
+    exclusions: array(pick(set, 'Exclusions', 'exclusions')).length,
+  };
+}
+const unwrapped = (data) => (data?.value && !Array.isArray(data.value) ? data.value : data);
+const customRules = (data) => ({
+  rules: array(pick(unwrapped(data), 'CustomRules', 'customRules'))
+    .slice(0, 100)
+    .map(customRule),
+});
+const managedRules = (data) => ({
+  ruleSets: array(pick(unwrapped(data), 'ManagedRules', 'managedRules'))
+    .slice(0, 16)
+    .map(managedRuleSet),
+});
+// Learn documents no schema for WebApplicationFirewallStatus: a string, or one status-like property, is kept.
+function firewallStatus(data) {
+  if (typeof data === 'string') return { status: text(data, 64) };
+  const root = unwrapped(data);
+  const status = pick(root, 'status', 'Status', 'wafStatus', 'WafStatus', 'state', 'State');
+  if (typeof status === 'string') return { status: text(status, 64) };
+  const enabled = pick(root, 'enabled', 'Enabled', 'isEnabled', 'IsEnabled');
+  if (typeof enabled === 'boolean') return { status: enabled ? 'Enabled' : 'Disabled' };
+  return { status: null, shape: 'unrecognized' };
+}
+const IP_ENTRY = /^[0-9a-f:.]{2,45}(?:\/\d{1,3})?$/i;
+function ipRestrictions(data) {
+  const rows = Array.isArray(data) ? data : data?.value;
+  if (!Array.isArray(rows)) throw new Error('Power Pages IP restriction list is not a collection.');
+  const entries = rows
+    .map((row) => ({
+      ipAddress: text(pick(row, 'IpAddress', 'ipAddress'), 49),
+      type: choice(pick(row, 'IpAddressType', 'ipAddressType'), ['IPv4', 'IPv6']),
+    }))
+    .filter((entry) => entry.ipAddress && IP_ENTRY.test(entry.ipAddress));
+  return { restricted: entries.length > 0, entries, withheld: rows.length - entries.length };
+}
+// One read; a refused read (for example WAF on a trial site, HTTP 400) is reported by its status, never its output.
+async function edgeSection(read, project, site) {
+  try {
+    return { available: true, ...project(jsonResponse(await read())) };
+  } catch (error) {
+    if (error?.code !== 'POWER_PAGES_MANAGEMENT_FAILED') throw error;
+    const reason = error.status === 400 && /^trial$/i.test(site.type ?? '') ? 'trial-site' : 'refused';
+    return { available: false, reason, status: error.status ?? null };
+  }
+}
+/**
+ * Read-only report of the controls the hosted edge applies before a request reaches the site: site visibility, the
+ * web application firewall (status, custom rules, managed rule sets) and the IP restriction allow list, with what a
+ * local Mirage runtime emulates of each. It never changes the site; PAC holds the sign-in, so no token passes here.
+ */
+export async function readPowerPagesEdge(
+  options = requiredArgument(
+    'readPowerPagesEdge({ environment, id })',
+    'an options object with the management site id',
+  ),
+) {
+  const site = await readPowerPagesSite(options);
+  const args = ['--id', site.id];
+  const read =
+    (name, extra = []) =>
+    () =>
+      command(name, [...args, ...extra], options);
+  const status = await edgeSection(read('get-waf-status'), firewallStatus, site);
+  const custom = await edgeSection(read('get-waf-rules', ['--rule-type', 'custom']), customRules, site);
+  const managed = await edgeSection(read('get-waf-rules', ['--rule-type', 'managed']), managedRules, site);
+  const ip = await edgeSection(read('get-allowed-ip-addresses'), ipRestrictions, site);
+  return {
+    managementId: site.id,
+    websiteUrl: site.websiteUrl,
+    type: site.type,
+    siteVisibility: site.siteVisibility,
+    firewall: { status, customRules: custom, managedRules: managed },
+    ipRestrictions: ip,
+    local: {
+      siteVisibility: {
+        emulated: true,
+        setting: 'observed.siteVisibility',
+        value: site.siteVisibility,
+        note: 'Mirage renders the private-site banner and, with privateSiteContactIds, admits only those contacts.',
+      },
+      ipRestrictions: {
+        emulated: false,
+        note: 'Every loopback request comes from the local machine; Mirage has no client-address model.',
+      },
+      firewallCustomRules: {
+        emulated: false,
+        note: 'The edge evaluates custom rules before the site; Mirage applies no request filtering or rate limits.',
+      },
+      firewallManagedRules: {
+        emulated: false,
+        note: 'The managed rule set content and its anomaly thresholds are not published.',
+      },
+    },
   };
 }

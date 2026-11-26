@@ -38,6 +38,7 @@ import {
   fromWall,
   fxError,
   isBlank,
+  isNumeric,
   isRecord,
   isoOf,
   member,
@@ -247,6 +248,21 @@ const n = (fx, value) => toNumber(value);
 const text = (fx, value) => toText(value, fx);
 const integer = (value) => (value instanceof FxError ? value : Math.trunc(value));
 
+// Learn "Create formula columns with decimal, whole number, float, and choice data types": in a Dataverse formula column
+// (host.formulaColumn) "a numeric function returns a float value when the first parameter provided to the function is of
+// float type. Otherwise, the function returns a decimal value" (Sum(1, 2, Float(1)) is a decimal, Sum(Float(1), 1, 2) a
+// float). Other hosts keep their own mixing rule, so the formula-column rule applies only under that host flag.
+const formulaColumnTyping = (fx) => fx?.host?.formulaColumn === true;
+// Learn "Work with formula columns" (range validations): the Dataverse range for decimal type formula columns.
+export const FORMULA_COLUMN_DECIMAL_LIMIT = 100_000_000_000;
+// A numeric result typed by the first argument under the formula-column rule; any other host gets it unchanged.
+function typedByFirst(fx, first, result) {
+  if (!formulaColumnTyping(fx) || result instanceof FxError || isBlank(result)) return result;
+  if (first instanceof FxFloat)
+    return result instanceof FxFloat || !isNumeric(result) ? result : new FxFloat(toNumber(result));
+  return result instanceof FxFloat ? toDecimal(result) : result;
+}
+
 // Number functions: the argument converted, an error or blank handled once.
 const numeric = (fn, { blank = 'zero' } = {}) => ({
   min: 1,
@@ -254,7 +270,10 @@ const numeric = (fn, { blank = 'zero' } = {}) => ({
   fn: (fx, value) => {
     if (isBlank(value) && blank === 'blank') return null;
     const x = toNumber(value);
-    return x instanceof FxError ? x : fn(x);
+    if (x instanceof FxError) return x;
+    const result = fn(x);
+    // A function that answers a number (Abs, Int) keeps a float argument's type under the formula-column rule.
+    return typeof result === 'number' && value instanceof FxFloat ? typedByFirst(fx, value, result) : result;
   },
 });
 const textual = (fn) => ({
@@ -292,7 +311,9 @@ const rounding = (mode) => ({
     if (d instanceof FxError) return d;
     // An exact decimal beyond a double's digits rounds exactly (half away from zero).
     if (isExactNumeric(value) && mode === 'round' && d >= 0) return roundNumeric(value, Math.trunc(d), 'Decimal');
-    return scaled(x, Math.trunc(d), mode);
+    return value instanceof FxFloat
+      ? typedByFirst(fx, value, scaled(x, Math.trunc(d), mode))
+      : scaled(x, Math.trunc(d), mode);
   },
 });
 
@@ -978,12 +999,16 @@ function aggregate(name, reduce) {
     },
   };
 }
-// Sum of numeric values: exact decimals, or a float when any value is a float.
-function total(values) {
+// Sum of numeric values: exact decimals, or a float when any value is a float (under the formula-column rule, when the
+// first value is a float).
+function total(values, fx) {
   const list = values.map(toDecimal);
   const error = firstError(...list);
   if (error) return error;
-  if (values.some((value) => value instanceof FxFloat)) return new FxFloat(list.reduce((a, b) => a + toNumber(b), 0));
+  const float = formulaColumnTyping(fx)
+    ? values[0] instanceof FxFloat
+    : values.some((value) => value instanceof FxFloat);
+  if (float) return new FxFloat(list.reduce((a, b) => a + toNumber(b), 0));
   return list.reduce((sum, value) => decimalArithmetic('+', sum, value), 0);
 }
 // The language number text is read in: the LanguageTag argument, else the user's language (Language()).
@@ -1219,7 +1244,7 @@ export const FUNCTIONS = {
         d = toDecimal(b);
       if (firstError(x, d)) return firstError(x, d);
       if (toNumber(d) === 0) return fail('Div0', 'Invalid operation: division by zero.');
-      if (a instanceof FxFloat || b instanceof FxFloat)
+      if (formulaColumnTyping(fx) ? a instanceof FxFloat : a instanceof FxFloat || b instanceof FxFloat)
         return new FxFloat(toNumber(x) - toNumber(d) * Math.floor(toNumber(x) / toNumber(d)));
       // Exact remainder that takes the divisor's sign (Learn example Mod(-3, 2) = 1).
       const pair = numericPair(x, d),
@@ -1239,8 +1264,20 @@ export const FUNCTIONS = {
   Decimal: {
     min: 1,
     max: 2,
-    fn: (fx, value, language) =>
-      isBlank(value) || value === '' ? null : asDecimal(value, numberLanguage(fx, language)),
+    fn(fx, value, language) {
+      if (isBlank(value) || value === '') return null;
+      const result = asDecimal(value, numberLanguage(fx, language));
+      // Learn "Work with formula columns" (currency fields): "The Decimal function makes sure the output is within the
+      // accepted range. If the currency or exchange rate column value exceeds the accepted range, then the formula returns
+      // null." The accepted range is the decimal formula column range of the same article (-100000000000 to
+      // 100000000000); the error makes the whole formula read null.
+      if (formulaColumnTyping(fx) && isNumeric(result) && Math.abs(toNumber(result)) > FORMULA_COLUMN_DECIMAL_LIMIT)
+        return fail(
+          'Numeric',
+          `The value is outside the formula column decimal range (±${FORMULA_COLUMN_DECIMAL_LIMIT}).`,
+        );
+      return result;
+    },
   },
   Float: {
     min: 1,
@@ -1259,18 +1296,26 @@ export const FUNCTIONS = {
     },
   },
   Boolean: { min: 1, max: 1, fn: (fx, value) => (isBlank(value) || value === '' ? null : toBoolean(value)) },
-  Sum: aggregate('Sum', (fx, values) => total(values)),
+  Sum: aggregate('Sum', (fx, values) => total(values, fx)),
   /* NOSONAR: mixed return values are part of the contract */ Average: aggregate('Average', (fx, values) => {
-    const sum = total(values);
+    const sum = total(values, fx);
     if (sum instanceof FxError) return sum;
     if (!values.length) return fail('Div0', 'Average of no values: division by zero.');
     return sum instanceof FxFloat ? new FxFloat(sum.value / values.length) : decimalArithmetic('/', sum, values.length);
   }),
   Max: aggregate('Max', (fx, values) =>
-    values.reduce((best, value) => (best === null || compare(value, best, fx) > 0 ? value : best), null),
+    typedByFirst(
+      fx,
+      values[0],
+      values.reduce((best, value) => (best === null || compare(value, best, fx) > 0 ? value : best), null),
+    ),
   ),
   Min: aggregate('Min', (fx, values) =>
-    values.reduce((best, value) => (best === null || compare(value, best, fx) < 0 ? value : best), null),
+    typedByFirst(
+      fx,
+      values[0],
+      values.reduce((best, value) => (best === null || compare(value, best, fx) < 0 ? value : best), null),
+    ),
   ),
   Sequence: {
     min: 1,

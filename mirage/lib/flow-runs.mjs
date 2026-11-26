@@ -553,7 +553,48 @@ export function createHostFlowRuns({
     approvals,
     stateDirectory,
   });
+  // Requests held for a waiting run's Response (exported-operations.mjs awaitPortalFlowResponse): runId -> settle callbacks.
+  const responseWaiters = new Map();
+  const settleWaiters = (runId, value) => {
+    const waiters = responseWaiters.get(runId);
+    responseWaiters.delete(runId);
+    for (const settle of waiters ?? []) settle(value);
+  };
+  /**
+   * The answer of the run's next resume that answers its Response or ends it, or { status: 'TimedOut' } once timeoutMs
+   * passed on the store scheduler (the runtime clock). The run itself keeps running after a timeout.
+   */
+  function awaitResponse(runId, timeoutMs) {
+    return new Promise((resolve) => {
+      const waiters = responseWaiters.get(runId) ?? new Set();
+      responseWaiters.set(runId, waiters);
+      let handle = null;
+      const settle = (value) => {
+        if (handle !== null) runs.scheduler().cancel(handle);
+        handle = null;
+        resolve(value);
+      };
+      waiters.add(settle);
+      handle = runs.scheduler().schedule(
+        () => {
+          handle = null;
+          waiters.delete(settle);
+          if (!waiters.size && responseWaiters.get(runId) === waiters) responseWaiters.delete(runId);
+          resolve({ status: 'TimedOut' });
+        },
+        timeoutMs,
+        { name: 'flow-response-timeout' },
+      );
+    });
+  }
   async function resumeRun(runId, outcome) {
+    const answer = await resumeOnce(runId, outcome);
+    // A run that waits again without having answered keeps its held requests; any other answer (a Response, the run's end,
+    // a failed resume as null) settles them.
+    if (answer?.status !== 'Waiting' || answer.response) settleWaiters(runId, answer ?? { status: 'Failed' });
+    return answer;
+  }
+  async function resumeOnce(runId, outcome) {
     try {
       const run = runs.get(runId),
         flow = run ? flowOf(run.processId) : null;
@@ -600,9 +641,17 @@ export function createHostFlowRuns({
   }
   runs.setResumeRun(resumeRun);
   const closeTimers = runs.close;
+  const cancelRun = runs.cancel;
   return Object.assign(runs, {
     flowOf,
     resumeRun,
+    awaitResponse,
+    // A cancelled run answers the requests held for it as cancelled.
+    async cancel(runId) {
+      const cancelled = await cancelRun(runId);
+      if (cancelled) settleWaiters(runId, { status: 'Cancelled' });
+      return cancelled;
+    },
     attach(api) {
       // The resumed run owns the change slot (runOwned), so a custom API it calls joins its transaction (no self-wait).
       if (typeof api?.change === 'function') change = (fn) => api.change(() => runOwned(fn));

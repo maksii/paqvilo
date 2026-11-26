@@ -78,7 +78,7 @@ import {
   webApiFetchToQuery,
 } from './plugin-query.mjs';
 import { pluginStepBypassed } from './plugin-bypass.mjs';
-import { compilePermissionFetchXml, serializePermissionFetchXml } from './permission-query.mjs';
+import { compilePermissionFetchXml, permissionPathTables, serializePermissionFetchXml } from './permission-query.mjs';
 import {
   compileCustomTablePermission,
   customTablePermissionFilter,
@@ -2023,7 +2023,7 @@ export class DataStore {
     return this.transact(fn, { skipSaveIfUnchanged: true, cloneResult: false, lazyReadSnapshot: true });
   }
   /** Resolve provider reads before the synchronous query engine evaluates and authorizes the rows. */
-  async withPortalReadSources(identity, { table, id = null, fetchXml, expand, navigation, right }, fn) {
+  async withPortalReadSources(identity, { table, id = null, fetchXml, expand, navigation, queryPaths, right }, fn) {
     const source = this.recordPipeline?.virtualProviders;
     if (!source) return fn();
     const permitted = (logical, operation = 'read') =>
@@ -2045,7 +2045,7 @@ export class DataStore {
     const admitted =
       fetchXml != null
         ? this.collectPortalFetchReadSources(fetchXml, right, permitted, addRead)
-        : this.collectPortalNavigationReadSources({ table, id, expand, navigation }, permitted, addRead);
+        : this.collectPortalNavigationReadSources({ table, id, expand, navigation, queryPaths }, permitted, addRead);
     if (!admitted) return fn();
     if (!identity?.admin && this.state.settings.permissionMode !== 'permissive')
       this.addPortalPermissionSources(identity, reads.values(), add);
@@ -2076,7 +2076,7 @@ export class DataStore {
     visit(fetch);
     return true;
   }
-  collectPortalNavigationReadSources({ table, id, expand, navigation }, permitted, addRead) {
+  collectPortalNavigationReadSources({ table, id, expand, navigation, queryPaths }, permitted, addRead) {
     const root = addRead(table, id);
     if (!permitted(root.logicalName)) return false;
     const related = (mapping, name) => {
@@ -2092,7 +2092,24 @@ export class DataStore {
     };
     const expanded = navigation ? related(root, navigation) : root;
     if (expanded && expand) visit(expanded, parseExpand(expand));
+    if (expanded && queryPaths?.length) this.collectPortalQueryPathSources(expanded, queryPaths, permitted, addRead);
     return true;
+  }
+  /** Tables on the navigation paths a query follows from `owner` (navigation segments only), when every one is readable. */
+  collectPortalQueryPathSources(owner, paths, permitted, addRead) {
+    for (const path of paths) {
+      let current = owner;
+      const tables = [];
+      for (const name of path) {
+        const relationship = ownMember(current.relationships, name);
+        if (!relationship) break;
+        const target = this.resolveMapping(relationship.entity);
+        if (!permitted(target.logicalName)) break;
+        tables.push(target.logicalName);
+        current = target;
+      }
+      if (tables.length === path.length) for (const table of tables) addRead(table);
+    }
   }
   /** Materialize provider-backed ancestors without changing which parent grant the visitor can exercise. */
   addPortalPermissionSources(identity, reads, add) {
@@ -2108,6 +2125,8 @@ export class DataStore {
       );
       if (grants.some(({ scope }) => scope == null || scope === 'global')) continue;
       for (const grant of grants) {
+        // A provider-backed intersect or identity table on the generated path is read fresh, as the parent is.
+        for (const table of permissionPathTables(grant)) add(table);
         const parent = this.portalParentPermissionSource(grant, identity);
         if (!parent) continue;
         add(parent[0]);
@@ -2327,6 +2346,8 @@ export class DataStore {
             if (isolated) this.isolatedCount = (this.isolatedCount ?? 0) + 1;
             const result = await fn();
             if (boundary.transactionFailure) throw boundary.transactionFailure;
+            // Derived state of whole-table replacements, written in this transaction (dataverse-rollup.mjs).
+            this.beforeTransactionCommit?.({ isolated });
             this.restorePluginTraceLogs(boundary);
             const staged = this.stageOnCommit(this.committedEventCandidates);
             // The callback and the commit stagers have written everything: the containers are plain data for the save.
@@ -2397,6 +2418,7 @@ export class DataStore {
             this.rowIndexes = null;
             const rollback = error.persistenceFailure ? boundary.persistenceBackup : boundary.backup;
             if (!privateInitialization && rollback !== null) this.state = restoreOf(rollback);
+            this.afterTransactionRollback?.();
             for (const note of boundary.rollbackNotes ?? [])
               try {
                 note(error);
@@ -2627,10 +2649,12 @@ export class DataStore {
   insertRow(table, rows, row) {
     assertPluginExecutionActive(this);
     this.stateTracker?.reach('tables', table);
+    const complete = this.beforeRowMembershipChange?.(table, rows, row, rows.length);
     if (this.rowTransaction) this.rowTransaction.insert(table, rows, rows.length, row);
     else rows.push(row);
     const indexes = this.rowIndexes?.get(rows);
     if (indexes?.size) for (const [name, entry] of indexes) if (!entry.appended(rows, row)) indexes.delete(name);
+    complete?.();
   }
   /** System-owned plug-in trace facts survive a business rollback. Never retain another table this way. */
   appendPluginTraceLog(row) {
@@ -2664,10 +2688,12 @@ export class DataStore {
     this.stateTracker?.reach('tables', table);
     const indexes = this.rowIndexes?.get(rows),
       removed = rows[index];
+    const complete = this.beforeRowMembershipChange?.(table, rows, removed);
     if (this.rowTransaction) this.rowTransaction.remove(table, rows, index);
     else rows.splice(index, 1);
     if (indexes?.size)
       for (const [name, entry] of indexes) if (!entry.removed(rows, index, removed)) indexes.delete(name);
+    complete?.();
   }
   /**
    * The cached index `name` of a row array (see RowKeyIndex), built on first use and
@@ -6940,6 +6966,8 @@ export class DataStore {
       yield* this.deleteChildrenForReference(mapping, row, reference, identity, deleting, options);
   }
   *deleteChildrenForReference(mapping, row, reference, identity, deleting, options) {
+    const configured = cascadeAction(reference.cascade, 'delete');
+    if (configured === 'NoCascade') return;
     const target = scalar(field(row, reference.targetColumn ?? mapping.idColumn));
     if (target == null) return;
     const candidates = this.state.tables[reference.entity] ?? [];
@@ -6951,20 +6979,37 @@ export class DataStore {
       return equal(scalar(value), target);
     });
     if (!children.length) return;
-    const configured = cascadeAction(reference.cascade, 'delete');
     const behaviour = configured ?? 'RemoveLink';
     if (configured == null) this.noteCascadeDefault(mapping.logicalName, reference);
-    if (behaviour === 'Restrict')
-      throw new DataError(
-        'The object you tried to delete is associated with another object and cannot be deleted.',
-        405,
-        'CannotDeleteDueToAssociation',
-        { innerCode: '0x80040227', table: reference.entity, relationship: reference.schemaName ?? null },
-      );
+    if (behaviour === 'Restrict') throw this.restrictedDeleteError(mapping, row, reference, children[0]);
     if (behaviour !== 'Cascade' && behaviour !== 'RemoveLink') return;
     const childMapping = this.resolveMapping(reference.entity);
     for (const child of children)
       yield* this.deleteChildRowSteps(childMapping, child, reference, behaviour, identity, deleting, options);
+  }
+  // The refusal of a delete that a Restrict relationship holds, in the native text (hosted captures 2026-11-26, two runs:
+  // 405 0x80040227 naming the deleted table and id, then the first restricting row and the relationship). Object type codes
+  // come from the table's exported metadata, else the organization's metadata service (store.objectTypeCode, set by
+  // dataverse-organization.mjs). A store without either answers the first sentence alone.
+  restrictedDeleteError(mapping, row, reference, child) {
+    const childMapping = this.resolveMapping(reference.entity);
+    const code = (target) => target.dataverseMetadata?.ObjectTypeCode ?? this.objectTypeCode?.(target.logicalName);
+    const id = (target, value) => String(scalar(field(value, target.idColumn)) ?? '').toLowerCase();
+    const parent = code(mapping),
+      restricting = code(childMapping);
+    const details =
+      parent == null || restricting == null
+        ? ''
+        : ` Deleting records from ${mapping.logicalName} (ObjectTypeCode: ${parent})\r\nfor Id(s) : ${id(mapping, row)}\r\n` +
+          'Exception : Cascade Delete failed due to cascade restrict relation. Details below : \r\n' +
+          `Restricting entity ${childMapping.logicalName} (ObjectTypeCode: ${restricting}) has Id: ${id(childMapping, child)}` +
+          ` and is collected by Relationship with name: ${reference.schemaName ?? reference.column}.\r\n`;
+    return new DataError(
+      'The object you tried to delete is associated with another object and cannot be deleted.' + details,
+      405,
+      'CannotDeleteDueToAssociation',
+      { innerCode: '0x80040227', table: reference.entity, relationship: reference.schemaName ?? null },
+    );
   }
   *deleteChildRowSteps(childMapping, child, reference, behaviour, identity, deleting, options) {
     const rows = this.state.tables[reference.entity];
@@ -7998,10 +8043,11 @@ export function withUpsertClassificationIndex(store, mapping, targets, texts, cl
 export function parseKeySegment(key, stats) {
   const text = String(key ?? '').trim();
   if (!text.includes('=')) return null;
-  const parts = {},
+  // The request names the columns: collect them in a Map, never as properties written to an object.
+  const parts = new Map(),
     state = { index: 0, stats };
   while (state.index < text.length) parseKeyPart(text, state, parts);
-  return parts;
+  return Object.fromEntries(parts);
 }
 
 function countKeyScan(state, from) {
@@ -8016,7 +8062,7 @@ function countKeyScan(state, from) {
   while (state.index < text.length && /\w/.test(text[state.index])) state.index++;
   countKeyScan(state, nameStart);
   const name = text.slice(nameStart, state.index).toLowerCase();
-  if (['__proto__', 'prototype', 'constructor'].includes(name) || own(parts, name)) invalidKeySegment();
+  if (['__proto__', 'prototype', 'constructor'].includes(name) || parts.has(name)) invalidKeySegment();
   skipKeyWhitespace(text, state);
   if (text[state.index++] !== '=') invalidKeySegment();
   skipKeyWhitespace(text, state);
@@ -8030,9 +8076,9 @@ function countKeyScan(state, from) {
   if (!raw) invalidKeySegment();
   skipKeyWhitespace(text, state);
   if (state.index < text.length && text[state.index++] !== ',') invalidKeySegment();
-  if (raw.startsWith("'")) parts[name] = raw.slice(1, -1).replaceAll("''", "'");
-  else if (/^-?\d+(?:\.\d+)?$/.test(raw)) parts[name] = parseNumericLiteral(raw);
-  else parts[name] = raw.replace(/^\{(.*)\}$/, '$1');
+  if (raw.startsWith("'")) parts.set(name, raw.slice(1, -1).replaceAll("''", "'"));
+  else if (/^-?\d+(?:\.\d+)?$/.test(raw)) parts.set(name, parseNumericLiteral(raw));
+  else parts.set(name, raw.replace(/^\{(.*)\}$/, '$1'));
 }
 
 function parseQuotedKeyValue(text, state) {

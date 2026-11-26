@@ -19,6 +19,7 @@ import { parseSetting, projectKeys } from './config-keys.mjs';
 import { jsonErrorPosition, withoutContent } from './path-options.mjs';
 import './provider-modules.mjs';
 import { codeComponentGuid } from './code-components.mjs';
+import { readSigningKey } from './auth-token.mjs';
 
 const VERSIONS = [1, 2];
 const idPattern = /^[a-z0-9][a-z0-9._-]*$/i;
@@ -137,6 +138,9 @@ const OBSERVED_CHOICES = {
   // Site visibility (Power Platform admin, not exported): "private" renders the platform's
   // private-site banner first in the layout body (lib/liquid.mjs).
   siteVisibility: ['public', 'private'],
+  // "platform": the site sends the default policy Learn documents for sites created after November 10, 2025 while it
+  // sets no HTTP/Content-Security-Policy (lib/response-headers.mjs sitePolicy). The export does not show it.
+  defaultContentSecurityPolicy: ['none', 'platform'],
   // Webapi/<table>/fields = "*": "enforced" (the hosted default; read by the Web API policy)
   // or "exempt" (the site was observed exposing every column for such a table).
   webApiWildcard: ['enforced', 'exempt'],
@@ -149,6 +153,9 @@ const OBSERVED_CHOICES = {
   liquidServiceTags: ['dotliquid', 'observed'],
   // Records output only; an empty response does not establish the native integration's admin state.
   powerBiOutput: ['empty', 'placeholder'],
+  // Generative AI for site users (Copilot hub governance at tenant, environment or site level; Power Platform admin,
+  // not exported): "disabled" answers the Data Summarization API with 400 90041001 (lib/portal-data-summary.mjs).
+  siteUserGenerativeAi: ['enabled', 'disabled'],
   liquidObjectCompatibility: ['dotliquid', 'observed'],
   liquidHtmlVoidSerialization: ['dotliquid', 'html'],
   liquidHtmlSafeInput: ['excluded', 'observed'],
@@ -541,6 +548,56 @@ function applyObservedChoices(value, label, observed) {
   }
 }
 
+// RFC 6797 section 6.1: one max-age with a delta-seconds value (optionally quoted), optional includeSubDomains;
+// preload is the common preload-list token. Each directive at most once.
+function applyObservedStrictTransportSecurity(value, label, observed) {
+  if (value.strictTransportSecurity == null) return;
+  const header = typeof value.strictTransportSecurity === 'string' ? value.strictTransportSecurity.trim() : '';
+  const directives = header
+    .split(';')
+    .map((directive) => directive.trim())
+    .filter(Boolean);
+  const names = directives.map((directive) => directive.split('=')[0].trim().toLowerCase());
+  const valid =
+    header.length <= 256 &&
+    !/[\r\n]/.test(header) &&
+    new Set(names).size === names.length &&
+    names.includes('max-age') &&
+    directives.every((directive) =>
+      /^(?:max-age\s*=\s*(?:\d{1,10}|"\d{1,10}")|includesubdomains|preload)$/i.test(directive),
+    );
+  if (!valid)
+    throw new Error(
+      `${label}.strictTransportSecurity must be the observed header value, such as max-age=31536000; includeSubDomains`,
+    );
+  observed.strictTransportSecurity = header;
+}
+
+const CORS_PAGE_PATH = /^\/(?:[\w.~!$&'()*+,;=:@%-]+\/)+$/;
+// Authored pages the site was observed sharing across origins (lib/page-cors.mjs): canonical page paths ending in "/".
+function applyObservedCorsPages(value, label, observed) {
+  if (value.corsPages == null) return;
+  const paths = value.corsPages;
+  if (!Array.isArray(paths) || !paths.length || paths.length > 50)
+    throw new Error(`${label}.corsPages must list 1 to 50 exported page paths`);
+  const seen = new Set();
+  for (const path of paths) {
+    if (
+      typeof path !== 'string' ||
+      !CORS_PAGE_PATH.test(path) ||
+      path.split('/').some((segment) => segment === '.' || segment === '..')
+    )
+      throw new Error(`${label}.corsPages entries must be page paths such as /identity-layout/ (not the root)`);
+    if (seen.has(path.toLowerCase())) throw new Error(`${label}.corsPages lists ${path} twice`);
+    seen.add(path.toLowerCase());
+  }
+  // A cross-origin page answer bypasses no private-site gate: the observation must also record a public site
+  // (applyObservedChoices has already read siteVisibility).
+  if (observed.siteVisibility !== 'public')
+    throw new Error(`${label}.corsPages requires siteVisibility public; set both or neither`);
+  observed.corsPages = [...paths];
+}
+
 function applyObservedWildcardExpiry(value, label, observed) {
   if (!Object.hasOwn(value, 'webApiWildcardExpiresAt')) return;
   const expires = value.webApiWildcardExpiresAt;
@@ -590,6 +647,8 @@ export function observedConfig(value, label = 'observed') {
         'webApiFetchXmlTransport',
         'webApiSelfNnPermissionErrors',
         'dataverseAttributeErrorContexts',
+        'strictTransportSecurity',
+        'corsPages',
       ].includes(key) &&
       !Object.hasOwn(OBSERVED_CHOICES, key)
     )
@@ -622,6 +681,8 @@ export function observedConfig(value, label = 'observed') {
   applyObservedSelfNnErrors(value, label, observed);
   applyObservedChoices(value, label, observed);
   applyObservedWildcardExpiry(value, label, observed);
+  applyObservedStrictTransportSecurity(value, label, observed);
+  applyObservedCorsPages(value, label, observed);
   if (!Object.keys(observed).length) return null;
   const evidence = typeof value.evidence === 'string' ? value.evidence.trim() : '';
   if (!evidence)
@@ -868,6 +929,40 @@ function resolveProjectSettings(raw, runtime, base, diagnostics) {
   return settings;
 }
 
+const inside = (root, file) => {
+  const relative = path.relative(root, file);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+};
+// Each configured implicit grant signing key file must read as a usable key and stay outside every portal export and
+// Solution folder, so a source checkout or a pac upload never carries it. A failure names the file and the reason only.
+async function validateImplicitGrantKeys(settings, portals, solutions) {
+  const keys = settings.implicitGrant?.signingKeys ?? [];
+  if (!keys.length) return;
+  const roots = await Promise.all(
+    [...portals.map((portal) => portal.sourceDir), ...solutions.map((solution) => solution.root)].map((root) =>
+      fs.realpath(root).catch(() => path.resolve(root)),
+    ),
+  );
+  for (const [index, key] of keys.entries()) {
+    const label = `implicitGrant.signingKeys[${index}].privateKeyFile`;
+    try {
+      readSigningKey(key.privateKeyFile);
+    } catch (error) {
+      throw Object.assign(new Error(`${label}: ${error.message}`), {
+        code: error.code ?? 'IMPLICIT_GRANT_SIGNING_KEY_INVALID',
+      });
+    }
+    const file = await fs.realpath(key.privateKeyFile);
+    if (roots.some((root) => inside(root, file)))
+      throw Object.assign(
+        new Error(
+          `${label}: ${key.privateKeyFile} is inside a portal export or Solution folder; keep signing keys outside the sources.`,
+        ),
+        { code: 'IMPLICIT_GRANT_SIGNING_KEY_INVALID' },
+      );
+  }
+}
+
 function validateModelDrivenTargets(settings, references) {
   const targetOrigins = new Set();
   for (const target of settings.modelDriven?.targets ?? []) {
@@ -929,6 +1024,7 @@ export async function resolveProjectConfig(raw, configFile, { checkSources = tru
   validateEnvironmentVariables(environmentVariables);
   const settings = resolveProjectSettings(raw, runtime, base, diagnostics);
   validateModelDrivenTargets(settings, references);
+  if (checkSources) await validateImplicitGrantKeys(settings, portals, solutions);
   return {
     configFile: absoluteConfig,
     stateNamespace: createHash('sha256')

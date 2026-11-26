@@ -98,6 +98,7 @@ import {
   withPlatformRegion,
   appendHostedRenderFragment,
   applyElementRenderEdits,
+  applyScriptNonces,
 } from './render-provenance.mjs';
 import { componentRenderResult } from './component-provenance.mjs';
 import { codeComponentGuid, liquidRenderHalt, PCF_PAGE_STATE } from './code-components.mjs';
@@ -431,9 +432,16 @@ export function accountPageEdits(
  */
 export function platformDocumentFragment(content, { portal, index = null, part, sourceRefIds = [] }) {
   const fragment = typeof content === 'string' ? { text: content, intervals: [] } : content;
+  return withPlatformTags(fragment, platformDocumentTags({ portal, index, part, sourceRefIds }));
+}
+/**
+ * The platform descriptor of a start tag of such a document (platformDocumentFragment): a builder binds the markup it
+ * writes itself with it (platformFragment), with the same descriptors as the document's platform pass.
+ */
+export function platformDocumentTags({ portal, index = null, part, sourceRefIds = [] }) {
   const resource = shellTags(portal, index, null),
     own = shellTags(portal, index, part, sourceRefIds);
-  return withPlatformTags(fragment, (tag) => {
+  return (tag) => {
     if (tag.tag === 'html') return { component: shellComponent('document') };
     if (tag.tag === 'head' || tag.tag === 'body' || tag.tag === 'title' || tag.tag === 'meta')
       return { component: shellComponent(tag.tag) };
@@ -442,7 +450,7 @@ export function platformDocumentFragment(content, { portal, index = null, part, 
         (tag.tag === 'link' && attribute.name === 'href') || (tag.tag === 'script' && attribute.name === 'src'),
     );
     return loads ? resource(tag) : own(tag);
-  });
+  };
 }
 /**
  * The runtime template body an include name selects when no exported source supplies one, with the
@@ -734,12 +742,14 @@ class EntitiesDrop extends LiquidDrop {
   }
 }
 class KnowledgeDrop extends LiquidDrop {
-  constructor(fetchXml, user, choiceColumns, language) {
+  constructor(fetchXml, user, choiceColumns, language, articleAccess = null) {
     super();
     this.fetchXml = fetchXml;
     this.user = user;
     this.choiceColumns = choiceColumns;
     this.language = language;
+    // The host's content access level filter (content-access-levels.mjs): null when the site does not filter.
+    this.articleAccess = articleAccess;
     this.cache = new Map();
   }
   liquidGet(key) {
@@ -750,6 +760,7 @@ class KnowledgeDrop extends LiquidDrop {
   async load(key) {
     if (!this.fetchXml) throw new LiquidError('Knowledge requires the configured portal data provider');
     const entity = key === 'categories' ? 'category' : 'knowledgearticle';
+    const access = key === 'articles' ? await this.articleAccess?.() : null;
     const rows = [];
     let cookie;
     for (let page = 1; page <= 20; page++) {
@@ -765,8 +776,11 @@ class KnowledgeDrop extends LiquidDrop {
         { language: this.language },
       );
       const multiSelect = this.choiceColumns(entity);
+      const admitted = access
+        ? (result.entities ?? []).filter((row) => access.visible(row.knowledgearticleid))
+        : (result.entities ?? []);
       rows.push(
-        ...(result.entities ?? []).map((row) => ({
+        ...admitted.map((row) => ({
           ...liquidRecord(row, undefined, { multiSelect }),
           name: row.title ?? row.name,
         })),
@@ -1513,6 +1527,14 @@ function codeComponentName(markup, context, args, errorsBefore = 0) {
     halt(
       'PCF_LIQUID_NAME_QUOTED',
       `The codecomponent tag names its control in quotes (name:${raw}); write it unquoted.`,
+    );
+  // An unquoted GUID renders in upper or lower case, with or without hyphens; a braced one renders nothing and ends the
+  // rest of the template (pcf-liquid-tag/liquid-tag-guids-bare replay cases). Only braced GUIDs are captured: any other
+  // braced name is looked up as a name like any other.
+  if (raw && /^\{[^{}]*\}$/.test(raw) && codeComponentGuid(raw.slice(1, -1)))
+    halt(
+      'PCF_LIQUID_NAME_BRACED',
+      `The codecomponent tag names its control id in braces (name:${raw}); write the id without braces.`,
     );
   args.name = raw == null ? null : (codeComponentGuid(raw) ?? raw);
   // This tag's attribute evaluation recorded the unquoted name as a missing variable; as the control's name it is none.
@@ -2496,7 +2518,13 @@ export function createPortalRenderer(
       sitemarkers: null,
       resx: new ResxDrop(language.selected?.code),
       entities: new EntitiesDrop(options.entity, user, options.entityMembers, choiceColumns),
-      knowledge: new KnowledgeDrop(options.fetchXml, user, choiceColumns, language.selected),
+      knowledge: new KnowledgeDrop(
+        options.fetchXml,
+        user,
+        choiceColumns,
+        language.selected,
+        options.knowledgeArticleAccess,
+      ),
       uniqueId: new UniqueDrop(),
       // The request's website language for hosts (forms, lists): { id, code, lcid, name, isDefault }.
       __language: language.selected
@@ -3291,12 +3319,21 @@ export function createPortalRenderer(
     const context = contextForPage(page, target, extra);
     const languageCode = layoutLanguageCode(context);
     const direction = /^(ar|fa|he|ur)(-|$)/i.test(languageCode) ? 'rtl' : 'ltr';
+    // The Head/Bottom snippet with its render provenance: its elements are the snippet's (script nonces, X-ray).
+    const index = sourceIndex(context.__language?.id);
+    const headFragment = await renderSourceFragment(
+      portal.snippets?.['Head/Bottom'] ?? '',
+      { ...context, __provenance: createRenderTrace({ sourceRevision: index.sourceRevision }) },
+      index.snippet('Head/Bottom'),
+      'snippet Head/Bottom',
+    );
     return {
       context,
       languageCode,
       html: `<html lang="${htmlEscape(languageCode)}" dir="${direction}"${layoutHtmlAttributes(languageCode, context.__language?.lcid)}>`,
       title: htmlEscape(home?.title ?? page.title ?? ''),
-      head: await renderSource(portal.snippets?.['Head/Bottom'] ?? '', context, null, 'snippet Head/Bottom'),
+      head: headFragment.text,
+      headFragment,
       body: `<body${layoutBodyAttributes(page, context)}>`,
       chrome: `${portal.observed?.siteVisibility === 'private' ? PRIVATE_MODE_BANNER : ''}${OFFLINE_NOTIFICATION_BAR}`,
       // The same chrome as a render fragment: each element bound to its shell part.
@@ -3485,20 +3522,29 @@ export function createPortalRenderer(
   }
   return {
     engine,
-    provenanceFor(rendered) {
-      if (rendered?.provenance) return { html: rendered.html, provenance: rendered.provenance };
+    // scriptNonce ({ nonce, pending }): also decide the script nonces of a nonce policy (render-provenance.mjs).
+    provenanceFor(rendered, { scriptNonce = null } = {}) {
+      if (rendered?.provenance && !scriptNonce) return { html: rendered.html, provenance: rendered.provenance };
       const trace = renderedFragments.get(rendered);
-      return trace ? finalizePortalProvenance(trace) : null;
+      return trace ? finalizePortalProvenance({ ...trace, scriptNonce }) : null;
     },
     /**
      * The provenance of a rendered document after host edits ({ start, end, text, intervals? } in rendered.html, the
      * account pages' content region): the edits are applied to the render fragment precisely, then finalized.
      */
-    provenanceForEdited(rendered, edits = []) {
+    provenanceForEdited(rendered, edits = [], { scriptNonce = null } = {}) {
       const trace = renderedFragments.get(rendered);
       if (!trace) return null;
       const fragment = applyRenderEdits(trace.fragment, edits);
-      return finalizePortalProvenance({ fragment, index: trace.index });
+      return finalizePortalProvenance({ fragment, index: trace.index, scriptNonce });
+    },
+    /**
+     * A rendered document (after host `edits`, as provenanceForEdited) with the script nonces of a nonce policy and no
+     * provenance proof: { html, scriptPolicy }, or null for a result this renderer did not render.
+     */
+    scriptNoncesFor(rendered, { nonce, pending }, edits = []) {
+      const trace = renderedFragments.get(rendered);
+      return trace ? applyScriptNonces({ fragment: trace.fragment, index: trace.index, nonce, pending, edits }) : null;
     },
     sourceIndex,
     async renderStringWithProvenance(source, context = {}, sourceRef = null) {

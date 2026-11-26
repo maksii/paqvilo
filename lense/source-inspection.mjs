@@ -923,6 +923,7 @@ export async function inspectionSources(cfg) {
     /* An inaccessible or changing selection cannot widen the scan. */
   }
   let scanned = 0,
+    inaccessibleFrames = 0,
     traversalTruncated = false,
     assetsTruncated = false,
     shapeOverflow = false;
@@ -968,8 +969,10 @@ export async function inspectionSources(cfg) {
       try {
         const inner = node.contentDocument;
         if (inner?.documentElement) pending.push(inner.documentElement);
+        // A cross-origin or sandboxed frame has no document this page can read: a boundary, counted.
+        else inaccessibleFrames++;
       } catch {
-        /* Optional inspection or cleanup failure must not interrupt the owning operation. */
+        inaccessibleFrames++;
       }
     for (const children of [node.shadowRoot?.children ?? [], node.children]) {
       const count = Math.min(children.length, 8000 - scanned - pending.length);
@@ -1058,6 +1061,7 @@ export async function inspectionSources(cfg) {
     markupTokens: [...tokens],
     truncated: controlsSeen > 300 || shapeTruncated || tokenTruncated,
     ...(assetsTruncated ? { assetsTruncated } : {}),
+    ...(inaccessibleFrames ? { inaccessibleFrames } : {}),
   };
 }
 
@@ -1502,8 +1506,12 @@ const LIQUID_OBJECT_ROOTS = [
  * The control name of one codecomponent tag, read as the Power Pages Liquid host reads it (as in Mirage
  * liquid.mjs codeComponentName): the raw text of the exact `name` argument. An unquoted
  * token is the literal name (a schema name or a customcontrolid GUID), never a variable; a quoted name renders nothing
- * on Power Pages (`quoted`).
+ * on Power Pages (`quoted`), and neither does a braced one (`braced`, Mirage PCF_LIQUID_NAME_BRACED): both end the rest
+ * of the template there.
  */
+// An unquoted GUID in braces ({<customcontrolid>}; any other braced name is an ordinary name), as Mirage liquid.mjs codeComponentName halts on it: upper-case and
+// hyphenless GUIDs render, a braced one ends the page there (pcf-parity summary-F section 3).
+const BRACED_NAME = /^\{[^{}]*\}$/;
 function codeComponentNameOf(markup) {
   // The tag key is case-insensitive.
   const parameter = /(?:^|\s)name\s*:\s*/i.exec(markup);
@@ -1515,12 +1523,13 @@ function codeComponentNameOf(markup) {
     return {
       name: value[3],
       dynamic: false,
+      ...(BRACED_NAME.test(value[3]) && codeComponentGuid(value[3].slice(1, -1)) ? { braced: true } : {}),
       ...(!value[3].includes('.') && !codeComponentGuid(value[3]) ? { unobserved: 'undotted-name' } : {}),
     };
   return { name: value[1] ?? value[2], dynamic: false, quoted: true };
 }
 
-/** The codecomponent tags of one Liquid body as `{ name, dynamic, quoted?, duplicate?, expression }`. */
+/** The codecomponent tags of one Liquid body as `{ name, dynamic, quoted?, braced?, duplicate?, expression }`. */
 export function codeComponentReferences(source) {
   // A tag inside {% raw %} or {% comment %} renders nothing (the inspection reads stripped bodies too).
   const body = stripLiquidLiteralBlocks(String(source));
@@ -1529,7 +1538,7 @@ export function codeComponentReferences(source) {
     const reference = { ...codeComponentNameOf(match[1]), expression: match[0], match };
     const key = (codeComponentGuid(reference.name) ?? reference.name).toLowerCase();
     // two-instances: a second tag of the same control renders neither.
-    if (!reference.quoted && key && seen.has(key)) reference.duplicate = true;
+    if (!reference.quoted && !reference.braced && key && seen.has(key)) reference.duplicate = true;
     seen.add(key);
     return reference;
   });
@@ -1642,20 +1651,24 @@ function missingMarkupControlReason(dynamic, schemaName) {
   return 'No code component in your Solution sources matches this name.';
 }
 
+const MARKUP_REFUSALS = {
+  PCF_LIQUID_NAME_QUOTED:
+    'Power Pages renders nothing for a quoted control name and ends the rest of the template: write name: unquoted.',
+  PCF_LIQUID_NAME_BRACED:
+    'Power Pages renders nothing for a control id in braces and ends the rest of the template: write the id without braces.',
+  PCF_LIQUID_DUPLICATE_CONTROL:
+    'Power Pages renders no host when a page renders the same control twice, and ends the rest of the template.',
+};
+
 // The control exists, but Power Pages renders nothing for this tag and ends the rest of the template.
 function noteRefusedMarkupReference(reference, row, report) {
   let refused = null;
   if (reference.quoted) refused = 'PCF_LIQUID_NAME_QUOTED';
+  else if (reference.braced) refused = 'PCF_LIQUID_NAME_BRACED';
   else if (reference.duplicate) refused = 'PCF_LIQUID_DUPLICATE_CONTROL';
   if (!refused) return;
   row.refused = refused;
-  report.unresolved.push({
-    kind: 'code-component',
-    expression: row.expression,
-    reason: reference.quoted
-      ? 'Power Pages renders nothing for a quoted control name and ends the rest of the template: write name: unquoted.'
-      : 'Power Pages renders no host when a page renders the same control twice, and ends the rest of the template.',
-  });
+  report.unresolved.push({ kind: 'code-component', expression: row.expression, reason: MARKUP_REFUSALS[refused] });
 }
 
 function inspectMarkupCodeReference(reference, context) {

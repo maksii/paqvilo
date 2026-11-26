@@ -52,15 +52,28 @@ function nativeSubmissionQuery(context, page) {
   return query;
 }
 
-/* NOSONAR */ function normalizePostedValue(value, control) {
+function nativeNumberLiteral(value, locale) {
+  if (!locale) return /^[+-]?\d+(?:\.\d*)?(?:[eE][+-]?\d+)?$/.test(value) ? value : null;
+  const german = locale === 'de-DE';
+  // Group marks are ignored in the integer part, including noncanonical group sizes.
+  const parts = (
+    german ? /^([+-]?\d+(?:\.\d+)*)(?:,(\d*))?([eE][+-]?\d+)?$/ : /^([+-]?\d+(?:,\d+)*)(?:\.(\d*))?([eE][+-]?\d+)?$/
+  ).exec(value);
+  if (!parts) return null;
+  const [, integer, fraction, exponent] = parts;
+  return integer.replaceAll(german ? '.' : ',', '') + (fraction == null ? '' : '.' + fraction) + (exponent ?? '');
+}
+
+/* NOSONAR */ function normalizePostedValue(value, control, numberLocale) {
   if (typeof value !== 'string') return value;
   if (value === '') return null;
   if (['integer', 'decimal', 'money', 'double', 'picklist'].includes(control)) {
     // Malformed text remains textual for the native format validator. Exact
     // decimal/Int64 tokens never pass through a rounded JavaScript Number.
-    if (/^[+-]?\d+(?:\.\d*)?(?:[eE][+-]?\d+)?$/.test(value)) {
+    const literal = nativeNumberLiteral(value, numberLocale);
+    if (literal != null) {
       try {
-        return control === 'double' ? Number(value) : parseNumericLiteral(value);
+        return control === 'double' ? Number(literal) : parseNumericLiteral(literal);
       } catch {
         /* The service will reject the original textbox value. */
       }
@@ -166,6 +179,28 @@ function applyNativeCaptcha(submission, schema, definition, descriptor, posted, 
   validateFormCaptcha(submission.body.action, schema?.metadata ?? definition.metadata, options.identity);
 }
 
+/** Converts the posted values of the schema's fields to the values the form service accepts. */
+function normalizeNativeValues(schema, submission, descriptor, posted, mapping, options) {
+  const postbackFields = new Map(descriptor.fields.map((field) => [field.name, field]));
+  for (const field of schema?.fields ?? []) {
+    if (!Object.hasOwn(submission.body.values, field.name)) continue;
+    const rawValue = submission.body.values[field.name];
+    const binding = postbackFields.get(field.name);
+    // The hidden input of a mounted field component is decoded by the form service (lib/pcf-field-host.mjs).
+    if (binding?.pcf) {
+      submission.body.values[field.name] = pcfHiddenValue(rawValue);
+      continue;
+    }
+    const control = nativeControlKind(field);
+    // A value carried from an earlier auto-generated step tab has no binding on this tab: its field's page culture
+    // comes from the form's number locales.
+    const numberLocale = binding ? binding.numberLocale : descriptor.numberLocales?.[field.name]?.parse;
+    const value = normalizePostedValue(rawValue, control, numberLocale);
+    if (control === 'lookup') applyNativeLookup(field, value, posted, descriptor, mapping, submission, options.store);
+    else submission.body.values[field.name] = value;
+  }
+}
+
 /** Transport-neutral adapter: source/session/permission checks stay in the service. */
 export async function submitNativePostback(entries, rendered, options) {
   const posted = [...entries];
@@ -195,22 +230,14 @@ export async function submitNativePostback(entries, rendered, options) {
       ...schemaFromFormXml(schema.formXml, { ...schema, entity: schema.entity ?? definition?.entityName }),
     };
   const mapping = schema?.entity ? options.store.resolveMapping(schema.entity) : null;
-  for (const field of schema?.fields ?? []) {
-    if (!Object.hasOwn(submission.body.values, field.name)) continue;
-    let value = submission.body.values[field.name];
-    // The hidden input of a mounted field component is decoded by the form service (lib/pcf-field-host.mjs).
-    if (descriptor.fields.find((item) => item.name === field.name)?.pcf) {
-      submission.body.values[field.name] = pcfHiddenValue(value);
-      continue;
-    }
-    const control = nativeControlKind(field);
-    value = normalizePostedValue(value, control);
-    if (control === 'lookup') applyNativeLookup(field, value, posted, descriptor, mapping, submission, options.store);
-    else submission.body.values[field.name] = value;
-  }
+  normalizeNativeValues(schema, submission, descriptor, posted, mapping, options);
   const result = await submitPortalForm(submission.kind, submission.formId, submission.body, {
     ...options,
     nativePostback: true,
+    // The page language of each localized number field's validation copy.
+    nativeNumberLocales: new Map(
+      Object.entries(descriptor.numberLocales ?? {}).map(([name, locale]) => [name, locale.messages]),
+    ),
   });
   return { result, context: submission.context };
 }

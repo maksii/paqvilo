@@ -93,6 +93,11 @@ const MIRAGE = {
     stage: 8,
     example: 'environmentVariables:\n  x_InventedFeatureFlag: "true"\n',
   },
+  implicitGrant: {
+    kind: 'object',
+    stage: 8,
+    example: 'implicitGrant:\n  signingKeys:\n    - privateKeyFile: ../keys/invented-implicit-grant.pem\n',
+  },
   connections: {
     kind: 'object',
     stage: 8,

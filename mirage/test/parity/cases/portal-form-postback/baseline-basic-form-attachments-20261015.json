@@ -1,0 +1,108 @@
+{
+  "schema": "paqvilo.parity-cases/1",
+  "surface": "portal-form-postback",
+  "suite": "baseline-basic-form-attachments-20261015",
+  "oracle": {
+    "kind": "native",
+    "name": "Power Pages basic form postback",
+    "version": "2026-10-15",
+    "scope": "Two signed-in browser runs (live, live-2) of the toolkit's invented baseline fixture site uploaded over the demo portal: a create form with the attach-file control, the file the control uploaded through the attach-file upload API and the multipart postback. Establishes the postback status and redirect and the attachments (file name, content type, image flag, displayed size) the created record lists. It does not establish which offered files the control accepts, the stored bytes or other personas. The exact hosted build is unrecorded."
+  },
+  "captures": [
+    {
+      "id": "baseline-live",
+      "sha256": "67028377435aaefb66a2b659263af2a8fa685201794fc97f9cad90690fb143c1",
+      "capturedAt": "2026-10-15"
+    },
+    {
+      "id": "baseline-live-2",
+      "sha256": "1755bff6111bf293afe2e4e91f746a06d50206f4c78d5617880558c20e9da254",
+      "capturedAt": "2026-10-15"
+    }
+  ],
+  "cases": [
+    {
+      "id": "basic-form/item-create-attach/insert/editor",
+      "input": {
+        "page": "/baseline/item-create-attach/",
+        "query": {},
+        "fields": {
+          "pqvd_name": "Baseline inserted item",
+          "pqvd_code": "I-NEW-r1",
+          "pqvd_required": "required value"
+        },
+        "action": "InsertButton",
+        "files": [
+          {
+            "name": "baseline.png",
+            "mimeType": "image/png",
+            "base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+          }
+        ]
+      },
+      "output": {
+        "status": 302,
+        "redirect": {
+          "site": true,
+          "path": "/baseline/item-edit/",
+          "query": {
+            "id": "<record id>"
+          }
+        },
+        "message": null,
+        "validation": [],
+        "attachments": [
+          {
+            "fileName": "baseline.png",
+            "contentType": "image/png",
+            "isImage": true,
+            "sizeDisplay": "68 bytes"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "basic-form/item-create-attach-multiple/insert/editor",
+      "input": {
+        "page": "/baseline/item-create-attach-multiple/",
+        "query": {},
+        "fields": {
+          "pqvd_name": "Baseline inserted item",
+          "pqvd_code": "I-NEW-r1",
+          "pqvd_required": "required value"
+        },
+        "action": "InsertButton",
+        "files": [
+          {
+            "name": "baseline.pdf",
+            "mimeType": "application/pdf",
+            "base64": "JVBERi0xLjQKMSAwIG9iajw8L1R5cGUvQ2F0YWxvZy9QYWdlcyAyIDAgUj4+ZW5kb2JqCjIgMCBvYmo8PC9UeXBlL1BhZ2VzL0tpZHNbMyAwIFJdL0NvdW50IDE+PmVuZG9iagozIDAgb2JqPDwvVHlwZS9QYWdlL1BhcmVudCAyIDAgUi9NZWRpYUJveFswIDAgMjAwIDIwMF0+PmVuZG9iagp4cmVmCjAgNAowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMDkgMDAwMDAgbiAKMDAwMDAwMDA1MiAwMDAwMCBuIAowMDAwMDAwMTAxIDAwMDAwIG4gCnRyYWlsZXI8PC9TaXplIDQvUm9vdCAxIDAgUj4+CnN0YXJ0eHJlZgoxNjAKJSVFT0YK"
+          }
+        ]
+      },
+      "output": {
+        "status": 302,
+        "redirect": {
+          "site": true,
+          "path": "/baseline/item-edit/",
+          "query": {
+            "id": "<record id>"
+          }
+        },
+        "message": null,
+        "validation": [],
+        "attachments": [
+          {
+            "fileName": "baseline.pdf",
+            "contentType": "application/pdf",
+            "isImage": false,
+            "sizeDisplay": "303 bytes"
+          }
+        ]
+      },
+      "volatile": []
+    }
+  ],
+  "history": []
+}

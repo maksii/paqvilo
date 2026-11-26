@@ -116,6 +116,8 @@ test('Liquid, a signed grid and native forms use an API-created global choice', 
 {% include 'entity_list' key: 'Choice list' %}
 {% if request.params.variant == 'override' %}
 {% entityform name: 'Override form' %}
+{% elsif request.params.variant == 'tags' %}
+{% entityform name: 'Tags form' %}
 {% else %}
 {% entityform name: 'Choice form' %}
 {% endif %}
@@ -123,9 +125,11 @@ test('Liquid, a signed grid and native forms use an API-created global choice', 
   );
   const choiceForm = 'ac000000-0000-4000-8000-000000000002';
   const overrideForm = 'ac000000-0000-4000-8000-000000000003';
+  const tagsForm = 'ac000000-0000-4000-8000-000000000004';
   for (const [name, id] of [
     ['Choice form', choiceForm],
     ['Override form', overrideForm],
+    ['Tags form', tagsForm],
   ])
     await fs.writeFile(
       path.join(root, 'site', `${name}.basicform.yml`),
@@ -138,6 +142,12 @@ test('Liquid, a signed grid and native forms use an API-created global choice', 
         {
           'adx.id': 'shared',
           'adx.attribute': 'new_status_choice',
+          'adx.filtertype': 'dynamicpicklistset',
+          'adx.uiselectionmode': 'Dropdown',
+        },
+        {
+          'adx.id': 'tags',
+          'adx.attribute': 'new_status_tags',
           'adx.filtertype': 'dynamicpicklistset',
           'adx.uiselectionmode': 'Dropdown',
         },
@@ -187,6 +197,11 @@ test('Liquid, a signed grid and native forms use an API-created global choice', 
             entity: 'locale_item',
             mode: 100000001,
             fields: [{ name: 'new_status_choice', label: 'Choice', dataverseType: 'picklist' }],
+          },
+          'Tags form': {
+            entity: 'locale_item',
+            mode: 100000001,
+            fields: [{ name: 'new_status_tags', label: 'Tags', dataverseType: 'multiselectpicklist' }],
           },
           'Override form': {
             entity: 'locale_item',
@@ -375,6 +390,68 @@ test('Liquid, a signed grid and native forms use an API-created global choice', 
     );
     assert.deepEqual(
       (await gridRows('shared=100000099')).map(({ Id }) => Id),
+      [],
+    );
+  });
+
+  // @test-kind unproven: local model of a native Basic Form choices (multi-select) field bound to a global choice: the control lists the published options in the page language and a posted value outside them is refused as Dataverse refuses it (PicklistValueOutOfRange); no hosted capture of a bound choices field
+  await t.test('native form multiselect uses the bound global choice and refuses unlisted values', async () => {
+    const html = await (await fetch(formUrl('tags'))).text();
+    // The control's option metadata (the PCF host manifest) lists the bound choice's options in the page language.
+    const decoded = html.replaceAll('&quot;', '"');
+    const listed = new Map(
+      [...decoded.matchAll(/"Value":(\d+),"Label":\{"LocalizedLabels":\[\{"Label":"([^"]*)"/g)].map(
+        ([, value, text]) => [Number(value), text],
+      ),
+    );
+    assert.deepEqual(
+      [...listed],
+      [
+        [100000001, 'Confirmé'],
+        [100000002, 'Pending'],
+      ],
+    );
+    const postTags = (value) => {
+      const controls = nativeFormControlIds('entityform', tagsForm);
+      return fetch(formUrl('tags'), {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams([
+          ['__EVENTTARGET', controls.buttons + 'UpdateButton'],
+          ['__EVENTARGUMENT', ''],
+          ['__RequestVerificationToken', app.portalToken],
+          [controls.names + 'new_status_tags', value],
+        ]),
+      });
+    };
+    const before = app.store.tableRows('locale_item').find((row) => row.locale_itemid === ITEM).new_status_tags;
+    const refused = await postTags('100000002,100000099');
+    assert.notEqual(refused.status, 200);
+    assert.match(await refused.text(), /100000099|outside the valid range|PicklistValueOutOfRange/);
+    assert.equal(app.store.tableRows('locale_item').find((row) => row.locale_itemid === ITEM).new_status_tags, before);
+    const saved = await postTags('100000002');
+    assert.equal(saved.status, 200, await saved.text());
+    assert.equal(
+      String(app.store.tableRows('locale_item').find((row) => row.locale_itemid === ITEM).new_status_tags),
+      '100000002',
+    );
+  });
+
+  // @test-kind unproven: local model of a dynamic list filter on a choices (multi-select) column: Learn documents contain-values as the operator for one of the selected values; the hosted filter's operator is not captured
+  await t.test('dynamic list filter on a choices column matches rows holding the selected option', async () => {
+    const tagged = 'ab000000-0000-4000-8000-000000000006';
+    await write('POST', '/locale_items', { locale_itemid: tagged, new_status_tags: '100000001,100000002' });
+    const html = await (await fetch(`${app.url}/fr-FR/?mf=${encodeURIComponent('tags=100000001')}`)).text();
+    const select = /<select[^>]*name="tags"[^>]*>([\s\S]*?)<\/select>/.exec(html)?.[1];
+    assert.ok(select, 'authored dynamic choices filter is present');
+    assert.match(select, /value="100000001"[^>]*selected[^>]*>Confirmé<\/option>/);
+    assert.deepEqual(
+      (await gridRows('tags=100000001')).map(({ Id }) => Id),
+      [tagged],
+    );
+    assert.deepEqual((await gridRows('tags=100000002')).map(({ Id }) => Id).sort(), [ITEM, tagged].sort());
+    assert.deepEqual(
+      (await gridRows('tags=100000099')).map(({ Id }) => Id),
       [],
     );
   });

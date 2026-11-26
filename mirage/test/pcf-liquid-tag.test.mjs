@@ -36,7 +36,7 @@ async function writeFiles(root, files) {
 
 // A page whose layout includes the page copy, with a tail after it: the live page loses both after a failing tag.
 // `language` ({ id, code, lcid }) makes the site's one website language and its default: every page is in it.
-async function site(t, copy, { observed, language } = {}) {
+async function site(t, copy, { observed, language, layout, files = {} } = {}) {
   const dir = await fs.realpath(await makeTemporaryDirectory(path.join(os.tmpdir(), 'pcf-tag-')));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const solution = path.join(dir, 'solution');
@@ -66,7 +66,9 @@ async function site(t, copy, { observed, language } = {}) {
     'Main.pagetemplate.yml': 'adx_pagetemplateid: main\nadx_webtemplateid: main\n',
     'Main.webtemplate.yml': 'adx_webtemplateid: main\nadx_name: Main\n',
     'Main.webtemplate.source.html':
+      layout ??
       '<html><body><main id="layout">{% include \'Page Copy\' %}<p id="layout-tail">layout tail</p></main></body></html>',
+    ...files,
   });
   const runtime = await createSimulator({
     sourceDir: portal,
@@ -139,6 +141,19 @@ test('a quoted name, a quoted GUID or a missing control renders nothing and ends
       name,
     );
   }
+});
+
+// Regression: every braced name was reported as a braced control id, although only braced GUIDs are captured.
+// @test-kind unproven: only braced GUIDs are captured (paqvilo-developer pcf-parity summary-F section 3); a braced name that is no GUID is looked up as a name and, absent, halts as a missing control
+test('a braced name that is no GUID is a missing control, not a braced control id', async (t) => {
+  const { html, diagnostics } = await site(
+    t,
+    `<h3>case</h3>{% codecomponent name:{notaguid} %}<p id="after">after</p>`,
+  );
+  assert.equal(hosts(html).length, 0);
+  assert.doesNotMatch(html, /id="after"/);
+  assert.ok(diagnostics.some((entry) => entry.code === 'PCF_LIQUID_CONTROL_NOT_FOUND'));
+  assert.ok(!diagnostics.some((entry) => entry.code === 'PCF_LIQUID_NAME_BRACED'));
 });
 
 // Regression: the halted copy's open elements were found with a case-sensitive tag regex, so an upper-case raw-text
@@ -222,6 +237,7 @@ test('arguments reach ControlProperties by exact property name, coerced as the l
   assert.equal(liquidControlProperty('TwoOptions', null), undefined);
 });
 
+// @test-kind observation: the host markup follows paqvilo-developer pcf-parity summary-D (r1 lq-* pages); the Resources entries of a control without RESX files follow raw r2 lq-dependency-ny, lq-two-datasets-ny and d1 subgrid-denied-ny (2026-11-26)
 test('the host markup has the live structure, a fresh id per render and serves its bundle at the native address', async (t) => {
   const copy = `{% codecomponent name:${P} textValue:'typed' %}`;
   const { html, runtime } = await site(t, copy);
@@ -247,11 +263,13 @@ test('the host markup has the live structure, a fresh id per render and serves i
     'IsCdnControl',
   ]);
   assert.equal(host.config.Name, P);
+  // A control without RESX files has no null Type 2 placeholder (raw r2 lq-dependency-ny, lq-two-datasets-ny and d1
+  // subgrid-denied-ny: every captured control without RESX; the r1 probe had one RESX file and one placeholder).
   assert.deepEqual(
     host.config.Resources.map((resource) => resource.Type),
-    [2, 3, 0, 1],
+    [3, 0, 1],
   );
-  assert.equal(host.config.Resources[2].Path, match[1].split('/').at(-1));
+  assert.equal(host.config.Resources[1].Path, match[1].split('/').at(-1));
   assert.deepEqual(Object.keys(host.context), [
     'UniqueId',
     'ControlId',
@@ -270,7 +288,7 @@ test('the host markup has the live structure, a fresh id per render and serves i
   const bundle = await fetch(runtime.url + match[1]);
   assert.equal(bundle.status, 200);
   assert.match(await bundle.text(), /registerControl\('Invented\.Probe'/);
-  const style = await fetch(`${runtime.url}/_pcfwebresource/${host.config.Resources[3].Path}`);
+  const style = await fetch(`${runtime.url}/_pcfwebresource/${host.config.Resources[2].Path}`);
   assert.equal(await style.text(), '.probe{}');
   const again = hosts(await fetch(runtime.url).then((response) => response.text()));
   assert.notEqual(again[0].id, host.id);
@@ -372,6 +390,31 @@ test('round 2: arrays, fractions, drops, date-only text and 1 coerce as the live
     dayValue: '2026-01-31T00:00:00',
     momentValue: '2026-01-31T00:00:00',
   });
+});
+
+// @test-kind observation: paqvilo-developer pcf-parity r2/r3 lq-coercion (two loads): the page drop passed as an argument in the stock Default studio template copy (editable page adx_copy, liquid) still renders one host and drops the argument
+test('a Liquid drop argument in an editable page copy is dropped and the host still renders', async (t) => {
+  const { html } = await site(
+    t,
+    `{% assign pq_list = 'a,b' | split: ',' %}{% codecomponent name:${P} textValue:pq_list wholeValue:'1.5' decimalValue:page dayValue:'2026-01-31' momentValue:'2026-01-31' flagValue:1 %}<p id="after-drop">after</p>`,
+    {
+      layout:
+        '<div id="mainContent" class="wrapper-body" role="main"><div class="page-copy">{% editable page \'adx_copy\' type: \'html\', liquid: true %}</div></div>',
+      // A child page: the page drop's children refer back to it, as on a site with more than one page.
+      files: {
+        'web-pages/Child.webpage.yml':
+          'adx_webpageid: child\nadx_name: Child\nadx_partialurl: child\nadx_parentpageid: home\nadx_pagetemplateid: main\n',
+      },
+    },
+  );
+  assert.doesNotMatch(html, /Liquid error/);
+  const [host] = hosts(html);
+  assert.deepEqual(host?.context.ControlProperties, {
+    textValue: 'System.String[]',
+    dayValue: '2026-01-31T00:00:00',
+    momentValue: '2026-01-31T00:00:00',
+  });
+  assert.match(html, /<p id="after-drop">after<\/p>/);
 });
 
 test('round 2: a required input without an argument renders with an empty value and an info diagnostic only', async (t) => {

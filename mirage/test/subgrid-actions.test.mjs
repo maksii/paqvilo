@@ -399,6 +399,34 @@ test('native grid action filters use the current exported website context', asyn
   assert.equal(store.snapshot().tables.child.length, 2);
 });
 
+// @test-kind contract: a grid action filter reads the row key whatever the authored projection selects; the portal's permission-trimmed read is distinct by default and returns only selected columns.
+test('native grid action filters that select other columns than the key still admit the matching row', async () => {
+  for (const projection of [
+    '<attribute name="name"/>',
+    '<attribute name="childkey" alias="key"/><attribute name="name"/>',
+  ]) {
+    const { portal, schemas, state, settings } = model();
+    settings.ItemActions[1].FilterCriteria = settings.ItemActions[1].FilterCriteria.replace(
+      '<entity name="child">',
+      `<entity name="child">${projection}`,
+    );
+    portal.records[0].adx_subgrid_settings = JSON.stringify(settings);
+    const store = await new DataStore({ state }).init();
+    const options = { portal, store, schemas, identity: state.simulator.identity };
+    await assert.rejects(
+      deletePortalSubgridRecord('entityform', 'parent', 'Children', acceptedId, { parentId }, options),
+      (e) => e.code === 'SubgridDeleteNotEnabled',
+      projection,
+    );
+    assert.deepEqual(
+      await deletePortalSubgridRecord('entityform', 'parent', 'Children', pendingId, { parentId }, options),
+      { deleted: true, id: pendingId },
+      projection,
+    );
+    assert.equal(store.snapshot().tables.child.length, 2, projection);
+  }
+});
+
 test('a subgrid without a relationship lists its whole view with no parent filter', async () => {
   const { portal, schemas, state } = model();
   const cell = formCells(schemas.parent).find((cell) => cell.id === 'Children');

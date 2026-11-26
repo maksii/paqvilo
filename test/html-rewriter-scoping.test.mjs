@@ -6,6 +6,25 @@ import { GitBaseline } from '../lense/git.mjs';
 import { HtmlRewriter } from '../lense/html-rewriter.mjs';
 import { createSourceInspector } from '../lense/source-inspection.mjs';
 import { createFixture, SITE, HOME_ID } from './fixture.mjs';
+import { parse } from 'parse5';
+
+/** The elements of a served document with their attributes by name and their text: order-free facts. */
+function elementsOf(html) {
+  const found = [];
+  const walk = (node) => {
+    for (const child of node.childNodes ?? []) {
+      if (!child.tagName) continue;
+      found.push({
+        tag: child.tagName,
+        attributes: Object.fromEntries(child.attrs.map(({ name, value }) => [name, value])),
+        text: child.childNodes.map((item) => item.value ?? '').join(''),
+      });
+      walk(child.tagName === 'template' ? child.content : child);
+    }
+  };
+  walk(parse(html));
+  return found;
+}
 
 let fx;
 beforeEach(() => {
@@ -106,7 +125,13 @@ test('a changed line is laid over the page only where its own file wrote it', as
       sourceIndex: index,
     },
   );
-  assert.match(own.html, /<h3 class="card-title"[^>]*>Breaking news<\/h3>/);
+  // The heading the template writes, with its class, holds the changed text; attribute order is not part of it.
+  assert.ok(
+    elementsOf(own.html).some(
+      (element) =>
+        element.tag === 'h3' && element.attributes.class === 'card-title' && element.text === 'Breaking news',
+    ),
+  );
   assert.deepEqual(
     own.applied.map((entry) => entry.rel),
     [first],
@@ -165,7 +190,16 @@ test('an injected page style carries the nonce of the page and is bound to its f
   );
   const served = page('<main>Contact</main><script nonce="n-1">window.ready = true;</script>');
   const result = rewriter().rewrite(served, '/contact', { isDocument: true, sourceIndex: await indexFor('/contact') });
-  assert.match(result.html, /<style type="text\/css" nonce="n-1"[^>]*>\.contact-banner/);
+  // The injected style element has the CSS type and the page's nonce, and holds the field's CSS.
+  assert.ok(
+    elementsOf(result.html).some(
+      (element) =>
+        element.tag === 'style' &&
+        element.attributes.type === 'text/css' &&
+        element.attributes.nonce === 'n-1' &&
+        element.text.startsWith('.contact-banner'),
+    ),
+  );
   const style = result.provenance.bindings.find((binding) => binding.tag === 'style');
   assert.deepEqual([style.mapping, style.origin], ['derived', 'served']);
   assert.equal(result.provenance.sourceRefs.find((ref) => ref.id === style.sourceRefId).fieldPath[0], 'customcss');

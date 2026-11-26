@@ -64,7 +64,7 @@ test("real browser: a code site's per-folder web file and language page script r
   assert.deepEqual(faults, []);
 });
 
-test('a configured build runs on a client route and Lense overlays its exported web file in the browser', async (t) => {
+test('a configured build runs on a client route; Lense answers the build file first and the other exported web files', async (t) => {
   const work = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-compiled-overlay-')));
   const site = path.join(work, '.powerpages-site');
   fs.cpSync(FIXTURE, site, { recursive: true });
@@ -100,8 +100,13 @@ test('a configured build runs on a client route and Lense overlays its exported 
   assert.equal(await page.evaluate(() => window.Microsoft.Dynamic365.Portal.isSpaSite), 'True');
   const fallback = await page.goto(origin + '/reports/calendar/', { waitUntil: 'load' });
   assert.equal(fallback.status(), 200);
-  assert.equal(await page.evaluate(() => window.syntheticApp), 'from the web file');
+  // The build is what pac pages upload-code-site deploys: its app.js answers ahead of the exported web file of that
+  // address (as in Mirage), and a web file the build does not hold is still answered from the export.
+  assert.equal(await page.evaluate(() => window.syntheticApp), 'from the build');
+  const theme = await page.evaluate(() => fetch('/theme.css').then((response) => response.text()));
+  assert.equal(theme, 'body { margin: 0; }\n');
   assert.equal(await page.evaluate(() => window.Microsoft.Dynamic365.Portal.isSpaSite), 'True');
-  assert.ok(!requests.includes('/app.js'), 'the local web file never reached the upstream build');
+  assert.ok(!requests.includes('/app.js'), 'the local build file never reached the upstream build');
+  assert.ok(!requests.includes('/theme.css'), 'the local web file never reached the upstream build');
   assert.deepEqual(faults, []);
 });

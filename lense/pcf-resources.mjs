@@ -12,6 +12,9 @@
 // order the page lists them in is then not established) or when an entry names no admitted file; the other kinds still
 // map, and the difference (with any change of the declared parameter names) is a manifest change to deploy
 // (`deployments`, Lense needsDeploy). The whole control is refused when no kind maps or it is not in the sources.
+// The manifest's img and html resources never reach a live page: Power Pages declares no `Resources[]` entry for them,
+// `getResource` fails and `/_pcfwebresource/<id>` answers 403 (pcf-parity summary-F section 6). A local edit of one is
+// a needsDeploy row that says so (`unservedEdits`), never an overlay.
 import fs from 'node:fs';
 import path from 'node:path';
 import { annotateRuntimeSources } from './runtime-sources.mjs';
@@ -26,6 +29,8 @@ const MIRAGE_PCF_PREFIX = '/__sim-static/pcf/';
 /** Declared resource types that the page requests, and the manifest resource kind each one is. */
 const PCF_RESOURCE_TYPES = Object.freeze({ 0: 'code', 1: 'css' });
 const PCF_RESX_TYPE = 2;
+/** Manifest resource kinds a live Power Pages page never declares or serves. */
+const PCF_UNSERVED_KINDS = new Set(['img', 'html']);
 
 export function acceptsPcfResx(value) {
   return (
@@ -211,6 +216,17 @@ function describeDeploymentMismatch(item) {
   return `its ${item.kind} resources${counts}`;
 }
 
+// The needsDeploy row of a local edit of a manifest img or html resource, which the live page cannot show.
+function unservedEditRow(entry) {
+  return {
+    pcfDeployment: true,
+    pcfUnserved: true,
+    rel: entry.rel,
+    control: entry.control,
+    reason: `code component ${entry.control} ${entry.kind} resource ${entry.path} changed; Power Pages declares no resource entry for a code component's img and html resources and does not serve them (/_pcfwebresource answers 403), so this edit cannot be previewed and does not reach the page when deployed either`,
+  };
+}
+
 /**
  * The Solution files of one session that answer portal addresses: code component resources joined from the pages'
  * declarations, Solution web resources by name. Entries by address (lower-case path), by display reference and by file.
@@ -225,6 +241,51 @@ export class SolutionResourceIndex {
     this.folders = new Set();
     /** manifest changes the portal has not deployed, by control: { rel, control, reason } (needsDeploy rows) */
     this.deployments = new Map();
+    /** manifest img and html resources of joined controls, by resolved file (never declared or served by the page) */
+    this.unserved = new Map();
+    /** local edits of those resources, by display reference: { rel, control, reason } (needsDeploy rows) */
+    this.unservedEdits = new Map();
+  }
+
+  /** The needsDeploy rows of the index: manifest changes by control, then edits the live page cannot show. */
+  needsDeploy() {
+    return [...this.deployments.values(), ...this.unservedEdits.values()];
+  }
+
+  /** The manifest img or html resource entry a file is, or undefined. */
+  unservedResource(file) {
+    return this.unserved.get(path.resolve(file));
+  }
+
+  /** The Solution roots that hold img or html resources of a joined control. */
+  unservedRoots() {
+    return new Set([...this.unserved.values()].map((entry) => entry.solutionRoot));
+  }
+
+  /** Records saved files that are img or html resources as edits the page cannot show; returns their rows. */
+  noteUnservedSaves(files) {
+    const rows = [];
+    for (const file of files) {
+      const entry = this.unservedResource(file);
+      if (!entry) continue;
+      const row = unservedEditRow(entry);
+      this.unservedEdits.set(entry.rel, row);
+      rows.push(row);
+    }
+    return rows;
+  }
+
+  /**
+   * Sets the edits of the img and html resources in one Solution root from the files Git reports as changed there
+   * (resolved paths); without a Git baseline (`changed` null) only saves are edits.
+   */
+  settleUnservedEdits(root, changed) {
+    if (!changed) return;
+    for (const entry of this.unserved.values()) {
+      if (entry.solutionRoot !== root) continue;
+      if (changed.has(entry.file)) this.unservedEdits.set(entry.rel, unservedEditRow(entry));
+      else this.unservedEdits.delete(entry.rel);
+    }
   }
 
   /** The entry for a portal address, or undefined. */
@@ -314,6 +375,7 @@ export class SolutionResourceIndex {
       refused: reason,
     });
     this.#noteDeployment(joined, manifest);
+    this.#noteUnserved(joined, sources);
     if (joined.refused) {
       for (const resource of declaration.resources)
         if (resource.guid) entries.push(this.#refuse(refusal(joined.refused, resource.guid)));
@@ -340,6 +402,44 @@ export class SolutionResourceIndex {
       control: joined.control,
       reason: `code component ${joined.control} changed ${changes.join(' and ')} in ControlManifest.xml; deploy the control before those changes can be previewed`,
     });
+  }
+
+  // The manifest img and html resources of a control in the sources: their folders are watched so that a save is seen
+  // and reported (noteUnservedSaves). A resource the manifest no longer declares is forgotten with its edit.
+  #noteUnserved(joined, sources) {
+    const control = joined.manifestFile ? sources?.catalogue?.controls?.get(joined.control) : null;
+    if (!control) return;
+    const current = new Map();
+    for (const resource of control.resources ?? []) {
+      const entry = PCF_UNSERVED_KINDS.has(resource.kind) ? this.#unservedEntry(joined, resource, sources) : null;
+      if (entry) current.set(path.resolve(entry.file), entry);
+    }
+    for (const [file, entry] of this.unserved)
+      if (entry.control === joined.control && !current.has(file)) {
+        this.unserved.delete(file);
+        this.unservedEdits.delete(entry.rel);
+      }
+    for (const [file, entry] of current) {
+      if (!this.unserved.has(file) && this.unserved.size >= this.limit) break;
+      this.unserved.set(file, entry);
+      this.folders.add(entry.folder);
+    }
+  }
+
+  // One img or html resource of a joined control as a Solution file entry, or null when no admitted file is named.
+  #unservedEntry(joined, resource, sources) {
+    const asset = sources.catalogue.assets?.get(resource.url);
+    const named = asset?.file && asset.root ? this.#named(asset.file, sources) : null;
+    if (!named) return null;
+    return {
+      control: joined.control,
+      kind: resource.kind,
+      path: resource.path,
+      file: named.file,
+      rel: named.ref,
+      solutionRoot: named.root,
+      folder: path.resolve(asset.root),
+    };
   }
 
   #noteResource(resource, { joined, manifest, refusal, sources }, entries) {

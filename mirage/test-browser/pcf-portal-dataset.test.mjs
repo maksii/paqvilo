@@ -140,7 +140,7 @@ async function datasetPortal(t, options = {}) {
     'solution/Entities/tst_row/Entity.xml': `<Entity><Name>tst_row</Name><EntityInfo><entity Name="tst_row"><EntitySetName>tst_rows</EntitySetName><attributes>${rowAttributes}</attributes></entity></EntityInfo><CustomControlDefaultConfigs><CustomControlDefaultConfig><CustomControlDefaultConfigXml><customControl name="tst_Synthetic.Grid" formFactor="0"/></CustomControlDefaultConfigXml></CustomControlDefaultConfig></CustomControlDefaultConfigs></Entity>`,
     'solution/Entities/contact/Entity.xml': `<Entity><Name>contact</Name><EntityInfo><entity Name="contact"><LocalizedNames><LocalizedName description="Contact" languagecode="1033"/></LocalizedNames><attributes>${attr('contactid', 'primarykey')}${attr('fullname', 'nvarchar')}${attr('emailaddress1', 'nvarchar', '<Format>email</Format>')}</attributes></entity></EntityInfo></Entity>`,
     'solution/Entities/tst_parent/Entity.xml': `<Entity><Name>tst_parent</Name><EntityInfo><entity Name="tst_parent"><attributes>${attr('tst_parentid', 'primarykey')}${attr('tst_label', 'nvarchar', '<DisplayMask>PrimaryName|ValidForForm</DisplayMask>')}</attributes></entity></EntityInfo></Entity>`,
-    'solution/Entities/tst_parent/FormXml/main/parent-form.xml': `<systemform><formid>{${formId}}</formid><type>2</type><LocalizedNames><LocalizedName description="Parent" languagecode="1033"/></LocalizedNames><form><tabs><tab name="general"><columns><column><sections><section name="main"><rows><row><cell><control id="children" indicationOfSubgrid="true"><parameters><TargetEntityType>tst_row</TargetEntityType><ViewId>${viewId}</ViewId><RelationshipName>${options.relationship ?? 'tst_parent_rows'}</RelationshipName><RecordsPerPage>3</RecordsPerPage></parameters></control></cell></row></rows></section></sections></column></columns></tab></tabs><controlDescriptions><controlDescription forControl="children"><customControl name="tst_Synthetic.Grid" formFactor="0"><parameters><data-set name="rows"><ViewId>${viewId}</ViewId><TargetEntityType>tst_row</TargetEntityType></data-set></parameters></customControl></controlDescription></controlDescriptions></form></systemform>`,
+    'solution/Entities/tst_parent/FormXml/main/parent-form.xml': `<systemform><formid>{${formId}}</formid><type>2</type><LocalizedNames><LocalizedName description="Parent" languagecode="1033"/></LocalizedNames><form><tabs><tab name="general"><columns><column><sections><section name="main"><rows><row><cell><control id="children" indicationOfSubgrid="true"><parameters><TargetEntityType>tst_row</TargetEntityType><ViewId>${viewId}</ViewId><RelationshipName>${options.relationship ?? 'tst_parent_rows'}</RelationshipName><RecordsPerPage>3</RecordsPerPage>${options.subgridParameters ?? ''}</parameters></control></cell></row></rows></section></sections></column></columns></tab></tabs><controlDescriptions><controlDescription forControl="children"><customControl name="tst_Synthetic.Grid" formFactor="0"><parameters><data-set name="rows"><ViewId>${viewId}</ViewId><TargetEntityType>tst_row</TargetEntityType></data-set></parameters></customControl></controlDescription></controlDescriptions></form></systemform>`,
     [`solution/Entities/tst_row/SavedQueries/${viewId}.xml`]: viewXml(
       viewId,
       'Rows view',
@@ -939,4 +939,127 @@ test('an N:N subgrid data set mounts and lists the rows linked through the inter
   ]);
   assert.deepEqual([grid.body.entityName, grid.body.entityId], ['tst_row', parentId]);
   assert.deepEqual(errors, []);
+});
+
+const rankViewId = 'd0000000-0000-4000-8000-000000000006';
+const viewEntry = (id, label) =>
+  `{"Type":"View","ViewId":"${id}","DisplayName":[{"Type":"LanguageResources","LCID":1033,"Value":"${label}"}]}`;
+
+/** The toolbar's views, the bound data set's view and columns and the lifecycle of every instance so far. */
+const viewState = (page) =>
+  page.evaluate(() => ({
+    toolbar: [...document.querySelectorAll('.entity-grid .view-toolbar .view-select [role="menuitem"]')].map((item) =>
+      item.textContent.trim(),
+    ),
+    selected: document.querySelector('.entity-grid .view-toolbar .selected-view .title')?.textContent.trim(),
+    view: [window.ds.getViewId(), window.ds.getTitle()],
+    columns: window.ds.columns.filter((column) => column.name).map((column) => column.name),
+    rows: window.ds.sortedRecordIds.length,
+    error: window.ds.error,
+    events: window.events.map((event) => event.kind + JSON.stringify(event.props)),
+    instances: window.__paqviloPcf
+      .inspect()
+      .map((entry) => [
+        entry.state,
+        entry.lifecycle.map((item) => item.stage).filter((stage) => !stage.startsWith('dataset:')),
+      ]),
+  }));
+
+/** Chooses a toolbar view by its position and waits for the new instance's first load to settle. */
+async function chooseView(page, index, loads) {
+  await page.evaluate((position) => {
+    const grid = document.querySelector('.entity-grid[data-pcf-view-host]');
+    grid.querySelector('.view-toolbar .selected-view').click();
+    grid.querySelectorAll('.view-toolbar .view-select [role="menuitem"]')[position].click();
+  }, index);
+  await page.waitForFunction(settledLoads, loads);
+}
+
+// @test-kind observation: paqvilo-developer pcf-parity summary-F section 4 (runs fa and fb, views-list-ny, views-itemlist-ny and views-subgrid-ny, 2026-11-26): the list's or subgrid's own toolbar draws the view dropdown for two views (a subgrid with its view picker on), also for a control whose manifest declares no view options; choosing a view destroys the control and initialises a new one whose data set reports that view, with init, updateView [] and updateView ['dataset','Items','records'], also for the view already shown
+test('a list or subgrid with two views draws its own view dropdown and choosing a view remounts the control on it', async (t) => {
+  const files = {
+    [`solution/Entities/tst_row/SavedQueries/${rankViewId}.xml`]: viewXml(
+      rankViewId,
+      'Rows by rank',
+      ['tst_title', 'tst_rank'],
+      0,
+      'tst_rank',
+    ),
+    'portal/Rows.list.yml': `adx_entitylistid: rows
+adx_name: All rows
+adx_entityname: tst_row
+adx_view: ${viewId}
+adx_pagesize: 3
+adx_iscodecomponent: true
+adx_views: '{"Type":"ViewMetadata","Views":[${viewEntry(viewId, 'All rows by title')},${viewEntry(rankViewId, 'All rows by rank')}]}'`,
+  };
+  const hosts = [
+    ['list', ['All rows by title', 'All rows by rank']],
+    ['subgrid', ['Rows view', 'Rows by rank']],
+  ];
+  for (const [host, labels] of hosts) {
+    const { page, errors } = await datasetPortal(t, {
+      host,
+      files,
+      subgridParameters: `<EnableViewPicker>true</EnableViewPicker><ViewIds>{${viewId.toUpperCase()}},{${rankViewId.toUpperCase()}}</ViewIds>`,
+    });
+    const initial = await viewState(page);
+    assert.deepEqual(initial.toolbar, labels, host);
+    assert.equal(initial.selected, labels[0], host);
+    assert.deepEqual(initial.view, [viewId, 'Rows view'], host);
+    await chooseView(page, 1, 2);
+    const switched = await viewState(page);
+    assert.equal(switched.selected, labels[1], host);
+    assert.deepEqual(switched.view, [rankViewId, 'Rows by rank'], host);
+    assert.deepEqual(switched.columns, ['tst_title', 'tst_rank'], host);
+    assert.deepEqual([switched.rows, switched.error], [3, false], host);
+    assert.deepEqual(switched.events, ['init[]', 'updateView[]', 'updateView["dataset","Items","records"]'], host);
+    assert.deepEqual(
+      switched.instances,
+      [
+        ['ready', ['init', 'updateView', 'updateView:dataset']],
+        ['destroyed', ['init', 'updateView', 'updateView:dataset', 'destroy']],
+      ],
+      host,
+    );
+    // The view already shown remounts too.
+    await chooseView(page, 1, 3);
+    const again = await viewState(page);
+    assert.deepEqual(again.view, [rankViewId, 'Rows by rank'], host);
+    assert.deepEqual(
+      again.instances.map(([state]) => state),
+      ['ready', 'destroyed', 'destroyed'],
+      host,
+    );
+    assert.deepEqual(errors, [], host);
+  }
+});
+
+// @test-kind unproven: the view picker of an ordinary (non code component) subgrid is not captured (pcf-parity summary-F section 4 captured it on a code component subgrid only); Mirage keeps such a subgrid on its default view
+test('an ordinary subgrid with its view picker on keeps its default view and draws no view dropdown', async (t) => {
+  const picker = `<EnableViewPicker>true</EnableViewPicker><ViewIds>{${viewId.toUpperCase()}},{${rankViewId.toUpperCase()}}</ViewIds>`;
+  const { page } = await datasetPortal(t, {
+    host: 'subgrid',
+    loads: 0,
+    subgridParameters: picker,
+    files: {
+      [`solution/Entities/tst_row/SavedQueries/${rankViewId}.xml`]: viewXml(
+        rankViewId,
+        'Rows by rank',
+        ['tst_title', 'tst_rank'],
+        0,
+        'tst_rank',
+      ),
+      'solution/Entities/tst_row/Entity.xml': `<Entity><Name>tst_row</Name><EntityInfo><entity Name="tst_row"><EntitySetName>tst_rows</EntitySetName><attributes>${rowAttributes}</attributes></entity></EntityInfo></Entity>`,
+      'solution/Entities/tst_parent/FormXml/main/parent-form.xml': `<systemform><formid>{${formId}}</formid><type>2</type><LocalizedNames><LocalizedName description="Parent" languagecode="1033"/></LocalizedNames><form><tabs><tab name="general"><columns><column><sections><section name="main"><rows><row><cell><control id="children" indicationOfSubgrid="true"><parameters><TargetEntityType>tst_row</TargetEntityType><ViewId>${viewId}</ViewId><RelationshipName>tst_parent_rows</RelationshipName><RecordsPerPage>3</RecordsPerPage>${picker}</parameters></control></cell></row></rows></section></sections></column></columns></tab></tabs></form></systemform>`,
+    },
+  });
+  await page.waitForFunction(() => document.querySelectorAll('.entity-grid tbody tr').length === 3);
+  assert.deepEqual(
+    await page.evaluate(() => ({
+      select: document.querySelectorAll('.view-select').length,
+      pcf: document.querySelectorAll('[data-pcf-view-host]').length,
+    })),
+    { select: 0, pcf: 0 },
+  );
 });

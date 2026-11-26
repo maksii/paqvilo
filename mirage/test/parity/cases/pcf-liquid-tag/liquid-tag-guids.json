@@ -1,0 +1,1521 @@
+{
+  "schema": "paqvilo.parity-cases/1",
+  "surface": "pcf-liquid-tag",
+  "suite": "liquid-tag-guids",
+  "oracle": {
+    "kind": "native",
+    "name": "Power Pages",
+    "version": "9.8.9.29",
+    "scope": "Three signed-in loads on 2026-11-26 (runs r1, r2, r3) of Enhanced-data-model site pages in the Default studio template whose copy holds one codecomponent tag naming an invented field control by its customcontrol id in five written forms (the environment id is replaced by one invented id in the copy and in the observed id map), followed by a marker paragraph. Establishes how many code component hosts the served page has and whether it keeps the copy after the tag; not the host markup, the arguments or client behaviour."
+  },
+  "captures": [
+    {
+      "id": "liquid-tag-guids-r1",
+      "sha256": "9df1af00fb5058cdf2d21ad6242fe4e93aa3d7d594495cab7bc8053f8ffeabcc",
+      "capturedAt": "2026-11-26"
+    },
+    {
+      "id": "liquid-tag-guids-r2",
+      "sha256": "2b32036f4640a70e00975aa570aed7aa119b44c03c92dcc869921003929d7e40",
+      "capturedAt": "2026-11-26"
+    },
+    {
+      "id": "liquid-tag-guids-r3",
+      "sha256": "9d53c6fa6b3eb8432daa7d459fd33f104a89cf905920396be2bc13e8d79d2710",
+      "capturedAt": "2026-11-26"
+    }
+  ],
+  "cases": [
+    {
+      "id": "guid",
+      "input": {
+        "copy": "<div id=\"pqcase-guid\" class=\"pqcase\"><h3>guid</h3>{% codecomponent name:'0c0c0c0c-0000-4000-8000-00000000c0c0' textValue:'guid' %}</div>\n<p class=\"pqpcf-after\" id=\"pqpcf-after\">after the tag</p>",
+        "afterMarker": "<p class=\"pqpcf-after\" id=\"pqpcf-after\">after the tag</p>",
+        "controls": [
+          {
+            "name": "pqpcf_Pqpcf.LiquidProbe",
+            "namespace": "Pqpcf",
+            "constructor": "LiquidProbe",
+            "controlType": "standard",
+            "properties": [
+              {
+                "name": "boundText",
+                "ofType": "SingleLine.Text",
+                "usage": "bound"
+              },
+              {
+                "name": "textValue",
+                "ofType": "SingleLine.Text",
+                "usage": "input"
+              },
+              {
+                "name": "wholeValue",
+                "ofType": "Whole.None",
+                "usage": "input"
+              },
+              {
+                "name": "decimalValue",
+                "ofType": "Decimal",
+                "usage": "input"
+              },
+              {
+                "name": "floatValue",
+                "ofType": "FP",
+                "usage": "input"
+              },
+              {
+                "name": "moneyValue",
+                "ofType": "Currency",
+                "usage": "input"
+              },
+              {
+                "name": "flagValue",
+                "ofType": "TwoOptions",
+                "usage": "input"
+              },
+              {
+                "name": "dayValue",
+                "ofType": "DateAndTime.DateOnly",
+                "usage": "input"
+              },
+              {
+                "name": "momentValue",
+                "ofType": "DateAndTime.DateAndTime",
+                "usage": "input"
+              },
+              {
+                "name": "flavour",
+                "ofType": "Enum",
+                "usage": "input",
+                "defaultValue": "2"
+              },
+              {
+                "name": "MixedCaseArg",
+                "ofType": "SingleLine.Text",
+                "usage": "input"
+              }
+            ],
+            "datasets": [],
+            "typeGroups": [],
+            "platformLibraries": [],
+            "dependencies": []
+          },
+          {
+            "name": "pqpcf_Pqpcf.FieldProbe",
+            "namespace": "Pqpcf",
+            "constructor": "FieldProbe",
+            "controlType": "standard",
+            "properties": [
+              {
+                "name": "value",
+                "ofTypeGroup": "supported",
+                "usage": "bound",
+                "required": true
+              },
+              {
+                "name": "caption",
+                "ofType": "SingleLine.Text",
+                "usage": "input",
+                "defaultValue": "Default caption"
+              },
+              {
+                "name": "flavour",
+                "ofType": "Enum",
+                "usage": "input",
+                "defaultValue": "2"
+              },
+              {
+                "name": "count",
+                "ofType": "Whole.None",
+                "usage": "input",
+                "defaultValue": "7"
+              },
+              {
+                "name": "ratio",
+                "ofType": "Decimal",
+                "usage": "input"
+              },
+              {
+                "name": "toggle",
+                "ofType": "TwoOptions",
+                "usage": "input"
+              }
+            ],
+            "datasets": [],
+            "typeGroups": [
+              {
+                "name": "supported",
+                "types": [
+                  "Currency",
+                  "DateAndTime.DateAndTime",
+                  "DateAndTime.DateOnly",
+                  "Decimal",
+                  "FP",
+                  "Multiple",
+                  "OptionSet",
+                  "SingleLine.Email",
+                  "SingleLine.Phone",
+                  "SingleLine.Text",
+                  "SingleLine.TextArea",
+                  "SingleLine.Ticker",
+                  "SingleLine.URL",
+                  "TwoOptions",
+                  "Whole.None"
+                ]
+              }
+            ],
+            "platformLibraries": [],
+            "dependencies": []
+          },
+          {
+            "name": "pqpcf_Pqpcf.DatasetProbe",
+            "namespace": "Pqpcf",
+            "constructor": "DatasetProbe",
+            "controlType": "standard",
+            "properties": [
+              {
+                "name": "caption",
+                "ofType": "SingleLine.Text",
+                "usage": "input",
+                "defaultValue": "Dataset caption"
+              }
+            ],
+            "datasets": [
+              {
+                "name": "records"
+              }
+            ],
+            "typeGroups": [],
+            "platformLibraries": [],
+            "dependencies": []
+          },
+          {
+            "name": "pqpcf_Pqpcf.RequiredProbe",
+            "namespace": "Pqpcf",
+            "constructor": "RequiredProbe",
+            "controlType": "standard",
+            "properties": [
+              {
+                "name": "needed",
+                "ofType": "SingleLine.Text",
+                "usage": "input",
+                "required": true
+              },
+              {
+                "name": "optional",
+                "ofType": "SingleLine.Text",
+                "usage": "input"
+              }
+            ],
+            "datasets": [],
+            "typeGroups": [],
+            "platformLibraries": [],
+            "dependencies": []
+          },
+          {
+            "name": "pqpcf_Pqpcf.DependencyProbe",
+            "namespace": "Pqpcf",
+            "constructor": "DependencyProbe",
+            "controlType": "standard",
+            "properties": [
+              {
+                "name": "textValue",
+                "ofType": "SingleLine.Text",
+                "usage": "input"
+              }
+            ],
+            "datasets": [],
+            "typeGroups": [],
+            "platformLibraries": [],
+            "dependencies": [
+              {
+                "type": "control",
+                "name": "pqpcf_Pqpcf.FileProbe"
+              },
+              {
+                "type": "control",
+                "name": "pqpcf_Pqpcf.LookupProbe",
+                "loadType": "onDemand"
+              }
+            ]
+          },
+          {
+            "name": "pqpcf_Pqpcf.ReactProbe",
+            "namespace": "Pqpcf",
+            "constructor": "ReactProbe",
+            "controlType": "standard",
+            "properties": [
+              {
+                "name": "value",
+                "ofType": "SingleLine.Text",
+                "usage": "bound"
+              },
+              {
+                "name": "textValue",
+                "ofType": "SingleLine.Text",
+                "usage": "input"
+              }
+            ],
+            "datasets": [],
+            "typeGroups": [],
+            "platformLibraries": [
+              {
+                "name": "React",
+                "version": "16.14.0"
+              }
+            ],
+            "dependencies": []
+          },
+          {
+            "name": "pqpcf_Pqpcf.VirtualProbe",
+            "namespace": "Pqpcf",
+            "constructor": "VirtualProbe",
+            "controlType": "virtual",
+            "properties": [
+              {
+                "name": "value",
+                "ofType": "SingleLine.Text",
+                "usage": "bound"
+              },
+              {
+                "name": "textValue",
+                "ofType": "SingleLine.Text",
+                "usage": "input"
+              }
+            ],
+            "datasets": [],
+            "typeGroups": [],
+            "platformLibraries": [
+              {
+                "name": "React",
+                "version": "16.14.0"
+              }
+            ],
+            "dependencies": []
+          },
+          {
+            "name": "pqpcf_Pqpcf.TwoDatasetProbe",
+            "namespace": "Pqpcf",
+            "constructor": "TwoDatasetProbe",
+            "controlType": "standard",
+            "properties": [],
+            "datasets": [
+              {
+                "name": "first"
+              },
+              {
+                "name": "second"
+              }
+            ],
+            "typeGroups": [],
+            "platformLibraries": [],
+            "dependencies": []
+          }
+        ],
+        "observed": {
+          "codeComponents": {
+            "0c0c0c0c-0000-4000-8000-00000000c0c0": "pqpcf_Pqpcf.LiquidProbe"
+          }
+        }
+      },
+      "output": {
+        "hosts": 0,
+        "copyAfterTag": false
+      },
+      "volatile": []
+    },
+    {
+      "id": "guid-bare",
+      "input": {
+        "copy": "<div id=\"pqcase-guid-bare\" class=\"pqcase\"><h3>guid-bare</h3>{% codecomponent name:0c0c0c0c-0000-4000-8000-00000000c0c0 textValue:'guid bare' %}</div>\n<p class=\"pqpcf-after\" id=\"pqpcf-after\">after the tag</p>",
+        "afterMarker": "<p class=\"pqpcf-after\" id=\"pqpcf-after\">after the tag</p>",
+        "controls": [
+          {
+            "name": "pqpcf_Pqpcf.LiquidProbe",
+            "namespace": "Pqpcf",
+            "constructor": "LiquidProbe",
+            "controlType": "standard",
+            "properties": [
+              {
+                "name": "boundText",
+                "ofType": "SingleLine.Text",
+                "usage": "bound"
+              },
+              {
+                "name": "textValue",
+                "ofType": "SingleLine.Text",
+                "usage": "input"
+              },
+              {
+                "name": "wholeValue",
+                "ofType": "Whole.None",
+                "usage": "input"
+              },
+              {
+                "name": "decimalValue",
+                "ofType": "Decimal",
+                "usage": "input"
+              },
+              {
+                "name": "floatValue",
+                "ofType": "FP",
+                "usage": "input"
+              },
+              {
+                "name": "moneyValue",
+                "ofType": "Currency",
+                "usage": "input"
+              },
+              {
+                "name": "flagValue",
+                "ofType": "TwoOptions",
+                "usage": "input"
+              },
+              {
+                "name": "dayValue",
+                "ofType": "DateAndTime.DateOnly",
+                "usage": "input"
+              },
+              {
+                "name": "momentValue",
+                "ofType": "DateAndTime.DateAndTime",
+                "usage": "input"
+              },
+              {
+                "name": "flavour",
+                "ofType": "Enum",
+                "usage": "input",
+                "defaultValue": "2"
+              },
+              {
+                "name": "MixedCaseArg",
+                "ofType": "SingleLine.Text",
+                "usage": "input"
+              }
+            ],
+            "datasets": [],
+            "typeGroups": [],
+            "platformLibraries": [],
+            "dependencies": []
+          },
+          {
+            "name": "pqpcf_Pqpcf.FieldProbe",
+            "namespace": "Pqpcf",
+            "constructor": "FieldProbe",
+            "controlType": "standard",
+            "properties": [
+              {
+                "name": "value",
+                "ofTypeGroup": "supported",
+                "usage": "bound",
+                "required": true
+              },
+              {
+                "name": "caption",
+                "ofType": "SingleLine.Text",
+                "usage": "input",
+                "defaultValue": "Default caption"
+              },
+              {
+                "name": "flavour",
+                "ofType": "Enum",
+                "usage": "input",
+                "defaultValue": "2"
+              },
+              {
+                "name": "count",
+                "ofType": "Whole.None",
+                "usage": "input",
+                "defaultValue": "7"
+              },
+              {
+                "name": "ratio",
+                "ofType": "Decimal",
+                "usage": "input"
+              },
+              {
+                "name": "toggle",
+                "ofType": "TwoOptions",
+                "usage": "input"
+              }
+            ],
+            "datasets": [],
+            "typeGroups": [
+              {
+                "name": "supported",
+                "types": [
+                  "Currency",
+                  "DateAndTime.DateAndTime",
+                  "DateAndTime.DateOnly",
+                  "Decimal",
+                  "FP",
+                  "Multiple",
+                  "OptionSet",
+                  "SingleLine.Email",
+                  "SingleLine.Phone",
+                  "SingleLine.Text",
+                  "SingleLine.TextArea",
+                  "SingleLine.Ticker",
+                  "SingleLine.URL",
+                  "TwoOptions",
+                  "Whole.None"
+                ]
+              }
+            ],
+            "platformLibraries": [],
+            "dependencies": []
+          },
+          {
+            "name": "pqpcf_Pqpcf.DatasetProbe",
+            "namespace": "Pqpcf",
+            "constructor": "DatasetProbe",
+            "controlType": "standard",
+            "properties": [
+              {
+                "name": "caption",
+                "ofType": "SingleLine.Text",
+                "usage": "input",
+                "defaultValue": "Dataset caption"
+              }
+            ],
+            "datasets": [
+              {
+                "name": "records"
+              }
+            ],
+            "typeGroups": [],
+            "platformLibraries": [],
+            "dependencies": []
+          },
+          {
+            "name": "pqpcf_Pqpcf.RequiredProbe",
+            "namespace": "Pqpcf",
+            "constructor": "RequiredProbe",
+            "controlType": "standard",
+            "properties": [
+              {
+                "name": "needed",
+                "ofType": "SingleLine.Text",
+                "usage": "input",
+                "required": true
+              },
+              {
+                "name": "optional",
+                "ofType": "SingleLine.Text",
+                "usage": "input"
+              }
+            ],
+            "datasets": [],
+            "typeGroups": [],
+            "platformLibraries": [],
+            "dependencies": []
+          },
+          {
+            "name": "pqpcf_Pqpcf.DependencyProbe",
+            "namespace": "Pqpcf",
+            "constructor": "DependencyProbe",
+            "controlType": "standard",
+            "properties": [
+              {
+                "name": "textValue",
+                "ofType": "SingleLine.Text",
+                "usage": "input"
+              }
+            ],
+            "datasets": [],
+            "typeGroups": [],
+            "platformLibraries": [],
+            "dependencies": [
+              {
+                "type": "control",
+                "name": "pqpcf_Pqpcf.FileProbe"
+              },
+              {
+                "type": "control",
+                "name": "pqpcf_Pqpcf.LookupProbe",
+                "loadType": "onDemand"
+              }
+            ]
+          },
+          {
+            "name": "pqpcf_Pqpcf.ReactProbe",
+            "namespace": "Pqpcf",
+            "constructor": "ReactProbe",
+            "controlType": "standard",
+            "properties": [
+              {
+                "name": "value",
+                "ofType": "SingleLine.Text",
+                "usage": "bound"
+              },
+              {
+                "name": "textValue",
+                "ofType": "SingleLine.Text",
+                "usage": "input"
+              }
+            ],
+            "datasets": [],
+            "typeGroups": [],
+            "platformLibraries": [
+              {
+                "name": "React",
+                "version": "16.14.0"
+              }
+            ],
+            "dependencies": []
+          },
+          {
+            "name": "pqpcf_Pqpcf.VirtualProbe",
+            "namespace": "Pqpcf",
+            "constructor": "VirtualProbe",
+            "controlType": "virtual",
+            "properties": [
+              {
+                "name": "value",
+                "ofType": "SingleLine.Text",
+                "usage": "bound"
+              },
+              {
+                "name": "textValue",
+                "ofType": "SingleLine.Text",
+                "usage": "input"
+              }
+            ],
+            "datasets": [],
+            "typeGroups": [],
+            "platformLibraries": [
+              {
+                "name": "React",
+                "version": "16.14.0"
+              }
+            ],
+            "dependencies": []
+          },
+          {
+            "name": "pqpcf_Pqpcf.TwoDatasetProbe",
+            "namespace": "Pqpcf",
+            "constructor": "TwoDatasetProbe",
+            "controlType": "standard",
+            "properties": [],
+            "datasets": [
+              {
+                "name": "first"
+              },
+              {
+                "name": "second"
+              }
+            ],
+            "typeGroups": [],
+            "platformLibraries": [],
+            "dependencies": []
+          }
+        ],
+        "observed": {
+          "codeComponents": {
+            "0c0c0c0c-0000-4000-8000-00000000c0c0": "pqpcf_Pqpcf.LiquidProbe"
+          }
+        }
+      },
+      "output": {
+        "hosts": 1,
+        "copyAfterTag": true
+      },
+      "volatile": []
+    },
+    {
+      "id": "guid-upper",
+      "input": {
+        "copy": "<div id=\"pqcase-guid-upper\" class=\"pqcase\"><h3>guid-upper</h3>{% codecomponent name:'0C0C0C0C-0000-4000-8000-00000000C0C0' textValue:'guid upper' %}</div>\n<p class=\"pqpcf-after\" id=\"pqpcf-after\">after the tag</p>",
+        "afterMarker": "<p class=\"pqpcf-after\" id=\"pqpcf-after\">after the tag</p>",
+        "controls": [
+          {
+            "name": "pqpcf_Pqpcf.LiquidProbe",
+            "namespace": "Pqpcf",
+            "constructor": "LiquidProbe",
+            "controlType": "standard",
+            "properties": [
+              {
+                "name": "boundText",
+                "ofType": "SingleLine.Text",
+                "usage": "bound"
+              },
+              {
+                "name": "textValue",
+                "ofType": "SingleLine.Text",
+                "usage": "input"
+              },
+              {
+                "name": "wholeValue",
+                "ofType": "Whole.None",
+                "usage": "input"
+              },
+              {
+                "name": "decimalValue",
+                "ofType": "Decimal",
+                "usage": "input"
+              },
+              {
+                "name": "floatValue",
+                "ofType": "FP",
+                "usage": "input"
+              },
+              {
+                "name": "moneyValue",
+                "ofType": "Currency",
+                "usage": "input"
+              },
+              {
+                "name": "flagValue",
+                "ofType": "TwoOptions",
+                "usage": "input"
+              },
+              {
+                "name": "dayValue",
+                "ofType": "DateAndTime.DateOnly",
+                "usage": "input"
+              },
+              {
+                "name": "momentValue",
+                "ofType": "DateAndTime.DateAndTime",
+                "usage": "input"
+              },
+              {
+                "name": "flavour",
+                "ofType": "Enum",
+                "usage": "input",
+                "defaultValue": "2"
+              },
+              {
+                "name": "MixedCaseArg",
+                "ofType": "SingleLine.Text",
+                "usage": "input"
+              }
+            ],
+            "datasets": [],
+            "typeGroups": [],
+            "platformLibraries": [],
+            "dependencies": []
+          },
+          {
+            "name": "pqpcf_Pqpcf.FieldProbe",
+            "namespace": "Pqpcf",
+            "constructor": "FieldProbe",
+            "controlType": "standard",
+            "properties": [
+              {
+                "name": "value",
+                "ofTypeGroup": "supported",
+                "usage": "bound",
+                "required": true
+              },
+              {
+                "name": "caption",
+                "ofType": "SingleLine.Text",
+                "usage": "input",
+                "defaultValue": "Default caption"
+              },
+              {
+                "name": "flavour",
+                "ofType": "Enum",
+                "usage": "input",
+                "defaultValue": "2"
+              },
+              {
+                "name": "count",
+                "ofType": "Whole.None",
+                "usage": "input",
+                "defaultValue": "7"
+              },
+              {
+                "name": "ratio",
+                "ofType": "Decimal",
+                "usage": "input"
+              },
+              {
+                "name": "toggle",
+                "ofType": "TwoOptions",
+                "usage": "input"
+              }
+            ],
+            "datasets": [],
+            "typeGroups": [
+              {
+                "name": "supported",
+                "types": [
+                  "Currency",
+                  "DateAndTime.DateAndTime",
+                  "DateAndTime.DateOnly",
+                  "Decimal",
+                  "FP",
+                  "Multiple",
+                  "OptionSet",
+                  "SingleLine.Email",
+                  "SingleLine.Phone",
+                  "SingleLine.Text",
+                  "SingleLine.TextArea",
+                  "SingleLine.Ticker",
+                  "SingleLine.URL",
+                  "TwoOptions",
+                  "Whole.None"
+                ]
+              }
+            ],
+            "platformLibraries": [],
+            "dependencies": []
+          },
+          {
+            "name": "pqpcf_Pqpcf.DatasetProbe",
+            "namespace": "Pqpcf",
+            "constructor": "DatasetProbe",
+            "controlType": "standard",
+            "properties": [
+              {
+                "name": "caption",
+                "ofType": "SingleLine.Text",
+                "usage": "input",
+                "defaultValue": "Dataset caption"
+              }
+            ],
+            "datasets": [
+              {
+                "name": "records"
+              }
+            ],
+            "typeGroups": [],
+            "platformLibraries": [],
+            "dependencies": []
+          },
+          {
+            "name": "pqpcf_Pqpcf.RequiredProbe",
+            "namespace": "Pqpcf",
+            "constructor": "RequiredProbe",
+            "controlType": "standard",
+            "properties": [
+              {
+                "name": "needed",
+                "ofType": "SingleLine.Text",
+                "usage": "input",
+                "required": true
+              },
+              {
+                "name": "optional",
+                "ofType": "SingleLine.Text",
+                "usage": "input"
+              }
+            ],
+            "datasets": [],
+            "typeGroups": [],
+            "platformLibraries": [],
+            "dependencies": []
+          },
+          {
+            "name": "pqpcf_Pqpcf.DependencyProbe",
+            "namespace": "Pqpcf",
+            "constructor": "DependencyProbe",
+            "controlType": "standard",
+            "properties": [
+              {
+                "name": "textValue",
+                "ofType": "SingleLine.Text",
+                "usage": "input"
+              }
+            ],
+            "datasets": [],
+            "typeGroups": [],
+            "platformLibraries": [],
+            "dependencies": [
+              {
+                "type": "control",
+                "name": "pqpcf_Pqpcf.FileProbe"
+              },
+              {
+                "type": "control",
+                "name": "pqpcf_Pqpcf.LookupProbe",
+                "loadType": "onDemand"
+              }
+            ]
+          },
+          {
+            "name": "pqpcf_Pqpcf.ReactProbe",
+            "namespace": "Pqpcf",
+            "constructor": "ReactProbe",
+            "controlType": "standard",
+            "properties": [
+              {
+                "name": "value",
+                "ofType": "SingleLine.Text",
+                "usage": "bound"
+              },
+              {
+                "name": "textValue",
+                "ofType": "SingleLine.Text",
+                "usage": "input"
+              }
+            ],
+            "datasets": [],
+            "typeGroups": [],
+            "platformLibraries": [
+              {
+                "name": "React",
+                "version": "16.14.0"
+              }
+            ],
+            "dependencies": []
+          },
+          {
+            "name": "pqpcf_Pqpcf.VirtualProbe",
+            "namespace": "Pqpcf",
+            "constructor": "VirtualProbe",
+            "controlType": "virtual",
+            "properties": [
+              {
+                "name": "value",
+                "ofType": "SingleLine.Text",
+                "usage": "bound"
+              },
+              {
+                "name": "textValue",
+                "ofType": "SingleLine.Text",
+                "usage": "input"
+              }
+            ],
+            "datasets": [],
+            "typeGroups": [],
+            "platformLibraries": [
+              {
+                "name": "React",
+                "version": "16.14.0"
+              }
+            ],
+            "dependencies": []
+          },
+          {
+            "name": "pqpcf_Pqpcf.TwoDatasetProbe",
+            "namespace": "Pqpcf",
+            "constructor": "TwoDatasetProbe",
+            "controlType": "standard",
+            "properties": [],
+            "datasets": [
+              {
+                "name": "first"
+              },
+              {
+                "name": "second"
+              }
+            ],
+            "typeGroups": [],
+            "platformLibraries": [],
+            "dependencies": []
+          }
+        ],
+        "observed": {
+          "codeComponents": {
+            "0c0c0c0c-0000-4000-8000-00000000c0c0": "pqpcf_Pqpcf.LiquidProbe"
+          }
+        }
+      },
+      "output": {
+        "hosts": 0,
+        "copyAfterTag": false
+      },
+      "volatile": []
+    },
+    {
+      "id": "guid-nohyphens",
+      "input": {
+        "copy": "<div id=\"pqcase-guid-nohyphens\" class=\"pqcase\"><h3>guid-nohyphens</h3>{% codecomponent name:'0c0c0c0c00004000800000000000c0c0' textValue:'guid without hyphens' %}</div>\n<p class=\"pqpcf-after\" id=\"pqpcf-after\">after the tag</p>",
+        "afterMarker": "<p class=\"pqpcf-after\" id=\"pqpcf-after\">after the tag</p>",
+        "controls": [
+          {
+            "name": "pqpcf_Pqpcf.LiquidProbe",
+            "namespace": "Pqpcf",
+            "constructor": "LiquidProbe",
+            "controlType": "standard",
+            "properties": [
+              {
+                "name": "boundText",
+                "ofType": "SingleLine.Text",
+                "usage": "bound"
+              },
+              {
+                "name": "textValue",
+                "ofType": "SingleLine.Text",
+                "usage": "input"
+              },
+              {
+                "name": "wholeValue",
+                "ofType": "Whole.None",
+                "usage": "input"
+              },
+              {
+                "name": "decimalValue",
+                "ofType": "Decimal",
+                "usage": "input"
+              },
+              {
+                "name": "floatValue",
+                "ofType": "FP",
+                "usage": "input"
+              },
+              {
+                "name": "moneyValue",
+                "ofType": "Currency",
+                "usage": "input"
+              },
+              {
+                "name": "flagValue",
+                "ofType": "TwoOptions",
+                "usage": "input"
+              },
+              {
+                "name": "dayValue",
+                "ofType": "DateAndTime.DateOnly",
+                "usage": "input"
+              },
+              {
+                "name": "momentValue",
+                "ofType": "DateAndTime.DateAndTime",
+                "usage": "input"
+              },
+              {
+                "name": "flavour",
+                "ofType": "Enum",
+                "usage": "input",
+                "defaultValue": "2"
+              },
+              {
+                "name": "MixedCaseArg",
+                "ofType": "SingleLine.Text",
+                "usage": "input"
+              }
+            ],
+            "datasets": [],
+            "typeGroups": [],
+            "platformLibraries": [],
+            "dependencies": []
+          },
+          {
+            "name": "pqpcf_Pqpcf.FieldProbe",
+            "namespace": "Pqpcf",
+            "constructor": "FieldProbe",
+            "controlType": "standard",
+            "properties": [
+              {
+                "name": "value",
+                "ofTypeGroup": "supported",
+                "usage": "bound",
+                "required": true
+              },
+              {
+                "name": "caption",
+                "ofType": "SingleLine.Text",
+                "usage": "input",
+                "defaultValue": "Default caption"
+              },
+              {
+                "name": "flavour",
+                "ofType": "Enum",
+                "usage": "input",
+                "defaultValue": "2"
+              },
+              {
+                "name": "count",
+                "ofType": "Whole.None",
+                "usage": "input",
+                "defaultValue": "7"
+              },
+              {
+                "name": "ratio",
+                "ofType": "Decimal",
+                "usage": "input"
+              },
+              {
+                "name": "toggle",
+                "ofType": "TwoOptions",
+                "usage": "input"
+              }
+            ],
+            "datasets": [],
+            "typeGroups": [
+              {
+                "name": "supported",
+                "types": [
+                  "Currency",
+                  "DateAndTime.DateAndTime",
+                  "DateAndTime.DateOnly",
+                  "Decimal",
+                  "FP",
+                  "Multiple",
+                  "OptionSet",
+                  "SingleLine.Email",
+                  "SingleLine.Phone",
+                  "SingleLine.Text",
+                  "SingleLine.TextArea",
+                  "SingleLine.Ticker",
+                  "SingleLine.URL",
+                  "TwoOptions",
+                  "Whole.None"
+                ]
+              }
+            ],
+            "platformLibraries": [],
+            "dependencies": []
+          },
+          {
+            "name": "pqpcf_Pqpcf.DatasetProbe",
+            "namespace": "Pqpcf",
+            "constructor": "DatasetProbe",
+            "controlType": "standard",
+            "properties": [
+              {
+                "name": "caption",
+                "ofType": "SingleLine.Text",
+                "usage": "input",
+                "defaultValue": "Dataset caption"
+              }
+            ],
+            "datasets": [
+              {
+                "name": "records"
+              }
+            ],
+            "typeGroups": [],
+            "platformLibraries": [],
+            "dependencies": []
+          },
+          {
+            "name": "pqpcf_Pqpcf.RequiredProbe",
+            "namespace": "Pqpcf",
+            "constructor": "RequiredProbe",
+            "controlType": "standard",
+            "properties": [
+              {
+                "name": "needed",
+                "ofType": "SingleLine.Text",
+                "usage": "input",
+                "required": true
+              },
+              {
+                "name": "optional",
+                "ofType": "SingleLine.Text",
+                "usage": "input"
+              }
+            ],
+            "datasets": [],
+            "typeGroups": [],
+            "platformLibraries": [],
+            "dependencies": []
+          },
+          {
+            "name": "pqpcf_Pqpcf.DependencyProbe",
+            "namespace": "Pqpcf",
+            "constructor": "DependencyProbe",
+            "controlType": "standard",
+            "properties": [
+              {
+                "name": "textValue",
+                "ofType": "SingleLine.Text",
+                "usage": "input"
+              }
+            ],
+            "datasets": [],
+            "typeGroups": [],
+            "platformLibraries": [],
+            "dependencies": [
+              {
+                "type": "control",
+                "name": "pqpcf_Pqpcf.FileProbe"
+              },
+              {
+                "type": "control",
+                "name": "pqpcf_Pqpcf.LookupProbe",
+                "loadType": "onDemand"
+              }
+            ]
+          },
+          {
+            "name": "pqpcf_Pqpcf.ReactProbe",
+            "namespace": "Pqpcf",
+            "constructor": "ReactProbe",
+            "controlType": "standard",
+            "properties": [
+              {
+                "name": "value",
+                "ofType": "SingleLine.Text",
+                "usage": "bound"
+              },
+              {
+                "name": "textValue",
+                "ofType": "SingleLine.Text",
+                "usage": "input"
+              }
+            ],
+            "datasets": [],
+            "typeGroups": [],
+            "platformLibraries": [
+              {
+                "name": "React",
+                "version": "16.14.0"
+              }
+            ],
+            "dependencies": []
+          },
+          {
+            "name": "pqpcf_Pqpcf.VirtualProbe",
+            "namespace": "Pqpcf",
+            "constructor": "VirtualProbe",
+            "controlType": "virtual",
+            "properties": [
+              {
+                "name": "value",
+                "ofType": "SingleLine.Text",
+                "usage": "bound"
+              },
+              {
+                "name": "textValue",
+                "ofType": "SingleLine.Text",
+                "usage": "input"
+              }
+            ],
+            "datasets": [],
+            "typeGroups": [],
+            "platformLibraries": [
+              {
+                "name": "React",
+                "version": "16.14.0"
+              }
+            ],
+            "dependencies": []
+          },
+          {
+            "name": "pqpcf_Pqpcf.TwoDatasetProbe",
+            "namespace": "Pqpcf",
+            "constructor": "TwoDatasetProbe",
+            "controlType": "standard",
+            "properties": [],
+            "datasets": [
+              {
+                "name": "first"
+              },
+              {
+                "name": "second"
+              }
+            ],
+            "typeGroups": [],
+            "platformLibraries": [],
+            "dependencies": []
+          }
+        ],
+        "observed": {
+          "codeComponents": {
+            "0c0c0c0c-0000-4000-8000-00000000c0c0": "pqpcf_Pqpcf.LiquidProbe"
+          }
+        }
+      },
+      "output": {
+        "hosts": 0,
+        "copyAfterTag": false
+      },
+      "volatile": []
+    },
+    {
+      "id": "guid-braces",
+      "input": {
+        "copy": "<div id=\"pqcase-guid-braces\" class=\"pqcase\"><h3>guid-braces</h3>{% codecomponent name:'{0c0c0c0c-0000-4000-8000-00000000c0c0}' textValue:'guid with braces' %}</div>\n<p class=\"pqpcf-after\" id=\"pqpcf-after\">after the tag</p>",
+        "afterMarker": "<p class=\"pqpcf-after\" id=\"pqpcf-after\">after the tag</p>",
+        "controls": [
+          {
+            "name": "pqpcf_Pqpcf.LiquidProbe",
+            "namespace": "Pqpcf",
+            "constructor": "LiquidProbe",
+            "controlType": "standard",
+            "properties": [
+              {
+                "name": "boundText",
+                "ofType": "SingleLine.Text",
+                "usage": "bound"
+              },
+              {
+                "name": "textValue",
+                "ofType": "SingleLine.Text",
+                "usage": "input"
+              },
+              {
+                "name": "wholeValue",
+                "ofType": "Whole.None",
+                "usage": "input"
+              },
+              {
+                "name": "decimalValue",
+                "ofType": "Decimal",
+                "usage": "input"
+              },
+              {
+                "name": "floatValue",
+                "ofType": "FP",
+                "usage": "input"
+              },
+              {
+                "name": "moneyValue",
+                "ofType": "Currency",
+                "usage": "input"
+              },
+              {
+                "name": "flagValue",
+                "ofType": "TwoOptions",
+                "usage": "input"
+              },
+              {
+                "name": "dayValue",
+                "ofType": "DateAndTime.DateOnly",
+                "usage": "input"
+              },
+              {
+                "name": "momentValue",
+                "ofType": "DateAndTime.DateAndTime",
+                "usage": "input"
+              },
+              {
+                "name": "flavour",
+                "ofType": "Enum",
+                "usage": "input",
+                "defaultValue": "2"
+              },
+              {
+                "name": "MixedCaseArg",
+                "ofType": "SingleLine.Text",
+                "usage": "input"
+              }
+            ],
+            "datasets": [],
+            "typeGroups": [],
+            "platformLibraries": [],
+            "dependencies": []
+          },
+          {
+            "name": "pqpcf_Pqpcf.FieldProbe",
+            "namespace": "Pqpcf",
+            "constructor": "FieldProbe",
+            "controlType": "standard",
+            "properties": [
+              {
+                "name": "value",
+                "ofTypeGroup": "supported",
+                "usage": "bound",
+                "required": true
+              },
+              {
+                "name": "caption",
+                "ofType": "SingleLine.Text",
+                "usage": "input",
+                "defaultValue": "Default caption"
+              },
+              {
+                "name": "flavour",
+                "ofType": "Enum",
+                "usage": "input",
+                "defaultValue": "2"
+              },
+              {
+                "name": "count",
+                "ofType": "Whole.None",
+                "usage": "input",
+                "defaultValue": "7"
+              },
+              {
+                "name": "ratio",
+                "ofType": "Decimal",
+                "usage": "input"
+              },
+              {
+                "name": "toggle",
+                "ofType": "TwoOptions",
+                "usage": "input"
+              }
+            ],
+            "datasets": [],
+            "typeGroups": [
+              {
+                "name": "supported",
+                "types": [
+                  "Currency",
+                  "DateAndTime.DateAndTime",
+                  "DateAndTime.DateOnly",
+                  "Decimal",
+                  "FP",
+                  "Multiple",
+                  "OptionSet",
+                  "SingleLine.Email",
+                  "SingleLine.Phone",
+                  "SingleLine.Text",
+                  "SingleLine.TextArea",
+                  "SingleLine.Ticker",
+                  "SingleLine.URL",
+                  "TwoOptions",
+                  "Whole.None"
+                ]
+              }
+            ],
+            "platformLibraries": [],
+            "dependencies": []
+          },
+          {
+            "name": "pqpcf_Pqpcf.DatasetProbe",
+            "namespace": "Pqpcf",
+            "constructor": "DatasetProbe",
+            "controlType": "standard",
+            "properties": [
+              {
+                "name": "caption",
+                "ofType": "SingleLine.Text",
+                "usage": "input",
+                "defaultValue": "Dataset caption"
+              }
+            ],
+            "datasets": [
+              {
+                "name": "records"
+              }
+            ],
+            "typeGroups": [],
+            "platformLibraries": [],
+            "dependencies": []
+          },
+          {
+            "name": "pqpcf_Pqpcf.RequiredProbe",
+            "namespace": "Pqpcf",
+            "constructor": "RequiredProbe",
+            "controlType": "standard",
+            "properties": [
+              {
+                "name": "needed",
+                "ofType": "SingleLine.Text",
+                "usage": "input",
+                "required": true
+              },
+              {
+                "name": "optional",
+                "ofType": "SingleLine.Text",
+                "usage": "input"
+              }
+            ],
+            "datasets": [],
+            "typeGroups": [],
+            "platformLibraries": [],
+            "dependencies": []
+          },
+          {
+            "name": "pqpcf_Pqpcf.DependencyProbe",
+            "namespace": "Pqpcf",
+            "constructor": "DependencyProbe",
+            "controlType": "standard",
+            "properties": [
+              {
+                "name": "textValue",
+                "ofType": "SingleLine.Text",
+                "usage": "input"
+              }
+            ],
+            "datasets": [],
+            "typeGroups": [],
+            "platformLibraries": [],
+            "dependencies": [
+              {
+                "type": "control",
+                "name": "pqpcf_Pqpcf.FileProbe"
+              },
+              {
+                "type": "control",
+                "name": "pqpcf_Pqpcf.LookupProbe",
+                "loadType": "onDemand"
+              }
+            ]
+          },
+          {
+            "name": "pqpcf_Pqpcf.ReactProbe",
+            "namespace": "Pqpcf",
+            "constructor": "ReactProbe",
+            "controlType": "standard",
+            "properties": [
+              {
+                "name": "value",
+                "ofType": "SingleLine.Text",
+                "usage": "bound"
+              },
+              {
+                "name": "textValue",
+                "ofType": "SingleLine.Text",
+                "usage": "input"
+              }
+            ],
+            "datasets": [],
+            "typeGroups": [],
+            "platformLibraries": [
+              {
+                "name": "React",
+                "version": "16.14.0"
+              }
+            ],
+            "dependencies": []
+          },
+          {
+            "name": "pqpcf_Pqpcf.VirtualProbe",
+            "namespace": "Pqpcf",
+            "constructor": "VirtualProbe",
+            "controlType": "virtual",
+            "properties": [
+              {
+                "name": "value",
+                "ofType": "SingleLine.Text",
+                "usage": "bound"
+              },
+              {
+                "name": "textValue",
+                "ofType": "SingleLine.Text",
+                "usage": "input"
+              }
+            ],
+            "datasets": [],
+            "typeGroups": [],
+            "platformLibraries": [
+              {
+                "name": "React",
+                "version": "16.14.0"
+              }
+            ],
+            "dependencies": []
+          },
+          {
+            "name": "pqpcf_Pqpcf.TwoDatasetProbe",
+            "namespace": "Pqpcf",
+            "constructor": "TwoDatasetProbe",
+            "controlType": "standard",
+            "properties": [],
+            "datasets": [
+              {
+                "name": "first"
+              },
+              {
+                "name": "second"
+              }
+            ],
+            "typeGroups": [],
+            "platformLibraries": [],
+            "dependencies": []
+          }
+        ],
+        "observed": {
+          "codeComponents": {
+            "0c0c0c0c-0000-4000-8000-00000000c0c0": "pqpcf_Pqpcf.LiquidProbe"
+          }
+        }
+      },
+      "output": {
+        "hosts": 0,
+        "copyAfterTag": false
+      },
+      "volatile": []
+    }
+  ],
+  "history": []
+}

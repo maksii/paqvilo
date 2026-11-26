@@ -779,14 +779,21 @@ function relationshipFacts(node) {
     // names: Cascade, Active, UserOwned, NoCascade, RemoveLink, Restrict). Solution exports
     // carry Assign, Delete, Archive, Reparent, Share, Unshare and RollupView; Merge is not
     // exported. The data store enforces delete (lib/data.mjs).
+    // The export spells the CascadeType Active as ActiveOnly (native, hosted export 2026-11-26: a relationship created with
+    // Assign "Active" exported <CascadeAssign>ActiveOnly</CascadeAssign>, and the metadata Web API answers "Active"), so it
+    // is read as Active, the name the cascades and the metadata API use.
+    const action = (name) => {
+      const value = t(name) || undefined;
+      return value === 'ActiveOnly' ? 'Active' : value;
+    };
     const cascade = compact({
-      assign: t('CascadeAssign') || undefined,
-      delete: t('CascadeDelete') || undefined,
-      archive: t('CascadeArchive') || undefined,
-      reparent: t('CascadeReparent') || undefined,
-      share: t('CascadeShare') || undefined,
-      unshare: t('CascadeUnshare') || undefined,
-      rollupView: t('CascadeRollupView') || undefined,
+      assign: action('CascadeAssign'),
+      delete: action('CascadeDelete'),
+      archive: action('CascadeArchive'),
+      reparent: action('CascadeReparent'),
+      share: action('CascadeShare'),
+      unshare: action('CascadeUnshare'),
+      rollupView: action('CascadeRollupView'),
     });
     const facts = compact({
       ...common,

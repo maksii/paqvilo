@@ -833,3 +833,45 @@ test('observed Web API entity sets resolve selected metadata without inventing m
   );
   assert.equal(withSolution.report.apiReferences.find((row) => row.name === 'unexported_sets').entity, null);
 });
+
+// @test-kind observation: pcf-parity summary-F section 3, live Power Pages capture of unquoted GUID codecomponent names: a braced id halts and cuts off the rest of the page, upper-case and hyphenless ids render
+test('inspection reports a braced code component id as a tag that ends the template', async (t) => {
+  const fx = inspectionFixture();
+  t.after(fx.cleanup);
+  const id = '0a0a0a0a-3333-4333-8333-000000000001';
+  fs.writeFileSync(
+    path.join(fx.portal, 'web-pages/home/Home.webpage.copy.html'),
+    `{% codecomponent name:${id.replaceAll('-', '').toUpperCase()} %}{% codecomponent name:{${id}} %}`,
+  );
+  const controlDir = path.join(fx.solution, 'Controls/fx_Example.Probe');
+  fs.mkdirSync(controlDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(controlDir, 'ControlManifest.xml'),
+    '<manifest><control namespace="Example" constructor="Probe" control-type="standard"><resources><code path="bundle.js" order="1"/></resources></control></manifest>',
+  );
+  fs.writeFileSync(
+    path.join(controlDir, 'ControlManifest.xml.data.xml'),
+    '<CustomControl><Name>fx_Example.Probe</Name></CustomControl>',
+  );
+  fs.writeFileSync(path.join(controlDir, 'bundle.js'), 'window.Example = {};');
+  const { report } = await createSourceInspector({
+    sourceDir: fx.portal,
+    mirageConfig: { solutionRoots: [fx.solution], observed: { codeComponents: { [id]: 'fx_Example.Probe' } } },
+  }).inspect('/');
+  assert.deepEqual(
+    report.codeComponents.map((row) => [row.schemaName, row.refused]),
+    [
+      ['fx_Example.Probe', undefined],
+      ['fx_Example.Probe', 'PCF_LIQUID_NAME_BRACED'],
+    ],
+  );
+  assert.deepEqual(
+    report.unresolved.filter((row) => row.kind === 'code-component').map((row) => [row.expression, row.reason]),
+    [
+      [
+        `{% codecomponent name:{${id}} %}`,
+        'Power Pages renders nothing for a control id in braces and ends the rest of the template: write the id without braces.',
+      ],
+    ],
+  );
+});

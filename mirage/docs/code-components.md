@@ -54,6 +54,13 @@ reference with a backslash, a colon (drive or scheme), a leading slash or one th
 up. A resource above `pcf.maxResourceBytes` (8 MiB by default) refuses the control with `PCF_IMPORT_FAILED`, reason
 `PCF_RESOURCE_TOO_LARGE`. Other `<resources>` children report `PCF_RESOURCE_KIND_UNSUPPORTED`.
 
+Declared code resources load as classic scripts, as Power Pages loads them
+(`<script type="text/javascript" src="/_pcfwebresource/<id>?<stamp>">`). A code resource that is an ES module bundle
+(`import` or `export` declarations, `import.meta` or top-level `await`, an `.mjs` file or a `type="module"`
+declaration) reports `PCF_CODE_RESOURCE_MODULE` at import. The control is still imported, but its bundle cannot
+register in a classic script, so the page shows the "did not register" error. Build the control with the pcf-scripts
+webpack output, which is a classic script.
+
 A `dependency` resource is imported as declared (`type`, `name`, `order`, `load-type`) and reported at render as
 `PCF_DEPENDENCY_NOT_LOADED`. Like Power Pages, the page loads no dependency, and `context.utils.loadDependency`
 rejects with `undefined`. Enum `<value>` elements are imported as the property's values; `version`, `api-version`,
@@ -109,8 +116,8 @@ control with a `control-type` other than `standard` or `virtual` is refused with
 ### Naming the control
 
 Name the control unquoted in a `codecomponent` Liquid tag: its exported schema name (`name:pub_Namespace.Control`) or
-its customcontrol GUID (`name:<guid>`, braced or without hyphens too, mapped to a schema name by an
-`observed.codeComponents` entry). The tag key `name` takes any letter case; the name is always literal, never a
+its customcontrol GUID (`name:<guid>`, in either letter case and with or without hyphens, mapped to a schema name by
+an `observed.codeComponents` entry). The tag key `name` takes any letter case; the name is always literal, never a
 variable, even when a variable of that name exists.
 
 As on Power Pages, these tags render nothing and end the rest of the template where they stand: the page copy and its
@@ -120,6 +127,7 @@ separately).
 | Tag                                                                   | Diagnostic                     |
 | --------------------------------------------------------------------- | ------------------------------ |
 | A quoted name or GUID (`name:'pub_Namespace.Control'`)                | `PCF_LIQUID_NAME_QUOTED`       |
+| A braced GUID (`name:{<guid>}`; another braced name is a name)        | `PCF_LIQUID_NAME_BRACED`       |
 | A name the sources do not hold, or of a control the import refused    | `PCF_LIQUID_CONTROL_NOT_FOUND` |
 | A tag without a name value                                            | `PCF_LIQUID_CONTROL_NOT_FOUND` |
 | A second tag of a control the same template renders (neither renders) | `PCF_LIQUID_DUPLICATE_CONTROL` |
@@ -159,8 +167,10 @@ The host markup has the Power Pages structure, with a fresh id per render: a `<i
 script (`/_pcfwebresource/<id>?<stamp>`), the `PcfControlConfig_<id>` span (`data-pcf-control`, `pcf-controlcontext`)
 and the `<id>_ControlView` div the control renders into. Mirage's `/_pcfwebresource/<id>` ids are derived from the
 local files, because an export does not carry the portal's web resource ids. `data-pcf-control` keeps the top-level
-keys, the resource entries (code `0`, styles `1`, strings `2`) and the manifest identity and properties; the
-formatting, localized string and property type entries are not written. Mirage's host script is loaded before the
+keys, the resource entries (one string placeholder per RESX file and none for a control without RESX files, then
+the RESX files `2`, the code `0` and the styles `1`; images and HTML resources have none) and the manifest identity and properties; the formatting, localized string
+and property type entries are not written. `/_pcfwebresource/<id>` serves only the bundle and the style sheets; a
+control's image, HTML or RESX resource answers 403 with an empty body. Mirage's host script is loaded before the
 container and its mount script follows it.
 
 ## Native form fields
@@ -237,9 +247,12 @@ the native control would post:
 
 ### Timing and script changes
 
-`notifyOutputChanged` returns at once. The host calls `getOutputs` in a later task, writes the output into the hidden
-input without a change event, marks the form dirty and then calls `updateView` with `updatedProperties` `[]`; notifies
-before that task share one `getOutputs` call. An output of the wrong type is written as it is.
+`notifyOutputChanged` returns at once. The host calls `getOutputs` once, 100 ms after the last notify, with the last
+value: notifies in one turn, in microtasks or in `setTimeout(0)` tasks share one call, and each notify within 100 ms
+moves it. The host writes the output into the hidden input without a change event, marks the form dirty and then calls
+`updateView` with `updatedProperties` `[]`, except when the output repeats the previous one. An output of the wrong
+type is written as it is. The Liquid tag host calls `getOutputs` the same way and never calls `updateView` after a
+notify.
 
 A page script reaches the control only by changing the hidden input's value and raising `change` (a jQuery
 `.trigger('change')` counts): the host re-reads the JSON and calls `updateView` with `[]`. Disabling or hiding the
@@ -268,10 +281,16 @@ as a generic control: `getValue` and `setValue` throw `Method not implemented.`,
 
 A list opts in with its code component setting and its table's desktop grid control; a form subgrid opts in through
 its portal metadata (code-component style) and an exported desktop FormXml dataset binding with one data-set and only
-static inputs besides it. The host binds the first view of the list or the subgrid's view; a list with several views
-gets no view selector. Map, calendar and user-, account- or website-filtered lists, a view absent from the sources, a
-binding for another table or view and a refused control keep the ordinary grid below an alert
-(`PCF_NATIVE_DATASET_UNSUPPORTED`).
+static inputs besides it. The host binds the first view of the list or the subgrid's view, and `getTitle()` is the view's own name. A
+list with two or more views, or a subgrid with its view picker on (`EnableViewPicker` and `ViewIds`), hosts the
+control in its grid element, and the grid's own toolbar draws the view dropdown with the list's display names (the
+saved query names on a subgrid), whatever the control's manifest declares; `CDSDataSetOptions` stays null. Choosing a
+view, the current one included, destroys the control and initialises a new one in a new host element whose data set
+reports that view (its columns, links and title) and loads as on the page load: `init`, `updateView` with `[]`, then
+`updateView` with `['dataset', 'Items', 'records']`. The other data sets of the control keep their unbound rows. An authored `{% entitylist %}...{% endentitylist %}`
+block on a code-component list renders only its body, with neither the code component nor the grid. Map, calendar and
+user-, account- or website-filtered lists, a view absent from the sources, a binding for another table or view and a
+refused control keep the ordinary grid below an alert (`PCF_NATIVE_DATASET_UNSUPPORTED`).
 
 ### Data transport
 
@@ -291,8 +310,10 @@ relationship or the intersect table of a many-to-many relationship.
 (`alias.column`) resolves through that link's exported table and is named "<column label> (<table label>)"; a cell
 without an exported definition is left out (`PCF_DATASET_COLUMN_SKIPPED`). `dataType` follows the attribute type: float
 is `Decimal`, money `Money`, multiline text `SingleLine.Text`, lookup, customer, owner, party list and multi-select
-columns keep their lower-case type names, text and whole-number formats give the narrower type
-(`SingleLine.Email`, `Whole.Duration`) and a date-format column `DateAndTime.DateOnly`.
+columns keep their lower-case type names, file, image and rich text columns are `SingleLine.Text`, a text format gives
+the narrower type (`SingleLine.Email`, `SingleLine.URL`, `SingleLine.Phone`, `SingleLine.Ticker`,
+`SingleLine.TextArea`), a whole-number format keeps `Whole.None` and a date-format column is `DateAndTime.DateOnly`.
+A party list column reads `null` with formatted value `""`, and a property-set column is never mapped (`null`).
 
 A record's `getValue` returns a choice as its value text, choices as numbers, money as its amount, a date as a `Date`
 and a lookup as `{ etn, id: { guid }, name }`. `getFormattedValue` returns the service's formatted text for choices,
@@ -390,12 +411,18 @@ implementation behave the same way locally:
   string matches.
 - `events.<name>()` of a manifest `<event>` raises a `paqvilo:pcf-event` DOM event on the container and returns null.
 
-`context.webAPI` reads and writes through the portal Web API with the visitor's table permissions. Each request names
-its table in the `pcf-entity-logical-name` header, and the page fetches its anti-forgery token once. `retrieveRecord`
-without options sends nothing and returns `undefined`, and `deleteRecord` resolves with a null id. Every rejected call
-rejects with `undefined`, as on Power Pages, so a control cannot read the reason: Mirage keeps it (operation, table,
-message, error code and HTTP status) in `__paqviloPcf.inspect(instanceId)[0].webApiErrors` and writes a console
-warning. A `WebAPI` control on sources without any imported table mapping reports `PCF_WEBAPI_MAPPING_MISSING`.
+`context.webAPI` reads and writes through the portal Web API with the visitor's table permissions. Each request goes
+to `/_api/<the table name the control passed>` and names it in the `pcf-entity-logical-name` header; the portal Web
+API reads such a segment as a table logical name only (an entity set name or an unknown table answers 400
+`9004010A`, and without the header a logical name answers 400 `9004010A`). The page fetches its anti-forgery token
+once and sends it with reads too; a read sends `accept: */*` and `content-type: application/json`.
+`retrieveMultipleRecords` ignores `maxPageSize` (no `Prefer` header, every row of the query) and a FetchXML `top`, and
+resolves `{ entities, nextLink: undefined }`. `retrieveRecord` resolves `{ data, entityType, values }` with the row under
+`data` (`values` undefined); without options it sends nothing and returns `undefined`, and `deleteRecord` resolves with
+a null id. Every rejected call rejects with `undefined`, as on Power Pages, so a control cannot read the reason: Mirage
+keeps it (operation, table, message, error code and HTTP status) in `__paqviloPcf.inspect(instanceId)[0].webApiErrors`
+and writes a console warning. A `WebAPI` control on sources without any imported table mapping reports
+`PCF_WEBAPI_MAPPING_MISSING`.
 
 `utils.getEntityMetadata(table, columns)` reads `/_api/EntityDefinitions(LogicalName='<table>')` with the requested
 columns in `$expand` and the `pcf-entity-logical-name` header, as the Power Pages host does; a request without that
@@ -429,6 +456,7 @@ Import and sources:
 - `PCF_IDENTITY_SHADOWED`: an earlier control is withdrawn by a later folder without a readable name.
 - `PCF_ARCHIVE_UNREADABLE`: a Solution ZIP cannot be read.
 - `PCF_RESOURCE_KIND_UNSUPPORTED`: the manifest declares a `<resources>` child no host reads.
+- `PCF_CODE_RESOURCE_MODULE`: a declared code resource is an ES module bundle, which a classic script cannot run.
 - `PCF_BUILD_OUTPUT_MISSING`: a `pcf.sources` entry has no build output yet.
 - `PCF_BUILD_SOURCE_INVALID`: a `pcf.sources` entry cannot name its controls (no valid publisher prefix).
 - `PCF_BUILD_SOURCE_OUTSIDE`: a `.pcfproj` `OutputPath` leaves its project folder.
@@ -449,8 +477,8 @@ Rendering a control:
 - `PCF_WEBAPI_MAPPING_MISSING`: a `WebAPI` control renders while no table has an imported Web API mapping.
 - `PCF_ARGUMENT_IGNORED`, `PCF_ARGUMENT_DROPPED`: a tag argument names no property, or its value has no
   `ControlProperties` form.
-- `PCF_LIQUID_NAME_QUOTED`, `PCF_LIQUID_CONTROL_NOT_FOUND`, `PCF_LIQUID_DUPLICATE_CONTROL`: a tag that renders nothing
-  and ends its template.
+- `PCF_LIQUID_NAME_QUOTED`, `PCF_LIQUID_NAME_BRACED`, `PCF_LIQUID_CONTROL_NOT_FOUND`, `PCF_LIQUID_DUPLICATE_CONTROL`: a
+  tag that renders nothing and ends its template.
 - `PCF_LIQUID_DATASET_UNBOUND`, `PCF_LIQUID_DATASET_LOCAL`: a Liquid-hosted data set without a binding, or with the
   local view binding.
 - `PCF_DATASET_WEBAPI_REQUIRED`: the local view binding reads a table or column the Web API settings do not serve.
@@ -491,7 +519,9 @@ modules with `eval`.
 - Controls the environment provides and no export holds (`Pages.*`) show an alert instead of rendering.
 - The field host's `data-pcf-control` is an empty manifest shell and the field loads its bundle through Mirage's host
   script, not from a `/_pcfwebresource/` address.
-- A data set has no `delete`, `getRelatedDataSet`, `newDataSet`, `cloneDataSet`, `saveMultipleRecords`, `getCommands`,
-  grouping, aggregation or `getCellImageInfo` members, and a record has no `getFormattedPrimaryName`.
+- A data set has no `delete`, `getRelatedDataSet`, `newDataSet`, `cloneDataSet`, `saveMultipleRecords`, `getCommands`
+  or `getCellImageInfo` members, and a record has no `getFormattedPrimaryName`. `aggregation` and `grouping` have
+  their `get`, `add`, `remove` and `clear` members; `getAggregations()` and `getGroupBys()` answer `[]`, and adding
+  or removing changes nothing.
 - Compare important behaviour with an authorized live portal; see [platform resources](platform-resources.md) and
   [coverage](../../docs/coverage.md).

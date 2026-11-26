@@ -782,6 +782,10 @@
         return String(value.Value);
       case 'Microsoft.Xrm.Sdk.OptionSetValueCollection':
         return value.map((item) => item.Value);
+      // A party list column arrives as an EntityCollection; the data set exposes null and '' for it (captured,
+      // paqvilo-developer pcf-parity summary-F section 7, an activity list).
+      case 'Microsoft.Xrm.Sdk.EntityCollection':
+        return null;
       case 'Microsoft.Xrm.Sdk.Money':
         return value.Value;
       case 'System.DateTime':
@@ -813,6 +817,8 @@
     const value = attribute?.Value;
     if (value == null) return '';
     switch (attribute.Type) {
+      case 'Microsoft.Xrm.Sdk.EntityCollection':
+        return '';
       case 'Microsoft.Xrm.Sdk.EntityReference':
         return String(value.Name ?? attribute.FormattedValue ?? '');
       case 'Microsoft.Xrm.Sdk.OptionSetValueCollection':
@@ -933,6 +939,21 @@
       getViewId: () => (transport === 'none' ? unbound() : binding.viewId),
       getTitle: () => (transport === 'none' ? unbound() : binding.viewName),
       getDataSetCapabilities: datasetCapabilities,
+      // A list's and a subgrid's data set has aggregation and grouping with get, add, remove and clear, and
+      // getAggregations() and getGroupBys() answer [] (captured, paqvilo-developer pcf-parity summary-F section 4,
+      // runs fc and fd). What add and remove change is not captured: they change nothing here.
+      aggregation: {
+        getAggregations: () => [],
+        addAggregation: () => undefined,
+        removeAggregation: () => undefined,
+        clear: () => undefined,
+      },
+      grouping: {
+        getGroupBys: () => [],
+        addGroupBy: () => undefined,
+        removeGroupBy: () => undefined,
+        clear: () => undefined,
+      },
       getSelectedRecordIds: () => [...selected],
       // Selection never runs updateView.
       setSelectedRecordIds(ids) {
@@ -1388,7 +1409,8 @@
       throw new Error(
         'The PCF bundle did not register ' +
           spec.constructor +
-          '. A development build that loads its modules with eval is refused by the page script policy: build the control in production mode.',
+          '. A development build that loads its modules with eval is refused by the page script policy: build the control in production mode.' +
+          ' The page loads declared code resources as classic scripts, so an ES module bundle (import or export declarations) cannot register either (PCF_CODE_RESOURCE_MODULE).',
       );
     return Constructor;
   }
@@ -1627,19 +1649,25 @@
       throw new Error('PCF Web API table has no imported mapping: ' + name);
     return mapping.entitySet;
   }
-  async function pcfApi(spec, name, suffix, method, body, maxPageSize, extraHeaders = {}) {
+  // The host's webAPI requests (headers carrying pcf-entity-logical-name) address the table by its logical name
+  // (captured, paqvilo-developer pcf-parity summary-A and summary-F section 1); the local Liquid view binding reads
+  // through the entity set name of the imported mapping.
+  function pcfSegment(spec, name, headers) {
+    const logical = headers['pcf-entity-logical-name'];
+    if (logical === undefined) return pcfEntitySet(spec, name);
+    if (!/^[a-z_][a-z\d_]*$/.test(logical)) throw new Error('PCF Web API needs a table logical name: ' + name);
+    return logical;
+  }
+  async function pcfApi(spec, name, suffix, method, body, extraHeaders = {}) {
     const headers = {
-      Accept: 'application/json',
+      // A read sends accept */* with content-type application/json and the anti-forgery token (captured,
+      // paqvilo-developer pcf-parity summary-F section 1); the headers of a write are not captured.
+      Accept: method === 'GET' ? '*/*' : 'application/json',
       'Content-Type': 'application/json',
       __RequestVerificationToken: await token(),
       ...extraHeaders,
     };
-    if (maxPageSize !== undefined) {
-      if (!Number.isInteger(maxPageSize) || maxPageSize < 1 || maxPageSize > 5000)
-        throw new Error('PCF Web API maxPageSize must be between 1 and 5000');
-      headers.Prefer = 'odata.maxpagesize=' + maxPageSize;
-    }
-    const response = await fetch('/_api/' + pcfEntitySet(spec, name) + suffix, {
+    const response = await fetch('/_api/' + pcfSegment(spec, name, headers) + suffix, {
       method,
       credentials: 'same-origin',
       headers,
@@ -2567,8 +2595,8 @@
       );
     // The host's webAPI requests name their table in pcf-entity-logical-name; the portal Web API
     // handler's authorization is not changed by it.
-    const api = (name, suffix, method, body, maxPageSize) =>
-      host.api(name, suffix, method, body, maxPageSize, {
+    const api = (name, suffix, method, body) =>
+      host.api(name, suffix, method, body, {
         'pcf-entity-logical-name': String(name ?? '').toLowerCase(),
       });
     let tracking = false;
@@ -2945,14 +2973,16 @@
         {
           retrieveRecord: [
             3,
-            // Without options the platform sends no request and returns undefined synchronously (captured).
+            // Without options the platform sends no request and returns undefined synchronously (captured). A read
+            // resolves { data, entityType, values: undefined } with the row under data (captured, paqvilo-developer
+            // pcf-parity summary-F section 1, field and dataset hosts alike).
             (entityType, id, query) => {
               if (!query) return undefined;
-              return webApi(
-                'retrieveRecord',
+              return webApi('retrieveRecord', entityType, async () => ({
+                data: (await api(entityType, '(' + recordId(id) + ')' + options(query), 'GET')).result,
                 entityType,
-                async () => (await api(entityType, '(' + recordId(id) + ')' + options(query), 'GET')).result,
-              );
+                values: undefined,
+              }));
             },
           ],
           createRecord: [
@@ -2980,12 +3010,15 @@
                 return { id: null, entityType };
               }),
           ],
+          // The host ignores maxPageSize (no Prefer header, every row of the query) and a FetchXML top, and resolves
+          // { entities, nextLink: undefined } (captured, paqvilo-developer pcf-parity summary-F section 1, runs fa and
+          // fb, field and dataset hosts alike).
           retrieveMultipleRecords: [
             4,
-            (entityType, query, maxPageSize) =>
+            (entityType, query) =>
               webApi('retrieveMultipleRecords', entityType, async () => {
-                const { result } = await api(entityType, options(query ?? ''), 'GET', undefined, maxPageSize);
-                return { entities: result.value ?? [], nextLink: result['@odata.nextLink'] };
+                const { result } = await api(entityType, options(query ?? ''), 'GET');
+                return { entities: result.value ?? [], nextLink: undefined };
               }),
           ],
           execute: [1, unsupportedWebApi('execute')],
@@ -3121,13 +3154,14 @@
       disposed = false,
       detachNative = () => {},
       updateQueued = false,
-      outputQueued = false;
+      outputTimer = null;
     const disposers = [];
     const pending = new Set(),
       sources = new Set();
     const cleanup = () => {
       if (disposed) return;
       disposed = true;
+      clearTimeout(outputTimer);
       detachNative();
       for (const dispose of disposers.splice(0))
         try {
@@ -3159,7 +3193,7 @@
       delete container.dataset.pcfReady;
     };
     // Reserve before resource loading so duplicate calls cannot create two instances.
-    instances.set(container, { cleanup, debug });
+    instances.set(container, { cleanup, debug, spec });
     try {
       await loadControlResources(spec);
       if (disposed || !container.isConnected) {
@@ -3168,8 +3202,7 @@
       }
       const Constructor = controlConstructor(spec);
       const { parameters, writable } = controlParameters(spec, debug, container);
-      const api = (name, suffix, method, body, maxPageSize, headers) =>
-        pcfApi(spec, name, suffix, method, body, maxPageSize, headers);
+      const api = (name, suffix, method, body, headers) => pcfApi(spec, name, suffix, method, body, headers);
       const stateKey = 'paqvilo-pcf:' + controlStateId(spec, container);
       // A read-only form disables the field host's controls, and the host disables a status or status reason
       // column on every form (captured: statuscode and statecode isControlDisabled true).
@@ -3288,16 +3321,27 @@
         }
         return outputs;
       };
-      // The field host (captured): notifyOutputChanged returns at once
-      // without calling getOutputs; the host calls getOutputs in a later task (about 100 ms later on the live host;
-      // Mirage takes the next macrotask and models no delay) and updateView right after it, with updatedProperties []
-      // and the output as the new raw value. A disabled control (statuscode) takes outputs too. Notifies before that
-      // task share it (LOCAL MODEL, unproven: coalescing of several notifies is not captured).
+      // The field and Liquid tag hosts debounce notifyOutputChanged (captured, paqvilo-developer pcf-parity summary-F
+      // section 2, runs fa and fb): notifyOutputChanged returns at once, and getOutputs runs once, about 100 ms after
+      // the last notify, reading the last value; notifies in one turn, in microtasks or in setTimeout(0) tasks share one
+      // call, notifies 50 ms apart keep moving it, notifies 150 ms apart get one call each. The field host follows a
+      // getOutputs with one updateView with updatedProperties [] and the output as the new raw value, and with none
+      // when the value is unchanged; a disabled control (statuscode) takes outputs too. The Liquid host never runs
+      // updateView after a notify. Lists and subgrids keep the local model below (not captured).
+      const NOTIFY_DEBOUNCE_MS = 100;
+      // "Unchanged" compares with the previous getOutputs answer: a first output equal to the column value still runs
+      // updateView (captured, summary-B: the status reason output 1 on a row whose value is 1), a repeated one does not
+      // (summary-F section 2, sameValueTwice).
+      let previousOutputs = null;
       const fieldOutputs = () => {
-        outputQueued = false;
-        if (disposed) return;
         const outputs = takeOutputs();
         if (!outputs) return;
+        const changedValues =
+          previousOutputs === null ||
+          Object.entries(outputs).some(
+            ([name, raw]) => !Object.hasOwn(previousOutputs, name) || JSON.stringify(raw) !== previousOutputs[name],
+          );
+        previousOutputs = Object.fromEntries(Object.entries(outputs).map(([name, raw]) => [name, JSON.stringify(raw)]));
         for (const [name, raw] of Object.entries(outputs)) {
           const parameter = parameters[name];
           parameter.raw = raw;
@@ -3312,6 +3356,7 @@
           return;
         }
         container.dispatchEvent(new CustomEvent('paqvilo:pcf-output', { bubbles: true, detail: outputs }));
+        if (!changedValues) return;
         try {
           context.updatedProperties = [];
           trace('updateView:output');
@@ -3320,16 +3365,9 @@
           failure(error);
         }
       };
-      const changed = () => {
-        if (disposed) return;
-        if (spec.nativeBinding) {
-          if (outputQueued) return;
-          outputQueued = true;
-          setTimeout(fieldOutputs, 0);
-          return;
-        }
-        const outputs = takeOutputs();
-        if (!outputs) return;
+      // Stores the outputs as the parameters' raw and formatted values; answers the names whose value changed, or null
+      // after a failure.
+      const applyOutputs = (outputs) => {
         let prepared;
         try {
           // Prepare every comparison/format before mutating parameter values.
@@ -3341,15 +3379,37 @@
           }));
         } catch (error) {
           failure(error);
-          return;
+          return null;
         }
         for (const { name, raw, formatted } of prepared) {
           parameters[name].raw = raw;
           parameters[name].formatted = formatted;
         }
-        const updates = prepared.filter((item) => JSON.stringify(item.raw) !== item.previous).map((item) => item.name);
         container.dispatchEvent(new CustomEvent('paqvilo:pcf-output', { bubbles: true, detail: outputs }));
-        schedule(updates, 'output');
+        return prepared.filter((item) => JSON.stringify(item.raw) !== item.previous).map((item) => item.name);
+      };
+      // The Liquid host takes the outputs and runs no updateView.
+      const liquidOutputs = () => {
+        const outputs = takeOutputs();
+        if (outputs) applyOutputs(outputs);
+      };
+      const debounced = spec.nativeBinding ? fieldOutputs : liquidOutputs;
+      const changed = () => {
+        if (disposed) return;
+        if (spec.nativeBinding || spec.host === 'liquid') {
+          clearTimeout(outputTimer);
+          outputTimer = setTimeout(() => {
+            outputTimer = null;
+            if (!disposed) debounced();
+          }, NOTIFY_DEBOUNCE_MS);
+          return;
+        }
+        // Lists, subgrids and a mount without a host (LOCAL MODEL, unproven): getOutputs at once, and one updateView
+        // in a microtask with the outputs whose value changed.
+        const outputs = takeOutputs();
+        if (!outputs) return;
+        const updates = applyOutputs(outputs);
+        if (updates) schedule(updates, 'output');
       };
       let state = {};
       try {
@@ -3485,6 +3545,40 @@
     for (const [container, instance] of instances) if (!container.isConnected) instance.cleanup();
   });
   removed.observe(document.documentElement, { childList: true, subtree: true });
+  // The mount specification of a list's or subgrid's control bound to another of its views: the bound data set takes
+  // that view's columns, links, sorting and signed configuration. Null when the data sets have no such view.
+  function viewSpec(spec, viewId) {
+    const wanted = String(viewId ?? '').toLowerCase();
+    let found = false;
+    const datasets = (spec.datasets ?? []).map((binding) => {
+      const view = binding.views?.find((entry) => String(entry.viewId).toLowerCase() === wanted);
+      if (!view) return binding;
+      found = true;
+      return { ...binding, ...view };
+    });
+    return found ? { ...spec, datasets } : null;
+  }
+  // A view chosen in a list's or subgrid's toolbar (entity-grid-compat.js): the host destroys the control and
+  // initialises a new one, in a new host element, whose data set reports the chosen view; it then loads as on the page
+  // load (init, updateView [], updateView ['dataset', 'Items', 'records']), also for the view already shown (captured,
+  // paqvilo-developer pcf-parity summary-F section 4, runs fa and fb).
+  document.addEventListener('paqvilo:pcf-view', (event) => {
+    const grid = event.target;
+    if (!(grid instanceof Element)) return;
+    // The instances found before any remount: a remount adds its new instance to the map.
+    const hosted = Array.from(instances).filter(([container, instance]) => grid.contains(container) && instance.spec);
+    for (const [container, instance] of hosted) {
+      const next = viewSpec(instance.spec, event.detail?.viewId);
+      if (!next) continue;
+      instance.cleanup();
+      const replacement = document.createElement('div');
+      for (const name of ['data-mirage-component', 'data-pcf-schema'])
+        if (container.hasAttribute(name)) replacement.setAttribute(name, container.getAttribute(name));
+      replacement.setAttribute('aria-busy', 'true');
+      container.replaceWith(replacement);
+      void mount(next, replacement);
+    }
+  });
   // A page entering the back/forward cache (persisted) keeps its live controls for the restore; only a
   // real unload destroys them.
   window.addEventListener('pagehide', (event) => {

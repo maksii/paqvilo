@@ -1,6 +1,8 @@
-// Rollup columns (lib/dataverse-rollup.mjs): create stamps state 0, a child write marks its parents stale, recalculate computes the
-// supported aggregates with and without the statecode filter, unsupported definitions report once and store state 2, a pack
-// override wins, and a write to a rollup column is refused.
+// @test-kind contract: Mirage's rollup module (stale marks, recalculation, pack override, diagnostics); tests that hosted runs prove carry their own observation tag
+// Rollup columns (lib/dataverse-rollup.mjs): create stamps the Calculated state with the empty value, a child write marks its
+// parents for the mass recalculation without changing their companions, recalculate computes the supported aggregates with and
+// without the statecode filter, unsupported definitions report once and store state 2, a pack override wins, and a write to a
+// rollup column is ignored.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EXTENSION, parseRollupFormula, recalculate, validateRollups } from '../lib/dataverse-rollup.mjs';
@@ -161,29 +163,32 @@ async function setup(t, options = {}) {
 
 const rowOf = (store, table, id) => store.state.tables[table].find((row) => row[`${table}id`] === id);
 
-test('create stamps every rollup column NotCalculated with a null date', async (t) => {
+// @test-kind observation: hosted runs run-derived-A/B 2026-11-26 (paqvilo-developer hosted-f6 summary-F6 DATA-04c), the invented FetchXML schema is typed here: on create every rollup column is Calculated at the creation time, with 0 for COUNT and SUM
+test('create stamps every rollup column Calculated at the creation time with the value of no children', async (t) => {
   const { request, json, store } = await setup(t);
   await json(await request('POST', '/x_parents', { x_name: 'Fresh parent' }), 201);
   const row = store.state.tables.x_parent.find((item) => item.x_name === 'Fresh parent');
-  assert.equal(row.x_countall_state, 0);
-  assert.equal(row.x_countall_date, null);
-  assert.equal(row.x_sumactive_state, 0);
-  assert.equal(row.x_sumactive_date, null);
+  for (const column of ['x_countall', 'x_sumall', 'x_sumactive']) {
+    assert.equal(row[`${column}_state`], 1, column);
+    assert.equal(row[`${column}_date`], row.createdon, column);
+    assert.equal(row[column], 0, column);
+  }
 });
 
-test('a write to a rollup column is refused and stores nothing', async (t) => {
+// @test-kind observation: hosted runs run-derived-A/B 2026-11-26 (paqvilo-developer hosted-f6 summary-F6 DATA-04c), the invented FetchXML schema is typed here: a direct write to a rollup column answers 204 and leaves the value as it was
+test('a write to a rollup column is accepted and ignored', async (t) => {
   const { request, json, store } = await setup(t);
-  await json(await request('POST', '/x_parents', { x_name: 'Refused', x_countall: 5 }), 400);
-  assert.equal(
-    store.state.tables.x_parent.some((row) => row.x_name === 'Refused'),
-    false,
-  );
-  await json(await request('PATCH', `/x_parents(${PARENT})`, { x_sumall: 1 }), 400);
+  await json(await request('POST', '/x_parents', { x_name: 'Ignored', x_countall: 5 }), 201);
+  assert.equal(store.state.tables.x_parent.find((row) => row.x_name === 'Ignored').x_countall, 0);
+  const response = await request('PATCH', `/x_parents(${PARENT})`, { x_sumall: 1 }, { prefer: 'return=minimal' });
+  assert.equal(response.status, 204, await response.text());
   assert.equal(rowOf(store, 'x_parent', PARENT).x_sumall, undefined);
 });
 
-test('a child create marks its parent stale in the same write', async (t) => {
+// @test-kind observation: hosted runs run-derived-A/B 2026-11-26 (paqvilo-developer hosted-f6 summary-F6 DATA-04c), the invented FetchXML schema is typed here: editing a child changes neither the parent's _state nor its _date
+test("a child create leaves the parent's companions as they are", async (t) => {
   const { request, json, store } = await setup(t);
+  const before = { ...rowOf(store, 'x_parent', PARENT) };
   await json(
     await request('POST', '/x_children', {
       x_name: 'New child',
@@ -194,27 +199,41 @@ test('a child create marks its parent stale in the same write', async (t) => {
     201,
   );
   const parent = rowOf(store, 'x_parent', PARENT);
-  assert.equal(parent.x_countall_state, 0);
-  assert.equal(parent.x_sumall_state, 0);
-  assert.equal(parent.x_sumactive_state, 0);
-  assert.equal(rowOf(store, 'x_parent', OTHER).x_countall_state, 1);
+  for (const column of ['x_countall', 'x_sumall', 'x_sumactive'])
+    for (const name of [column, `${column}_state`, `${column}_date`]) assert.equal(parent[name], before[name], name);
 });
 
-test('a reparent or a delete marks both the old and the new parent stale', async (t) => {
-  const { request, json, store } = await setup(t);
+test('a child create marks its parent for the mass recalculation in the same write', async (t) => {
+  const { request, json, api } = await setup(t);
+  const stale = (id, column) => api.rollups.isStale('x_parent', id, column);
+  await json(
+    await request('POST', '/x_children', {
+      x_name: 'New child',
+      x_amount: 3,
+      'x_parentid@odata.bind': `/x_parents(${PARENT})`,
+      statecode: 0,
+    }),
+    201,
+  );
+  for (const column of ['x_countall', 'x_sumall', 'x_sumactive']) assert.equal(stale(PARENT, column), true, column);
+  assert.equal(stale(OTHER, 'x_countall'), false);
+});
+
+test('a reparent or a delete marks both the old and the new parent for recalculation', async (t) => {
+  const { request, json, api } = await setup(t);
+  const stale = (id) => api.rollups.isStale('x_parent', id, 'x_sumall');
   await json(
     await request('PATCH', `/x_children(${CHILD_ACTIVE})`, { 'x_parentid@odata.bind': `/x_parents(${OTHER})` }),
     200,
   );
-  assert.equal(rowOf(store, 'x_parent', PARENT).x_sumall_state, 0);
-  assert.equal(rowOf(store, 'x_parent', OTHER).x_sumall_state, 0);
-  // Reset the marks, then delete a child: its parent is stale again, the other parent is untouched.
-  store.state.tables.x_parent.forEach((row) => {
-    row.x_sumall_state = 1;
-  });
+  assert.equal(stale(PARENT), true);
+  assert.equal(stale(OTHER), true);
+  // Recalculating clears the marks; then delete a child: its parent is marked again, the other parent is not.
+  for (const id of [PARENT, OTHER]) await api.rollups.recalculate('x_parent', id, 'x_sumall');
+  assert.deepEqual([stale(PARENT), stale(OTHER)], [false, false]);
   await json(await request('DELETE', `/x_children(${CHILD_ACTIVE_2})`), 204);
-  assert.equal(rowOf(store, 'x_parent', PARENT).x_sumall_state, 0);
-  assert.equal(rowOf(store, 'x_parent', OTHER).x_sumall_state, 1);
+  assert.equal(stale(PARENT), true);
+  assert.equal(stale(OTHER), false);
 });
 
 test('recalculate computes COUNT and SUM, with and without the statecode filter', async (t) => {
@@ -292,7 +311,7 @@ test('CalculateRollupField answers through the module: a pack rollups function s
 test('CalculateRollupField on an unsupported definition answers state 2 and reports ROLLUP_UNSUPPORTED', async (t) => {
   const { request, json, diagnostics } = await setup(t);
   const body = await json(await calculate(request, PARENT, 'x_unsupported'), 200);
-  assert.equal(body.x_unsupported, null);
+  assert.equal(Object.hasOwn(body, 'x_unsupported'), false, 'a null value is absent');
   assert.equal(body.x_unsupported_state, 2);
   assert.equal(
     diagnostics.filter((entry) => entry.code === 'ROLLUP_UNSUPPORTED' && entry.column === 'x_unsupported').length,
@@ -301,13 +320,12 @@ test('CalculateRollupField on an unsupported definition answers state 2 and repo
 });
 
 test("a child write keeps the parent's ETag and runs no Update step or committed event on the parent", async (t) => {
-  const { request, json, store } = await setup(t);
+  const { request, json, store, api } = await setup(t);
   // A parent created through the API carries a versionnumber, so its ETag is that version (seed rows hash their content).
   const parent = await json(await request('POST', '/x_parents', { x_name: 'Created parent' }), 201);
   const PARENT = parent.x_parentid;
   const etag = parent['@odata.etag'];
   assert.match(etag, /^W\/"\d+"$/);
-  rowOf(store, 'x_parent', PARENT).x_sumall_state = 1;
   const phases = [];
   const events = [];
   const phase = store.exportedPluginPhase;
@@ -330,8 +348,8 @@ test("a child write keeps the parent's ETag and runs no Update step or committed
     201,
   );
   assert.equal(
-    rowOf(store, 'x_parent', PARENT).x_sumall_state,
-    0,
+    api.rollups.isStale('x_parent', PARENT, 'x_sumall'),
+    true,
     'the parent is still marked for the mass recalculation',
   );
   assert.ok(!phases.includes('x_parent.update'), phases.join(','));
@@ -375,4 +393,72 @@ test("concurrent writes on a table without rollups read each table's field defin
     calls.size <= Object.keys(store.state.mappings).length,
     `rollup read ${calls.size} definitions for 60 writes`,
   );
+});
+
+const markParents = async (request, ids) => {
+  for (const id of ids)
+    await request(
+      'POST',
+      '/x_children',
+      { x_name: 'Marking child', x_amount: 1, 'x_parentid@odata.bind': `/x_parents(${id})`, statecode: 0 },
+      { prefer: 'return=minimal' },
+    );
+};
+
+test('a deleted parent keeps no mark, and the mass recalculation still reaches every other marked parent', async (t) => {
+  const { request, json, store, api } = await setup(t);
+  const created = await json(await request('POST', '/x_parents', { x_name: 'Deleted parent' }), 201);
+  const gone = created.x_parentid;
+  await markParents(request, [gone]);
+  assert.equal(api.rollups.isStale('x_parent', gone, 'x_sumall'), true);
+  for (const row of store.state.tables.x_child.filter((child) => child.x_parentid?.id === gone))
+    await json(await request('DELETE', `/x_children(${row.x_childid})`), 204);
+  await json(await request('DELETE', `/x_parents(${gone})`), 204);
+  assert.equal(api.rollups.isStale('x_parent', gone, 'x_sumall'), false);
+  // A row removed without a delete (a raw replacement) leaves a mark behind; the mass recalculation drops it.
+  await markParents(request, [OTHER]);
+  await store.transact(() => {
+    store.state.tables.x_parent = store.state.tables.x_parent.filter((row) => row.x_parentid !== OTHER);
+  });
+  await json(
+    await request('PATCH', `/x_children(${CHILD_ACTIVE})`, { x_amount: 11 }, { prefer: 'return=minimal' }),
+    204,
+  );
+  assert.ok((await api.rollups.recalculateStale()) >= 3);
+  assert.equal(rowOf(store, 'x_parent', PARENT).x_sumall, 116);
+  assert.deepEqual(
+    ['x_countall', 'x_sumall', 'x_sumactive'].map((column) => api.rollups.isStale('x_parent', OTHER, column)),
+    [false, false, false],
+  );
+});
+
+test('one failing recalculation is reported and keeps its mark; the other marked parents are recalculated', async (t) => {
+  const { request, store, api, diagnostics } = await setup(t, {
+    rollups: {
+      'x_parent.x_countall': (row) => {
+        if (row.x_name === 'Invented other parent') throw new Error('invented pack failure');
+        return 7;
+      },
+    },
+  });
+  await markParents(request, [OTHER, PARENT]);
+  await api.rollups.recalculateStale();
+  assert.equal(rowOf(store, 'x_parent', PARENT).x_countall, 7);
+  assert.equal(api.rollups.isStale('x_parent', PARENT, 'x_countall'), false);
+  assert.equal(api.rollups.isStale('x_parent', OTHER, 'x_countall'), true);
+  assert.equal(api.rollups.isStale('x_parent', OTHER, 'x_sumall'), false, 'its other columns still ran');
+  const failed = diagnostics.filter((entry) => entry.code === 'ROLLUP_RECALCULATION_FAILED');
+  assert.deepEqual(
+    failed.map(({ table, column, id }) => [table, column, id]),
+    [['x_parent', 'x_countall', OTHER]],
+  );
+  assert.match(failed[0].message, /invented pack failure/);
+});
+
+test('a reset clears every mark', async (t) => {
+  const { request, api } = await setup(t);
+  await markParents(request, [PARENT]);
+  assert.equal(api.rollups.isStale('x_parent', PARENT, 'x_sumall'), true);
+  EXTENSION.reset(api);
+  assert.equal(api.rollups.isStale('x_parent', PARENT, 'x_sumall'), false);
 });

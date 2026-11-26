@@ -8,7 +8,7 @@ import { observedPage } from './shared-browser.mjs';
 import { importCodeComponents, renderCodeComponent } from '../lib/code-components.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
-// @test-kind unproven+observation: local model of feature declarations on loopback sources; the device and utils namespaces present without declarations follow the live capture of 2026-11-26 (paqvilo-developer pcf-parity digest-surface-r1.json)
+// @test-kind unproven+observation: local model of feature declarations on loopback sources; the device and utils namespaces present without declarations follow the live capture of 2026-11-26 (paqvilo-developer pcf-parity digest-surface-r1.json), and the webAPI read's /_api/<logical name> request with pcf-entity-logical-name follows summary-F section 1 (runs fa and fb)
 test('PCF required declarations never load a constructor while optional features retain host APIs', async (t) => {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pcf-features-'));
   let server, browser;
@@ -93,8 +93,9 @@ test('PCF required declarations never load a constructor while optional features
     } else if (assetBodies.has(request.url)) {
       response.setHeader('Content-Type', 'text/javascript');
       response.end(assetBodies.get(request.url));
-    } else if (request.url.startsWith('/_api/tst_rows')) {
-      apiCalls.push(request.method);
+    } else if (/^\/_api\/tst_row(?=[(?]|$)/.test(request.url)) {
+      // The host addresses the table by its logical name and names it in pcf-entity-logical-name (summary-F section 1).
+      apiCalls.push(request.method + ' ' + request.url + ' ' + request.headers['pcf-entity-logical-name']);
       response.setHeader('Content-Type', 'application/json');
       response.end('{"value":[{"tst_rowid":"d0000000-0000-4000-8000-000000000001"}]}');
     } else {
@@ -136,7 +137,7 @@ test('PCF required declarations never load a constructor while optional features
     // (live capture of a control with an empty feature-usage, paqvilo-developer pcf-parity digest-surface-r1.json).
     assert.deepEqual(item, { webAPI: 'function', device: 'object', utility: 'undefined', utils: 'object' });
   assert.equal(state.result.entities[0].tst_rowid, 'd0000000-0000-4000-8000-000000000001');
-  assert.deepEqual(apiCalls, ['GET']);
+  assert.deepEqual(apiCalls, ['GET /_api/tst_row tst_row']);
   const deniedUrls = variations
     .filter((v) => !v.eligible)
     .flatMap((v) => catalog.controls.get(`tst_Synthetic.${v.key}`).resources.map((r) => r.url));

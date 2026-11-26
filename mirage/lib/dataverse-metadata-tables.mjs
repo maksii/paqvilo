@@ -6,6 +6,7 @@
 // table; they are kept in state.dataverse.customColumns and reapplied onto the mapping (reapplyCustomColumns) so a Solution
 // refresh keeps them. Choice storage follows the canonical shape in dataverse-metadata-relationships.mjs.
 import { DataError } from './data-error.mjs';
+import { calculatedDefinitionError } from './calculated-xaml.mjs';
 import { applyCustomColumns } from './dataverse-custom-columns.mjs';
 import { createMetadataService } from './dataverse-metadata.mjs';
 import {
@@ -22,6 +23,7 @@ import {
 } from './dataverse-metadata-relationships.mjs';
 import { grantTablePrivileges, revokeTablePrivileges } from './dataverse-security.mjs';
 import { standardGlobalOptionSets } from './dataverse-standard.mjs';
+import { assertRollupDefinition } from './dataverse-rollup.mjs';
 import { resyncMessageFilters } from './dataverse-plugin-registration.mjs';
 import { pluralizeEntitySetName } from './solution-standard.mjs';
 import { alternateKeyOf, alternateKeyValues, alternateKeyKinds } from './alternate-key-values.mjs';
@@ -223,8 +225,11 @@ function columnField(api, attr, dataverseType, schemaName, primary) {
   const field = { dataverseType };
   const range = { minValue: attr.MinValue ?? null, maxValue: attr.MaxValue ?? null };
   if (attr.SourceType != null) facts.sourceType = Number(attr.SourceType?.Value ?? attr.SourceType);
-  if (typeof attr.FormulaDefinition === 'string' && attr.FormulaDefinition)
+  if (typeof attr.FormulaDefinition === 'string' && attr.FormulaDefinition) {
+    // A rollup (SourceType 2) definition is checked as the platform checks it at definition time.
+    if (facts.sourceType === 2) assertRollupDefinition(attr.FormulaDefinition);
     facts.formulaDefinition = attr.FormulaDefinition;
+  }
   switch (dataverseType) {
     case 'nvarchar':
       Object.assign(facts, {
@@ -317,6 +322,9 @@ function addColumn(api, mapping, table, attr, { primary = false, system = false 
   const name = schemaName.toLowerCase();
   const taken = (n) => Object.hasOwn(mapping.fields, n) || n === mapping.idColumn;
   if (taken(name) || (dataverseType === 'file' && taken(`${name}_name`))) throw attributeExists(name, table);
+  // A calculated column whose designer XAML the platform refuses (native, hosted creates 2026-11-26: 400 0x80060424).
+  if (Number(attr.SourceType?.Value ?? attr.SourceType) === 1 && calculatedDefinitionError(attr.FormulaDefinition))
+    throw fail(`The ${name} field has an invalid XAML formula definition.`, 400, 'InvalidRequest', '0x80060424');
   const field = columnField(api, attr, dataverseType, schemaName, primary);
   if (system)
     field.columnMetadata = { ...field.columnMetadata, isCustomField: false, isManaged: true, isCustomizable: false };

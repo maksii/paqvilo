@@ -486,6 +486,13 @@ else the default refusal. Several response shapes and error codes are local choi
   `gitRemoteDirectory`, without network or a git binary.
 - Power Automate desktop flows, Copilot Studio bots, Dynamics 365 application messages, feature controls and
   ALM/analytics probes: partly store-backed; the rest answer a feature-not-enabled or internal-only refusal.
+- Dynamics 365 Sales conversions, store-backed over the tables the project defines: `WinQuote` (an active quote
+  becomes Won with a `quoteclose` activity; Status -1 is the state's default status), `ConvertQuoteToSalesOrder` (an
+  active or won quote), `ConvertSalesOrderToInvoice` and `GenerateQuoteFromOpportunity` (an open opportunity) create
+  the new record from every column both tables have, copy the line items and link the new record to its source;
+  `CalculateActualValueOpportunity` (a won opportunity) answers the sum of its products' extended amounts, else its
+  estimated value, and writes it to `actualvalue`. The copied columns, the state checks' texts and the written value
+  are local choices.
 
 ### Duplicate detection
 
@@ -544,7 +551,13 @@ readable like any other. Writes through the portal and `/_sim/` are audited too,
   and activating a Solution row whose `Type` is neither a definition (1) nor a template (3) `0x8004500D` ("Only
   workflow definition or draft workflow template can be published."). A Web API create with another `type` answers 400
   `0x8004431a` ("… The value 9 of 'type' on record of type 'workflow' is outside the valid range. Accepted Values:
-  1,2,3"), and creating a classic workflow with XAML through the Web API answers 400 `0x80040203`.
+  1,2,3"). A classic (category 0) definition created or updated through the Web API is accepted when its XAML is
+  designer-shaped: the supported subset below, without a Postpone and with `xml:space="preserve"` on an empty
+  RetrieveCurrentTime parameter list; any other XAML answers 400 `0x80045040` ("This workflow cannot be created, updated
+  or published because it was created outside the Microsoft Dynamics 365 Web application. …"). Activation checks each
+  lookup literal of the XAML: a row that does not exist answers 400 `0x80048455` ("Error: This workflow has errors and
+  cannot be published. … ErrorMap Details: {CreateStep9: InvalidGuidReference ; ConditionBranchStep8: … ; WorkflowStep0:
+  InvalidGuidReference}", the steps around the reference, innermost first).
 - `POST workflows(<id>)/Microsoft.Dynamics.CRM.ExecuteWorkflow` with `{ "EntityId": "<id>" }` returns the
   `asyncoperationid` of a job of type 10 (Workflow). A background classic run and every cloud flow run is that job; a
   real-time classic run executes inside the request and answers the empty id. Refusals (400): no `EntityId`
@@ -552,19 +565,73 @@ readable like any other. Writes through the portal and `/_sim/` are audited too,
   on-demand `0x80060479` or not Dataverse-triggered `0x80060476`.
 - `POST workflows(<template id>)/Microsoft.Dynamics.CRM.CreateWorkflowFromTemplate` with `{ "WorkflowName": "…" }`
   copies a template (type 3) into a new draft definition; another row type answers 400 `0x80040203`.
-- Classic XAML is never interpreted. A run uses a trusted pack handler
-  (`workflows: { '<workflowid or uniquename>': handler }`, see [project extensions](../../docs/project-extensions.md))
-  or a mode set in `/_sim/`; otherwise it is a placeholder: a background job ends Canceled with "Simulator: classic
-  workflow XAML is not executed; register a trusted pack workflow handler or a mock." and both kinds record a
-  `WORKFLOW_PLACEHOLDER` diagnostic. Handler and mock runs write a `workflowlog` row (a handler's `{ message }` is the
+- A run uses, in this order, a mode set in `/_sim/` (disabled, placeholder, mock), a trusted pack handler
+  (`workflows: { '<workflowid or uniquename>': handler }`, see [project extensions](../../docs/project-extensions.md)),
+  the definition's designer XAML when all of it is in the supported subset (`lib/classic-workflow-xaml.mjs`), or the
+  placeholder: a background job ends Canceled with "Simulator: classic workflow XAML is not executed; register a trusted
+  pack workflow handler or a mock." and both kinds record a `WORKFLOW_PLACEHOLDER` diagnostic.
+- The XAML subset: condition sequences with if / else-if / default branches and Then/Else composites,
+  EvaluateCondition (Equal, NotEqual, Null, NotNull, GreaterThan, GreaterEqual, LessThan, LessEqual, BeginsWith,
+  EndsWith, Contains and their negations) and EvaluateLogicalCondition And/Or; values from CreateCrmType literals
+  (Boolean, DateTime in ISO form, Decimal, Float, Integer, Money, OptionSetValue, EntityReference, Guid, String, null,
+  with or without the trailing attribute type), an EntityReference whose row id is a variable, Add (a text join),
+  RetrieveCurrentTime, SelectFirstNonNull and ConvertCrmXrmTypes; variables with defaults of their own type (GUID text,
+  numbers, `[Nothing]`) in sequences, composites and `mxswa:Workflow.Variables`; GetEntityProperty from the primary
+  row and N:1 related rows (`related_<lookup>#<table>`), SetEntityProperty on created entities, UpdateEntity,
+  CreateEntity and SetState; TerminateWorkflow is Stop workflow with Succeeded or Canceled, in the designer's form (the
+  status in a one-argument exception, the message in `Reason="[DirectCast(…, System.String)]"`) or with the message in
+  the exception. VB expressions are never evaluated beyond these literal forms, and XAML is bounded in length, element
+  count and nesting. XAML outside the subset keeps the placeholder and also records `WORKFLOW_XAML_UNSUPPORTED` naming the
+  first unsupported step.
+- Hosted behaviour (session F6, two runs; replayed by `mirage/test/parity/cases/classic-workflow/hosted-f6.json`):
+  - Real-time: the steps run after the operation, inside it. Stop Canceled refuses the write with 400 `0x80040265` and
+    the Stop message, and a failing step with 400 `0x80040265` and the step's own message; either rolls back. A
+    successful real-time run leaves no workflow log row.
+  - Run-as: a real-time run with run-as owner writes as the workflow owner; with run-as calling user it writes as the
+    request's user, on behalf of the principal that called (an impersonating application, `createdonbehalfby`). An
+    event-started background run writes as the owner whatever run-as says. Its system job is owned by the workflow owner
+    and created by SYSTEM. An on-demand run writes as the user who started it (Learn; not hosted-checked).
+  - A calling-user run started by a portal write runs as the identity the portal writes as (Learn "Power Pages
+    connectivity to a Microsoft Dataverse": the site's application user, an older site SYSTEM): under enhanced
+    authorization the visitor's mapped user; in the standard model the observed application user
+    (`observed.portalApplicationUserId`) when that user exists, else SYSTEM. It never falls back to the workflow owner:
+    a calling-user run without a calling user fails.
+  - Background: a run completes 3/30; Stop Succeeded 3/30 and Stop Canceled 3/32, without a message. A failing step
+    suspends the job 1/10 (Waiting) with error code -2147204303 (`0x80044331`), the step's message as `friendlymessage`
+    and in a plug-in trace `message`, and wait-until 9999-12-30; the writes of earlier steps stay. A Resume runs the
+    failing step again (local model): the failing designer step, else the innermost activity or condition evaluation
+    that failed, never the steps before it.
+  - Logs: one `workflowlog` row per executed designer step, `Step_<number>` with activity `<step>_step`: a condition
+    when it is evaluated, a branch when the body it ran completed, any other step when it completed; status 2, message
+    `''` for conditions, branches and Stop, null otherwise. A failing step and the conditions around it get status 3,
+    its error code and message; a Stop is logged status 2 even when it cancels.
+- Waits (Learn: a wait condition pauses a background workflow until its criteria are met, and it starts again
+  automatically; real-time workflows cannot use wait conditions). A ConditionSequence with `Wait` True holds wait
+  branches: the first whose condition holds runs; when none holds the run suspends: the job is 1/10 with wait-until
+  9999-12-30, the earlier writes commit, the steps run so far are logged. Only a later write of a column the wait's
+  conditions read wakes it (hosted: a write of another column did not, and a condition on the current time did not
+  wake when that time passed), inside the committing transaction; the run continues at the wait, which reads the
+  record again and suspends once more when no branch holds. A write that comes while the run still holds the job is
+  not lost: the job is woken once that run ends. A Web API Resume (`statecode` 0) runs it the same way; a Cancel ends
+  it. A delete of the record wakes it and ends the job Canceled (local model). An on-demand run that suspends hands its
+  system job to the same runner. Waiting jobs survive a restart. A real-time definition that waits is not interpreted
+  ("A real-time workflow cannot use wait conditions or Postpone.").
+- Postpone is a local model: every Postpone form was refused at Web API create in the hosted session, so none ran there.
+  Postpone with `BlockExecution` True and `PostponeUntil` a DateTime variable suspends the run until that time on the
+  runtime clock (`postponeuntil`); BlockExecution False, or a time already passed, does not suspend.
+- Interpreted runs write through the records pipeline as the run-as user, in one transaction under the depth limit. The
+  first-branch choice when several wait branches hold, string comparison without case, and the Resume of a failed step
+  are a local model.
+- Handler and mock runs write one `workflowlog` row (a handler's `{ message }` is the
   job's and the log's `message`); a real-time failure with `syncworkflowlogonfailure` writes a `processsession` row. A
   failed real-time run, from a handler's error or a mock set to status 31, answers 400 `0x80040265` with its message
   (a handler's own Dataverse error keeps its code). A chain of runs that start one another runs 16 times; the 17th is
   cancelled (job status 32, `errorcode` `0x80044182`, which the Web API returns as the signed integer -2147204734,
   "This workflow job was canceled because the workflow that started it included an infinite loop. …"). Background runs
   are committed jobs ([asynchronous steps](dataverse-plugins.md#asynchronous-steps-and-system-jobs)).
-  Preflight lists active definitions as `classic-workflow:<workflowid>` requirements. A trusted handler satisfies the
-  requirement. Placeholder, mock and disabled choices remain visible to a scenario that requires the workflow.
+  Preflight lists active definitions as `classic-workflow:<workflowid>` requirements. A trusted handler
+  (`resolution.by: 'pack'`) or interpreted XAML (`resolution.by: 'xaml'`) satisfies the requirement and is reported as
+  registered. Placeholder, mock and disabled choices remain visible to a scenario that requires the workflow.
 
 ### Model-driven app customization
 

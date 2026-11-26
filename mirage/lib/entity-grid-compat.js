@@ -349,6 +349,42 @@
       xhr.send(form ? body : JSON.stringify(body));
     });
   }
+  function confirmFormWorkflow(row, button, body) {
+    confirmFormDialog(row, button, body, '.modal-form-workflow', () => ({ workflowId: button.dataset.ppWorkflowId }));
+  }
+  // Resolve Case asks for the resolution subject and description in its dialog, then posts them with the action.
+  function confirmResolveCase(row, button, body) {
+    confirmFormDialog(row, button, body, '.modal-resolvecase', (modal) => ({
+      resolution: {
+        subject: modal.querySelector('.resolution-input')?.value ?? '',
+        description: modal.querySelector('.resolution-description-input')?.value ?? '',
+      },
+    }));
+  }
+  // A bound form action confirmed in its own dialog (selector, matched by action index) posts the body that extra(modal) adds to.
+  function confirmFormDialog(row, button, body, selector, extra) {
+    if (!Number.isSafeInteger(body.actionIndex)) return;
+    const modal = row.querySelector(`${selector}[data-pp-action-index="${body.actionIndex}"]`);
+    const primary = modal?.querySelector('.modal-footer button.primary');
+    const url = button.dataset.url;
+    if (!primary || !url) return;
+    primary.onclick = async () => {
+      if (primary.disabled) return;
+      primary.disabled = true;
+      try {
+        const result = await post(url, { ...body, ...extra(modal) });
+        hideModal(modal);
+        if (result.outcome?.type === 'redirect' && result.outcome.url) location.assign(result.outcome.url);
+        else location.reload();
+      } catch (error) {
+        hideModal(modal);
+        notify(row, error.message);
+      } finally {
+        primary.disabled = false;
+      }
+    };
+    showModal(modal);
+  }
   /**
    * entityform.js record actions (button.*-link in .form-custom-actions): Delete opens the
    * form's delete dialog whose primary button posts the record reference to the button URL;
@@ -375,6 +411,8 @@
           pageUrl: location.pathname + location.search,
         }
       : { entityReference: reference };
+    if (formAction === 'workflow') return confirmFormWorkflow(row, button, body);
+    if (formAction === 'resolve-case') return confirmResolveCase(row, button, body);
     const submit = () =>
       post(/* NOSONAR */ button.getAttribute('data-url') || location.href, body, { json: false }).then(
         // NOSONAR: read actual attributes, not inherited dataset properties
@@ -396,7 +434,7 @@
   document.addEventListener('click', (event) => {
     if (
       event.target.closest(
-        '.form-custom-actions button.delete-link, .form-custom-actions button.activate-link, .form-custom-actions button.deactivate-link, .form-custom-actions button.create-related-record-link',
+        '.form-custom-actions button.delete-link, .form-custom-actions button.activate-link, .form-custom-actions button.deactivate-link, .form-custom-actions button.create-related-record-link, .form-custom-actions button.form-workflow-link, .form-custom-actions button[data-pp-form-action]',
       )
     )
       void formActionClick(event);
@@ -566,6 +604,27 @@
     Deactivate: 17,
     Activate: 18,
   };
+  // The table-specific record actions (legacy entity-grid.js): their row link class and when the record shows it
+  // (StateCode, StatusCode), beside the Write privilege.
+  const RECORD_ACTIONS = {
+    9: { link: 'close-case-link', shows: (record) => record.StateCode === 0 },
+    11: { link: 'convert-quote-link', shows: (record) => record.StateCode === 1 },
+    12: { link: 'convert-order-link', shows: (record) => record.StateCode !== 2 },
+    13: { link: 'calculate-opportunity-link', shows: () => true },
+    14: { link: 'resolve-case-link', shows: (record) => record.StateCode === 0, modal: '.modal-resolvecase' },
+    15: { link: 'reopen-case-link', shows: (record) => record.StateCode !== 0 },
+    16: { link: 'cancel-case-link', shows: (record) => record.StateCode === 0 },
+    20: {
+      link: 'set-opportunity-on-hold-link',
+      shows: (record) => record.StateCode === 0 && record.StatusCode !== 2,
+    },
+    21: { link: 'win-opportunity-link', shows: (record) => record.StateCode === 0 },
+    22: { link: 'lose-opportunity-link', shows: (record) => record.StateCode === 0 },
+    23: { link: 'generate-quote-from-opportunity-link', shows: (record) => record.StateCode === 0 },
+  };
+  const RECORD_ACTION_LINKS = Object.values(RECORD_ACTIONS)
+    .map(({ link }) => `, a.${link}`)
+    .join('');
 
   class EntityGrid {
     constructor(element) {
@@ -586,6 +645,8 @@
       this.gridClass = data('grid-class') || '';
       this.widthStyle = data('column-width-style') || 'Percent';
       this.selectedView = data('selected-view');
+      // A dataset code component's list or subgrid: the grid draws its toolbar and the control reads the rows.
+      this.pcfHost = element.hasAttribute('data-pcf-view-host');
       // Grids inside a Bootstrap 5 dialog (lookup, associate) and grids of a page that loads the
       // Bootstrap 5 platform bundles render the Bootstrap 5 toolbar, table and pagination.
       this.dialog = Boolean(element.closest('.modal[data-bs-backdrop]'));
@@ -655,9 +716,28 @@
         this.showMessage('.view-error');
         return;
       }
+      if (this.pcfHost) {
+        this.renderViewToolbar();
+        return;
+      }
       this.renderToolbar();
       this.renderTable();
       if (load) void this.load(1);
+    }
+
+    // The toolbar of a code component's list or subgrid: the view dropdown, drawn for two or more views whatever the
+    // control declares, and an empty actions group (captured, paqvilo-developer pcf-parity summary-F section 4, runs
+    // fa and fb).
+    renderViewToolbar() {
+      this.child('.view-toolbar')?.remove();
+      const select = this.renderViewSelect();
+      if (!select) return;
+      const toolbar = document.createElement('div');
+      toolbar.className = 'view-toolbar grid-actions clearfix';
+      const actions = document.createElement('div');
+      actions.className = `${this.bs5 ? 'float-end' : 'pull-right'} toolbar-actions`;
+      toolbar.append(select, actions);
+      this.element.prepend(toolbar);
     }
 
     renderToolbar() {
@@ -1140,7 +1220,7 @@
     }
 
     load(page = 1) {
-      if (!this.layout) return Promise.resolve();
+      if (!this.layout || this.pcfHost) return Promise.resolve();
       if (!this.layout.Base64SecureConfiguration) {
         this.showMessage('.view-error');
         return Promise.resolve();
@@ -1482,8 +1562,13 @@
         case ACTION.Activate:
           return this.activateActionClass(record);
         default:
-          return null;
+          return this.recordActionClass(action, record);
       }
+    }
+
+    recordActionClass(action, record) {
+      const known = RECORD_ACTIONS[action.Type];
+      return known && record.CanWrite && known.shows(record) ? known.link : null;
     }
 
     disassociateActionClass(record) {
@@ -1511,7 +1596,8 @@
 
     handleRowActionClick(event, tbody) {
       const link = event.target.closest(
-        'a.details-link, a.edit-link, a.delete-link, a.disassociate-link, a.workflow-link, a.deactivate-link, a.activate-link',
+        'a.details-link, a.edit-link, a.delete-link, a.disassociate-link, a.workflow-link, a.deactivate-link, a.activate-link' +
+          RECORD_ACTION_LINKS,
       );
       if (!link || !tbody.contains(link)) {
         this.toggleRowDropdown(event, tbody);
@@ -1616,6 +1702,7 @@
             { force: action.ShowModal === 1 },
           );
         case ACTION.Workflow:
+          this.customizeWorkflowModal(this.child('.modal-run-workflow'), action);
           return this.confirmAndRun(
             '.modal-run-workflow',
             action,
@@ -1633,6 +1720,52 @@
             { force: action.ShowModal === 1 },
           );
         default:
+          if (RECORD_ACTIONS[action.Type]) return this.runRecordAction(action, record);
+      }
+    }
+
+    // A table-specific record action posts the record reference to its action service; Resolve Case first asks for
+    // the resolution in the grid's resolve dialog, Close Case sends the link's default resolution (legacy entity-grid.js).
+    runRecordAction(action, record) {
+      const known = RECORD_ACTIONS[action.Type];
+      const path = action.URL?.PathWithQueryString;
+      if (!path) return;
+      const modal = known.modal ? this.child(known.modal) : null;
+      const resolution = () =>
+        modal
+          ? {
+              resolutionSubject: modal.querySelector('.resolution-input')?.value ?? '',
+              resolutionDescription: modal.querySelector('.resolution-description-input')?.value ?? '',
+            }
+          : { resolutionSubject: action.DefaultResolution, resolutionDescription: action.DefaultResolutionDescription };
+      return this.confirmAndRun(
+        known.modal ?? '.modal-pp-none',
+        action,
+        () =>
+          post(
+            path,
+            { entityReference: { LogicalName: record.EntityName, Id: record.Id }, ...resolution() },
+            { json: false },
+          ),
+        { force: Boolean(modal) },
+      );
+    }
+
+    // A workflow action with its own dialog texts (CustomizeModal) writes them into the grid's one workflow dialog, as the
+    // legacy entity-grid.js does: its title and primary button (text, title and aria-label); its confirmation becomes the
+    // body (confirmAndRun). The legacy client stores the close text under data-modal-canled-action and reads
+    // data-modal-cancel-action, so it never applies the action's close text, and nothing restores the dialog for a later
+    // action without its own texts. Both are kept as the legacy client behaves.
+    customizeWorkflowModal(modal, action) {
+      if (!modal || action.CustomizeModal !== true) return;
+      const custom = action.Modal ?? {};
+      const title = modal.querySelector('.modal-title');
+      if (title && custom.Title) title.innerHTML = custom.Title;
+      const primary = modal.querySelector('.modal-footer button.primary');
+      if (primary && custom.PrimaryButtonText) {
+        primary.innerHTML = custom.PrimaryButtonText;
+        primary.setAttribute('title', custom.PrimaryButtonText);
+        primary.setAttribute('aria-label', custom.PrimaryButtonText);
       }
     }
 
@@ -1861,6 +1994,12 @@
       this.state.sort = null;
       this.state.page = 1;
       this.render(true);
+      // The code component host destroys the control and initialises a new one on the chosen view, also when it is
+      // the current one (captured, summary-F section 4).
+      if (this.pcfHost)
+        this.element.dispatchEvent(
+          new CustomEvent('paqvilo:pcf-view', { bubbles: true, detail: { viewId: String(id) } }),
+        );
     }
 
     download(action, link) {
@@ -2150,6 +2289,95 @@
   }
 
   // ---- notes
+  // Rich note and activity HTML (Timeline/RTEEnabled; activity descriptions) as fresh elements of an allowlist, built
+  // from an inert parse: no attribute survives except link targets and, in notes, image sources. The server sanitizes
+  // the same text before it answers; this keeps a page from rendering unsanitized markup whatever the service returns.
+  const RICH_NOTE_TAGS = new Set(
+    'a,b,blockquote,br,code,dd,div,dl,dt,em,h1,h2,h3,h4,h5,h6,hr,i,li,ol,p,pre,s,span,strike,strong,sub,sup,table,tbody,td,tfoot,th,thead,tr,u,ul'.split(
+      ',',
+    ),
+  );
+  const RICH_NOTE_DROPPED = new Set(
+    'base,button,embed,form,frame,frameset,iframe,input,link,math,meta,noscript,object,script,select,style,svg,template,textarea,title'.split(
+      ',',
+    ),
+  );
+  const RICH_LINK = /^(?:https?:|mailto:|tel:|\/(?!\/)|#)/i;
+  const RICH_IMAGE = /^(?:https?:|\/(?!\/)|data:image\/(?:png|gif|jpe?g|webp);)/i;
+  // The copy of a note image whose source is permitted, with its alt text; null otherwise.
+  function richNoteImage(node) {
+    const src = String(node.getAttribute('src') ?? '').trim(); // NOSONAR: reads attributes of the inert parse
+    if (!RICH_IMAGE.test(src)) return null;
+    const image = document.createElement('img');
+    image.setAttribute('src', src);
+    image.setAttribute('alt', node.getAttribute('alt') ?? ''); // NOSONAR: reads attributes of the inert parse
+    return image;
+  }
+  // An empty copy of a permitted note element with its permitted attributes: safe links and table cell spans.
+  function richNoteElement(node, tag) {
+    const element = document.createElement(tag);
+    const href = String(node.getAttribute('href') ?? '').trim(); // NOSONAR: reads attributes of the inert parse
+    if (tag === 'a' && RICH_LINK.test(href)) {
+      element.setAttribute('href', href);
+      element.setAttribute('rel', 'noopener noreferrer');
+      element.setAttribute('target', '_blank');
+    }
+    for (const name of ['colspan', 'rowspan']) {
+      const span = node.getAttribute(name) ?? ''; // NOSONAR: reads attributes of the inert parse
+      if ((tag === 'td' || tag === 'th') && /^\d{1,3}$/.test(span)) element.setAttribute(name, span);
+    }
+    return element;
+  }
+  function richNoteHtml(html, images = true) {
+    const source = new DOMParser().parseFromString(String(html ?? ''), 'text/html').body;
+    const out = document.createElement('div');
+    const copy = (from, to) => {
+      for (const node of from.childNodes) {
+        if (node.nodeType === Node.TEXT_NODE) to.append(document.createTextNode(node.data));
+        if (node.nodeType !== Node.ELEMENT_NODE || RICH_NOTE_DROPPED.has(node.localName)) continue;
+        const tag = node.localName;
+        if (tag === 'img') {
+          const image = images ? richNoteImage(node) : null;
+          if (image) to.append(image);
+          continue;
+        }
+        if (!RICH_NOTE_TAGS.has(tag)) {
+          copy(node, to);
+          continue;
+        }
+        const element = richNoteElement(node, tag);
+        copy(node, element);
+        to.append(element);
+      }
+    };
+    copy(source, out);
+    return out.innerHTML;
+  }
+
+  // The note field of a dialog: the rich text editor mounted on its textarea (Timeline/RTEEnabled), else the textarea.
+  function noteField(modal) {
+    const area = modal?.querySelector('textarea[name="text"]');
+    const editor = () => (area?.id ? globalThis.CKEDITOR?.instances?.[area.id] : null);
+    return {
+      get: () => (editor() ? editor().getData() : (area?.value ?? '')),
+      set(value) {
+        if (editor()) editor().setData(value ?? '');
+        else if (area) area.value = value ?? '';
+      },
+    };
+  }
+
+  // A timeline activity (EntityActivity/GetActivities): when, who, its type, subject and sanitized description.
+  function activityCard(activity, pattern, bs5) {
+    const created = activity.CreatedOnDisplay ? new Date(activity.CreatedOnDisplay) : null;
+    const stamp = created && !Number.isNaN(created.getTime()) ? created : null;
+    const [left, right] = bs5 ? ['col-md-3', 'col-md-9'] : ['col-sm-3', 'col-sm-9'];
+    const postedBy = activity.PostedByName
+      ? `<div class="createdby text-muted">${esc(activity.PostedByName)}</div>`
+      : '';
+    return `<div class="note activity" data-id="${esc(activity.Id)}" data-entityname="${esc(activity.EntityName ?? '')}"><div class="row"><div class="${left} metadata"><div class="postedon"><abbr class="timeago" data-datetime="${esc(activity.CreatedOnDisplay ?? '')}" title="${esc(stamp && pattern ? formatLocal(stamp, pattern) : (activity.CreatedOnDisplay ?? ''))}">${esc(stamp ? timeAgo(stamp) : (activity.CreatedOnDisplay ?? ''))}</abbr></div>${postedBy}<div class="activitytype text-muted">${esc(activity.ActivityTypeDisplay ?? activity.EntityName ?? '')}</div></div><div class="${right} content"><div class="subject"><strong>${esc(activity.Subject ?? '')}</strong></div><div class="text">${richNoteHtml(activity.Description, false)}</div></div></div></div>`;
+  }
+
   function bs5NoteToolbar(note) {
     if (!note.DisplayToolbar) return '';
     const editItem = note.CanWrite
@@ -2169,13 +2397,15 @@
     return `<div class="attachment alert alert-block clearfix">${thumbnail}<div class="link float-start"><span class="fa fa-file" aria-hidden="true"></span> <a href="${esc(url)}" target="_blank">${esc(note.AttachmentFileName)} (${esc(note.AttachmentSizeDisplay)})</a></div></div>`;
   }
 
-  function bs5NoteCard(note, pattern) {
+  function bs5NoteCard(note, pattern, rich = false) {
     const created = note.CreatedOnDisplay ? new Date(note.CreatedOnDisplay) : null;
     const stamp = created && !Number.isNaN(created.getTime()) ? created : null;
     const url = `${note.AttachmentUrl}?t=${Date.now()}`;
     const toolbar = bs5NoteToolbar(note);
     const attachment = bs5NoteAttachment(note, url);
-    const text = esc(note.UnformattedText).replaceAll(/\r\n?|\n/g, '<br />');
+    const text = rich
+      ? richNoteHtml(note.UnformattedText)
+      : esc(note.UnformattedText).replaceAll(/\r\n?|\n/g, '<br />');
     const postedBy = note.PostedByName ? `<div class="createdby text-muted">${esc(note.PostedByName)}</div>` : '';
     return `<div class="note" data-attachmentfilename="${esc(note.AttachmentFileName ?? '')}" data-attachmentfilesize="${esc(note.AttachmentSizeDisplay ?? '')}" data-attachmentisimage="${note.AttachmentIsImage}" data-attachmenturl="${esc(url)}" data-candelete="${note.CanDelete}" data-canedit="${note.CanWrite}" data-hasattachment="${note.HasAttachment}" data-id="${esc(note.Id)}" data-isprivate="${note.IsPrivate}" data-subject="${esc(note.Subject ?? '')}" data-unformattedtext="${esc(note.UnformattedText)}"><div class="row"><div class="col-md-3 metadata"><div class="postedon" tabindex="0"><abbr class="timeago" data-datetime="${esc(note.CreatedOnDisplay ?? '')}" title="${esc(stamp && pattern ? formatLocal(stamp, pattern) : (note.CreatedOnDisplay ?? ''))}">${esc(stamp ? timeAgo(stamp) : (note.CreatedOnDisplay ?? ''))}</abbr></div>${postedBy}${note.IsPrivate ? '<div class="label label-warning">Private</div>' : ''}</div><div class="col-md-9 content">${toolbar}<div class="text" tabindex="1">${text}</div>${attachment}</div></div></div>`;
   }
@@ -2196,6 +2426,8 @@
     // The Bootstrap 5 control (data-bs-target) moves its dialogs to the document body and shows
     // its list only when it has notes.
     const bs5 = container.hasAttribute('data-bs-target'); // NOSONAR: actual attributes exclude inherited dataset values
+    const rich = container.getAttribute('data-rte-enabled') === 'True'; // NOSONAR: actual attributes exclude inherited dataset values
+    const timeline = container.getAttribute('data-is-timeline') === 'True'; // NOSONAR: actual attributes exclude inherited dataset values
     if (bs5)
       for (const name of ['.modal-editnote', '.modal-deletenote', '.modal-addnote']) {
         const modal = container.querySelector(`:scope > ${name}`);
@@ -2242,11 +2474,13 @@
             const attachment = note.HasAttachment
               ? `<div class="attachment alert alert-block alert-info clearfix"><div class="link pull-left"><a href="${esc(note.AttachmentUrl)}?t=${Date.now()}"><span class="fa fa-file" aria-hidden="true"></span> ${esc(note.AttachmentFileName)} (${esc(note.AttachmentSizeDisplay)})</a></div></div>`
               : '';
-            return `<div class="note" data-id="${esc(note.Id)}" data-canedit="${note.CanWrite}" data-candelete="${note.CanDelete}" data-unformattedtext="${esc(note.UnformattedText)}" data-isprivate="${note.IsPrivate}" data-hasattachment="${note.HasAttachment}" data-attachmentfilename="${esc(note.AttachmentFileName ?? '')}" data-attachmentfilesize="${esc(note.AttachmentSizeDisplay ?? '')}" data-attachmenturl="${esc(note.AttachmentUrl ?? '')}"><div class="row"><div class="col-sm-3 metadata"><div class="postedon"><abbr class="timeago" title="${esc(note.CreatedOnDisplay ?? '')}">${esc(note.CreatedOnDisplay ?? '')}</abbr></div><div class="createdby text-muted">${esc(note.PostedByName ?? '')}</div>${note.IsPrivate ? '<div class="label label-warning">Private</div>' : ''}</div><div class="col-sm-9 content">${toolbar}<div class="text">${note.Text ?? ''}</div>${attachment}</div></div></div>`;
+            return `<div class="note" data-id="${esc(note.Id)}" data-canedit="${note.CanWrite}" data-candelete="${note.CanDelete}" data-unformattedtext="${esc(note.UnformattedText)}" data-isprivate="${note.IsPrivate}" data-hasattachment="${note.HasAttachment}" data-attachmentfilename="${esc(note.AttachmentFileName ?? '')}" data-attachmentfilesize="${esc(note.AttachmentSizeDisplay ?? '')}" data-attachmenturl="${esc(note.AttachmentUrl ?? '')}"><div class="row"><div class="col-sm-3 metadata"><div class="postedon"><abbr class="timeago" title="${esc(note.CreatedOnDisplay ?? '')}">${esc(note.CreatedOnDisplay ?? '')}</abbr></div><div class="createdby text-muted">${esc(note.PostedByName ?? '')}</div>${note.IsPrivate ? '<div class="label label-warning">Private</div>' : ''}</div><div class="col-sm-9 content">${toolbar}<div class="text">${rich ? richNoteHtml(note.Text) : (note.Text ?? '')}</div>${attachment}</div></div></div>`;
           };
-          list.innerHTML = (data.Records ?? [])
-            .map((note) => (bs5 ? bs5NoteCard(note, pattern) : legacyNoteCard(note)))
-            .join('');
+          const card = (note) => {
+            if (timeline) return activityCard(note, pattern, bs5);
+            return bs5 ? bs5NoteCard(note, pattern, rich) : legacyNoteCard(note);
+          };
+          list.innerHTML = (data.Records ?? []).map(card).join('');
           trigger(container, 'loaded');
         })
         .catch((error) => {
@@ -2277,7 +2511,7 @@
       const input = modal.querySelector('input[type="file"]');
       const fields = {
         ...extra,
-        text: modal.querySelector('textarea[name="text"]')?.value ?? '',
+        text: noteField(modal).get(),
         isRequired: '',
         isPrivate: String(modal.querySelector('input[name="isPrivate"]')?.checked ?? false),
         attachmentSettings: container.getAttribute('data-attachmentsettings') ?? '', // NOSONAR: actual attributes exclude inherited dataset values
@@ -2295,7 +2529,7 @@
               url,
               {
                 ...extra,
-                text: modal.querySelector('textarea[name="text"]')?.value ?? '',
+                text: noteField(modal).get(),
                 isPrivate: modal.querySelector('input[name="isPrivate"]')?.checked ?? false,
                 file,
               },
@@ -2308,8 +2542,7 @@
           // The Bootstrap 5 add dialog is reset: an empty note and a fresh file input without
           // the label and tab stop the dialog markup gave the first one.
           if (bs5 && modal.matches('.modal-addnote')) {
-            const text = modal.querySelector('textarea[name="text"]');
-            if (text) text.value = '';
+            noteField(modal).set('');
             const input = modal.querySelector('input[type="file"]');
             if (input) {
               const fresh = document.createElement('input');
@@ -2334,7 +2567,7 @@
       event.preventDefault();
       const modal = dialog('.modal-addnote');
       if (!modal) return;
-      modal.querySelector('textarea')?.value && (modal.querySelector('textarea').value = '');
+      if (noteField(modal).get()) noteField(modal).set('');
       const primary = modal.querySelector('.modal-footer .primary');
       const replacement = primary.cloneNode(true);
       primary.replaceWith(replacement);
@@ -2373,8 +2606,7 @@
       }
       const modal = dialog('.modal-editnote');
       if (!modal) return;
-      const textarea = modal.querySelector('textarea[name="text"]');
-      if (textarea) textarea.value = note.getAttribute('data-unformattedtext') ?? null; // NOSONAR: actual attributes exclude inherited dataset values
+      noteField(modal).set(note.getAttribute('data-unformattedtext') ?? ''); // NOSONAR: actual attributes exclude inherited dataset values
       const primary = modal.querySelector('.modal-footer .primary');
       const replacement = primary.cloneNode(true);
       primary.replaceWith(replacement);

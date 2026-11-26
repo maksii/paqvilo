@@ -828,11 +828,12 @@ function processInlineScriptNode(node, location, endTag, inertTemplateId, state)
     mappingsTruncated: parsed.mappingsTruncated,
     ...scriptLineStarts(parsed.text),
   };
+  const at = attributeOffset(node, location, state.fragment.text);
+  if (at < 0) return true;
   addInlineScriptDebugUrl(script, body, mappings, state.index);
   state.scripts.push(script);
   const existing = node.sourceCodeLocation.attrs?.['data-paqvilo-script'];
   if (existing) state.edits.push({ start: existing.startOffset, end: existing.endOffset, text: '' });
-  const at = location.endOffset - 1;
   state.edits.push({ start: at, end: at, text: ` data-paqvilo-script="${id}"` });
   return true;
 }
@@ -843,16 +844,35 @@ const RELEVANT_ATTRIBUTE =
   /^(?:id|name|type|data-(?:entityname|formid|viewid|listid|control-id|control-name|pcf-schema|pcf-control|pcf-name))$/;
 
 /**
- * Where the marker attribute goes: before the `>` of the start tag, and before a solidus that closes the tag
- * (`<br/>`, `<img src="x" />`). A solidus that ends an unquoted attribute value (`<a href=/contact/>`) belongs to the
- * value: a marker put in front of it would change the value.
+ * Where an attribute the toolkit adds to a start tag goes (a binding stamp, a script proof id, a nonce, a nonce
+ * marker): directly after the tag name, where the inserted ` name="value"` always begins a new attribute. A later
+ * offset can fall inside the tag's own syntax: before the `>` of `<script x=>` the browser reads the insertion as the
+ * value of x. -1 when the text at the start tag is not `<` and the element's tag name (nothing can be added there).
  */
-function markerOffset(node, location, text) {
-  const close = location.endOffset - 1;
-  if (text[close - 1] !== '/') return close;
-  for (const attribute of Object.values(node.sourceCodeLocation.attrs ?? {}))
-    if (attribute.endOffset === close) return close;
-  return close - 1;
+function attributeOffset(node, location, text) {
+  const at = location.startOffset + 1 + node.tagName.length;
+  return text[location.startOffset] === '<' &&
+    text.slice(location.startOffset + 1, at).toLowerCase() === node.tagName.toLowerCase()
+    ? at
+    : -1;
+}
+
+/**
+ * `text` with `edits` ({ start, end, text }, in the coordinates of `text`, not overlapping) applied in one pass: each
+ * character of `text` is copied once, whatever the number of edits. Insertions at the same offset end up in the reverse
+ * order of `edits`, as applying them one at a time from the end of the text puts them.
+ */
+function applyTextEdits(text, edits) {
+  const ordered = edits.map((edit, at) => ({ edit, at })).sort((a, b) => a.edit.start - b.edit.start || b.at - a.at);
+  const parts = [];
+  let cursor = 0;
+  for (const { edit } of ordered) {
+    if (edit.start < cursor || edit.end < edit.start) throw new RangeError('Overlapping document edits');
+    parts.push(text.slice(cursor, edit.start), edit.text);
+    cursor = edit.end;
+  }
+  parts.push(text.slice(cursor));
+  return parts.join('');
 }
 
 // One id per bound element of a document: 64 random bits in base64url (11 characters, never a `:`, so never equal to
@@ -873,8 +893,9 @@ const nextBindingId = (state) => {
 
 function stampNode(node, location, state, id) {
   const existing = node.sourceCodeLocation.attrs?.[PROVENANCE_ATTRIBUTE];
+  const at = attributeOffset(node, location, state.fragment.text);
+  if (at < 0) return;
   if (existing) state.edits.push({ start: existing.startOffset, end: existing.endOffset, text: '' });
-  const at = markerOffset(node, location, state.fragment.text);
   state.edits.push({ start: at, end: at, text: ` ${PROVENANCE_ATTRIBUTE}="${id}"` });
 }
 
@@ -1276,6 +1297,11 @@ function visitRenderNode(node, inertTemplateId, state, inert) {
 /**
  * Finalize only after Liquid evaluation. No wrappers and no parse/serialize rewriting.
  * `tagBindings` (optional) carries bindings found outside the render trace, by start-tag offset; see bindServedNode.
+ * `scriptNonce` ({ nonce, pending, trust? }, optional) also decides the script nonces of a nonce policy
+ * (applyScriptNonces): the result then has `scriptPolicy`, kept out of the published proof. `trust` is the fragment of
+ * the same text the decisions read instead of `fragment`: a document whose provenance binds every unowned tag to the
+ * platform (platformDocumentFragment) is decided on what its builder proved before that pass; a `trust` of another
+ * text proves nothing.
  */
 export function finalizePortalProvenance({
   fragment,
@@ -1283,6 +1309,7 @@ export function finalizePortalProvenance({
   proofId = randomUUID(),
   channel = 'mirage-render',
   tagBindings = null,
+  scriptNonce = null,
 }) {
   const tree = parse(fragment.text, { sourceCodeLocationInfo: true });
   const edits = [],
@@ -1336,9 +1363,8 @@ export function finalizePortalProvenance({
         inert: true,
       });
   }
-  let html = fragment.text;
-  for (const edit of edits.sort(/* NOSONAR: preserve in-place sorting */ (a, b) => b.start - a.start))
-    html = html.slice(0, edit.start) + edit.text + html.slice(edit.end);
+  const scriptPolicy = addScriptNonceEdits(tree, fragment, index, scriptNonce, edits);
+  const html = applyTextEdits(fragment.text, edits);
   const result = {
     html,
     provenance: {
@@ -1356,7 +1382,399 @@ export function finalizePortalProvenance({
     },
   };
   result.provenance = refreshScriptProofLocations(html, result.provenance);
+  result.scriptPolicy = scriptPolicy;
   return result;
+}
+
+// ---- Script nonces of a nonce Content-Security-Policy (lib/response-headers.mjs siteUsesScriptNonce)
+//
+// Learn ("Manage your site's Content Security Policy") documents that the platform adds the per-request nonce to
+// "inline script tags from trusted sources", injects it "into inline scripts rendered through Liquid templates after
+// rendering", and secures inline event handlers "through automatic hash generation". A post-render injection cannot
+// tell a script the maker wrote from a script element that a record field printed without | escape; the hosted
+// treatment of such data is not documented. The local choice is the safe one: a nonce (or a handler hash) is given only
+// to an element whose start tag render provenance proves was written by
+// - the exported source (every character of the start tag is verified literal source text: a web template, a content
+//   snippet, a page copy, custom JavaScript), or
+// - the platform's own code (a platform interval on exactly that start tag: the page shell, the custom JavaScript and
+//   CSS wrappers, a form, list or code component, a compatibility adapter). Built-in template and rewrite-layout
+//   regions are excluded: they are Liquid renderings without a source, whose unbound tags may be data.
+// An inline script also needs its end tag from the same kind of writer, so a value inside it cannot close it and open
+// another one. Authored external scripts get no nonce: their host must be in script-src, as Learn's troubleshooting says.
+// Everything else (data, unverified or partly interpolated script tags) is withheld and reported. The toolkit's own
+// scripts injected after rendering are found by `nonceInjectedScripts`.
+const UNPROVEN_PLATFORM_KINDS = new Set(['builtin-template', 'page-template']);
+const EVENT_HANDLER_ATTRIBUTE = /^on[a-z]+$/;
+const EXECUTABLE_SCRIPT_TYPE = /^(?:module|(?:text|application)\/(?:x-)?(?:java|ecma)script)?$/i;
+const MAX_HANDLER_HASHES = 256;
+
+// Elements whose content parse5 (8.1) and current browsers parse differently. parse5 reads the content of a select with
+// the earlier "in select" insertion mode, which ignores <svg>, <math>, <button> or <datalist> there; browsers with the
+// customizable select (Chromium 158) insert them, so an <svg> a record writes inside a select opens foreign content
+// around the scripts after it while parse5 still sees HTML-namespace scripts. option, optgroup, datalist and
+// selectedcontent share that content model.
+const SELECT_CONTENT_ELEMENTS = new Set(['select', 'option', 'optgroup', 'datalist', 'selectedcontent']);
+
+/**
+ * The parse5 element nodes of a tree, template contents included (a script cloned out of a template runs). Each node
+ * with a SELECT_CONTENT_ELEMENTS ancestor is also added to `insideSelect` when it is given.
+ */
+function elementNodes(tree, insideSelect = null) {
+  const nodes = [],
+    pending = [[tree, false]];
+  while (pending.length) {
+    const [node, inside] = pending.pop();
+    if (node.tagName) nodes.push(node);
+    if (inside) insideSelect?.add(node);
+    const below = inside || SELECT_CONTENT_ELEMENTS.has(node.tagName);
+    for (const child of node.childNodes ?? []) pending.push([child, below]);
+    if (node.content) pending.push([node.content, below]);
+  }
+  return nodes;
+}
+
+/** The intervals overlapping each of `probes` (sorted, disjoint { start, end }), as an array parallel to them. */
+function intervalsOfProbes(intervals, probes) {
+  const result = probes.map(() => []);
+  for (const span of intervals) {
+    let low = 0,
+      high = probes.length;
+    while (low < high) {
+      const mid = (low + high) >> 1;
+      if (probes[mid].end <= span.start) low = mid + 1;
+      else high = mid;
+    }
+    for (let at = low; at < probes.length && probes[at].start < span.end; at++) result[at].push(span);
+  }
+  return result;
+}
+
+/** The part of a literal span inside [start, end) when it is the exact text of its exported source there, else null. */
+function verifiedLiteralPiece(span, start, end, state) {
+  if (span.mapping !== 'literal' || !span.sourceSpan) return null;
+  const source = state.index?.sources?.get(span.sourceRefId);
+  const from = Math.max(start, span.start),
+    to = Math.min(end, span.end);
+  if (!source || source.ambiguous || to <= from) return null;
+  const sourceStart = span.sourceSpan.start + from - span.start;
+  if (!Number.isSafeInteger(sourceStart)) return null;
+  return source.text.slice(sourceStart, sourceStart + to - from) === state.text.slice(from, to) ? { from, to } : null;
+}
+
+/** True when verified literal source text accounts for every character of [start, end). */
+function literalCovers(spans, start, end, state) {
+  const pieces = spans
+    .map((span) => verifiedLiteralPiece(span, start, end, state))
+    .filter(Boolean)
+    .sort((a, b) => a.from - b.from);
+  let cursor = start;
+  for (const piece of pieces) {
+    if (piece.from > cursor) return false;
+    cursor = Math.max(cursor, piece.to);
+  }
+  return cursor >= end;
+}
+
+const isProvenPlatform = (span) =>
+  span.mapping === 'platform' && span.component?.key && !UNPROVEN_PLATFORM_KINDS.has(span.component.kind);
+
+/** Who wrote a start tag: "platform" (its own platform interval), "source" (verified literal source), else null. */
+function startTagWriter(spans, location, tagName, state) {
+  const platform = spans.some(
+    (span) =>
+      isProvenPlatform(span) &&
+      span.start === location.startOffset &&
+      span.end === location.endOffset &&
+      String(span.tag).toLowerCase() === tagName,
+  );
+  if (platform) return 'platform';
+  return literalCovers(spans, location.startOffset, location.endOffset, state) ? 'source' : null;
+}
+
+/** True when an inline script's end tag comes from its start tag's writer, not from text written inside it. */
+function endTagFromWriter(spans, location, elementStart, writer, state) {
+  if (writer === 'source') return literalCovers(spans, location.startOffset, location.endOffset, state);
+  // A platform script's end tag: no output that began inside the element (a value it embeds) wrote any of it.
+  return spans.every(
+    (span) =>
+      span.start <= elementStart ||
+      isProvenPlatform(span) ||
+      verifiedLiteralPiece(span, location.startOffset, location.endOffset, state),
+  );
+}
+
+function attributeRange(node, name) {
+  return node.sourceCodeLocation?.startTag?.attrs?.[name] ?? null;
+}
+
+/**
+ * The elements a nonce policy decides (scripts, and elements with inline handlers), in document order. A handler is
+ * `merged` when its tag's source text does not write it: the parser moves the attributes of a later <html> or <body>
+ * tag (one a record can print) onto the document's first one, which may be source text.
+ */
+function policyElements(tree) {
+  const elements = [],
+    insideSelect = new Set();
+  for (const node of elementNodes(tree, insideSelect)) {
+    const location = node.sourceCodeLocation?.startTag;
+    if (!location) continue;
+    const script = node.tagName === 'script';
+    const handlers = (node.attrs ?? [])
+      .filter((attr) => EVENT_HANDLER_ATTRIBUTE.test(attr.name))
+      .map((attr) => (location.attrs?.[attr.name] ? attr : { ...attr, merged: true }));
+    if (script || handlers.length)
+      elements.push({
+        node,
+        location,
+        script,
+        handlers,
+        selectContent: insideSelect.has(node),
+        start: [],
+        end: [],
+        content: [],
+      });
+  }
+  return elements.sort((a, b) => a.location.startOffset - b.location.startOffset);
+}
+
+// A script element outside the HTML namespace (an SVG script): the parser reads its content as markup, so character
+// references in it decode and a value printed with | escape (or | json) can end a string literal the source opened.
+// A script inside select content is decided the same way: a browser may parse it as foreign content where parse5
+// does not (SELECT_CONTENT_ELEMENTS).
+const HTML_NAMESPACE = 'http://www.w3.org/1999/xhtml';
+const isForeignScript = (element) =>
+  element.script && (element.node.namespaceURI !== HTML_NAMESPACE || element.selectContent);
+// The content of a foreign script whose children are all text (no element or comment is inside it).
+const foreignTextContent = (element) => {
+  const endTag = element.node.sourceCodeLocation.endTag;
+  if (!endTag || !(element.node.childNodes ?? []).every((child) => child.nodeName === '#text')) return null;
+  return endTag.startOffset > element.location.endOffset
+    ? { start: element.location.endOffset, end: endTag.startOffset }
+    : null;
+};
+
+/**
+ * Gives each element the intervals over its start tag (`start`) and, for a script, over its end tag (`end`) and, for a
+ * foreign script with text content, over that content (`content`). The probes are disjoint: a start or end tag holds no
+ * other tag, and a text-only content holds none either.
+ */
+function assignCoverage(elements, intervals) {
+  const probes = [];
+  for (const element of elements) {
+    probes.push({ start: element.location.startOffset, end: element.location.endOffset, element, part: 'start' });
+    const endTag = element.script ? element.node.sourceCodeLocation.endTag : null;
+    if (endTag) probes.push({ start: endTag.startOffset, end: endTag.endOffset, element, part: 'end' });
+    const content = isForeignScript(element) ? foreignTextContent(element) : null;
+    if (content) probes.push({ ...content, element, part: 'content' });
+  }
+  probes.sort((a, b) => a.start - b.start);
+  const covering = intervalsOfProbes(intervals, probes);
+  probes.forEach((probe, at) => {
+    probe.element[probe.part] = covering[at];
+  });
+}
+
+/**
+ * True when the writer of a foreign script's tags also wrote all of its content: verified literal source text for the
+ * source, nothing but proven platform output or verified literal text for the platform. Whoever opened the foreign
+ * context (an `<svg>` a record printed before an authored script) cannot then change what the script runs.
+ */
+function foreignContentFromWriter(element, writer, state) {
+  const range = foreignTextContent(element);
+  if (!range) return (element.node.childNodes ?? []).length === 0;
+  if (writer === 'source') return literalCovers(element.content, range.start, range.end, state);
+  return element.content.every(
+    (span) => isProvenPlatform(span) || verifiedLiteralPiece(span, range.start, range.end, state),
+  );
+}
+
+/** A script's decision: { trusted } or { reason } (withheld), or { external } for an authored external script. */
+function scriptDecision(element, writer, state) {
+  const { node, location, end } = element;
+  const endTag = node.sourceCodeLocation.endTag;
+  if (!writer) return { reason: 'unaccounted' };
+  // An SVG script loads its file from href.
+  const foreign = isForeignScript(element);
+  if (node.attrs.some((attr) => attr.name === 'src' || (foreign && attr.name === 'href')))
+    return writer === 'platform' ? { trusted: true } : { external: true };
+  if (!endTag) return { reason: 'unterminated' };
+  if (!endTagFromWriter(end, endTag, location.startOffset, writer, state)) return { reason: 'end-tag' };
+  if (foreign && !foreignContentFromWriter(element, writer, state)) return { reason: 'foreign-content' };
+  return { trusted: true };
+}
+
+// A data block (application/json, a client template) never runs: it needs no nonce and is not reported.
+const runs = (node) =>
+  node.attrs.some((attr) => attr.name === 'src') ||
+  EXECUTABLE_SCRIPT_TYPE.test((node.attrs.find((attr) => attr.name === 'type')?.value ?? '').trim());
+
+/**
+ * Hashes the inline handlers that a proved start tag writes itself (up to MAX_HANDLER_HASHES); withholds the others,
+ * merged ones included.
+ */
+function decideHandlers({ location, handlers }, writer, hashes, withheld) {
+  for (const handler of handlers) {
+    if (writer && !handler.merged && hashes.size < MAX_HANDLER_HASHES) {
+      hashes.add(createHash('sha256').update(handler.value, 'utf8').digest('base64'));
+      continue;
+    }
+    let reason = null;
+    if (handler.merged) reason = 'merged';
+    else if (writer) reason = 'limit';
+    withheld.push({
+      kind: 'handler',
+      attribute: handler.name,
+      offset: location.startOffset,
+      ...(reason ? { reason } : {}),
+    });
+  }
+}
+
+/**
+ * The edits of one script's decision: the nonce (replacing an authored one) or the pending marker. Both go directly
+ * after the tag name (attributeOffset): a start tag whose text is not `<script` gets neither and so no nonce.
+ */
+function decideScript({ node, location }, decided, { nonce, pending, edits, policy, text }) {
+  const at = attributeOffset(node, location, text);
+  const decision = at < 0 && decided.trusted ? { reason: 'start-tag' } : decided;
+  if (decision.external) policy.external++;
+  if (decision.reason && runs(node))
+    policy.withheld.push({ kind: 'script', offset: location.startOffset, reason: decision.reason });
+  if (at < 0) return;
+  if (!decision.trusted) {
+    edits.push({ start: at, end: at, text: ` ${pending}` });
+    return;
+  }
+  // An authored nonce attribute would win as the first one; the response's nonce replaces it.
+  const existing = attributeRange(node, 'nonce');
+  if (existing) edits.push({ start: existing.startOffset, end: existing.endOffset, text: '' });
+  edits.push({ start: at, end: at, text: ` nonce="${nonce}"` });
+  policy.nonced++;
+}
+
+/**
+ * The script nonce and handler hash decisions for the elements of a parsed render fragment (parse5 tree with source
+ * locations over `fragment.text`). `nonce` is the response's nonce; `pending` names the attribute that marks every
+ * script left without it, so nonceInjectedScripts can tell them from scripts the toolkit adds later.
+ * Returns { edits, scriptPolicy: { handlerHashes, nonced, withheld, external } }.
+ */
+function scriptNonceDecisions(tree, fragment, index, { nonce, pending }) {
+  const state = { index, text: fragment.text };
+  const elements = policyElements(tree);
+  assignCoverage(elements, fragment.intervals ?? []);
+  const edits = [],
+    hashes = new Set(),
+    policy = { handlerHashes: [], nonced: 0, withheld: [], external: 0 };
+  for (const element of elements) {
+    const writer = startTagWriter(element.start, element.location, element.node.tagName, state);
+    decideHandlers(element, writer, hashes, policy.withheld);
+    if (element.script)
+      decideScript(element, scriptDecision(element, writer, state), {
+        nonce,
+        pending,
+        edits,
+        policy,
+        text: fragment.text,
+      });
+  }
+  policy.handlerHashes = [...hashes];
+  return { edits, scriptPolicy: policy };
+}
+
+/** Adds the nonce decisions' edits to `edits` and returns their scriptPolicy; undefined without `scriptNonce`. */
+function addScriptNonceEdits(tree, fragment, index, scriptNonce, edits) {
+  if (!scriptNonce) return undefined;
+  const { trust = fragment } = scriptNonce;
+  const proved = trust.text === fragment.text ? trust : { text: fragment.text, intervals: [] };
+  const decided = scriptNonceDecisions(tree, proved, index, scriptNonce);
+  edits.push(...decided.edits);
+  return decided.scriptPolicy;
+}
+
+/** A fresh pending-marker attribute name: unpredictable, so no rendered text can carry it in advance. */
+export const scriptNoncePendingAttribute = () => `data-paqvilo-nonce-pending-${randomBytes(12).toString('hex')}`;
+
+/**
+ * A fresh attribute name for the scripts the toolkit injects into one response after its rendered scripts were decided
+ * (lib/document-injection.mjs scriptMarker): nonceInjectedScripts gives the nonce to these scripts only.
+ */
+export const scriptNonceInjectedAttribute = () => `data-paqvilo-nonce-injected-${randomBytes(12).toString('hex')}`;
+
+/**
+ * The rendered document of `fragment` with script nonces (see above) and without render provenance: for responses that
+ * publish no provenance proof. `edits` ({ start, end, text, intervals? }) are host edits applied first
+ * (applyRenderEdits). Returns { html, scriptPolicy }.
+ */
+export function applyScriptNonces({ fragment, index, nonce, pending, edits = [] }) {
+  const edited = edits.length ? applyRenderEdits(fragment, edits) : fragment;
+  const tree = parse(edited.text, { sourceCodeLocationInfo: true });
+  const decided = scriptNonceDecisions(tree, edited, index, { nonce, pending });
+  return { html: applyTextEdits(edited.text, decided.edits), scriptPolicy: decided.scriptPolicy };
+}
+
+/**
+ * applyScriptNonces for a document that is exported source byte for byte (a code site's compiled entry document): every
+ * character is that source's literal text.
+ */
+export function staticDocumentScriptNonces(html, { nonce, pending }) {
+  const text = String(html);
+  const source = { id: 'static-document', text };
+  return applyScriptNonces({
+    fragment: {
+      text,
+      intervals: [
+        {
+          start: 0,
+          end: text.length,
+          mapping: 'literal',
+          sourceRefId: source.id,
+          sourceSpan: { start: 0, end: text.length },
+        },
+      ],
+    },
+    index: { sources: new Map([[source.id, source]]) },
+    nonce,
+    pending,
+  });
+}
+
+/** The edits of one script of a final response body (nonceInjectedScripts): its markers removed, maybe its nonce. */
+function injectedScriptEdits(node, html, { nonce, pending, injected }) {
+  const marker = pending ? attributeRange(node, pending) : null,
+    mark = injected ? attributeRange(node, injected) : null;
+  // A marker went in as " <name>": it is removed with that space.
+  const removal = (range) => ({
+    start: html[range.startOffset - 1] === ' ' ? range.startOffset - 1 : range.startOffset,
+    end: range.endOffset,
+    text: '',
+  });
+  const edits = marker ? [removal(marker)] : [];
+  if (!mark) return edits;
+  if (marker) return [...edits, removal(mark)];
+  const existing = attributeRange(node, 'nonce');
+  if (existing) edits.push({ start: existing.startOffset, end: existing.endOffset, text: '' });
+  edits.push({ start: mark.startOffset, end: mark.endOffset, text: `nonce="${nonce}"` });
+  return edits;
+}
+
+/**
+ * The final response body of a document whose rendered scripts were decided (applyScriptNonces or
+ * finalizePortalProvenance with `scriptNonce`). It fails closed: a script gets the nonce here only when it carries
+ * `injected` (scriptNonceInjectedAttribute), the attribute the toolkit's injectors put on the scripts they add after
+ * the decisions (its runtime, the pages client API, compatibility adapters, local head scripts, frame readiness), the
+ * platform-equivalent part of the local runtime. A script that carries neither that attribute nor the nonce stays
+ * without it, whatever wrote it, as does one that also carries the pending marker. Both markers are removed.
+ */
+export function nonceInjectedScripts(html, { nonce, pending, injected = null }) {
+  const tree = parse(html, { sourceCodeLocationInfo: true });
+  const edits = [];
+  for (const node of elementNodes(tree))
+    if (node.tagName === 'script' && node.sourceCodeLocation?.startTag)
+      edits.push(...injectedScriptEdits(node, html, { nonce, pending, injected }));
+  let body = applyTextEdits(html, edits);
+  // A marker name is random per response: one left anywhere else (never a script's attribute) is the toolkit's.
+  for (const name of [pending, injected]) if (name && body.includes(name)) body = body.replaceAll(` ${name}`, '');
+  return body;
 }
 
 /** Revalidate known script identities after explicit host HTML edits; never search by source text. */

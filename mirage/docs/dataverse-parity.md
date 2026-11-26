@@ -90,6 +90,7 @@ persona resolution reports the last row:
 | `MODERN_LIST_LOCAL_MARKUP`          | A modern list include (`isModern: 'true'`) is served by the local adapter through the classic grid engine, with local markup.                                        |
 | `MODERN_LIST_RENDERED_CLASSIC`      | A modern include names a map, calendar or code component list; it renders classic. A `portal:modern-list` requirement at `contract`, so `--strict` preflight blocks. |
 | `MODERN_LIST_FEATURES_UNSERVED`     | A served modern list configures other action types; those actions are absent locally.                                                                                |
+| `CMS_CONTENT_EDITOR_REMOVED`        | Pages and web templates whose Liquid uses `{% editable %}` or an `.editable` check, once each: the portal content editor is removed. Rendering is unchanged.         |
 | `PERSONA_ACCOUNT_ROLES_NOT_APPLIED` | Web roles of a persona's parent account are reported, not applied: current Power Pages behaviour for them is not documented.                                         |
 
 See [capabilities and preflight](capabilities-and-preflight.md#report-shape). An exported server-logic endpoint that
@@ -404,8 +405,34 @@ For a valid PNG uploaded to a portal image-column route, Mirage removes the `eXI
 rest of the full image bytes. Portal PNG thumbnails use centered square cropping, with a 144 pixel edge for larger
 images and the shorter side for smaller images. Projection and range downloads use the same thumbnail. The local codec
 returns the original bytes for interlaced images, unsupported formats, and inputs beyond its pixel or dimension limits.
-Portal JPEG uploads remove Exif APP1 before the first scan and preserve the other encoded bytes. Hosted encoder
-behavior, orientation normalization, and non-PNG thumbnails need separate evidence.
+Portal JPEG uploads remove Exif APP1 before the first scan and preserve the other encoded bytes.
+
+Portal JPEG reads get a thumbnail by the same rule and the same center crop as PNG, so both formats pick the same source
+pixels. The bounded local codec (`lib/portal-jpeg-codec.mjs`) decodes baseline and extended sequential Huffman JPEG
+(SOF0/SOF1, 8-bit, grayscale or YCbCr/RGB, any integral sampling, restart intervals, 8- or 16-bit quantization tables)
+up to 8192 pixels a side and 8M pixels, and encodes the thumbnail as baseline JFIF at quality 90 (4:2:0 for colour, one
+component for grayscale). Progressive, lossless, arithmetic-coded, 12-bit and CMYK JPEGs, malformed or truncated files
+and larger images keep their original bytes. A portal JPEG upload with Exif orientation 2–8 is re-encoded upright,
+reusing its quantization tables and chroma subsampling, before Exif is removed; orientation 1 or no Exif keeps the bytes.
+`size=full` and organization reads return the stored bytes. The thumbnail geometry follows Microsoft Learn; the
+thumbnail encoding, quality and orientation handling are a local model until hosted thumbnail bytes are captured.
+
+Portal GIF and BMP reads get a thumbnail by the same rule and the same center crop as PNG and JPEG
+(`lib/portal-image-formats.mjs`). Microsoft Learn's [Types of columns](https://learn.microsoft.com/power-apps/maker/data-platform/types-of-fields#image-columns)
+says uploaded images are converted to .jpg and an animated GIF keeps only its first frame, so these thumbnails are
+baseline JFIF at quality 90, with transparent pixels composited on white. The GIF decoder reads GIF87a and GIF89a:
+global and local color tables, the graphic control transparency index, interlaced rows and LZW codes up to 12 bits,
+including a deferred clear. It draws the first frame on a transparent logical screen; parts of the frame outside the
+screen are cut off, and indices past the color table stay transparent. The BMP decoder reads BITMAPINFOHEADER and its
+V2 to V5 extensions: 1-, 4- and 8-bit color tables, 16-bit 5-5-5 and BI_BITFIELDS (for example 5-6-5), 24-bit, and
+32-bit BI_RGB, BI_BITFIELDS and BI_ALPHABITFIELDS, bottom-up or top-down, plus BI_RLE8 and BI_RLE4. As Chromium decodes
+them, 32-bit BI_RGB with a 40-byte header is opaque, an alpha mask applies as it stands, and pixels that runs skip or
+that use an index past the color table are black. OS/2 headers, embedded JPEG or PNG, other compressions, top-down RLE,
+malformed or truncated files, and images over 8192 pixels a side or 8M pixels keep their original bytes, as does an
+image that already is its own thumbnail. `size=full` and organization reads return the stored bytes. The geometry and
+the .jpg output follow Microsoft Learn. The quality, the white background, the BMP alpha and RLE details, and keeping
+the bytes of an image that is already square at its thumbnail size are a local model until hosted thumbnail bytes are
+captured; a ranged thumbnail read still names the stored `mimetype`.
 
 ## Input and rendering contracts
 
@@ -448,6 +475,15 @@ answer 413 `0x8004418a` "Request message length is too large.".
 
 The portal Web API runs `$apply` (`groupby`, `aggregate` and `filter` transformations). `savedQuery` and `userQuery` are
 not portal Web API options: either one answers 400 `9004010A`, whatever its id.
+
+A portal Web API collection answers at most 5,000 rows per response, with an absolute `@odata.nextLink` carrying
+`$skiptoken` when more rows follow; `$skip` answers 400 (follow the link instead). `Prefer: odata.maxpagesize=N` pages
+only a query that has `$top`, as on Power Pages: without `$top` the preference is ignored and the response is the one
+the query gets without it, while the Dataverse Web API pages without `$top`. With `$top`, a response holds at most N
+rows and its next link keeps the query, `$top` included. `$top` bounds the whole result, so the last page stops at it;
+the live captures cover the first page and its link, and the later pages follow OData. A next link is signed for its
+query, the visitor and the local data: a changed query, a different visitor or a committed change answers 400
+(restart the query). No `Preference-Applied` header is sent.
 
 For tables exported as custom activities, a nonempty list of solely inherited `activitypointer` columns is refused
 as a wildcard by default. This applies after combining the explicit site setting and the imported system view and to

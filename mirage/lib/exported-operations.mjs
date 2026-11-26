@@ -806,8 +806,8 @@ export function runExportedCloudFlow({
     );
     return typeof answer?.then === 'function' ? answer.then(portalAnswer) : portalAnswer(answer);
   }
-  // The native answer of a Power Pages flow request whose run waits before its Response is a guess (natively the request
-  // waits for the Response until the portal times out), as is the flowrun triggertype text.
+  // A run that waits before its Response answers 202 { runId, status: 'Waiting' } here, marked held: the portal request then
+  // waits for that Response outside the store transaction (awaitPortalFlowResponse). The flowrun triggertype text is a guess.
   return runTrackedFlow({
     runs,
     processId: record.processId,
@@ -816,7 +816,38 @@ export function runExportedCloudFlow({
     ...args,
   }).then((answer) =>
     answer?.status === 'Waiting'
-      ? (answer.response ?? { status: 202, body: { runId: answer.runId, status: 'Waiting' } })
+      ? (answer.response ?? { status: 202, body: { runId: answer.runId, status: 'Waiting' }, held: answer.runId })
       : portalAnswer(answer),
   );
+}
+
+// Power Automate "Limits of automated, scheduled, and instant flows": an inbound request (an instant flow's trigger) has
+// 120 seconds, and a flow with a response action returns its response within that limit.
+const FLOW_RESPONSE_TIMEOUT_MS = 120_000;
+
+/**
+ * The answer of a Power Pages flow request whose run waited before its Response (runExportedCloudFlow marks it held): the
+ * request waits, on the runtime clock, for the resumed run's Response or end, up to FLOW_RESPONSE_TIMEOUT_MS. Call it outside
+ * the store transaction, since the resume writes. A run still waiting then answers 504 ResponseTimeout and keeps running
+ * (Learn: actions after the limit continue). Without the host's run store, the 202 Waiting answer stands.
+ */
+export async function awaitPortalFlowResponse(store, answer) {
+  const runs = flowRunsOf(store);
+  if (!answer?.held || typeof runs?.awaitResponse !== 'function') return answer;
+  const { held, ...waiting } = answer;
+  const later = await runs.awaitResponse(held, FLOW_RESPONSE_TIMEOUT_MS);
+  if (later?.status === 'TimedOut')
+    throw failure(
+      'The flow did not answer its Response within 120 seconds; the run continues.',
+      504,
+      'ResponseTimeout',
+    );
+  if (later?.status === 'Waiting') return later.response ?? waiting;
+  if (later?.status === 'Failed' && !later.body)
+    throw failure('The flow run failed before it answered with a Response.', 502, 'FlowRunFailed');
+  if (later?.status === 'Cancelled')
+    throw failure('The flow run was cancelled before it answered with a Response.', 409, 'FlowRunCancelled');
+  if (later?.status === 'Skipped') return { status: 202, body: { status: 'Skipped', reason: later.reason } };
+  if (later?.status === 'Succeeded') return { status: 202, body: undefined };
+  return later;
 }

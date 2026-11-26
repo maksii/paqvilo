@@ -277,6 +277,31 @@ before stage 40, so rules may establish the parent link. See
 
 Standard PCF controls come from Solution manifests, not packs; see [code components](code-components.md).
 
+## Portal search summary fixture
+
+Register one trusted `portalSearchSummary` function across the packs matched to a local portal.
+It serves `POST /_api/search/v1.0/summary` with an `application/x-www-form-urlencoded` body containing one
+`userQuery` and the normal portal request-verification token. The local query limit is 1,024 characters and the
+request body limit is 16 KiB. An absent provider leaves ordinary route dispatch in effect.
+
+```js
+portalSearchSummary: ({ sources: [first] }) => ({
+  summary: 'The local search found a matching article.',
+  citationIds: [first.id],
+}),
+```
+
+The provider receives `{ query, sources }` with up to ten matching published, non-internal knowledge articles from
+the site's authorized search view. Its `sources` contain only copies of the article ID, title and displayed
+`content` column. Field permissions apply, and the `Knowledge Article` site marker must resolve to a published
+same-origin page that the active visitor can read. The provider never runs for an empty source set. Anonymous requests
+can use sources readable through that visitor's applicable local table and page permissions.
+
+Return plain summary text and a list of distinct IDs from `sources`. Mirage derives the `Citations` map and inline
+citation links from those IDs. This contract supports deterministic local fixtures. Hosted generation, authored
+generative search scope outside the knowledge-article fixture and the platform's error responses still require
+independent evidence. [Power Pages Search Summary API](https://learn.microsoft.com/en-us/power-pages/configure/search/generative-ai#search-summary-api)
+
 ## Captured error templates
 
 These capabilities reproduce an explicitly captured error-message suffix; the project keeps the captures and
@@ -295,6 +320,51 @@ successful writes, permissions, SDK or flow errors.
 
 Both must be plain data properties; lazy accessors and duplicate method/descriptor keys across matching packs are
 rejected.
+
+## Portal data summarization fixture
+
+Register one trusted `portalDataSummary` function across the packs matched to a local portal.
+The fixture serves `POST /_api/summarization/data/v1.0/<entitySet>(<key>)` for one record (its primary key or a
+declared, active alternate key, resolved as the Web API resolves it) and
+`POST /_api/summarization/data/v1.0/<entitySet>` for a collection. The query is a portal Web API read: a record takes
+`$select` and `$expand`; a collection also takes `$filter` (lambdas included), `$orderby`, `$top`, `$count` and
+`$apply`; and each `$expand` takes its own `$select`, `$filter`, `$orderby`, `$top` and nested `$expand`. Every level
+except an `$apply` names an explicit `$select`. A collection summarizes the page a Web API GET of the same query returns:
+at most 5,000 rows, `Prefer: odata.maxpagesize` with `$top`, and the `$skiptoken` of an `@odata.nextLink` (bound to the
+visitor that read it). FetchXML is not a summary source. Send the normal portal verification token and a JSON object
+with `InstructionIdentifier` naming an authored `Summarization/prompt/<identifier>` site setting. Enable the
+fixture with `Summarization/Data/Enable=true` and the Web API settings for the root and related tables.
+
+```js
+portalDataSummary: ({ record, records, recommendation }) => ({
+  summary: (records ?? [record]).map((row) => row.x_description).join(' '),
+  recommendations: recommendation ? [] : ['Which item changed last?'],
+}),
+```
+
+The provider receives only `{ table, instructionIdentifier, prompt, record }` for a record and
+`{ table, instructionIdentifier, prompt, records }` for a collection (each `$apply` row holds its grouped columns and
+aggregate aliases), plus `recommendation` on a follow-up. The regular local Web API read checks apply to the visible
+projection, including row permissions on expanded records. The fixture removes masked
+or unreadable fields, implicit identifiers, annotations and binary attachments from the provider input. In local
+mode a signed-out request uses the visitor's anonymous permissions. An empty admitted projection does not call the
+handler. Input is capped at 100,000 serialized record characters by default and can be tuned with
+`Summarization/Data/ContentSizeLimit` up to the local ceiling of 1,000,000. The request JSON is capped at 16 KiB.
+
+Return a summary string of up to 8,000 characters and, optionally, `recommendations`: up to 10 follow-up prompts of up
+to 500 characters each, as strings or `{ text }`. The endpoint sends `Summary` and `Recommendations` as
+`[{ Text, Config }]`. `Config` is an opaque value that Mirage signs for the visitor (the signed-in contact and sign-in
+session, else the anonymous visitor cookie), the summary route and its exact query options. Pass it back unchanged as
+`{ "RecommendationConfig": "<Config>" }`, without `InstructionIdentifier`, to the same URL: the provider then receives
+the recommendation text with the prompt of the original `InstructionIdentifier`, and the data is read again with the
+visitor's current permissions. A changed, foreign or reused-elsewhere value is refused with 400
+`InvalidDataSummaryRequest` before any read, and a value is valid only while the simulator that signed it runs.
+
+Generative AI governance for site users (Copilot hub, at tenant, environment or site level) is not in the export. Record a
+site whose governance blocks it as `observed.siteUserGenerativeAi: disabled` with evidence: every summary request then
+answers 400 `90041001` `Generative AI features are disabled` before the site switch, any read or the pack. Hosted model
+output and the hosted recommendation format are not modelled. Without the pack, normal portal dispatch applies.
+[Power Pages Data Summarization API](https://learn.microsoft.com/en-us/power-pages/configure/data-summarization-api)
 
 ## OData property order
 
@@ -334,6 +404,7 @@ to `{ value, pack }`; `packProvides(packs)` lists `{ pack, export, key }`.
 | `hierarchies`, `transitions`                                                                                           | lower-case table name                                           | error                   |
 | `serviceFixtures`                                                                                                      | `<service>.<operation>`                                         | error                   |
 | `powerFx`                                                                                                              | `adapter` (one adapter per runtime)                             | error                   |
+| `portalSearchSummary`, `portalDataSummary`                                                                             | `provider` (one function per runtime)                           | error                   |
 | `capabilities`                                                                                                         | capability name (array) or map key                              | error                   |
 
 Provider exports are validated by their owning modules
@@ -342,7 +413,9 @@ configuration path. An export whose owning module has not loaded (a project test
 `paqvilo/mirage/packs`) is shape-checked only and reported as `PACK_EXPORT_PENDING`. `storageProviders` and
 `messageProviders` map names to factories ([storage](storage-providers.md#pack-storage-providers),
 [messaging](messaging-and-outbox.md)); `outboxHandlers` maps names to functions; `serviceFixtures` see
-[service fixtures](service-fixtures.md); `powerFx` see [canvas apps](canvas-apps.md); the Dataverse column, rule,
+[service fixtures](service-fixtures.md); `powerFx` see [canvas apps](canvas-apps.md); `portalSearchSummary` and
+`portalDataSummary` see the [search summary](#portal-search-summary-fixture) and
+[data summarization](#portal-data-summarization-fixture) fixtures; the Dataverse column, rule,
 hierarchy, transition and virtual-table exports see [Dataverse contract modules](dataverse-contract-modules.md).
 `capabilities` records need `name`, `kind` and a `level` of `inventory`, `contract`, `behaviour` or `native-qualified`
 ([capabilities](capabilities-and-preflight.md)).

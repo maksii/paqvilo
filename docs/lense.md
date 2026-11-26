@@ -181,8 +181,9 @@ individual outcomes, and evidence paths. Configured form script kinds that the p
   Resource IDs from `resources` differ from agent page IDs.
 - `audit` coverage is source classification, not proof of navigation or browser application. It also checks every
   `codecomponent` tag of the export against the Solution and `pcf.sources` controls, with the rules of the Power Pages
-  Liquid host: a quoted name (`PCF_AUDIT_NAME_QUOTED`), a second tag of the same control in one file
-  (`PCF_AUDIT_DUPLICATE_CONTROL`), a control the sources do not hold (`PCF_AUDIT_CONTROL_MISSING`, also a GUID without
+  Liquid host: a quoted name (`PCF_AUDIT_NAME_QUOTED`), a control GUID in braces (`PCF_AUDIT_NAME_BRACED`: the platform
+  halts rendering there and cuts off the rest of the page; upper-case and hyphenless ids render), a second tag of the
+  same control in one file (`PCF_AUDIT_DUPLICATE_CONTROL`), a control the sources do not hold (`PCF_AUDIT_CONTROL_MISSING`, also a GUID without
   an `observed.codeComponents` mapping), a control the host refuses (`PCF_AUDIT_CONTROL_REFUSED` with its `reasons`),
   the import diagnostics of a referenced control and the `pcf.sources` diagnostics. Each is a warning that leaves the
   audit incomplete, and the report's `codeComponents` counts the tags, the controls read and the findings. With
@@ -190,10 +191,32 @@ individual outcomes, and evidence paths. Configured form script kinds that the p
   `mirage.pcf.sources` holds those controls. Tags in `{% comment %}` and `{% raw %}` blocks are skipped; a tag without
   a name is counted but not checked. An unreadable export file is `PCF_AUDIT_EXPORT_UNREADABLE`, and a failure of
   these checks is `PCF_AUDIT_FAILED`, never a site error.
+- `audit` resources and `verify` `diagnostics.baseline/afterEdits.needsDeploy` rows carry the same `deploymentCode`
+  for the same condition: `server-logic`, `site-metadata`, `deployment-profile`, `portal-metadata` (a record field the
+  overlay does not apply), `inactive-record`, `unresolved-page-url` and `preview-disabled` (an audit resource of a
+  mapped kind that the site settings do not enable). Only `verify` reports changes against its baseline:
+  `record-lifecycle` (a created, deleted or unindexed record), `new-source`, `liquid-change`, `unlocatable-change`,
+  `unreadable-field`, `component-metadata-unparsed` and `pcf-manifest` (also an edited `img` or `html` resource,
+  which the page never loads); `audit` reports unreadable sources as errors and code components in `codeComponents`.
+  A needsDeploy row whose reason no kind matches has `deploymentCode: null`.
+  `test/deployment-diagnostics.test.mjs` checks both commands against this list.
+- `analyze` reports `PP-CACHE-001` (warning) when `Header/OutputCache/Enabled` or `Footer/OutputCache/Enabled` is
+  literally true and the website's Header or Footer web template, or a template it includes by name outside a
+  substitution block, reads `request`, `params`, `page`, `now` or `language.url` outside
+  `{% substitution %}...{% endsubstitution %}`: the cached output is reused for other requests
+  ([output caching](https://learn.microsoft.com/power-pages/configure/enable-header-footer-output-caching)). `user`, the
+  `*_substitution` attributes and names the template declares in scope (`assign`, `capture`, `for`/`tablerow`
+  variables, include parameters) are not reported; `.url` of a `website.languages` loop variable is. An absent,
+  unresolved or duplicated setting reports nothing.
 - `analyze` reports the Power Pages limits of a PCF manifest: a required `uses-feature` (`APP-PCF-013`, warning), a
   declared Device capture, location, barcode or file API or Utility (`APP-PCF-014`), a bound type outside the Power
   Pages field types (`APP-PCF-015`; a type group passes when one of its types is supported), more than one bound
   property (`APP-PCF-016`) and a `dependency` resource (`APP-PCF-017`), the last four as hints.
+- `verify` edits the page script and style of the page copy in the language the browser displays, taken from the page
+  that the start path finally showed.
+- Lense reads an enhanced site's site and language records only from `Assets/` (or the root) of the folder that holds
+  `powerpagecomponents/`, as Mirage does. A component file whose envelope cannot be parsed (for example a character
+  reference outside Unicode) is skipped and the rest of the Solution loads.
 - `verify --signed-in` reuses the dev profile and its sign-in: close that dev session first. When the profile is already
   signed in it also runs headless; add `--headed` when a sign-in may still be needed and bound it with
   `--sign-in-timeout` (1–900000 ms, default 900000). Each check reports `ok` `true`, `false` or `null` (skipped, with
@@ -245,6 +268,30 @@ baseline** and **Issues** lists **Comparison unavailable** with the reason and w
 Git's own message. Shared sources reload the affected portal's tabs, page sources that page. Pausing reload preserves
 an unsaved form while saves accumulate.
 
+### Code sites (single-page applications)
+
+When the source is a code-site project (`powerpages.config.json` beside its `.powerpages-site` folder), Lense lays
+the local build over the live site, as `pac pages upload-code-site` would deploy it:
+
+- A file of the build (`compiledPath`) answers its own address ahead of the exported web file at that address; a web
+  file the build does not hold is still answered from the export. The landing page's own address (`/index.html`)
+  answers the local file.
+- An application route (an address without a file extension, outside the portal's own paths) is asked from the
+  portal, which answers it with the site's root page
+  ([Learn](https://learn.microsoft.com/en-us/power-pages/configure/create-code-sites#differences-from-existing-power-pages-sites)).
+  Lense lays the local landing page over the deployed one by lines: what the portal added to the deployed landing
+  page (its client context, `Microsoft.Dynamic365.Portal` with `isSpaSite`, the anti-forgery holder) stays, and the
+  build's changes replace the lines they change.
+- The deployed landing page is the exported web file at its address, so download the site
+  (`pac pages download-code-site`) before you change the build. The page then names why the local landing page was not
+  laid over: the export has no deployed landing page, the portal answered the route with another document, or the
+  portal and the build changed the same line (deploy to see that change).
+
+The source watcher also watches `powerpages.config.json` and the build folder it names, also before the first build
+creates it: a rebuild reloads the open tabs with the new build. A configuration Lense cannot use (a `compiledPath`
+outside the project, a missing landing page) is reported once as a session fault and the export alone is overlaid.
+How the hosted platform composes the root page has not been captured yet; the line merge follows the documented model.
+
 ### A checkout ahead of the portal, or behind it
 
 Lense lays over a page the difference between the baseline and your working copy, and takes the baseline for what the
@@ -290,7 +337,10 @@ the Mirage admin pages for the current page. Targets stay isolated by origin, en
 The panel, X-ray and the model-driven panel follow the operating system's light or dark colour scheme, whatever the
 page's own theme.
 
-In **Tweaks**, the first line says who this browser is; its tooltip says how the portal signs in. Each persona row
+In **Tweaks**, the first line says who this browser is; its tooltip says how the portal signs in. A signed-in contact
+whose web role has the **Preview Unpublished Entities** website access permission also gets a **Publishing preview**
+On/Off switch, the classic Enable and Disable preview; switching it reloads the page
+([publishing preview toggle](../mirage/docs/sim-administration.md#publishing-preview-toggle)). Each persona row
 signs this browser in through the portal's own sign-in (other browsers keep their sessions); its star makes it a
 favorite, listed first under **Favorites** in this browser. The persona this browser is signed in as is marked
 **signed in**, and **Activity** logs each sign-in and sign-out when it starts and when it finished or failed. **/**
@@ -322,9 +372,12 @@ build output, when the page declares them and the sources hold the file (a contr
 over). Each kind (bundle, style sheets) maps on its own: when your manifest declares other style sheets than the page,
 or gives them different `order` values, those go to the portal while the bundle is still laid over. Such a
 difference, or a parameter the page declares that your manifest no longer has, is listed in **Issues** under **Needs
-deployment or a source fix**; the control is passed to the portal only when no kind maps. The button on a row selects
-the element that loads the file. **Differs from deployed, not applied** lists page blocks that differ from your file
-and are not laid over, with the reason on each row.
+deployment or a source fix**; the control is passed to the portal only when no kind maps. A manifest `img` or `html`
+resource is never laid over: Power Pages declares no resource entry for it, `getResource` fails and
+`/_pcfwebresource/<id>` answers 403, so a local edit of one (a save, or a file Git reports as changed in its Solution
+repository) is listed there too, saying that it cannot be previewed and does not reach the page when deployed. The
+button on a row selects the element that loads the file. **Differs from deployed, not applied** lists page blocks that
+differ from your file and are not laid over, with the reason on each row.
 
 In **Inspect**, the icon buttons beside the filter refresh the inspection, select an element and expand or collapse
 every group; the section chips sit on one line under the filter. **Page & templates** covers page copy, scripts,
@@ -441,7 +494,9 @@ Rules that decide attribution:
   their own form and table context. Native quick-view iframes join a verified parent form and that control's QuickForms
   target. Rich-text editor frames inherit a field binding from attribute-scoped hosts (`<logical_column>_ControlView`,
   `<logical_column>_Container`) joined to a verified form, up to 16 frame levels or 256 ancestors. Cross-origin and
-  sandboxed frames and closed shadow roots are boundaries; URL parameters are context, never proof.
+  sandboxed frames and closed shadow roots are boundaries; URL parameters are context, never proof. Selecting such a
+  frame says it is outside Inspect, and **Not everything was read** counts the frames the page read could not enter.
+  A closed shadow root cannot be detected from the page, so it is not counted.
 - **Code components** link FormXml properties and bound columns to manifests and portal settings, distinguish the
   desktop control from other form factors, and report portal enablement separately. Constructor and mount details appear
   only when observed.
@@ -505,6 +560,38 @@ lists it as unreachable, and the next session start in that state folder removes
 After a refresh, inspect applied resources, unmatched markup patches, deployment requirements, errors and failed
 requests. Contributors can measure X-ray latency on synthetic exports with
 `node scripts/benchmark-xray.mjs --samples 3 --strict --json` in a toolkit checkout.
+
+## Edge controls of the live site
+
+The hosted edge applies site visibility, the web application firewall (WAF) and IP restrictions before a request
+reaches the site. They are not in the export, and a local Mirage runtime does not apply them
+([HTTP transport and CORS](../mirage/docs/http-headers.md#edge-controls-that-mirage-does-not-emulate)). A project script
+reads them for one site with `readPowerPagesEdge` from `paqvilo/dataverse`:
+
+```js
+import { readPowerPagesEdge } from 'paqvilo/dataverse';
+const report = await readPowerPagesEdge({
+  environment: '<environment GUID or HTTPS origin>',
+  id: '<management site id>',
+});
+```
+
+It runs only the read-only PAC commands `power-pages get-website-by-id`, `get-waf-status`, `get-waf-rules` (custom and
+managed) and `get-allowed-ip-addresses`, with the PAC executable and environment rules of the other Power Pages
+management readers ([project extensions](project-extensions.md)). It changes nothing on the site, and PAC keeps the
+sign-in, so no token passes through the report. The report holds:
+
+- `siteVisibility`, and `local.siteVisibility` with the `observed.siteVisibility` value that models it in Mirage.
+- `firewall.status`, `firewall.customRules.rules` (name, priority, state, action, rule type, rate limit and match
+  conditions) and `firewall.managedRules.ruleSets` (rule set type, version and action, with counts of overrides and
+  exclusions).
+- `ipRestrictions`: the allow-list entries in CIDR notation. `restricted: false` means that every address may connect.
+- `local`: what Mirage emulates of each control. IP restrictions and WAF rules are not emulated.
+
+Match values are reported only for client addresses, request methods, request URIs and country codes. For headers,
+cookies, query strings and bodies only the count is reported, because such values can be shared secrets. A read that
+the service refuses, such as WAF on a trial site (HTTP 400), appears as `{ available: false, reason, status }`. PAC's
+error text is withheld.
 
 ## Agent API reference
 

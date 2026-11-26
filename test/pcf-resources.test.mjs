@@ -16,6 +16,7 @@ import { OverlaySession } from '../lense/session.mjs';
 import { interceptOrigin } from '../lense/intercept.mjs';
 import { enablePanel } from '../lense/panel.mjs';
 import { createSourceInspector } from '../lense/source-inspection.mjs';
+import { deploymentDiagnosticCode } from '../lense/resource-audit.mjs';
 import { createFixture, SITE, tempDirSync } from './fixture.mjs';
 import { fakeBrowser, pausedAnswers as answers } from './fake-browser.mjs';
 
@@ -488,6 +489,60 @@ test('a refused join is never served and names its reason', async (t) => {
       reason: 'pcf-control-not-in-sources',
     },
   );
+});
+
+// @test-kind observation: pcf-parity summary-F section 6, live Power Pages capture of a resource probe control: its img (png, svg) and html resources get no Resources[] entry, getResource fails and /_pcfwebresource answers 403 for them
+test('an edit of a code component img or html resource is a needsDeploy row, never an overlay', async (t) => {
+  const { root, control } = solution(t, {
+    resources: `${DEFAULT_RESOURCES}<img path="img/logo.png" /><img path="img/icon.svg" /><html path="html/help.html" />`,
+    extra: { 'img/logo.png': 'invented png', 'img/icon.svg': '<svg/>', 'html/help.html': '<p>help</p>' },
+  });
+  for (const args of [
+    ['init', '-q'],
+    ['add', '.'],
+    ['-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-q', '-m', 'x'],
+  ])
+    execFileSync('git', args, { cwd: root });
+  // Edited before the session starts: Git reports it once the page declares the control.
+  const help = path.join(control, 'html', 'help.html');
+  fs.writeFileSync(help, '<p>changed help</p>');
+  const { load, session, b } = await overlay(t, { root });
+  await load('/widget', 'Document');
+  const settled = () =>
+    Promise.all([...session.solutionResources.unservedRoots()].map((r) => session.solutionChanges.get(r)));
+  await settled();
+  const unserved = () =>
+    session.rewriter.unsupported.filter((row) => row.pcfUnserved).map((row) => [row.rel, row.reason]);
+  const ref = (rel) => `@${path.basename(root)}/Controls/${SCHEMA}/${rel}`;
+  const reason = (kind, rel) =>
+    `code component ${SCHEMA} ${kind} resource ${rel} changed; Power Pages declares no resource entry for a code component's img and html resources and does not serve them (/_pcfwebresource answers 403), so this edit cannot be previewed and does not reach the page when deployed either`;
+  assert.deepEqual(unserved(), [[ref('html/help.html'), reason('html', 'html/help.html')]]);
+  assert.equal(deploymentDiagnosticCode(session.rewriter.unsupported.find((row) => row.pcfUnserved)), 'pcf-manifest');
+  // The declared code, style and RESX resources still map as before; nothing maps the img or html files.
+  assert.deepEqual(
+    session.pcfResourcesFor(b.context.tabs[0].page).map((entry) => entry.kind),
+    ['code', 'css', 'css', 'resx'],
+  );
+  assert.equal(body(await load(`/_pcfwebresource/${G.bundle}`)), BUNDLE);
+  assert.equal(session.solutionSource(ref('img/logo.png')), null);
+  // A save is reported at once, and Git keeps it.
+  const logo = path.join(control, 'img', 'logo.png');
+  fs.writeFileSync(logo, 'changed png');
+  assert.deepEqual(session.classifyChanges([logo]).relevant, [logo]);
+  session.refresh([logo]);
+  assert.deepEqual(unserved(), [
+    [ref('html/help.html'), reason('html', 'html/help.html')],
+    [ref('img/logo.png'), reason('img', 'img/logo.png')],
+  ]);
+  await settled();
+  assert.equal(unserved().length, 2, 'Git reports both as changed');
+  session.rewriter.refresh();
+  assert.equal(unserved().length, 2, 'kept across a refresh');
+  // Reverted: Git reports no change, so the row goes.
+  fs.writeFileSync(help, '<p>help</p>');
+  session.refresh([help]);
+  await settled();
+  assert.deepEqual(unserved(), [[ref('img/logo.png'), reason('img', 'img/logo.png')]]);
 });
 
 test('a save in a mapped control folder is a relevant change and the folder is announced for watching', async (t) => {

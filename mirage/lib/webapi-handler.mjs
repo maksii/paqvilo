@@ -23,7 +23,7 @@ import {
 } from './fetchxml-engine.mjs';
 import { compilePermissionFetchXml } from './permission-query.mjs';
 import { prepareODataPage } from './odata-paging.mjs';
-import { parseExpand, parseSelect } from './odata-query.mjs';
+import { parseApply, parseExpand, parseODataExpression, parseSelect } from './odata-query.mjs';
 import { createWebApiFormatter } from './webapi-format.mjs';
 import { POWER_PAGES_TABLES, WEBAPI_UNSUPPORTED_TABLES, webApiFetchPolicy, webApiPolicy } from './webapi-policy.mjs';
 import { fieldKind, GUID_PATTERN, own } from './dataverse-values.mjs';
@@ -747,6 +747,7 @@ async function routeTarget(t, method, target, url) {
 
 async function dispatchRead(t) {
   let response;
+  let attachments = [];
   const pending = {
     writeHead(status, headers) {
       response = { status, headers, raw: true };
@@ -766,29 +767,11 @@ async function dispatchRead(t) {
     },
   };
   await t.store.readOperation(async () => {
-    if (
-      typeof t.store.withPortalReadSources !== 'function' ||
-      (t.target.kind === 'collection' && t.url.searchParams.has('fetchXml')) ||
-      t.target.kind === 'ref'
-    )
-      await dispatch(buffered);
-    else {
-      if (t.target.kind === 'collection' || t.target.kind === 'entity') t.policy.assertQuery(t.url.searchParams);
-      const key = t.target.key;
-      await t.store.withPortalReadSources(
-        t.deps.identity,
-        {
-          table: t.mapping.logicalName,
-          id: key != null && !String(key).includes('=') ? locate(t, t.mapping, key).id : null,
-          expand: t.url.searchParams.get('$expand'),
-          navigation: t.mapping.relationships?.[t.target.segment] ? t.target.segment : null,
-        },
-        () => dispatch(buffered),
-      );
-    }
+    await preparePortalRead(t, () => dispatch(buffered));
+    if (response?.status === 200 && !response.raw) attachments = captureAttachments(t, response.body);
   });
   if (!response) throw new DataError('The read operation produced no response.', 500, 'InvalidReadResponse');
-  if (!response.raw && response.status === 200) await hydrateAttachments(t, response.body);
+  for (const { row, column, load } of attachments) row[column] = await load();
   if (response.raw) {
     t.res.writeHead(response.status, response.headers);
     return t.res.end(response.body);
@@ -796,18 +779,173 @@ async function dispatchRead(t) {
   return t.deps.json(t.res, response.status, response.body, response.headers);
 }
 
-// A note's documentbody or an attachment's body held by a storage provider (dataverse-storage-routing.mjs) reads as null
-// from the row; deps.attachmentBody (organization-host.mjs) reads it before the entity or collection response leaves.
+function preparePortalRead(t, execute) {
+  const { kind } = t.target;
+  const params = t.url.searchParams;
+  if (
+    typeof t.store.withPortalReadSources !== 'function' ||
+    (kind === 'collection' && params.has('fetchXml')) ||
+    kind === 'ref'
+  )
+    return execute();
+  const query = assertPortalReadQuery(t);
+  // The native-classic adapter refuses navigation, lambdas, $expand and $apply itself.
+  const local =
+    query && (t.deps.identity?.admin || t.store.observed?.odataPermissionQueryPipeline !== 'native-classic');
+  const key = t.target.key;
+  return t.store.withPortalReadSources(
+    t.deps.identity,
+    {
+      table: t.mapping.logicalName,
+      id: key != null && !String(key).includes('=') ? locate(t, t.mapping, key).id : null,
+      expand: params.get('$expand'),
+      navigation: t.mapping.relationships?.[t.target.segment] ? t.target.segment : null,
+      queryPaths: local ? portalQueryPaths(t.store, query.mapping, query.params) : null,
+    },
+    execute,
+  );
+}
+
+/**
+ * The column-policy and table-permission refusals a read route makes without reading rows, made before any provider read
+ * so a provider failure cannot hide them. Returns the table and options the route queries, or null for a route that
+ * runs no query.
+ */
+function assertPortalReadQuery(t) {
+  const { kind, segment } = t.target;
+  const params = t.url.searchParams;
+  if (kind === 'collection') {
+    assertCollectionQuery(t, t.mapping, t.policy, params);
+    return { mapping: t.mapping, params };
+  }
+  if (kind === 'entity') {
+    t.policy.assertQuery(params);
+    const read = pick(params, ['$select', '$expand']);
+    assertExpandReadable(t, t.mapping, read.get('$expand'));
+    return { mapping: t.mapping, params: read };
+  }
+  if (kind === 'count') {
+    const counted = pick(params, ['$filter']);
+    t.policy.assertQuery(counted);
+    return { mapping: t.mapping, params: counted };
+  }
+  const rel = kind === 'member' || kind === 'navcount' ? ownRelationship(t.mapping, segment) : null;
+  if (!rel) return null;
+  t.policy.assertPath([segment]);
+  const mapping = t.store.resolveMapping(rel.entity);
+  const policy = webApiPolicy(policyPortal(t.store, t.deps), t.store, mapping.logicalName);
+  if (kind === 'navcount') {
+    assertExpandReadable(t, t.mapping, null, [{ navigation: segment, expand: [] }]);
+    if (rel.many === false) return null;
+    const counted = pick(params, ['$filter']);
+    policy.assertQuery(counted);
+    return { mapping, params: counted };
+  }
+  if (rel.many !== false) {
+    assertCollectionQuery(t, mapping, policy, params);
+    return { mapping, params };
+  }
+  const read = pick(params, ['$select', '$expand']);
+  policy.assertQuery(read);
+  assertExpandReadable(t, t.mapping, null, [{ navigation: segment, expand: parseExpand(read.get('$expand')) }]);
+  return { mapping, params: read };
+}
+
+const ownRelationship = (mapping, name) =>
+  name != null && own(mapping.relationships ?? {}, name) ? mapping.relationships[name] : null;
+
+/**
+ * Navigation paths, qualified from the queried table, that evaluating its $filter (any/all lambdas included), every
+ * $filter nested in its $expand and every $apply filter, groupby property and aggregate path follows. Each path lists
+ * navigation segments only. A collection-valued hop counts only as the collection of a lambda: the query engine refuses
+ * it anywhere else, and a refused query reads no provider.
+ */
+function portalQueryPaths(store, mapping, params) {
+  const aliases = Object.fromEntries([...params].filter(([key]) => key.startsWith('@')));
+  const parse = (expression) => parseODataExpression(expression, { dialect: 'dataverse', aliases });
+  const paths = [];
+  // The table a path reaches when every hop is traversable, else null. The last segment is a column unless collection.
+  const follow = (owner, hops, collection) => {
+    let current = owner;
+    for (const [index, name] of hops.entries()) {
+      const rel = ownRelationship(current, name);
+      if (!rel || (rel.many !== false) !== (collection && index === hops.length - 1)) return null;
+      current = store.resolveMapping(rel.entity);
+    }
+    return current;
+  };
+  const segmentsOf = (node) => {
+    if (node.type === 'path') return node.segments;
+    if (node.type === 'lambda') return node.path;
+    const name = node.params?.PropertyName;
+    return name?.type === 'literal' && typeof name.value === 'string' ? name.value.split('/') : null;
+  };
+  // A path, lambda or property-name function: the navigation hops it follows, then the body of a lambda.
+  const visitPath = (node, base, scope) => {
+    const segments = segmentsOf(node);
+    if (!segments?.length) return;
+    const origin = scope.get(segments[0]);
+    const from = origin ?? base;
+    const relative = origin ? segments.slice(1) : segments;
+    const lambda = node.type === 'lambda';
+    const hops = lambda ? relative : relative.slice(0, -1);
+    const target = follow(from.mapping, hops, lambda);
+    if (!target) return;
+    const qualified = [...from.prefix, ...hops];
+    if (hops.length) paths.push(qualified);
+    if (lambda && node.body)
+      visit(node.body, base, new Map([...scope, [node.variable, { mapping: target, prefix: qualified }]]));
+  };
+  const visit = (node, base, scope) => {
+    if (!node || typeof node !== 'object') return;
+    if (node.type === 'path' || node.type === 'lambda' || node.type === 'crm') {
+      visitPath(node, base, scope);
+      return;
+    }
+    for (const key of ['left', 'right', 'operand', 'body']) visit(node[key], base, scope);
+    for (const list of [node.args, node.values])
+      if (Array.isArray(list)) for (const item of list) visit(item, base, scope);
+  };
+  const expand = (owner, prefix, specs) => {
+    for (const spec of specs) {
+      const rel = ownRelationship(owner, spec.navigation);
+      if (!rel) continue;
+      const target = store.resolveMapping(rel.entity);
+      const nested = [...prefix, spec.navigation];
+      if (spec.filter) visit(parse(spec.filter), { mapping: target, prefix: nested }, new Map());
+      expand(target, nested, spec.expand ?? []);
+    }
+  };
+  const filter = params.get('$filter');
+  if (filter) visit(parse(filter), { mapping, prefix: [] }, new Map());
+  expand(mapping, [], parseExpand(params.get('$expand')));
+  // A step after a groupby reads aggregate aliases, which follow no relationship of the table.
+  const apply = params.get('$apply');
+  for (const step of apply ? parseApply(apply, { dialect: 'dataverse', aliases }) : []) {
+    if (step.ast) visit(step.ast, { mapping, prefix: [] }, new Map());
+    const read = [...(step.properties ?? []), ...(step.aggregates ?? []).map((aggregate) => aggregate.path)];
+    for (const segments of read.filter(Boolean))
+      visitPath({ type: 'path', segments }, { mapping, prefix: [] }, new Map());
+  }
+  return paths;
+}
+
+// A stored attachment body projects as null. Capture it alongside the admitted rows and load its bytes after the read.
 // ponytail: bodies under $expand of another table are not read back; add the walk when a portal page expands notes.
-async function hydrateAttachments(t, body) {
-  const logical = t.mapping?.logicalName,
-    column = ATTACHMENT_COLUMNS[logical];
-  if (!column || typeof t.deps.attachmentBody !== 'function' || !body || typeof body !== 'object') return;
+function captureAttachments(t, body) {
+  const logical = t.mapping?.logicalName;
+  const column = ATTACHMENT_COLUMNS[logical];
+  const { captureAttachmentBody, attachmentBody } = t.deps;
+  if (!column || (!captureAttachmentBody && !attachmentBody) || !body || typeof body !== 'object') return [];
   const idColumn = t.mapping.idColumn;
+  const attachments = [];
   for (const row of Array.isArray(body.value) ? body.value : [body]) {
     if (!row || typeof row !== 'object' || !own(row, column) || row[column] != null || !row[idColumn]) continue;
-    row[column] = await t.deps.attachmentBody(logical, { [idColumn]: row[idColumn] });
+    const record = { [idColumn]: row[idColumn] };
+    const load = captureAttachmentBody ? captureAttachmentBody(logical, record) : () => attachmentBody(logical, record);
+    if (load) attachments.push({ row, column, load });
   }
+  return attachments;
 }
 
 function dispatch(t) {
@@ -876,7 +1014,8 @@ function dispatchValue(t, method) {
  * tables the simulated Dataverse API seeds or creates), data and site tables, and the
  * Power Pages tables every environment has (POWER_PAGES_TABLES).
  */
-function resolveSet(store, set) {
+function resolveSet(store, set, pcfLogicalName) {
+  if (pcfLogicalName !== undefined) return resolveLogicalSegment(store, set);
   // The entity set name wins over a table whose logical name happens to equal it (a
   // table named x_products doesn't shadow the x_products set of x_product).
   const owner = Object.entries(store.state?.mappings ?? {}).find(([, value]) => value?.entitySet === set);
@@ -893,6 +1032,29 @@ function resolveSet(store, set) {
     throw new DataError(`Resource not found for the segment '${set}'.`, 404, 'WebApiTableNotEnabled', {
       segment: set,
       table,
+    });
+  throw unknownSet(set);
+}
+
+/**
+ * A segment of a request carrying pcf-entity-logical-name (the code component host's webAPI calls) is read as a table
+ * logical name only (captured, paqvilo-developer pcf-parity summary-A3 and summary-F section 1, runs fa and fb): the
+ * logical name of a known table resolves, an entity set name or an unknown name answers 400 9004010A. Without the
+ * header resolveSet reads entity set names only (a logical name answers 400 9004010A). The header's value is not
+ * compared with the segment (the host sends the same name in both; other combinations are not captured).
+ */
+function resolveLogicalSegment(store, set) {
+  let mapping = null;
+  try {
+    mapping = store.resolveMapping(set);
+  } catch (error) {
+    if (!(error.status === 404 || error.code === 'UnknownEntity')) throw error;
+  }
+  if (mapping?.logicalName === set) return mapping;
+  if ([...POWER_PAGES_TABLES.values()].includes(set))
+    throw new DataError(`Resource not found for the segment '${set}'.`, 404, 'WebApiTableNotEnabled', {
+      segment: set,
+      table: set,
     });
   throw unknownSet(set);
 }
@@ -919,7 +1081,7 @@ function requestContext(req, res, url, deps, target, method) {
     throw new DataError(`Configuration table ${configuration} is not supported.`, 404, 'WebApiConfigurationTable', {
       table: configuration,
     });
-  const mapping = resolveSet(store, target.set);
+  const mapping = resolveSet(store, target.set, req.headers['pcf-entity-logical-name']);
   const policy = webApiPolicy(policyPortal(store, deps), store, mapping.logicalName);
   const prefer = parsePrefer(req.headers.prefer);
   const include = prefer.annotations == null ? null : annotationMatcher(prefer.annotations);
@@ -1205,10 +1367,10 @@ function assertExpandReadable(t, mapping, expand, specs = parseExpand(expand)) {
   visit(mapping, specs);
 }
 
-function getCollection(t, { mapping = t.mapping, policy = t.policy, ids } = {}) {
-  const { url, store, deps } = t;
-  policy.assertQuery(url.searchParams);
-  const apply = url.searchParams.has('$apply');
+function assertCollectionQuery(t, mapping, policy, params) {
+  const { store, deps } = t;
+  policy.assertQuery(params);
+  const apply = params.has('$apply');
   // Table permission is checked before the select-less column rule.
   if (
     !deps.identity?.admin &&
@@ -1216,8 +1378,18 @@ function getCollection(t, { mapping = t.mapping, policy = t.policy, ids } = {}) 
     !store.rules(mapping.logicalName, 'read', deps.identity).length
   )
     throw readDenied(t.store, mapping.logicalName);
-  if (!apply) assertExpandReadable(t, mapping, url.searchParams.get('$expand'));
-  if (!apply && !url.searchParams.has('$select')) assertSelectLessRead(t, policy, mapping);
+  if (!apply) assertExpandReadable(t, mapping, params.get('$expand'));
+  if (!apply && !params.has('$select')) assertSelectLessRead(t, policy, mapping);
+}
+
+function getCollection(t, options) {
+  return send(t, 200, collectionPayload(t, options));
+}
+
+function collectionPayload(t, { mapping = t.mapping, policy = t.policy, ids } = {}) {
+  const { url, store, deps } = t;
+  assertCollectionQuery(t, mapping, policy, url.searchParams);
+  const apply = url.searchParams.has('$apply');
   const paging = prepareODataPage({
     url,
     prefer: t.req.headers.prefer ?? '',
@@ -1235,11 +1407,7 @@ function getCollection(t, { mapping = t.mapping, policy = t.policy, ids } = {}) 
   const value = apply
     ? result.value.map((row) => t.formatter.formatEntity(row, mapping, { etag: false }))
     : result.value.map((row) => shapeEntity(t, policy, mapping, row, { expand: url.searchParams.get('$expand') }));
-  return send(
-    t,
-    200,
-    collectionBody(t, mapping, apply ? null : url.searchParams, result, value, apply ? null : paging),
-  );
+  return collectionBody(t, mapping, apply ? null : url.searchParams, result, value, apply ? null : paging);
 }
 
 /**
@@ -1400,7 +1568,7 @@ function entityResponse(t, mapping, policy, id, params, { portalPrimaryKeyProjec
   };
 }
 
-function getEntity(t) {
+function entityProjection(t) {
   const { url, mapping, policy, target } = t;
   // Every supplied option is column-checked, even ones a single entity ignores.
   policy.assertQuery(url.searchParams);
@@ -1410,7 +1578,11 @@ function getEntity(t) {
   assertExpandReadable(t, mapping, params.get('$expand'));
   const portalPrimaryKeyProjection =
     GUID_PATTERN.test(target.key) && url.searchParams.size === 1 && Boolean(parseSelect(params.get('$select'))?.length);
-  const body = entityResponse(t, mapping, policy, id, params, { portalPrimaryKeyProjection });
+  return entityResponse(t, mapping, policy, id, params, { portalPrimaryKeyProjection });
+}
+
+function getEntity(t) {
+  const body = entityProjection(t);
   const match = t.req.headers['if-none-match'];
   if (
     match &&
@@ -1424,6 +1596,46 @@ function getEntity(t) {
     return t.res.end();
   }
   return send(t, 200, body);
+}
+
+/** Read a summary's authorized source before response annotations and binary hydration. The caller owns the serialized read. */
+export function readWebApiSummaryEntity(url, deps, project) {
+  const target = parseWebApiRoute(url.pathname);
+  if (target.kind !== 'entity')
+    throw new DataError('Data summarization requires an entity set or an entity URL.', 404, 'ResourceNotFound');
+  // A primary key or a declared, active alternate key resolves as the Web API GET resolves it (locate, findByKey).
+  const t = summaryReadContext(url, deps, target);
+  return preparePortalRead(t, () => project(entityProjection(t), t.mapping));
+}
+
+/**
+ * Read a collection summary's authorized source: the page a portal Web API GET of the same query returns (its $filter,
+ * $orderby, $top, $count, $apply, nested $expand options, Prefer odata.maxpagesize and $skiptoken), permission-filtered,
+ * before response annotations and binary hydration. The caller owns the serialized read.
+ */
+export function readWebApiSummaryCollection(url, deps, project, { prefer } = {}) {
+  const target = parseWebApiRoute(url.pathname);
+  if (target.kind !== 'collection')
+    throw new DataError('Data summarization requires an entity set or an entity URL.', 404, 'ResourceNotFound');
+  // FetchXML is its own read lane (getFetch): its permission compilation and projection have no summary projection.
+  if (url.searchParams.has('fetchXml') || url.searchParams.has('fetchxml'))
+    throw new DataError(
+      'Data summarization reads OData query options, not FetchXML.',
+      400,
+      'InvalidDataSummaryRequest',
+    );
+  const t = summaryReadContext(url, deps, target, prefer);
+  return preparePortalRead(t, () => {
+    const body = collectionPayload(t);
+    return project(body.value, t.mapping, { apply: url.searchParams.has('$apply') });
+  });
+}
+
+function summaryReadContext(url, deps, target, prefer) {
+  if (deps.identity?.admin || deps.store.state.settings.permissionMode === 'permissive')
+    throw new DataError('Local data summarization requires enforced portal permissions.', 403, 'PermissionDenied');
+  const headers = typeof prefer === 'string' && prefer ? { prefer } : {};
+  return requestContext({ method: 'GET', headers }, null, url, deps, target, 'GET');
 }
 
 function navigationTarget(t) {

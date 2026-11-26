@@ -319,3 +319,50 @@ test('a site-bound context reuses its portal import and exposes effective Soluti
   ownedFixture(t).add(() => override.close());
   assert.equal(imports, 2);
 });
+
+// @test-kind security: a wildcard exemption belongs only to the runtime to which its evidence was supplied.
+test('reused portal imports do not share Web API wildcard exemptions', async (t) => {
+  const root = await project(t);
+  await fs.writeFile(
+    path.join(root, 'portal', 'api.sitesetting.yml'),
+    "- adx_name: Webapi/widget/enabled\n  adx_value: 'true'\n- adx_name: Webapi/widget/fields\n  adx_value: '*'",
+  );
+  const context = await createMirageContext({ config: path.join(root, 'paqvilo.config.yml'), site: 'invented' });
+  const expiry = '2026-12-01T12:00:00Z';
+  let now = Date.parse(expiry) - 1;
+  const start = async (observed) => {
+    const app = await context.createSimulator({
+      port: 0,
+      watch: false,
+      clock: () => now,
+      observed,
+      initial: {
+        mappings: { widget: { entitySet: 'widgets', idColumn: 'widgetid' } },
+        tables: { widget: [{ widgetid: 'invented-widget', name: 'Invented widget' }] },
+        permissions: [{ id: 'public-widget-read', entity: 'widget', scope: 'global', operations: ['read'] }],
+      },
+    });
+    ownedFixture(t).add(() => app.close());
+    return app;
+  };
+  const request = (app) => fetch(app.url + '/_api/widgets?$select=name');
+  const assertEnforced = async (app) => {
+    const response = await request(app);
+    assert.equal(response.headers.get('x-sim-error-code'), 'WebApiWildcardDeprecated', await response.clone().text());
+    assert.equal(response.status, 403);
+  };
+  const original = await start();
+  await assertEnforced(original);
+  const exempt = await start({
+    webApiWildcard: 'exempt',
+    webApiWildcardExpiresAt: expiry,
+    evidence: 'invented site exemption receipt',
+  });
+  assert.equal((await request(exempt)).status, 200);
+  const sibling = await start();
+  await assertEnforced(sibling);
+  await assertEnforced(original);
+  assert.equal((await request(exempt)).status, 200);
+  now++;
+  await assertEnforced(exempt);
+});

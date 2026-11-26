@@ -255,3 +255,121 @@ test('both loaders reject mixed-site enhanced Solutions before exposing pages, a
     await writeComponent(component, 1);
   }
 });
+
+test('both loaders skip one malformed component envelope and keep the rest of the Solution', async (t) => {
+  const site = await fixture(t);
+  await site.write('Assets/powerpagesites.xml', `<powerpagesites>${siteRecord(1, 'First')}</powerpagesites>`);
+  await site.write(componentFile(2), enhancedComponent(2, 2, 'Home', { isroot: true, partialurl: '/' }));
+  await site.write(componentFile(3), enhancedComponent(3, 9, 'Valid/Setting', { value: 'kept' }));
+  // A character reference outside Unicode is not well-formed XML (String.fromCodePoint throws on it).
+  await site.write(componentFile(4), enhancedComponent(4, 9, 'Bad&#x110000;Name', { value: 'x' }));
+  await site.write(
+    componentFile(5),
+    enhancedComponent(5, 8, 'Template', { source: 'body' }).replace(
+      '<powerpagecomponenttype>8<',
+      '<powerpagecomponenttype>&#1114112;<',
+    ),
+  );
+
+  const lense = new PortalModel(site.root);
+  for (const n of [4, 5])
+    assert.ok(lense.warnings.includes(`powerpagecomponents/${id(n)}/powerpagecomponent.xml: malformed component XML`));
+  assert.equal(lense.siteSettings['Valid/Setting'], 'kept');
+  assert.equal(lense.pagePath(id(2)), '/');
+  assert.equal(
+    lense.inlineSources.find((item) => item.kind === 'web-template'),
+    undefined,
+  );
+  lense.load();
+  assert.doesNotThrow(() => auditResources(lense, SITE));
+
+  const mirage = await importPortal(site.root);
+  assert.equal(mirage.pages[0].id, id(2));
+  assert.ok(mirage.records.some((record) => record.id === id(3)));
+  for (const n of [4, 5]) {
+    assert.ok(!mirage.records.some((record) => record.id === id(n)));
+    assert.ok(
+      mirage.diagnostics.some(
+        (diagnostic) =>
+          diagnostic.code === 'invalid-enhanced-content' &&
+          diagnostic.file.endsWith(path.join(id(n), 'powerpagecomponent.xml')),
+      ),
+    );
+  }
+});
+
+const siteLanguage = (n, owner, code) =>
+  `<powerpagesitelanguages><powerpagesitelanguage powerpagesitelanguageid="${id(n)}"><name>${code}</name>` +
+  `<languagecode>${code}</languagecode><powerpagesiteid><powerpagesiteid>${id(owner)}</powerpagesiteid></powerpagesiteid>` +
+  `</powerpagesitelanguage></powerpagesitelanguages>`;
+const ignoredMetadata = (portal) =>
+  portal.diagnostics.filter((diagnostic) => diagnostic.code === 'ENHANCED_SITE_METADATA_IGNORED');
+
+test('both loaders read site metadata only from Assets/ or the root, never from a stray copy', async (t) => {
+  const site = await fixture(t);
+  await site.write(componentFile(2), enhancedComponent(2, 2, 'Home', { isroot: true, partialurl: '/' }));
+  await site.write('Assets/powerpagesites.xml', `<powerpagesites>${siteRecord(1, 'First')}</powerpagesites>`);
+  await site.write('Assets/powerpagesitelanguages.xml', siteLanguage(7, 1, 'en-US'));
+  await site.write('Other/previous/powerpagesites.xml', `<powerpagesites>${siteRecord(9, 'Stray')}</powerpagesites>`);
+  await site.write('Other/previous/powerpagesitelanguages.xml', siteLanguage(8, 9, 'fr-FR'));
+
+  const lense = new PortalModel(site.root);
+  assert.equal(lense.ambiguousSite, false);
+  assert.deepEqual([...lense.languageCodes], ['en-us']);
+  const mirage = await importPortal(site.root);
+  assert.equal(mirage.website.id, id(1));
+  assert.equal(mirage.website.name, 'First');
+  const languages = mirage.records.filter((record) => record.kind === 'websitelanguage').map((record) => record.id);
+  assert.deepEqual(languages, [id(7)]);
+  assert.deepEqual(
+    ignoredMetadata(mirage).map((diagnostic) => diagnostic.files),
+    [['Other/previous/powerpagesitelanguages.xml', 'Other/previous/powerpagesites.xml']],
+  );
+
+  // The root is a metadata location for both loaders, so a second site there is ambiguous for both.
+  await site.write('powerpagesites.xml', `<powerpagesites>${siteRecord(9, 'Stray')}</powerpagesites>`);
+  assert.throws(() => new PortalModel(site.root), { code: 'AMBIGUOUS_PORTAL_SITE' });
+  await assert.rejects(importPortal(site.root), { code: 'AMBIGUOUS_PORTAL_SITE' });
+});
+
+test('Mirage reads site metadata of a Solution nested below the source folder and reports metadata it ignores', async (t) => {
+  const site = await fixture(t);
+  const solution = 'exports/Invented Solution_1_0_0_0';
+  await site.write(
+    `${solution}/${componentFile(2)}`,
+    enhancedComponent(2, 2, 'Home', { isroot: true, partialurl: '/' }),
+  );
+  await site.write(
+    `${solution}/Assets/powerpagesites.xml`,
+    `<powerpagesites>${siteRecord(1, 'First')}</powerpagesites>`,
+  );
+  await site.write(`${solution}/Assets/powerpagesitelanguages.xml`, siteLanguage(7, 1, 'en-US'));
+
+  // Lense opens the Solution itself; Mirage also accepts a folder above it and reads the same site.
+  const lense = new PortalModel(path.join(site.root, solution));
+  assert.equal(lense.format, 'enhanced');
+  assert.deepEqual([...lense.languageCodes], ['en-us']);
+  const nested = await importPortal(path.join(site.root, solution));
+  const parent = await importPortal(site.root);
+  for (const portal of [nested, parent]) {
+    assert.equal(portal.website.id, id(1));
+    assert.equal(portal.website.name, 'First');
+    assert.deepEqual(ignoredMetadata(portal), []);
+  }
+  assert.equal(parent.records.length, nested.records.length);
+  assert.deepEqual(
+    parent.records.map((record) => record.id),
+    nested.records.map((record) => record.id),
+  );
+
+  // Site metadata in neither Assets/ nor the root of the Solution names no site, and the import says so.
+  await fs.rename(path.join(site.root, solution, 'Assets'), path.join(site.root, 'exports', 'Assets'));
+  const unread = await importPortal(site.root);
+  assert.deepEqual(unread.website, {});
+  const [diagnostic] = ignoredMetadata(unread);
+  assert.deepEqual(diagnostic.files, [
+    'exports/Assets/powerpagesitelanguages.xml',
+    'exports/Assets/powerpagesites.xml',
+  ]);
+  assert.match(diagnostic.message, /^No site metadata was read/);
+});

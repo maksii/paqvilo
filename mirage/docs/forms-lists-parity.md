@@ -7,7 +7,7 @@ adapters supply platform-shaped form events, validators, date and picklist contr
 actions, notes and attachments, and session-sensitive requests; permissions are checked by the local data layer.
 Generated fields and unsupported controls keep diagnostics.
 
-No replay case ([test kinds](../../docs/test-kinds.md#replay-cases)) records native form or list behaviour; the rules
+Only form postback replay cases ([test kinds](../../docs/test-kinds.md#replay-cases)) record native forms; the rules
 below are local models of Microsoft's documentation and site observations. A locally passing flow shows that the
 simulated scenario works. Compare the reference DOM and network behaviour before calling it platform parity
 ([reference parity evidence](parity-evidence.md)); project tests should assert their own labels, relationships,
@@ -31,6 +31,12 @@ actions and saved results against an explicitly registered dataset.
   ignores defaults; stored values and prepopulation win, and the stored row is unchanged. DateOnly controls filled from
   the clock keep the observed UTC suffix in their hidden postback value; the submitter accepts it and the zone-free
   edited value.
+- **Global choices.** A native choice or choices (multi-select) field whose column is bound to a global choice lists
+  the published options in the page language; an explicit authored options array keeps its own. A posted choice value
+  outside the list fails event validation; a posted choices value outside it is refused as Dataverse refuses it
+  (`PicklistValueOutOfRange`) and nothing is written. A list's dynamic choice filter on a choices column matches the
+  rows that hold the selected option (`contain-values`, the operator Learn documents for choices columns); the hosted
+  filter's operator is not captured.
 - **Read security.** A form or advanced form step reads its record as Dataverse answers the reading principal: the
   site's application user under standard authorization, the visitor's mapped Dataverse user under enhanced authorization
   ([enhanced authorization](dataverse-parity.md#enhanced-authorization)). Unreadable secured columns are empty, masked
@@ -54,6 +60,27 @@ the attach-file control) successful controls to the form action, including modal
   record. Each existing attachment accepted by the record reader uses a slot and satisfies the required-file setting.
   A Dataverse attachment location saves the file in a note. An Azure Blob Storage location uses the configured
   `portalCloudAttachments` provider route. A form without an exported location uses the site-level storage setting.
+  The count covers every file note of the record, read as the system: a visitor who may create notes but not read
+  them (or reads only their own) still uses up the slots the record's files take, and the rendered control states the
+  same remaining count.
+- **Number fields.** Every stock number box of a basic form or multistep form step (insert, edit, read-only and modal
+  forms) shows and parses numbers in the page language, for example `1.234,5` in German; values that auto-generated
+  steps carry in `__VIEWSTATE` are parsed the same way. Format and range messages are in the page language. A range
+  bound the exported metadata omits beside a configured one is the column type's supported limit. A field whose code
+  component mounts posts JSON instead, and the JSON transport keeps invariant numbers. The en-US and de-DE behaviour
+  was observed on the platform; the other form modes are a local model.
+- **Associate Current Portal User.** With **Is Activity Party**, the configured column must be a party list column of
+  the form's table that accepts a contact. The save writes the contact as an `activityparty` row with the record, in
+  the participation type that Learn's
+  [activity party types](https://learn.microsoft.com/power-apps/developer/data-platform/activityparty-entity) table
+  gives the column (`from` is Sender, `to` ToRecipient, `requiredattendees` RequiredAttendee, and so on); a posted
+  value for the column is replaced. A column without a documented type, such as `partners`, fails with 501
+  `FormUserAssociationUnresolved` before any write. A provider that writes through the Web API (the live bridge) sends
+  the party as a deep insert of the record create.
+- **Metadata validators.** The constant sum, multiple choice and rank order groups of basic form metadata are checked
+  on the server as in the browser: `FormConstantSumInvalid`, `FormMultipleChoiceInvalid` and `FormRankOrderTie`
+  re-render the form with the group's message. A Geolocation Lookup Validator needs the hosted map service and reports
+  `FORM_GEOLOCATION_VALIDATOR_HOSTED`; Timeline metadata reports `FORM_TIMELINE_METADATA_UNSUPPORTED`.
 - **Checkboxes** follow ASP.NET successful-control rules: a non-empty posted value (including a script's custom value)
   saves `true`, empty or omitted saves `false`. Only editable checkboxes rendered by the selected form participate.
   Boolean radio and select controls decode `1`/`0` and reject other text; the JSON API requires typed Booleans.
@@ -88,6 +115,57 @@ the attach-file control) successful controls to the form action, including modal
   status in one atomic write. Status values need exported state/status metadata; unsupported actions, unresolved
   metadata and action filter criteria keep diagnostics. Confirmation, labels and redirects come from the source.
   Repeated button IDs across forms dispatch through the button's full WebForms name.
+- A basic form `WorkflowAction` shows its **Run workflow** button (label, tooltip and dialog texts from the action and
+  the form's `WorkflowDialog` settings) when its filter matches the record. Confirming runs the workflow on the record
+  when it is an exported, published, on-demand real-time workflow of the form's table with a trusted local `workflows`
+  handler ([Dataverse API](dataverse-api.md)); otherwise the button is absent and `FORM_WORKFLOW_UNRESOLVED` reports
+  it. A local runtime with live data or a virtual table never shows it.
+- The table-specific basic form actions Microsoft Learn lists run locally on their own table: Close Case
+  (`CloseIncidentAction`, with the action's `DefaultResolution` texts, else "Case Closed" and "Case Closed via Web
+  Portal"), Resolve Case (`ResolveCaseAction`: its dialog asks for the resolution and its description, both required),
+  Reopen Case, Cancel Case, Close as Won, Close as Lost and Set On Hold. Each button posts to the form's own action
+  endpoint, which resolves the exported action, the record and the update permission again, and writes the close
+  activity (`incidentresolution`, `opportunityclose`) and the state and status reason in one write. Cancel Case first
+  cancels the case's open and scheduled activities (each table's Canceled state with its default status). The values
+  come from the open-source legacy portal (Resolve and Close: state 1, status 5; Cancel: state 2; Reopen: state 0;
+  Won: state 1, status 3; Lost: state 2, status 4; On Hold: state 0, status 2) and need the table's exported state and
+  status metadata; the hosted wire and markup are not captured. An action on another table reports
+  `FORM_ACTION_TABLE_MISMATCH`. Every table action, on forms and grids, first requires the record state the grid link
+  shows for: an active case for Close, Resolve and Cancel, a closed one for Reopen, an open opportunity for Win, Lose
+  and Generate Quote (Set On Hold: open and not on hold), a draft or active quote for Create Order and an order that is
+  not canceled for Create Invoice; another state is refused with 400 `InvalidStateTransition` (inner code
+  `0x8004F00E`, Mirage's state-transition refusal; the native code is not captured) before any write, and checked again
+  inside the write.
+- Calculate Value (`CalculateOpportunityAction`), Create Order (`ConvertQuoteToOrderAction`), Create Invoice
+  (`ConvertOrderToInvoiceAction`) and Generate Quote (`GenerateQuoteFromOpportunityAction`) check Update on the record
+  and Create on the new record's table, then run the Dynamics 365 messages of the local organization as the site's
+  application user, as the legacy service does: `CalculateActualValueOpportunity`; for an order, activating a quote
+  that is not active and `WinQuote` on one that is not won, then `ConvertQuoteToSalesOrder`;
+  `ConvertSalesOrderToInvoice`; `GenerateQuoteFromOpportunity`. The conversions copy every column both tables have and
+  the line items (`opportunityproduct`, `quotedetail`, `salesorderdetail`, `invoicedetail`) and link the new record to
+  its source; Calculate Value sums the products' extended amounts of a won opportunity (else its estimated value) into
+  `actualvalue`. These message semantics are a local model of the documented messages ([Dataverse API](dataverse-api.md)).
+- Lists and subgrids offer the same table-specific actions as row actions (legacy link types 9 and 11 to 23: Close
+  Case, Create Order, Create Invoice, Calculate Value, Resolve Case, Reopen Case, Cancel Case, Set On Hold, Close as
+  Won, Close as Lost, Generate Quote), shown by the record's state as the legacy grid shows them (Resolve and Cancel on
+  an active case, Reopen on a closed one, Create Order on an active quote, ...). Each posts the record reference to the
+  legacy route `/_services/action-<name>/<website>`, which checks Write on the record (and Create on the new record's
+  table) as the legacy service does and runs the same write as the form action. Resolve Case asks for the resolution
+  in the grid's resolve dialog; Close Case sends the link's default resolution.
+- A list or subgrid's record actions are its `ItemActions` followed by its `ExtendedItemActions`, ordered by
+  `ActionIndex` (an equal index keeps that order, a missing one comes first), for rendering, row privileges, delete and
+  workflow admission. A workflow action's link carries the grid `WorkflowDialog` texts, classes and size as its dialog,
+  with the action's own `WorkflowDialogTitle`, `WorkflowDialogPrimaryButtonText` and `WorkflowDialogCloseButtonText`
+  over them (`CustomizeModal`), in the request language like the labels. The grid renders one workflow dialog, the
+  first workflow action's: its title (with `TitleCssClass`), confirmation, button texts and classes, size and dismiss
+  text, on Bootstrap 3 and 5 (empty exported values keep the defaults). Choosing an action with its own texts writes
+  its title, confirmation and primary text into that dialog; as in the legacy client, its close text is never applied
+  (entity-grid.js stores it as `data-modal-canled-action` and reads `data-modal-cancel-action`) and nothing restores
+  the dialog for a later action without its own texts. This follows the legacy list source
+  (`ViewConfiguration.GetActions`, `WorkflowActionLink`, `EntityGridExtensions`, entity-grid.js); no hosted capture of
+  a configured list workflow exists.
+- Action filters of forms and lists match the record by its primary key, which the query selects even when the filter
+  lists only other columns.
 - A lookup dialog restores the current selection only when both record ID and table match a row of the authorized grid
   query. Selecting a row updates the control; the record changes only after a successful save.
 - Native subgrid quick-find visibility follows the exported FormXml flag. Native PCF fields need explicit portal
@@ -108,11 +186,44 @@ the attach-file control) successful controls to the form action, including modal
   delivery time does not count: the hold fails open 5 s after that request with `FRAME_READY_TIMEOUT`, and
   `FRAME_LOAD_ORDERING` records the release order. If `connect-src` blocks the ready notification, a same-origin image
   request releases the hold. A page whose inline script is blocked (a site
-  `Content-Security-Policy` without `'unsafe-inline'`) is not held; after 60 s `FRAME_READY_TIMEOUT` with ordering
+  `Content-Security-Policy` without `'unsafe-inline'` or the `'nonce'` placeholder, whose nonce the document's own
+  scripts carry) is not held; after 60 s `FRAME_READY_TIMEOUT` with ordering
   `never-requested` reports it. Set
   `observed.modalLoadOrdering: immediate` (with evidence) to opt out. This stabilizes local timing only.
 - A form subgrid on Document Locations renders the local document control
   ([SharePoint](sharepoint.md#adapter-a-dataverse-document-integration)).
+
+## Notes and the activity timeline
+
+- **Rich text notes.** With the site setting `Timeline/RTEEnabled` set to `true`
+  ([Learn](https://learn.microsoft.com/power-pages/configure/configure-notes#enable-rich-text-editor)), the add and
+  edit note dialogs use the rich text editor that rich text columns use (native CKEditor, or the compatibility editor).
+  The control is marked `data-rte-enabled="True"`. The notes service sanitizes the note HTML before it stores it, and
+  again on every read, because another author, the model-driven app or an import can store any markup. Scripts, event
+  handlers, styles, frames and `javascript:` links are removed. The notes client rebuilds the HTML it shows from an
+  allowlist of elements, so it never renders markup straight from the service. A note whose HTML has no visible text
+  and no image is empty (HTTP 417). Without the setting, notes are plain text. Mirage does not reproduce
+  the platform's request-validation error for HTML posted while the setting is off.
+- **Timeline.** A form's `notescontrol` whose `DefaultTabId` parameter is `ActivitiesTab` is the activity timeline
+  ([Learn](https://learn.microsoft.com/power-pages/configure/view-all-activities-in-portal-timeline), "Default tab").
+  It lists the record's activities instead of its notes and posts to `/_portal/<website-id>/EntityActivity/GetActivities`.
+  The diagnostic `PORTAL_TIMELINE_ACTIVITIES` reports it. On a custom (publisher-prefixed) table,
+  `PORTAL_TIMELINE_CUSTOM_TABLE_NOTES` warns that notes and activities cannot both be shown on one form for a custom
+  table (Learn, configure-notes). Mirage does not simulate adding portal comments or listing activity attachments.
+- **Activities.** The timeline admits the activity tables named by the activitytypecode conditions of the **Portal
+  Timeline View** (the activitypointer view `620cdb5e-d7c9-e511-80d1-00155d20b011`, or that name in the Solutions). The
+  view's first order sets the order; the default is newest first by `createdon`. Each admitted table is read through
+  the visitor's table permissions on that table, for activities regarding the record only, so a table without Read
+  adds no rows. When the view is not in the configured Solutions, every activity table is admitted and
+  `PORTAL_TIMELINE_VIEW_ABSENT` says so. When the view has other conditions, `PORTAL_TIMELINE_VIEW_FILTER_PARTIAL`
+  names them, because they are not applied. Descriptions are sanitized and shown without inline images, as Learn
+  states. Plain-text descriptions keep their line breaks. The page size is 10 by default and at most 25.
+- **CustomerSupport/DisplayAllUserActivitiesOnTimeline.** Unless this setting is `true`, a case (`incident`) timeline
+  shows only portal comments (`adx_portalcomment`), and `PORTAL_TIMELINE_PORTAL_COMMENTS_ONLY` says so. Other tables
+  are not restricted.
+- The timeline service shape, the page size limits, the portal-comment rule and the `DefaultTabId` rule come from the
+  open-sourced portal code (xRM Portals Community Edition: `EntityActivityController`, `ActivityDataAdapter`,
+  `ViewDataAdapter`, `FormXmlCellMetadata`). No live capture confirms them, and the activity card markup is local.
 
 ## Liquid form tags
 

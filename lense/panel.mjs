@@ -1113,6 +1113,20 @@ export function enablePanel(context, session, opts = {}) {
     };
   };
   /**
+   * This browser's classic publishing preview (Mirage GET /session/preview, through the page's cookie jar): whether its
+   * contact may preview unpublished content and whether preview is on; null when the Mirage does not report it.
+   */
+  const readPreview = async (page) => {
+    const response = await mirageGet('/session/preview', MIRAGE_READ_GUARD_MS, page.context().request).catch(
+      () => null,
+    );
+    if (!response?.ok()) return null;
+    const data = await response.json().catch(() => null);
+    return data && typeof data === 'object'
+      ? { eligible: data.eligible === true, enabled: data.enabled === true }
+      : null;
+  };
+  /**
    * The identity provider behind the portal's sign-in (Mirage /session identityProvider): the
    * default provider, its callback path and the local identity provider's port; null for a
    * Mirage that does not report one.
@@ -2293,6 +2307,8 @@ export function enablePanel(context, session, opts = {}) {
             roundsTruncated: false,
             ...runtime.report.inputLimits,
             renderedReadFailed,
+            // Cross-origin and sandboxed frames the page could not read (browser boundaries).
+            inaccessibleFrames: Number.isSafeInteger(rendered.inaccessibleFrames) ? rendered.inaccessibleFrames : 0,
           };
         progress.phase = 'Linking source files';
         schedule(page);
@@ -2314,10 +2330,11 @@ export function enablePanel(context, session, opts = {}) {
     },
     tweaks: async (body, page) => {
       if (!cfg.mirage) return { ok: false, error: 'Tweaks change the local Mirage runtime only.' };
-      const [status, personasResponse, session] = await Promise.all([
+      const [status, personasResponse, session, preview] = await Promise.all([
         readMirageStatus(),
         mirageGet('/personas', MIRAGE_READ_GUARD_MS),
         readSession(page),
+        readPreview(page),
       ]);
       if (!status) return { ok: false, error: 'The Mirage status endpoint is unavailable.' };
       lastMirageStatus = status;
@@ -2362,6 +2379,7 @@ export function enablePanel(context, session, opts = {}) {
         revision: status.revision ?? null,
         // This browser's session; `identity` is the Mirage default (the sign-in page persona).
         session,
+        preview,
         identity: personas?.identity ?? status.identity ?? null,
         personas: publicPersonas,
         personaCatalog: {
@@ -2426,6 +2444,14 @@ export function enablePanel(context, session, opts = {}) {
     signout: async (body, page) => {
       if (!cfg.mirage) return { ok: false, error: 'Sign-in sessions belong to the local Mirage runtime.' };
       return startSessionFlow(page, null);
+    },
+    // The classic publishing preview cookie of this page's browser: the Mirage refuses a contact without the right.
+    preview: async (body, page) => {
+      if (!cfg.mirage) return { ok: false, error: 'Publishing preview belongs to the local Mirage runtime.' };
+      if (typeof body.enabled !== 'boolean') return { ok: false, error: 'publishing preview is on or off' };
+      const result = await mirageWrite('/session/preview', 'POST', { enabled: body.enabled }, page.context().request);
+      if (result.ok) log({ type: 'switch', text: `Publishing preview: ${body.enabled ? 'on' : 'off'}` });
+      return result.ok ? { ok: true, enabled: result.result?.enabled === true } : result;
     },
     permissions: async (body) => {
       if (!cfg.mirage) return { ok: false, error: 'Permission enforcement belongs to the local Mirage runtime.' };

@@ -1,4 +1,4 @@
-import { redactUrlQuery } from './query-redaction.mjs';
+import { redactUrlQuery, redactUrlUserinfo } from './query-redaction.mjs';
 import { debugScript, exportFieldFile } from './source-debug.mjs';
 import { decodeXml, portalField } from './importer.mjs';
 import { xmlAttributes } from './xml-text.mjs';
@@ -10,6 +10,7 @@ import { renderFormLabel } from './form-labels.mjs';
 import { clockFunction, systemClock } from './runtime-clock.mjs';
 import { clientManagedControlsRuntime, validateManagedControlDefinition } from './managed-controls.mjs';
 import { mountRichTextEditors } from './richtext-client.mjs';
+import { customTable, notesRichTextEnabled } from './portal-timeline.mjs';
 import { clientLocalSelfOriginRuntime } from './local-self-origin.mjs';
 import { clientDateControlsRuntime } from './date-controls.mjs';
 import {
@@ -25,7 +26,9 @@ import {
   executeGridQuery,
   gridMasked,
   settingsJson,
+  gridWorkflowDialog,
 } from './native-services.mjs';
+import { gridItemActions } from './grid-item-actions.mjs';
 import { modernListFallback, modernListUnservedActions } from './platform-changes.mjs';
 import {
   webFormSession,
@@ -45,10 +48,18 @@ import { deniedPageRoute } from './redirects.mjs';
 import { approximateFormSchema, approximateAdvancedFormSchema } from './form-schema-fallback.mjs';
 import { isNativeTextarea, systemFormSchemaFor } from './solution-metadata.mjs';
 import { hasPlatformBundles, bootstrapVariant } from './platform-manifest.mjs';
+import { documentAnchors, insertAt, scriptMarker } from './document-injection.mjs';
 import { portalLanguage } from './portal-languages.mjs';
 import { clientPortalObjectRuntime } from './portal-client-object.mjs';
 import { parseDateValue, choiceFieldOptions } from './dataverse-values.mjs';
-import { nativeFormActions, nativeFormActionApplies } from './native-form-actions.mjs';
+import {
+  nativeFormActions,
+  nativeFormActionApplies,
+  nativeFormWorkflowId,
+  NATIVE_FORM_WORKFLOW,
+  NATIVE_STATE_ACTIONS,
+  nativeStateActionKey,
+} from './native-form-actions.mjs';
 import { timeZoneChoices } from './platform-time-zones.mjs';
 import {
   missingLiquidComponent,
@@ -537,8 +548,9 @@ export function injectRuntime(
   traceId = null,
   languages = null,
   // rootTraceId: the page's trace-store trace id; sent: shown the document as it leaves here (the caller's record of
-  // what it answers), it changes nothing
-  { rootTraceId = null, sent = null, site = {} } = {},
+  // what it answers), it changes nothing; injectedScripts: the response's injected-script marker under a nonce policy
+  // (lib/document-injection.mjs scriptMarker)
+  { rootTraceId = null, sent = null, site = {}, injectedScripts = null } = {},
 ) {
   // The trace id travels in the x-sim-trace-id header and the runtime script only: a meta
   // element would shift every head child the platform renders (charset, viewport, links).
@@ -550,17 +562,19 @@ export function injectRuntime(
     ...site,
     rootTraceId,
   });
+  const mark = scriptMarker(injectedScripts);
   const script = hasPlatformBundles(html)
-    ? `<script data-paqvilo-mirage-runtime>${runtime}\n${PAGES_CLIENT_API_SOURCE}</script>`
-    : `<script data-paqvilo-mirage-runtime>${runtime}</script><script src="${PAGES_CLIENT_API_SCRIPT}" data-paqvilo-mirage-runtime></script>`;
+    ? `<script${mark} data-paqvilo-mirage-runtime>${runtime}\n${PAGES_CLIENT_API_SOURCE}</script>`
+    : `<script${mark} data-paqvilo-mirage-runtime>${runtime}</script><script${mark} src="${PAGES_CLIENT_API_SCRIPT}" data-paqvilo-mirage-runtime></script>`;
   // The server form's __VIEWSTATE carries the visitor's anti-forgery key (k), as ASP.NET binds
   // ViewState to the visitor (ViewStateUserKey): WebForms postbacks then post the page's own
   // fields only (the bodies carry no __RequestVerificationToken; lib/native-postback.mjs
   // nativeViewStateKey, lib/webforms-compat.js).
-  // Decode the attribute once: chained replacements would decode nested entities twice.
+  // Decode the attribute once: chained replacements would decode nested entities twice. A proved document stamps the
+  // input with its binding directly after the tag name (lib/render-provenance.mjs attributeOffset).
   if (token && !site.isSpaSite)
     html = html.replace(
-      /(<input type="hidden" name="__VIEWSTATE" id="__VIEWSTATE" value=")([^"]*)(")/g,
+      /(<input(?: data-paqvilo-source="[^"]*")? type="hidden" name="__VIEWSTATE" id="__VIEWSTATE" value=")([^"]*)(")/g,
       (_match, open, value, close) =>
         `${open}${attr(
           viewStateWithKey(
@@ -569,18 +583,19 @@ export function injectRuntime(
           ),
         )}${close}`,
     );
-  // Native pages always carry the empty anti-forgery holder and its token URL.
-  if (!/\bid=["']antiforgerytoken["']/i.test(html))
-    html = html.replace(/<body\b[^>]*>/i, `$&<div id="antiforgerytoken" data-url="/_layout/tokenhtml"></div>`);
+  // The insertions go to the document's real head and body tags (lib/document-injection.mjs), the last one first so
+  // the earlier offsets stay valid.
+  const anchors = documentAnchors(html);
   // The managed grid/lookup/notes runtime loads after the page content, like
   // the native app bundle, so authored ready handlers are registered first. Documents
   // with the platform bundles get it from the app bundle's local equivalent.
-  const grid = `<script src="${NATIVE_GRID_SCRIPT}" data-paqvilo-mirage-native></script>`;
+  const grid = `<script${mark} src="${NATIVE_GRID_SCRIPT}" data-paqvilo-mirage-native></script>`;
   if (!site.isSpaSite && !html.includes(NATIVE_GRID_SCRIPT) && !hasPlatformBundles(html))
-    html = /<\/body>/i.test(html) ? html.replace(/<\/body>(?![\s\S]*<\/body>)/i, `${grid}$&`) : html + grid;
-  const answered = /<head\b[^<>]*>/i.test(html)
-    ? html.replace(/<head\b[^<>]*>/i, (head) => head + script)
-    : script + html;
+    html = anchors.bodyEnd >= 0 ? insertAt(html, anchors.bodyEnd, grid) : html + grid;
+  // Native pages always carry the empty anti-forgery holder and its token URL.
+  if (!/\bid=["']antiforgerytoken["']/i.test(html) && anchors.bodyStart >= 0)
+    html = insertAt(html, anchors.bodyStart, `<div id="antiforgerytoken" data-url="/_layout/tokenhtml"></div>`);
+  const answered = anchors.headStart >= 0 ? insertAt(html, anchors.headStart, script) : script + html;
   sent?.(answered);
   return answered;
 }
@@ -675,14 +690,17 @@ function componentError(message, status, code) {
 
 const boundFormChoice = Symbol('boundFormChoice');
 
-/** Use published options for an authored native picklist with a bound Dataverse column. */
+// The native control kind each choice column type binds to its global choice through.
+const BOUND_CHOICE_CONTROLS = { picklist: 'picklist', multiselectpicklist: 'multiselect' };
+/** Use published options for an authored native choice or choices field with a bound Dataverse column. */
 export function formChoiceField(field, column, globalChoices, lcid) {
+  const control = BOUND_CHOICE_CONTROLS[column?.dataverseType];
   if (
-    column?.dataverseType !== 'picklist' ||
+    !control ||
     !column.globalOptionSet ||
     !globalChoices ||
     field.codeComponent ||
-    nativeControlKind(field) !== 'picklist'
+    nativeControlKind(field) !== control
   )
     return field;
   const options = choiceFieldOptions({ ...column, options: field.options }, globalChoices, lcid);
@@ -695,17 +713,72 @@ export function acceptsFormChoice(field, value) {
   return field.options.some((option) => Number(option.value) === Number(value));
 }
 
+/** The first posted value of a bound choices field outside its effective options, or null when every value is listed. */
+export function rejectedFormChoices(field, value) {
+  if (!field[boundFormChoice]) return null;
+  return (
+    multiSelectValues(value).find(
+      (item) =>
+        !/^-?\d+$/.test(item) ||
+        !Number.isSafeInteger(Number(item)) ||
+        !field.options.some((option) => Number(option.value) === Number(item)),
+    ) ?? null
+  );
+}
+
+// The supported range of each Dataverse number column type (Microsoft.Xrm.Sdk.Metadata IntegerAttributeMetadata,
+// DecimalAttributeMetadata, DoubleAttributeMetadata and MoneyAttributeMetadata MinSupportedValue/MaxSupportedValue).
+const SUPPORTED_NUMBER_RANGE = {
+  integer: [-2147483648, 2147483647],
+  decimal: [-100000000000, 100000000000],
+  double: [-100000000000, 100000000000],
+  money: [-922337203685477, 922337203685477],
+};
+
+/**
+ * The [minimum, maximum] a native number field validates. Dataverse metadata always carries both bounds, so a bound
+ * the exported metadata omits beside a configured one is the column type's supported limit.
+ */
+export function nativeRangeBounds(field) {
+  const bounds = [field.minimum ?? field.minValue, field.maximum ?? field.maxValue].map((value) =>
+    value === '' || value == null ? null : value,
+  );
+  if (bounds.every((value) => value == null)) return bounds;
+  const supported =
+    String(field.dataverseType ?? '').toLowerCase() === 'bigint'
+      ? null
+      : SUPPORTED_NUMBER_RANGE[nativeControlKind(field)];
+  return supported ? bounds.map((value, index) => value ?? supported[index]) : bounds;
+}
+
 /** Native numeric range messages use the column's exported decimal precision. */
-export function nativeRangeMessage(field) {
+export function nativeRangeMessage(field, locale) {
   const control = nativeControlKind(field);
   const precision =
     Number.isInteger(field.precision) && field.precision >= 0 && field.precision <= 100 ? field.precision : null;
-  const bound = (value) => {
+  // Each bound is formatted on its own; whole numbers keep their digits ungrouped in every language (captured).
+  const formatter = locale && precision != null && control !== 'integer' ? numberBoxFormatter(locale, precision) : null;
+  const [lower, upper] = nativeRangeBounds(field).map((value) => {
     if (value == null) return '';
+    if (formatter && Number.isFinite(Number(value))) return formatter.format(String(value));
     if (precision != null && control !== 'integer') return Number(value).toFixed(precision);
     return String(value);
-  };
-  return `${field.label ?? field.name} must have a value between ${bound(field.minimum ?? field.minValue)} and ${bound(field.maximum ?? field.maxValue)}.`;
+  });
+  const label = field.label ?? field.name;
+  return locale === 'de-DE'
+    ? `${label} muss einen Wert zwischen ${lower} und ${upper} haben.`
+    : `${label} must have a value between ${lower} and ${upper}.`;
+}
+
+/** The native format validator copy of a number field (IntegerValidator/FloatValidator) in the page language. */
+export function nativeNumberFormatMessage(field, locale, control = nativeControlKind(field)) {
+  const label = field.label ?? field.name;
+  if (locale === 'de-DE') {
+    const kind = { integer: 'ganzzahliger Wert', double: 'Gleitkommawert' }[control] ?? 'Dezimalwert';
+    return `${label} muss ein gültiger ${kind} sein.`;
+  }
+  const kind = { integer: 'integer', double: 'floating-point' }[control] ?? 'decimal';
+  return `${label} must be a valid ${kind} value.`;
 }
 
 /** The exported Dataverse format takes precedence over the generic input type. */
@@ -1077,7 +1150,7 @@ export function summaryLink(fieldId, message, linksEnabled, focusId = fieldId) {
 }
 
 /** Native validators (ASP.NET ids, Page_Validators expandos) for one field. */
-function fieldValidators(field, { linksEnabled }) {
+function fieldValidators(field, { linksEnabled, numberCopyLocale }) {
   // CellTemplate instantiates validators unless the field itself is read-only; a read-only
   // form keeps them.
   if ((field.fieldReadOnly ?? field.readOnly) || field.hidden) return [];
@@ -1127,9 +1200,9 @@ function fieldValidators(field, { linksEnabled }) {
     });
   const format = {
     email: ['EmailFormatValidator', `${label} must be a valid email address.`],
-    integer: ['IntegerValidator', `${label} must be a valid integer value.`],
-    decimal: ['FloatValidator', `${label} must be a valid decimal value.`],
-    double: ['FloatValidator', `${label} must be a valid floating-point value.`],
+    integer: ['IntegerValidator', nativeNumberFormatMessage(field, numberCopyLocale, 'integer')],
+    decimal: ['FloatValidator', nativeNumberFormatMessage(field, numberCopyLocale, 'decimal')],
+    double: ['FloatValidator', nativeNumberFormatMessage(field, numberCopyLocale, 'double')],
     datetime: ['DateFormatValidator', `${label} must have a valid date format.`],
   }[field.control];
   const formatValidator = format && {
@@ -1139,7 +1212,7 @@ function fieldValidators(field, { linksEnabled }) {
     evaluationfunction: 'CustomValidatorEvaluateIsValid',
   };
   appendFormatAndLengthValidators({ field, validators, formatValidator, required, id, label, linksEnabled, focus });
-  appendRangeAndLateRequired(field, validators, required, requiredLate, id, linksEnabled, focus);
+  appendRangeAndLateRequired({ field, validators, required, requiredLate, id, linksEnabled, focus, numberCopyLocale });
   return validators;
 }
 
@@ -1173,7 +1246,16 @@ function appendFormatAndLengthValidators({
   if (formatValidator && field.control !== 'email') validators.push(formatValidator);
 }
 
-function appendRangeAndLateRequired(field, validators, required, requiredLate, id, linksEnabled, focus) {
+function appendRangeAndLateRequired({
+  field,
+  validators,
+  required,
+  requiredLate,
+  id,
+  linksEnabled,
+  focus,
+  numberCopyLocale,
+}) {
   if (
     ['integer', 'decimal', 'double', 'money'].includes(field.control) &&
     (field.minimum != null || field.maximum != null)
@@ -1181,13 +1263,23 @@ function appendRangeAndLateRequired(field, validators, required, requiredLate, i
     validators.push({
       id: `RangeValidator${id}`,
       controltovalidate: id,
-      errormessage: summaryLink(id, field.rangeMessage || nativeRangeMessage(field), linksEnabled, focus),
+      errormessage: summaryLink(
+        id,
+        field.rangeMessage || nativeRangeMessage(field, numberCopyLocale),
+        linksEnabled,
+        focus,
+      ),
       evaluationfunction: 'CustomValidatorEvaluateIsValid',
-      minimumvalue: String(field.minimum ?? ''),
-      maximumvalue: String(field.maximum ?? ''),
+      ...nativeRangeValues(field),
       type: field.control === 'integer' ? 'Integer' : 'Double',
     });
   if (required && requiredLate && field.control !== 'email') validators.push(required);
+}
+
+/** The range validator's bounds, a bound absent from the metadata being the column type's supported limit. */
+function nativeRangeValues(field) {
+  const [minimum, maximum] = nativeRangeBounds(field);
+  return { minimumvalue: String(minimum ?? ''), maximumvalue: String(maximum ?? '') };
 }
 
 function validatorStartupScript(validators, summaryId, summaryHeader, group = '') {
@@ -1324,12 +1416,13 @@ function nativeModal({
   dismissText = 'Close',
   rawTitle = false,
   titleAttr = null,
+  titleCss = '',
 }) {
   // headingLabel: the Bootstrap 5 lookup dialog labels its heading instead of the section.
   // rawTitle: the label and title attributes carry the title markup as is (details, error dialogs).
   const labelText = rawTitle ? title : (label ?? plainText(title));
   const labelAttr = ` aria-label="${attr(labelText)}"`;
-  return `<section aria-hidden="true"${headingLabel ? '' : labelAttr} class="modal fade ${className}" ${bs.backdrop}="static" role="dialog" tabindex="-1"><div class="${size ? size + ' ' : ''}modal-dialog"><div class="modal-content"><div class="modal-header"><h1${headingLabel ? labelAttr : ''} class="modal-title" title="${attr(titleAttr ?? (rawTitle ? title : plainText(title)))}">${title}</h1><button aria-label="Close" class="form-close" ${bs.dismiss}="modal" style="position: absolute; top: 3%;" tabindex="0" title="${attr(dismissText)}" type="button"><span aria-hidden="true">×</span><span class="${bs.srOnly}">${escape(dismissText)}</span></button></div><div class="modal-body">${body}</div>${footer ? '<div class="modal-footer">' + footer + '</div>' : ''}</div></div></section>`;
+  return `<section aria-hidden="true"${headingLabel ? '' : labelAttr} class="modal fade ${className}" ${bs.backdrop}="static" role="dialog" tabindex="-1"><div class="${size ? size + ' ' : ''}modal-dialog"><div class="modal-content"><div class="modal-header"><h1${headingLabel ? labelAttr : ''} class="modal-title${titleCss ? ' ' + attr(titleCss) : ''}" title="${attr(titleAttr ?? (rawTitle ? title : plainText(title)))}">${title}</h1><button aria-label="Close" class="form-close" ${bs.dismiss}="modal" style="position: absolute; top: 3%;" tabindex="0" title="${attr(dismissText)}" type="button"><span aria-hidden="true">×</span><span class="${bs.srOnly}">${escape(dismissText)}</span></button></div><div class="modal-body">${body}</div>${footer ? '<div class="modal-footer">' + footer + '</div>' : ''}</div></div></section>`;
 }
 // An attribute value whose line breaks are CRLF: the HTML parser folds raw CR LF into LF, so the
 // platform's indented JSON attributes keep their CR as character references.
@@ -1401,9 +1494,7 @@ function gridModals(page, settings = {}, language = {}, bs = BOOTSTRAP_MARKUP.Bo
     'DetailsFormDialog',
     "<span class='fa fa-info-circle' aria-hidden='true'></span> View details",
   );
-  const deleteAction = (settings?.ItemActions ?? []).find(
-    (action) => action?.Type === 'CrmEntityFormView-DeleteAction',
-  );
+  const deleteAction = gridItemActions(settings).find((action) => action?.Type === 'CrmEntityFormView-DeleteAction');
   const primary = escape(localizedText(settings?.DeleteDialog?.PrimaryButtonText, 'Delete'));
   const close = escape(localizedText(settings?.DeleteDialog?.CloseButtonText, 'Cancel'));
   return [
@@ -1453,17 +1544,24 @@ function gridModals(page, settings = {}, language = {}, bs = BOOTSTRAP_MARKUP.Bo
       dismissText: dismiss('DeleteDialog'),
     }),
     gridErrorModal(bs, settings?.ErrorDialog, language),
+    // A grid with a Resolve Case action asks for the resolution in its resolve dialog (legacy ResolveCaseModal).
+    ...gridItemActions(settings)
+      .filter((action) => /^(?:CrmEntityFormView-)?ResolveCaseAction$/.test(action?.Type ?? ''))
+      .slice(0, 1)
+      .map((action) =>
+        resolveCaseDialog({
+          bs,
+          action,
+          dialog: settings?.ResolveCaseDialog,
+          actionIndex: 'grid',
+          formLabel: (value, fallback) => formText(value, fallback, language),
+        }),
+      ),
     // Bootstrap 5 subgrids render no workflow, (de)activate or disassociate dialogs.
     ...(bs.v5
       ? []
       : [
-          nativeModal({
-            bs,
-            className: 'modal-run-workflow',
-            title: 'Run workflow',
-            body: 'Are you sure you want to run this workflow?',
-            footer: `<button class="primary btn btn-primary" type="button">Run workflow</button><button class="cancel btn btn-default" ${bs.dismiss}="modal" type="button">Cancel</button>`,
-          }),
+          workflowGridModal(bs, gridWorkflowDialog(settings, language.lcid ?? language.defaultLcid ?? 1033)),
           nativeModal({
             bs,
             className: 'modal-deactivate',
@@ -1487,6 +1585,46 @@ function gridModals(page, settings = {}, language = {}, bs = BOOTSTRAP_MARKUP.Bo
           }),
         ]),
   ].join('');
+}
+
+/**
+ * The Bootstrap 3 grid's workflow dialog (the legacy WorkflowModal): the first workflow action's dialog (the grid
+ * WorkflowDialog with that action's own texts, gridWorkflowDialog) and confirmation; unset values keep the defaults.
+ */
+function workflowGridModal(bs, dialog) {
+  const modal = dialog ?? {};
+  const css = (name) => (modal[name] ? ' ' + attr(modal[name]) : '');
+  const primary = escape(modal.PrimaryButtonText ?? 'Run workflow');
+  const close = escape(modal.CloseButtonText ?? 'Cancel');
+  return nativeModal({
+    bs,
+    className: `modal-run-workflow${css('CssClass')}`,
+    title: escape(modal.Title ?? 'Run workflow'),
+    titleCss: modal.TitleCssClass ?? '',
+    body: modal.Confirmation ? escape(modal.Confirmation) : 'Are you sure you want to run this workflow?',
+    size: MODAL_SIZES[Number(modal.Size)] ?? '',
+    dismissText: modal.DismissButtonSrText ?? 'Close',
+    footer: `<button class="primary btn btn-primary${css('PrimaryButtonCssClass')}" type="button">${primary}</button><button class="cancel btn btn-default${css('CloseButtonCssClass')}" ${bs.dismiss}="modal" type="button">${close}</button>`,
+  });
+}
+
+/** The Bootstrap 5 list's workflow dialog: the first workflow action's dialog, its confirmation and button texts. */
+function workflowListModalV5(settings, language) {
+  const modal = gridWorkflowDialog(settings, language.lcid ?? language.defaultLcid ?? 1033) ?? {};
+  const dialog = Object.fromEntries(
+    ['Title', 'CssClass', 'TitleCssClass', 'Size', 'DismissButtonSrText']
+      .filter((name) => modal[name] != null)
+      .map((name) => [name, modal[name]]),
+  );
+  const repeat = (css) => (settings?.WorkflowDialog ? css : '');
+  return listModalV5({
+    className: 'modal-run-workflow',
+    dialog,
+    title: ' Run workflow',
+    body: escape(modal.Confirmation ?? '<p>Are you sure you want to run this workflow?</p>'),
+    footer: `<button class="primary btn btn-primary ${repeat('btn btn-primary')}" type="button">${escape(modal.PrimaryButtonText ?? 'Run workflow')}</button><button class="cancel btn btn-default ${repeat('btn btn-default')}" data-bs-dismiss="modal" type="button">${escape(modal.CloseButtonText ?? 'Cancel')}</button>`,
+    language,
+  });
 }
 
 /*
@@ -1519,7 +1657,7 @@ function gridModalsV5(page, settings = {}, language = {}, listId = '') {
     `<div class="form-loading">${defaults ? '<span class="fa fa-spinner fa-spin fa-4x" aria-hidden="true"></span>' : escape(formText(dialog?.LoadingMessage, '', language))}</div><iframe${hidden ? ' aria-hidden="true"' : ''} data-page="${attr(page)}" src="about:blank"></iframe>`;
   const confirm = (name, primary, cancel = 'Cancel') =>
     `<button class="primary btn btn-primary ${settings?.[name] ? 'btn btn-primary' : ''}" type="button">${escape(formText(settings?.[name]?.PrimaryButtonText, primary, language))}</button><button class="cancel btn btn-default ${settings?.[name] ? 'btn btn-default' : ''}" data-bs-dismiss="modal" type="button">${escape(formText(settings?.[name]?.CloseButtonText, cancel, language))}</button>`;
-  const deleteAction = (settings.ItemActions ?? []).find((action) => action?.Type === 'CrmEntityFormView-DeleteAction');
+  const deleteAction = gridItemActions(settings).find((action) => action?.Type === 'CrmEntityFormView-DeleteAction');
   const resolve = `<div class="row mb-3"><label class="required col-form-label col-md-3">${defaults ? 'Resolution (required)' : ''}</label><div class="col-md-9"><input aria-required="true" class="resolution-input required form-control" type="text" aria-label="${defaults ? 'Resolution (required)' : ''}"></div></div><div class="row mb-3"><label class="required col-form-label col-md-3">${defaults ? 'Description of resolution' : ''}</label><div class="col-md-9"><textarea aria-required="true" class="resolution-description-input required form-control" cols="20" rows="6" aria-label="${defaults ? 'Description of resolution' : ''}"></textarea></div></div>`;
   return [
     listModalV5({
@@ -1575,13 +1713,7 @@ function gridModalsV5(page, settings = {}, language = {}, listId = '') {
       body: formBody(settings.CreateRelatedRecordDialog),
       language,
     }),
-    listModalV5({
-      className: 'modal-run-workflow',
-      title: ' Run workflow',
-      body: escape('<p>Are you sure you want to run this workflow?</p>'),
-      footer: confirm('WorkflowDialog', 'Run workflow'),
-      language,
-    }),
+    workflowListModalV5(settings, language),
     listModalV5({
       className: 'modal-deactivate',
       dialog: settings.DeactivateDialog,
@@ -1709,6 +1841,12 @@ function columnDescription(field, language) {
   );
 }
 
+/** The LCID grid action labels and dialog texts are localized in: the request language, else the default one. */
+function actionLanguage(context, portal) {
+  const { lcid, defaultLcid } = requestLanguage(context, portal);
+  return lcid ?? defaultLcid ?? 1033;
+}
+
 function requestLanguage(context, portal) {
   return {
     lcid: context?.__language?.lcid ?? null,
@@ -1821,6 +1959,7 @@ function listActionLinks(model, context, options, { websiteId, v5, pageControl }
     portal: options.portal,
     requestUrl: context.request?.url ?? 'http://localhost/',
     website: websiteId,
+    lcid: actionLanguage(context, options.portal),
   });
   if (model.detailsPage && !actions.some((action) => action.Type === 1)) {
     const target = options.portal.pages.find((candidate) => canonicalId(candidate.id) === model.detailsPage);
@@ -2171,6 +2310,7 @@ function entityListDrop(model, options, context) {
     portal: options.portal,
     requestUrl: context.request?.url ?? 'http://localhost/',
     website: websiteId,
+    lcid: actionLanguage(context, options.portal),
   });
   const layouts = gridLayouts(model, {
     secureBase: { t: 'list', w: websiteId, list: model.list.id },
@@ -2265,7 +2405,7 @@ function entityListLayout(listMetadata, model, modern) {
 async function entityListCodeComponent(list, model, options) {
   if (!truthy(fieldOf(list.metadata, 'iscodecomponent'))) return { notice: '' };
   const name = options.metadata?.entities?.[model.entity]?.grid?.control;
-  // A list with several views binds its first view; the platform renders no view selector.
+  // A list with several views binds its first view and draws its view dropdown (renderNativeDataset).
   const supported =
     !model.approximated &&
     !model.calendar &&
@@ -2354,23 +2494,30 @@ async function renderEntityList(name, context, options) {
  * its kind (entity-grid-data.json / entity-subgrid-data.json), signed for the dataset host (`pcf`), never from the
  * portal Web API (captured), so
  * the grid service's table permissions apply and no Web API site setting gates the component.
+ *
+ * With two or more views (a list's views, a subgrid with its view picker on) the list's or subgrid's own toolbar draws
+ * its view dropdown above the control, whatever the control's manifest declares, and choosing a view destroys the
+ * control and initialises a new one on that view (captured, paqvilo-developer pcf-parity summary-F section 4, runs fa
+ * and fb). The control is then hosted in the grid element whose toolbar entity-grid-compat.js draws, as live.
  */
 async function renderNativeDataset(options, model, { name, args = {}, secure, ...binding }) {
   if (!options.codeComponent || !name || !model.views.length) return null;
   const view = model.views[0];
   const websiteId = canonicalId(options.portal.website?.id);
-  const layout = buildLayout({
-    view,
-    entity: model.entity,
-    idColumn: model.idColumn,
-    primaryName: model.primaryName,
-    metadata: options.metadata,
-    settings: model.settings,
-    configuration: {},
-    secure: { ...secure, w: websiteId, view: view.id, pcf: true },
-  });
+  const signed = (entry) =>
+    buildLayout({
+      view: entry,
+      entity: model.entity,
+      idColumn: model.idColumn,
+      primaryName: model.primaryName,
+      metadata: options.metadata,
+      settings: model.settings,
+      configuration: {},
+      secure: { ...secure, w: websiteId, view: entry.id, pcf: true },
+    }).Base64SecureConfiguration;
   const service = secure.t === 'subgrid' ? 'entity-subgrid-data.json' : 'entity-grid-data.json';
-  return options.codeComponent({
+  const views = model.views.length > 1 ? model.views.map((entry) => ({ id: entry.id, secure: signed(entry) })) : null;
+  const component = await options.codeComponent({
     name,
     args,
     nativeDataset: {
@@ -2380,10 +2527,21 @@ async function renderNativeDataset(options, model, { name, args = {}, secure, ..
       pageSize: Math.min(5000, Math.max(1, Math.floor(model.pageSize) || 25)),
       service: `/_services/${service}/${websiteId}`,
       update: `/_services/entity-grid-update-entity/${websiteId}`,
-      secure: layout.Base64SecureConfiguration,
+      secure: views ? views[0].secure : signed(view),
+      ...(views ? { views } : {}),
       ...binding,
     },
   });
+  if (!views || typeof component !== 'string' || !component.includes('__paqviloPcf.mount(')) return component;
+  // The grid's layouts name the views for the toolbar (the list's display names, else the saved query names); the
+  // grid runtime draws only the toolbar of a grid marked data-pcf-view-host and leaves the rows to the control.
+  const layouts = gridLayouts(model, {
+    secureBase: { ...secure, w: websiteId },
+    websiteId,
+    metadata: options.metadata,
+    actions: [],
+  });
+  return `<div class="entity-grid ${secure.t === 'subgrid' ? 'subgrid' : 'entitylist'}" data-pcf-view-host data-selected-view="${attr(view.id)}" data-view-layouts="${base64Json(layouts)}">${component}</div>`;
 }
 
 function nativeDatasetFallback(options, label, source) {
@@ -2507,21 +2665,73 @@ const POWERBI_INPUTS = [
   ['tileid', 'data-powerbi-tileid'],
   ['filter', 'data-powerbi-filter'],
 ];
-// ponytail: redaction is a pattern over `?key=value`, `&key=value` and `#key=value` pairs of any value with a query or
-// fragment (absolute or relative), not a URL parser.
+// ponytail: redaction is a pattern over the userinfo of a `//` authority (`user:password@`, redacted first so a password
+// holding `&` or `=` cannot pass as a query pair) and over `?key=value`, `&key=value` and `#key=value` pairs of any
+// value with a query or fragment (absolute or relative), not a URL parser.
 function powerBiPlaceholderMarkup(args, options) {
   const attributes = POWERBI_INPUTS.flatMap(([input, attribute]) =>
     args?.[input] == null || args[input] === ''
       ? []
-      : [` ${attribute}="${escape(redactUrlQuery(String(args[input])))}"`],
+      : [` ${attribute}="${escape(redactUrlQuery(redactUrlUserinfo(String(args[input]))))}"`],
   ).join('');
+  // AAD and powerbiembedded need the platform's own Microsoft Entra application or Power BI Embedded service principal,
+  // which issues the embed token; a local runtime cannot obtain one on the site's behalf.
+  const secure = ['aad', 'powerbiembedded'].includes(powerBiAuthenticationType(args));
   options.diagnostic?.({
     code: 'LIQUID_POWERBI_PLACEHOLDER',
     severity: 'warning',
     component: 'powerbi',
-    message: 'The powerbi tag emits a placeholder; the Power BI report is not rendered locally and no request is made.',
+    authenticationType: powerBiAuthenticationType(args),
+    message: secure
+      ? 'The powerbi tag emits a placeholder: a secure (AAD or powerbiembedded) report needs the embed token that the platform service principal issues, which a local runtime cannot obtain; check it on the live site with Lense. No request is made.'
+      : 'The powerbi tag emits a placeholder; the Power BI report is not rendered locally and no request is made.',
   });
   return `<div class="paqvilo-powerbi-placeholder" data-mirage-component="powerbi"${attributes}>Power BI report is not rendered locally.</div>`;
+}
+
+// Learn (Dataverse Liquid tags, powerbi): authentication_type is case-insensitive and Anonymous is the default.
+function powerBiAuthenticationType(args) {
+  return (
+    String(args?.authentication_type ?? '')
+      .trim()
+      .toLowerCase() || 'anonymous'
+  );
+}
+// Anonymous embeds a Power BI Publish to web report: Learn sends makers to Power BI's Publish to web embed code, whose
+// public URL is https://app.powerbi.com/view?r=<embed key>. Only that shape becomes an iframe: any other path (another
+// scheme, host or route, credentials or a port) keeps the redacting placeholder, so a value never becomes a frame of a
+// script URL or of an arbitrary origin.
+function publishToWebUrl(path) {
+  let url;
+  try {
+    url = new URL(String(path ?? ''));
+  } catch {
+    return null;
+  }
+  const valid =
+    url.protocol === 'https:' &&
+    url.hostname.toLowerCase() === 'app.powerbi.com' &&
+    !url.port &&
+    !url.username &&
+    !url.password &&
+    url.pathname === '/view' &&
+    Boolean(url.searchParams.get('r'));
+  return valid ? url.href : null;
+}
+/**
+ * The iframe of a Publish to web report, in the shape of Power BI's embed code (src, frameborder, allowFullScreen).
+ * The wrapper markup that hosted Power Pages writes around it is not recorded, so the diagnostic names the shape.
+ * Learn: an anonymous report does not support filtering, so filter, roles and tileid are not applied.
+ */
+function powerBiAnonymousMarkup(url, options) {
+  options.diagnostic?.({
+    code: 'LIQUID_POWERBI_ANONYMOUS_EMBED',
+    severity: 'info',
+    component: 'powerbi',
+    message:
+      "The powerbi tag renders the Publish to web report as an iframe in the shape of Power BI's embed code; the browser loads the public report from Power BI.",
+  });
+  return `<iframe class="powerbi" data-mirage-component="powerbi" title="Power BI report" src="${escape(url)}" frameborder="0" allowfullscreen="true"></iframe>`;
 }
 
 function powerBiMarkup(args, context, options) {
@@ -2556,19 +2766,24 @@ function powerBiMarkup(args, context, options) {
     });
     return '';
   }
+  const publicReport = powerBiAuthenticationType(args) === 'anonymous' ? publishToWebUrl(args?.path) : null;
+  if (publicReport) return powerBiAnonymousMarkup(publicReport, options);
   return powerBiPlaceholderMarkup(args, options);
 }
 
 /** The searchindex tag (lib/portal-search.mjs): results filtered by the visitor's table permissions. */
 async function renderSearchIndex(context, options) {
   const args = options.args ?? {};
+  const identity = context.user ?? context.identity;
   const found = await portalSearch({
     portal: options.portal,
     store: options.store,
     readProvider: options.readProvider,
     metadata: options.metadata,
     config: options.config,
-    identity: context.user ?? context.identity,
+    identity,
+    // Note bodies kept in a storage provider, read as this visitor (column security applies).
+    attachmentBody: options.attachmentReader?.(identity) ?? null,
     query: args.query ?? '',
     recoverQuerySyntax: true,
     filter: args.filter ?? null,
@@ -2684,6 +2899,7 @@ function prepopulateValue(row, identity, now) {
   const bs = bootstrapMarkup(portal.settings);
   // Labels and messages in the request's website language (context.__language).
   const formLanguage = requestLanguage(context, portal);
+  const transport = nativeFormTransport(options.observed ?? portal.observed);
   // Number formats follow the request's website language (en-US when it is unknown).
   const languageCode = portalLanguage({ lcid: formLanguage.lcid ?? formLanguage.defaultLcid })?.code ?? 'en-US';
   const decimalSeparator =
@@ -3220,6 +3436,25 @@ function prepopulateValue(row, identity, now) {
       },
     ),
   );
+  // Geolocation Lookup Validator (adx_controlstyle 100000002) needs the hosted Bing Maps service (form-service.mjs).
+  if (fields.some((field) => field.controlStyle === 100000002))
+    options.diagnostic?.({
+      code: 'FORM_GEOLOCATION_VALIDATOR_HOSTED',
+      severity: 'warning',
+      component: kind,
+      form: definition?.name ?? name,
+      message:
+        'Geolocation Lookup Validator checks the text with the hosted Bing Maps service; it renders as plain text.',
+    });
+  // Timeline metadata (adx_type 756150000): Learn names its settings but not the adx_timeline_settings shape.
+  if (metadataRows.some((row) => Number(fieldOf(row, 'type')) === 756150000))
+    options.diagnostic?.({
+      code: 'FORM_TIMELINE_METADATA_UNSUPPORTED',
+      severity: 'warning',
+      component: kind,
+      form: definition?.name ?? name,
+      message: 'Timeline form metadata is not applied locally; notes follow the Notes metadata and the form timeline.',
+    });
   // A column placed on the form more than once renders only its first cell (see layout below).
   const byName = new Map();
   for (const field of fields) if (!byName.has(field.name)) byName.set(field.name, field);
@@ -3245,6 +3480,41 @@ function prepopulateValue(row, identity, now) {
     identity,
   });
   const value = (field) => resolveFormFieldValue(field, { record, mode, entityReference, reference, mapping, fields });
+  // Every stock number box of a Basic Form or multistep form step (insert, edit and read-only forms, modal and
+  // page-control forms) shows and parses the page culture's format, and its validators speak the page language. A
+  // field whose code component mounts (pcfFields, filled when its cell renders) posts JSON instead; an exported
+  // desktop control that does not mount leaves the stock box. Mirage's JSON transport keeps its invariant markup and
+  // comma-aware manifest.
+  const localizedNumberBoxes =
+    ['entityform', 'webform'].includes(kind) && transport === 'postback' && ['en-US', 'de-DE'].includes(languageCode);
+  const numberCopyLocale = (field) =>
+    localizedNumberBoxes &&
+    !field.hidden &&
+    !pcfFields.has(field.name) &&
+    ['integer', 'decimal', 'double', 'money'].includes(field.control)
+      ? languageCode
+      : undefined;
+  // Whole numbers keep their digits as typed (no captured grouping), so only fractional boxes take the culture format.
+  const numberBoxLocale = (field) =>
+    field.control !== 'integer' && numberBoxPrecision(field) !== null ? numberCopyLocale(field) : undefined;
+  // The page culture of every localized number field, including fields of auto-generated step tabs this request does
+  // not render: their values travel in __VIEWSTATE and are parsed and validated with the final tab's postback. An
+  // unrendered field whose portal-enabled code component may mount keeps its hidden-input decoding.
+  const numberLocales = () =>
+    Object.fromEntries(
+      fields
+        .filter(
+          (field) =>
+            !field.ownerHidden &&
+            !field.readOnly &&
+            numberCopyLocale(field) &&
+            (renderedFields.has(field.name) || !(field.controlStyle === 756150001 && field.codeComponent)),
+        )
+        .map((field) => [
+          field.name,
+          { ...(numberBoxLocale(field) ? { parse: numberBoxLocale(field) } : {}), messages: numberCopyLocale(field) },
+        ]),
+    );
   // Lookup choices for dropdown lookups and bindings for every lookup.
   for (const field of fields.filter((candidate) => candidate.control === 'lookup')) {
     const targets = field.lookupTargets ?? [
@@ -3621,18 +3891,12 @@ function prepopulateValue(row, identity, now) {
       case 'decimal':
       case 'double':
       case 'money': {
-        const precision = Number(field.precision);
-        const displayed =
-          field.control !== 'integer' &&
-          scalar != null &&
-          scalar !== '' &&
-          Number.isFinite(Number(scalar)) &&
-          field.precision != null &&
-          Number.isInteger(precision) &&
-          precision >= 0 &&
-          precision <= 10
-            ? Number(scalar).toFixed(precision)
-            : (scalar ?? '');
+        const displayed = numberBoxValue(
+          scalar,
+          numberBoxPrecision(field),
+          numberBoxLocale(field),
+          Object.hasOwn(postback?.values ?? {}, field.name),
+        );
         // Whole numbers formatted as a duration or a language are option lists (blank first).
         const choices = field.control === 'integer' ? integerFormatChoices(field, portal) : null;
         if (choices) {
@@ -3975,6 +4239,24 @@ function prepopulateValue(row, identity, now) {
         !store.allowed(schema.entity, 'appendTo', record, identity)
       )
         settings.CreateEnabled = false;
+      // A notescontrol whose default tab is ActivitiesTab is the activity timeline: it lists the record's activities
+      // instead of its notes, and the local timeline neither adds portal comments nor edits notes.
+      const timeline = String(cell.defaultTab ?? '').toLowerCase() === 'activitiestab';
+      if (timeline) {
+        for (const flag of ['CreateEnabled', 'EditEnabled', 'DeleteEnabled']) settings[flag] = false;
+        const custom = customTable(schema.entity);
+        options.diagnostic?.({
+          code: custom ? 'PORTAL_TIMELINE_CUSTOM_TABLE_NOTES' : 'PORTAL_TIMELINE_ACTIVITIES',
+          severity: custom ? 'warning' : 'info',
+          level: 'contract',
+          component: kind,
+          form: definition?.id,
+          control: cell.id,
+          message: custom
+            ? `The timeline on ${schema.entity} shows activities, not notes: showing both notes and activities on one form for a custom table is not supported with configuration (Learn, configure-notes). Adding portal comments is not simulated.`
+            : `The timeline on ${schema.entity} shows the record's activities instead of its notes. Adding portal comments is not simulated.`,
+        });
+      }
       extraControls.set(
         cell.id,
         renderNotesControl({
@@ -3987,6 +4269,10 @@ function prepopulateValue(row, identity, now) {
           language: formLanguage,
           bs,
           rowspan: cell.rowspan,
+          timeline,
+          rich: !timeline && notesRichTextEnabled(portal),
+          richTextCompatibility,
+          controlId: cell.id,
         }),
       );
       continue;
@@ -4106,6 +4392,7 @@ function prepopulateValue(row, identity, now) {
       portal,
       requestUrl: context.request?.url ?? 'http://localhost/',
       website: websiteId,
+      lcid: actionLanguage(context, portal),
     });
     for (const action of actions)
       action.Enabled =
@@ -4113,7 +4400,9 @@ function prepopulateValue(row, identity, now) {
         (action.Type !== 3 ||
           !store.allowed ||
           store.allowed(cell.entity, 'create', unbound ? {} : { [model.relationship.to]: id }, identity));
-    const layouts = gridLayouts(model, {
+    // The view picker's other views are drawn only for a dataset code component subgrid (captured there,
+    // pcf-parity summary-F section 4); an ordinary subgrid's picker is not captured, so it keeps its default view.
+    const layouts = gridLayouts(model.views.length > 1 ? { ...model, views: model.views.slice(0, 1) } : model, {
       secureBase: {
         t: 'subgrid',
         w: websiteId,
@@ -4216,7 +4505,12 @@ function prepopulateValue(row, identity, now) {
     if (extraControls.has(cell.id)) return extraControls.get(cell.id);
     const resolved = byName.get(cell.name) ?? cell;
     if (resolved.ownerHidden) return '';
-    const fieldValidatorsList = fieldValidators(resolved, { linksEnabled, readOnly });
+    // The control renders first: whether a code component mounts on the field decides its range copy.
+    const control = await input(resolved, cell);
+    const fieldValidatorsList = fieldValidators(resolved, {
+      linksEnabled,
+      numberCopyLocale: numberCopyLocale(resolved),
+    });
     // A server-side validation failure (postback) shows the failing validator and starts it
     // invalid (no style, isvalid = "False").
     applyPostbackValidatorErrors(postback, resolved, fieldValidatorsList);
@@ -4237,7 +4531,7 @@ function prepopulateValue(row, identity, now) {
     // read-only lookups and option sets focusable (lib/platform-app-compat.js).
     const fieldLevelReadOnly = resolved.fieldReadOnly ?? resolved.readOnly;
     // Bootstrap 5 marks a required column required even when it is read-only.
-    return `${descriptionHtml(100000002)}<div class="${bs.info}${resolved.required && (bs.v5 || !resolved.readOnly) ? ' required' : ''}">${labelHtml}${fieldValidatorsMarkup(fieldLevelReadOnly, resolved, fieldValidatorsList, readOnly)}</div>${descriptionHtml(100000000)}<div class="control" data-logical-name="${attr(resolved.name)}">${await input(resolved, cell)}</div>${descriptionHtml(100000001)}`;
+    return `${descriptionHtml(100000002)}<div class="${bs.info}${resolved.required && (bs.v5 || !resolved.readOnly) ? ' required' : ''}">${labelHtml}${fieldValidatorsMarkup(fieldLevelReadOnly, resolved, fieldValidatorsList, readOnly)}</div>${descriptionHtml(100000000)}<div class="control" data-logical-name="${attr(resolved.name)}">${control}</div>${descriptionHtml(100000001)}`;
   };
   const cellClass = (cell) => {
     if (cell.type === 'quickform') return 'crmquickform-cell';
@@ -4590,8 +4884,9 @@ function prepopulateValue(row, identity, now) {
       const canDelete = !store.allowed || store.allowed(mapping.logicalName, 'delete', record, identity);
       const linkCss = (action) => attr(`${action.ButtonCssClass || 'btn btn-default'} btn`);
       // The app bundle hides whichever rendered state button the current record state rules out.
-      const stateButton = async (action, type, index) => {
-        if (!action.FilterCriteria)
+      // A table-specific action always posts to its bound form endpoint, which rechecks the exported action.
+      const stateButton = async (action, type, index, bound = false) => {
+        if (!action.FilterCriteria && !bound)
           return renderStateActionButton({
             action,
             type,
@@ -4658,6 +4953,46 @@ function prepopulateValue(row, identity, now) {
         } else if (action.Type === 'DeactivateAction' && canUpdate) {
           const button = await stateButton(action, 'deactivate', actionIndex);
           if (button) recordButtons.push(button);
+        } else if (NATIVE_STATE_ACTIONS[nativeStateActionKey(action.Type)]?.table) {
+          const key = nativeStateActionKey(action.Type);
+          if (canonicalId(schema.entity) !== NATIVE_STATE_ACTIONS[key].table) {
+            options.diagnostic?.({
+              code: 'FORM_ACTION_TABLE_MISMATCH',
+              severity: 'warning',
+              component: 'entityform',
+              form: definition?.name ?? name,
+              action: action.Type,
+              message: `Native form action '${action.Type}' applies to the ${NATIVE_STATE_ACTIONS[key].table} table only.`,
+            });
+            continue;
+          }
+          if (!canUpdate) continue;
+          const button = await stateButton(action, key, actionIndex, true);
+          if (!button) continue;
+          recordButtons.push(button);
+          if (key === 'resolve-case')
+            recordDialogs.push(
+              resolveCaseDialog({ bs, action, dialog: formSettings.ResolveCaseDialog, actionIndex, formLabel }),
+            );
+        } else if (action.Type === NATIVE_FORM_WORKFLOW) {
+          if (!canUpdate) continue;
+          const workflow = await renderFormWorkflowAction({
+            actionIndex,
+            definition,
+            schema,
+            id,
+            mapping,
+            readProvider,
+            identity,
+            portal,
+            options,
+            bs,
+            formLabel,
+          });
+          if (workflow) {
+            recordButtons.push(workflow.button);
+            recordDialogs.push(workflow.modal);
+          }
         } else if (action.Type === 'CreateRelatedRecordAction') {
           // The platform stamps a fresh filter criteria id on the button and its dialog; the
           // dialog is the generic confirmation, posted to the button's (empty) URL.
@@ -4752,7 +5087,6 @@ function prepopulateValue(row, identity, now) {
   // Hidden configuration consumed by the local postback runtime (scripts are
   // excluded from semantic DOM comparison).
   const queryName = source.queryName ?? 'id';
-  const transport = nativeFormTransport(options.observed ?? portal.observed);
   const submitConfig = {
     kind,
     formId: definition?.id ?? name,
@@ -4961,15 +5295,17 @@ function prepopulateValue(row, identity, now) {
     const descriptor = nativeFormPostbackDescriptor({
       kind,
       formId: definition?.id ?? name,
-      fields: writable.map((field) => ({
-        ...field,
-        control: pcfFields.has(field.name) ? 'pcf' : controlForSubmit(field),
-      })),
+      fields: writable.map((field) => {
+        if (pcfFields.has(field.name)) return { ...field, control: 'pcf' };
+        return { ...field, control: controlForSubmit(field), numberLocale: numberBoxLocale(field) };
+      }),
       actions: renderedActions,
       modal,
       pageControl,
+      numberLocales: numberLocales(),
     });
     Object.freeze(descriptor.ids);
+    Object.freeze(descriptor.numberLocales);
     for (const field of descriptor.fields) Object.freeze(field);
     for (const action of descriptor.actions) Object.freeze(action);
     Object.freeze(descriptor.fields);
@@ -5162,15 +5498,54 @@ function renderNotesControl({
   language = {},
   bs = BOOTSTRAP_MARKUP.BootstrapV3,
   rowspan,
+  timeline = false,
+  rich = false,
+  richTextCompatibility = false,
+  controlId = 'notescontrol',
 }) {
   const info = notesInfoMarkup(bs, label);
   if (!id) return `${info}<div class="control"><div id="notescontrol"></div></div>`;
   const page = (name, fallback) => formText(settings?.[name], fallback, language);
   // Notes are read-only without a Notes metadata record.
   const addEnabled = settings.CreateEnabled === true;
+  const urls = notesServiceUrls(websiteId, timeline);
+  const editor = rich ? noteRichTextEditors(controlId, richTextCompatibility) : null;
   if (bs.v5)
-    return `${info}<div class="control"><div id="notescontrol">${notesControlV5({ record, id, entity, websiteId, settings, page, addEnabled, bs, rowspan })}</div></div>`;
-  return `${info}<div class="control"><div id="notescontrol"><div class="col-md-8 entity-notes" data-url-get="/_services/entity-notes/${websiteId}" data-url-add="/_services/entity-form-addnote/${websiteId}" data-url-edit="/_services/entity-form-updatenote/${websiteId}" data-url-delete="/_services/entity-form-deletenote/${websiteId}" data-url-get-attachments="" data-add-enabled="${addEnabled ? 'True' : 'False'}" data-edit-enabled="${settings.EditEnabled === true ? 'True' : 'False'}" data-delete-enabled="${settings.DeleteEnabled === true ? 'True' : 'False'}" data-use-scrolling-pagination="False" data-hide-field-label="False" data-orders='[{"Attribute":"createdon","Alias":null,"Direction":null}]' data-target="${attr(JSON.stringify({ Id: canonicalId(id), LogicalName: entity, Name: record?.name ?? null }))}" data-pagesize="${Number(settings.PageSize) || 10}"><div class="notes-empty message"><div class="alert alert-block alert-info">${escape(page('EmptyMessage', 'There are no notes to display.'))}</div></div><div class="notes-access-denied message"><div class="alert alert-block alert-danger">You don't have permissions to view these notes.</div></div><div class="notes-error message"><div class="alert alert-block alert-danger">An error occurred while loading notes.<span class="details"></span></div></div><div class="notes-loading message text-center"><span class="fa fa-spinner fa-spin" aria-hidden="true"></span> Loading...</div><div class="notes" tabindex="0"></div><div class="note-actions row"><div class="col-sm-3">${legacyNotesAddLink(addEnabled, page)}</div><div class="notes-pagination col-sm-9" data-pages="1" data-pagesize="${Number(settings.PageSize) || 10}" data-current-page="1"></div></div>${legacyNoteDialog(bs, 'add')}${legacyNoteDialog(bs, 'edit')}${legacyNoteDialog(bs, 'delete')}</div></div></div>`;
+    return `${info}<div class="control"><div id="notescontrol">${notesControlV5({ record, id, entity, websiteId, settings, page, addEnabled, bs, rowspan, urls, editor, timeline })}</div></div>`;
+  return `${info}<div class="control"><div id="notescontrol"><div class="col-md-8 entity-notes" data-url-get="${urls.get}" data-url-add="${urls.add}" data-url-edit="${urls.edit}" data-url-delete="${urls.delete}" data-url-get-attachments=""${timeline ? ' data-is-timeline="True"' : ''}${editor ? ' data-rte-enabled="True"' : ''} data-add-enabled="${addEnabled ? 'True' : 'False'}" data-edit-enabled="${settings.EditEnabled === true ? 'True' : 'False'}" data-delete-enabled="${settings.DeleteEnabled === true ? 'True' : 'False'}" data-use-scrolling-pagination="False" data-hide-field-label="False" data-orders='[{"Attribute":"createdon","Alias":null,"Direction":null}]' data-target="${attr(JSON.stringify({ Id: canonicalId(id), LogicalName: entity, Name: record?.name ?? null }))}" data-pagesize="${Number(settings.PageSize) || 10}"><div class="notes-empty message"><div class="alert alert-block alert-info">${escape(page('EmptyMessage', 'There are no notes to display.'))}</div></div><div class="notes-access-denied message"><div class="alert alert-block alert-danger">You don't have permissions to view these notes.</div></div><div class="notes-error message"><div class="alert alert-block alert-danger">An error occurred while loading notes.<span class="details"></span></div></div><div class="notes-loading message text-center"><span class="fa fa-spinner fa-spin" aria-hidden="true"></span> Loading...</div><div class="notes" tabindex="0"></div><div class="note-actions row"><div class="col-sm-3">${legacyNotesAddLink(addEnabled, page)}</div><div class="notes-pagination col-sm-9" data-pages="1" data-pagesize="${Number(settings.PageSize) || 10}" data-current-page="1"></div></div>${legacyNoteDialog(bs, 'add', editor?.add)}${legacyNoteDialog(bs, 'edit', editor?.edit)}${legacyNoteDialog(bs, 'delete')}${editor?.script ?? ''}</div></div></div>`;
+}
+
+// The notes services, or the activity timeline's (the platform's default portal route, EntityActivity/GetActivities),
+// which neither adds notes nor edits them here.
+function notesServiceUrls(websiteId, timeline) {
+  if (timeline) return { get: `/_portal/${websiteId}/EntityActivity/GetActivities`, add: '', edit: '', delete: '' };
+  return {
+    get: `/_services/entity-notes/${websiteId}`,
+    add: `/_services/entity-form-addnote/${websiteId}`,
+    edit: `/_services/entity-form-updatenote/${websiteId}`,
+    delete: `/_services/entity-form-deletenote/${websiteId}`,
+  };
+}
+
+/**
+ * Timeline/RTEEnabled: the add and edit dialogs edit the note with the rich text editor the form's rich text columns
+ * use (native CKEditor, or the compatibility editor), mounted by the same runtime. The hidden textarea named text
+ * keeps the editor's HTML for the notes client.
+ */
+function noteRichTextEditors(controlId, compatibility) {
+  const field = (kind) => {
+    const fieldId = `${controlId}_${kind}note_text`;
+    return {
+      fieldId,
+      markup: `<input type="hidden" id="${attr(fieldId)}" value="&quot;&quot;" data-sim-richtext-value><div id="PcfControl_${attr(fieldId)}" data-sim-richtext-editor data-sim-note-editor data-field="${attr(fieldId)}"><textarea id="${attr(fieldId)}_editor" name="text" aria-label="Note"></textarea><p role="alert" data-sim-richtext-error hidden></p></div>`,
+    };
+  };
+  const add = field('add'),
+    edit = field('edit');
+  const settings = Object.fromEntries(
+    [add, edit].map(({ fieldId }) => [fieldId, { configuration: {}, configUrl: null, compatibility }]),
+  );
+  return { add: add.markup, edit: edit.markup, script: `<script>${clientRichTextRuntime(settings)}</script>` };
 }
 
 function notesInfoMarkup(bs, label) {
@@ -5184,13 +5559,13 @@ function legacyNotesAddLink(addEnabled, page) {
   return `<a class="btn btn-default addnote" href="#">${escape(page('AddNoteButtonLabel', 'Add a note'))}</a>`;
 }
 
-function legacyNoteDialog(bs, kind) {
+function legacyNoteDialog(bs, kind, richField = null) {
   if (kind === 'add')
     return nativeModal({
       bs,
       className: 'modal-addnote',
       title: 'Add a note',
-      body: '<div class="addnote form-horizontal"><div class="form-group"><label id="note_label" class="col-sm-3 control-label required" for="note-text">Note</label><div class="col-sm-9"><textarea id="note-text" name="text" class="form-control" cols="20" rows="6"></textarea></div></div><div class="form-group"><label class="col-sm-3 control-label" for="note-file">Attach a file</label><div class="col-sm-9 form-control-static"><input id="note-file" name="file" type="file"></div></div></div>',
+      body: `<div class="addnote form-horizontal"><div class="form-group"><label id="note_label" class="col-sm-3 control-label required" for="note-text">Note</label><div class="col-sm-9">${richField ?? '<textarea id="note-text" name="text" class="form-control" cols="20" rows="6"></textarea>'}</div></div><div class="form-group"><label class="col-sm-3 control-label" for="note-file">Attach a file</label><div class="col-sm-9 form-control-static"><input id="note-file" name="file" type="file"></div></div></div>`,
       footer: `<button class="primary btn btn-primary" type="button">Add Note</button><button class="cancel btn btn-default" ${bs.dismiss}="modal" type="button">Cancel</button>`,
     });
   if (kind === 'edit')
@@ -5198,7 +5573,7 @@ function legacyNoteDialog(bs, kind) {
       bs,
       className: 'modal-editnote',
       title: 'Edit note',
-      body: '<div class="editnote form-horizontal"><div class="form-group"><label class="col-sm-3 control-label required" for="note-edit-text">Note</label><div class="col-sm-9"><textarea id="note-edit-text" name="text" class="form-control" cols="20" rows="6"></textarea></div></div><div class="form-group"><label class="col-sm-3 control-label" for="note-edit-file">Attach a file</label><div class="col-sm-9 form-control-static"><input id="note-edit-file" name="file" type="file"></div></div></div>',
+      body: `<div class="editnote form-horizontal"><div class="form-group"><label class="col-sm-3 control-label required" for="note-edit-text">Note</label><div class="col-sm-9">${richField ?? '<textarea id="note-edit-text" name="text" class="form-control" cols="20" rows="6"></textarea>'}</div></div><div class="form-group"><label class="col-sm-3 control-label" for="note-edit-file">Attach a file</label><div class="col-sm-9 form-control-static"><input id="note-edit-file" name="file" type="file"></div></div></div>`,
       footer: `<button class="primary btn btn-primary" type="button">Update Note</button><button class="cancel btn btn-default" ${bs.dismiss}="modal" type="button">Cancel</button>`,
     });
   return nativeModal({
@@ -5221,40 +5596,58 @@ function notesToolbarMarkup(toolbar) {
 // The Bootstrap 5 notes control pages as many notes as its form cell spans rows, whatever
 // PageSize the metadata declares. Six when the cell carries no row span.
 const NOTES_PAGE_SIZE_V5 = 6;
+/** A configured notes message as escaped text, or the platform default markup when none is configured. */
+function configuredText(page, name, fallback) {
+  const text = page(name, '');
+  return text ? escape(text) : fallback;
+}
+/** The notes control's list orders: configured orders carry a direction; the default order has none. */
+function notesListOrders(settings) {
+  if (!settings.ListOrders?.length) return [{ Attribute: 'createdon', Alias: null, Direction: null }];
+  return settings.ListOrders.map((order) => ({
+    Attribute: order.Attribute,
+    Alias: order.Alias ?? null,
+    Direction: /^desc/i.test(String(order.Direction)) || Number(order.Direction) === 1 ? 1 : 0,
+  }));
+}
 /**
  * Bootstrap 5 notes control (the platform's timeline-less notes list): plain status messages,
  * the list title, and add/edit/delete dialogs with the platform's fixed labels. The platform's
  * data-attachmentsettings is an encrypted value and is not reproduced.
  */
-function notesControlV5({ id, entity, websiteId, settings, page, addEnabled, bs, rowspan }) {
+function notesControlV5({ id, entity, websiteId, settings, page, addEnabled, bs, rowspan, urls, editor, timeline }) {
   const pageSize = Number(rowspan) > 0 ? Number(rowspan) : NOTES_PAGE_SIZE_V5;
-  // Configured list orders carry a direction; the default order has none.
-  const orders = settings.ListOrders?.length
-    ? settings.ListOrders.map((order) => ({
-        Attribute: order.Attribute,
-        Alias: order.Alias ?? null,
-        Direction: /^desc/i.test(String(order.Direction)) || Number(order.Direction) === 1 ? 1 : 0,
-      }))
-    : [{ Attribute: 'createdon', Alias: null, Direction: null }];
+  const orders = notesListOrders(settings);
   const regarding = { Id: canonicalId(id), LogicalName: entity, Name: null, KeyAttributes: [], RowVersion: null };
   // The dialogs carry the regarding record as indented JSON with CRLF line breaks.
   const dialogTarget = JSON.stringify({ LogicalName: entity, Id: canonicalId(id) }, null, 2);
   // A configured message renders as plain text; the platform defaults keep their alert markup.
   const message = (className, name, fallback) =>
-    `<div class="${className}" role="presentation" tabindex="0">${page(name, '') ? escape(page(name, '')) : fallback}</div>`;
-  const loading = page('LoadingMessage', '')
-    ? escape(page('LoadingMessage', ''))
-    : '<span class="fa fa-spinner fa-spin" aria-hidden="true"></span> Loading...';
-  const template = notesTemplateV5({
-    toolbar: settings.EditEnabled === true || settings.DeleteEnabled === true,
-    privacyLabel: page('NotePrivacyLabel', '')
-      ? escape(page('NotePrivacyLabel', ''))
-      : "<span class='fa fa-eye-slash' aria-hidden='true'></span> Private",
-  });
+    `<div class="${className}" role="presentation" tabindex="0">${configuredText(page, name, fallback)}</div>`;
+  const loading = configuredText(
+    page,
+    'LoadingMessage',
+    '<span class="fa fa-spinner fa-spin" aria-hidden="true"></span> Loading...',
+  );
+  // The platform's notes template; the timeline's activity template is not reproduced (the client renders activities).
+  const template = timeline
+    ? ''
+    : notesTemplateV5({
+        toolbar: settings.EditEnabled === true || settings.DeleteEnabled === true,
+        privacyLabel: configuredText(
+          page,
+          'NotePrivacyLabel',
+          "<span class='fa fa-eye-slash' aria-hidden='true'></span> Private",
+        ),
+      });
   const button = (label, primary = false) =>
     `<button aria-label="${attr(label)}" class="${primary ? 'primary btn btn-primary' : 'cancel btn btn-default'}"${primary ? '' : ' ' + bs.dismiss + '="modal"'} tabindex="0" title="${attr(label)}" type="button">${escape(label)}</button>`;
-  const noteRow = (labelHtml, textarea) =>
-    `<div class="row mb-3">${labelHtml}<div class="col-md-9"><textarea aria-label="Note" class="form-control" cols="20"${textarea} name="text" rows="9" tabindex="0"></textarea></div></div>`;
+  const noteRow = (labelHtml, textarea, richField) => {
+    const field =
+      richField ??
+      `<textarea aria-label="Note" class="form-control" cols="20"${textarea} name="text" rows="9" tabindex="0"></textarea>`;
+    return `<div class="row mb-3">${labelHtml}<div class="col-md-9">${field}</div></div>`;
+  };
   const fileRow = (wrapper, accept) =>
     `<div class="row mb-3"><label aria-label="Attach a file" class="col-form-label fw-bold col-md-3">Attach a file</label><div class="col-md-9"${wrapper}><div class="form-control-plaintext"><input${accept} aria-label="Choose File" name="file" tabindex="0" type="file"></div></div></div>`;
   const deleteTitle = "<span class='fa fa-trash-o' aria-hidden='true'></span> Delete note";
@@ -5265,7 +5658,7 @@ function notesControlV5({ id, entity, websiteId, settings, page, addEnabled, bs,
           bs,
           className: 'modal-addnote',
           title: 'Add note',
-          body: `<div class="  addnote" data-bs-target="${crlfAttr(dialogTarget)}" data-url="/_services/entity-form-addnote/${websiteId}">${noteRow('<label class="col-form-label fw-bold col-md-3" id="note_label_add">Note</label>', ' maxlength="100000"')}${fileRow('', ' accept="*"')}</div>`,
+          body: `<div class="  addnote" data-bs-target="${crlfAttr(dialogTarget)}" data-url="/_services/entity-form-addnote/${websiteId}">${noteRow('<label class="col-form-label fw-bold col-md-3" id="note_label_add">Note</label>', ' maxlength="100000"', editor?.add)}${fileRow('', ' accept="*"')}</div>`,
           footer: `${button(' Add note', true)}${button('Cancel')}`,
         })
       : '',
@@ -5274,7 +5667,7 @@ function notesControlV5({ id, entity, websiteId, settings, page, addEnabled, bs,
           bs,
           className: 'modal-editnote',
           title: 'Edit note',
-          body: `<div class="  editnote" data-bs-target="${crlfAttr(dialogTarget)}" data-url="/_services/entity-form-updatenote/${websiteId}">${noteRow('<label class="required col-form-label fw-bold col-md-3" id="note_label_edit">Note</label>', '')}${fileRow(' tabindex="0"', '')}</div>`,
+          body: `<div class="  editnote" data-bs-target="${crlfAttr(dialogTarget)}" data-url="/_services/entity-form-updatenote/${websiteId}">${noteRow('<label class="required col-form-label fw-bold col-md-3" id="note_label_edit">Note</label>', '', editor?.edit)}${fileRow(' tabindex="0"', '')}</div>`,
           footer: `${button('Update note', true)}${button('Cancel')}`,
         })
       : '',
@@ -5290,7 +5683,7 @@ function notesControlV5({ id, entity, websiteId, settings, page, addEnabled, bs,
       : '',
   ].join('');
   // The accepted attachment types come with the configured add, even when this visitor may not add.
-  return `<div class="col-lg-8 entity-notes"${settings.attachmentToken ? ' data-add-accept-types="*"' : ''} data-add-enabled="${addEnabled ? 'True' : 'False'}"${settings.attachmentToken ? ' data-attachmentsettings="' + attr(settings.attachmentToken) + '"' : ''} data-bs-target="${attr(JSON.stringify(regarding))}" data-delete-enabled="${settings.DeleteEnabled === true ? 'True' : 'False'}" data-edit-enabled="${settings.EditEnabled === true ? 'True' : 'False'}" data-hide-field-label="False" data-is-timeline="False" data-orders="${attr(JSON.stringify(orders))}" data-pagesize="${pageSize}" data-rte-enabled="False" data-url-add="/_services/entity-form-addnote/${websiteId}" data-url-delete="/_services/entity-form-deletenote/${websiteId}" data-url-edit="/_services/entity-form-updatenote/${websiteId}" data-url-get="/_services/entity-notes/${websiteId}" data-url-get-attachments="" data-url-get-attachments-count="" data-use-scrolling-pagination="False" disable-validation="false">${page('ListTitle', '') ? '<div class="col-md-12 page-header mr-0"><h3>' + escape(page('ListTitle', '')) + '</h3></div>' : ''}${template}${message('notes-empty message', 'EmptyMessage', '<div class="alert alert-block alert-warning">There are no notes to display.</div>')}${message('notes-access-denied message', 'AccessDeniedMessage', '<div class="alert alert-block alert-danger">You don\'t have permissions to view notes.</div>')}${message('notes-error message', 'ErrorMessage', '<div class="alert alert-block alert-danger">Error completing request. <span class="details"></span></div>')}<div class="notes-loading message text-center" role="presentation" tabindex="0">${loading}</div><div class="notes"></div><div class="notes-loading-more message text-center">${loading}</div><div class="note-actions row">${addEnabled ? '<div class="col-md-3"><a class="addnote btn btn-default" href="#" role="button">' + escape(page('AddNoteButtonLabel', 'Add a note')) + '</a></div>' : ''}<div class="notes-pagination col-md-9" data-current-page="1" data-pages="1" data-pagesize="${pageSize}"></div></div>${dialogs}</div>`;
+  return `<div class="col-lg-8 entity-notes"${settings.attachmentToken ? ' data-add-accept-types="*"' : ''} data-add-enabled="${addEnabled ? 'True' : 'False'}"${settings.attachmentToken ? ' data-attachmentsettings="' + attr(settings.attachmentToken) + '"' : ''} data-bs-target="${attr(JSON.stringify(regarding))}" data-delete-enabled="${settings.DeleteEnabled === true ? 'True' : 'False'}" data-edit-enabled="${settings.EditEnabled === true ? 'True' : 'False'}" data-hide-field-label="False" data-is-timeline="${timeline ? 'True' : 'False'}" data-orders="${attr(JSON.stringify(orders))}" data-pagesize="${pageSize}" data-rte-enabled="${editor ? 'True' : 'False'}" data-url-add="${urls.add}" data-url-delete="${urls.delete}" data-url-edit="${urls.edit}" data-url-get="${urls.get}" data-url-get-attachments="" data-url-get-attachments-count="" data-use-scrolling-pagination="False" disable-validation="false">${page('ListTitle', '') ? '<div class="col-md-12 page-header mr-0"><h3>' + escape(page('ListTitle', '')) + '</h3></div>' : ''}${template}${message('notes-empty message', 'EmptyMessage', '<div class="alert alert-block alert-warning">There are no notes to display.</div>')}${message('notes-access-denied message', 'AccessDeniedMessage', '<div class="alert alert-block alert-danger">You don\'t have permissions to view notes.</div>')}${message('notes-error message', 'ErrorMessage', '<div class="alert alert-block alert-danger">Error completing request. <span class="details"></span></div>')}<div class="notes-loading message text-center" role="presentation" tabindex="0">${loading}</div><div class="notes"></div><div class="notes-loading-more message text-center">${loading}</div><div class="note-actions row">${addEnabled ? '<div class="col-md-3"><a class="addnote btn btn-default" href="#" role="button">' + escape(page('AddNoteButtonLabel', 'Add a note')) + '</a></div>' : ''}<div class="notes-pagination col-md-9" data-current-page="1" data-pages="1" data-pagesize="${pageSize}"></div></div>${dialogs}${editor?.script ?? ''}</div>`;
 }
 
 // The platform file and image controls' upload size argument (KB) as the platform controls render it.
@@ -5502,7 +5895,118 @@ function constantSumMarkup(last, names, group) {
 
 function renderStateActionButton({ action, type, css, url, formLabel, index }) {
   const bound = index === undefined ? '' : ` data-pp-form-action="${type}" data-pp-action-index="${index}"`;
-  return `<button class="${type}-link ${css}" data-url="${escape(url)}" href="${escape(url)}" type="button"${bound}>${escape(formLabel(action.ButtonLabel, type === 'activate' ? 'Activate' : 'Deactivate'))}</button>`;
+  const label = NATIVE_STATE_ACTIONS[type]?.label ?? type;
+  return `<button class="${type}-link ${css}" data-url="${escape(url)}" href="${escape(url)}" type="button"${bound}>${escape(formLabel(action.ButtonLabel, label))}</button>`;
+}
+
+/** The Resolve Case dialog of a Basic Form action: the resolution subject and description the action posts. */
+function resolveCaseDialog({ bs, action, dialog, actionIndex, formLabel }) {
+  const settings = dialog && typeof dialog === 'object' ? dialog : {};
+  const subject = escape(formLabel(action.SubjectLabel, 'Resolution'));
+  const description = escape(formLabel(action.DescriptionLabel, 'Description of resolution'));
+  const primary = escape(formLabel(settings.PrimaryButtonText, 'Resolve'));
+  const close = escape(formLabel(settings.CloseButtonText, 'Cancel'));
+  const field = `pp-resolve-${actionIndex}`;
+  return nativeModal({
+    bs,
+    className: 'modal-resolvecase',
+    title: escape(formLabel(settings.Title, 'Resolve case')),
+    size: MODAL_SIZES[Number(settings.Size)] ?? '',
+    body: `<div class="form-group"><label class="required" for="${field}-subject">${subject}</label><input id="${field}-subject" aria-required="true" class="resolution-input required form-control" type="text"></div><div class="form-group"><label class="required" for="${field}-description">${description}</label><textarea id="${field}-description" aria-required="true" class="resolution-description-input required form-control" cols="20" rows="6"></textarea></div>`,
+    footer: `<button class="primary btn btn-primary" type="button">${primary}</button><button class="cancel btn btn-default" ${bs.dismiss}="modal" type="button">${close}</button>`,
+  }).replace(' role="dialog"', ` data-pp-action-index="${actionIndex}" role="dialog"`);
+}
+
+async function renderFormWorkflowAction({
+  actionIndex,
+  definition,
+  schema,
+  id,
+  mapping,
+  readProvider,
+  identity,
+  portal,
+  options,
+  bs,
+  formLabel,
+}) {
+  const action = nativeFormActions(definition?.metadata)[actionIndex];
+  const workflowId = nativeFormWorkflowId(action);
+  const unavailable = (message) =>
+    options.diagnostic?.({
+      code: 'FORM_WORKFLOW_UNRESOLVED',
+      severity: 'warning',
+      component: 'entityform',
+      form: definition?.name,
+      action: NATIVE_FORM_WORKFLOW,
+      message,
+    });
+  if (
+    !workflowId ||
+    schema.approximated ||
+    mapping.logicalName !== canonicalId(definition?.entityName) ||
+    !options.canRunFormWorkflow?.(workflowId, mapping.logicalName)
+  ) {
+    unavailable(
+      'The form workflow requires an exported, published, on-demand real-time workflow and a trusted local handler.',
+    );
+    return null;
+  }
+  try {
+    const applies = await nativeFormActionApplies(action, {
+      entity: mapping.logicalName,
+      idColumn: mapping.idColumn,
+      recordId: id,
+      readProvider,
+      identity,
+      context: { website: portal.website },
+    });
+    if (!applies) return null;
+  } catch (error) {
+    unavailable(error.message);
+    return null;
+  }
+  const settings = settingsJson(portalField(definition.metadata, 'settings') ?? '', 'form settings') ?? {};
+  const dialog = settings.WorkflowDialog ?? {};
+  const label = formLabel(action.ButtonLabel, 'Run workflow');
+  const primary = escape(formLabel(action.WorkflowDialogPrimaryButtonText, formLabel(dialog.PrimaryButtonText, 'Run')));
+  const close = escape(formLabel(action.WorkflowDialogCloseButtonText, formLabel(dialog.CloseButtonText, 'Cancel')));
+  const url = `/__sim/forms/entityform/${encodeURIComponent(definition.id)}/submit`;
+  const button = `<button class="form-workflow-link ${escape(action.ButtonCssClass || 'btn btn-default')}" data-url="${escape(url)}" type="button" title="${escape(formLabel(action.ButtonTooltip, label))}" data-pp-form-action="workflow" data-pp-action-index="${actionIndex}" data-pp-workflow-id="${workflowId}">${escape(label)}</button>`;
+  const modal = nativeModal({
+    bs,
+    className: `modal-form-workflow${dialog.CssClass ? ' ' + escape(dialog.CssClass) : ''}`,
+    size: MODAL_SIZES[Number(dialog.Size)] ?? '',
+    title: escape(formLabel(action.WorkflowDialogTitle, formLabel(dialog.Title, label))),
+    dismissText: formLabel(dialog.DismissButtonSrText, 'Close'),
+    body: escape(formLabel(action.Confirmation, 'Are you sure you want to run this workflow?')),
+    footer: `<button class="primary btn btn-primary" type="button">${primary}</button><button class="cancel btn btn-default" ${bs.dismiss}="modal" type="button">${close}</button>`,
+  }).replace(' role="dialog"', ` data-pp-action-index="${actionIndex}" role="dialog"`);
+  return { button, modal };
+}
+
+function numberBoxPrecision(field) {
+  const precision = Number(field.precision);
+  return field.control !== 'integer' &&
+    field.precision != null &&
+    Number.isInteger(precision) &&
+    precision >= 0 &&
+    precision <= 10
+    ? precision
+    : null;
+}
+
+function numberBoxValue(value, precision, locale, posted) {
+  if (value == null || value === '') return '';
+  if (precision === null || !Number.isFinite(Number(value))) return value;
+  if (!locale) return Number(value).toFixed(precision);
+  // The response retains the text submitted by the native textbox.
+  if (posted) return value;
+  return numberBoxFormatter(locale, precision).format(String(value));
+}
+
+function numberBoxFormatter(locale, precision) {
+  return new Intl.NumberFormat(locale, { minimumFractionDigits: precision, maximumFractionDigits: precision });
 }
 
 function numberSeparatorAttribute(field, separator, attr) {

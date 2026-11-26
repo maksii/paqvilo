@@ -1,5 +1,6 @@
 // Dynamics 365 application messages (Sales, Marketing and Service stubs): Recalculate (goal rollups), SyncBulkOperation,
-// SendBulkMail, ImmediateBook, CalculatePrice and ApplyRecordCreationAndUpdateRule. Every operation is registered through
+// SendBulkMail, ImmediateBook, CalculatePrice, ApplyRecordCreationAndUpdateRule and the sales conversions (WinQuote,
+// ConvertQuoteToSalesOrder, ConvertSalesOrderToInvoice, GenerateQuoteFromOpportunity, CalculateActualValueOpportunity). Every operation is registered through
 // registerAddon (dataverse-addon-common.mjs), so a trusted pack's dataverseMessages handler replaces it. Book,
 // InstantiateTemplate and SendEmail are reused through api.registry. Guesses: the bulk-mail failure text, the
 // SyncBulkOperation result and state mapping, the rollup column stem (goalattribute without "rollupfield"), and the answers
@@ -7,7 +8,7 @@
 // ponytail: one GET page per query (the records default), QueryByAttribute is not modelled, no Exchange (EWS) attachments,
 // a rollup query on a missing row does not restrict, and the time window is the goal's own dates (no entityfordateattribute join).
 import { DataError } from './data-error.mjs';
-import { argsOf, idOf, registerAddon } from './dataverse-addon-common.mjs';
+import { argsOf, idOf, registerAddon, STAMPED_COLUMNS } from './dataverse-addon-common.mjs';
 import { readMessageRecords } from './dataverse-message-context.mjs';
 import { fromBulkDeleteJson, toFetchXml } from './dataverse-soap-query.mjs';
 import { privilegeName } from './dataverse-security.mjs';
@@ -290,6 +291,186 @@ function operations(api) {
     return undefined;
   }
 
+  // ---- Sales conversions: WinQuote, ConvertQuoteToSalesOrder, ConvertSalesOrderToInvoice, GenerateQuoteFromOpportunity,
+  // CalculateActualValueOpportunity (Learn Microsoft.Crm.Sdk.Messages and "Convert an opportunity to a quote, sales order,
+  // or invoice": the records share their common data, and the products become the new record's line items).
+
+  // A source row's columns that the target table also has, without its key, state, status or system stamps.
+  const NOT_CARRIED = new Set([
+    'statecode',
+    'statuscode',
+    'processid',
+    'stageid',
+    'traversedpath',
+    'importsequencenumber',
+  ]);
+  const carriedColumns = (fromLogical, toLogical, row) => {
+    const from = store.resolveMapping(fromLogical),
+      to = store.resolveMapping(toLogical);
+    const known = store.fieldDefinitions(toLogical);
+    return Object.fromEntries(
+      Object.entries(row).filter(
+        ([name, value]) =>
+          value != null &&
+          Object.hasOwn(known, name) &&
+          name !== from.idColumn &&
+          name !== to.idColumn &&
+          !STAMPED_COLUMNS.has(name) &&
+          !NOT_CARRIED.has(name),
+      ),
+    );
+  };
+  const tableOrNotFound = (logical, id) => {
+    if (!mappingOf(logical)) throw notFound(logical, id);
+    return store.resolveMapping(logical);
+  };
+  const recordOrNotFound = (logical, id) => {
+    tableOrNotFound(logical, id);
+    const row = rowIn(logical, id);
+    if (!row) throw notFound(logical, id);
+    return row;
+  };
+  const stateOf = (row) => Number(row?.statecode?.value ?? row?.statecode ?? 0);
+  // The default status of a state (SetState Status -1) from the table's state metadata.
+  const defaultStatus = (logical, state, fallback) => {
+    const definition = store.fieldDefinitions(logical).statecode;
+    const option = (definition?.states ?? definition?.options ?? []).find((item) => Number(item.value) === state);
+    return option?.defaultStatus == null ? fallback : Number(option.defaultStatus);
+  };
+  const lookupTo = (logical, id) => ({ id: key(id), logical_name: logical });
+  // The record a function answers with: the new row, restricted to a ColumnSet's columns when it names some.
+  const answerRow = (row, columnSet, idColumn) => {
+    const columns = Array.isArray(columnSet?.Columns) ? columnSet.Columns : null;
+    if (!columns || columnSet?.AllColumns === true) return row;
+    return Object.fromEntries(Object.entries(row).filter(([name]) => name === idColumn || columns.includes(name)));
+  };
+
+  // The new record and its line items, copied from `source` and its `lines`, in one write.
+  async function convertRecord(c, { from, to, sourceId, lineFrom, lineTo, sourceLookup, lineLookup, lineParent }) {
+    const source = recordOrNotFound(from, sourceId);
+    const target = tableOrNotFound(to, null);
+    need(c, from, 'read');
+    need(c, to, 'create');
+    const lines = mappingOf(lineFrom) ? rowsOf(lineFrom).filter((row) => sameId(idOf(row[lineParent]), sourceId)) : [];
+    if (lines.length) need(c, lineTo, 'create');
+    return write(async () => {
+      const created = await api.records.createInternal(
+        c,
+        to,
+        { ...carriedColumns(from, to, source), [sourceLookup]: lookupTo(from, sourceId) },
+        { authorized: true },
+      );
+      const createdId = created[target.idColumn];
+      for (const line of lines)
+        await api.records.createInternal(
+          c,
+          lineTo,
+          { ...carriedColumns(lineFrom, lineTo, line), [lineLookup]: lookupTo(to, createdId) },
+          { authorized: true },
+        );
+      return rowIn(to, createdId) ?? created;
+    });
+  }
+
+  async function winQuote(c) {
+    const args = argsOf(c);
+    const close = args.QuoteClose ?? {};
+    const quoteId = idOf(close['quoteid@odata.bind'] ?? close.quoteid);
+    if (!quoteId) throw invalid('QuoteClose must name its quote (quoteid).');
+    const quote = recordOrNotFound('quote', quoteId);
+    tableOrNotFound('quoteclose', null);
+    need(c, 'quote', 'write');
+    // Only an active quote can be won (QuoteState Active 1); Won is 2.
+    if (stateOf(quote) !== 1) throw invalid('The quote must be active to be won.');
+    const status = Number(args.Status ?? -1);
+    const statuscode = status === -1 ? defaultStatus('quote', 2, 4) : status;
+    const values = Object.fromEntries(
+      Object.entries(close).filter(([name]) => !name.includes('@') && name !== 'quoteid' && name !== 'activityid'),
+    );
+    await write(async () => {
+      await api.records.createInternal(
+        c,
+        'quoteclose',
+        { ...values, quoteid: lookupTo('quote', quoteId) },
+        { authorized: true },
+      );
+      await api.records.updateInternal(c, 'quote', quoteId, { statecode: 2, statuscode }, { authorized: true });
+    });
+    return undefined;
+  }
+
+  async function convertQuoteToSalesOrder(c) {
+    const args = argsOf(c);
+    const quote = recordOrNotFound('quote', args.QuoteId);
+    // An active or won quote converts (QuoteState Active 1, Won 2); a draft or closed one does not.
+    if (![1, 2].includes(stateOf(quote))) throw invalid('Only an active or won quote can be converted to an order.');
+    const order = await convertRecord(c, {
+      from: 'quote',
+      to: 'salesorder',
+      sourceId: args.QuoteId,
+      lineFrom: 'quotedetail',
+      lineTo: 'salesorderdetail',
+      sourceLookup: 'quoteid',
+      lineLookup: 'salesorderid',
+      lineParent: 'quoteid',
+    });
+    return answerRow(order, args.ColumnSet, store.resolveMapping('salesorder').idColumn);
+  }
+
+  async function convertSalesOrderToInvoice(c) {
+    const args = argsOf(c);
+    recordOrNotFound('salesorder', args.SalesOrderId);
+    const invoice = await convertRecord(c, {
+      from: 'salesorder',
+      to: 'invoice',
+      sourceId: args.SalesOrderId,
+      lineFrom: 'salesorderdetail',
+      lineTo: 'invoicedetail',
+      sourceLookup: 'salesorderid',
+      lineLookup: 'invoiceid',
+      lineParent: 'salesorderid',
+    });
+    return answerRow(invoice, args.ColumnSet, store.resolveMapping('invoice').idColumn);
+  }
+
+  async function generateQuoteFromOpportunity(c) {
+    const args = argsOf(c);
+    const opportunity = recordOrNotFound('opportunity', args.OpportunityId);
+    // An open opportunity generates quotes (OpportunityState Open 0).
+    if (stateOf(opportunity) !== 0) throw invalid('Only an open opportunity can generate a quote.');
+    const quote = await convertRecord(c, {
+      from: 'opportunity',
+      to: 'quote',
+      sourceId: args.OpportunityId,
+      lineFrom: 'opportunityproduct',
+      lineTo: 'quotedetail',
+      sourceLookup: 'opportunityid',
+      lineLookup: 'quoteid',
+      lineParent: 'opportunityid',
+    });
+    return answerRow(quote, args.ColumnSet, store.resolveMapping('quote').idColumn);
+  }
+
+  // The actual value of a won opportunity: the sum of its products' extended amounts, else its estimated value (Learn:
+  // Actual Revenue "defaults to the Est. Revenue value when an opportunity is won"). The value is written to actualvalue.
+  async function calculateActualValueOpportunity(c) {
+    const args = argsOf(c);
+    const opportunity = recordOrNotFound('opportunity', args.OpportunityId);
+    need(c, 'opportunity', 'write');
+    if (stateOf(opportunity) !== 1) throw invalid('The opportunity must be won to calculate its actual value.');
+    const amount = (value) => Number(value?.value ?? value ?? 0) || 0;
+    const products = mappingOf('opportunityproduct')
+      ? rowsOf('opportunityproduct').filter((row) => sameId(idOf(row.opportunityid), args.OpportunityId))
+      : [];
+    const value = products.length
+      ? products.reduce((sum, row) => sum + amount(row.extendedamount), 0)
+      : amount(opportunity.estimatedvalue);
+    await write(() =>
+      api.records.updateInternal(c, 'opportunity', args.OpportunityId, { actualvalue: value }, { authorized: true }),
+    );
+    return { Value: value };
+  }
+
   return [
     // Guesses: the percentage is 0 when the target is unset; rollup attribute names are read from goalattribute.
     {
@@ -368,6 +549,66 @@ function operations(api) {
       binding: 'unbound',
       signature: { params: [['Target', 'mscrm.crmbaseentity']] },
       handle: applyRecordCreation,
+    },
+    // Sales conversions. Guesses: the state checks' error texts, the copied columns (every column both tables have) and
+    // the written actualvalue.
+    {
+      name: 'WinQuote',
+      kind: 'action',
+      binding: 'unbound',
+      signature: {
+        params: [
+          ['QuoteClose', 'mscrm.crmbaseentity'],
+          ['Status', 'Edm.Int32'],
+        ],
+      },
+      handle: winQuote,
+    },
+    {
+      name: 'ConvertQuoteToSalesOrder',
+      kind: 'function',
+      binding: 'unbound',
+      signature: {
+        params: [
+          ['QuoteId', 'Edm.Guid'],
+          ['ColumnSet', 'mscrm.ColumnSet'],
+        ],
+        returns: 'mscrm.crmbaseentity',
+      },
+      handle: convertQuoteToSalesOrder,
+    },
+    {
+      name: 'ConvertSalesOrderToInvoice',
+      kind: 'function',
+      binding: 'unbound',
+      signature: {
+        params: [
+          ['SalesOrderId', 'Edm.Guid'],
+          ['ColumnSet', 'mscrm.ColumnSet'],
+        ],
+        returns: 'mscrm.crmbaseentity',
+      },
+      handle: convertSalesOrderToInvoice,
+    },
+    {
+      name: 'GenerateQuoteFromOpportunity',
+      kind: 'function',
+      binding: 'unbound',
+      signature: {
+        params: [
+          ['OpportunityId', 'Edm.Guid'],
+          ['ColumnSet', 'mscrm.ColumnSet'],
+        ],
+        returns: 'mscrm.crmbaseentity',
+      },
+      handle: generateQuoteFromOpportunity,
+    },
+    {
+      name: 'CalculateActualValueOpportunity',
+      kind: 'function',
+      binding: 'unbound',
+      signature: { params: [['OpportunityId', 'Edm.Guid']], response: [['Value', 'Edm.Decimal']] },
+      handle: calculateActualValueOpportunity,
     },
   ];
 }

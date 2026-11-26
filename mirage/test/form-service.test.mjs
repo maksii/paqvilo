@@ -2,6 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore } from '../lib/data.mjs';
+import { renderComponent } from '../lib/platform.mjs';
 import {
   submitPortalForm,
   createWebFormSessions,
@@ -9,6 +10,7 @@ import {
   portalRecordWrites,
   formText,
   redirectTarget,
+  formAttachmentCount,
 } from '../lib/form-service.mjs';
 
 test('native redirects preserve configured and omitted record parameter names while appending exported query values', () => {
@@ -822,6 +824,132 @@ test('both form save transports enforce required attachments and remaining slots
       ['FormAttachmentTooMany'],
     );
   }
+});
+
+// @test-kind security: the file count of a record cannot be reset by a visitor who cannot read its notes, and it is read as the system without returning any note to the visitor
+test("the remaining file count and Attach File Required count the record's notes the visitor cannot read", async () => {
+  const otherNote = (recordId) => ({
+    annotationid: 'a0000000-0000-4000-8000-0000000000aa',
+    objectid: { id: recordId, logical_name: 'contact' },
+    objecttypecode: 'contact',
+    filename: 'other.txt',
+    isdocument: true,
+    authorcontactid: 'someone-else',
+  });
+  const grants = {
+    // Notes may be created on the record but never read.
+    'create only': [{ entity: 'annotation', scope: 'global', roles: ['Editor'], operations: ['create'] }],
+    // Only the visitor's own notes are readable; the existing note is someone else's.
+    'own notes only': [
+      { entity: 'annotation', scope: 'global', roles: ['Editor'], operations: ['create'] },
+      { entity: 'annotation', scope: 'contact', field: 'authorcontactid', roles: ['Editor'], operations: ['read'] },
+    ],
+  };
+  for (const [grant, permissions] of Object.entries(grants))
+    for (const nativePostback of [false, true]) {
+      const label = `${grant}, ${nativePostback ? 'postback' : 'JSON'}`;
+      const options = await setupUnits();
+      const metadata = {
+        adx_attachfile: true,
+        adx_attachfilerequired: true,
+        adx_attachfileallowmultiple: true,
+        adx_maximumnooffiles: 2,
+      };
+      options.portal.forms.push(
+        { id: 'attach-edit', mode: 100000001, metadata },
+        {
+          id: 'attach-render',
+          name: 'Attach render',
+          mode: 100000001,
+          metadata: { ...metadata, adx_entitysourcetype: 756150001, adx_recordidquerystringparametername: 'id' },
+        },
+      );
+      options.schemas['attach-edit'] = options.schemas.edit;
+      options.schemas['attach-render'] = options.schemas.edit;
+      const { recordId } = await submitPortalForm('entityform', 'create', { values: { fullname: 'Quota' } }, options);
+      const state = options.store.snapshot();
+      state.permissions.push(...permissions);
+      state.tables.annotation.push(otherNote(recordId));
+      await options.store.replaceState(state);
+      const inputs = { ...options, nativePostback };
+      const notesOf = () =>
+        options.store
+          .snapshot()
+          .tables.annotation.filter((note) => String(note.objectid?.id ?? note.objectid) === recordId);
+      const visible = await options.store.fetchXml(
+        `<fetch><entity name="annotation"><attribute name="filename"/><filter><condition attribute="objectid" operator="eq" value="${recordId}"/></filter></entity></fetch>`,
+        options.identity,
+      );
+      assert.deepEqual(visible.entities, [], `${label}: the visitor reads none of the record's notes`);
+      assert.equal(
+        await formAttachmentCount(options.store, options.identity, 'contact', recordId),
+        1,
+        `${label}: the count the form renders includes the unreadable note`,
+      );
+      // The rendered control offers the one remaining slot, is not required, and names no existing note.
+      const html = await renderComponent(
+        'entityform',
+        'Attach render',
+        { identity: options.identity, request: { params: { id: recordId } } },
+        options,
+      );
+      const control = html.slice(html.indexOf('<div class="file-cell cell">'));
+      assert.ok(control.startsWith('<div class="file-cell cell">'), `${label}: the attach control renders`);
+      assert.match(control, /id="AttachFile_HiddenField_MaxFile" value="1"/, label);
+      assert.match(control, /You can upload a maximum of 1 file,/, label);
+      assert.doesNotMatch(control, /aria-required="true"/, label);
+      assert.doesNotMatch(html, /other.txt|someone-else/, label);
+
+      // The existing file satisfies Attach File Required on an edit without a new file.
+      const edited = await submitPortalForm(
+        'entityform',
+        'attach-edit',
+        { values: { fullname: 'Renamed' }, recordId },
+        inputs,
+      );
+      assert.equal(edited.record.fullname, 'Renamed', label);
+      // One slot of two remains: two new files are refused, one is saved, and then none remains.
+      await assert.rejects(
+        submitPortalForm(
+          'entityform',
+          'attach-edit',
+          { values: { fullname: 'Renamed' }, recordId, attachments: [file('b.txt', 10), file('c.txt', 10)] },
+          inputs,
+        ),
+        (error) =>
+          error.code === 'FormAttachmentTooMany' && error.message === 'You can upload a maximum of 1 more file.',
+        label,
+      );
+      // Two concurrent saves cannot both take the last slot.
+      const responses = await Promise.allSettled(
+        ['d.txt', 'e.txt'].map((name) =>
+          submitPortalForm(
+            'entityform',
+            'attach-edit',
+            { values: { fullname: 'Renamed' }, recordId, attachments: [file(name, 10)] },
+            inputs,
+          ),
+        ),
+      );
+      assert.deepEqual(
+        responses.map(({ status, reason }) => (status === 'fulfilled' ? 'saved' : reason.code)).sort(),
+        ['FormAttachmentTooMany', 'saved'],
+        label,
+      );
+      for (const name of ['f.txt'])
+        await assert.rejects(
+          submitPortalForm(
+            'entityform',
+            'attach-edit',
+            { values: { fullname: 'Renamed' }, recordId, attachments: [file(name, 10)] },
+            inputs,
+          ),
+          (error) =>
+            error.code === 'FormAttachmentTooMany' && error.message === 'You can upload a maximum of 0 more files.',
+          `${label}: ${name}`,
+        );
+      assert.equal(notesOf().length, 2, `${label}: the record keeps the form's maximum of two files`);
+    }
 });
 
 test('a failing association rolls back the record a provider transaction created', async () => {

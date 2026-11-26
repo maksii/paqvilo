@@ -109,6 +109,21 @@ export function decodeNativeViewState(text) {
   };
 }
 
+/** The posted binding of a declared native form field. */
+function boundNativeField(field, wireName) {
+  return {
+    name: field.name,
+    wireName,
+    multiple: field.multiple === true,
+    ...(field.numberLocale ? { numberLocale: field.numberLocale } : {}),
+    // A mounted field component posts its hidden input as JSON (lib/pcf-field-host.mjs), never a check box.
+    ...(field.control === 'pcf' ? { pcf: true } : {}),
+    ...(field.control !== 'pcf' && (field.control === 'checkbox' || field.type === 'checkbox')
+      ? { checkbox: true }
+      : {}),
+  };
+}
+
 /**
  * The caller supplies only fields and actions resolved for a rendered component.
  * Record, step, identity and permission context remain server-owned.
@@ -120,6 +135,7 @@ export function nativeFormPostbackDescriptor({
   actions: declaredActions = [],
   modal = false,
   pageControl = false,
+  numberLocales = {},
 }) {
   if (typeof formId !== 'string' || !formId) invalid('Native form identity required');
   if (!Array.isArray(fields) || !Array.isArray(declaredActions))
@@ -135,16 +151,7 @@ export function nativeFormPostbackDescriptor({
     // A column placed on the form more than once renders (and posts) only its first cell.
     if (names.has(wireName)) continue;
     names.add(wireName);
-    boundFields.push({
-      name: field.name,
-      wireName,
-      multiple: field.multiple === true,
-      // A mounted field component posts its hidden input as JSON (lib/pcf-field-host.mjs), never a check box.
-      ...(field.control === 'pcf' ? { pcf: true } : {}),
-      ...(field.control !== 'pcf' && (field.control === 'checkbox' || field.type === 'checkbox')
-        ? { checkbox: true }
-        : {}),
-    });
+    boundFields.push(boundNativeField(field, wireName));
   }
   const targets = new Set();
   const boundActions = declaredActions.map((action) => {
@@ -168,7 +175,30 @@ export function nativeFormPostbackDescriptor({
       ...(action.actionIndex != null ? { actionIndex: action.actionIndex } : {}),
     };
   });
-  return { kind, formId, ids, fields: boundFields, actions: boundActions };
+  const locales = nativeNumberLocales(numberLocales);
+  return {
+    kind,
+    formId,
+    ids,
+    fields: boundFields,
+    actions: boundActions,
+    ...(Object.keys(locales).length ? { numberLocales: locales } : {}),
+  };
+}
+
+const NUMBER_LOCALES = new Set(['en-US', 'de-DE']);
+
+/** The page culture of each localized number field: { [field]: { parse?, messages } }, on a null prototype. */
+function nativeNumberLocales(declared) {
+  if (!declared || typeof declared !== 'object' || Array.isArray(declared)) invalid('Invalid native number locales');
+  const locales = Object.create(null);
+  for (const [name, locale] of Object.entries(declared)) {
+    if (!name || dangerous.has(name) || !locale || typeof locale !== 'object') invalid('Invalid native number locale');
+    if (!NUMBER_LOCALES.has(locale.messages) || (locale.parse != null && !NUMBER_LOCALES.has(locale.parse)))
+      invalid('Invalid native number locale');
+    locales[name] = Object.freeze({ ...(locale.parse ? { parse: locale.parse } : {}), messages: locale.messages });
+  }
+  return locales;
 }
 
 /**

@@ -1,10 +1,9 @@
 // @test-kind contract: the notes service follows provider cursors before reporting a chronological, portal-visible page.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import http from 'node:http';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { handleNativeService, parseFetchTree } from '../lib/native-services.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { serveRoutes } from './support/route-server.mjs';
 
 const id = (n) => `01000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const website = id(100);
@@ -76,16 +75,9 @@ async function notesFixture(t, alter = (result) => result) {
       },
     },
   };
-  const server = http.createServer(async (req, res) => {
-    if (!(await handleNativeService(req, res, new URL(req.url, 'http://127.0.0.1'), context))) res.writeHead(404).end();
-  });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  ownedFixture(t).add(() => {
-    server.closeAllConnections();
-    return new Promise((resolve) => server.close(resolve));
-  });
+  const origin = await serveRoutes(t, (req, res, url) => handleNativeService(req, res, url, context));
   const post = (page, Direction) =>
-    fetch(`http://127.0.0.1:${server.address().port}/_services/entity-notes/${website}`, {
+    fetch(`${origin}/_services/entity-notes/${website}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', __RequestVerificationToken: context.csrf },
       body: JSON.stringify({

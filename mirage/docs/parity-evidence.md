@@ -6,6 +6,12 @@ built by `scripts/parity-cases.mjs` from two or more captures; a single capture 
 `observation`; a local model without proof is `unproven` and is never presented as parity. For the native component
 baseline (forms, lists, multistep forms), see the [baseline](../../docs/baseline.md).
 
+The portal HTTP surfaces with replay cases are `portal-file-range` (file column downloads), `portal-form-postback`
+(basic form postbacks, attachments included) and `portal-webapi` (Web API writes, raw bodies, tokens and queries). Each
+names its recordings, what they establish and how to regenerate them in an evidence file beside its cases in the
+repository (`mirage/test/parity/portal-file-range-evidence.md`, `portal-form-postback-evidence.md` and
+`portal-webapi-evidence.md`); test files are not part of the package.
+
 Reference reads go through the intended signed-in browser of an explicitly selected, authorized environment. They are
 separate from source bootstrap and local testing. Keep plans, business routes, expected persona access, fixtures and
 raw captures in your portal project under ignored `.paqvilo/`.

@@ -36,6 +36,7 @@ import { createModelDrivenRecordService, createModelDrivenWebApi } from './lib/d
 import { createStaffSessions, createStaffSessionHandler } from './lib/staff-session.mjs';
 import { createDataverseAdmin } from './lib/dataverse-admin.mjs';
 import { ATTACHMENT_COLUMNS } from './lib/dataverse-files.mjs';
+import { DataError } from './lib/data-error.mjs';
 import { runtimeSettings } from './lib/runtime-config.mjs';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import http from 'node:http';
@@ -49,7 +50,7 @@ import {
   publicPersonaReport,
 } from './lib/persona-catalog.mjs';
 import { identityProviderSettings, identityProviderAssets } from './lib/identity-provider-settings.mjs';
-import { createLocalAccounts } from './lib/local-accounts.mjs';
+import { createLocalAccounts, rememberedBrowserCookieName } from './lib/local-accounts.mjs';
 import { createLocalCaptcha } from './lib/local-captcha.mjs';
 import { closestPersonaKeys } from './lib/persona-search.mjs';
 import { createPersonaContexts } from './lib/persona-contexts.mjs';
@@ -71,6 +72,7 @@ import { readLocalFile } from '../lense/local-file.mjs';
 import { readWebFileSource, webFileSourcePaths } from './lib/web-file-source.mjs';
 import { onProjectCodeFault } from './lib/project-code-watch.mjs';
 import { packHandlerAnswer } from './lib/pack-handler-answer.mjs';
+import { collectPackExport } from './lib/pack-exports.mjs';
 import { portalSourceLoss } from './lib/portal-source-loss.mjs';
 import { packChangeNotice, watchPackFiles } from './lib/pack-change-notice.mjs';
 import { deferredStateClaim, STATE_CLAIM } from './lib/state-file-claim.mjs';
@@ -102,6 +104,7 @@ import {
   accountPageEdits,
   applyMarkupEdits,
   platformDocumentFragment,
+  platformDocumentTags,
   shellComponent,
   shellTags,
   headStartFragment,
@@ -121,6 +124,12 @@ import {
   platformFragment,
   joinRenderFragments,
   applyRenderEdits,
+  nonceInjectedScripts,
+  scriptNoncePendingAttribute,
+  scriptNonceInjectedAttribute,
+  staticDocumentScriptNonces,
+  applyScriptNonces,
+  withPlatformTags,
 } from './lib/render-provenance.mjs';
 import { assetKind } from './lib/asset-type.mjs';
 import { listPresets } from './lib/presets.mjs';
@@ -161,6 +170,7 @@ import {
   assertServerLogicEnabled,
   assertServerLogicTimeout,
   runExportedServerLogic,
+  awaitPortalFlowResponse,
   runExportedCloudFlow,
   importOperationWorkflows,
   organizationCustomApi,
@@ -169,6 +179,14 @@ import { createPortalAuthorization, portalAuthorizationModel } from './lib/porta
 import { changeOperationOverride, checkOperationOverrides } from './lib/operation-override-route.mjs';
 import { createPortalDocumentService } from './lib/sharepoint-documents.mjs';
 import { renderPortalSearchPage } from './lib/portal-search.mjs';
+import { knowledgeArticleAccess } from './lib/content-access-levels.mjs';
+import { NATIVE_STATE_ACTIONS } from './lib/native-form-actions.mjs';
+import {
+  PORTAL_SEARCH_SUMMARY,
+  readSummaryQuery,
+  searchSummarySources,
+  summarizeSearch,
+} from './lib/portal-search-summary.mjs';
 import {
   validateOperationOverrides,
   operationPlaceholder,
@@ -190,6 +208,7 @@ import { captureObservedSnippetComposition } from './lib/observed-snippet-compos
 import { captureObservedStylesheets, resolveObservedStylesheet } from './lib/observed-stylesheets.mjs';
 import { resolveRichTextConfiguration, richTextConfigurationStatus } from './lib/richtext-config.mjs';
 import { pageAccess } from './lib/page-access.mjs';
+import { answerPageCors } from './lib/page-cors.mjs';
 import { codeSiteDocument, codeSiteNavigation, compiledCodeSiteAsset } from './lib/code-site.mjs';
 import { CONTEXT_LANGUAGE_COOKIE, localizedPortalPage } from './lib/portal-languages.mjs';
 import { cachedImplementationSourceFingerprint, observedEvidence, implementationEvidence } from './lib/evidence.mjs';
@@ -230,6 +249,7 @@ import {
   parseCookies,
   safeReturnUrl,
   returnUrlParameter,
+  securityStampDigest,
   signInContent,
 } from './lib/auth-session.mjs';
 import { createExternalSignIn } from './lib/sign-in-flow.mjs';
@@ -265,7 +285,12 @@ import { browserProbe, setTraceHeaders, sseClients, traceSessionKey } from './li
 import { buildSourceGraph } from './lib/source-graph.mjs';
 import { scenarioSettings } from './lib/capability-report.mjs';
 import { environmentVariablePayload } from './lib/secret-resolver.mjs';
-import { authenticationSettings, fixedApplicationSessionLifetime } from './lib/external-login.mjs';
+import {
+  admissionSessionLifetime,
+  applicationSessionLifetime,
+  authenticationSettings,
+  securityStampInterval,
+} from './lib/external-login.mjs';
 import { dataverseHostStatus, dataverseSettings, managedIdentityStatusReader } from './lib/dataverse-settings.mjs';
 import { uuidV5, createApplicationUser } from './lib/dataverse-security.mjs';
 import { ensureCertificate } from './lib/dataverse-tls.mjs';
@@ -343,6 +368,8 @@ function postbackRedirect(res, response, portal) {
 import {
   siteHeaders,
   siteHttpPolicyDiagnostics,
+  siteUsesScriptNonce,
+  cspNonce,
   webFileHeaders,
   webFileDisposition,
   tokenHtmlHeaders,
@@ -386,6 +413,7 @@ import {
 } from './lib/native-postback.mjs';
 import { readVisitor, newVisitor, visitorCookieName } from './lib/visitor-session.mjs';
 import { handleNativeService, antiForgeryCookie, portalNotes } from './lib/native-services.mjs';
+import { handlePublishingPreview } from './lib/publishing-preview.mjs';
 import { organizationPrincipalContext } from './lib/dataverse-principal-context.mjs';
 import {
   antiForgeryHolder,
@@ -395,6 +423,13 @@ import {
   bootstrapVariant,
 } from './lib/platform-manifest.mjs';
 import { packEndpoints } from './lib/extensions.mjs';
+import {
+  dataSummaryBody,
+  dataSummarySource,
+  PORTAL_DATA_SUMMARY,
+  registerDataSummaryProvider,
+  summarizeData,
+} from './lib/portal-data-summary.mjs';
 import { keepIdleConnections } from './lib/idle-connections.mjs';
 import { invokePackMutation } from './lib/pack-endpoint-writes.mjs';
 import { externalFrameOrigins, portalContentSecurityPolicy } from './lib/content-policy.mjs';
@@ -405,6 +440,7 @@ import {
   portalDocumentAccess,
 } from './lib/permissions.mjs';
 import { handleWebApi } from './lib/webapi-handler.mjs';
+import { handlePortalFileApi } from './lib/portal-file-api.mjs';
 import {
   buildSiteTables,
   configureContactRoles,
@@ -643,12 +679,16 @@ function guardStalledBody(req, idleMs) {
   arm();
   return stop;
 }
-async function rawBody(req) {
+const MAX_RAW_BODY = 8 * 1024 * 1024;
+async function rawBody(req, limit = MAX_RAW_BODY) {
   const chunks = [];
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > 8 * 1024 * 1024) throw error('Request body exceeds 8 MiB.', 413);
+    if (size > limit) {
+      const limitLabel = limit === MAX_RAW_BODY ? '8 MiB' : limit / 1024 + ' KiB';
+      throw error(`Request body exceeds ${limitLabel}.`, 413);
+    }
     chunks.push(chunk);
   }
   req[requestBody] = Buffer.concat(chunks);
@@ -1249,6 +1289,7 @@ export async function createSimulator(options) {
     metadata: solutionData,
   });
   const packEndpointList = packEndpoints(projectPacks ?? (await discoverPacks({ portal: sourcePortal })));
+  const summaryProvider = collectPackExport(projectPacks ?? [], 'portalSearchSummary').get('provider')?.value;
   const matchPackEndpoint = (endpoint, pathname) => {
     endpoint.pattern.lastIndex = 0;
     return endpoint.pattern.exec(pathname);
@@ -1965,13 +2006,42 @@ export async function createSimulator(options) {
   // "all-requests" is accepted) gives cookie-less portal requests the configured identity.
   // The cookie is named after the listening port (paqvilo-mirage-auth-<port>): browsers share
   // cookies across ports, and every local runtime keeps its own session.
+  const localApplicationSessions = () => {
+    const { mode, pageMode } = store.state.simulator ?? {};
+    return (mode ?? 'local') === 'local' && (pageMode ?? 'local') === 'local';
+  };
+  /**
+   * A contact's state for the security stamp validator: { active, stamp } (adx_identity_securitystamp), null when the
+   * local data has no such contact, undefined when it has no contact data to validate against.
+   */
+  const contactSecurity = (contactId) => {
+    const mapping = store.state.mappings?.contact;
+    const rows = store.state.tables?.contact;
+    if (!mapping || !Array.isArray(rows)) return undefined;
+    const row = rows.find((item) => personaKey(item[mapping.idColumn ?? 'contactid']) === personaKey(contactId));
+    if (!row) return null;
+    const stamp = row.adx_identity_securitystamp;
+    return {
+      active: Number(row.statecode?.value ?? row.statecode ?? 0) === 0,
+      stamp: typeof stamp === 'string' && stamp ? stamp : null,
+    };
+  };
   const authSessions = createAuthSessions({
     name: () => authCookieName(localOrigin ? new URL(localOrigin).port : null),
     clock: () => store.clock.now(),
-    fixedLifetime: () => fixedApplicationSessionLifetime(portal),
+    lifetime: () => {
+      const policy = applicationSessionLifetime(portal);
+      return policy?.sliding && !localApplicationSessions() ? null : policy;
+    },
     identifyIssuedSessions: true,
+    securityStamp: (contactId) => contactSecurity(contactId)?.stamp ?? null,
   });
-  const privateSiteSessions = createAuthSessions({ name: () => `${authSessions.name}-site-access` });
+  // The private-site admission session ends at a fixed deadline (lib/external-login.mjs admissionSessionLifetime).
+  const privateSiteSessions = createAuthSessions({
+    name: () => `${authSessions.name}-site-access`,
+    clock: () => store.clock.now(),
+    lifetime: () => admissionSessionLifetime(portal),
+  });
   const privateSiteContacts = new Set(providerSettings.privateSiteContactIds?.map((id) => id.toLowerCase()));
   const privateSiteAdmission = () =>
     portal.observed?.siteVisibility === 'private' && providerSettings.privateSiteContactIds !== undefined;
@@ -2016,7 +2086,44 @@ export async function createSimulator(options) {
   };
   const readPortalSession = (req) => {
     const session = authSessions.read(req.headers.cookie);
-    return session?.credentialStamp && !localAccounts.validSession(session) ? { contactId: null } : session;
+    if (session?.credentialStamp) return localAccounts.validSession(session) ? session : { contactId: null };
+    return validatedSecurityStamp(session);
+  };
+  /**
+   * The security stamp validator (ASP.NET Identity SecurityStampValidator, Learn ValidateInterval): once the interval
+   * has passed since a contact session was last validated, the contact must still exist, be active and carry the
+   * security stamp the session was issued with; otherwise the session is anonymous. No cookie is issued for a passed
+   * validation (only a sliding renewal carries the new validation time), so a session validates on each request
+   * once its interval has passed.
+   */
+  const validatedSecurityStamp = (session) => {
+    if (!session?.contactId || typeof session.securityStamp !== 'string' || !Number.isSafeInteger(session.validatedAt))
+      return session;
+    if (!localApplicationSessions()) return session;
+    const now = store.clock.now();
+    if (now - session.validatedAt < securityStampInterval(portal)) return session;
+    const contact = contactSecurity(session.contactId);
+    if (contact === undefined) return session;
+    if (!contact?.active || securityStampDigest(contact.stamp) !== session.securityStamp) return { contactId: null };
+    return { ...session, validatedAt: now };
+  };
+  const appendApplicationSessionRenewal = (req, res, headers) => {
+    if (req.method === 'HEAD' || !browserRequest(req) || onAdmin(req) || onApps(req)) return;
+    if (
+      !String(headers['cache-control'] ?? '')
+        .split(',')
+        .some((part) => part.trim().toLowerCase() === 'no-store')
+    )
+      return;
+    // A sliding renewal also carries the time of the latest security stamp validation.
+    const renewal = authSessions.renewalCookie(trace.getStore()?.auth?.session);
+    if (!renewal || !currentIdentity().contactId) return;
+    const explicitCookies = headers['set-cookie'];
+    const written = explicitCookies ?? res.getHeader('set-cookie') ?? [];
+    const cookies = Array.isArray(written) ? written : [written];
+    if (cookies.some((cookie) => String(cookie).startsWith(authSessions.name + '='))) return;
+    if (explicitCookies === undefined) res.appendHeader('set-cookie', renewal);
+    else headers['set-cookie'] = [...cookies, renewal];
   };
   const pairedBrowserTokens = providerSettings.pairedBrowserTokens === true;
   const pairedPortalRequest = (req) => pairedBrowserTokens && !onAdmin(req) && !onApps(req) && browserRequest(req);
@@ -2250,28 +2357,29 @@ export async function createSimulator(options) {
     };
     return store.inTransaction() ? read() : store.readOperation(read);
   };
+  const localPortalFetch = (xml, identity, fetchOptions = {}) => {
+    const metadata = solutionMetadata;
+    return readPortalData(async () =>
+      normalizeMockLiquidFetchXml(
+        await store.withPortalReadSources(identity, { fetchXml: xml, right: fetchOptions.right }, () =>
+          store.fetchXml(xml, identity, {
+            platformLanguageCode: fetchOptions.language?.code ?? 'en-US',
+            portalRequest: true,
+            right: fetchOptions.right,
+            fetchCache: fetchOptions.fetchCache,
+            diagnostic: fetchOptions.diagnostic,
+            liquidTag: fetchOptions.liquidTag,
+          }),
+        ),
+        xml,
+        liquidMappings(metadata),
+        { lcid: fetchOptions.language?.lcid, globalChoices: portalGlobalChoices() },
+      ),
+    );
+  };
   const rawReadProvider = {
     async fetchXml(xml, identity, fetchOptions = {}) {
-      if (config().mode !== 'live') {
-        const metadata = solutionMetadata;
-        return readPortalData(async () =>
-          normalizeMockLiquidFetchXml(
-            await store.withPortalReadSources(identity, { fetchXml: xml, right: fetchOptions.right }, () =>
-              store.fetchXml(xml, identity, {
-                platformLanguageCode: fetchOptions.language?.code ?? 'en-US',
-                portalRequest: true,
-                right: fetchOptions.right,
-                fetchCache: fetchOptions.fetchCache,
-                diagnostic: fetchOptions.diagnostic,
-                liquidTag: fetchOptions.liquidTag,
-              }),
-            ),
-            xml,
-            liquidMappings(metadata),
-            { lcid: fetchOptions.language?.lcid, globalChoices: portalGlobalChoices() },
-          ),
-        );
-      }
+      if (config().mode !== 'live') return localPortalFetch(xml, identity, fetchOptions);
       requireRenderSource({ mutable: true });
       const entity = parseFetchXml(xml).children.find((n) => n.name === 'entity')?.attrs.name;
       if (!entity) throw error('FetchXML requires a root entity.');
@@ -2401,7 +2509,7 @@ export async function createSimulator(options) {
     const user = store.tableRows('systemuser').find((row) => row.systemuserid === id);
     return organizationPrincipalContext(store, user);
   };
-  const listWorkflowPrincipal = async (identity) => {
+  const portalWorkflowPrincipal = async (identity) => {
     const mapped = store.portalAuthorization?.principal(identity);
     if (mapped?.user) return organizationPrincipalContext(store, mapped.user, { caller: mapped.caller });
     return applicationWorkflowPrincipal();
@@ -2409,8 +2517,33 @@ export async function createSimulator(options) {
   const runListWorkflow = (input) => {
     const run = organization.api.executePortalListWorkflow;
     if (!run) throw error('Classic workflow execution is unavailable.', 501, 'WorkflowUnsupported');
-    return run({ ...input, principal: listWorkflowPrincipal });
+    return run({ ...input, principal: portalWorkflowPrincipal });
   };
+  const canRunFormWorkflow = (workflowId, entity) =>
+    config().mode !== 'live' &&
+    !store.recordPipeline?.virtualProviders?.status(entity)?.virtual &&
+    organization.api.hasPortalFormWorkflow?.(workflowId, entity) === true;
+  const runFormWorkflow = ({ verify, ...input }) => {
+    const run = organization.api.executePortalFormWorkflow;
+    const assertLocal = () => {
+      try {
+        verify?.();
+      } catch (cause) {
+        // Preserve the portal admission error through the classic workflow failure envelope.
+        throw new DataError(cause.message, cause.status, cause.code, cause.details);
+      }
+      if (!run || config().mode === 'live')
+        throw new DataError('Local Basic Form workflow execution is unavailable.', 501, 'WorkflowUnsupported');
+    };
+    assertLocal();
+    return run({ ...input, principal: portalWorkflowPrincipal, verify: assertLocal });
+  };
+  // A Basic Form record action's Dataverse messages run as the site's application user (the legacy portal service context).
+  const runFormMessage = (input) =>
+    organizationCustomApi(organization, {
+      principal: portalApplicationUser,
+      origin: dataverse?.origin ?? localOrigin,
+    })(input);
   // Server-object bridges of exported server logic (exported-operations.mjs runExportedServerLogic `services`).
   const serverLogicServices = () => ({
     // Enhanced authorization: the visitor's mapped Dataverse user (impersonation; portal-authorization.mjs), else the application user.
@@ -2492,7 +2625,8 @@ export async function createSimulator(options) {
         }
       });
       if (failure) throw failure;
-      return value;
+      // A run that waited before its Response: the request waits for it outside the transaction.
+      return awaitPortalFlowResponse(store, value);
     }
     return packHandlerAnswer(
       {
@@ -2599,6 +2733,11 @@ export async function createSimulator(options) {
           config().mode !== 'live'
             ? store.associate(entity, id, navigation, targetId, identity)
             : associateFormRecord(entity, id, navigation, targetId, identity),
+        // The live bridge writes through the portal Web API, which creates activity parties only as a deep insert of
+        // their activity (form-service.mjs, Is Activity Party).
+        get activityPartyDeepInsert() {
+          return config().mode === 'live';
+        },
         // A submission's record, associations and notes form one unit. Locally the
         // store transaction restores everything on failure; the live bridge has no
         // transaction, so the records the unit created are deleted again.
@@ -2788,6 +2927,16 @@ export async function createSimulator(options) {
           })
         );
       },
+      // knowledge.articles keeps the articles that share a content access level with the visitor when the site filters.
+      knowledgeArticleAccess: () =>
+        knowledgeArticleAccess({
+          portal: source,
+          store,
+          identity: currentIdentity(),
+          config: config(),
+          readProvider,
+          diagnostic: recordDiagnostic,
+        }),
       previewFetchXml: mutableRenderInput((xml, _user, _request, fetchOptions) => {
         if (config().mode === 'live')
           throw error(
@@ -2854,6 +3003,9 @@ export async function createSimulator(options) {
             portal,
             store,
             readProvider,
+            // The searchindex tag reads storage-backed note bodies as that visitor (lib/portal-search.mjs).
+            attachmentReader: (identity) => portalAttachmentReader(identity, organizationHost.attachmentBody),
+            canRunFormWorkflow,
             args: typeof args === 'string' ? { name: args } : (args ?? {}),
             serviceFixtures: organizationHost.providers.serviceFixtures,
             metadata: modelMetadata(),
@@ -3586,7 +3738,7 @@ export async function createSimulator(options) {
         preset,
       });
       try {
-        const signed = opened.runtime.signIn(persona.contactId);
+        const signed = opened.runtime.signIn(persona.contactId, { browserSession: true });
         const { runtime, ...description } = opened;
         return {
           ...description,
@@ -3595,6 +3747,7 @@ export async function createSimulator(options) {
           path: targetPath,
           url: opened.origin + targetPath,
           cookieHeader: signed.cookieHeader,
+          setCookie: signed.setCookie,
           identity: signed.identity,
         };
       } catch (cause) {
@@ -3602,7 +3755,10 @@ export async function createSimulator(options) {
         throw cause;
       }
     }
+    // A launched persona is a browser session: it is issued like a sign-in, with the site's lifetime and the contact's
+    // security stamp (authSessions.cookie), never as a programmatic signIn() value.
     const session = signInSession(persona.contactId);
+    const setCookie = authSessions.cookie(session);
     return {
       origin: localOrigin,
       url: localOrigin + targetPath,
@@ -3611,7 +3767,8 @@ export async function createSimulator(options) {
       contactId: persona.contactId,
       isolated: Boolean(personaInstance),
       browser: definition?.browser ?? {},
-      cookieHeader: authSessions.name + '=' + authSessions.value(session),
+      cookieHeader: setCookie.split(';')[0],
+      setCookie,
       identity: describeSession(session),
     };
   };
@@ -3681,6 +3838,84 @@ export async function createSimulator(options) {
   // Render provenance is established for documents a browser parses: top-level and framed navigations, never data
   // callers (XHR fragments keep their original bytes).
   const provenanceDestination = (req) => ['document', 'iframe', 'frame'].includes(req.headers['sec-fetch-dest']);
+  // The script nonce of a page response under a nonce policy (lib/response-headers.mjs siteUsesScriptNonce), with the
+  // marker that names the rendered scripts left without it and the marker the injectors put on the scripts they add
+  // afterwards (`injected`: the only scripts nonceInjectedScripts gives the nonce); null without such a policy.
+  const pageScriptNonce = (site) =>
+    siteUsesScriptNonce(site)
+      ? { nonce: cspNonce(), pending: scriptNoncePendingAttribute(), injected: scriptNonceInjectedAttribute() }
+      : null;
+  // Script elements and inline handlers that render provenance does not prove were written by the exported source or
+  // the platform keep no nonce (lib/render-provenance.mjs): one finding per path.
+  const recordWithheldScriptNonces = (scriptPolicy, pathname) => {
+    const withheld = scriptPolicy?.withheld ?? [];
+    if (!withheld.length) return;
+    if (diagnostics.some((entry) => entry.code === 'PORTAL_CSP_NONCE_WITHHELD' && entry.path === pathname)) return;
+    const scripts = withheld.filter((entry) => entry.kind === 'script').length;
+    recordDiagnostic({
+      code: 'PORTAL_CSP_NONCE_WITHHELD',
+      severity: 'warning',
+      path: pathname,
+      scripts,
+      handlers: withheld.length - scripts,
+      message:
+        'The page has script elements or inline event handlers that the exported source and the platform did not write ' +
+        '(data output, a script tag with Liquid inside it, or a part of a runtime-built document it cannot attribute): ' +
+        'the local nonce policy blocks them. Learn describes the hosted nonce as injected into Liquid output after rendering.',
+    });
+  };
+  // The script nonces of a document the runtime builds outside the page layout (modal form, quick view, search page,
+  // custom error page) under a nonce policy. `proved` is what its builder bound (platformDocumentTags, component
+  // provenance, exported snippets) before any blanket platform pass; when it is not the document's text, nothing is
+  // proved and every script stays without the nonce. With `provenance` (the document's platform fragment) the proof is
+  // finalized in the same pass. Returns { html, provenance?, scriptPolicy }, or null without a nonce policy.
+  const builtDocumentNonces = (scriptNonce, { html, proved = null, provenance = null, index, pathname }) => {
+    if (!scriptNonce) return null;
+    const trust = proved?.text === html ? proved : { text: html, intervals: [] };
+    const decided = provenance
+      ? finalizePortalProvenance({ fragment: provenance, index, scriptNonce: { ...scriptNonce, trust } })
+      : applyScriptNonces({ fragment: trust, index, nonce: scriptNonce.nonce, pending: scriptNonce.pending });
+    recordWithheldScriptNonces(decided.scriptPolicy, pathname);
+    return decided;
+  };
+  // The site policy headers of a built document whose scripts got the response's nonce (none without one).
+  const builtDocumentPolicyHeaders = (scriptNonce, scriptPolicy, options = {}) => {
+    if (!scriptNonce || !scriptPolicy) return {};
+    const headers = siteHeaders(portal, {
+      ...options,
+      nonce: scriptNonce.nonce,
+      handlerHashes: scriptPolicy.handlerHashes,
+    });
+    return Object.fromEntries(
+      ['content-security-policy', 'content-security-policy-report-only']
+        .filter((name) => headers[name])
+        .map((name) => [name, headers[name]]),
+    );
+  };
+  // A built document whose final statement keeps its reviewed text (CodeQL dispositions match it) answers through this
+  // writer: the toolkit's scripts the statement adds get the nonce (nonceInjectedScripts) and the proof is refreshed on
+  // the body actually sent.
+  const answerWithScriptNonces = (res, scriptNonce, refreshProof) => {
+    if (!scriptNonce) return;
+    const end = res.end;
+    res.end = function (body, ...rest) {
+      res.end = end;
+      const sent = typeof body === 'string' ? refreshProof(nonceInjectedScripts(body, scriptNonce)) : body;
+      return end.call(this, sent, ...rest);
+    };
+  };
+  // A document's server form as its builder proves it: the form's own elements (outside its content range) are the
+  // builder's (`tags`), the content keeps the component provenance of the form it hosts (serverFormFragment), and the
+  // last `tail` characters of the content are markup the builder appended to it (a startup script).
+  const builtFormFragment = (form, content, range, tags, tail = 0) => {
+    const hosted = content && range ? serverFormFragment(form, content, range) : form;
+    const fragment = typeof hosted === 'string' ? { text: hosted, intervals: [] } : hosted;
+    if (!range) return fragment;
+    const contentEnd = range.offset + range.length;
+    return withPlatformTags(fragment, (tag) =>
+      tag.start >= range.offset && tag.start < contentEnd - tail ? null : tags(tag),
+    );
+  };
   // Stores a document's provenance proof, names it in the response headers and returns a function that revalidates
   // its script proofs against the final response body (after the toolkit's own injections).
   const publishRenderProof = (headers, proof) => {
@@ -3697,14 +3932,21 @@ export async function createSimulator(options) {
     };
   };
   // The provenance of a document the runtime generates outside the page layout (platform-shell:<part>).
-  const platformDocumentProof = (req, html, part, sourceRefIds = []) => {
+  // With `scriptNonce` (a nonce policy) the document is also decided, proving nothing: such a document has no builder
+  // proof, so no script in it gets the nonce (builtDocumentNonces).
+  const platformDocumentProof = (req, html, part, sourceRefIds = [], scriptNonce = null) => {
     if (!provenanceDestination(req) || !isHtmlDocument(html)) return null;
     const index = renderer.sourceIndex();
-    return finalizePortalProvenance({
-      fragment: platformDocumentFragment(html, { portal, index, part, sourceRefIds }),
-      index,
-    });
+    const fragment = platformDocumentFragment(html, { portal, index, part, sourceRefIds });
+    if (scriptNonce)
+      return builtDocumentNonces(scriptNonce, { html, provenance: fragment, index, pathname: req.url.split('?')[0] });
+    return finalizePortalProvenance({ fragment, index });
   };
+  // A runtime-built document that its builder does not prove (the search page, a custom error page) under a nonce
+  // policy: its proof when it has one, else its decisions alone. Returns { html, provenance?, scriptPolicy? } or null.
+  const unprovedDocument = (req, html, part, sourceRefIds, scriptNonce) =>
+    platformDocumentProof(req, html, part, sourceRefIds, scriptNonce) ??
+    builtDocumentNonces(scriptNonce, { html, index: renderer.sourceIndex(), pathname: req.url.split('?')[0] });
   const scriptProofs = new Map();
   // Page inspection answers with the identity that a portal request for the inspected page,
   // carrying the same cookies, would get (requestAuth): the session, otherwise anonymous.
@@ -4144,11 +4386,11 @@ export async function createSimulator(options) {
     }
   };
   // Rehydration reads the raw row and storage, so require the caller's column read before touching the bytes.
-  const noteAttachmentBody = (identity) => (logical, row, options) => {
+  const portalAttachmentReader = (identity, read) => (logical, row, options) => {
     const column = ATTACHMENT_COLUMNS[logical];
     const id = row?.[`${logical}id`];
     if (!column || store.portalAuthorization?.canReadRawColumn(identity, logical, column, id) === false) return null;
-    return organizationHost.attachmentBody(logical, row, options);
+    return read(logical, row, options);
   };
   // /_sim/api/messages and /_sim/api/outbox (sim-messaging-routes.mjs), created once the organization exists.
   let messagingRoutes = null;
@@ -4884,8 +5126,8 @@ export async function createSimulator(options) {
       return json(res, 200, personasPayload());
     }
     if (method === 'POST' && relative === '/personas/launch') {
-      const result = await launchPersona(await jsonObjectBody(req));
-      return json(res, 200, result, { 'set-cookie': result.cookieHeader + '; Path=/; HttpOnly; SameSite=Lax' });
+      const { setCookie, ...result } = await launchPersona(await jsonObjectBody(req));
+      return json(res, 200, result, { 'set-cookie': setCookie });
     }
     if (method === 'DELETE' && relative.startsWith('/persona-runtimes/'))
       return json(
@@ -5626,6 +5868,44 @@ export async function createSimulator(options) {
       siteTables.cache = { portal, state: store.state, value: buildSiteTables(portal, store.state) };
     return siteTables.cache.value;
   }
+  const webApiReadDeps = (identity) => ({
+    store,
+    portal: {
+      ...portal,
+      webApiViews: solutionMetadata.views,
+      // The public Web API types columns from the Solution's own metadata (webApiPolicy's Solution-only rule).
+      // A table that only a user mapping declares contributes no column types here, unlike modelMetadata()
+      // which serves layouts and Liquid.
+      webApiEntities: solutionMetadata.entities,
+      webApiIdentity: identity,
+    },
+    identity,
+    metadata: (logical) => solutionMetadata.entities?.[logical]?.fields,
+  });
+  const dataSummaryProvider = registerDataSummaryProvider(projectPacks);
+  async function summarizePortalData(req, res, url, origin) {
+    if (req.method !== 'POST') throw error('Data summarization requires POST.', 405);
+    if (req.headers.origin && req.headers.origin !== origin) throw error('Cross-origin requests are not allowed.', 403);
+    assertPortalToken(req.headers.__requestverificationtoken, headerToken(req));
+    const request = await dataSummaryBody(req);
+    const source = await readPortalData(() => {
+      if (config().mode === 'live') throw error('The data summarization provider requires local data.', 501);
+      const session = trace.getStore()?.auth?.session;
+      const identity = session?.contactId ? currentIdentity() : identityFor(null);
+      // A recommendation continuation is bound to this browser: the sign-in session, else the anonymous visitor cookie.
+      const visitor = session?.contactId
+        ? `contact:${session.contactId}:${session.sessionId ?? ''}`
+        : `visitor:${readVisitor(req.headers.cookie, visitorName()) ?? ''}`;
+      return dataSummarySource(url, request, {
+        ...webApiReadDeps(identity),
+        origin,
+        visitor,
+        prefer: req.headers.prefer,
+      });
+    });
+    const answer = await summarizeData(dataSummaryProvider, source);
+    return json(res, 200, answer, { 'odata-version': '4.0', 'cache-control': 'no-store' });
+  }
   async function api(req, res, url, { forceLocal = false } = {}) {
     const context = trace.getStore();
     if (context) {
@@ -5637,25 +5917,14 @@ export async function createSimulator(options) {
     // writes and the documented error envelope live in lib/webapi-handler.mjs.
     const identity = currentIdentity();
     return handleWebApi(req, res, url, {
-      store,
-      attachmentBody: noteAttachmentBody(identity),
+      ...webApiReadDeps(identity),
+      attachmentBody: portalAttachmentReader(identity, organizationHost.attachmentBody),
+      captureAttachmentBody: portalAttachmentReader(identity, organizationHost.captureAttachmentBody),
       webApiErrorTemplates: registeredWebApiErrorTemplates,
-      portal: {
-        ...portal,
-        webApiViews: solutionMetadata.views,
-        // The public Web API types columns from the Solution's own metadata (webApiPolicy's Solution-only rule).
-        // A table that only a user mapping declares contributes no column types here, unlike modelMetadata()
-        // which serves layouts and Liquid.
-        webApiEntities: solutionMetadata.entities,
-        webApiIdentity: identity,
-      },
-      identity,
       csrf: headerToken(req),
       origin: url.origin,
       // Portal scripts address @odata.id targets on the live portal origin.
       origins: [url.origin, live.origin].filter(Boolean),
-      // Same Solution-only column types as webApiEntities above.
-      metadata: (logical) => solutionMetadata.entities?.[logical]?.fields,
       // The organization's metadata service answers the code component EntityDefinitions read (portal-entity-definitions.mjs).
       entityMetadata: () => organization?.metadata ?? null,
       json,
@@ -5738,8 +6007,8 @@ export async function createSimulator(options) {
       ...extra,
     };
   };
-  const sendSession = (res, session, extra = {}) => {
-    const header = authSessions.cookie(session);
+  const sendSession = (res, session, { allowSliding = true, ...extra } = {}) => {
+    const header = authSessions.cookie(session, { allowSliding });
     const name = authSessions.name;
     const cookie = { name, value: parseCookies(header)[name], path: '/', httpOnly: true, sameSite: 'Lax' };
     return json(res, 200, describeSession(session, { ...extra, cookie }), { 'set-cookie': header });
@@ -5754,7 +6023,7 @@ export async function createSimulator(options) {
     if (unknown.length) throw error(`Unknown web roles: ${unknown.join(', ')}`, 400, 'UNKNOWN_WEB_ROLES');
     const { roles: _previous, ...base } = auth.session; // NOSONAR: binding is excluded from the rest object or is a placeholder
     const session = body.roles === null ? base : { ...base, roles: [...new Set(body.roles)] };
-    return sendSession(res, session);
+    return sendSession(res, session, { allowSliding: false });
   };
   async function sessionApi(req, res, url) {
     const relative = url.pathname.slice('/__sim/api/session'.length).replace(/\/$/, '');
@@ -5988,14 +6257,26 @@ export async function createSimulator(options) {
     let html = applied.html;
     // A browser document gets the render provenance of the composed page: the exported header, footer and copy keep
     // their sources, the account content is the sign-in page's (platform-shell:sign-in).
-    const traced = provenanceDestination(req) ? shell.value.provenanceForEdited(rendered, applied.edits) : null;
+    const scriptNonce = pageScriptNonce(portal);
+    const traced = provenanceDestination(req)
+      ? shell.value.provenanceForEdited(rendered, applied.edits, { scriptNonce })
+      : null;
     if (traced) html = traced.html;
+    let scriptPolicy = traced?.scriptPolicy ?? null;
+    if (scriptNonce && !scriptPolicy) {
+      const nonced = shell.value.scriptNoncesFor(rendered, scriptNonce, applied.edits);
+      if (nonced) ({ html, scriptPolicy } = nonced);
+    }
+    recordWithheldScriptNonces(scriptPolicy, url.pathname);
+    // The scripts the injectors add below carry the response's marker: they are the ones that get the nonce.
+    const injected = { injectedScripts: scriptPolicy ? scriptNonce.injected : null };
     if (rendered.isDocument !== false) {
-      html = injectRuntimeDependencies(html, sourceDependencies);
+      html = injectRuntimeDependencies(html, sourceDependencies, [], injected);
       html = injectLocalHead(
-        injectRuntimeCompatibility(html, sourceDependencies),
+        injectRuntimeCompatibility(html, sourceDependencies, [], injected),
         localOverrides,
         traced?.provenance ?? null,
+        injected,
       );
       html = injectRuntime(
         html,
@@ -6006,13 +6287,20 @@ export async function createSimulator(options) {
         siteLanguageCodes(),
         {
           rootTraceId: trace.getStore()?.traceSpan?.traceId,
+          ...injected,
         },
       );
     }
+    if (scriptPolicy) html = nonceInjectedScripts(html, scriptNonce);
     const headers = {
       'content-type': 'text/html; charset=utf-8',
       ...PAGE_HEADERS,
-      ...siteHeaders(portal, { confinement: confinementPolicy(), kind: 'page' }),
+      ...siteHeaders(portal, {
+        confinement: confinementPolicy(),
+        kind: 'page',
+        nonce: scriptNonce?.nonce,
+        handlerHashes: scriptPolicy?.handlerHashes,
+      }),
       'x-sim-route': route,
     };
     const refreshProof = publishRenderProof(headers, traced?.provenance);
@@ -6094,7 +6382,7 @@ export async function createSimulator(options) {
       traceSignIn(result.contactId, 'persona');
       res.writeHead(302, {
         location: result.url,
-        'set-cookie': result.cookieHeader + '; Path=/; HttpOnly; SameSite=Lax',
+        'set-cookie': result.setCookie,
         'cache-control': 'no-store',
       });
       return res.end();
@@ -6190,8 +6478,13 @@ export async function createSimulator(options) {
     requestTokens,
     authCookieName: () => authSessions.name,
     signedSession: readPortalSession,
-    signIn: (res, account, location, cookies) =>
-      localSignInResponse(res, account.contactId, location, cookies, { credentialStamp: account.stamp }),
+    canRememberSession: () => localApplicationSessions() && Boolean(applicationSessionLifetime(portal)),
+    canRememberBrowser: localApplicationSessions,
+    signIn: (res, account, location, cookies, { persistent } = {}) =>
+      localSignInResponse(res, account.contactId, location, cookies, {
+        credentialStamp: account.stamp,
+        persistent,
+      }),
     renderPage(req, res, _url, { status, content, route }) {
       res.writeHead(status, {
         'content-type': 'text/html; charset=utf-8',
@@ -6376,6 +6669,38 @@ export async function createSimulator(options) {
         `${CONTEXT_LANGUAGE_COOKIE}=${encodeURIComponent(code)}; Path=/; HttpOnly; SameSite=Lax`,
       );
   };
+  const handleSearchSummary = async (req, res, origin) => {
+    if (req.method !== 'POST') throw error('Search summary requires POST.', 405);
+    if (req.headers.origin && req.headers.origin !== origin) throw error('Cross-origin requests are not allowed.', 403);
+    assertPortalToken(req.headers.__requestverificationtoken, headerToken(req));
+    const query = await readSummaryQuery(req, rawBody);
+    const sources = await readPortalData(() => {
+      if (config().mode === 'live') throw error('The search summary provider requires local data.', 501);
+      const identity = trace.getStore()?.auth?.session?.contactId ? currentIdentity() : identityFor(null);
+      return searchSummarySources({
+        portal,
+        store,
+        query,
+        origin,
+        identity,
+        readProvider: { fetchXml: localPortalFetch },
+        metadata: modelMetadata(),
+        config: config(),
+        canReadPage(citation) {
+          const route = languageRoute(portal, citation, 'GET');
+          const target = route?.kind === 'rewrite' ? route.pathname : citation.pathname;
+          const locale = requestLocale(req, citation, route?.code, identity);
+          return pageAccess(portal, target, identity, {
+            previewCookie: false,
+            now: store.clock.now(),
+            languageId: locale?.id,
+          }).allowed;
+        },
+      });
+    });
+    const answer = await summarizeSearch(summaryProvider, query, sources);
+    return json(res, 200, answer, { 'cache-control': 'no-store' });
+  };
   /* NOSONAR: single-pass routine, splitting it would change shared state */ async function handle(req, res) {
     // Normalize the admin alias before security checks so rejected requests
     // keep the same JSON error contract for both spellings.
@@ -6392,8 +6717,23 @@ export async function createSimulator(options) {
       req.headers.origin !== ownOrigin &&
       !adminOriginAccepted &&
       !externalSignIn?.acceptsOrigin(req)
-    )
+    ) {
+      // The other one: a credential-free read of an authored page the site was observed sharing (lib/page-cors.mjs).
+      if (
+        !onAdmin(req) &&
+        !onApps(req) &&
+        answerPageCors(req, res, {
+          portal,
+          live: config().mode === 'live' || config().pageMode === 'live',
+          privateAdmission: privateSiteAdmission(),
+          readable: (page) =>
+            pageAccess(portal, page, identityFor(null), { previewCookie: false, now: store.clock.now() }).allowed,
+          diagnostic: recordDiagnostic,
+        })
+      )
+        return;
       throw error('Cross-origin requests are not allowed.', 403);
+    }
     if (req.headers['sec-fetch-site'] === 'cross-site' && isWrite(req.method))
       throw error('Cross-site writes are not allowed.', 403);
     const url = requestTargetUrl(req.url, localOrigin);
@@ -6531,14 +6871,24 @@ export async function createSimulator(options) {
         typeof body?.pageUrl === 'string' && body.pageUrl.startsWith('/') ? body.pageUrl : '/',
         localOrigin,
       );
-      return change(async () => {
-        const stateAction = body?.action === 'activate' || body?.action === 'deactivate';
+      const workflowAction = body?.action === 'workflow';
+      const messageAction = Boolean(NATIVE_STATE_ACTIONS[body?.action]?.messages);
+      const submit = async () => {
+        // Every record action (Activate, Close Case, Create Order, ...) is pinned to the current source epoch.
+        const stateAction =
+          typeof body?.action === 'string' && !['submit', 'previous', 'workflow'].includes(body.action);
         const ensureActionSource =
-          stateAction && config().mode !== 'live' ? () => requirePortalSourceEpoch(sourceEpoch) : null;
+          (stateAction || workflowAction) && config().mode !== 'live'
+            ? () => requirePortalSourceEpoch(sourceEpoch)
+            : null;
         ensureActionSource?.();
         const result = await submitPortalForm(formRoute[1], formRoute[2], body, {
           ...formSubmissionOptions(formIdentity, visitor, pageTarget),
           ensureActionSource,
+          runFormWorkflow: workflowAction ? runFormWorkflow : null,
+          runFormMessage: messageAction && config().mode !== 'live' ? runFormMessage : null,
+          hostChange: change,
+          workflowIdentity: workflowAction ? currentIdentity : null,
         });
         return json(
           res,
@@ -6554,9 +6904,19 @@ export async function createSimulator(options) {
           },
           result.recordId ? { entityid: result.recordId } : {},
         );
-      });
+      };
+      // The workflow runner and a record action's Dataverse messages own their host changes and store transactions.
+      return workflowAction || messageAction ? submit() : change(submit);
     }
     if (url.pathname.startsWith('/__sim/api')) mirrorHead(req);
+    // This browser's classic publishing preview cookie (lib/publishing-preview.mjs).
+    if (/^\/__sim\/api\/session\/preview\/?$/.test(url.pathname))
+      return handlePublishingPreview(req, res, {
+        portal,
+        identity: identityFor(trace.getStore()?.auth?.session),
+        csrf: sameToken(req.headers['x-sim-csrf'], adminToken),
+        body: () => jsonBody(req),
+      });
     // Browser sign-in sessions : GET /__sim/api/session, POST .../sign-in, .../sign-out.
     if (/^\/__sim\/api\/session(?:\/|$)/.test(url.pathname)) return sessionApi(req, res, url);
     if (url.pathname.startsWith('/__sim/api')) return admin(req, res, url);
@@ -6598,7 +6958,7 @@ export async function createSimulator(options) {
         const result = await launchPersona({ personaKey: body.personaKey, returnUrl: body.ReturnUrl });
         res.writeHead(302, {
           location: result.url,
-          'set-cookie': result.cookieHeader + '; Path=/; HttpOnly; SameSite=Lax',
+          'set-cookie': result.setCookie,
           'cache-control': 'no-store',
         });
         return res.end();
@@ -6678,13 +7038,16 @@ export async function createSimulator(options) {
       const token = requestTokens.issue(req, res);
       const paired = pairedPortalRequest(req);
       if (paired && token) res.appendHeader('set-cookie', antiForgeryCookie(token));
-      res.writeHead(200, {
+      const headers = {
         'content-type': 'text/html; charset=utf-8',
         ...tokenHtmlHeaders(portal, { confinement: confinementPolicy() }),
         ...(paired ? {} : { 'set-cookie': antiForgeryCookie(token) }),
-      });
+      };
+      if (req.method === 'GET') appendApplicationSessionRenewal(req, res, headers);
+      res.writeHead(200, headers);
       return res.end(`<input name="__RequestVerificationToken" type="hidden" value="${token}" />`);
     }
+    if (summaryProvider && url.pathname === PORTAL_SEARCH_SUMMARY) return handleSearchSummary(req, res, ownOrigin);
     const endpoint = (config().endpoints ?? []).find(
       (e) =>
         e.enabled !== false &&
@@ -6722,6 +7085,12 @@ export async function createSimulator(options) {
     // The native address a Liquid tag host names (code-components.mjs pcfWebResourceGuid) of a served resource.
     const pcfWebResource = /^\/_pcfwebresource\/([0-9a-f-]{36})$/i.exec(url.pathname);
     const pcfWebResourceKey = pcfWebResource && pcfWebResourceAsset(codeComponents, pcfWebResource[1]);
+    // Only the bundle and the style sheet are served there; an image, HTML or RESX resource of the control answers
+    // 403 with an empty body (captured, paqvilo-developer pcf-parity summary-F section 6).
+    if (pcfWebResourceKey && !['code', 'css'].includes(codeComponents.assets.get(pcfWebResourceKey)?.kind)) {
+      res.writeHead(403, { 'cache-control': 'no-cache, no-store, must-revalidate', 'content-length': '0' });
+      return res.end();
+    }
     if (pcfWebResourceKey)
       return await servePcfResource(req, res, {
         assets: codeComponents.assets,
@@ -6796,31 +7165,42 @@ export async function createSimulator(options) {
         metadata: modelMetadata(),
         config: config(),
         identity: currentIdentity(),
+        attachmentBody: portalAttachmentReader(currentIdentity(), organizationHost.attachmentBody),
         params: url.searchParams,
         languageCode: locale?.code,
         action: searchLanguage?.kind === 'rewrite' ? `/${encodeURIComponent(searchLanguage.code)}/search/` : '/search/',
         diagnostic: (entry) => recordDiagnostic({ ...entry, path: url.pathname }),
       });
       // The same page response headers as every portal page: site HTTP/* settings, the confinement CSP, nosniff.
-      const searchHeaders = {
-        'content-type': 'text/html; charset=utf-8',
-        ...PAGE_HEADERS,
-        ...siteHeaders(portal, { confinement: confinementPolicy(), kind: 'page' }),
-        'x-sim-route': 'portal-search-local',
-      };
       // The default search page is the platform's (platform-shell:search-page), configured by the Search/* settings.
+      // Under a nonce policy it carries the policy too; its builder proves no script, so none gets the nonce.
       const index = renderer.sourceIndex(locale?.id);
-      const traced = platformDocumentProof(
+      const scriptNonce = pageScriptNonce(portal);
+      const traced = unprovedDocument(
         req,
         html,
         'search-page',
         (portal.records ?? [])
           .filter((record) => record.kind === 'sitesetting' && /^search\//i.test(String(record.name ?? '')))
           .map((record) => index.source(record, '$record')?.id),
+        scriptNonce,
       );
+      const searchHeaders = {
+        'content-type': 'text/html; charset=utf-8',
+        ...PAGE_HEADERS,
+        ...siteHeaders(portal, {
+          confinement: confinementPolicy(),
+          kind: 'page',
+          nonce: traced?.scriptPolicy ? scriptNonce.nonce : null,
+          handlerHashes: traced?.scriptPolicy?.handlerHashes,
+        }),
+        'x-sim-route': 'portal-search-local',
+      };
       const refreshProof = publishRenderProof(searchHeaders, traced?.provenance);
+      appendApplicationSessionRenewal(req, res, searchHeaders);
       res.writeHead(200, searchHeaders);
-      return res.end(refreshProof(traced?.html ?? html));
+      const searchBody = traced?.html ?? html;
+      return res.end(refreshProof(traced?.scriptPolicy ? nonceInjectedScripts(searchBody, scriptNonce) : searchBody));
     }
     const flow = operationPortal().cloudFlows.find(
       (record) =>
@@ -6952,11 +7332,9 @@ export async function createSimulator(options) {
           bootstrap: sourceStyles.bootstrap || resource(bootstrapFile?.url ?? '/css/bootstrap.min.css'),
           renderStyles: (paths) => paths.map(resource).join(''),
         });
-        const styles =
+        const quickStyles =
           quickPlatform.remaining.stylesheets.map(resource).join('') +
-          formContentStyles(sourceStyles.content, config().shellProfile) +
-          layout.head +
-          quickPlatform.headEnd;
+          formContentStyles(sourceStyles.content, config().shellProfile);
         for (const item of formStyleDiagnostics(body, config().shellProfile))
           recordDiagnostic({ ...item, path: url.pathname });
         // The form posts back to the document's own path (./{websiteId}?query); only the entity form view script loads.
@@ -6974,14 +7352,21 @@ export async function createSimulator(options) {
           },
         });
         const quickIndex = renderer.sourceIndex();
+        // A nonce policy (the 'nonce' placeholder): the quick view's own scripts get the response's nonce.
+        const scriptNonce = pageScriptNonce(portal);
+        const proving = provenanceDestination(req) || Boolean(scriptNonce);
+        // The markup the builder writes itself, bound as the document's platform pass binds it (platformDocumentTags).
+        const quickTags = platformDocumentTags({ portal, index: quickIndex, part: 'quick-view' });
+        const built = (text) => (proving ? platformFragment(text, quickTags) : text);
         // The quick view's own markup names the quick view form, its fields and the host form control
         // (lib/component-provenance.mjs); the document around it is the platform's (platform-shell:quick-view), its
         // chrome and anti-forgery holder their own shell parts.
-        const quickForm = provenanceDestination(req)
-          ? serverFormFragment(
+        const quickForm = proving
+          ? builtFormFragment(
               form,
               componentRenderResult(body, { components: quickComponents, index: quickIndex, tag: 'quickform' }),
               quickContent,
+              quickTags,
             )
           : form;
         const quickFragment = joinRenderFragments(
@@ -6989,34 +7374,53 @@ export async function createSimulator(options) {
           headStartFragment(quickPlatform, {
             index: quickIndex,
             bootstrapMarkup: sourceStyles.bootstrapSnippet ? sourceStyles.bootstrap : null,
+            ...(proving ? { tags: quickTags } : {}),
           }),
-          `${styles}</head>${layout.body}${quickPlatform.bodyOpen}`,
+          built(quickStyles),
+          proving ? layout.headFragment : layout.head,
+          built(quickPlatform.headEnd),
+          `</head>${layout.body}`,
+          built(quickPlatform.bodyOpen),
           layout.chromeFragment ?? layout.chrome,
           platformFragment(antiForgeryHolder(quickAntiForgeryPath), { component: shellComponent('antiforgery') }),
-          `${quickPlatform.bodyStart}<div id="content-container" class="container quickform"><div id="content">`,
+          built(`${quickPlatform.bodyStart}<div id="content-container" class="container quickform"><div id="content">`),
           quickForm,
-          `</div></div>${quickPlatform.afterContent}${quickPlatform.afterFooter}</body></html>`,
+          built(`</div></div>${quickPlatform.afterContent}${quickPlatform.afterFooter}</body></html>`),
         );
-        const quickTraced = provenanceDestination(req)
-          ? finalizePortalProvenance({
-              fragment: platformDocumentFragment(quickFragment, { portal, index: quickIndex, part: 'quick-view' }),
-              index: quickIndex,
-            })
+        const quickProvenance = provenanceDestination(req)
+          ? platformDocumentFragment(quickFragment, { portal, index: quickIndex, part: 'quick-view' })
           : null;
+        const quickNonced = builtDocumentNonces(scriptNonce, {
+          html: quickFragment.text,
+          proved: quickFragment,
+          provenance: quickProvenance,
+          index: quickIndex,
+          pathname: url.pathname,
+        });
+        // Without a proof the decided document stands in for it (its html, no provenance).
+        let quickTraced = quickNonced;
+        if (quickProvenance && !quickTraced)
+          quickTraced = finalizePortalProvenance({ fragment: quickProvenance, index: quickIndex });
         // The local head goes in here, once, with its proof. The statement that answers below keeps the text its
         // reviewed CodeQL disposition is matched by: its own injectLocalHead call finds every asset already there, and
         // the proof is shown the document through `sent`.
+        // Under a nonce policy the scripts added from here on carry the response's marker (answerWithScriptNonces).
+        const quickInjected = scriptNonce?.injected ?? null;
         const document = injectLocalHead(
           quickTraced?.html ?? quickFragment.text,
           localOverrides,
           quickTraced?.provenance ?? null,
+          { injectedScripts: quickInjected },
         );
         const quickHeaders = {
           'content-type': 'text/html; charset=utf-8',
           ...PAGE_HEADERS,
           'x-frame-options': siteHeaders(portal)['x-frame-options'],
+          // Under a nonce policy the site's policy, with the nonce the quick view's proved scripts carry.
+          ...builtDocumentPolicyHeaders(scriptNonce, quickNonced?.scriptPolicy),
         };
         const refreshQuickProof = publishRenderProof(quickHeaders, quickTraced?.provenance);
+        answerWithScriptNonces(res, scriptNonce, refreshQuickProof);
         res.writeHead(200, quickHeaders);
         return res.end(
           req.method === 'HEAD'
@@ -7025,6 +7429,7 @@ export async function createSimulator(options) {
                 path: url.pathname,
                 observed: config().observed ?? portal.observed,
                 sent: refreshQuickProof,
+                injectedScripts: quickInjected,
               }),
         );
       } catch (cause) {
@@ -7034,6 +7439,8 @@ export async function createSimulator(options) {
     }
     const previewCookie = requestPublishingPreview(req);
     const nativeIdentity = currentIdentity();
+    const localAttachments = config().mode !== 'live';
+    const listWorkflowSourceEpoch = portalSourcePublications ? null : portalSourceEpoch;
     if (
       await handleNativeService(req, res, url, {
         portal,
@@ -7049,6 +7456,9 @@ export async function createSimulator(options) {
         pairedTokenCookie: pairedPortalRequest(req),
         adminToken,
         runListWorkflow,
+        // A grid record action's Dataverse messages (Create Order, Generate Quote, ...), as the site's application user.
+        runRecordMessage: config().mode === 'live' ? null : runFormMessage,
+        verifyListWorkflowSource: () => requirePortalSourceEpoch(listWorkflowSourceEpoch),
         workflowRequestContext: () => {
           const current = config();
           return {
@@ -7059,7 +7469,11 @@ export async function createSimulator(options) {
             metadata: modelMetadata(),
           };
         },
-        attachmentBody: noteAttachmentBody(nativeIdentity),
+        attachmentBody: portalAttachmentReader(nativeIdentity, organizationHost.attachmentBody),
+        captureAttachmentBody: localAttachments
+          ? portalAttachmentReader(nativeIdentity, organizationHost.captureAttachmentBody)
+          : null,
+        readAttachment: localAttachments ? readPortalData : null,
         config: config(),
         schemas: { ...solutionMetadata.componentSchemas, ...config().componentSchemas },
         metadata: modelMetadata(),
@@ -7070,6 +7484,7 @@ export async function createSimulator(options) {
         origin: localOrigin,
         cache,
         recordDiagnostic,
+        implicitGrant: settingOptionsRest.implicitGrant,
         decorateDocument: (html) =>
           frameReadiness.decorate(injectLocalHead(html, localOverrides), {
             path: url.pathname,
@@ -7195,6 +7610,33 @@ export async function createSimulator(options) {
       });
       return answer(204);
     }
+    // The Azure Blob Storage file Web API (lib/portal-file-api.mjs); a live runtime forwards it with the rest of /_api.
+    if (
+      url.pathname.startsWith('/_api/file/') &&
+      config().mode !== 'live' &&
+      (await handlePortalFileApi(req, res, url, {
+        store,
+        portal,
+        identity: currentIdentity(),
+        csrf: headerToken(req),
+        owner: ({ start }) => {
+          if (start && !trace.getStore().visitor) {
+            const visitor = newVisitor(visitorName());
+            trace.getStore().visitor = visitor.id;
+            res.setHeader('set-cookie', visitor.cookie);
+          }
+          return uploadOwner();
+        },
+        attachmentBody: portalAttachmentReader(currentIdentity(), organizationHost.attachmentBody),
+        storage: () => organizationHost.providers.storage.forRoute('portalCloudAttachments'),
+        change,
+        json,
+        recordDiagnostic,
+      }))
+    )
+      return;
+    if (dataSummaryProvider && url.pathname.startsWith(PORTAL_DATA_SUMMARY))
+      return summarizePortalData(req, res, url, ownOrigin);
     if (url.pathname.startsWith('/_api/')) return api(req, res, url);
     if (config().pageMode === 'live') return forward(req, res, url);
     // A read may yield to a source publication between routing, authorization, and Liquid rendering.
@@ -7426,6 +7868,7 @@ export async function createSimulator(options) {
           portal,
           store,
           readProvider,
+          canRunFormWorkflow,
           args: { id: definition.id },
           metadata: modelMetadata(),
           globalChoices: localPortalGlobalChoices(),
@@ -7503,7 +7946,10 @@ export async function createSimulator(options) {
                 id: response.state.savedId ?? null,
               })
             : 'Success';
-          html += `<script type="text/javascript">window.parent.postMessage(${JSON.stringify(message)}, "*");</script>`;
+          // The message holds a record name: a < stays inside the script string (it cannot close the element).
+          const escapedLt = String.raw`\u003c`;
+          const payload = JSON.stringify(message).replaceAll('<', escapedLt);
+          html += `<script type="text/javascript">window.parent.postMessage(${payload}, "*");</script>`;
         }
       }
       const resource = (entry, type) => renderShellResource(entry, type, { localOnly: true });
@@ -7559,6 +8005,12 @@ export async function createSimulator(options) {
       });
       const modalAntiForgeryPath = `/_portal/${scopedSite}/Layout/GetAntiForgeryToken`;
       const modalIndex = renderer.sourceIndex();
+      // A nonce policy (the 'nonce' placeholder): the modal document's own scripts get the response's nonce.
+      const scriptNonce = pageScriptNonce(portal);
+      const proving = provenanceDestination(req) || Boolean(scriptNonce);
+      // The markup the builder writes itself, bound as the document's platform pass binds it (platformDocumentTags).
+      const modalTags = platformDocumentTags({ portal, index: modalIndex, part: 'modal-form' });
+      const built = (text) => (proving ? platformFragment(text, modalTags) : text);
       let modalContent = null;
       const modalForm = webFormsForm({
         id: 'content_form',
@@ -7572,36 +8024,45 @@ export async function createSimulator(options) {
       // The form's own markup names its basic form, FormXml controls, tabs, sections and columns
       // (lib/component-provenance.mjs); the modal form document around it is the platform's (platform-shell:modal-form),
       // its chrome, anti-forgery holder and the local compatibility adapters their own shell parts.
-      const modalFormFragment =
-        definition && provenanceDestination(req)
-          ? serverFormFragment(
-              modalForm,
-              {
-                html,
-                renderProvenance:
-                  componentRenderResult(modalFormHtml, {
-                    components: modalComponents,
-                    explicit: modalExplicit,
-                    index: modalIndex,
-                    tag: 'entityform',
-                    args: { id: definition.id },
-                  })?.renderProvenance ?? [],
-              },
-              modalContent,
-            )
-          : modalForm;
+      const modalContentProof =
+        proving && definition
+          ? {
+              html,
+              renderProvenance:
+                componentRenderResult(modalFormHtml, {
+                  components: modalComponents,
+                  explicit: modalExplicit,
+                  index: modalIndex,
+                  tag: 'entityform',
+                  args: { id: definition.id },
+                })?.renderProvenance ?? [],
+            }
+          : null;
+      // The content's last characters past the form's own render are the startup script the document appends.
+      const modalFormFragment = proving
+        ? builtFormFragment(modalForm, modalContentProof, modalContent, modalTags, html.length - modalFormHtml.length)
+        : modalForm;
       const modalFragment = joinRenderFragments(
         `<!doctype html>${layout.html}<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta http-equiv="X-UA-Compatible" content="IE=edge"><title>${layout.title}</title>`,
         headStartFragment(modalPlatform, {
           index: modalIndex,
           bootstrapMarkup: sourceStyles.bootstrapSnippet ? sourceStyles.bootstrap : null,
+          ...(proving ? { tags: modalTags } : {}),
         }),
-        `${styles}${headScripts}${layout.head}${modalPlatform.headEnd}</head>${layout.body}${modalPlatform.bodyOpen}`,
+        built(`${styles}${headScripts}`),
+        proving ? layout.headFragment : layout.head,
+        built(modalPlatform.headEnd),
+        `</head>${layout.body}`,
+        built(modalPlatform.bodyOpen),
         layout.chromeFragment ?? layout.chrome,
         platformFragment(antiForgeryHolder(modalAntiForgeryPath), { component: shellComponent('antiforgery') }),
-        `${modalPlatform.bodyStart}<div id="content-container" class="container wrapper-body" role="main"><div id="content"><div id="mainContent">`,
+        built(
+          `${modalPlatform.bodyStart}<div id="content-container" class="container wrapper-body" role="main"><div id="content"><div id="mainContent">`,
+        ),
         modalFormFragment,
-        `</div></div></div>${modalPlatform.afterContent}${bodyScripts}${modalPlatform.afterFooter}</body></html>`,
+        built(
+          `</div></div></div>${modalPlatform.afterContent}${bodyScripts}${modalPlatform.afterFooter}</body></html>`,
+        ),
       );
       const modalAdapters = runtimeCompatibilityEdits(modalFragment.text, sourceDependencies, configuredHeadScripts)
         .map((edit) => ({
@@ -7610,15 +8071,32 @@ export async function createSimulator(options) {
         }))
         .reverse();
       const modalComposed = applyRenderEdits(modalFragment, modalAdapters);
-      const modalTraced = provenanceDestination(req)
-        ? finalizePortalProvenance({
-            fragment: platformDocumentFragment(modalComposed, { portal, index: modalIndex, part: 'modal-form' }),
-            index: modalIndex,
-          })
+      let modalDocument = injectRuntimeCompatibility(modalFragment.text, sourceDependencies, configuredHeadScripts);
+      const modalProvenance = provenanceDestination(req)
+        ? platformDocumentFragment(modalComposed, { portal, index: modalIndex, part: 'modal-form' })
         : null;
-      const modalDocument = injectRuntimeCompatibility(modalFragment.text, sourceDependencies, configuredHeadScripts);
+      // The composed fragment proves the document only when it is the document answered; otherwise nothing is proved.
+      const modalNonced = builtDocumentNonces(scriptNonce, {
+        html: modalDocument,
+        proved: modalComposed,
+        provenance: modalComposed.text === modalDocument ? modalProvenance : null,
+        index: modalIndex,
+        pathname: url.pathname,
+      });
+      let modalTraced = modalNonced?.provenance ? modalNonced : null;
+      if (modalProvenance && !modalTraced)
+        modalTraced = finalizePortalProvenance({ fragment: modalProvenance, index: modalIndex });
       const traceModal = modalTraced && modalComposed.text === modalDocument;
+      if (modalNonced && !traceModal) modalDocument = modalNonced.html;
+      Object.assign(
+        headers,
+        builtDocumentPolicyHeaders(scriptNonce, modalNonced?.scriptPolicy, {
+          confinement: confinementPolicy(),
+          kind: 'page',
+        }),
+      );
       const refreshModalProof = publishRenderProof(headers, traceModal ? modalTraced.provenance : null);
+      answerWithScriptNonces(res, scriptNonce, refreshModalProof);
       const modalToken = requestTokens.issue(req, res);
       res.writeHead(200, headers);
       for (const item of formStyleDiagnostics(modalDocument, config().shellProfile))
@@ -7626,10 +8104,13 @@ export async function createSimulator(options) {
       // The local head goes in here, once, with its proof. The statement that answers below keeps the text its
       // reviewed CodeQL disposition is matched by: its own injectLocalHead call finds every asset already there, and
       // the proof is shown the document through `sent`.
+      // Under a nonce policy the scripts added from here on carry the response's marker (answerWithScriptNonces).
+      const modalInjected = scriptNonce?.injected ?? null;
       const document = injectLocalHead(
         traceModal ? modalTraced.html : modalDocument,
         localOverrides,
         traceModal ? modalTraced.provenance : null,
+        { injectedScripts: modalInjected },
       );
       return res.end(
         injectRuntime(
@@ -7637,13 +8118,18 @@ export async function createSimulator(options) {
             path: url.pathname,
             observed: config().observed ?? portal.observed,
             head: req.method === 'HEAD',
+            injectedScripts: modalInjected,
           }),
           modalToken,
           renderedRevision,
           formIdentity,
           trace.getStore()?.spanId,
           siteLanguageCodes(),
-          { rootTraceId: trace.getStore()?.traceSpan?.traceId, sent: refreshModalProof },
+          {
+            rootTraceId: trace.getStore()?.traceSpan?.traceId,
+            sent: refreshModalProof,
+            injectedScripts: modalInjected,
+          },
         ),
       );
     }
@@ -8001,8 +8487,12 @@ export async function createSimulator(options) {
       const body = await readWebFileSource(codeSite.entryFile, codeSite.compiledDir, url.pathname);
       requirePageSource();
       const token = requestTokens.issue(req, res);
-      const html = injectRuntime(
-        codeSiteDocument(body.toString('utf8')),
+      // The compiled entry document is exported source as it is: under a nonce policy its inline scripts get the nonce.
+      const scriptNonce = pageScriptNonce(portal);
+      const document = codeSiteDocument(body.toString('utf8'));
+      const decided = scriptNonce ? staticDocumentScriptNonces(document, scriptNonce) : null;
+      let html = injectRuntime(
+        decided?.html ?? document,
         token,
         revision,
         pageIdentity,
@@ -8011,31 +8501,46 @@ export async function createSimulator(options) {
         {
           rootTraceId: nativeContext?.traceSpan?.traceId,
           site: { websiteId: portal.website?.id, isSpaSite: portal.isSpaSite },
+          injectedScripts: decided ? scriptNonce.injected : null,
         },
       );
+      if (decided) html = nonceInjectedScripts(html, scriptNonce);
       const headers = {
         ...PAGE_HEADERS,
-        ...siteHeaders(portal, { confinement: confinementPolicy(), kind: 'page' }),
+        ...siteHeaders(portal, {
+          confinement: confinementPolicy(),
+          kind: 'page',
+          nonce: scriptNonce?.nonce,
+          handlerHashes: decided?.scriptPolicy.handlerHashes,
+        }),
         'content-type': 'text/html; charset=utf-8',
         'x-sim-route': 'code-site-app',
       };
       // An unbound browser HEAD omits the GET-only token and cannot advertise the rendered length.
       if (req.method === 'HEAD' && !token) delete headers['content-length'];
       else headers['content-length'] = Buffer.byteLength(html);
+      appendApplicationSessionRenewal(req, res, headers);
       res.writeHead(200, headers);
       return res.end(req.method === 'HEAD' ? undefined : html);
     }
     let renderedSource;
+    // A nonce policy (the 'nonce' placeholder): one nonce for this response's headers and scripts.
+    const scriptNonce = pageScriptNonce(portal);
     const renderCurrentPage = () => {
       requirePageSource();
       if (nativeContext) nativeContext.nativePostbacks = [];
+      const headerPortal = portal,
+        confinement = confinementPolicy();
       renderedSource = {
         epoch: requestedPortalSource,
         renderer,
         revision,
         dependencies: sourceDependencies,
         shellProfile: config().shellProfile,
-        headers: siteHeaders(portal, { confinement: confinementPolicy(), kind: 'page' }),
+        headers: siteHeaders(headerPortal, { confinement, kind: 'page' }),
+        // The headers of a response whose scripts got the nonce, with its proved inline event handlers' hashes.
+        policyHeaders: (handlerHashes) =>
+          siteHeaders(headerPortal, { confinement, kind: 'page', nonce: scriptNonce?.nonce, handlerHashes }),
         languageCodes: siteLanguageCodes(),
         isSpaSite: portal.isSpaSite,
       };
@@ -8119,19 +8624,29 @@ export async function createSimulator(options) {
     const isDocument = contentType.includes('text/html') && (rendered.isDocument ?? isHtmlDocument(html));
     // A bare HTML template may be a native browser navigation or an XHR fragment. Only a
     // document destination (top-level or framed) establishes parser-node proof; data callers keep original bytes.
+    let scriptPolicy = null;
     if (contentType.includes('text/html') && provenanceDestination(req) && !rendered.provenance) {
-      const traced = renderedSource.renderer.provenanceFor(rendered);
+      const traced = renderedSource.renderer.provenanceFor(rendered, { scriptNonce });
       if (traced) {
         html = traced.html;
         rendered.provenance = traced.provenance;
+        scriptPolicy = traced.scriptPolicy ?? null;
       }
     }
+    if (scriptNonce && !scriptPolicy && contentType.includes('text/html')) {
+      const nonced = renderedSource.renderer.scriptNoncesFor(rendered, scriptNonce);
+      if (nonced) ({ html, scriptPolicy } = nonced);
+    }
+    recordWithheldScriptNonces(scriptPolicy, url.pathname);
+    // The scripts the injectors add below carry the response's marker: they are the ones that get the nonce.
+    const injected = { injectedScripts: scriptPolicy ? scriptNonce.injected : null };
     if (isDocument) {
-      html = injectRuntimeDependencies(html, renderedSource.dependencies);
+      html = injectRuntimeDependencies(html, renderedSource.dependencies, [], injected);
       html = injectLocalHead(
-        injectRuntimeCompatibility(html, renderedSource.dependencies),
+        injectRuntimeCompatibility(html, renderedSource.dependencies, [], injected),
         localOverrides,
         rendered.provenance ?? null,
+        injected,
       );
       for (const item of formStyleDiagnostics(html, renderedSource.shellProfile))
         recordDiagnostic({ ...item, path: url.pathname });
@@ -8149,7 +8664,7 @@ export async function createSimulator(options) {
     const headers = {
       'content-type': contentType,
       ...PAGE_HEADERS,
-      ...renderedSource.headers,
+      ...(scriptPolicy ? renderedSource.policyHeaders(scriptPolicy.handlerHashes) : renderedSource.headers),
       ...(nativeContext?.nativePostbackState?.outcome?.requestId
         ? { 'x-ms-request-id': nativeContext.nativePostbackState.outcome.requestId }
         : {}),
@@ -8180,7 +8695,7 @@ export async function createSimulator(options) {
       if (adapters.length) headers['x-sim-compatibility'] = adapters.join(', ');
       if (rendered.provenance) headers['x-paqvilo-provenance'] = rendered.provenance.proofId;
     }
-    const responseBody = isDocument
+    let responseBody = isDocument
       ? injectRuntime(
           html,
           requestTokens.issue(req, res),
@@ -8188,14 +8703,22 @@ export async function createSimulator(options) {
           pageIdentity,
           trace.getStore()?.spanId,
           renderedSource.languageCodes,
-          { rootTraceId: trace.getStore()?.traceSpan?.traceId, site: { isSpaSite: renderedSource.isSpaSite } },
+          {
+            rootTraceId: trace.getStore()?.traceSpan?.traceId,
+            site: { isSpaSite: renderedSource.isSpaSite },
+            ...injected,
+          },
         )
       : html;
+    // The toolkit's scripts added above get the nonce too (render-provenance.mjs nonceInjectedScripts).
+    if (scriptPolicy) responseBody = nonceInjectedScripts(responseBody, scriptNonce);
     if (rendered.provenance) {
       const entry = renderProofs.get(rendered.provenance.proofId);
       if (entry) entry.proof = refreshScriptProofLocations(responseBody, rendered.provenance);
     }
-    res.writeHead(route?.status ?? rendered.status ?? 200, headers);
+    const status = route?.status ?? rendered.status ?? 200;
+    if (isDocument && !route && status < 300) appendApplicationSessionRenewal(req, res, headers);
+    res.writeHead(status, headers);
     res.end(responseBody);
   }
   const recordRequestErrorDiagnostics = (err, req, context) => {
@@ -8218,6 +8741,42 @@ export async function createSimulator(options) {
         path: req.url?.split('?')[0],
       });
   };
+  // An error document is the runtime's (platform-shell:error-page); a failure to trace it never replaces the answer.
+  // Under a nonce policy (`scriptNonce`) it is decided proving nothing (unprovedDocument).
+  const errorDocumentProof = (req, body, scriptNonce = null) => {
+    try {
+      if (typeof body !== 'string') return null;
+      return scriptNonce
+        ? unprovedDocument(req, body, 'error-page', [], scriptNonce)
+        : platformDocumentProof(req, body, 'error-page');
+    } catch {
+      return null;
+    }
+  };
+  // An observed error presentation. The custom error page carries the site's headers: under a nonce policy, the policy
+  // with a nonce that none of its scripts gets (the error snippet's markup is the snippet with its Liquid removed, not
+  // provable source).
+  const writeErrorPresentation = (presentation, req, res) => {
+    const scriptNonce = presentation.custom ? pageScriptNonce(portal) : null;
+    const traced = errorDocumentProof(req, presentation.body, scriptNonce);
+    const nonced = traced?.scriptPolicy ? traced : null;
+    const site = presentation.custom
+      ? {
+          ...PAGE_HEADERS,
+          ...siteHeaders(portal, {
+            confinement: confinementPolicy(),
+            kind: 'page',
+            nonce: nonced ? scriptNonce.nonce : null,
+            handlerHashes: nonced?.scriptPolicy.handlerHashes,
+          }),
+        }
+      : {};
+    const headers = { ...site, ...presentation.headers };
+    const refreshProof = publishRenderProof(headers, traced?.provenance);
+    res.writeHead(presentation.status, headers);
+    if (nonced) return res.end(refreshProof(nonceInjectedScripts(nonced.html, scriptNonce)));
+    return res.end(traced ? refreshProof(traced.html) : presentation.body);
+  };
   const writePageRequestError = (err, req, res, status) => {
     const queryValidation = err?.code === 'PAGE_QUERY_REQUEST_VALIDATION';
     const presentation = observedPageErrorResponse({
@@ -8228,26 +8787,8 @@ export async function createSimulator(options) {
       languageId: queryValidation ? requestLocale(req, requestTargetUrl(req.url, localOrigin))?.id : undefined,
       now: store.clock.now(),
     });
-    // An error document is the runtime's (platform-shell:error-page); a failure to trace it never replaces the answer.
-    const errorProof = (body) => {
-      try {
-        return typeof body === 'string' ? platformDocumentProof(req, body, 'error-page') : null;
-      } catch {
-        return null;
-      }
-    };
-    if (presentation) {
-      const traced = errorProof(presentation.body);
-      const headers = {
-        ...(presentation.custom
-          ? { ...PAGE_HEADERS, ...siteHeaders(portal, { confinement: confinementPolicy(), kind: 'page' }) }
-          : {}),
-        ...presentation.headers,
-      };
-      const refreshProof = publishRenderProof(headers, traced?.provenance);
-      res.writeHead(presentation.status, headers);
-      return res.end(traced ? refreshProof(traced.html) : presentation.body);
-    }
+    const errorProof = (body) => errorDocumentProof(req, body);
+    if (presentation) return writeErrorPresentation(presentation, req, res);
     const headers = {
       'content-type': 'text/html; charset=utf-8',
       ...(err.code === 'REDIRECT_SITE_MARKER_NULL_REFERENCE' && observed.siteMarkerRedirect === 'null-reference'
@@ -8355,6 +8896,7 @@ export async function createSimulator(options) {
     const own = new Set([
       authSessions.name,
       `${authSessions.name}-mfa`,
+      rememberedBrowserCookieName(authSessions.name),
       privateSiteSessions.name,
       visitorName(),
       ANTI_FORGERY_COOKIE,
@@ -8803,8 +9345,8 @@ export async function createSimulator(options) {
     await externalSignIn.start({ host });
     bootstrapTimings.listenerMs = Math.round(performance.now() - startedAt);
     bootstrapTimings.memory = { rss: process.memoryUsage().rss, heapUsed: process.memoryUsage().heapUsed };
-  } catch (cause) {
-    await closeAfterStartupFailure(cause);
+  } catch (error_) {
+    await closeAfterStartupFailure(error_);
   }
   let reloadRequested = false;
   // Source notifications the watcher reported, and how many of them a published or failed reload has covered: status
@@ -9087,8 +9629,14 @@ export async function createSimulator(options) {
     applyPreset: (name) => change(() => applySelectedPreset(name)),
     // Sign-in for tools and tests that render portal routes as a persona :
     // { cookieHeader: "paqvilo-mirage-auth-<port>=…" for a Cookie request header, identity }.
-    signIn: (contactId, options = {}) => {
+    // browserSession: true issues the session as a browser sign-in (lifetime, security stamp) with its Set-Cookie
+    // header in setCookie; without it the cookie value is a programmatic session for tools and tests.
+    signIn: (contactId, { browserSession = false, ...options } = {}) => {
       const session = signInSession(contactId, options);
+      if (browserSession) {
+        const setCookie = authSessions.cookie(session);
+        return { cookieHeader: setCookie.split(';')[0], setCookie, identity: describeSession(session) };
+      }
       return {
         cookieHeader: `${authSessions.name}=${authSessions.value(session)}`,
         identity: describeSession(session),

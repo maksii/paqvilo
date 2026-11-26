@@ -41,6 +41,10 @@ separate project, with evidence under ignored `.paqvilo/`.
 - [Forms and lists](forms-lists-parity.md): native forms, lists and client behaviour.
 - [Platform resources](platform-resources.md): fallback platform styles, `mirage capture-shell` and single stylesheet or
   snippet observations.
+- [Content Security Policy](content-security-policy.md): the site's `HTTP/Content-Security-Policy` headers, script
+  nonces and the loopback transport adaptation.
+- [HTTP transport and CORS](http-headers.md): the observed HSTS header, CORS for observed authored pages and the edge
+  controls that Mirage does not emulate.
 - [Code components](code-components.md): standard PCF field and dataset controls.
 - [SharePoint documents](sharepoint.md): document integration and Graph fixtures.
 

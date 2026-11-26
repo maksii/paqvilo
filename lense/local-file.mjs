@@ -7,6 +7,10 @@ export function realLocalPath(file) {
   return process.platform === 'win32' ? fs.realpathSync.native(file) : fs.realpathSync(file);
 }
 
+// Read-only, never following a final link. The mode only applies to a created file, and these flags never create one.
+const READ_FLAGS = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0);
+const OWNER_ONLY = 0o600;
+
 const identity = (stat) => `${stat.dev}:${stat.ino}`;
 const version = (stat) => `${identity(stat)}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
 const inside = (root, file) => {
@@ -35,7 +39,7 @@ export async function readLocalFile(file, { root, maxBytes = 32 * 1024 * 1024, e
   ]);
   const real = settled(resolved);
   if (root && !inside(settled(resolvedRoot), real)) throw new Error('Local file is outside its source root');
-  const handle = await fs.promises.open(real, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+  const handle = await fs.promises.open(real, READ_FLAGS, OWNER_ONLY);
   try {
     // Windows file IDs can exceed Number's exact range. Keep identities and
     // timestamps exact; convert only the validated byte length for Buffer APIs.
@@ -79,7 +83,7 @@ export function readLocalFileSync(file, { root, maxBytes = 32 * 1024 * 1024, enc
   // An opt-in caller validation boundary also refuses a link inserted before this reader's first realpath.
   if (expectedRealPath !== undefined && real !== expectedRealPath) throw new Error('Local file changed before reading');
   if (root && !inside(realLocalPath(root), real)) throw new Error('Local file is outside its source root');
-  const descriptor = fs.openSync(real, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+  const descriptor = fs.openSync(real, READ_FLAGS, OWNER_ONLY);
   try {
     const before = fs.fstatSync(descriptor, { bigint: true });
     checkSize(before, maxBytes);

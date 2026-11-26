@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { auditCodeComponents } from '../lense/pcf-audit.mjs';
+import { codeComponentReferences } from '../lense/source-inspection.mjs';
 import { pcfSettings } from '../mirage/lib/pcf-sources.mjs';
 import { tempDirSync } from './fixture.mjs';
 
@@ -169,4 +170,59 @@ test('lense audit admits React and virtual controls with the configured pcf.plat
   });
   assert.equal(configured.controls, 2);
   assert.deepEqual(configured.findings, []);
+});
+
+// @test-kind observation: pcf-parity summary-F section 3, live Power Pages capture of unquoted GUID codecomponent names: upper-case and hyphenless ids render with the page content after them, a braced id halts and cuts off the rest of the page
+test('lense audit reports a braced control id, which halts the page, and accepts upper-case and hyphenless ids', async (t) => {
+  const work = fs.realpathSync.native(tempDirSync('paqvilo-pcf-audit-'));
+  t.after(() => fs.rmSync(work, { recursive: true, force: true }));
+  const solution = path.join(work, 'solution');
+  write(solution, control('inv_Good.Control'));
+  const id = '0a0a0a0a-2222-4222-8222-000000000001';
+  const portal = path.join(work, 'portal');
+  write(portal, {
+    'web-templates/main/Main.webtemplate.source.html': [
+      `{% codecomponent name:${id.toUpperCase()} %}`,
+      `<p>after</p>`,
+    ].join('\n'),
+    'web-pages/home/content-pages/Home.en-US.webpage.copy.html': `{% codecomponent name: {${id}} label: 'x' %}<p>cut</p>`,
+    'web-templates/plain/Plain.webtemplate.source.html': `{% codecomponent name:${id.replaceAll('-', '')} %}`,
+  });
+  const result = await auditCodeComponents({
+    sourceDir: portal,
+    mirageConfig: { solutionRoots: [solution], observed: { codeComponents: { [id]: 'inv_Good.Control' } } },
+  });
+  assert.equal(result.references, 3);
+  assert.deepEqual(
+    result.findings.map((finding) => [finding.code, finding.name, finding.relativePath]),
+    [['PCF_AUDIT_NAME_BRACED', `{${id}}`, 'web-pages/home/content-pages/Home.en-US.webpage.copy.html']],
+  );
+  assert.match(
+    result.findings[0].reason,
+    /halts rendering there on Power Pages: the rest of the page content is cut off/,
+  );
+});
+
+// @test-kind observation: pcf-parity summary-F section 3, live Power Pages capture: a braced codecomponent id renders nothing and ends the template, as Mirage PCF_LIQUID_NAME_BRACED halts
+test('the inspection reads a braced control id as a tag that ends the template', () => {
+  const id = '0a0a0a0a-2222-4222-8222-000000000001';
+  const references = codeComponentReferences(
+    `{% codecomponent name:${id} %}{% codecomponent name:{${id}} %}{% codecomponent name:{${id.toUpperCase()}} %}`,
+  );
+  assert.deepEqual(
+    references.map(({ name, braced, duplicate }) => ({ name, braced, duplicate })),
+    [
+      { name: id, braced: undefined, duplicate: undefined },
+      // The braced check comes first, as in Mirage: a braced tag of a control already rendered is braced, not a duplicate.
+      { name: `{${id}}`, braced: true, duplicate: undefined },
+      { name: `{${id.toUpperCase()}}`, braced: true, duplicate: undefined },
+    ],
+  );
+});
+
+// Regression: every braced name was read as a braced control id, although only braced GUIDs are captured.
+// @test-kind unproven: only braced GUIDs are captured (pcf-parity summary-F section 3); a braced name that is no GUID is read as an ordinary name, as Mirage reads it
+test('the inspection reads a braced name that is no GUID as an ordinary name', () => {
+  const [reference] = codeComponentReferences('{% codecomponent name:{notaguid} %}');
+  assert.deepEqual([reference.name, reference.braced], ['{notaguid}', undefined]);
 });

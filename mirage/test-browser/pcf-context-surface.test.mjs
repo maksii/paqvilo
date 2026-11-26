@@ -65,6 +65,16 @@ async function hostPage(t, { timezoneId = 'America/New_York', locale = 'en-US' }
       response.setHeader('Content-Type', 'application/json');
       if (request.url.startsWith("/_api/EntityDefinitions(LogicalName='tst_row')"))
         return response.end(JSON.stringify(ENTITY_DEFINITION));
+      // As the portal Web API: with pcf-entity-logical-name only a known table's logical name resolves; an entity set
+      // name or an unknown table answers 400 9004010A (summary-A3 Q-R1, summary-F section 1).
+      if (!/^\/_api\/tst_row(?=[(?]|$)/.test(request.url)) {
+        response.statusCode = 400;
+        return response.end(
+          JSON.stringify({
+            error: { code: '9004010A', message: 'An unexpected error occurred while processing the request' },
+          }),
+        );
+      }
       if (request.method === 'POST' || request.method === 'PATCH' || request.method === 'DELETE') {
         response.statusCode = 204;
         if (request.method === 'POST') response.setHeader('OData-EntityId', `/_api/tst_rows(${ROW})`);
@@ -695,7 +705,7 @@ test('mode, page, utils, resources, events and factory calls behave as captured 
   assert.deepEqual(errors, []);
 });
 
-// @test-kind observation+contract: paqvilo-developer pcf-parity capture r1 actions-save, summary-A2 Q1 (capture x1 extras) and summary-A3 Q-R1 (webapi-headers-1795684484298.json) webAPI sequence (2026-11-26): one token fetch reused, success shapes, entity-set names and a bad id with options rejected, a delete with a null id, retrieveRecord without options returns undefined with no request, and every rejection carries undefined; the detail kept in inspect().webApiErrors and the console warning are Paqvilo's own diagnostics
+// @test-kind observation+contract: paqvilo-developer pcf-parity capture r1 actions-save, summary-A2 Q1 (capture x1 extras), summary-A3 Q-R1 (webapi-headers-1795684484298.json) and summary-F section 1 (runs fa and fb wa-field-ny and wa-dataset-ny) webAPI sequence (2026-11-26): one token fetch reused, every request to /_api/<the name passed> with pcf-entity-logical-name, no Prefer for a maxPageSize, success shapes, an unknown table and an entity-set name sent and rejected, a bad id with options rejected without a request, a delete with a null id, retrieveRecord without options returns undefined with no request, and every rejection carries undefined; the detail kept in inspect().webApiErrors and the console warning are Paqvilo's own diagnostics
 test('webAPI resolves the captured shapes, rejects with undefined and keeps the detail for the debugger', async (t) => {
   const { page, errors, warnings, requests } = await hostPage(t);
   const result = await page.evaluate(async (row) => {
@@ -743,8 +753,10 @@ test('webAPI resolves the captured shapes, rejects with undefined and keeps the 
     };
   }, ROW);
   assert.equal(result.tokens, 1);
-  // summary-A3 Q-R1: the host's webAPI requests name their table in pcf-entity-logical-name.
-  assert.ok(requests.every((request) => request.headers['pcf-entity-logical-name'] === 'tst_row'));
+  // summary-A3 Q-R1 and summary-F section 1: the host's webAPI requests name their table in the URL and in
+  // pcf-entity-logical-name, and a maxPageSize sends no Prefer.
+  assert.ok(requests.every((request) => request.url.startsWith('/_api/' + request.headers['pcf-entity-logical-name'])));
+  assert.ok(requests.every((request) => request.headers.prefer === undefined));
   assert.deepEqual(result.badIdWithOptions, { rejected: 'undefined' });
   assert.deepEqual(result.entitySet, { rejected: 'undefined' });
   assert.deepEqual(result.created, { value: { id: ROW, entityType: 'tst_row' } });
@@ -764,9 +776,9 @@ test('webAPI resolves the captured shapes, rejects with undefined and keeps the 
     {
       operation: 'createRecord',
       entityType: 'tst_missing',
-      message: 'PCF Web API table has no imported mapping: tst_missing',
-      errorCode: null,
-      status: null,
+      message: 'An unexpected error occurred while processing the request',
+      errorCode: '9004010A',
+      status: 400,
     },
     {
       operation: 'retrieveRecord',
@@ -778,19 +790,23 @@ test('webAPI resolves the captured shapes, rejects with undefined and keeps the 
     {
       operation: 'retrieveMultipleRecords',
       entityType: 'tst_rows',
-      message: 'PCF Web API table has no imported mapping: tst_rows',
-      errorCode: null,
-      status: null,
+      message: 'An unexpected error occurred while processing the request',
+      errorCode: '9004010A',
+      status: 400,
     },
   ]);
-  // Without options retrieveRecord sends nothing: one POST, the denied GET, the PATCH and the DELETE.
+  // Without options retrieveRecord sends nothing, nor does a bad id: the POST, the denied GET, the PATCH, the DELETE,
+  // the unknown table's POST and the entity-set name's GET, each to the name the control passed (summary-A, summary-F
+  // section 1).
   assert.deepEqual(
     requests.map((request) => request.method + ' ' + request.url),
     [
-      'POST /_api/tst_rows',
-      'GET /_api/tst_rows?$select=tst_title&$top=1',
-      `PATCH /_api/tst_rows(${ROW})`,
-      `DELETE /_api/tst_rows(${ROW})`,
+      'POST /_api/tst_row',
+      'GET /_api/tst_row?$select=tst_title&$top=1',
+      `PATCH /_api/tst_row(${ROW})`,
+      `DELETE /_api/tst_row(${ROW})`,
+      'POST /_api/tst_missing',
+      'GET /_api/tst_rows?$select=tst_title',
     ],
   );
   assert.equal(warnings.filter((text) => text.includes('inspect().webApiErrors')).length, 4);

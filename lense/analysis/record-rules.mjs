@@ -141,7 +141,7 @@ export const recordRules = [
   },
 ];
 
-function booleanValue(value) {
+export function booleanValue(value) {
   if (typeof value === 'boolean') return value;
   if (typeof value !== 'string') return undefined;
   if (value.trim().toLowerCase() === 'true') return true;
@@ -149,7 +149,7 @@ function booleanValue(value) {
   return undefined;
 }
 
-function textValue(value) {
+export function textValue(value) {
   return typeof value === 'string' ? value.trim() : '';
 }
 
@@ -159,11 +159,11 @@ function siteKey(record) {
   return `${record.rootId ?? 'source'}\0${identity}`;
 }
 
-function isActive(record) {
+export function isActive(record) {
   return record.fields.statecode !== 1 && record.fields.statecode !== '1';
 }
 
-function isEnvironmentBacked(record) {
+export function isEnvironmentBacked(record) {
   const fields = record.fields;
   if (fields.source === 1 || fields.source === '1') return true;
   if (

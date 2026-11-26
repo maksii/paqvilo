@@ -5,10 +5,13 @@ import { createHash, randomUUID } from 'node:crypto';
 export const MAX_COMMAND_PAYLOAD_BYTES = 1024 * 1024;
 const PAYLOAD_NAME = /^stop-([a-f0-9]{64})\.json$/;
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
-const samePath = (a, b) =>
-  process.platform === 'win32'
-    ? path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase()
-    : path.resolve(a) === path.resolve(b);
+/** Whether two paths name one location: Windows paths compare without letter case. */
+export const samePath = (a, b, { platform = process.platform } = {}) => {
+  const paths = platform === 'win32' ? path.win32 : path.posix;
+  return platform === 'win32'
+    ? paths.resolve(a).toLowerCase() === paths.resolve(b).toLowerCase()
+    : paths.resolve(a) === paths.resolve(b);
+};
 const failure = (message, code) => Object.assign(new Error(message), { code });
 // File identities are read as BigInt: a device or file number does not fit a JavaScript number (every NTFS file
 // number is above 2^53), and two files whose numbers differ only beyond that precision would compare as one file.

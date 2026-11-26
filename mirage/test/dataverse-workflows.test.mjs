@@ -18,11 +18,14 @@ import {
   workflowHandlers,
   workflowsWithActivation,
 } from '../lib/dataverse-workflows.mjs';
+import { organizationPrincipalContext } from '../lib/dataverse-principal-context.mjs';
 import { createSimulator } from '../server.mjs';
 import { settleCommittedWork } from '../lib/committed-work.mjs';
 import { createTraceStore } from '../lib/trace-store.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { signInHeaders } from '../testing/session.mjs';
+import { reloadDuringHandler } from './support/source-refresh-gate.mjs';
+import { startListWorkflowSimulator } from './support/list-workflow-fixture.mjs';
 import { bearerCall } from './support/web-api.mjs';
 
 const APP_ID = '22222222-2222-2222-2222-222222222222';
@@ -246,6 +249,52 @@ describe('dataverse workflows: rows, activation and ExecuteWorkflow over HTTP', 
     return (await response.json()).error;
   }
 
+  // @test-kind contract: the workflow runner propagates a simulator source conflict unchanged; it is not a workflow failure.
+  it('propagates the original source conflict of a real-time run without a log or process session', async () => {
+    const realtime = WF(5);
+    const definition = () => store.tableRows('workflow').find((row) => row.workflowid === realtime);
+    const user = store
+      .tableRows('systemuser')
+      .find((row) => row.systemuserid === uuidV5(organizationId, 'systemuser:SYSTEM'));
+    assert.ok(definition() && user, 'the real-time workflow and the SYSTEM user are seeded');
+    await store.transact(() => {
+      definition().syncworkflowlogonfailure = true;
+    });
+    const conflict = Object.assign(new Error('Portal sources changed while resolving this page.'), {
+      status: 409,
+      code: 'SourceRefreshConflict',
+    });
+    const counts = () => ({
+      status: store.tableRows('contoso_widget').find((row) => row.contoso_widgetid === WIDGET).status,
+      logs: store.tableRows('workflowlog').length,
+      sessions: store.tableRows('processsession').length,
+    });
+    const before = counts();
+    let checks = 0;
+    try {
+      await assert.rejects(
+        api.organization.api.executePortalListWorkflow({
+          workflowId: realtime,
+          entity: 'contoso_widget',
+          recordId: WIDGET,
+          authorize: async () => null,
+          principal: async () => organizationPrincipalContext(store, user),
+          // The check after the handler ran (attempt's second verify) reports the overlapping publication.
+          verify: () => {
+            if (++checks === 2) throw conflict;
+          },
+        }),
+        (error) => error === conflict && error.status === 409 && error.code === 'SourceRefreshConflict',
+      );
+    } finally {
+      await store.transact(() => {
+        definition().syncworkflowlogonfailure = false;
+      });
+    }
+    assert.equal(checks, 2, 'the handler ran before the conflict');
+    assert.deepEqual(counts(), before);
+  });
+
   it('seeds each Solution workflow as a row, and each activated one with its activation row', async () => {
     const definition = await row('workflows', WF(1));
     assert.equal(definition.name, 'Invented 01');
@@ -385,20 +434,40 @@ describe('dataverse workflows: rows, activation and ExecuteWorkflow over HTTP', 
     assert.equal((await errorOf(response)).code, '0x8004500d'); // the error body is lower-cased, as every code is
   });
 
-  it('refuses to create a classic workflow through the Web API', async () => {
-    const response = await call(webApi('workflows'), {
-      method: 'POST',
-      body: { name: 'Invented create', category: 0, type: 1, primaryentity: 'contoso_widget' },
-    });
-    assert.equal(response.status, 400);
-    assert.deepEqual(await errorOf(response), {
-      code: '0x80040203',
-      message: 'Creating a classic workflow with XAML through the Web API is not supported with Dataverse.',
-    });
+  // @test-kind observation: hosted session F6, summary-F6 OPS-01d (runs A and B): the Web API creates a category-0 definition whose XAML is designer-shaped and refuses other XAML (every Postpone form included) with 400 0x80045040
+  it('creates a classic workflow with designer XAML through the Web API and refuses custom XAML with 0x80045040', async () => {
+    const XAML = (body) =>
+      `<Activity x:Class="XrmWorkflowInvented" xmlns="http://schemas.microsoft.com/netfx/2009/xaml/activities" xmlns:mxswa="clr-namespace:Microsoft.Xrm.Sdk.Workflow.Activities;assembly=Microsoft.Xrm.Sdk.Workflow" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"><mxswa:Workflow>${body}</mxswa:Workflow></Activity>`;
+    const create = (name, xaml) =>
+      call(webApi('workflows'), {
+        method: 'POST',
+        body: { name, category: 0, type: 1, mode: 0, primaryentity: 'contoso_widget', triggeroncreate: true, xaml },
+      });
+    const accepted = await create('Invented designer', XAML(''));
+    assert.equal(accepted.status, 204, await accepted.clone().text());
     assert.equal(
-      store.tableRows('workflow').some((item) => item.name === 'Invented create'),
-      false,
+      store.tableRows('workflow').some((item) => item.name === 'Invented designer'),
+      true,
     );
+    for (const [name, xaml] of [
+      [
+        'Invented custom',
+        '<Activity x:Class="XrmWorkflowInvented" xmlns="http://schemas.microsoft.com/netfx/2009/xaml/activities" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"><Sequence /></Activity>',
+      ],
+      ['Invented postpone', XAML('<mxswa:Postpone BlockExecution="True" PostponeUntil="[Until]" />')],
+    ]) {
+      const response = await create(name, xaml);
+      assert.equal(response.status, 400, name);
+      assert.deepEqual(await errorOf(response), {
+        code: '0x80045040',
+        message:
+          'This workflow cannot be created, updated or published because it was created outside the Microsoft Dynamics 365 Web application. Your organization does not allow this type of workflow.',
+      });
+      assert.equal(
+        store.tableRows('workflow').some((item) => item.name === name),
+        false,
+      );
+    }
   });
 
   it('copies a workflow template into a new draft definition, and refuses a definition that is not a template', async () => {
@@ -915,8 +984,7 @@ describe('dataverse workflows: a portal write is unchanged by a background trigg
   });
 });
 
-// @test-kind security: the local list workflow bridge binds trusted execution to an exported action and an authorized row
-it('runs a trusted real-time workflow only for its authorized native list action', async (t) => {
+async function portalListWorkflowFixture(t, { settings = null } = {}) {
   const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-workflow-list-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const id = WF(61);
@@ -930,7 +998,7 @@ it('runs a trusted real-time workflow only for its authorized native list action
   const pack = path.join(dir, 'pack.mjs');
   const action = {
     Type: 'CrmEntityFormView-WorkflowAction',
-    Workflow: { Id: id },
+    WorkflowId: id,
     FilterCriteria:
       '<fetch><entity name="contoso_widget"><attribute name="contoso_widgetid"/><filter><condition attribute="name" operator="eq" value="alpha"/></filter></entity></fetch>',
   };
@@ -946,16 +1014,15 @@ it('runs a trusted real-time workflow only for its authorized native list action
       'adx_name: Widgets',
       'adx_entityname: contoso_widget',
       'adx_settings: |-',
-      `  ${JSON.stringify({ ItemActions: [action, { ...action, Workflow: { Id: withoutHandler } }] })}`,
+      `  ${JSON.stringify(settings?.({ action, withoutHandler, id, unlisted }) ?? { ItemActions: [action, { ...action, WorkflowId: undefined, Workflow: { Id: withoutHandler } }] })}`,
     ].join('\n'),
     'pack.mjs': `
       export default {
         id: 'workflow-list-fixture', name: 'Workflow list fixture', description: 'Invented list handlers',
         matches: () => true, presets: () => ({}),
         workflows: {
-          '${id}': ({ api, target }) => {
-            api.store.state.tables.contoso_widget.find((row) => row.contoso_widgetid === target.id).status =
-              target.row.status + 10;
+          '${id}': async ({ api, target }) => {
+            await api.store.updateRecordAsync('contoso_widget', target.id, { status: target.row.status + 10 }, { admin: true });
             return { message: 'Portal list handler ran' };
           },
           '${unlisted}': () => { throw new Error('The unavailable action ran.'); },
@@ -975,29 +1042,7 @@ it('runs a trusted real-time workflow only for its authorized native list action
     { contoso_widgetid: selected, name: 'alpha', status: 1 },
     { contoso_widgetid: filtered, name: 'beta', status: 1 },
   ];
-  state.tables.workflow = [id, unlisted, withoutHandler].map((workflowid) => ({
-    workflowid,
-    name: 'Invented list workflow',
-    category: 0,
-    type: 1,
-    mode: 1,
-    ondemand: true,
-    primaryentity: 'contoso_widget',
-    statecode: 1,
-    statuscode: 2,
-  }));
-  state.simulator = {
-    componentSchemas: { Widgets: { entity: 'contoso_widget', fields: [{ name: 'name', label: 'Widget' }] } },
-  };
-  const app = await createSimulator({
-    sourceDir: dir,
-    projectRoot: dir,
-    watch: false,
-    port: 0,
-    initial: state,
-    dataverse: { enabled: true },
-    dataPacks: [{ module: pack }],
-  });
+  const app = await startListWorkflowSimulator({ dir, state, workflowIds: [id, unlisted, withoutHandler], pack });
   t.after(() => app.close());
   const editor = signInHeaders(app, contact, { roles: ['Editor'] });
   const reader = signInHeaders(app, contact, { roles: ['Reader'] });
@@ -1020,6 +1065,27 @@ it('runs a trusted real-time workflow only for its authorized native list action
         base64SecureConfiguration: secure,
       }),
     });
+  const listFile = 'Widgets.list.yml';
+  return {
+    app,
+    html,
+    layout,
+    post,
+    id,
+    unlisted,
+    withoutHandler,
+    selected,
+    filtered,
+    reader,
+    listPath: path.join(dir, listFile),
+    listSource: files[listFile],
+  };
+}
+
+// @test-kind security: the local list workflow bridge binds trusted execution to an exported action and an authorized row
+it('runs a trusted real-time workflow only for its authorized native list action', async (t) => {
+  const { app, layout, post, id, unlisted, withoutHandler, selected, filtered, reader } =
+    await portalListWorkflowFixture(t);
   const originalTransact = app.store.transact;
   const transactBetweenAdmissionAndRun = async (change) => {
     const entered = Promise.withResolvers();
@@ -1063,4 +1129,113 @@ it('runs a trusted real-time workflow only for its authorized native list action
     app.store.tableRows('workflowlog').map((row) => row.message),
     ['Portal list handler ran'],
   );
+});
+
+// @test-kind contract: a source refresh overlapping a trusted classic list workflow rolls back its local records before the new configuration takes effect.
+it('rolls back a classic list workflow if the list source changes during its handler', async (t) => {
+  const { app, id, post, selected, filtered, listPath, listSource } = await portalListWorkflowFixture(t);
+  // A failed real-time run of this workflow also records a process session; the refused run must not.
+  await app.store.transact(() => {
+    app.store.tableRows('workflow').find((row) => row.workflowid === id).syncworkflowlogonfailure = true;
+  });
+  const refused = await reloadDuringHandler(t, {
+    app,
+    sourcePath: listPath,
+    start: () => post(),
+    beforeReload: async () => {
+      const updatedSource = listSource.replaceAll('alpha', 'beta');
+      assert.notEqual(updatedSource, listSource);
+      await fs.writeFile(listPath, updatedSource);
+    },
+    label: 'list',
+  });
+  const status = (id) => app.store.tableRows('contoso_widget').find((row) => row.contoso_widgetid === id).status;
+  assert.deepEqual(
+    {
+      response: refused.status,
+      selectedStatus: status(selected),
+      logs: app.store.tableRows('workflowlog').length,
+      sessions: app.store.tableRows('processsession').length,
+    },
+    { response: 409, selectedStatus: 1, logs: 0, sessions: 0 },
+  );
+  assert.equal((await refused.json()).InnerError.Code, 'SourceRefreshConflict');
+  assert.equal((await post()).status, 403);
+  assert.equal((await post({ recordId: filtered })).status, 204);
+  assert.equal(status(filtered), 11);
+  assert.deepEqual(
+    app.store.tableRows('workflowlog').map((row) => [row.status, row.message]),
+    [[2, 'Portal list handler ran']],
+  );
+});
+
+// @test-kind unproven: local model of the legacy list source (Adxstudio ViewConfiguration.GetActions merges ItemActions and ExtendedItemActions by ActionIndex; WorkflowActionLink takes the grid WorkflowDialog and the action's dialog texts); no hosted capture of a configured workflow action
+it('runs an ExtendedItemActions workflow in ActionIndex order with its own dialog texts', async (t) => {
+  const label = (value) => [{ LCID: 1033, Value: value }];
+  const { app, html, layout, post, id, unlisted, selected } = await portalListWorkflowFixture(t, {
+    settings: ({ action, unlisted: other }) => ({
+      ItemActions: [
+        { Type: 'CrmEntityFormView-DeleteAction', ActionIndex: 2 },
+        { ...action, WorkflowId: other, FilterCriteria: undefined, ActionIndex: 1, ButtonLabel: label('Second') },
+      ],
+      ExtendedItemActions: [
+        {
+          ...action,
+          ActionIndex: 1,
+          ButtonLabel: label('Extended run'),
+          WorkflowDialogTitle: label('Confirm the extended run'),
+          WorkflowDialogPrimaryButtonText: label('Start'),
+        },
+      ],
+      WorkflowDialog: {
+        Title: label('Grid run'),
+        PrimaryButtonText: label('Go'),
+        CloseButtonText: label('Back'),
+        DismissButtonSrText: label(''),
+        Size: 2,
+        CssClass: 'grid-run',
+        TitleCssClass: '',
+        PrimaryButtonCssClass: '',
+        CloseButtonCssClass: '',
+      },
+    }),
+  });
+  const links = layout.Configuration.ItemActionLinks;
+  // Equal indexes keep ItemActions before ExtendedItemActions; the delete action (index 2) follows.
+  assert.deepEqual(
+    links.map((link) => [link.Type, link.Label]),
+    [
+      [7, 'Second'],
+      [7, 'Extended run'],
+      [4, "<span class='fa fa-trash-o' aria-hidden='true'></span> Delete"],
+    ],
+  );
+  assert.deepEqual(
+    links
+      .slice(0, 2)
+      .map((link) => [
+        link.Workflow.Id,
+        link.CustomizeModal,
+        link.Modal.Title,
+        link.Modal.PrimaryButtonText,
+        link.Modal.CloseButtonText,
+        link.Modal.Size,
+        link.Modal.CssClass,
+      ]),
+    [
+      [unlisted, false, 'Grid run', 'Go', 'Back', 2, 'grid-run'],
+      [id, true, 'Confirm the extended run', 'Start', 'Back', 2, 'grid-run'],
+    ],
+  );
+  // The Bootstrap 3 list's one workflow dialog carries the grid WorkflowDialog.
+  const modal = /<section[^>]*modal-run-workflow[^>]*>[\s\S]*?<\/section>/.exec(html)?.[0] ?? '';
+  assert.match(modal, /class="modal fade modal-run-workflow grid-run"/);
+  assert.match(modal, /<div class="modal-sm modal-dialog">/);
+  assert.match(modal, /<h1 class="modal-title" title="Grid run">Grid run<\/h1>/);
+  assert.match(modal, /<button class="primary btn btn-primary" type="button">Go<\/button>/);
+  assert.match(modal, /<button class="cancel btn btn-default" data-dismiss="modal" type="button">Back<\/button>/);
+  // The extended action is the list's own action: it runs on its authorized row.
+  const answer = await post({ workflowId: id, recordId: selected });
+  assert.equal(answer.status, 204, await answer.text());
+  assert.equal(app.store.tableRows('contoso_widget').find((row) => row.contoso_widgetid === selected).status, 11);
 });

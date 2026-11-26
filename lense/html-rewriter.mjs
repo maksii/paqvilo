@@ -488,7 +488,7 @@ function groupLanguageVariants(candidates) {
     let key = null;
     if (src.lcid != null)
       key = 'field|' + src.file + '|' + (src.field ?? '') + '|' + JSON.stringify(src.fieldPath ?? null);
-    else if (src.pageKey) key = 'page|' + src.kind + '|' + src.pageKey;
+    else if (src.pageKey || src.pageUrl) key = 'page|' + src.kind + '|' + (src.pageKey ?? urlKey(src.pageUrl));
     if (!key) continue;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(src);
@@ -516,6 +516,11 @@ function servedLanguageVariants(candidates, language) {
   }
   return dropped.size ? candidates.filter((src) => !dropped.has(src)) : candidates;
 }
+
+export function sourcesForDocumentLanguage(candidates, html, urlPath, model) {
+  return servedLanguageVariants(candidates, documentLanguage(html, urlPath, model));
+}
+
 const sourceLocale = (src) =>
   src.lcid ?? /\.([a-z]{2}(?:-[a-z]{2,4})?)\.(?:webpage|contentsnippet)\./i.exec(src.rel)?.[1]?.toLowerCase() ?? null;
 function differentLocalizedVariants(a, b) {
@@ -1296,7 +1301,7 @@ export class HtmlRewriter {
     this.sourceStamps = prepared?.stamps ?? new Map();
     this.blockCache = new Map();
     this.prepared = prepared;
-    /** manifest changes the portal has not deployed (lense/pcf-resources.mjs deployments), kept across refreshes */
+    /** code component rows the page cannot preview (lense/pcf-resources.mjs needsDeploy), kept across refreshes */
     this.deployments = () => [];
     this.refresh(prepared ? [] : undefined);
   }
@@ -2003,9 +2008,11 @@ export class HtmlRewriter {
     if (!this.blocks.length) return html;
     const docKey = pageKey(urlPath, this.model);
     const minSim = this.site.inline?.minSimilarity ?? 0.5;
-    const candidates = servedLanguageVariants(
+    const candidates = sourcesForDocumentLanguage(
       this.blocks.filter((b) => !b.pageKey || b.pageKey === docKey),
-      documentLanguage(html, urlPath, this.model),
+      html,
+      urlPath,
+      this.model,
     );
     if (!candidates.length) return html;
     const { found, pairs } = collectBlockPairs(html, candidates, docKey, minSim, this.lineWeight, markupBlocks);

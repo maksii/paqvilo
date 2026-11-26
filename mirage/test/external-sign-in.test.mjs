@@ -30,6 +30,8 @@ import {
   timeSpanMs,
 } from '../lib/external-login.mjs';
 import { startIdentityProvider } from '../lib/identity-provider.mjs';
+import { authCookieName } from '../lib/auth-session.mjs';
+import { fixedClock } from '../lib/runtime-clock.mjs';
 import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 
 const TENANT = 'https://login.windows.net/0f0f0f0f-1111-4222-8333-444444444444/';
@@ -727,6 +729,87 @@ test("the provider's response is validated: state, nonce cookie, signature, repl
   );
   assert.equal(noToken.status, 400);
   assert.match(await text(noToken), /The anti-forgery token is missing or invalid/);
+});
+
+const OIDC_LIFETIME = 'Authentication/OpenIdConnect/Local/UseTokenLifetime';
+const appSessionCookie = (app, response) => {
+  const name = authCookieName(new URL(app.url).port);
+  return response.headers.getSetCookie().find((cookie) => cookie.startsWith(name + '='));
+};
+
+// @test-kind security+contract: an explicitly token-bound OIDC session stops at the authenticated deadline without sliding.
+test('OIDC UseTokenLifetime overrides application expiry and disables sliding renewal', async (t) => {
+  for (const [enabled, responseType] of [
+    [true, 'code id_token'],
+    [true, 'code'],
+    [false, 'code id_token'],
+  ]) {
+    const clock = fixedClock();
+    const initial = clock.now();
+    const settings = [
+      ...LOCAL_PROVIDER,
+      [OIDC_LIFETIME, String(enabled)],
+      ['Authentication/OpenIdConnect/Local/ResponseType', responseType],
+      ['Authentication/OpenIdConnect/Local/ClientSecret', 'fixture-client-credential'],
+      ['Authentication/ApplicationCookie/ExpireTimeSpan', '00:00:10'],
+      ['Authentication/ApplicationCookie/SlidingExpiration', 'true'],
+    ];
+    const { app, idp } = await simulator(t, settings, initialState(), { clock });
+    const browser = client(app);
+    const started = await startSignIn(browser);
+    const answer = await choose(browser, started.headers.get('location'), { contactId: 'alex' });
+    const idToken = hiddenFields(answer).id_token;
+    // The local code exchange issues its one-hour ID token when postBack redeems the code at this clock time.
+    const deadline = idToken ? claimsOf(idToken).exp * 1000 : initial + 3_600_000;
+    const pending = await postBack(browser, answer, idp.origin);
+    assert.equal(pending.headers.get('x-sim-route'), 'external-login-response');
+    clock.advance(1000);
+    const signedIn = await browser.request(pending.headers.get('location'));
+    assert.equal(signedIn.headers.get('x-sim-route'), 'external-sign-in');
+    assert.ok(appSessionCookie(app, signedIn));
+    clock.set(initial + 11_000);
+    assert.equal(
+      field(await text(await browser.request('/')), 'user'),
+      enabled ? 'Alex Local' : 'anonymous',
+      'the provider token deadline overrides the shorter site cookie only when enabled',
+    );
+    if (!enabled) continue;
+    clock.set(deadline - 1);
+    const last = await browser.request('/members/');
+    assert.equal(last.status, 200);
+    assert.equal(appSessionCookie(app, last), undefined, 'an active token-bound session cannot slide');
+    await last.text();
+    clock.advance(1);
+    const denied = await browser.request('/members/');
+    assert.equal(denied.status, 302);
+    assert.equal(appSessionCookie(app, denied), undefined);
+    assert.equal(field(await text(await browser.request('/')), 'user'), 'anonymous');
+  }
+});
+
+// @test-kind security: an expired pending OIDC ticket cannot create a contact, external identity or application session.
+test('OIDC UseTokenLifetime denies expired pending enrollment before provisioning', async (t) => {
+  const clock = fixedClock();
+  const { app, idp } = await simulator(t, [...LOCAL_PROVIDER, [OIDC_LIFETIME, 'true']], initialState(), {
+    clock,
+    identityProvider: { newUser: 'always' },
+  });
+  const browser = client(app);
+  const started = await startSignIn(browser);
+  const answer = await choose(browser, started.headers.get('location'), {
+    newUser: { given_name: 'Expiry', family_name: 'Fixture', email: 'expiry-fixture@example.test' },
+  });
+  const deadline = claimsOf(hiddenFields(answer).id_token).exp * 1000;
+  clock.set(deadline - 1000);
+  const pending = await postBack(browser, answer, idp.origin);
+  assert.equal(pending.headers.get('x-sim-route'), 'external-login-response');
+  const state = () => app.store.snapshot({ tables: ['contact', 'adx_externalidentity'] }).tables;
+  const before = state();
+  clock.advance(1000);
+  const rejected = await browser.request(pending.headers.get('location'));
+  assert.equal(rejected.headers.get('x-sim-route'), 'external-login-missing');
+  assert.equal(appSessionCookie(app, rejected), undefined);
+  assert.deepEqual(state(), before);
 });
 
 test("a new user's first sign-in follows the registration settings: open registration, disabled registration, unique email and contact mapping with email", async (t) => {

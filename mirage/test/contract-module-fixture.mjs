@@ -36,7 +36,7 @@ export function loopbackFetch(url, options) {
  */
 export async function contractModuleFixture(
   t,
-  { mappings = {}, tables = {}, extension, options = {}, providers = null },
+  { mappings = {}, tables = {}, extension, options = {}, providers = null, file },
 ) {
   const secretVar = `PAQVILO_CONTRACT_MODULE_SECRET_${process.pid}_${randomUUID().replaceAll('-', '').toUpperCase()}`;
   process.env[secretVar] = 'contract-module-secret';
@@ -46,7 +46,7 @@ export async function contractModuleFixture(
   const state = emptyState();
   Object.assign(state.mappings, structuredClone(mappings));
   for (const [table, rows] of Object.entries(tables)) state.tables[table] = structuredClone(rows);
-  const store = await new DataStore({ state }).init();
+  const store = await new DataStore({ state, file }).init();
   const settings = dataverseSettings({
     enabled: true,
     applications: [

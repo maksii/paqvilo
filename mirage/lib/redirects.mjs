@@ -67,13 +67,13 @@ export const loginPath = (portal) => signInPath(portal).path;
 
 /**
  * Attach a site's observed configuration (lib/project-config.mjs observedConfig) to an
- * imported portal as portal.observed. For loginPath an exported LoginPath setting wins
- * and a differing observation is reported.
+ * imported portal without annotating the cached export shared by other runtimes.
+ * For loginPath an exported LoginPath setting wins and a differing observation is reported.
  */
 export function applyObserved(portal, observed) {
   if (!observed || !Object.keys(observed).some((key) => key !== 'evidence')) return portal;
-  portal.observed = { ...observed };
-  if (!observed.loginPath) return portal;
+  const applied = { ...portal, observed: { ...observed } };
+  if (!observed.loginPath) return applied;
   const configured = String(siteSetting(portal, LOGIN_PATH_SETTING) ?? '').trim();
   let diagnostic = null;
   if (!sitePath(configured))
@@ -91,11 +91,8 @@ export function applyObserved(portal, observed) {
       evidence: observed.evidence,
       message: `The export sets ${LOGIN_PATH_SETTING} to ${configured}; the observed sign-in path ${observed.loginPath} (evidence: ${observed.evidence}) is not used.`,
     };
-  if (diagnostic) {
-    portal.diagnostics ??= [];
-    portal.diagnostics.push(diagnostic);
-  }
-  return portal;
+  if (diagnostic) applied.diagnostics = [...(portal.diagnostics ?? []), diagnostic];
+  return applied;
 }
 
 /**

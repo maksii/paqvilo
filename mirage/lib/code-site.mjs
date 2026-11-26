@@ -99,7 +99,17 @@ export async function compiledCodeSiteAsset(site, pathname) {
   const requested = path.join(site.compiledDir, ...parts);
   try {
     const file = await fs.realpath(requested);
-    if (!inside(site.compiledDir, file) || file === site.entryFile || !(await fs.stat(file)).isFile()) return null;
+    // The resolved path is checked again: a link or a Windows 8.3 short name (ENV~1) can reach a dotfile.
+    if (
+      !inside(site.compiledDir, file) ||
+      path
+        .relative(site.compiledDir, file)
+        .split(path.sep)
+        .some((part) => part.startsWith('.')) ||
+      file === site.entryFile ||
+      !(await fs.stat(file)).isFile()
+    )
+      return null;
     return file;
   } catch (error) {
     if (['ENOENT', 'ENOTDIR'].includes(error.code)) return null;

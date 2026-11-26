@@ -20,6 +20,8 @@ import {
   WEB_RESOURCE_PATH,
 } from './pcf-resources.mjs';
 import { siteHeaders, webFileDisposition, rfc5987 } from '../mirage/lib/response-headers.mjs';
+import { codeSiteNavigation, compiledCodeSiteAsset, readCodeSite } from '../mirage/lib/code-site.mjs';
+import { codeSiteChangeKind, codeSiteWatchPaths, mergeCompiledEntry } from './code-site-overlay.mjs';
 
 // Editors and tools leave scratch files next to the sources (safe-write temporaries, swap and
 // backup files). They are never portal sources, so they must not rebuild the index or reload tabs.
@@ -227,6 +229,8 @@ export class OverlaySession extends EventEmitter {
     /** the repository state `head` was read in; null while files cannot show whether HEAD moved */
     this.headState = null;
     this.refreshQueue = Promise.resolve(); // NOSONAR: constructor timing must not change
+    /** a code-site project's configuration file and build folder, watched beside the export (null for another export) */
+    this.codeSiteWatch = cfg.mirage ? null : codeSiteWatchPaths(cfg.sourceDir);
     this.rewriter =
       prepared.rewriter ??
       new HtmlRewriter({
@@ -271,7 +275,7 @@ export class OverlaySession extends EventEmitter {
     });
     /** Solution files that answer portal addresses: code component resources, Solution web resources (pcf-resources.mjs) */
     this.solutionResources = new SolutionResourceIndex();
-    this.rewriter.deployments = () => [...this.solutionResources.deployments.values()];
+    this.rewriter.deployments = () => this.solutionResources.needsDeploy();
     /** @type {WeakMap<object, Set<string>>} code component addresses the page's current documents declare */
     this.pagePcf = new WeakMap();
     /** the last code component catalogue and Solution roots the inspector gave: {catalogue, roots, sourceDir} */
@@ -334,11 +338,15 @@ export class OverlaySession extends EventEmitter {
         .then((baseline) => (baseline.available ? baseline.changedFilesAsync({ refreshRef: false }) : null))
         .catch(() => null)
         .then((changed) => {
-          if (this.solutionChanges.get(root) === pending)
+          if (this.solutionChanges.get(root) === pending) {
             this.settledSolutionChanges.set(
               root,
               changed ? new Set([...changed].map((file) => path.resolve(file))) : null,
             );
+            // An img or html resource Git reports as changed is an edit the live page cannot show (pcf-resources.mjs).
+            this.solutionResources.settleUnservedEdits(root, this.settledSolutionChanges.get(root));
+            this.#syncPcfRows();
+          }
           return this.settledSolutionChanges.get(root) ?? null;
         });
       this.solutionChanges.set(root, pending);
@@ -383,16 +391,23 @@ export class OverlaySession extends EventEmitter {
     const folders = new Set(this.solutionResources.folders);
     const entries = this.solutionResources.notePcf(declarations, sources);
     // A manifest change the page shows is not deployed joins the needsDeploy rows at once, not at the next refresh.
-    this.rewriter.unsupported = [
-      ...this.rewriter.unsupported.filter((row) => !row.pcfDeployment),
-      ...this.solutionResources.deployments.values(),
-    ];
+    this.#syncPcfRows();
+    // Git tells which img and html resources of the page's controls are already edited (#solutionChanges).
+    for (const root of this.solutionResources.unservedRoots()) void this.#solutionChanges(root);
     if (page) {
       const declared = this.pagePcf.get(page) ?? new Set();
       for (const entry of entries) declared.add(entry.url);
       this.pagePcf.set(page, declared);
     }
     this.#announceFolders(folders);
+  }
+
+  /** Replaces the code component needsDeploy rows (pcfDeployment) with the index's current ones. */
+  #syncPcfRows() {
+    this.rewriter.unsupported = [
+      ...this.rewriter.unsupported.filter((row) => !row.pcfDeployment),
+      ...this.solutionResources.needsDeploy(),
+    ];
   }
 
   /** Tells the source watcher about Solution folders that hold newly mapped files ('watch' event, `watchPaths`). */
@@ -403,7 +418,31 @@ export class OverlaySession extends EventEmitter {
 
   /** Solution folders whose files answer portal addresses: a source watcher watches them beside the export. */
   get watchPaths() {
-    return [...this.solutionResources.folders];
+    return [...this.solutionResources.folders, ...this.#codeSiteWatchList()];
+  }
+
+  #codeSiteWatchList() {
+    const watch = this.codeSiteWatch;
+    return watch ? [watch.configFile, watch.compiledDir].filter(Boolean) : [];
+  }
+
+  /**
+   * A saved file of a code site's build or its configuration: the next request reads the configuration again, and a
+   * configuration that now names another build folder has that folder watched ('watch' event).
+   */
+  #codeSiteChange(file) {
+    const watch = this.codeSiteWatch;
+    const kind = codeSiteChangeKind(watch, file);
+    if (!kind) return false;
+    const config = kind === 'config';
+    this.codeSiteRead = null;
+    if (config) {
+      const before = new Set(this.#codeSiteWatchList());
+      this.codeSiteWatch = codeSiteWatchPaths(this.cfg.sourceDir) ?? watch;
+      const added = this.#codeSiteWatchList().filter((item) => !before.has(item));
+      if (added.length) this.emit('watch', added);
+    }
+    return true;
   }
 
   #acceptChanges(changed) {
@@ -484,6 +523,11 @@ export class OverlaySession extends EventEmitter {
         relevant.push(file);
         continue;
       }
+      // A rebuilt file of a code site's build, or its configuration: the tabs reload with the new build.
+      if (!SCRATCH_FILE.test(file) && this.#codeSiteChange(file)) {
+        relevant.push(file);
+        continue;
+      }
       const decision = classifyChange(file, sourceDir, this.knownFiles, routeRoots);
       if (decision.relevant) relevant.push(file);
       else ignored.push(file);
@@ -550,6 +594,8 @@ export class OverlaySession extends EventEmitter {
     if (!full && !relevant.length)
       return { ignored: true, files: [], changeTrackingDeferred: false, baselineChanged: false };
     files = relevant;
+    // A saved img or html resource of a code component is reported at once: the live page never loads it.
+    if (this.solutionResources.noteUnservedSaves(files).length) this.#syncPcfRows();
     const structural = full || rebuild;
     const inlineChanged = files.some((file) => inlineKindOf(file));
     const changeTrackingDeferred =
@@ -894,6 +940,15 @@ export class OverlaySession extends EventEmitter {
     // 1. web files and explicit routes: answered from disk, the online site is not asked at all
     let readFailed = null;
     let solutionReason = null;
+    // A code site's local build answers its own files, before the exported web file at the same address.
+    if (method === 'GET' || method === 'HEAD') {
+      const built = await this.#compiledFile(url, request, type);
+      if (built && !this.disabled.has(built.rel)) {
+        const served = await this.#serveLocal(route, request, url, method, built);
+        if (served === true) return;
+        readFailed = served;
+      }
+    }
     // Code component resources the page declared and Solution web resources: answered from the Solution file.
     if (method === 'GET' || method === 'HEAD') {
       const solution = await this.#solutionEntry(url);
@@ -1011,8 +1066,12 @@ export class OverlaySession extends EventEmitter {
       let original;
       let result;
       let sourceIndex;
+      let entry;
       try {
         original = await response.text();
+        // A code site's root page: the local build's landing page laid over the deployed one the portal served.
+        entry =
+          isDocument && method === 'GET' && status === 200 && isHtml ? await this.#compiledEntry(url, original) : null;
         // The code components the page declares are mapped before the browser requests their resources.
         if (isHtml)
           await this.#notePcf(route, original, url.pathname, navigation).catch((error) =>
@@ -1028,7 +1087,7 @@ export class OverlaySession extends EventEmitter {
             this.emit('fault', error, request.url());
           }
         }
-        result = this.rewriter.rewrite(original, url.pathname, {
+        result = this.rewriter.rewrite(entry?.html ?? original, url.pathname, {
           html: isHtml,
           isDocument,
           sourceIndex,
@@ -1036,6 +1095,8 @@ export class OverlaySession extends EventEmitter {
           // local change may be laid, and leaves the document unmarked.
           provenance: Boolean(this.sourceInspector),
         });
+        if (entry?.applied) result.applied.unshift(entry.applied);
+        if (entry?.note) result.notes.push(entry.note);
       } catch (err) {
         this.emit('fault', err, request.url());
         const fields = answered({ status: response.status(), reason: 'rewrite-failed' });
@@ -1174,6 +1235,91 @@ export class OverlaySession extends EventEmitter {
   }
 
   /** True when `request` is a navigation of its page's main frame (`document` false: never). */
+  /**
+   * The code site of the export (powerpages.config.json beside its .powerpages-site folder, mirage/lib/code-site.mjs),
+   * or null. A main-frame navigation reads the configuration again, so a later build or edit is picked up.
+   */
+  #codeSite(reread) {
+    if (this.cfg.mirage || !this.cfg.sourceDir) return Promise.resolve(null);
+    if (reread || !this.codeSiteRead) {
+      const diagnostics = [];
+      this.codeSiteRead = readCodeSite(this.cfg.sourceDir, diagnostics).then(
+        (site) => {
+          // A configuration that cannot be used is reported once, until it changes.
+          const problem = diagnostics[0]?.message ?? null;
+          if (problem && problem !== this.codeSiteProblem)
+            this.emit('fault', new Error(`Code site build not overlaid: ${problem}`));
+          this.codeSiteProblem = problem;
+          return site?.compiledDir ? site : null;
+        },
+        () => null,
+      );
+    }
+    return this.codeSiteRead;
+  }
+
+  /** The file of a code site's local build that answers this address, as #serveLocal takes it; null for none. */
+  async #compiledFile(url, request, type) {
+    const site = await this.#codeSite(this.#mainFrame(request, type === 'document', false));
+    if (!site) return null;
+    // The landing page's own address is a web file of the deployed build: the local one answers it as a file.
+    const file =
+      url.pathname === site.entryPath
+        ? site.entryFile
+        : await compiledCodeSiteAsset(site, url.pathname).catch(() => null);
+    if (!file) return null;
+    const webFile = this.model.findWebFile(url.pathname);
+    return {
+      file,
+      rel: this.rel(file),
+      via: 'code-site-build',
+      kind: 'code-site-build',
+      ...(webFile ? { webFile } : {}),
+    };
+  }
+
+  /**
+   * The local landing page laid over the root page the portal served for an application route
+   * (lense/code-site-overlay.mjs): {html, applied} when laid, {note} when it could not be, null when not a code-site
+   * route or nothing changed.
+   */
+  async #compiledEntry(url, served) {
+    const site = await this.#codeSite(false);
+    if (
+      !site ||
+      url.pathname === site.entryPath ||
+      !codeSiteNavigation(site, url.pathname) ||
+      platformRule(url, this.cfg.origin, pageKey(url.pathname, this.model))
+    )
+      return null;
+    const rel = this.rel(site.entryFile);
+    if (this.disabled.has(rel)) return null;
+    let local;
+    try {
+      local = fs.readFileSync(site.entryFile, 'utf8');
+    } catch (error) {
+      return { note: { rel, reason: `The local landing page could not be read (${error.code ?? error.message}).` } };
+    }
+    const deployedFile = this.model.findWebFile(site.entryPath)?.file;
+    let deployed = null;
+    try {
+      if (deployedFile && isSourceFile(this.cfg.sourceDir, deployedFile))
+        deployed = fs.readFileSync(deployedFile, 'utf8');
+    } catch {
+      /* an unreadable export copy is an unknown deployed page */
+    }
+    const merged = mergeCompiledEntry({ deployed, served, local });
+    const reasons = {
+      'unknown-deployed': `The export has no web file at ${site.entryPath}, the deployed landing page: download the site (pac pages download-code-site) to lay the local build's landing page over the portal's.`,
+      'not-entry':
+        "The portal answered this route with a document that does not keep the deployed landing page's lines: the local landing page is not laid over it.",
+      conflict: `The portal changed line ${merged.lines?.join(', ')} of the deployed landing page, which the local build changes too: the local landing page needs a deployment.`,
+    };
+    if (merged.outcome === 'applied')
+      return { html: merged.html, applied: { kind: 'code-site-build', rel, action: 'code-site-entry' } };
+    return reasons[merged.outcome] ? { note: { rel, reason: reasons[merged.outcome] } } : null;
+  }
+
   #mainFrame(request, document, unknown) {
     if (!document) return false;
     try {

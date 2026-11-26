@@ -1,7 +1,13 @@
 import { stripTrailingCharacter } from './text-scanning.mjs';
 import { orderedMap as mapLimit } from '../../lense/async-map.mjs';
 import { directoryFiles } from '../../lense/directory-files.mjs';
-import { componentEnvelope, componentIdentity, componentPayload } from '../../lense/portal-model.mjs';
+import {
+  componentEnvelope,
+  componentIdentity,
+  componentPayload,
+  enhancedSolutionRoot,
+  isEnhancedSiteMetadataSource,
+} from '../../lense/portal-model.mjs';
 import { COMPONENT_KINDS as TYPES, COMPONENT_TYPE_OF_KIND } from './portal-component-types.mjs';
 import { portalField as field } from './portal-field.mjs';
 import { assertSingleEnhancedSite, enhancedPortalRecords, enhancedSiteLookup } from './portal-solution.mjs';
@@ -120,6 +126,9 @@ const componentIdField = (kind) => {
   return `${kind}id`;
 };
 const active = (r) => Number(field(r, 'statecode', 0)) !== 1;
+// Shortcut target columns in the documented priority order, and the target kinds Mirage does not host.
+const SHORTCUT_TARGET_FIELDS = ['externalurl', 'webpageid', 'surveyid', 'webfileid', 'eventid', 'forumid'];
+const SHORTCUT_UNSUPPORTED_TARGETS = Object.freeze({ surveyid: 'survey', eventid: 'event', forumid: 'forum' });
 // A malformed escape keeps the raw path, so one bad partial URL neither stops an import nor a page request.
 const decodePortalPath = (pathname) => {
   try {
@@ -419,9 +428,23 @@ function enhancedLanguageRecord(language, file, diagnostics) {
   };
 }
 
-async function readEnhancedSiteMetadata(files, contents, siteIds, records, diagnostics) {
+// Reports the site metadata files outside the folders that site metadata is read from.
+function reportIgnoredSiteMetadata(sourceDir, ignored, metadataCount, diagnostics) {
+  if (!ignored.length) return;
+  const list = ignored.map((file) => path.relative(sourceDir, file).replaceAll('\\', '/'));
+  diagnostics.push({
+    code: 'ENHANCED_SITE_METADATA_IGNORED',
+    files: list,
+    message:
+      `${metadataCount ? 'Site metadata' : 'No site metadata was read; site metadata'} outside Assets/ (or the root) ` +
+      `of the folder that holds powerpagecomponents/ is ignored: ${list.join(', ')}.`,
+  });
+}
+
+// Collects the site IDs of the powerpagesites.xml files and returns the website record of the first site, if any.
+async function readEnhancedSites(metadata, contents, siteIds, diagnostics) {
   let website;
-  for (const file of files.filter((name) => /(?:^|[\\/])powerpagesites\.xml$/i.test(name))) {
+  for (const file of metadata.filter((name) => /(?:^|[\\/])powerpagesites\.xml$/i.test(name))) {
     try {
       const sites = enhancedPortalRecords(await read(file, contents), 'powerpagesite');
       for (const site of sites) siteIds.push(site.attrs.powerpagesiteid);
@@ -430,7 +453,12 @@ async function readEnhancedSiteMetadata(files, contents, siteIds, records, diagn
       diagnostics.push({ code: 'invalid-website', message: error.message });
     }
   }
-  for (const file of files.filter((name) => /(?:^|[\\/])powerpagesitelanguages\.xml$/i.test(name))) {
+  return website;
+}
+
+// Collects the site IDs and the language records of the powerpagesitelanguages.xml files.
+async function readEnhancedSiteLanguages(metadata, contents, siteIds, records, diagnostics) {
+  for (const file of metadata.filter((name) => /(?:^|[\\/])powerpagesitelanguages\.xml$/i.test(name))) {
     try {
       for (const language of enhancedPortalRecords(await read(file, contents), 'powerpagesitelanguage')) {
         siteIds.push(enhancedSiteLookup(language));
@@ -440,6 +468,25 @@ async function readEnhancedSiteMetadata(files, contents, siteIds, records, diagn
       diagnostics.push({ code: 'invalid-enhanced-content', file, message: error.message });
     }
   }
+}
+
+async function readEnhancedSiteMetadata(sourceDir, files, contents, siteIds, records, diagnostics) {
+  // Site metadata is read only where Lense reads it: Assets/ (or the root) of each folder that holds
+  // powerpagecomponents/, which may sit below sourceDir. Files arrive in name order.
+  const roots = [
+    ...new Set(
+      files
+        .filter((file) => path.basename(file) === 'powerpagecomponent.xml')
+        .map(enhancedSolutionRoot)
+        .filter(Boolean),
+    ),
+  ];
+  const candidates = files.filter((file) => /^powerpagesite(?:s|languages)\.xml$/i.test(path.basename(file)));
+  const metadata = candidates.filter((file) => roots.some((root) => isEnhancedSiteMetadataSource(root, file)));
+  const ignored = candidates.filter((file) => !metadata.includes(file));
+  reportIgnoredSiteMetadata(sourceDir, ignored, metadata.length, diagnostics);
+  const website = await readEnhancedSites(metadata, contents, siteIds, diagnostics);
+  await readEnhancedSiteLanguages(metadata, contents, siteIds, records, diagnostics);
   return website ?? {};
 }
 
@@ -552,7 +599,7 @@ async function readEnhancedSiteMetadata(files, contents, siteIds, records, diagn
         });
       }
     }
-    website = await readEnhancedSiteMetadata(files, contents, siteIds, records, diagnostics);
+    website = await readEnhancedSiteMetadata(sourceDir, files, contents, siteIds, records, diagnostics);
     assertSingleEnhancedSite(sourceDir, siteIds);
   } else {
     for (const file of files.filter((f) => /\.ya?ml$/i.test(f) && !/[\\/]deployment-profiles[\\/]/i.test(f))) {
@@ -1176,9 +1223,23 @@ async function readEnhancedSiteMetadata(files, contents, siteIds, records, diagn
   for (const step of byKind('advancedformstep'))
     step.customJavascript = await source(step, 'custom_javascript.js', 'customjavascript');
   const shortcuts = byKind('shortcut').map((record) => {
-    const externalUrl = field(record, 'externalurl') || null;
-    const targetPageId = externalUrl ? null : id(field(record, 'webpageid'));
-    const targetFileId = externalUrl || targetPageId ? null : id(field(record, 'webfileid'));
+    // A shortcut has one target: the first set of external URL, web page, survey, web file, event and forum
+    // (https://learn.microsoft.com/power-pages/configure/place-child-nodes#manage-shortcuts). Enhanced mspp_shortcut
+    // offers only the external URL, web page and web file columns, so a standard export's survey, event or forum
+    // target is reported and leaves the shortcut without a URL; a lower-priority web file is not used in its place.
+    const selected = SHORTCUT_TARGET_FIELDS.find((name) => field(record, name));
+    const unsupported = SHORTCUT_UNSUPPORTED_TARGETS[selected];
+    if (unsupported)
+      diagnostics.push({
+        code: 'SHORTCUT_TARGET_UNSUPPORTED',
+        shortcutId: record.id,
+        targetId: id(field(record, selected)),
+        targetKind: unsupported,
+        message: `The shortcut targets a ${unsupported}, which the enhanced shortcut table (mspp_shortcut) does not offer and Mirage does not host; the shortcut has no URL.`,
+      });
+    const externalUrl = selected === 'externalurl' ? field(record, 'externalurl') : null;
+    const targetPageId = selected === 'webpageid' ? id(field(record, 'webpageid')) : null;
+    const targetFileId = selected === 'webfileid' ? id(field(record, 'webfileid')) : null;
     const target = pages.find((page) => page.id === targetPageId) ?? webFiles.find((file) => file.id === targetFileId);
     if (!target && (targetPageId || targetFileId))
       diagnostics.push({

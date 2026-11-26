@@ -56,7 +56,7 @@ import { runWithQueryResolvers } from './dataverse-conditions.mjs';
 import { createCapabilityRegistry, describeExtension, packCapabilityRecords } from './capability-registry.mjs';
 import { buildPreflightReport } from './capability-report.mjs';
 import { attachmentBody as storedAttachmentBody } from './dataverse-storage-routing.mjs';
-import { ATTACHMENT_COLUMNS } from './dataverse-files.mjs';
+import { ATTACHMENT_COLUMNS, blobKeyOf } from './dataverse-files.mjs';
 import { guidKey } from './dataverse-values.mjs';
 import { organizationRecord } from './organization-context.mjs';
 import { clockFunction, systemClock, systemIds } from './runtime-clock.mjs';
@@ -1839,6 +1839,12 @@ function closePreparedOverrides(prepared, runtimes, diagnostic) {
 function hostReports(c) {
   const { store, providers, canvas } = c;
   let statusRegistry, statusSnapshot;
+  const locateAttachmentRow = (row, logical) => {
+    const idColumn = `${logical}id`;
+    const id = guidKey(row[idColumn]);
+    return store.tableRows(logical).find((item) => guidKey(item[idColumn]) === id);
+  };
+  const storedAttachmentRow = (row, logical) => locateAttachmentRow(row, logical) ?? row;
   return {
     /**
      * A simulation report (simulation-persistence.mjs report) with the private blob directory listed as a target when an
@@ -2013,11 +2019,37 @@ function hostReports(c) {
     async attachmentBody(logical, row, options = {}) {
       const column = ATTACHMENT_COLUMNS[logical];
       if (!column || !row) return null;
-      const idColumn = logical === 'annotation' ? 'annotationid' : 'activitymimeattachmentid';
-      const stored = store.tableRows(logical).find((item) => guidKey(item[idColumn]) === guidKey(row[idColumn])) ?? row;
+      const stored = storedAttachmentRow(row, logical);
       return c.organization
         ? storedAttachmentBody(c.organization.api, logical, stored, options)
         : (stored[column] ?? null);
+    },
+    /** Capture the authorized version while its reader holds the store, then load its provider bytes outside that read. */
+    captureAttachmentBody(logical, row) {
+      const column = ATTACHMENT_COLUMNS[logical];
+      if (!column || !row) return null;
+      const idColumn = `${logical}id`;
+      const stored = storedAttachmentRow(row, logical);
+      const inline = stored[column];
+      if (inline != null) return () => inline;
+      const key = blobKeyOf(logical, stored);
+      if (!key || !c.organization) return null;
+      const snapshot = { [idColumn]: stored[idColumn], __blobkey: key };
+      const version = JSON.stringify(stored);
+      return async () => {
+        const body = await storedAttachmentBody(c.organization.api, logical, snapshot);
+        if (body == null) return null;
+        // A deleted and re-created row can reuse its provider key (annotations/<id>/1), and a lane commit rewrites a row in
+        // place. Keep the bytes only while the id still resolves to the admitted row object, key and content: writes to
+        // other rows of the table leave them valid.
+        const unchanged = () => {
+          const current = locateAttachmentRow(stored, logical);
+          return current === stored && blobKeyOf(logical, current) === key && JSON.stringify(current) === version;
+        };
+        // A read lease orders the check after earlier transactions without opening another audited read operation.
+        const current = store.inTransaction() ? unchanged() : await store.readLease(unchanged);
+        return current ? body : null;
+      };
     },
   };
 }

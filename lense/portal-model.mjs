@@ -823,14 +823,21 @@ function closeEnvelopeTag(state, tag, xml) {
   return true;
 }
 
-/** Direct component envelope fields; comments, CDATA and JSON content never supply metadata tags. */
+/**
+ * Direct component envelope fields; comments, CDATA and JSON content never supply metadata tags. Null for a
+ * malformed envelope, including a field with a character reference outside Unicode (`&#x110000;`).
+ */
 export function componentEnvelope(xml) {
   const state = { stack: [], result: {}, pending: null, roots: 0 };
-  for (const tag of xmlElementTags(xml)) {
-    if (tag.invalid || !tag.name) return null;
-    if (tag.closing) {
-      if (!closeEnvelopeTag(state, tag, xml)) return null;
-    } else if (!openEnvelopeTag(state, tag)) return null;
+  try {
+    for (const tag of xmlElementTags(xml)) {
+      if (tag.invalid || !tag.name) return null;
+      if (tag.closing) {
+        if (!closeEnvelopeTag(state, tag, xml)) return null;
+      } else if (!openEnvelopeTag(state, tag)) return null;
+    }
+  } catch {
+    return null;
   }
   return state.roots === 1 && state.stack.length === 0 ? state.result : null;
 }
@@ -940,6 +947,17 @@ const CLASSIC_METADATA =
 /** Enhanced site and language documents configure the live host, rather than page overlays. */
 export const isEnhancedSiteMetadata = (relative) =>
   /(?:^|\/)powerpagesite(?:s|languages)\.xml$/i.test(relative.replaceAll('\\', '/'));
+/** The solution root of an enhanced component file: the directory that holds its powerpagecomponents/ folder. */
+export function enhancedSolutionRoot(componentFile) {
+  const folder = path.dirname(path.dirname(componentFile));
+  return /^powerpagecomponents$/i.test(path.basename(folder)) ? path.dirname(folder) : null;
+}
+/**
+ * Where an unpacked Solution keeps its site and language records: Assets/ (or the root) of the directory that holds
+ * powerpagecomponents/. Lense and Mirage read site metadata only there, so a stray copy elsewhere names no site.
+ */
+export const isEnhancedSiteMetadataSource = (solutionRoot, file) =>
+  /^(?:assets\/)?powerpagesite(?:s|languages)\.xml$/i.test(path.relative(solutionRoot, file).replaceAll('\\', '/'));
 /** Portal metadata filenames, excluding unrelated YAML/XML notes in the checkout. */
 export const isPortalMetadata = (relative) =>
   CLASSIC_METADATA.test(yamlName(relative.replaceAll('\\', '/'))) ||
@@ -1146,7 +1164,11 @@ export class PortalModel {
           .filter((row) => row && !row.__error && Number(yamlValue(row, 'statecode') ?? 0) !== 1);
         (/portallanguage/i.test(name) ? portalRows : languageRows).push(...rows);
       }
-      if (name.toLowerCase() === 'powerpagesitelanguages.xml' && isSourceFile(this.sourceDir, file))
+      if (
+        name.toLowerCase() === 'powerpagesitelanguages.xml' &&
+        isEnhancedSiteMetadataSource(this.sourceDir, file) &&
+        isSourceFile(this.sourceDir, file)
+      )
         this.#readLanguageXmlRows(file, languageRows);
     }
     return { languageRows, portalRows };
@@ -1265,7 +1287,8 @@ export class PortalModel {
     });
     const ids = [];
     for (const file of files) {
-      if (!isEnhancedSiteMetadata(file) || !isSourceFile(this.sourceDir, file)) continue;
+      // The enhanced format reads its components from sourceDir/powerpagecomponents: sourceDir is the solution root.
+      if (!isEnhancedSiteMetadataSource(this.sourceDir, file) || !isSourceFile(this.sourceDir, file)) continue;
       const isLanguage = /powerpagesitelanguages\.xml$/i.test(file);
       const kind = isLanguage ? 'powerpagesitelanguage' : 'powerpagesite';
       try {

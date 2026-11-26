@@ -1,0 +1,77 @@
+{
+  "schema": "paqvilo.parity-cases/1",
+  "surface": "pcf-form-save",
+  "suite": "read-only-form",
+  "oracle": {
+    "kind": "native",
+    "name": "Power Pages",
+    "version": "9.8.9.29",
+    "scope": "Two signed-in loads on 2026-11-26 (f1, f2) of a read-only basic form hosting an invented probe field control: the ids of the page's submit controls (input or button of type submit, UpdateButton, InsertButton) that carry an id. Establishes that a read-only basic form serves no submit or update button; not the control outputs or the site header."
+  },
+  "captures": [
+    {
+      "id": "read-only-form-f1",
+      "sha256": "7de007a69848f289531d0c7bc0d4ca6e2c397080ceea3923da8236e2152b5938",
+      "capturedAt": "2026-11-26"
+    },
+    {
+      "id": "read-only-form-f2",
+      "sha256": "a28f0ac5156c2923b9fb8e8b251f4db2b8eaa309b069dc1efe171f24836321e5",
+      "capturedAt": "2026-11-26"
+    }
+  ],
+  "cases": [
+    {
+      "id": "read-only-submit-controls",
+      "input": {
+        "entity": "pqpcf_probe",
+        "language": {
+          "code": "en-US",
+          "lcid": 1033,
+          "codeInUrl": false
+        },
+        "basicForm": {
+          "adx_name": "pqpcf Probe Read",
+          "adx_entityname": "pqpcf_probe",
+          "adx_formname": "pqpcf probe main",
+          "adx_mode": 100000002,
+          "adx_entitypermissionsenabled": true,
+          "adx_recordidquerystringparametername": "id"
+        },
+        "columns": [
+          {
+            "column": "pqpcf_email",
+            "attribute": "<attribute PhysicalName=\"pqpcf_email\">\r\n          <Type>nvarchar</Type>\r\n          <Name>pqpcf_email</Name>\r\n          <LogicalName>pqpcf_email</LogicalName>\r\n          <RequiredLevel>none</RequiredLevel>\r\n          <DisplayMask>ValidForAdvancedFind|ValidForForm|ValidForGrid</DisplayMask>\r\n          <ImeMode>auto</ImeMode>\r\n          <ValidForUpdateApi>1</ValidForUpdateApi>\r\n          <ValidForReadApi>1</ValidForReadApi>\r\n          <ValidForCreateApi>1</ValidForCreateApi>\r\n          <IsCustomField>1</IsCustomField>\r\n          <IsAuditEnabled>1</IsAuditEnabled>\r\n          <IsSecured>0</IsSecured>\r\n          <IntroducedVersion>1.0</IntroducedVersion>\r\n          <IsCustomizable>1</IsCustomizable>\r\n          <IsRenameable>1</IsRenameable>\r\n          <CanModifySearchSettings>1</CanModifySearchSettings>\r\n          <CanModifyRequirementLevelSettings>1</CanModifyRequirementLevelSettings>\r\n          <CanModifyAdditionalSettings>1</CanModifyAdditionalSettings>\r\n          <SourceType>0</SourceType>\r\n          <IsGlobalFilterEnabled>0</IsGlobalFilterEnabled>\r\n          <IsSortableEnabled>0</IsSortableEnabled>\r\n          <CanModifyGlobalFilterSettings>1</CanModifyGlobalFilterSettings>\r\n          <CanModifyIsSortableSettings>1</CanModifyIsSortableSettings>\r\n          <IsDataSourceSecret>0</IsDataSourceSecret>\r\n          <AutoNumberFormat></AutoNumberFormat>\r\n          <IsSearchable>0</IsSearchable>\r\n          <IsFilterable>0</IsFilterable>\r\n          <IsRetrievable>0</IsRetrievable>\r\n          <IsLocalizable>0</IsLocalizable>\r\n          <Format>email</Format>\r\n          <MaxLength>100</MaxLength>\r\n          <Length>200</Length>\r\n          <displaynames>\r\n            <displayname description=\"Email\" languagecode=\"1033\" />\r\n          </displaynames>\r\n          <Descriptions>\r\n            <Description description=\"pqpcf probe column: Email\" languagecode=\"1033\" />\r\n          </Descriptions>\r\n        </attribute>",
+            "cell": "<cell id=\"{9C7F0A11-0000-4000-8000-000000000009}\" showlabel=\"true\">\r\n                        <labels>\r\n                          <label description=\"Email\" languagecode=\"1033\" />\r\n                        </labels>\r\n                        <control id=\"pqpcf_email\" classid=\"{4273EDBD-AC1D-40D3-9FB2-095C621B552D}\" datafieldname=\"pqpcf_email\" disabled=\"false\" uniqueid=\"{9C7F0A11-0001-4000-8000-000202121752}\" />\r\n                      </cell>",
+            "controlDescription": "<controlDescription forControl=\"{9C7F0A11-0001-4000-8000-000202121752}\">\r\n          <customControl id=\"{4273EDBD-AC1D-40D3-9FB2-095C621B552D}\">\r\n            <parameters>\r\n              <datafieldname>pqpcf_email</datafieldname>\r\n            </parameters>\r\n          </customControl>\r\n          <customControl formFactor=\"0\" name=\"pqpcf_Pqpcf.TypeEmailProbe\">\r\n            <parameters>\r\n              <value type=\"SingleLine.Email\">pqpcf_email</value>\r\n            </parameters>\r\n          </customControl>\r\n          <customControl formFactor=\"1\" name=\"pqpcf_Pqpcf.TypeEmailProbe\">\r\n            <parameters>\r\n              <value type=\"SingleLine.Email\">pqpcf_email</value>\r\n            </parameters>\r\n          </customControl>\r\n          <customControl formFactor=\"2\" name=\"pqpcf_Pqpcf.TypeEmailProbe\">\r\n            <parameters>\r\n              <value type=\"SingleLine.Email\">pqpcf_email</value>\r\n            </parameters>\r\n          </customControl>\r\n        </controlDescription>",
+            "control": {
+              "name": "pqpcf_Pqpcf.TypeEmailProbe",
+              "manifest": "<manifest><control namespace=\"Pqpcf\" constructor=\"TypeEmailProbe\" version=\"1.0.2\" display-name-key=\"FieldProbe_Display\" description-key=\"FieldProbe_Description\" control-type=\"standard\" api-version=\"1.3.18\"><external-service-usage enabled=\"false\" /><property name=\"value\" display-name-key=\"Value_Display\" description-key=\"Value_Description\" of-type=\"SingleLine.Email\" usage=\"bound\" required=\"true\" /><property name=\"caption\" display-name-key=\"Caption\" description-key=\"Static text input\" of-type=\"SingleLine.Text\" usage=\"input\" required=\"false\" default-value=\"Default caption\" /><property name=\"flavour\" display-name-key=\"Flavour\" description-key=\"Static enum input\" of-type=\"Enum\" usage=\"input\" default-value=\"2\"><value name=\"alpha\" display-name-key=\"Flavour_Alpha\">1</value><value name=\"beta\" display-name-key=\"Flavour_Beta\">2</value><value name=\"gamma\" display-name-key=\"Flavour_Gamma\">3</value></property><property name=\"count\" display-name-key=\"Count\" description-key=\"Static whole input\" of-type=\"Whole.None\" usage=\"input\" default-value=\"7\" /><property name=\"ratio\" display-name-key=\"Ratio\" description-key=\"Static decimal input\" of-type=\"Decimal\" usage=\"input\" /><property name=\"toggle\" display-name-key=\"Toggle\" description-key=\"Static two options input\" of-type=\"TwoOptions\" usage=\"input\" /><event name=\"OnProbe\" display-name-key=\"OnProbe_Display\" description-key=\"Probe event\" /><resources><code path=\"bundle.js\" order=\"1\" /><css path=\"css/TypeEmailProbe.css\" order=\"1\" /><img path=\"img/probe.png\" /><resx path=\"strings/TypeEmailProbe.1033.resx\" version=\"1.0.0\" /></resources><feature-usage /><built-by name=\"pac\" version=\"1.51.1\" /></control></manifest>",
+              "files": {
+                "bundle.js": "",
+                "css/TypeEmailProbe.css": ".pqpcf-probe, .pqpcf-dataset-probe { font: 12px monospace; border: 1px dashed #888; padding: 4px; }\n",
+                "img/probe.png": "",
+                "strings/TypeEmailProbe.1033.resx": "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<root>\n  <xsd:schema id=\"root\" xmlns=\"\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:msdata=\"urn:schemas-microsoft-com:xml-msdata\">\n    <xsd:element name=\"root\" msdata:IsDataSet=\"true\"><xsd:complexType><xsd:choice maxOccurs=\"unbounded\"><xsd:element name=\"data\"><xsd:complexType><xsd:sequence><xsd:element name=\"value\" type=\"xsd:string\" minOccurs=\"0\" msdata:Ordinal=\"1\" /><xsd:element name=\"comment\" type=\"xsd:string\" minOccurs=\"0\" msdata:Ordinal=\"2\" /></xsd:sequence><xsd:attribute name=\"name\" type=\"xsd:string\" msdata:Ordinal=\"1\" /><xsd:attribute name=\"type\" type=\"xsd:string\" msdata:Ordinal=\"3\" /><xsd:attribute name=\"mimetype\" type=\"xsd:string\" msdata:Ordinal=\"4\" /></xsd:complexType></xsd:element></xsd:choice></xsd:complexType></xsd:element>\n  </xsd:schema>\n  <resheader name=\"resmimetype\"><value>text/microsoft-resx</value></resheader>\n  <resheader name=\"version\"><value>2.0</value></resheader>\n  <resheader name=\"reader\"><value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>\n  <resheader name=\"writer\"><value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>\n  <data name=\"FieldProbe_Display\" xml:space=\"preserve\"><value>Pqpcf field probe</value></data>   <data name=\"FieldProbe_Description\" xml:space=\"preserve\"><value>Records the Power Pages field host (1033)</value></data>   <data name=\"Probe_Caption\" xml:space=\"preserve\"><value>Caption from resx 1033</value></data>   <data name=\"Flavour_Alpha\" xml:space=\"preserve\"><value>Alpha</value></data>   <data name=\"Flavour_Beta\" xml:space=\"preserve\"><value>Beta</value></data>   <data name=\"Flavour_Gamma\" xml:space=\"preserve\"><value>Gamma</value></data>   <data name=\"Value_Display\" xml:space=\"preserve\"><value>Value</value></data>   <data name=\"Value_Description\" xml:space=\"preserve\"><value>Bound column</value></data>   <data name=\"OnProbe_Display\" xml:space=\"preserve\"><value>On probe</value></data>\n</root>\n"
+              }
+            },
+            "metadata": {
+              "adx_type": 100000000,
+              "adx_attributelogicalname": "pqpcf_email",
+              "adx_controlstyle": 756150001
+            }
+          }
+        ],
+        "row": {
+          "pqpcf_email": "alpha@example.invalid"
+        },
+        "posted": null,
+        "observe": "submitControls"
+      },
+      "output": {
+        "submitControls": []
+      },
+      "volatile": []
+    }
+  ],
+  "history": []
+}

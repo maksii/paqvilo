@@ -1,0 +1,470 @@
+{
+  "schema": "paqvilo.parity-cases/1",
+  "surface": "portal-form-postback",
+  "suite": "baseline-basic-form-20261015",
+  "oracle": {
+    "kind": "native",
+    "name": "Power Pages basic form postback",
+    "version": "2026-10-15",
+    "scope": "Two signed-in browser runs (live, live-2) of the toolkit's invented baseline fixture site uploaded over the demo portal, one form postback per scenario: the HTTP status, a redirect's target with record ids replaced, the form's message panel kind and text, and the validation summary entries after create, update, plug-in rejection, mutation, range, CAPTCHA and redirect submissions. It does not establish stored values, the rendered page around the panel or other personas. The exact hosted build is unrecorded."
+  },
+  "captures": [
+    {
+      "id": "baseline-live",
+      "sha256": "c997500fd23cb1a4d9a3db558891aef1381c5b26275181798eb599230a4206ab",
+      "capturedAt": "2026-10-15"
+    },
+    {
+      "id": "baseline-live-2",
+      "sha256": "6ddf4aefb40ce04df074ee128ad8d55e01a7769983a4a2a1f126a56634d3e55b",
+      "capturedAt": "2026-10-15"
+    }
+  ],
+  "cases": [
+    {
+      "id": "basic-form/item-create/insert/editor",
+      "input": {
+        "page": "/baseline/item-create/",
+        "query": {},
+        "fields": {
+          "pqvd_name": "Baseline inserted item",
+          "pqvd_code": "I-NEW-r1",
+          "pqvd_required": "required value"
+        },
+        "action": "InsertButton"
+      },
+      "output": {
+        "status": 200,
+        "redirect": null,
+        "message": {
+          "kind": "success",
+          "text": "Baseline item created."
+        },
+        "validation": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "basic-form/item-create/plugin-error-create-postoperation/editor",
+      "input": {
+        "page": "/baseline/item-create/",
+        "query": {},
+        "fields": {
+          "pqvd_name": "Baseline plugin postoperation",
+          "pqvd_code": "I-PL-pos-r1",
+          "pqvd_required": "required value",
+          "pqvd_text": "plugin-fail-create-postoperation"
+        },
+        "action": "InsertButton"
+      },
+      "output": {
+        "status": 200,
+        "redirect": null,
+        "message": {
+          "kind": "danger",
+          "text": "Baseline plugin rejected create at postoperation"
+        },
+        "validation": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "basic-form/item-create/plugin-error-create-preoperation/editor",
+      "input": {
+        "page": "/baseline/item-create/",
+        "query": {},
+        "fields": {
+          "pqvd_name": "Baseline plugin preoperation",
+          "pqvd_code": "I-PL-pre-r1",
+          "pqvd_required": "required value",
+          "pqvd_text": "plugin-fail-create-preoperation"
+        },
+        "action": "InsertButton"
+      },
+      "output": {
+        "status": 200,
+        "redirect": null,
+        "message": {
+          "kind": "danger",
+          "text": "Baseline plugin rejected create at preoperation"
+        },
+        "validation": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "basic-form/item-create/plugin-error-create-prevalidation/editor",
+      "input": {
+        "page": "/baseline/item-create/",
+        "query": {},
+        "fields": {
+          "pqvd_name": "Baseline plugin prevalidation",
+          "pqvd_code": "I-PL-pre-r1",
+          "pqvd_required": "required value",
+          "pqvd_text": "plugin-fail-create-prevalidation"
+        },
+        "action": "InsertButton"
+      },
+      "output": {
+        "status": 200,
+        "redirect": null,
+        "message": {
+          "kind": "danger",
+          "text": "Baseline plugin rejected create at prevalidation"
+        },
+        "validation": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "basic-form/item-create/rule-error/editor",
+      "input": {
+        "page": "/baseline/item-create/",
+        "query": {},
+        "fields": {
+          "pqvd_name": "Baseline rule error",
+          "pqvd_code": "I-RE-r1",
+          "pqvd_required": "required value",
+          "pqvd_ruleerror": "600"
+        },
+        "action": "InsertButton"
+      },
+      "output": {
+        "status": 200,
+        "redirect": null,
+        "message": {
+          "kind": "success",
+          "text": "Baseline item created."
+        },
+        "validation": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "basic-form/item-create-captcha/insert/editor",
+      "input": {
+        "page": "/baseline/item-create-captcha/",
+        "query": {},
+        "fields": {
+          "pqvd_name": "Baseline inserted item",
+          "pqvd_code": "I-NEW-r1",
+          "pqvd_required": "required value"
+        },
+        "action": "InsertButton"
+      },
+      "output": {
+        "status": 200,
+        "redirect": null,
+        "message": {
+          "kind": "success",
+          "text": "Submission completed successfully."
+        },
+        "validation": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "basic-form/item-create-captcha-all/insert-captcha/editor",
+      "input": {
+        "page": "/baseline/item-create-captcha-all/",
+        "query": {},
+        "fields": {
+          "pqvd_name": "Baseline inserted item",
+          "pqvd_code": "I-NEW-r1",
+          "pqvd_required": "required value"
+        },
+        "action": "InsertButton"
+      },
+      "output": {
+        "status": 200,
+        "redirect": null,
+        "message": null,
+        "validation": ["Captcha is incorrect, please re-enter captcha."]
+      },
+      "volatile": []
+    },
+    {
+      "id": "basic-form/item-create-redirect/insert/editor",
+      "input": {
+        "page": "/baseline/item-create-redirect/",
+        "query": {
+          "returnurl": "/baseline/"
+        },
+        "fields": {
+          "pqvd_name": "Baseline inserted item",
+          "pqvd_code": "I-NEW-r1",
+          "pqvd_required": "required value"
+        },
+        "action": "InsertButton"
+      },
+      "output": {
+        "status": 302,
+        "redirect": {
+          "site": true,
+          "path": "/baseline/item-edit/",
+          "query": {
+            "id": "<record id>"
+          }
+        },
+        "message": null,
+        "validation": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "basic-form/item-create-redirect-url/insert/editor",
+      "input": {
+        "page": "/baseline/item-create-redirect-url/",
+        "query": {
+          "returnurl": "/baseline/"
+        },
+        "fields": {
+          "pqvd_name": "Baseline inserted item",
+          "pqvd_code": "I-NEW-r1",
+          "pqvd_required": "required value"
+        },
+        "action": "InsertButton"
+      },
+      "output": {
+        "status": 302,
+        "redirect": {
+          "site": false,
+          "origin": "https://example.com",
+          "path": "/",
+          "query": {
+            "id": "<record id>",
+            "returnurl": "/baseline/",
+            "source": "baseline",
+            "code": "I-NEW-r1"
+          }
+        },
+        "message": null,
+        "validation": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "basic-form/item-create-success/insert/editor",
+      "input": {
+        "page": "/baseline/item-create-success/",
+        "query": {},
+        "fields": {
+          "pqvd_name": "Baseline inserted item",
+          "pqvd_code": "I-NEW-r1",
+          "pqvd_required": "required value"
+        },
+        "action": "InsertButton"
+      },
+      "output": {
+        "status": 200,
+        "redirect": null,
+        "message": {
+          "kind": "success",
+          "text": "Baseline item saved; the form is hidden."
+        },
+        "validation": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "basic-form/item-edit/plugin-error-update-postoperation/editor",
+      "input": {
+        "page": "/baseline/item-edit/",
+        "query": {
+          "id": {
+            "fixture": "item1"
+          }
+        },
+        "fields": {
+          "pqvd_text": "plugin-fail-update-postoperation"
+        },
+        "action": "UpdateButton"
+      },
+      "output": {
+        "status": 200,
+        "redirect": null,
+        "message": {
+          "kind": "danger",
+          "text": "Baseline plugin rejected update at postoperation"
+        },
+        "validation": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "basic-form/item-edit/plugin-error-update-preoperation/editor",
+      "input": {
+        "page": "/baseline/item-edit/",
+        "query": {
+          "id": {
+            "fixture": "item1"
+          }
+        },
+        "fields": {
+          "pqvd_text": "plugin-fail-update-preoperation"
+        },
+        "action": "UpdateButton"
+      },
+      "output": {
+        "status": 200,
+        "redirect": null,
+        "message": {
+          "kind": "danger",
+          "text": "Baseline plugin rejected update at preoperation"
+        },
+        "validation": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "basic-form/item-edit/plugin-error-update-prevalidation/editor",
+      "input": {
+        "page": "/baseline/item-edit/",
+        "query": {
+          "id": {
+            "fixture": "item1"
+          }
+        },
+        "fields": {
+          "pqvd_text": "plugin-fail-update-prevalidation"
+        },
+        "action": "UpdateButton"
+      },
+      "output": {
+        "status": 200,
+        "redirect": null,
+        "message": {
+          "kind": "danger",
+          "text": "Baseline plugin rejected update at prevalidation"
+        },
+        "validation": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "basic-form/item-edit/plugin-mutation/editor",
+      "input": {
+        "page": "/baseline/item-edit/",
+        "query": {
+          "id": {
+            "fixture": "item1"
+          }
+        },
+        "fields": {
+          "pqvd_ticker": "MUT",
+          "pqvd_textarea": "mutate-me"
+        },
+        "action": "UpdateButton"
+      },
+      "output": {
+        "status": 200,
+        "redirect": null,
+        "message": {
+          "kind": "success",
+          "text": "Submission completed successfully."
+        },
+        "validation": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "basic-form/item-edit/plugin-mutation-postback/editor",
+      "input": {
+        "page": "/baseline/item-edit/",
+        "query": {
+          "id": {
+            "fixture": "item1"
+          }
+        },
+        "fields": {
+          "pqvd_ticker": "MUT",
+          "pqvd_textarea": "mutate-me"
+        },
+        "action": "UpdateButton"
+      },
+      "output": {
+        "status": 200,
+        "redirect": null,
+        "message": {
+          "kind": "success",
+          "text": "Submission completed successfully."
+        },
+        "validation": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "basic-form/item-edit/range-error/editor",
+      "input": {
+        "page": "/baseline/item-edit/",
+        "query": {
+          "id": {
+            "fixture": "item1"
+          }
+        },
+        "fields": {
+          "pqvd_wholenumber": "5000"
+        },
+        "action": "UpdateButton"
+      },
+      "output": {
+        "status": 200,
+        "redirect": null,
+        "message": null,
+        "validation": ["Baseline whole number must be between 0 and 1000."]
+      },
+      "volatile": []
+    },
+    {
+      "id": "basic-form/item-edit/save-text/editor",
+      "input": {
+        "page": "/baseline/item-edit/",
+        "query": {
+          "id": {
+            "fixture": "item1"
+          }
+        },
+        "fields": {
+          "pqvd_text": "edited by baseline"
+        },
+        "action": "UpdateButton"
+      },
+      "output": {
+        "status": 200,
+        "redirect": null,
+        "message": {
+          "kind": "success",
+          "text": "Submission completed successfully."
+        },
+        "validation": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "basic-form/item-edit-nolinks/save-text/editor",
+      "input": {
+        "page": "/baseline/item-edit-nolinks/",
+        "query": {
+          "id": {
+            "fixture": "item1"
+          }
+        },
+        "fields": {
+          "pqvd_text": "edited by baseline"
+        },
+        "action": "UpdateButton"
+      },
+      "output": {
+        "status": 200,
+        "redirect": null,
+        "message": {
+          "kind": "success",
+          "text": "Submission completed successfully."
+        },
+        "validation": []
+      },
+      "volatile": []
+    }
+  ],
+  "history": []
+}

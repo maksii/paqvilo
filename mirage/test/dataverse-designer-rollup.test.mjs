@@ -30,11 +30,12 @@ test('a designer-exported one-to-many Count recalculates and goes stale when a c
     active: false,
     aggregate: 'count',
     attribute: 'test_childid',
+    form: 'designer',
     unsupported: null,
   });
-  assert.match(parseRollupFormula(formula.replace('>Count</', '>Sum</')).unsupported, /child Count/);
+  assert.match(parseRollupFormula(formula.replace('>Count</', '>Median</')).unsupported, /Count, Sum, Average/);
 
-  const { request, json, store } = await contractModuleFixture(t, {
+  const { api, request, json } = await contractModuleFixture(t, {
     extension: EXTENSION,
     mappings: {
       test_parent: {
@@ -63,18 +64,18 @@ test('a designer-exported one-to-many Count recalculates and goes stale when a c
       ],
     },
   });
-  const parent = () => store.tableRows('test_parent').find((row) => row.test_parentid === PARENT);
+  const stale = () => api.rollups.isStale('test_parent', PARENT, 'child_count');
   const rollup = `/CalculateRollupField(Target=@target,FieldName=@field)?${new URLSearchParams({
     '@target': JSON.stringify({ '@odata.id': `test_parents(${PARENT})` }),
     '@field': "'child_count'",
   })}`;
   assert.equal((await json(await request('GET', rollup), 200)).child_count, 1);
-  assert.equal(parent().child_count_state, 1);
+  assert.equal(stale(), false);
   await json(
     await request('PATCH', `/test_children(${CHILD})`, { 'test_parentid@odata.bind': `/test_parents(${OTHER})` }),
     200,
   );
-  assert.equal(parent().child_count_state, 0);
+  assert.equal(stale(), true);
   assert.equal((await json(await request('GET', rollup), 200)).child_count, 0);
 });
 
@@ -94,7 +95,7 @@ test('a designer child Count uses the named relationship and distinguishes looku
     from: 'test_parentid',
     many: false,
   });
-  const { request, json, store, api } = await contractModuleFixture(t, {
+  const { request, json, api } = await contractModuleFixture(t, {
     extension: EXTENSION,
     mappings: {
       test_parent: {
@@ -135,7 +136,6 @@ test('a designer child Count uses the named relationship and distinguishes looku
       ],
     },
   });
-  const parent = () => store.tableRows('test_parent').find((row) => row.test_parentid === PARENT);
   const recalculate = async (column) =>
     json(
       await request(
@@ -150,7 +150,7 @@ test('a designer child Count uses the named relationship and distinguishes looku
 
   await t.test('a well-formed definition with an unresolved relationship reports unsupported', async () => {
     const result = await recalculate('wrong_count');
-    assert.equal(result.wrong_count, null);
+    assert.equal(Object.hasOwn(result, 'wrong_count'), false, 'a null value is absent');
     assert.equal(result.wrong_count_state, 2);
     assert.ok(
       api.rollups
@@ -161,16 +161,16 @@ test('a designer child Count uses the named relationship and distinguishes looku
 
   await t.test('only the typed matching child contributes or makes the rollup stale', async () => {
     assert.equal((await recalculate('child_count')).child_count, 1);
-    assert.equal(parent().child_count_state, 1);
+    assert.equal(api.rollups.isStale('test_parent', PARENT, 'child_count'), false);
     await json(await request('PATCH', `/test_children(${foreign})`, { name: 'Updated other relationship' }), 200);
-    assert.equal(parent().child_count_state, 1);
+    assert.equal(api.rollups.isStale('test_parent', PARENT, 'child_count'), false);
     await json(
       await request('PATCH', `/test_children(${CHILD})`, {
         'test_parentid_parent@odata.bind': `/test_parents(${OTHER})`,
       }),
       200,
     );
-    assert.equal(parent().child_count_state, 0);
+    assert.equal(api.rollups.isStale('test_parent', PARENT, 'child_count'), true);
     assert.equal((await recalculate('child_count')).child_count, 0);
   });
 });
@@ -185,7 +185,7 @@ test('a designer Count resolves standard relationship metadata and only counts u
   const foreign = 'be000000-0000-4000-8000-000000000007';
   const ambiguous = 'be000000-0000-4000-8000-000000000008';
   const unique = 'be000000-0000-4000-8000-000000000009';
-  const { request, json, store } = await contractModuleFixture(t, {
+  const { api, request, json, store } = await contractModuleFixture(t, {
     extension: EXTENSION,
     mappings: {
       account: {
@@ -227,7 +227,6 @@ test('a designer Count resolves standard relationship metadata and only counts u
   assert.equal(relationship.ReferencingEntity, 'contact');
   assert.equal(relationship.ReferencingAttribute, 'parentcustomerid');
 
-  const parent = (id = PARENT) => store.tableRows('account').find(({ accountid }) => accountid === id);
   const recalculate = async (id = PARENT) =>
     json(
       await request(
@@ -241,21 +240,21 @@ test('a designer Count resolves standard relationship metadata and only counts u
     );
   assert.equal((await recalculate()).test_contact_count, 1);
   assert.equal((await recalculate(OTHER)).test_contact_count, 1);
-  assert.equal(parent().test_contact_count_state, 1);
-  assert.equal(parent(OTHER).test_contact_count_state, 1);
+  assert.equal(api.rollups.isStale('account', PARENT, 'test_contact_count'), false);
+  assert.equal(api.rollups.isStale('account', OTHER, 'test_contact_count'), false);
   await json(await request('PATCH', `/contacts(${unique})`, { firstname: 'Updated bare account target' }), 200);
-  assert.equal(parent(OTHER).test_contact_count_state, 0);
+  assert.equal(api.rollups.isStale('account', OTHER, 'test_contact_count'), true);
   assert.equal((await recalculate(OTHER)).test_contact_count, 1);
   await json(await request('PATCH', `/contacts(${foreign})`, { firstname: 'Updated contact target' }), 200);
   await json(await request('PATCH', `/contacts(${ambiguous})`, { firstname: 'Updated ambiguous target' }), 200);
-  assert.equal(parent().test_contact_count_state, 1);
+  assert.equal(api.rollups.isStale('account', PARENT, 'test_contact_count'), false);
   await json(
     await request('PATCH', `/contacts(${CHILD})`, {
       'parentcustomerid_account@odata.bind': `/accounts(${OTHER})`,
     }),
     200,
   );
-  assert.equal(parent().test_contact_count_state, 0);
+  assert.equal(api.rollups.isStale('account', PARENT, 'test_contact_count'), true);
   assert.equal((await recalculate()).test_contact_count, 0);
   assert.equal((await recalculate(OTHER)).test_contact_count, 2);
 
@@ -270,6 +269,6 @@ test('a designer Count resolves standard relationship metadata and only counts u
     };
   });
   const unresolved = await recalculate();
-  assert.equal(unresolved.test_contact_count, null);
+  assert.equal(Object.hasOwn(unresolved, 'test_contact_count'), false, 'a null value is absent');
   assert.equal(unresolved.test_contact_count_state, 2);
 });

@@ -51,6 +51,7 @@ const NEW_KEYS = [
   'trace',
   'logs',
   'uploadedAssemblies',
+  'implicitGrant',
 ];
 const PRE_MIGRATION_CATALOGUE = [
   'project',

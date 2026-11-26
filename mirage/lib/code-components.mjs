@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import vm from 'node:vm';
 import { readLocalFile } from '../../lense/local-file.mjs';
 import { orderedMap } from '../../lense/async-map.mjs';
 import { createHash, randomUUID } from 'node:crypto';
@@ -31,7 +32,8 @@ const jsonItem = (key, item) => (typeof item === 'bigint' ? item.toString() : it
 const json = (value) => JSON.stringify(value, jsonItem).replaceAll('<', String.raw`\u003c`);
 /**
  * The canonical form of a code component GUID reference (lower case, hyphenated, without braces), or null when the value
- * is no GUID. A tag may name the control's id braced or without hyphens; observed mappings use this form as their key.
+ * is no GUID. A tag may name the control's id in upper case or without hyphens (a braced id ends the page there:
+ * liquid.mjs codeComponentName); observed mappings use this form as their key.
  */
 export function codeComponentGuid(value) {
   const match = /^\{?([0-9a-f]{8})-?([0-9a-f]{4})-?([0-9a-f]{4})-?([0-9a-f]{4})-?([0-9a-f]{12})\}?$/i.exec(
@@ -44,10 +46,10 @@ const contained = (root, file) => {
   return Boolean(rel) && rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel);
 };
 // The dataset column dataType of each attribute type, as a Power Pages list and subgrid report it (captured,
-// Columns): float is Decimal, money Money, memo
-// SingleLine.Text, and lookup, customer and multi-select columns keep their lower-case attribute type names. Owner,
-// party list, file, image, unique identifier and big integer columns were not in the capture: they
-// follow the same rule (owner, partylist) or keep the manifest type names.
+// Columns): float is Decimal, money Money, memo (rich text too) SingleLine.Text, and lookup, customer, owner, party
+// list and multi-select columns keep their lower-case attribute type names; file and image columns are SingleLine.Text
+// (owner, party list, file, image and rich text captured in paqvilo-developer pcf-parity summary-F section 7). Unique
+// identifier and big integer columns were not in the captures.
 const pcfTypes = {
   nvarchar: 'SingleLine.Text',
   string: 'SingleLine.Text',
@@ -73,11 +75,12 @@ const pcfTypes = {
   customer: 'customer',
   owner: 'owner',
   partylist: 'partylist',
-  file: 'File',
-  image: 'Image',
+  file: 'SingleLine.Text',
+  image: 'SingleLine.Text',
 };
-// Column formats that select a narrower type of the same attribute type: email (captured) and the other text formats
-// and whole-number formats by their manifest type names (not captured).
+// Text column formats that select a narrower type: email, phone, text area, ticker symbol and URL (captured, summary-C
+// and summary-F section 7). A whole number's format (duration, time zone, language) keeps Whole.None (captured,
+// summary-F section 7).
 const pcfTextFormats = {
   email: 'SingleLine.Email',
   phone: 'SingleLine.Phone',
@@ -85,13 +88,11 @@ const pcfTextFormats = {
   tickersymbol: 'SingleLine.Ticker',
   url: 'SingleLine.URL',
 };
-const pcfWholeFormats = { duration: 'Whole.Duration', language: 'Whole.Language', timezone: 'Whole.TimeZone' };
 /** The dataset dataType of an exported column: its attribute type, narrowed by its format (a date-format column is DateOnly whatever its behaviour). */
 function pcfDataType(field) {
   const type = String(field?.dataverseType ?? '').toLowerCase(),
     format = String(field?.format ?? '').toLowerCase();
   if (type === 'nvarchar' && pcfTextFormats[format]) return pcfTextFormats[format];
-  if (['int', 'integer'].includes(type) && pcfWholeFormats[format]) return pcfWholeFormats[format];
   if (type === 'datetime' && (format === 'date' || field.dateTimeBehavior === 'DateOnly'))
     return 'DateAndTime.DateOnly';
   return pcfTypes[type];
@@ -225,6 +226,28 @@ function classicExportGlobal(source) {
   const name = source.slice(start, offset);
   whitespace();
   return source[offset] === ';' ? name : undefined;
+}
+
+// The syntax errors V8 reports for syntax only an ES module may hold: import and export declarations, import.meta and
+// top-level await. Dynamic import() is valid in a classic script.
+const moduleOnlySyntax =
+  /^(?:Cannot use import statement outside a module|Unexpected token 'export'|Cannot use 'import\.meta' outside a module|await is only valid in async functions and the top level bodies of modules)/;
+
+/**
+ * Why a declared code resource is an ES module bundle, or null. Power Pages loads every declared code resource as a
+ * classic script (`<script type="text/javascript" src="/_pcfwebresource/...">`), as Mirage's hosts do, so such a
+ * bundle cannot run there. The source is only compiled as a classic script to learn whether it parses, never run.
+ */
+function moduleBundleReason(resource, source) {
+  if (/^module$/i.test(String(resource.attrs.type ?? '').trim())) return 'the manifest declares it type="module"';
+  if (/\.mjs$/i.test(resource.attrs.path ?? '')) return 'it is an .mjs file';
+  try {
+    new vm.Script(source, { filename: resource.attrs.path }); // NOSONAR: compiled to test classic-script syntax, never run
+  } catch (error) {
+    if (error?.name === 'SyntaxError' && moduleOnlySyntax.test(error.message))
+      return `it holds ES module syntax (${error.message})`;
+  }
+  return null;
 }
 
 // Declaration eligibility is a Power Pages contract, independent of whether a
@@ -931,6 +954,24 @@ async function siblingAssets({ source, token, resources, bodies, limit, declared
   return siblings;
 }
 
+// SDK bundles can export their constructor through a classic script module rather than a namespace or registerControl
+// call: the export global of a declared code resource, bound only from this exact declared resource (globals are never
+// scanned). An ES module bundle is reported: Power Pages loads declared code resources as classic scripts.
+function codeResourceFacts(resource, file, relative, body, diagnostics) {
+  const text = body.toString('utf8');
+  const exportGlobal = classicExportGlobal(text);
+  const moduleReason = moduleBundleReason(resource, text);
+  if (moduleReason)
+    diagnostics.push({
+      code: 'PCF_CODE_RESOURCE_MODULE',
+      severity: 'warning',
+      file,
+      path: relative,
+      message: `PCF code resource ${relative} is an ES module bundle: ${moduleReason}. Power Pages loads declared code resources as classic scripts, so the bundle cannot register its control; build it as a classic script (the pcf-scripts webpack output).`,
+    });
+  return exportGlobal ? { exportGlobal } : {};
+}
+
 // Checks run for every declaration; bodies are read only up to the first failed check, as the serial reading did.
 // The fold then applies declaration order, so the first failure decides the error and the diagnostics before it.
 async function readDeclaredResources({ source, token, declared, admitted, digest, diagnostics, limit }) {
@@ -959,17 +1000,13 @@ async function readDeclaredResources({ source, token, declared, admitted, digest
       }),
     );
     admitted.set(located.file, body);
-    // SDK bundles can export their constructor through a classic script
-    // module rather than a namespace or registerControl call. Bind only
-    // a declaration from this exact declared resource, never scan globals.
-    const exportGlobal = resource.name === 'code' ? classicExportGlobal(body.toString('utf8')) : undefined;
     resources.push({
       kind: resource.name,
       path: relative,
       url,
       order: Number(resource.attrs.order) || 0,
       attributes: { ...resource.attrs },
-      ...(exportGlobal ? { exportGlobal } : {}),
+      ...(resource.name === 'code' ? codeResourceFacts(resource, located.file, relative, body, diagnostics) : {}),
     });
     bodyList.push(body);
     if (resource.name === 'resx')
@@ -1428,7 +1465,33 @@ function nativeHostDataset(dataset, isBound, { metadata, mappings, nativeDataset
   if (result.dataset.entity !== nativeDataset.entity)
     return { error: `Code component ${schema} has a native dataset view for a different table.` };
   result.dataset.pageSize = nativeDataset.pageSize;
+  if (nativeDataset.views)
+    result.dataset.views = switchableViews(dataset, result.dataset, { metadata, mappings, nativeDataset, diagnostic });
   return result;
+}
+
+/**
+ * The views a list's or subgrid's toolbar switches the bound data set to: each view's own binding (columns, links,
+ * sorting, signed configuration). A view that does not resolve to the same table is left out; choosing it changes
+ * nothing.
+ */
+function switchableViews(dataset, first, { metadata, mappings, nativeDataset, diagnostic }) {
+  const views = [];
+  for (const entry of nativeDataset.views) {
+    const bound =
+      canonical(entry.id) === canonical(first.viewId)
+        ? { dataset: first }
+        : nativeComponentDataset(dataset, {
+            metadata,
+            mappings,
+            nativeDataset: { ...nativeDataset, viewId: entry.id },
+            diagnostic,
+          });
+    if (bound.error || bound.dataset.entity !== nativeDataset.entity) continue;
+    const { viewId, viewName, columns, links, tables, sorting } = bound.dataset;
+    views.push({ viewId, viewName, columns, links, tables, sorting, secure: entry.secure });
+  }
+  return views;
 }
 
 function resolveComponentDataset(dataset, isBound, options) {
@@ -1811,7 +1874,9 @@ function liquidHostMarkup({ schema, control, value, controlProperties, strings }
     DataConnectors: [],
     AuthConfigPropertiesGroups: [],
     Resources: [
-      entry(2, null, 0),
+      // One placeholder per RESX file, none without one (captured with zero, one and two: summary-F section 6 and the
+      // configs of the r2, d1 and f rounds). Images and HTML resources have no entry.
+      ...Array.from({ length: ofKind('resx').length }, () => entry(2, null, 0)),
       entry(
         3,
         JSON.stringify({
@@ -1986,9 +2051,29 @@ function nativeDatasetMatches(control, nativeDataset) {
   return !nativeDataset.property || control.datasets.some((dataset) => dataset.name === nativeDataset.property);
 }
 
+/**
+ * Tag arguments in a form JSON can always write: a value JSON cannot write (a Liquid drop such as `page`, which refers
+ * back to itself) stands for its argument text, the text the server coerces it from (liquidControlProperty). Every
+ * other value is kept as it is, so the ids of such arguments do not change.
+ */
+function hashableArguments(args) {
+  return Object.fromEntries(
+    Object.entries(args ?? {}).map(([key, value]) => {
+      try {
+        JSON.stringify(value, jsonItem);
+        return [key, value];
+      } catch {
+        return [key, { liquidValue: argumentText(value) ?? Object.prototype.toString.call(value) }];
+      }
+    }),
+  );
+}
+
 /** The rendered control id: keyed by the control, its arguments and its native dataset binding. */
 function codeComponentId(schema, args, nativeDataset) {
-  const hash = createHash('sha256').update(schema).update(json(args));
+  const hash = createHash('sha256')
+    .update(schema)
+    .update(json(hashableArguments(args)));
   if (nativeDataset) hash.update(json(nativeDataset));
   return `pcf-${hash.digest('hex').slice(0, 16)}`;
 }
@@ -2000,7 +2085,11 @@ function codeComponentStateId({ control, schema, args, nativeBinding, stateScope
   );
   const stateHash = createHash('sha256')
     .update(schema)
-    .update(json(Object.fromEntries(Object.entries(args).filter(([name]) => !bound.has(name.toLowerCase())))))
+    .update(
+      json(
+        hashableArguments(Object.fromEntries(Object.entries(args).filter(([name]) => !bound.has(name.toLowerCase())))),
+      ),
+    )
     .update(json(nativeBinding?.id ?? null))
     .update(json(stateScope ?? null));
   if (nativeDataset) stateHash.update(json(nativeDataset));

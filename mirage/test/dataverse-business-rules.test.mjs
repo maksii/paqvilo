@@ -1,5 +1,7 @@
 // Business rules (lib/dataverse-business-rules.mjs): server-scope rules of workflow category 2 evaluated inside the write.
-// Set value / default / error / required on create and update, client-only rules as diagnostics, pack override, rollback.
+// Set value / default / error on create and update, client-only rules (required included) as diagnostics, pack override,
+// rollback.
+// @test-kind contract: the XAML subset, its cache, the pack override and the diagnostics are Paqvilo's own business-rule grammar and design; the server/client split of the actions follows Learn (asserted in dataverse-business-rules-scope.test.mjs)
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -147,24 +149,29 @@ test('show error message fails the update and leaves the row unchanged', async (
   assert.equal(row.x_name, 'Invented order');
 });
 
-test('set required fails a write that leaves the column empty, on create and on update', async (t) => {
-  const { request, json, rowNamed, store } = await setup(t);
-  const created = await json(await request('POST', '/x_orders', { x_name: 'Large', x_amount: 6000 }), 400);
-  assert.match(created.error.message, /x_reference/);
-  assert.equal(rowNamed('Large'), null);
-  await json(
-    await request('POST', '/x_orders', { x_name: 'Large with reference', x_amount: 6000, x_reference: 'R-1' }),
-    201,
+// @test-kind compatibility: Learn https://learn.microsoft.com/power-apps/maker/model-driven-apps/create-business-rules-recommendations-apply-logic-form lists Set Business Required as a model-driven app action and "Actions that only apply to model-driven apps are ignored when the rule is run server-side."
+test('set required is client-only: the server stores a write that leaves the column empty', async (t) => {
+  const { request, json, rowNamed, store, diagnostics } = await setup(t);
+  await json(await request('POST', '/x_orders', { x_name: 'Large', x_amount: 6000 }), 201);
+  assert.equal(rowNamed('Large').x_reference ?? null, null);
+  await json(await request('PATCH', `/x_orders(${ORDER})`, { x_amount: 7000 }), 200);
+  assert.equal(store.state.tables.x_order.find((item) => item.x_orderid === ORDER).x_amount, 7000);
+  const client = diagnostics.filter(
+    (entry) => entry.code === 'BUSINESS_RULE_CLIENT_ONLY' && entry.workflowId === RULE_REQUIRED,
   );
-  await json(await request('PATCH', `/x_orders(${ORDER})`, { x_amount: 7000 }), 400);
-  assert.equal(store.state.tables.x_order.find((item) => item.x_orderid === ORDER).x_amount, 10);
+  assert.deepEqual(
+    client.map((entry) => entry.actions),
+    [['setfieldrequiredlevelstep']],
+  );
 });
 
 test('client-only and form-scope rules have no server behaviour; client-only reports one diagnostic', async (t) => {
   const { request, json, diagnostics } = await setup(t);
   await json(await request('POST', '/x_orders', { x_name: 'One', x_amount: 1 }), 201);
   await json(await request('POST', '/x_orders', { x_name: 'Two', x_amount: 2 }), 201);
-  const client = diagnostics.filter((entry) => entry.code === 'BUSINESS_RULE_CLIENT_ONLY');
+  const client = diagnostics.filter(
+    (entry) => entry.code === 'BUSINESS_RULE_CLIENT_ONLY' && entry.workflowId !== RULE_REQUIRED,
+  );
   assert.equal(client.length, 1);
   assert.equal(client[0].workflowId, RULE_CLIENT);
   assert.deepEqual(client[0].actions, ['setdisplaymodestep', 'setvisibilitystep']);

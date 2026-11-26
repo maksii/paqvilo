@@ -28,6 +28,10 @@ import { tracedFetch } from './trace-hosts.mjs';
 import { registrationSnippetText } from './registration-snippet-text.mjs';
 import { stripTrailingCharacter } from './text-scanning.mjs';
 import { grantContactRoles } from './site-tables.mjs';
+import { createFederatedSignIn } from './sign-in-federation.mjs';
+import { CLAIM_TYPES, FederationProblem } from './identity-federation.mjs';
+
+import { PROVIDER_PREFIXES as SETTING_PREFIX } from './identity-provider-settings.mjs';
 
 /**
  * The portal side of external sign-in.
@@ -98,7 +102,11 @@ const codeFlow = (provider) =>
     .split(/\s+/)
     .filter(Boolean)
     .join(' ') === 'code';
+/** Sign-in flows of the providers that are not OpenID Connect. */
+const PROTOCOL_FLOWS = { oauth2: 'authorization-code', saml2: 'saml2-web-sso', wsfederation: 'ws-federation-passive' };
 const flowOf = (provider) => {
+  if (provider.protocol === 'oauth1') return 'oauth1-request-token';
+  if (PROTOCOL_FLOWS[provider.type]) return PROTOCOL_FLOWS[provider.type];
   const parts = String(provider.responseType ?? '')
     .trim()
     .toLowerCase()
@@ -170,6 +178,16 @@ class SignInProblem extends Error {
     super(message);
     this.code = code;
     this.status = status;
+  }
+}
+
+/** Runs `work`, reporting a federation problem as the sign-in problem it is. */
+async function signInProblems(work) {
+  try {
+    return await work();
+  } catch (error) {
+    if (error instanceof FederationProblem) throw new SignInProblem(error.message, error.code, error.status);
+    throw error;
   }
 }
 
@@ -296,6 +314,21 @@ export function createExternalSignIn({
     Boolean(token && (token === requestTokens.expected(req, token) || token === adminToken()));
   const redirectUri = (provider) => new URL(provider.callbackPath, origin()).href;
   const settings = () => authenticationSettings(portal());
+  // OAuth 2.0, SAML 2.0 and WS-Federation providers (lib/sign-in-federation.mjs).
+  const federation = createFederatedSignIn({
+    now,
+    origin,
+    identityProvider: () => idp,
+    protect,
+    unprotect,
+    mac,
+    redirectUri,
+    providers: () => providerList(),
+    fetchProvider: (operation, url, init, capture) => providerFetch(operation, url, init, capture),
+    logoutKey: () => clientKeyPair(),
+    readGuardMs: PROVIDER_READ_GUARD_MS,
+  });
+  const claimOptions = (provider) => (provider.claimDefaults ? { defaultPairs: provider.claimDefaults } : {});
 
   // ---- data: contacts, external identities, invitations, ledger ----
   const contactMapping = () => {
@@ -417,9 +450,20 @@ export function createExternalSignIn({
         'REGISTRATION_CONTACT_UNMAPPED',
         409,
       );
-    const fields = contactFieldsFromClaims(claims, provider.registrationClaims, { userinfo });
+    const fields = contactFieldsFromClaims(claims, provider.registrationClaims, {
+      userinfo,
+      ...claimOptions(provider),
+    });
     const email = fields.emailaddress1 ?? emailClaim(claims);
-    if (!fields.lastname) fields.lastname = String(claims.family_name ?? claims.name ?? email ?? claims.sub).trim();
+    if (!fields.lastname)
+      fields.lastname = String(
+        claims.family_name ??
+          claims.name ??
+          claims[CLAIM_TYPES.name] ??
+          email ??
+          claims.sub ??
+          claims[CLAIM_TYPES.nameIdentifier],
+      ).trim();
     const contactId = randomUUID();
     await createRow(mapping.logicalName, {
       [mapping.idColumn]: contactId,
@@ -502,6 +546,11 @@ export function createExternalSignIn({
                   },
                 ]
               : [],
+          // The local stand-in for the site's custom certificate signs SAML 2.0 logout requests.
+          logoutKeys:
+            provider.type === 'saml2' && provider.logoutCertificate
+              ? [{ ...clientKeyPair().publicKey.export({ format: 'jwk' }), kid: provider.logoutCertificate }]
+              : [],
         })),
       users: async (provider) => presetUsers(provider),
       personaCatalog,
@@ -520,14 +569,14 @@ export function createExternalSignIn({
         }
       },
     });
-    // Provider settings that cannot be used as written (lib/external-login.mjs oidcOptions).
+    // Provider settings that cannot be used as written (lib/external-login.mjs oidcOptions, openAuthOptions).
     for (const provider of providerList())
       for (const message of provider.problems ?? [])
         diagnostic({
           code: 'EXTERNAL_LOGIN_SETTING_INVALID',
           severity: 'warning',
           provider: provider.key,
-          message: `Authentication/OpenIdConnect/${provider.key}: ${message}`,
+          message: `${SETTING_PREFIX[provider.type] ?? SETTING_PREFIX.openidconnect}${provider.key}: ${message}`,
         });
     return idp;
   }
@@ -653,7 +702,10 @@ export function createExternalSignIn({
   const clearExternal = () => `${externalCookieName()}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`;
   const readExternal = (req) => {
     const data = unprotect(parseCookies(req.headers.cookie)[externalCookieName()]);
-    return data && now() - Number(data.t) < EXTERNAL_LIFETIME_MS ? data : null;
+    const time = now();
+    return data && time - Number(data.t) < EXTERNAL_LIFETIME_MS && (data.e === undefined || data.e > time)
+      ? data
+      : null;
   };
   const fail = (req, res, url, problem, { returnUrl = '/', invitationCode = null, cookies = [] } = {}) => {
     diagnostic({ code: problem.code, severity: 'warning', message: problem.message, path: url.pathname });
@@ -685,6 +737,10 @@ export function createExternalSignIn({
       siteAdmission = false,
     },
   ) {
+    if (provider.type !== 'openidconnect')
+      return signInProblems(() =>
+        federation.challenge(res, provider, { returnUrl, invitationCode, cookies }, redirect),
+      );
     const meta = await metadata(provider);
     const nonce = `${now()}.${randomBytes(32).toString('base64url')}`;
     // PKCE for the code flow: the verifier travels in the protected state, as the OWIN
@@ -1115,6 +1171,12 @@ export function createExternalSignIn({
     return redirect(res, returnUrl, 'private-site-admission', [cleared, cookie]);
   }
 
+  function applicationTokenDeadline(provider, claims) {
+    if (!provider.useTokenLifetime) return null;
+    const deadline = claims.exp * 1000;
+    return Number.isFinite(claims.exp) && Number.isSafeInteger(deadline) && deadline > now() ? deadline : Number.NaN;
+  }
+
   async function providerResponse(req, res, url, message, privateSiteOnly) {
     const raw = message.state.startsWith(STATE_PREFIX) ? message.state.slice(STATE_PREFIX.length) : null;
     const props = unprotect(raw);
@@ -1142,22 +1204,81 @@ export function createExternalSignIn({
     const { cleared } = nonce;
     if (props.g === true)
       return finishSiteAdmission(req, res, url, { provider, subject: claims.sub, returnUrl, cleared });
+    const expiresAt = applicationTokenDeadline(provider, claims);
+    if (Number.isNaN(expiresAt))
+      return fail(
+        req,
+        res,
+        url,
+        new SignInProblem('The identity provider session has expired. Sign in again.', 'EXTERNAL_LOGIN_TOKEN_INVALID'),
+        { returnUrl, cookies: [cleared] },
+      );
     const kept = keptClaims(claims, ['nonce', 'c_hash', 'at_hash', 'iat', 'nbf', 'exp', 'aud', 'iss']);
     const userinfoClaims = provider.useUserInfo ? await userInfo(provider, accessToken, claims.sub, url) : null;
+    return issueExternal(res, provider, {
+      subject: claims.sub,
+      claims: kept,
+      expiresAt,
+      userinfo: userinfoClaims,
+      returnUrl,
+      invitationCode: props.i ?? null,
+      cookies: [cleared],
+    });
+  }
+
+  /** The short-lived external sign-in cookie of a validated provider answer, and the redirect to ExternalLoginCallback. */
+  function issueExternal(
+    res,
+    provider,
+    { subject, claims, expiresAt = null, userinfo = null, returnUrl, invitationCode, cookies },
+  ) {
     const external = protect({
       p: provider.slug,
-      s: claims.sub,
-      c: kept,
-      ...(userinfoClaims ? { u: userinfoClaims } : {}),
+      s: subject,
+      c: claims,
+      ...(expiresAt !== null ? { e: expiresAt } : {}),
+      ...(userinfo ? { u: userinfo } : {}),
       t: now(),
     });
     const target =
       `/Account/Login/ExternalLoginCallback?ReturnUrl=${encodeURIComponent(returnUrl)}` +
-      (props.i ? '&InvitationCode=' + encodeURIComponent(props.i) : '');
+      (invitationCode ? '&InvitationCode=' + encodeURIComponent(invitationCode) : '');
     return redirect(res, target, 'external-login-response', [
-      cleared,
+      ...cookies,
       `${externalCookieName()}=${external}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${EXTERNAL_LIFETIME_MS / 1000}`,
     ]);
+  }
+
+  /** The answer of an OAuth 2.0, SAML 2.0 or WS-Federation provider (lib/sign-in-federation.mjs answer). */
+  function federatedResponse(req, res, url, outcome, privateSiteOnly) {
+    if (outcome.kind === 'problem')
+      return fail(
+        req,
+        res,
+        url,
+        new SignInProblem(outcome.problem.message, outcome.problem.code, outcome.problem.status ?? 400),
+        {
+          returnUrl: outcome.returnUrl,
+          cookies: outcome.cookies,
+        },
+      );
+    if (privateSiteOnly)
+      return fail(
+        req,
+        res,
+        url,
+        new SignInProblem('Private site admission is required.', 'PRIVATE_SITE_ACCESS_REQUIRED', 401),
+        { cookies: outcome.cookies },
+      );
+    if (outcome.kind === 'logout')
+      return redirect(res, outcome.returnUrl, 'sign-out-external-complete', outcome.cookies);
+    return issueExternal(res, outcome.provider, {
+      subject: outcome.subject,
+      claims: keptClaims(outcome.claims),
+      returnUrl: outcome.returnUrl,
+      invitationCode: outcome.invitationCode,
+      cookies: outcome.cookies,
+    });
   }
 
   // ---- mapping the external identity to a contact ----
@@ -1193,7 +1314,8 @@ export function createExternalSignIn({
     const claims = external.c ?? {};
     const userinfo = userinfoOf(provider, external);
     const email =
-      contactFieldsFromClaims(claims, provider.registrationClaims, { userinfo }).emailaddress1 ?? emailClaim(claims);
+      contactFieldsFromClaims(claims, provider.registrationClaims, { userinfo, ...claimOptions(provider) })
+        .emailaddress1 ?? emailClaim(claims);
     if (
       settings().requireUniqueEmail &&
       email &&
@@ -1452,6 +1574,18 @@ export function createExternalSignIn({
     if (flags.invitation) return { invitationRequired: true };
     throw registrationDisabled();
   }
+  function completeExternalSignIn(res, returnUrl, provider, external, outcome) {
+    signedIn(outcome.contactId, provider.id);
+    return redirect(res, returnUrl, outcome.route, [
+      sessions.cookie({
+        contactId: outcome.contactId,
+        provider: provider.slug,
+        ...(external.e !== undefined ? { expiresAt: external.e } : {}),
+      }),
+      clearExternal(),
+    ]);
+  }
+
   async function externalLoginCallback(req, res, url) {
     const returnUrl = safeReturnUrl(returnUrlParameter(url.searchParams));
     const external = readExternal(req);
@@ -1488,11 +1622,7 @@ export function createExternalSignIn({
         `/Account/Login/RedeemInvitation?ReturnUrl=${encodeURIComponent(returnUrl)}`,
         'invitation-required',
       );
-    signedIn(outcome.contactId, provider.id);
-    return redirect(res, returnUrl, outcome.route, [
-      sessions.cookie({ contactId: outcome.contactId, provider: provider.slug }),
-      clearExternal(),
-    ]);
+    return completeExternalSignIn(res, returnUrl, provider, external, outcome);
   }
 
   // ---- invitation redemption page ----
@@ -1555,14 +1685,15 @@ export function createExternalSignIn({
       if (!(error instanceof SignInProblem)) throw error;
       return redeemPage(req, res, url, { status: error.status ?? 400, code, returnUrl, error: error.message });
     }
-    signedIn(outcome.contactId, provider.id);
-    return redirect(res, returnUrl, outcome.route, [
-      sessions.cookie({ contactId: outcome.contactId, provider: provider.slug }),
-      clearExternal(),
-    ]);
+    return completeExternalSignIn(res, returnUrl, provider, external, outcome);
   }
 
   // ---- LogOff ----
+  /** A configured sign-out URL moved onto the portal's origin (its path, query and fragment). */
+  const localUrl = (value) => {
+    const target = new URL(value, origin());
+    return new URL(target.pathname + target.search + target.hash, origin()).href;
+  };
   async function logOff(req, res, url) {
     if (!identity()?.contactId)
       // LogOff needs a signed-in user; an anonymous request is sent to the sign-in path.
@@ -1575,14 +1706,34 @@ export function createExternalSignIn({
     const session = sessions.read(req.headers.cookie);
     const provider = session?.provider ? providerList().find((item) => item.slug === session.provider) : null;
     const signedOut = sessions.cookie({ contactId: null });
-    if (provider?.externalLogout && idp) {
-      const meta = await metadata(provider);
-      const local = (value) => {
-        const target = new URL(value, origin());
-        return new URL(target.pathname + target.search + target.hash, origin()).href;
-      };
+    if (provider && provider.type !== 'openidconnect' && idp) {
       const target = provider.postLogoutRedirectUri
-        ? local(provider.postLogoutRedirectUri)
+        ? localUrl(provider.postLogoutRedirectUri)
+        : new URL(returnUrl, origin()).href;
+      const nameId =
+        identityRows().find(
+          (row) =>
+            active(row) &&
+            providerMatches(provider, row.adx_identityprovidername) &&
+            same(lookupOf(row, 'adx_contactid'), session.contactId),
+        )?.adx_username ?? null;
+      const answered = await signInProblems(() =>
+        federation.signOut(res, provider, { nameId, returnUrl, target, cookies: [signedOut] }, redirect),
+      );
+      if (answered !== false) return answered;
+      if (provider.type === 'saml2' && (provider.externalLogout || provider.logoutCertificate))
+        diagnostic({
+          code: 'SAML_LOGOUT_NOT_SENT',
+          severity: 'info',
+          provider: provider.key,
+          message: `${SETTING_PREFIX.saml2}${provider.key}: no logout request was sent; it needs ExternalLogoutCertThumbprint, the contact's external identity and the provider's SingleLogoutService. The site session ended locally.`,
+          path: url.pathname,
+        });
+    }
+    if (provider?.externalLogout && idp && provider.type !== 'saml2' && provider.type !== 'wsfederation') {
+      const meta = await metadata(provider);
+      const target = provider.postLogoutRedirectUri
+        ? localUrl(provider.postLogoutRedirectUri)
         : new URL(returnUrl, origin()).href;
       return redirect(
         res,
@@ -1638,10 +1789,22 @@ export function createExternalSignIn({
     if (!callbackPaths().has(path)) return false;
     let message;
     // A query answer only where a provider of that reply URL uses response_mode=query.
-    if (['GET', 'HEAD'].includes(req.method)) message = queryCallbackMessage(url, path);
-    else if (req.method === 'POST' && isForm(req)) {
+    if (['GET', 'HEAD'].includes(req.method)) {
+      const outcome = await federation.answer(req, url, path, Object.fromEntries(url.searchParams));
+      if (outcome) {
+        await federatedResponse(req, res, url, outcome, privateSiteOnly);
+        return true;
+      }
+      message = queryCallbackMessage(url, path);
+    } else if (req.method === 'POST' && isForm(req)) {
       const bytes = await readBody(req);
-      message = providerMessage(formOf(bytes));
+      const fields = formOf(bytes);
+      const outcome = await federation.answer(req, url, path, fields);
+      if (outcome) {
+        await federatedResponse(req, res, url, outcome, privateSiteOnly);
+        return true;
+      }
+      message = providerMessage(fields);
       if (!message) replayUnrecognizedProviderForm(req, bytes);
     }
     if (!message) return false;
@@ -1734,13 +1897,14 @@ export function createExternalSignIn({
         clientId: provider.clientId,
         responseType: provider.responseType,
         responseMode: provider.responseMode,
+        protocol: provider.protocol ?? null,
         flow: flowOf(provider),
         scope: provider.scope,
         // The secret is never reported, only whether one is configured.
         clientSecret: provider.clientSecret ? 'configured' : null,
         tokenAuthMethod: provider.tokenAuthMethod,
         certificateKid: provider.certificateKid,
-        pkce: codeFlow(provider),
+        pkce: provider.type === 'openidconnect' && codeFlow(provider),
         userInfo: {
           enabled: provider.useUserInfo,
           endpoint: provider.userInfoEndpoint,
@@ -1753,6 +1917,15 @@ export function createExternalSignIn({
         externalLogout: provider.externalLogout,
         registration: provider.registration,
         emailMapping: provider.emailMapping,
+        ...(provider.type === 'saml2' || provider.type === 'wsfederation'
+          ? {
+              metadataAddress: provider.metadataAddress,
+              validateAudience: provider.validateAudience,
+              validAudiences: provider.validAudiences,
+              homeRealm: provider.homeRealm,
+              logoutCertificate: provider.logoutCertificate,
+            }
+          : {}),
         default: provider === button,
       })),
       loginButton: { value: flags.loginButton, provider: button?.id ?? null },

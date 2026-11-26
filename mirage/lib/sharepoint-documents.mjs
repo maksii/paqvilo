@@ -31,6 +31,7 @@ import { sameToken } from './admin-origin.mjs';
 import { DataError } from './data-error.mjs';
 import { assertAttachmentSize } from './platform-settings.mjs';
 import { guardProvider } from './storage-provider.mjs';
+import { clockFunction, storeScheduler, systemClock } from './runtime-clock.mjs';
 import { createThroughPipeline } from './dataverse-files.mjs';
 import { organizationPrincipalContext } from './dataverse-principal-context.mjs';
 
@@ -38,6 +39,11 @@ const ROUTE = 'sharepointDocuments';
 const SITE = 'sharepointsite';
 const LOCATION = 'sharepointdocumentlocation';
 const FOLDER_MARKER = '_folder'; // a user file name can never encode to this: "_" is always escaped
+// The kind holding a name (metadata { kind: 'file' | 'folder' }), created once with If-None-Match: *. Runtimes whose
+// adapters share one backend (Azurite, a pack) agree on file-versus-folder through this single-key condition.
+const NAME_CLAIM = '_name';
+// A claim whose file or folder never appeared (its creator stopped) is taken over after this long.
+const STALE_CLAIM_MS = 60_000;
 const MAX_FOLDER_DEPTH = 16; // ponytail: a local bound on subfolder depth; SharePoint's own limit is the URL length
 // Seeded only when dataverse-standard did not provide the mappings (the standard file lists both tables).
 const FALLBACK_MAPPINGS = {
@@ -118,6 +124,8 @@ function assertNewName(name) {
     throw new DataError(`'${name}' is not a valid SharePoint file or folder name.`, 400, 'SharePointInvalidName');
   return name;
 }
+// The runtime clock (the store's, which its scheduler and the renewals of a claim also run on), for claim ages.
+const apiNow = (api) => () => clockFunction(api.store?.clock ?? api.clock ?? systemClock)();
 const sameNameExists = () =>
   new DataError('A file or folder with this name already exists.', 409, 'SharePointNameExists');
 
@@ -164,6 +172,86 @@ function withDocumentName(storage, key, kind, operation) {
   });
   names.set(key, { kind, wait, done });
   return run;
+}
+
+// The claim at `key`, or null: the kind holding the name, its ETag and when it was written.
+async function nameClaim(storage, key) {
+  const head = await storage.head(`${key}/${NAME_CLAIM}`);
+  return head ? { kind: head.metadata?.kind ?? null, etag: head.etag, lastModified: head.lastModified } : null;
+}
+
+// The write condition that claims a name over `current`: create when there is none, replace a stale one (nothing stands
+// behind it and it is older than STALE_CLAIM_MS), else null (the other kind holds the name).
+async function claimCondition(storage, key, current, now) {
+  if (!current) return { ifNoneMatch: '*' };
+  const held = current.kind === 'folder' ? `${key}/${FOLDER_MARKER}` : key;
+  const age = now() - Date.parse(current.lastModified ?? '');
+  const stale = Number.isFinite(age) && age > STALE_CLAIM_MS;
+  if (!stale || (await storage.head(held))) return null;
+  return { ifMatch: current.etag };
+}
+
+// Claims the name at `key` for a kind: { kind } of the holder after this call (ours, or the other kind's), and whether
+// this call created the claim. A claim with nothing behind it that is older than STALE_CLAIM_MS is replaced conditionally.
+async function claimName(storage, key, kind, { now = Date.now } = {}) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const current = await nameClaim(storage, key);
+    if (current?.kind === kind) return { kind, claimed: false };
+    const condition = await claimCondition(storage, key, current, now);
+    if (!condition) return { kind: current.kind, claimed: false };
+    try {
+      await storage.put(`${key}/${NAME_CLAIM}`, Buffer.alloc(0), {
+        contentType: 'application/x-name-claim',
+        metadata: { kind },
+        ...condition,
+      });
+      return { kind, claimed: true };
+    } catch (error) {
+      if (!['Conflict', 'PreconditionFailed'].includes(error?.code)) throw error;
+    }
+  }
+  return { kind: (await nameClaim(storage, key))?.kind ?? kind, claimed: false };
+}
+
+// While a write of the named file or folder runs (a long upload), its claim is renewed on the runtime scheduler every
+// third of STALE_CLAIM_MS, so another runtime never takes over a claim whose write is still in progress. A renewal is
+// conditional on the claim's ETag; one that finds the claim gone or replaced stops. Answers stop().
+const RENEW_CLAIM_MS = STALE_CLAIM_MS / 3;
+function keepClaim(api, storage, key, kind) {
+  const scheduler = storeScheduler(api.store);
+  let handle = null,
+    stopped = false;
+  const renew = async () => {
+    handle = null;
+    if (stopped) return;
+    const head = await storage.head(`${key}/${NAME_CLAIM}`).catch(() => null);
+    if (stopped || head?.metadata?.kind !== kind) return;
+    try {
+      await storage.put(`${key}/${NAME_CLAIM}`, Buffer.alloc(0), {
+        contentType: 'application/x-name-claim',
+        metadata: { kind },
+        ifMatch: head.etag,
+      });
+    } catch (error) {
+      if (['Conflict', 'PreconditionFailed'].includes(error?.code)) return;
+    }
+    if (!stopped) handle = scheduler.schedule(renew, RENEW_CLAIM_MS, { name: 'sharepoint-name-claim' });
+  };
+  handle = scheduler.schedule(renew, RENEW_CLAIM_MS, { name: 'sharepoint-name-claim' });
+  return () => {
+    stopped = true;
+    if (handle !== null) scheduler.cancel(handle);
+    handle = null;
+  };
+}
+
+// Releases a claim this call created when its write failed, so the name stays usable.
+async function releaseName(storage, key) {
+  try {
+    await storage.delete(`${key}/${NAME_CLAIM}`);
+  } catch (error) {
+    if (error?.code !== 'NotFound') throw error;
+  }
 }
 
 function rowOf(store, logical, id) {
@@ -368,7 +456,7 @@ function createApi(api) {
       const page = await storage.list(`${folder}/`, { continuation });
       for (const item of page.items) {
         const rest = item.key.slice(folder.length + 1);
-        if (rest === FOLDER_MARKER) continue;
+        if (rest === FOLDER_MARKER || rest === NAME_CLAIM) continue;
         if (rest.includes('/')) {
           folders.add(rest.slice(0, rest.indexOf('/')));
           continue;
@@ -407,8 +495,14 @@ function createApi(api) {
       const marker = `${key}/${FOLDER_MARKER}`;
       const folderExists = () =>
         new DataError(`A folder named '${name}' already exists.`, 409, 'SharePointFolderExists');
+      const claim = await claimName(storage, key, 'folder', { now: apiNow(api) });
+      if (claim.kind === 'file') throw sameNameExists();
       if (await storage.head(marker)) throw folderExists();
-      if (await storage.head(key)) throw sameNameExists();
+      // A file stored before name claims existed still holds its name.
+      if (await storage.head(key)) {
+        if (claim.claimed) await releaseName(storage, key);
+        throw sameNameExists();
+      }
       try {
         const stored = await storage.put(marker, Buffer.alloc(0), {
           contentType: 'application/x-folder',
@@ -418,6 +512,7 @@ function createApi(api) {
         return { name, folder: true, lastModified: stored.lastModified };
       } catch (error) {
         if (error?.code === 'Conflict') throw folderExists();
+        if (claim.claimed) await releaseName(storage, key);
         throw error;
       }
     });
@@ -438,11 +533,15 @@ function createApi(api) {
     } while (continuation);
     const markers = [];
     for (const key of keys) {
-      if (key.endsWith(`/${FOLDER_MARKER}`)) markers.push(key);
+      if (key.endsWith(`/${FOLDER_MARKER}`) || key.endsWith(`/${NAME_CLAIM}`)) markers.push(key);
       else await storage.delete(key);
     }
-    // A provider failure must leave the remaining folder addressable. Keep every marker until its data is gone.
-    for (const key of markers.sort((left, right) => right.length - left.length)) await storage.delete(key);
+    // A provider failure must leave the remaining folder addressable. Keep every marker until its data is gone, and each
+    // folder's name claim until its marker is (deepest first; a claim sorts after its folder's marker).
+    const order = (left, right) =>
+      right.split('/').length - left.split('/').length ||
+      Number(left.endsWith(`/${NAME_CLAIM}`)) - Number(right.endsWith(`/${NAME_CLAIM}`));
+    for (const key of markers.sort(order)) await storage.delete(key);
     return { deleted: true };
   }
 
@@ -461,12 +560,27 @@ function createApi(api) {
     const key = `${folder}/${encodeSegment(name)}`;
     const storage = storageOf(api);
     return withDocumentName(storage, key, 'file', async () => {
-      if (await storage.head(`${key}/${FOLDER_MARKER}`)) throw sameNameExists();
-      const stored = await storage.put(key, body, {
-        contentType: contentType ?? 'application/octet-stream',
-        metadata: { name },
-        ...(ifMatch !== undefined ? { ifMatch } : {}),
-      });
+      const claim = await claimName(storage, key, 'file', { now: apiNow(api) });
+      if (claim.kind === 'folder') throw sameNameExists();
+      // A folder created before name claims existed still holds its name.
+      if (await storage.head(`${key}/${FOLDER_MARKER}`)) {
+        if (claim.claimed) await releaseName(storage, key);
+        throw sameNameExists();
+      }
+      let stored;
+      const stopKeeping = keepClaim(api, storage, key, 'file');
+      try {
+        stored = await storage.put(key, body, {
+          contentType: contentType ?? 'application/octet-stream',
+          metadata: { name },
+          ...(ifMatch !== undefined ? { ifMatch } : {}),
+        });
+      } catch (error) {
+        stopKeeping();
+        if (claim.claimed) await releaseName(storage, key);
+        throw error;
+      }
+      stopKeeping();
       return {
         name,
         size: stored.size,
@@ -480,11 +594,11 @@ function createApi(api) {
   async function remove(locationId, name, { ifMatch, path = [] } = {}, identity) {
     const folder = await folderOf(locationId, identity, 'write', path);
     assertName(name);
-    const existed = await storageOf(api).delete(
-      `${folder}/${encodeSegment(name)}`,
-      ifMatch !== undefined ? { ifMatch } : {},
-    );
+    const storage = storageOf(api);
+    const key = `${folder}/${encodeSegment(name)}`;
+    const existed = await storage.delete(key, ifMatch !== undefined ? { ifMatch } : {});
     if (!existed) throw new DataError(`The document '${name}' does not exist in this location.`, 404, 'NotFound');
+    await releaseName(storage, key);
     return { deleted: true };
   }
 

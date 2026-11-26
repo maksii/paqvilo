@@ -1447,6 +1447,8 @@ function panelBrowserImpl(data) {
         limits.renderedTruncated &&
           'Only part of the page was read: it has more elements or controls than Inspect reads.',
         read.assetsTruncated && 'Only the first 300 files the page loads were read.',
+        read.inaccessibleFrames > 0 &&
+          `${count(read.inaccessibleFrames, 'frame')} could not be read: the browser keeps cross-origin and sandboxed frames closed to the page (open a frame in its own tab to inspect it).`,
         read.webFilesTruncated && 'Only the first 100 scripts and stylesheets of your web files were searched.',
         read.roundsTruncated && 'Web files that other web files load were followed eight levels deep, not further.',
         limits.candidateTruncated &&
@@ -2736,6 +2738,19 @@ function panelBrowserImpl(data) {
         const account = session.accountId ? ` · account ${session.accountId}` : '';
         const sessionError = session.error ? '<div class="dim">' + esc(session.error) + '</div>' : '';
         out += `<div class="card"><div class="path">Browser session</div><div class="tw who" data-idp="${provider ? 'external' : 'local'}" title="${esc(via + account)}"><span class="grow">${who} · ${esc((session.roles ?? []).join(', ') || 'no web roles')}${override}</span>${signout}</div>${sessionError}${t.personas.length ? personaPickerHtml() : noPersonas}</div>`;
+        // Publishing preview (Enable / Disable preview), offered only to a contact whose web roles hold the right.
+        if (session.signedIn && t.preview?.eligible) {
+          const previewButton = ([value, label, title]) => {
+            const pressed = t.preview.enabled === (value === 'on');
+            return `<button class="${pressed ? 'on' : ''}" data-act="preview" data-v="${value}" aria-pressed="${pressed}" title="${title}">${label}</button>`;
+          };
+          out += `<div class="card"><div class="path">Publishing preview</div><div class="tw"><span class="seg" role="group" aria-label="Publishing preview">${[
+            ['on', 'On', 'This browser sees unpublished pages, snippets and web files; the page reloads'],
+            ['off', 'Off', 'This browser sees published content only; the page reloads'],
+          ]
+            .map(previewButton)
+            .join('')}</span></div></div>`;
+        }
       } else {
         // No sign-in sessions: the runtime persona serves every request without one.
         const current = t.identity?.contactId
@@ -3910,6 +3925,16 @@ function panelBrowserImpl(data) {
           const r = await api('signout', {});
           if (r.ok) toast(r.navigating ? 'Signing out through the portal ...' : 'This browser is not signed in.');
           else toast(r.error ?? 'Could not sign out', true);
+          break;
+        }
+        case 'preview': {
+          const enabled = t.dataset.v === 'on';
+          if (!S.tweaks?.preview?.eligible || S.tweaks.preview.enabled === enabled) break;
+          const r = await api('preview', { enabled });
+          if (r.ok) {
+            toast(`Publishing preview ${enabled ? 'on' : 'off'}; reloading ...`);
+            reloadPage();
+          } else toast(r.error ?? 'Could not change publishing preview', true);
           break;
         }
         case 'permissions': {

@@ -6,9 +6,15 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { chromium } from 'playwright-core';
-import verify, { diagnosticSnapshot, compareDiagnostics, assessVerification } from '../lense/commands/verify.mjs';
+import verify, {
+  diagnosticSnapshot,
+  compareDiagnostics,
+  assessVerification,
+  verificationPageBlocks,
+} from '../lense/commands/verify.mjs';
 import * as verifyModule from '../lense/commands/verify.mjs';
-import { createFixture, SITE } from './fixture.mjs';
+import { PortalModel } from '../lense/portal-model.mjs';
+import { createFixture, HOME_ID, SITE } from './fixture.mjs';
 
 test('signed-in verification launches the selected external child profile without a credential export', async (t) => {
   // The browser identity is under test, not the inline baseline: a plain export needs no Git repository.
@@ -82,6 +88,41 @@ test('strict mode treats truncated diagnostic text as incomplete even when prefi
   assert.equal(comparison.comparison.problems.incomplete, true);
   assert.equal(assessVerification(checks, comparison, true).passed, false);
   assert.equal(assessVerification(checks, comparison, false).passed, true);
+});
+
+test('Verify chooses the displayed language’s inline page sources', (t) => {
+  const fx = createFixture();
+  t.after(fx.cleanup);
+  fx.write(
+    'web-pages/fixture/Fixture.webpage.yml',
+    `adx_webpageid: fixture-root\nadx_partialurl: fixture\nadx_parentpageid: ${HOME_ID}\n`,
+  );
+  fx.write(
+    'websitelanguage.yml',
+    '- adx_websitelanguageid: en\n  adx_languagecode: en-US\n- adx_websitelanguageid: fr\n  adx_languagecode: fr-FR\n',
+  );
+  const files = (locale) => {
+    const stem = `web-pages/fixture/content-pages/Fixture.${locale}.webpage`;
+    return [`${stem}.custom_css.css`, `${stem}.custom_javascript.js`];
+  };
+  for (const locale of ['en-US', 'fr-FR']) {
+    fx.write(
+      `web-pages/fixture/content-pages/Fixture.${locale}.webpage.yml`,
+      `adx_webpageid: fixture-${locale}\nadx_rootwebpageid: fixture-root\nadx_partialurl: fixture\n`,
+    );
+    const [css, js] = files(locale);
+    fx.write(css, 'html { color: navy; }\n');
+    fx.write(js, `window.fixtureLocale = '${locale}';\n`);
+  }
+  const model = new PortalModel(fx.dir);
+  const selected = (html, url) =>
+    verificationPageBlocks(model, html, url)
+      .map(({ rel }) => rel)
+      .sort();
+  assert.deepEqual(selected('<html lang="fr-FR"></html>', '/fixture/'), files('fr-FR'));
+  assert.deepEqual(selected('<html lang="en-US"></html>', '/fixture/'), files('en-US'));
+  assert.deepEqual(selected('<html></html>', '/fr-FR/fixture/'), files('fr-FR'));
+  assert.deepEqual(selected('<html></html>', '/fixture/'), [...files('en-US'), ...files('fr-FR')].sort());
 });
 
 test('JSON verification emits one final failure report when temporary cleanup also fails', async (t) => {

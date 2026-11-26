@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import { adapterEnabled } from './local-overrides.mjs';
 import { hasPlatformBundles } from './platform-manifest.mjs';
+import { documentAnchors, insertAt, scriptMarker } from './document-injection.mjs';
 
 function strings(value, output = []) {
   if (typeof value === 'string') output.push(value);
@@ -167,8 +168,12 @@ export function runtimeDependencyPaths(dependencies, configuredScripts = []) {
  * verbatim by the portal and must stay byte-identical. */
 export const isHtmlDocument = (html) => /<(?:!doctype|html|head|body)\b/i.test(String(html ?? ''));
 
-/** Put source-detected fallback libraries before authored page/form scripts. */
-export function injectRuntimeDependencies(html, dependencies, configuredScripts = []) {
+/**
+ * Put source-detected fallback libraries before authored page/form scripts: after the head start tag, else before the
+ * first script, else before the body end tag, else after the body start tag (the document's real elements,
+ * lib/document-injection.mjs). `injectedScripts` is the response's injected-script marker under a nonce policy.
+ */
+export function injectRuntimeDependencies(html, dependencies, configuredScripts = [], { injectedScripts = null } = {}) {
   if (!isHtmlDocument(html)) return html;
   // Documents with the platform bundles get jQuery, moment and Datejs from them.
   if (hasPlatformBundles(html)) return html;
@@ -177,22 +182,11 @@ export function injectRuntimeDependencies(html, dependencies, configuredScripts 
     existing.push(match[2]);
   const paths = runtimeDependencyPaths(dependencies, existing);
   if (!paths.length) return html;
-  const tags = paths.map((src) => `<script src="${src}"></script>`).join('');
-  const head = /<head\b[^>]*>/i.exec(html);
-  if (head) {
-    const at = head.index + head[0].length;
-    return `${html.slice(0, at)}${tags}${html.slice(at)}`;
-  }
-  const firstScript = /<script\b/i.exec(html);
-  if (firstScript) return `${html.slice(0, firstScript.index)}${tags}${html.slice(firstScript.index)}`;
-  const bodyEnd = html.toLowerCase().lastIndexOf('</body>');
-  if (bodyEnd >= 0) return `${html.slice(0, bodyEnd)}${tags}${html.slice(bodyEnd)}`;
-  const bodyStart = /<body\b[^>]*>/i.exec(html);
-  if (bodyStart) {
-    const at = bodyStart.index + bodyStart[0].length;
-    return `${html.slice(0, at)}${tags}${html.slice(at)}`;
-  }
-  return html;
+  const mark = scriptMarker(injectedScripts);
+  const tags = paths.map((src) => `<script${mark} src="${src}"></script>`).join('');
+  const anchors = documentAnchors(html, { scripts: true });
+  const at = [anchors.headStart, anchors.firstScript, anchors.bodyEnd, anchors.bodyStart].find((offset) => offset >= 0);
+  return at === undefined ? html : insertAt(html, at, tags);
 }
 
 export function runtimeCompatibilityPaths(dependencies, configuredScripts = []) {
@@ -218,8 +212,8 @@ export function runtimeCompatibilityPaths(dependencies, configuredScripts = []) 
  * replaces $.fn plugins; the adapters re-attach themselves to a replaced jQuery,
  * so they are never repeated. A document that already references Bootstrap
  * (any core, bundle or hashed platform build) keeps its own plugins. */
-export function injectRuntimeCompatibility(html, dependencies, configuredScripts = []) {
-  const edits = runtimeCompatibilityEdits(html, dependencies, configuredScripts);
+export function injectRuntimeCompatibility(html, dependencies, configuredScripts = [], options = {}) {
+  const edits = runtimeCompatibilityEdits(html, dependencies, configuredScripts, options);
   if (!edits.length) return html;
   let output = '',
     cursor = 0;
@@ -232,9 +226,11 @@ export function injectRuntimeCompatibility(html, dependencies, configuredScripts
 
 /**
  * The insertions injectRuntimeCompatibility makes, in document order and in the coordinates of `html`
- * ({ start, end: start, text }), so a caller that tracks render provenance can apply them precisely.
+ * ({ start, end: start, text }), so a caller that tracks render provenance can apply them precisely. The anchors are
+ * the document's real elements (a jQuery include that is a script element, the body end tag), never the same text in
+ * an attribute value. `injectedScripts` is the response's injected-script marker under a nonce policy.
  */
-export function runtimeCompatibilityEdits(html, dependencies, configuredScripts = []) {
+export function runtimeCompatibilityEdits(html, dependencies, configuredScripts = [], { injectedScripts = null } = {}) {
   if (!isHtmlDocument(html)) return [];
   // The platform bundles' local equivalents include these adapters (lib/platform-manifest.mjs).
   if (hasPlatformBundles(html)) return [];
@@ -245,14 +241,17 @@ export function runtimeCompatibilityEdits(html, dependencies, configuredScripts 
     (src) => src && !present.has(src),
   );
   const edits = [];
+  const mark = scriptMarker(injectedScripts);
+  let anchors = null;
+  const documentAnchorsOnce = () => (anchors ??= documentAnchors(html, { scripts: true }));
   if (paths.length) {
     const includes = [
       ...String(html).matchAll(/<script\b[^>]*\bsrc\s*=\s*(["'])([^"']+)\1[^>]*>\s*<\/script>/gi),
     ].filter((match) => JQUERY_CORE_SCRIPT.test(match[2]));
-    const last = includes.at(-1);
+    const last = includes.findLast((match) => documentAnchorsOnce().scriptStarts.has(match.index));
     if (last) {
       const at = last.index + last[0].length;
-      edits.push({ start: at, end: at, text: paths.map((src) => `<script src="${src}"></script>`).join('') });
+      edits.push({ start: at, end: at, text: paths.map((src) => `<script${mark} src="${src}"></script>`).join('') });
     }
   }
   // Inline page templates can contain a semantic footer even when source
@@ -262,13 +261,13 @@ export function runtimeCompatibilityEdits(html, dependencies, configuredScripts 
     (dependencies.footerSpacing || /<footer\b|\brole\s*=\s*["']contentinfo["']/i.test(html)) &&
     !present.has('/__sim-static/vendor/footer-spacing-compat.js')
   ) {
-    // The inserted adapters contain no closing body tag: the last one of the document is the same.
-    const closingBody = html.toLowerCase().lastIndexOf('</body>');
+    // The inserted adapters contain no closing body tag: the body end tag of the document is the same.
+    const closingBody = documentAnchorsOnce().bodyEnd;
     if (closingBody >= 0)
       edits.push({
         start: closingBody,
         end: closingBody,
-        text: '<script src="/__sim-static/vendor/footer-spacing-compat.js"></script>',
+        text: `<script${mark} src="/__sim-static/vendor/footer-spacing-compat.js"></script>`,
       });
   }
   return edits.sort((a, b) => a.start - b.start);

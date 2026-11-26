@@ -130,13 +130,13 @@ const initialState = (identity = { contactId: 'alex', roleSource: 'memberships',
   },
 });
 
-async function simulator(t, initial = initialState(), { clock, settings = [] } = {}) {
+async function simulator(t, initial = initialState(), { clock, settings = [], identityProvider } = {}) {
   const dir = await makeFixtureDirectory(t, 'pp-auth-');
   await writeFixtureFiles(dir, {
     ...portalFiles,
     'sitesetting.yml': [portalFiles['sitesetting.yml'], ...settings].join('\n'),
   });
-  const app = await startLocalSimulator(t, dir, initial, { clock });
+  const app = await startLocalSimulator(t, dir, initial, { clock, identityProvider });
   const state = await (await fetch(app.url + '/__sim/api/state?summary=1')).json();
   // A browser sends Fetch Metadata (Sec-Fetch-Site) with every request.
   const browser = (target, { cookie, headers = {}, ...init } = {}) =>
@@ -641,6 +641,124 @@ test('configured fixed application session expiry survives a web-role change', a
   assert.equal(field(await text(await browser('/', { cookie: updatedCookie })), 'user'), 'anonymous');
   assert.equal((await browser('/members/')).status, 200, 'cookie-less tooling still uses its configured identity');
   assert.equal((await browser('/members/', { cookie: (await signIn('alex')).cookie })).status, 200);
+});
+
+// @test-kind security+contract: clock-bound browser renewal preserves the paired owner and never revives a rejected session.
+test('explicit sliding sessions renew strictly after halfway and keep their paired browser token', async (t) => {
+  const clock = fixedClock();
+  const settings = [
+    '- adx_sitesettingid: absolute\n  adx_name: Authentication/ApplicationCookie/ExpireTimeSpan\n  adx_value: "00:00:10"',
+    '- adx_sitesettingid: sliding\n  adx_name: Authentication/ApplicationCookie/SlidingExpiration\n  adx_value: "true"',
+  ];
+  const { app, browser, csrf } = await simulator(t, initialState(), {
+    clock,
+    settings,
+    identityProvider: { pairedBrowserTokens: true },
+  });
+  const name = authCookieName(new URL(app.url).port);
+  const applicationCookie = (response) =>
+    response.headers.getSetCookie().find((cookie) => cookie.startsWith(name + '='));
+  const signIn = async () => {
+    const response = await fetch(app.adminOrigin + '/__sim/api/session/sign-in', {
+      method: 'POST',
+      headers: { origin: app.adminOrigin, 'content-type': 'application/json', 'x-sim-csrf': csrf },
+      body: JSON.stringify({ contactId: 'alex' }),
+    });
+    assert.equal(response.status, 200);
+    const issued = applicationCookie(response);
+    assert.ok(issued && !/Max-Age|Expires=/i.test(issued), 'the application cookie remains a browser session cookie');
+    await response.json();
+    return issued.split(';')[0];
+  };
+  const token = async (response) => /value="([0-9a-f]{64})"/.exec(await response.text())?.[1];
+  const original = await signIn();
+  const expired = await signIn();
+  const legacy = app.signIn('alex').cookieHeader;
+  const firstLayout = await browser('/_layout/tokenhtml', { cookie: original });
+  const firstToken = await token(firstLayout);
+  assert.ok(firstToken);
+  const binding = firstLayout.headers
+    .getSetCookie()
+    .find((cookie) => cookie.includes('-request-binding-'))
+    ?.split(';')[0];
+  assert.ok(binding);
+  const combined = (session) => session + '; ' + binding;
+  clock.advance(5000);
+  const middle = await browser('/members/', { cookie: combined(original) });
+  assert.equal(middle.status, 200);
+  assert.equal(applicationCookie(middle), undefined);
+  await middle.text();
+
+  clock.advance(1);
+  const head = await browser('/members/', { method: 'HEAD', cookie: combined(original) });
+  assert.equal(head.status, 200);
+  assert.equal(applicationCookie(head), undefined);
+  const layout = await browser('/_layout/tokenhtml', { cookie: combined(original) });
+  const renewed = applicationCookie(layout)?.split(';')[0];
+  assert.ok(renewed, 'browser response after halfway reissues the application cookie');
+  assert.ok(layout.headers.getSetCookie().some((cookie) => cookie.startsWith('__RequestVerificationToken=')));
+  assert.ok((await token(layout)) === firstToken, 'the request token keeps its authenticated owner');
+  const document = await browser('/members/', { cookie: combined(original) });
+  assert.equal(document.status, 200);
+  assert.ok(applicationCookie(document)?.split(';')[0] === renewed, 'portal documents also renew the original ticket');
+  await document.text();
+  const nextLayout = await browser('/_layout/tokenhtml', { cookie: combined(renewed) });
+  assert.ok((await token(nextLayout)) === firstToken, 'the renewed cookie preserves the paired owner');
+  assert.equal(applicationCookie(nextLayout), undefined);
+
+  clock.advance(4999);
+  const stale = await browser('/members/', { cookie: combined(expired) });
+  assert.equal(stale.status, 302);
+  assert.equal(applicationCookie(stale), undefined);
+  const accepted = await browser('/members/', { cookie: combined(renewed) });
+  assert.equal(accepted.status, 200);
+  assert.equal(applicationCookie(accepted), undefined);
+  await accepted.text();
+  const tooling = await browser('/members/', { cookie: legacy });
+  assert.equal(tooling.status, 200);
+  assert.equal(applicationCookie(tooling), undefined);
+  await tooling.text();
+  const last = renewed.at(-1);
+  const damaged = renewed.slice(0, -1) + (last === 'a' ? 'b' : 'a');
+  const invalid = await browser('/members/', { cookie: combined(damaged) });
+  assert.equal(invalid.status, 302);
+  assert.equal(applicationCookie(invalid), undefined);
+
+  clock.advance(2);
+  const logout = await browser('/Account/Login/LogOff', { cookie: combined(renewed) });
+  assert.equal(logout.status, 302);
+  assert.equal(logout.headers.getSetCookie().filter((cookie) => cookie.startsWith(name + '=')).length, 1);
+  const signedOut = applicationCookie(logout).split(';')[0];
+  assert.equal((await browser('/members/', { cookie: combined(signedOut) })).status, 302);
+  clock.advance(4999);
+  const timedOut = await browser('/members/', { cookie: combined(renewed) });
+  assert.equal(timedOut.status, 302);
+  assert.equal(applicationCookie(timedOut), undefined);
+});
+
+// @test-kind security: renewal re-signs the original identity and window and requires the currently enabled sliding setting.
+test('sliding renewal retains the signed provider, credential stamp and role override', () => {
+  const clock = fixedClock();
+  let policy = { duration: 10_000, sliding: true };
+  const sessions = createAuthSessions({ clock: clock.now, lifetime: () => policy, identifyIssuedSessions: true });
+  const claims = {
+    contactId: 'alex',
+    provider: 'fixture-provider',
+    credentialStamp: 'fixture-stamp',
+    roles: ['Member'],
+  };
+  const original = sessions.read(sessions.cookie(claims).split(';')[0]);
+  clock.advance(5001);
+  policy = { duration: 60_000, sliding: false };
+  assert.equal(sessions.renewalCookie(original), null);
+  policy = { duration: 60_000, sliding: true };
+  const renewed = sessions.read(sessions.renewalCookie(original).split(';')[0]);
+  assert.deepEqual(renewed, {
+    ...claims,
+    sessionId: original.sessionId,
+    issuedAt: clock.now(),
+    expiresAt: clock.now() + 10_000,
+  });
 });
 
 test('simulator.identityScope configured (alias all-requests) gives cookie-less portal requests the configured identity', async (t) => {

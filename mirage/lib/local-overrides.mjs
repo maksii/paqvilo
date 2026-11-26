@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { documentAnchors, insertAt, scriptMarker } from './document-injection.mjs';
 
 const COMPAT_ADAPTERS = Object.freeze({
   footerSpacing: 'footer-spacing-compat.js',
@@ -74,10 +75,17 @@ export function adapterEnabled(file, compat = {}) {
  * The project's local head assets (mirage.head) after the document's head tag. With a render `provenance` (the proof
  * of a finalized document, lib/render-provenance.mjs), every inserted element is bound to the project file it loads:
  * component kind `local-head`, key `local-head:<project-relative path>`, that file as its source ref. The binding stamp
- * (data-paqvilo-source) is the only difference from the unproved document.
+ * (data-paqvilo-source) is the only difference from the unproved document. The assets go after the document's real
+ * head start tag (lib/document-injection.mjs); a document without one gets none. `injectedScripts` is the response's
+ * injected-script marker under a nonce policy.
  */
-export function injectLocalHead(html, overrides, provenance = null) {
+export function injectLocalHead(html, overrides, provenance = null, { injectedScripts = null } = {}) {
   if (!/<head\b/i.test(html) || !overrides.assets.length) return html;
+  const missing = overrides.assets.filter((asset) => !html.includes(`"${asset.url}"`));
+  if (!missing.length) return html;
+  const head = documentAnchors(html).headStart;
+  if (head < 0) return html;
+  const mark = scriptMarker(injectedScripts);
   const stamp = (asset, index) => {
     if (!provenance?.proofId) return '';
     const id = `${provenance.proofId}:local-head:${index}`;
@@ -87,15 +95,14 @@ export function injectLocalHead(html, overrides, provenance = null) {
     if (!provenance.sourceRefs.some((ref) => ref.id === binding.ref.id)) provenance.sourceRefs.push(binding.ref);
     return ` data-paqvilo-source="${id}"`;
   };
-  const tags = overrides.assets
-    .filter((asset) => !html.includes(`"${asset.url}"`))
+  const tags = missing
     .map((asset, index) =>
       asset.kind === 'scripts'
-        ? `<script data-sim-local-only="head" src="${asset.url}"${stamp(asset, index)}></script>`
+        ? `<script${mark} data-sim-local-only="head" src="${asset.url}"${stamp(asset, index)}></script>`
         : `<link data-sim-local-only="head" rel="stylesheet" href="${asset.url}"${stamp(asset, index)}>`,
     )
     .join('');
-  return html.replace(/<head\b[^>]*>/i, (tag) => tag + tags);
+  return insertAt(html, head, tags);
 }
 
 /** The platform binding of one local head element and the source ref of the project file it loads. */

@@ -517,7 +517,10 @@ test('$top, $count (capped at 5000), odata.maxpagesize paging and the $skip rest
   const state = fixture();
   state.tables.tag = Array.from({ length: 5002 }, (_, index) => ({ tagid: G(1000 + index), name: `Tag ${index}` }));
   const { json } = await start(t, { state });
-  const counted = await json('/_api/tags?$select=name&$count=true', { headers: { Prefer: 'odata.maxpagesize=2' } });
+  // odata.maxpagesize pages only a query with $top (see the observation test below).
+  const counted = await json('/_api/tags?$select=name&$count=true&$top=10', {
+    headers: { Prefer: 'odata.maxpagesize=2' },
+  });
   assert.equal(counted.body['@odata.count'], 5000);
   assert.equal(counted.body.value.length, 2);
   assert.equal(counted.headers.get('preference-applied'), null, 'the local response omits Preference-Applied');
@@ -544,6 +547,57 @@ test('$top, $count (capped at 5000), odata.maxpagesize paging and the $skip rest
     await fetch(counted.body['@odata.nextLink'].replace(/\/_api\/tags\?.*/, '/_api/tags/$count'))
   ).text();
   assert.equal(count, '5000');
+});
+
+const nineTags = async (t) => {
+  const state = fixture();
+  state.tables.tag = Array.from({ length: 9 }, (_, index) => ({ tagid: G(2000 + index), name: `Tag ${index}` }));
+  return start(t, { state });
+};
+
+// @test-kind observation: live captures paqvilo-developer pcf-parity summary-F section 1 (runs fa and fb, wa-field-ny and wa-dataset-ny direct reads set.list.maxpagesize, set.list.maxpagesize.top, set.list.count and logical.pcfheader.maxpagesize over nine rows, paqvilo3 2026-11-26), replayed on an invented loopback portal
+test('odata.maxpagesize pages only a query with $top; the absolute next link keeps $top', async (t) => {
+  const { json } = await nineTags(t);
+  const prefer = { Prefer: 'odata.maxpagesize=2' };
+  const ignored = await json('/_api/tags?$select=name&$orderby=name', { headers: prefer });
+  assert.equal(ignored.status, 200);
+  assert.equal(ignored.body.value.length, 9);
+  assert.equal(ignored.body['@odata.nextLink'], undefined);
+  const logical = await json('/_api/tag?$select=name&$orderby=name', {
+    headers: { ...prefer, 'pcf-entity-logical-name': 'tag', 'X-Requested-With': 'XMLHttpRequest' },
+  });
+  assert.equal(logical.status, 200);
+  assert.equal(logical.body.value.length, 9);
+  assert.equal(logical.body['@odata.nextLink'], undefined);
+  const paged = await json('/_api/tags?$select=name&$orderby=name&$top=5', { headers: prefer });
+  assert.equal(paged.status, 200);
+  assert.deepEqual(
+    paged.body.value.map((row) => row.name),
+    ['Tag 0', 'Tag 1'],
+  );
+  const link = paged.body['@odata.nextLink'];
+  assert.ok(link.startsWith(`${paged.url}/_api/tags?$select=name&$orderby=name&$top=5&$skiptoken=`), link);
+  const counted = await json('/_api/tags?$select=name&$count=true&$top=2');
+  assert.equal(counted.body.value.length, 2);
+  assert.equal(counted.body['@odata.count'], 9);
+  assert.equal(counted.body['@odata.nextLink'], undefined);
+});
+
+// @test-kind unproven: OData model of the pages after the first under $top and odata.maxpagesize; the live captures (summary-F section 1) record the first page and its next link only
+test('next links under $top and odata.maxpagesize stop at $top over all pages', async (t) => {
+  const { json } = await nineTags(t);
+  const prefer = { Prefer: 'odata.maxpagesize=2' };
+  const pages = [];
+  let route = '/_api/tags?$select=name&$orderby=name&$top=5';
+  while (route) {
+    const page = await json(route, { headers: prefer });
+    assert.equal(page.status, 200);
+    pages.push(page.body.value.map((row) => row.name));
+    const link = page.body['@odata.nextLink'];
+    if (link) assert.match(link, /&\$top=5&\$skiptoken=/);
+    route = link ? new URL(link).pathname + new URL(link).search : null;
+  }
+  assert.deepEqual(pages, [['Tag 0', 'Tag 1'], ['Tag 2', 'Tag 3'], ['Tag 4']]);
 });
 
 test('$expand of single- and collection-valued navigation properties with nested options', async () => {
@@ -1342,7 +1396,7 @@ test('$filter follows three-valued logic: not, and/or and functions over null ar
 
 test("paging links bind to the store's data revision, not a digest of the state", async (t) => {
   const { prepareODataPage } = await import('../lib/odata-paging.mjs');
-  const url = new URL('http://127.0.0.1/_api/accounts?$select=name');
+  const url = new URL('http://127.0.0.1/_api/accounts?$select=name&$top=10');
   assert.throws(() => prepareODataPage({ url, identity: {}, secret: 's' }), /data revision/);
   const first = prepareODataPage({ url, prefer: 'odata.maxpagesize=1', identity: {}, revision: '4.1', secret: 's' });
   const next = new URL(first.nextLink(1));
@@ -1357,7 +1411,7 @@ test("paging links bind to the store's data revision, not a digest of the state"
   // Over HTTP: a committed change invalidates an outstanding link.
   const { json, app } = await start(t);
   const revision = app.store.dataRevision();
-  const page = await json('/_api/accounts?$select=name', { headers: { Prefer: 'odata.maxpagesize=1' } });
+  const page = await json('/_api/accounts?$select=name&$top=10', { headers: { Prefer: 'odata.maxpagesize=1' } });
   const link = new URL(page.body['@odata.nextLink']);
   assert.equal((await json(link.pathname + link.search, { headers: { Prefer: 'odata.maxpagesize=1' } })).status, 200);
   await json(`/_api/accounts(${G(2)})`, { method: 'PATCH', body: { name: 'Fabrikam 2' } });

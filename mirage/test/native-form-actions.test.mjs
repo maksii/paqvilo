@@ -171,13 +171,12 @@ test('basic form state-action filters gate rendering and are rechecked before th
   assert.equal(done.record.title, 'Original');
 });
 
-// @test-kind contract: a filtered state action binds the record before applying a distinct authored projection.
-test('distinct form-action projections can omit the primary key and still filter the selected record', async () => {
+// A deactivate action filtered by `filter`, a projection without the primary key, renders and saves on the record the
+// filter selects only (`id`), never on another one.
+async function assertProjectionSelectsRecord(filter) {
   const options = await fixture();
   const definition = options.portal.forms[0];
   const authored = JSON.parse(definition.metadata.adx_settings);
-  const filter =
-    '<fetch distinct="true"><entity name="sample"><attribute name="title"/><filter><condition attribute="title" operator="eq" value="Original"/></filter></entity></fetch>';
   authored.Actions[0].FilterCriteria = filter;
   definition.metadata.adx_settings = JSON.stringify(authored);
   const render = (row) =>
@@ -192,7 +191,19 @@ test('distinct form-action projections can omit the primary key and still filter
   assert.equal(saved.recordId, id);
   assert.equal(saved.record.statecode, 1);
   assert.equal((await options.store.get('sample', other, options.identity)).statecode, 0);
-});
+}
+
+// @test-kind contract: a filtered state action binds the record before applying a distinct authored projection.
+test('distinct form-action projections can omit the primary key and still filter the selected record', () =>
+  assertProjectionSelectsRecord(
+    '<fetch distinct="true"><entity name="sample"><attribute name="title"/><filter><condition attribute="title" operator="eq" value="Original"/></filter></entity></fetch>',
+  ));
+
+// @test-kind contract: a filtered state action reads the record key whatever the authored projection selects; the portal's permission-trimmed read is distinct by default and returns only selected columns.
+test('form-action projections without the primary key render and save the action on the matching record', () =>
+  assertProjectionSelectsRecord(
+    '<fetch><entity name="sample"><attribute name="title"/><filter><condition attribute="title" operator="eq" value="Original"/></filter></entity></fetch>',
+  ));
 
 // @test-kind contract: this same-table action subset refuses group and aggregate projections and other operation kinds.
 test('native state filters fail closed before evaluating unqualified query or action types', async () => {

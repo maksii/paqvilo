@@ -145,10 +145,14 @@ export function portalMetadataEntities(portal) {
   ];
 }
 
-function notesCell(cell, control, lcid) {
+function notesCell(cell, control, parameters, lcid) {
+  // A notescontrol whose default tab is ActivitiesTab is the activity timeline (FormXmlCellMetadata in the
+  // open-sourced portal code; Learn: view-all-activities-in-portal-timeline, "Default tab").
+  const defaultTab = text(parameters, 'DefaultTabId');
   return {
     type: 'notes',
     id: control.attrs.id,
+    ...(defaultTab ? { defaultTab } : {}),
     label: label(child(cell, 'labels'), lcid) || 'Notes',
     showLabel: cell.attrs.showlabel !== 'false',
     hidden: cell.attrs.visible === 'false',
@@ -176,19 +180,36 @@ function subgridCell(cell, control, parameters, context) {
   const entity = norm(text(parameters, 'TargetEntityType'));
   const viewId = norm(text(parameters, 'ViewId'));
   const view = metadata.views.find((candidate) => candidate.entity === entity && candidate.id === viewId);
+  const viewFields = (entry) =>
+    (entry?.fields ?? []).map((field) => ({ ...metadata.entities[entity]?.fields[field.name], ...field }));
+  // With the view picker on, the subgrid also offers its ViewIds (the default view first): its toolbar draws the view
+  // dropdown (captured on a code component subgrid, paqvilo-developer pcf-parity summary-F section 4).
+  const pickerViews =
+    text(parameters, 'EnableViewPicker') === 'true'
+      ? [
+          ...new Set(
+            String(text(parameters, 'ViewIds') ?? '')
+              .split(',')
+              .map(norm)
+              .map((id) => id.trim()),
+          ),
+        ]
+          .filter((id) => id && id !== viewId)
+          .map((id) => metadata.views.find((candidate) => candidate.entity === entity && candidate.id === id))
+          .filter((entry) => entry?.fetchXml)
+          .map((entry) => ({ id: entry.id, name: entry.name, fetchXml: entry.fetchXml, fields: viewFields(entry) }))
+      : [];
   return {
     type: 'subgrid',
     id: control.attrs.id,
     entity,
     viewId,
+    ...(pickerViews.length ? { pickerViews } : {}),
     relationship: text(parameters, 'RelationshipName'),
     searchEnabled: text(parameters, 'EnableQuickFind') === 'true',
     recordsPerPage: Number(text(parameters, 'RecordsPerPage')) || undefined,
     ...componentBindings(control),
-    fields: (view?.fields ?? []).map((field) => ({
-      ...metadata.entities[entity]?.fields[field.name],
-      ...field,
-    })),
+    fields: viewFields(view),
     fetchXml: view?.fetchXml,
     label: label(child(cell, 'labels'), lcid),
     // A hidden label leaves the subgrid heading empty.
@@ -286,7 +307,7 @@ function buildFormCell(cell, context, fields) {
     norm(control?.attrs.classid) === '06375649-c143-495e-a496-c962e5b4488e' ||
     control?.attrs.indicationOfNotes === 'true'
   )
-    return notesCell(cell, control, lcid);
+    return notesCell(cell, control, parameters, lcid);
   if (norm(control?.attrs.classid) === WEB_RESOURCE_CLASS) return webResourceCell(cell, control, parameters, lcid);
   const datasetControl = Boolean(text(parameters, 'TargetEntityType') && text(parameters, 'ViewId'));
   if (control?.attrs.indicationOfSubgrid === 'true' || norm(control?.attrs.classid) === SUBGRID_CLASS || datasetControl)

@@ -1,8 +1,8 @@
 # Service fixtures
 
 Paqvilo never executes Power BI, AI Builder, Copilot or Dynamics app services. Each operation of such a service answers
-a trusted pack's fixture, else a disabled answer (for Power BI in Liquid, a placeholder). Nothing is rendered, inferred
-or orchestrated.
+a trusted pack's fixture, else a disabled answer (for Power BI in Liquid, a placeholder, or the public iframe of a
+Publish to web report). Nothing is inferred or orchestrated.
 
 ## Disabled-by-default services
 
@@ -45,8 +45,21 @@ No remote report request is made.
   `LIQUID_POWERBI_FIXTURE_UNAVAILABLE` and falls back to the observation below or the placeholder; a non-string `html`
   or a promise renders the Liquid error "powerBi.embed must synchronously return { html: string } or { error }." in
   place of the tag.
-- Without a fixture the tag renders a labelled placeholder (its inputs as `data-powerbi-*` attributes, URL query values
-  redacted) and reports `LIQUID_POWERBI_PLACEHOLDER`.
+- Without a fixture, an `Anonymous` tag renders the report's iframe. `Anonymous` is the default authentication type,
+  and Learn's Dataverse Liquid tags page says it embeds a Publish to web report. The path must be the Publish to web URL
+  `https://app.powerbi.com/view?r=<embed key>`, and the iframe takes the shape of Power BI's embed code
+  (`<iframe class="powerbi" title="Power BI report" src="…" frameborder="0" allowfullscreen="true">`). The browser loads
+  the public report from Power BI; Mirage makes no request. Learn says that an anonymous report does not support
+  filtering, so `filter`, `roles` and `tileid` are not applied. The info diagnostic `LIQUID_POWERBI_ANONYMOUS_EMBED`
+  reports it. The markup that hosted Power Pages writes around the report is not recorded. A site whose
+  `frame-src`, or the loopback confinement policy, does not allow `https://app.powerbi.com` blocks the frame in the
+  browser.
+- Any other tag renders a labelled placeholder (its inputs as `data-powerbi-*` attributes, with URL user names,
+  passwords and query values redacted) and reports `LIQUID_POWERBI_PLACEHOLDER`. This covers an anonymous path in another shape (another scheme, host, port
+  or route, or credentials in the URL), so a value never becomes a script URL or a frame of another origin. `AAD` and
+  `powerbiembedded` reports need an embed token that the platform's own Microsoft Entra application or Power BI
+  Embedded service principal issues. A local runtime cannot obtain that token for the site, so the diagnostic names the
+  missing token and points to Lense on the live site.
 - A site whose native output was captured empty can set
   `observed: { powerBiOutput: empty, evidence: <path to capture> }` to render nothing
   (`LIQUID_POWERBI_OBSERVED_EMPTY`). A trusted fixture that answers `html` takes precedence over the observation.

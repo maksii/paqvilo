@@ -8,6 +8,7 @@
 import { parseFragment } from 'parse5';
 import { PCF_HOST_SCRIPT } from './code-components.mjs';
 import { applyElementRenderEdits } from './render-provenance.mjs';
+import { gridItemActions } from './grid-item-actions.mjs';
 
 const norm = (value) =>
   String(value ?? '')
@@ -89,7 +90,7 @@ function settingsObject(value) {
 function actionForms(settings) {
   const forms = new Map();
   const parsed = settingsObject(settings);
-  for (const action of [...(parsed.ViewActions ?? []), ...(parsed.ItemActions ?? [])]) {
+  for (const action of [...(parsed.ViewActions ?? []), ...gridItemActions(parsed)]) {
     const name = ACTION_NAMES[action?.Type];
     const target = action?.TargetType == null || action.TargetType === '' ? 0 : Number(action.TargetType);
     if (name && target === 0 && action.EntityFormId) forms.set(name, norm(action.EntityFormId));

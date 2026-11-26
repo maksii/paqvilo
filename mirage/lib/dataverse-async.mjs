@@ -17,7 +17,7 @@ import { dataverseIdentity, ownerColumns } from './dataverse-security.mjs';
 import { dataverseError, parseDataverseRoute, parsePrefer } from './dataverse-odata.mjs';
 import { isLoopbackUrl, loopbackFetch } from './dataverse-webhooks.mjs';
 import { createScheduler, stampMs, systemIds } from './runtime-clock.mjs';
-import { detached, jobOrigin } from './committed-work.mjs';
+import { committedJobs, detached, jobOrigin } from './committed-work.mjs';
 import { tracedFetch } from './trace-hosts.mjs';
 
 const BULK_DELETE_TYPE = 13; // asyncoperation.operationtype: Bulk Delete
@@ -738,7 +738,9 @@ export async function install(
     };
     const start = () => {
       forgetIfDone(jobId);
-      if (rowOf(store, 'asyncoperation', jobId)?.statecode !== STATE.Ready) return Promise.resolve();
+      // A row that took a committed-job payload (a waiting workflow run handed over) is resumed by that runner.
+      const row = rowOf(store, 'asyncoperation', jobId);
+      if (row?.statecode !== STATE.Ready || row.data != null) return Promise.resolve();
       return runJob(store, traced, (span) => runSystemJob(jobId, work, span));
     };
     systemStarts.set(jobId, start);
@@ -750,7 +752,7 @@ export async function install(
   // for its resume.
   const forgetIfDone = (jobId) => {
     const row = rowOf(store, 'asyncoperation', jobId);
-    if (!row || row.statecode === STATE.Completed) systemStarts.delete(jobId);
+    if (!row || row.statecode === STATE.Completed || row.data != null) systemStarts.delete(jobId);
   };
 
   // The row values a system job takes when its work() returns: the status a cancel or pause written during the run asks for.
@@ -783,6 +785,8 @@ export async function install(
         const row = rowOf(store, 'asyncoperation', jobId);
         if (row) Object.assign(row, systemJobEnd(row, message));
       });
+      // A row that took a committed-job payload (a waiting workflow run handed over) is that runner's from now on.
+      if (rowOf(store, 'asyncoperation', jobId)?.data != null) committedJobs(store).watch(jobId);
     } catch (error) {
       const statuscode = failedJobStatus(error, rowOf(store, 'asyncoperation', jobId));
       await setRow('asyncoperation', jobId, {
