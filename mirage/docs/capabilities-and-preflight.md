@@ -213,7 +213,7 @@ Rows for what a host detects but does not run (`resolution.level` in brackets). 
 | `portal:modern-list`                       | `MODERN_LIST_RENDERED_CLASSIC`: a map, calendar or code component list renders classic (`contract`)                                           |
 | `portal:modern-list/<list>`                | `MODERN_LIST_FEATURES_UNSERVED`: actions other than details, edit, create, delete and download (`contract`)                                   |
 | `portal:sharepoint-documents`              | `PORTAL_SHAREPOINT_DOCUMENTS_LOCAL`: a form with a Document Locations subgrid (`contract`)                                                    |
-| `portal:pcf/<control>`                     | a Solution code component under a portal source; the Power Pages host supplies no platform libraries                                          |
+| `portal:pcf/<control>`                     | every reason the Power Pages host refuses a Solution control, then `PCF_DEPENDENCY_NOT_LOADED` (`contract`)                                   |
 | `model-driven:pcf/<control>`               | `PCF_VIRTUAL_UNSUPPORTED`: a virtual component whose platform libraries the project does not supply (`contract`)                              |
 | `model-driven:custom-page/<app>/<subarea>` | `CANVAS_NOT_RENDERED` (`behaviour`, `placeholder`: the canvas app runs headless); `MD_NAV_CUSTOM_PAGE` (`inventory`) when it does not resolve |
 | `model-driven:offline/<profile>`           | `MD_OFFLINE_FILTER_UNSUPPORTED` (`contract`), or `MD_OFFLINE_PROFILE_MISSING` keyed by the app (`inventory`)                                  |

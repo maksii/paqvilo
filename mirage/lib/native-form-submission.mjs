@@ -4,6 +4,7 @@ import { approximateFormSchema, approximateAdvancedFormSchema } from './form-sch
 import { nativeControlKind, schemaFromFormXml } from './platform.mjs';
 import { parseNumericLiteral } from './exact-numeric.mjs';
 import { formWriteError } from './form-error-presentation.mjs';
+import { pcfHiddenValue } from './pcf-field-host.mjs';
 
 function nativeSubmissionContext(item) {
   const context = nativeFormSubmissionContext(item?.context ?? {});
@@ -197,6 +198,11 @@ export async function submitNativePostback(entries, rendered, options) {
   for (const field of schema?.fields ?? []) {
     if (!Object.hasOwn(submission.body.values, field.name)) continue;
     let value = submission.body.values[field.name];
+    // The hidden input of a mounted field component is decoded by the form service (lib/pcf-field-host.mjs).
+    if (descriptor.fields.find((item) => item.name === field.name)?.pcf) {
+      submission.body.values[field.name] = pcfHiddenValue(value);
+      continue;
+    }
     const control = nativeControlKind(field);
     value = normalizePostedValue(value, control);
     if (control === 'lookup') applyNativeLookup(field, value, posted, descriptor, mapping, submission, options.store);

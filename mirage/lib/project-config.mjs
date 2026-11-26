@@ -18,6 +18,7 @@ import { loadOrganizationSources } from './solution-runtime-source.mjs';
 import { parseSetting, projectKeys } from './config-keys.mjs';
 import { jsonErrorPosition, withoutContent } from './path-options.mjs';
 import './provider-modules.mjs';
+import { codeComponentGuid } from './code-components.mjs';
 
 const VERSIONS = [1, 2];
 const idPattern = /^[a-z0-9][a-z0-9._-]*$/i;
@@ -441,12 +442,8 @@ function applyObservedCodeComponents(value, label, observed) {
     throw new Error(`${label}.codeComponents must map GUIDs to control schema names`);
   observed.codeComponents = {};
   for (const [raw, schema] of Object.entries(value.codeComponents)) {
-    const id = raw.replace(/[{}]/g, '').toLowerCase();
-    if (
-      !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(id) ||
-      typeof schema !== 'string' ||
-      !/^[\w.]+$/.test(schema)
-    )
+    const id = codeComponentGuid(raw);
+    if (!id || typeof schema !== 'string' || !/^[\w.]+$/.test(schema))
       throw new Error(`${label}.codeComponents requires GUID keys and schema names`);
     if (Object.hasOwn(observed.codeComponents, id))
       throw new Error(`${label}.codeComponents has a duplicate component GUID`);

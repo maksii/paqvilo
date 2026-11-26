@@ -179,7 +179,21 @@ individual outcomes, and evidence paths. Configured form script kinds that the p
 - `map --no-write --json` returns the mapping without writing reports. `resources` distinguishes `exists`, `empty` and
   `renders` for optional enhanced fields; duplicate active page URLs and overwritten YAML records are diagnosed.
   Resource IDs from `resources` differ from agent page IDs.
-- `audit` coverage is source classification, not proof of navigation or browser application.
+- `audit` coverage is source classification, not proof of navigation or browser application. It also checks every
+  `codecomponent` tag of the export against the Solution and `pcf.sources` controls, with the rules of the Power Pages
+  Liquid host: a quoted name (`PCF_AUDIT_NAME_QUOTED`), a second tag of the same control in one file
+  (`PCF_AUDIT_DUPLICATE_CONTROL`), a control the sources do not hold (`PCF_AUDIT_CONTROL_MISSING`, also a GUID without
+  an `observed.codeComponents` mapping), a control the host refuses (`PCF_AUDIT_CONTROL_REFUSED` with its `reasons`),
+  the import diagnostics of a referenced control and the `pcf.sources` diagnostics. Each is a warning that leaves the
+  audit incomplete, and the report's `codeComponents` counts the tags, the controls read and the findings. With
+  `--strict`, an export that uses `codecomponent` tags therefore fails until `mirage.solutionRoots` or
+  `mirage.pcf.sources` holds those controls. Tags in `{% comment %}` and `{% raw %}` blocks are skipped; a tag without
+  a name is counted but not checked. An unreadable export file is `PCF_AUDIT_EXPORT_UNREADABLE`, and a failure of
+  these checks is `PCF_AUDIT_FAILED`, never a site error.
+- `analyze` reports the Power Pages limits of a PCF manifest: a required `uses-feature` (`APP-PCF-013`, warning), a
+  declared Device capture, location, barcode or file API or Utility (`APP-PCF-014`), a bound type outside the Power
+  Pages field types (`APP-PCF-015`; a type group passes when one of its types is supported), more than one bound
+  property (`APP-PCF-016`) and a `dependency` resource (`APP-PCF-017`), the last four as hints.
 - `verify --signed-in` reuses the dev profile and its sign-in: close that dev session first. When the profile is already
   signed in it also runs headless; add `--headed` when a sign-in may still be needed and bound it with
   `--sign-in-timeout` (1–900000 ms, default 900000). Each check reports `ok` `true`, `false` or `null` (skipped, with
@@ -303,9 +317,14 @@ tooltip, unless the row's own name already says it. A Solution file named by an 
 files**, **Other sites** and **Not identified**, each with its count. A row of your sources that was not laid over
 says why (the scope is changed vs Git, the override is paused, a route passes it to the portal, several web files have
 the address, only reads are laid over, ...). A code component bundle or style sheet (`/_pcfwebresource/<id>`) and a
-Solution web resource (`/_webresource/<name>`) are served from your Solution roots when the page declares them and
-the Solution holds the file. The button on a row selects the element that loads the file. **Differs from deployed, not
-applied** lists page blocks that differ from your file and are not laid over, with the reason on each row.
+Solution web resource (`/_webresource/<name>`) are served from your Solution roots, or from a `mirage.pcf.sources`
+build output, when the page declares them and the sources hold the file (a control of a Solution ZIP is not laid
+over). Each kind (bundle, style sheets) maps on its own: when your manifest declares other style sheets than the page,
+or gives them different `order` values, those go to the portal while the bundle is still laid over. Such a
+difference, or a parameter the page declares that your manifest no longer has, is listed in **Issues** under **Needs
+deployment or a source fix**; the control is passed to the portal only when no kind maps. The button on a row selects
+the element that loads the file. **Differs from deployed, not applied** lists page blocks that differ from your file
+and are not laid over, with the reason on each row.
 
 In **Inspect**, the icon buttons beside the filter refresh the inspection, select an element and expand or collapse
 every group; the section chips sit on one line under the filter. **Page & templates** covers page copy, scripts,

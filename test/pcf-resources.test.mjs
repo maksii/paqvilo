@@ -110,9 +110,11 @@ test('a declaration is read from its entity-encoded attribute, with the requeste
         { type: 1, guid: G.first },
         { type: 1, guid: G.second },
       ],
+      properties: ['value'],
     },
     {
       name: 'inv_Other.Thing',
+      properties: ['value'],
       resources: [
         { type: 2, guid: G.strings },
         { type: 0, guid: G.bundle },
@@ -151,19 +153,80 @@ test('declared resources join to the manifest by kind and order', async (t) => {
   );
 });
 
-test('a join whose counts per kind differ, or whose control is not in the sources, is refused', async (t) => {
-  const { root } = solution(t, {
+test('a kind whose counts differ is refused alone, and a control without any matching kind or sources is refused', async (t) => {
+  const { root, control } = solution(t, {
     resources: '<code path="bundle.js" order="1" /><css path="css/first.css" order="1" />',
   });
   const catalogue = await importCodeComponents([{ dir: root }]);
   const [declared] = pcfDeclarations(page());
+  // The bundle still maps; the style sheets the page and the manifest count differently are a change to deploy.
   assert.deepEqual(joinPcfDeclaration(declared, catalogue), {
+    control: SCHEMA,
+    componentKey: 'pcf:inv_invented.widget',
+    manifestFile: catalogue.controls.get(SCHEMA).file,
+    mismatches: [{ kind: 'css', declared: 2, manifest: 1 }],
+    refusedGuids: [G.first, G.second],
+    resources: [
+      {
+        guid: G.bundle,
+        kind: 'code',
+        order: 0,
+        path: 'bundle.js',
+        file: path.join(control, 'bundle.js'),
+        controlRoot: control,
+      },
+    ],
+    unresolvedResx: [G.strings],
+  });
+  // Both kinds differ: nothing maps and the control is refused.
+  const [both] = pcfDeclarations(
+    page(
+      declaration({
+        resources: [
+          { Type: 0, Path: G.bundle },
+          { Type: 0, Path: G.first },
+          { Type: 1, Path: G.second },
+          { Type: 1, Path: G.strings },
+        ],
+      }),
+    ),
+  );
+  assert.deepEqual(joinPcfDeclaration(both, catalogue), {
     refused: 'pcf-manifest-mismatch',
     control: SCHEMA,
     componentKey: 'pcf:inv_invented.widget',
     manifestFile: catalogue.controls.get(SCHEMA).file,
-    detail: { kind: 'css', declared: 2, manifest: 1 },
+    detail: { kind: 'code', declared: 2, manifest: 1 },
+    mismatches: [
+      { kind: 'code', declared: 2, manifest: 1 },
+      { kind: 'css', declared: 2, manifest: 1 },
+    ],
   });
+  // A parameter the local manifest renamed is a change to deploy; the resources still map.
+  const full = await importCodeComponents([{ dir: solution(t).root }]);
+  const [renamed] = pcfDeclarations(
+    page().replace('&quot;Name&quot;:&quot;value&quot;', '&quot;Name&quot;:&quot;oldValue&quot;'),
+  );
+  const joined = joinPcfDeclaration(renamed, full);
+  assert.deepEqual(joined.mismatches, [{ kind: 'property', declared: ['oldValue'], manifest: ['value'] }]);
+  assert.equal(joined.resources.length, 4);
+  // A page that lists fewer parameters than the manifest (an output, an unbound input) is no change: whether the live
+  // Properties list carries every manifest property is not established.
+  const more = await importCodeComponents([
+    {
+      dir: solution(t, {
+        resources: DEFAULT_RESOURCES,
+        extra: {
+          'ControlManifest.xml': manifest(DEFAULT_RESOURCES).replace(
+            '<resources>',
+            '<property name="result" of-type="SingleLine.Text" usage="output" /><resources>',
+          ),
+        },
+      }).root,
+    },
+  ]);
+  const [subset] = pcfDeclarations(page());
+  assert.equal(joinPcfDeclaration(subset, more).mismatches, undefined);
   assert.deepEqual(joinPcfDeclaration({ ...declared, name: 'inv_Missing.Control' }, catalogue), {
     refused: 'pcf-control-not-in-sources',
     control: 'inv_Missing.Control',
@@ -174,7 +237,7 @@ test('a join whose counts per kind differ, or whose control is not in the source
       '<code path="bundle.js" order="1" /><css path="css/first.css" order="2" /><css path="css/second.css" order="1" />',
   });
   const orderedCatalogue = await importCodeComponents([{ dir: ordered.root }]);
-  assert.equal(joinPcfDeclaration(declared, orderedCatalogue).refused, 'pcf-manifest-mismatch');
+  assert.deepEqual(joinPcfDeclaration(declared, orderedCatalogue).mismatches, [{ kind: 'css', order: 'differs' }]);
   // A declared code or style entry without a GUID path cannot name a file.
   const [unnamed] = pcfDeclarations(
     page(
@@ -373,7 +436,7 @@ test('a refused join is never served and names its reason', async (t) => {
   const { root } = solution(t, {
     resources: '<code path="bundle.js" order="1" /><css path="css/first.css" order="1" />',
   });
-  const { load, ledger } = await overlay(t, {
+  const { load, ledger, session } = await overlay(t, {
     root,
     online: {
       [ORIGIN + '/other']: {
@@ -385,10 +448,24 @@ test('a refused join is never served and names its reason', async (t) => {
     },
   });
   await load('/widget', 'Document');
-  assert.equal((await load(`/_pcfwebresource/${G.bundle}`)).method, 'Fetch.continueRequest');
+  // The style sheets differ from the page's declaration: they go to the portal; the matching bundle is still local.
+  assert.equal((await load(`/_pcfwebresource/${G.bundle}`)).method, 'Fetch.fulfillRequest');
+  assert.equal((await load(`/_pcfwebresource/${G.first}`, 'Stylesheet')).method, 'Fetch.continueRequest');
+  const manifestRel = `@${path.basename(root)}/Controls/${SCHEMA}/ControlManifest.xml`;
+  assert.deepEqual(
+    session.rewriter.unsupported.filter((row) => row.pcfDeployment).map((row) => [row.rel, row.reason]),
+    [
+      [
+        manifestRel,
+        `code component ${SCHEMA} changed its css resources (2 on the page, 1 in the manifest) in ControlManifest.xml; deploy the control before those changes can be previewed`,
+      ],
+    ],
+  );
+  session.rewriter.refresh();
+  assert.equal(session.rewriter.unsupported.filter((row) => row.pcfDeployment).length, 1, 'kept across a refresh');
   assert.deepEqual(
     (({ class: kind, kind: resource, control, reason, rel }) => ({ kind, resource, control, reason, rel }))(
-      ledger(`${ORIGIN}/_pcfwebresource/${G.bundle}`),
+      ledger(`${ORIGIN}/_pcfwebresource/${G.first}`),
     ),
     {
       kind: 'export',

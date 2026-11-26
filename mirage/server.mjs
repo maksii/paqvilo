@@ -175,7 +175,13 @@ import {
   importSolutionOperationSources,
   withSolutionOperations,
 } from './lib/operation-catalogue.mjs';
-import { importCodeComponents, renderCodeComponent } from './lib/code-components.mjs';
+import {
+  importCodeComponents,
+  pcfPlatformScripts,
+  pcfWebResourceAsset,
+  renderCodeComponent,
+} from './lib/code-components.mjs';
+import { pcfBuildLayers, pcfImportOptions, pcfPlatformLibraries } from './lib/pcf-sources.mjs';
 import { componentRenderResult, serverFormFragment } from './lib/component-provenance.mjs';
 import { signInPartTags } from './lib/sign-in-provenance.mjs';
 import { mergeShellProfile } from './lib/shell-profile.mjs';
@@ -781,6 +787,21 @@ function renderedSources(spans, index, fallback) {
   return { sources, slots, components };
 }
 
+// The SOURCES_RELOADED notice of one reload pass: a code-component-only pass keeps the portal and Solution metadata.
+function sourcesReloadedDiagnostic(revision, changed, controlsOnly) {
+  const notice = { code: 'SOURCES_RELOADED', severity: 'info', revision, changed: changed.slice(0, 20) };
+  if (controlsOnly)
+    return {
+      ...notice,
+      scope: 'code-components',
+      message: `Reloaded code component sources (${changed.length} changed path(s)); portal and Solution metadata were kept.`,
+    };
+  return {
+    ...notice,
+    message: `Reloaded portal and solution sources (${changed.length} changed path(s)); mappings, schemas and the permission model were recompiled.`,
+  };
+}
+
 export async function createSimulator(options) {
   requireRuntimeSources('createSimulator(options)', options);
   const runtime = runtimeSettings(options.runtime);
@@ -1074,6 +1095,10 @@ export async function createSimulator(options) {
   let operationWorkflows = new Map();
   let solutionOperations = { serverLogics: [], cloudFlows: [] };
   let codeComponents = { controls: new Map(), assets: new Map(), diagnostics: [] };
+  // pcf.sources build outputs (lib/pcf-sources.mjs): layered after the Solutions, so a local build supersedes its export.
+  let pcfLayers = [];
+  // pcf.platformLibraries: the project's React, ReactDOM and Fluent UI files the Power Pages host loads (lib/pcf-sources.mjs).
+  let pcfPlatform = { libraries: [], assets: new Map() };
   const modelDrivenSettingsValue = modelDrivenSettings(modelDrivenOption);
   let clientResources = { resources: [], assets: new Map(), pcf: { controls: [] } };
   // Source import diagnostics arrive before recordDiagnostic exists; they are buffered and replayed into it.
@@ -1081,8 +1106,70 @@ export async function createSimulator(options) {
   let sourceDiagnostic = (entry) => earlySourceDiagnostics.push(entry);
   let solutionInventory = [],
     solutionScan = null;
+  // The code component catalogue of a scan and the pcf.sources build outputs layered after it.
+  async function loadCodeComponents(scan) {
+    pcfLayers = await pcfBuildLayers(settingOptionsRest.pcf, { diagnostic: (entry) => sourceDiagnostic(entry) });
+    pcfPlatform = await pcfPlatformLibraries(settingOptionsRest.pcf, {
+      diagnostic: (entry) => sourceDiagnostic(entry),
+    });
+    codeComponents = await importCodeComponents([...scan.layers, ...pcfLayers], {
+      retainBytes: true,
+      ...pcfImportOptions(settingOptionsRest.pcf),
+    });
+  }
+  const loadClientResources = (scan) =>
+    importModelDrivenResources(scan.layers, {
+      codeComponents,
+      clientSources: modelDrivenSettingsValue.clientSources,
+      projectRoot,
+      diagnostic: (entry) => sourceDiagnostic(entry),
+    });
+  // A change set inside control folders only (a Solution layer's Controls folder or a pcf.sources build output) reloads the
+  // code components alone; anything else, or a path spelled differently from its layer, takes the full reload.
+  // A manifest or identity file of a Solution layer is part of the Solution inventory (scan): its change takes the full
+  // reload. pcf.sources build outputs are not in the inventory, so a rebuild (which rewrites its manifest) stays here.
+  const controlSourcesOnly = (changed) => {
+    if (!changed.length || !solutionScan) return false;
+    const key = (value) => path.resolve(value).toLowerCase();
+    const within = (file, tree) => key(file).startsWith(tree + path.sep);
+    const solutionTrees = solutionScan.layers
+      .filter((layer) => layer.type === 'directory')
+      .map((layer) => key(path.join(layer.dir, 'controls')));
+    const buildTrees = [
+      ...(settingOptionsRest.pcf?.sources ?? []).map((source) => key(source.path)),
+      ...pcfLayers.map((layer) => key(layer.dir)),
+    ];
+    const inventoried = /^controlmanifest\.xml(?:\.data\.xml)?$/i;
+    return changed.every(
+      (file) =>
+        buildTrees.some((tree) => within(file, tree)) ||
+        (solutionTrees.some((tree) => within(file, tree)) && !inventoried.test(path.basename(file))),
+    );
+  };
+  // The whole reload of a change set inside control folders: the code component catalogue and the model-driven client
+  // resources are imported again; the PCF findings of the previous catalogue are replaced, never accumulated.
+  async function reloadCodeComponentSources() {
+    const stale = new Set(diagnostics.filter((entry) => /^(?:MODEL_)?PCF_/.test(entry.code ?? '')));
+    await loadCodeComponents(solutionScan);
+    clientResources = await loadClientResources(solutionScan);
+    solutionMetadata = {
+      ...solutionMetadata,
+      modelDrivenRibbonDocuments: clientResources.ribbonDocuments,
+      modelDrivenAppActions: clientResources.appActions,
+    };
+    fingerprint = await calculateFingerprint();
+    renderer = buildRenderer();
+    for (let index = diagnostics.length - 1; index >= 0; index--)
+      if (stale.has(diagnostics[index])) diagnostics.splice(index, 1);
+  }
   async function loadSolutions({ reuseImported = false } = {}) {
-    if (!solutionRoots.length && !modelDrivenSettingsValue.clientSources?.length) return;
+    if (
+      !solutionRoots.length &&
+      !modelDrivenSettingsValue.clientSources?.length &&
+      !settingOptionsRest.pcf?.sources?.length &&
+      !settingOptionsRest.pcf?.platformLibraries?.length
+    )
+      return;
     startupPhase('solution-import');
     const started = performance.now();
     const cache = await SolutionFileCache.open(solutionCacheFile);
@@ -1110,7 +1197,7 @@ export async function createSimulator(options) {
     bootstrapTimings.solutionReuse = { scan: scan === previous, schema: reuse };
     operationWorkflows = await importOperationWorkflows(scan.layers);
     solutionOperations = await importSolutionOperationSources(scan.layers, portal.website);
-    codeComponents = await importCodeComponents(scan.layers, { retainBytes: true });
+    await loadCodeComponents(scan);
     [solutionMetadata, solutionData] = await Promise.all([
       importSolutionMetadata(solutionRoots, {
         portal,
@@ -1126,12 +1213,7 @@ export async function createSimulator(options) {
         : importSolutionData(solutionRoots, { scan, schema, lcid }),
     ]);
     solutionMetadata.modelDrivenApps = solutionApps(scan, { lcid, projectRoot });
-    clientResources = await importModelDrivenResources(scan.layers, {
-      codeComponents,
-      clientSources: modelDrivenSettingsValue.clientSources,
-      projectRoot,
-      diagnostic: (entry) => sourceDiagnostic(entry),
-    });
+    clientResources = await loadClientResources(scan);
     solutionInventory = scan.inventory ?? [];
     solutionScan = scan;
     solutionMetadata.modelDrivenRibbonDocuments = clientResources.ribbonDocuments;
@@ -2735,16 +2817,30 @@ export async function createSimulator(options) {
             tag: kind,
             args,
           });
+        // Dataset code components read through the portal Web API as this visitor, as handleWebApi below sees it.
+        const webApi = {
+          store,
+          portal: {
+            ...portal,
+            webApiViews: solutionMetadata.views,
+            webApiEntities: solutionMetadata.entities,
+            webApiIdentity: currentIdentity(),
+          },
+        };
         if (kind === 'codecomponent') {
           const html = renderCodeComponent({
             name: args?.name ?? args?.id,
             args,
+            liquidTag: true,
+            platformLibraries: pcfPlatform.libraries,
             portal,
             catalog: codeComponents,
             metadata: modelMetadata(),
             language: context?.__language ?? portal.language,
-            identity: currentIdentity(),
             mappings: store.snapshot({ sections: ['mappings'] }).mappings,
+            webApi,
+            // Local-only explicit dataset binding of the Liquid tag (packet 04; default "none", as Power Pages).
+            liquidDatasetBinding: settingOptionsRest.pcf?.liquidDatasetBinding,
             diagnostic: (entry) => recordDiagnostic({ ...entry, path: context?.request?.path }),
             onRendered: (binding) => bindings.push(binding),
           });
@@ -2767,12 +2863,16 @@ export async function createSimulator(options) {
                 ...spec,
                 portal,
                 catalog: codeComponents,
+                platformLibraries: pcfPlatform.libraries,
                 metadata: modelMetadata(),
                 language: context?.__language ?? portal.language,
-                identity: currentIdentity(),
                 mappings: store.snapshot({ sections: ['mappings'] }).mappings,
                 diagnostic: (entry) => recordDiagnostic({ ...entry, path: context?.request?.path }),
               }),
+            // Field hosts write the platform libraries before their first bundle, once per page render: the same page
+            // state the Liquid codecomponent tag uses (lib/code-components.mjs pcfPlatformScripts).
+            pcfPlatformScripts: (pageState) => pcfPlatformScripts(pcfPlatform.libraries, pageState),
+            pcfPageState: context?.state,
             config: config(),
             observed: config().observed ?? portal.observed,
             managedControls: config().managedControls ?? config().shellProfile?.managedControls,
@@ -4437,6 +4537,7 @@ export async function createSimulator(options) {
         workflows: operationWorkflows,
         portal,
         clientResources,
+        portalPlatformLibraries: pcfPlatform.libraries,
         // The model-driven catalogue's tables on this host: the portal provider's site tables plus the store mappings.
         mappings: {
           ...powerPagesTables(portal, modelMetadata()),
@@ -5555,6 +5656,8 @@ export async function createSimulator(options) {
       origins: [url.origin, live.origin].filter(Boolean),
       // Same Solution-only column types as webApiEntities above.
       metadata: (logical) => solutionMetadata.entities?.[logical]?.fields,
+      // The organization's metadata service answers the code component EntityDefinitions read (portal-entity-definitions.mjs).
+      entityMetadata: () => organization?.metadata ?? null,
       json,
       jsonBody,
       change,
@@ -6611,11 +6714,20 @@ export async function createSimulator(options) {
     }
     if (url.pathname.startsWith(PORTAL_PCF)) {
       return await servePcfResource(req, res, {
-        assets: codeComponents.assets,
+        assets: pcfPlatform.assets.has(url.pathname) ? pcfPlatform.assets : codeComponents.assets,
         key: url.pathname,
         fail: (status, message) => error(message, status),
       });
     }
+    // The native address a Liquid tag host names (code-components.mjs pcfWebResourceGuid) of a served resource.
+    const pcfWebResource = /^\/_pcfwebresource\/([0-9a-f-]{36})$/i.exec(url.pathname);
+    const pcfWebResourceKey = pcfWebResource && pcfWebResourceAsset(codeComponents, pcfWebResource[1]);
+    if (pcfWebResourceKey)
+      return await servePcfResource(req, res, {
+        assets: codeComponents.assets,
+        key: pcfWebResourceKey,
+        fail: (status, message) => error(message, status),
+      });
     const serverLogic = serverLogicName(url.pathname);
     if (serverLogic !== null) {
       if (
@@ -6816,6 +6928,7 @@ export async function createSimulator(options) {
           metadata: modelMetadata(),
           schemas: { ...solutionMetadata.componentSchemas, ...config().componentSchemas },
           onComponentRendered: (item) => quickComponents.push(item),
+          diagnostic: (entry) => recordDiagnostic({ ...entry, path: url.pathname }),
         });
         const quickRequest = {
           url: url.href,
@@ -7326,12 +7439,14 @@ export async function createSimulator(options) {
               ...spec,
               portal,
               catalog: codeComponents,
+              platformLibraries: pcfPlatform.libraries,
               metadata: modelMetadata(),
               language: context?.__language ?? portal.language,
-              identity: formIdentity,
               mappings: store.snapshot({ sections: ['mappings'] }).mappings,
               diagnostic: (entry) => recordDiagnostic({ ...entry, path: url.pathname }),
             }),
+          // The modal form is its own document: its field hosts write the platform libraries once for it.
+          pcfPlatformScripts: (pageState) => pcfPlatformScripts(pcfPlatform.libraries, pageState),
           diagnostic: (entry) => recordDiagnostic({ ...entry, path: url.pathname }),
           sourceDependencies,
           richTextCompatibility: richTextCompatibility(),
@@ -8701,9 +8816,45 @@ export async function createSimulator(options) {
   const layerSignature = () =>
     JSON.stringify([
       (solutionData.layers ?? []).map((layer) => layer.dir),
+      pcfLayers.map((layer) => layer.dir),
       solutionMetadata.plugins?.sourceFiles ?? [],
       portal.codeSite?.compiledDir ?? null,
     ]);
+  // A full reload pass: deployment profiles, the portal export, Solutions and the recompiled state.
+  async function reloadPortalAndSolutionSources() {
+    activeProfiles = await loadDeploymentProfiles(profileConfig, config().deploymentProfilePin ?? null);
+    sourcePortal = await importSource(config().modelDriven?.records);
+    if (requirePortalSource) assertPortalSource(sourcePortal);
+    portal = applyPortalOverrides(await environmentBound(sourcePortal, store.state), config().portalOverrides);
+    sourceDependencies = { ...(await discoverSourceDependencies(portal)), compat: localOverrides.compat };
+    await loadSolutions();
+    activeProfiles = withDefinedVariables(activeProfiles, solutionData.environmentVariables);
+    generatedPresets = initialState(portal, bootstrapOptions()).presets;
+    store.presetLibrary = generatedPresets;
+    // Publish the new source fingerprint and renderer before the recompiled
+    // state, so no status read pairs reloaded data with the old fingerprint.
+    fingerprint = await calculateFingerprint();
+    renderer = buildRenderer();
+    // The re-registered Solution source modules (custom APIs, duplicate rules, workflows, plug-in registrations) follow in
+    // the same change slot and source publication; their own transaction leaves the previous registrations when it fails.
+    const publish = async () => {
+      await replaceCompiledState(store.snapshot(undefined, { forkTables: true }));
+      await organizationHost.refreshSources();
+      await organizationHost.loadCanvas();
+    };
+    // Findings of the previous revision are dropped; those the publication raised (SOURCE_EXTENSIONS_REFRESHED) stay.
+    const previousFindings = diagnostics.length;
+    await change(() => (storageAdapter ? storageAdapter.bootstrap(publish, () => store.state) : publish()));
+    diagnostics.splice(0, previousFindings);
+  }
+  // A pass that changed the set of layers restarts the watcher with the new list.
+  async function restartWatcherForLayers(notified) {
+    if (!watch || watchedLayers === layerSignature()) return;
+    await restartWatcher();
+    // The restart cancelled the reload a notification during this pass scheduled, and the new watcher does not
+    // report it again: one more pass reads those paths.
+    if (watchNotified > notified) reloadRequested = true;
+  }
   async function reload() {
     if (closing) return;
     // Settled outside the host change queue (as standalone-runtime.mjs does): a job's api.change would wait on a held queue.
@@ -8733,6 +8884,8 @@ export async function createSimulator(options) {
           operationWorkflows,
           solutionOperations,
           codeComponents,
+          pcfLayers,
+          pcfPlatform,
           fingerprint,
           renderer,
           activeProfiles,
@@ -8746,30 +8899,9 @@ export async function createSimulator(options) {
           const started = performance.now();
           const changed = [...changedPaths].sort(compareText);
           changedPaths.clear();
-          activeProfiles = await loadDeploymentProfiles(profileConfig, config().deploymentProfilePin ?? null);
-          sourcePortal = await importSource(config().modelDriven?.records);
-          if (requirePortalSource) assertPortalSource(sourcePortal);
-          portal = applyPortalOverrides(await environmentBound(sourcePortal, store.state), config().portalOverrides);
-          sourceDependencies = { ...(await discoverSourceDependencies(portal)), compat: localOverrides.compat };
-          await loadSolutions();
-          activeProfiles = withDefinedVariables(activeProfiles, solutionData.environmentVariables);
-          generatedPresets = initialState(portal, bootstrapOptions()).presets;
-          store.presetLibrary = generatedPresets;
-          // Publish the new source fingerprint and renderer before the recompiled
-          // state, so no status read pairs reloaded data with the old fingerprint.
-          fingerprint = await calculateFingerprint();
-          renderer = buildRenderer();
-          // The re-registered Solution source modules (custom APIs, duplicate rules, workflows, plug-in registrations) follow in
-          // the same change slot and source publication; their own transaction leaves the previous registrations when it fails.
-          const publish = async () => {
-            await replaceCompiledState(store.snapshot(undefined, { forkTables: true }));
-            await organizationHost.refreshSources();
-            await organizationHost.loadCanvas();
-          };
-          // Findings of the previous revision are dropped; those the publication raised (SOURCE_EXTENSIONS_REFRESHED) stay.
-          const previousFindings = diagnostics.length;
-          await change(() => (storageAdapter ? storageAdapter.bootstrap(publish, () => store.state) : publish()));
-          diagnostics.splice(0, previousFindings);
+          const controlsOnly = controlSourcesOnly(changed);
+          if (controlsOnly) await reloadCodeComponentSources();
+          else await reloadPortalAndSolutionSources();
           revision++;
           bootstrapTimings.lastReload = {
             at: new Date().toISOString(),
@@ -8777,20 +8909,9 @@ export async function createSimulator(options) {
             changed: changed.slice(0, 50),
             changedCount: changed.length,
           };
-          recordDiagnostic({
-            code: 'SOURCES_RELOADED',
-            severity: 'info',
-            revision,
-            changed: changed.slice(0, 20),
-            message: `Reloaded portal and solution sources (${changed.length} changed path(s)); mappings, schemas and the permission model were recompiled.`,
-          });
+          recordDiagnostic(sourcesReloadedDiagnostic(revision, changed, controlsOnly));
           recordReloadNotices(previous.sourcePortal, sourcePortal, revision);
-          if (watch && watchedLayers !== layerSignature()) {
-            await restartWatcher();
-            // The restart cancelled the reload a notification during this pass scheduled, and the new watcher does not
-            // report it again: one more pass reads those paths.
-            if (watchNotified > notified) reloadRequested = true;
-          }
+          await restartWatcherForLayers(notified);
           watchCovered = Math.max(watchCovered, notified);
           publishLog('reload', {
             revision,
@@ -8808,6 +8929,8 @@ export async function createSimulator(options) {
           operationWorkflows = previous.operationWorkflows;
           solutionOperations = previous.solutionOperations;
           codeComponents = previous.codeComponents;
+          pcfLayers = previous.pcfLayers;
+          pcfPlatform = previous.pcfPlatform;
           fingerprint = previous.fingerprint;
           renderer = previous.renderer;
           activeProfiles = previous.activeProfiles;
@@ -8846,9 +8969,16 @@ export async function createSimulator(options) {
     const codeSiteSources = [codeSite?.configFile, codeSite?.compiledDir].filter(Boolean);
     const canvasWatch = canvasSourceWatch(settingOptionsRest.canvas?.sources, projectRoot);
     // A <Library>@<version>.js clientSources entry is a file root (watched as that file), never a directory layer.
+    // A pcf.sources entry is watched from its configured path, so its first build is seen too.
+    const pcfSourceWatch = [
+      ...(settingOptionsRest.pcf?.sources ?? []).map((source) => source.path),
+      ...(settingOptionsRest.pcf?.platformLibraries ?? []),
+      ...pcfLayers.map((layer) => layer.dir),
+    ];
     const ignoreSource = solutionWatchFilter({
       sourceDir,
       roots: [...solutionRoots, ...clientSources],
+      controlTrees: pcfSourceWatch,
       layers: [
         ...layers,
         ...clientSources.filter((source) => !/[.]js$/i.test(source)).map((dir) => ({ type: 'directory', dir })),
@@ -8856,7 +8986,15 @@ export async function createSimulator(options) {
       exclude: stateFile ? [path.dirname(path.resolve(stateFile))] : [],
     });
     watcher = sourceWatcher(
-      [sourceDir, ...solutionRoots, ...clientSources, ...pluginSources, ...canvasWatch.roots, ...codeSiteSources],
+      [
+        sourceDir,
+        ...solutionRoots,
+        ...clientSources,
+        ...pluginSources,
+        ...canvasWatch.roots,
+        ...codeSiteSources,
+        ...pcfSourceWatch,
+      ],
       {
         ignoreInitial: true,
         ignored: (file, stats) =>

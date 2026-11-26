@@ -953,6 +953,8 @@ export class LiquidContext {
   handleError(error) {
     if (error instanceof BreakInterrupt || error instanceof ContinueInterrupt) throw error;
     if (error?.renderLimit) throw error;
+    // A tag that ends the template render (codecomponent without a control: liquid.mjs) is never a Liquid error.
+    if (error?.liquidHalt) throw error;
     // Simulator infrastructure failures are not Liquid semantics: they abort the render.
     if (isInfrastructureError(error)) throw error;
     this.errors.push(error);

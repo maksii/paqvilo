@@ -49,7 +49,6 @@ import { portalLanguage } from './portal-languages.mjs';
 import { clientPortalObjectRuntime } from './portal-client-object.mjs';
 import { parseDateValue, choiceFieldOptions } from './dataverse-values.mjs';
 import { nativeFormActions, nativeFormActionApplies } from './native-form-actions.mjs';
-import { webApiPolicy } from './webapi-policy.mjs';
 import { timeZoneChoices } from './platform-time-zones.mjs';
 import {
   missingLiquidComponent,
@@ -68,6 +67,16 @@ import { portalSearch } from './portal-search.mjs';
 import { LiquidError } from './liquid-engine.mjs';
 import { attributeTypeCode, attributeTypeCodeName } from './attribute-metadata.mjs';
 import { choiceColumnsOf, choiceTextRow } from './liquid.mjs';
+import { PCF_HOST_SCRIPT } from './code-components.mjs';
+import {
+  nativeFieldAdmission,
+  nativeFieldRefusal,
+  nativeFieldRefusalSummary,
+  nativeFieldUnknownProblem,
+  nativeFieldHostId,
+  nativeFieldServerValue,
+  nativeFieldHiddenValue,
+} from './pcf-field-host.mjs';
 const escape = (value) =>
   String(value ?? '').replace(
     /[&<>"']/g,
@@ -799,41 +808,179 @@ const metadataFor = (rows, type, predicate) =>
   return { mode, id: id ?? null, queryName };
 }
 
-function nativeCodeComponentBindings(field, component, getValue) {
+// The static arguments of a native field component. The bound value is not an argument: the host reads it from the
+// field's hidden input. A FormXml binding of another column is not honoured by the Power Pages host (that property
+// gets no value, captured), so it is left out and named.
+function nativeCodeComponentBindings(field, component) {
   const args = { disabled: field.readOnly };
   const properties = [];
   const propertyTypes = {};
+  const ignored = [];
   for (const [name, parameter] of Object.entries(component.parameters)) {
     if (parameter.kind === 'static') {
       args[name] = parameter.value;
       continue;
     }
-    if (parameter.kind !== 'binding' || parameter.column !== field.name)
+    if (parameter.kind !== 'binding')
       return {
         error: `Code component ${component.name} has an unresolved or unsupported native property binding: ${name}.`,
       };
-    const current = getValue(field);
-    args[name] = nativeCodeComponentValue(field, current);
+    if (parameter.column !== field.name) {
+      ignored.push(name);
+      continue;
+    }
     properties.push(name);
     if (parameter.type) propertyTypes[name] = parameter.type;
   }
-  return { args, properties, propertyTypes };
+  return { args, properties, propertyTypes, ignored };
 }
 
-function nativeCodeComponentValue(field, current) {
-  if (field.control === 'lookup') {
-    if (current)
-      return [
-        {
-          id: canonicalId(scalarValue(current)),
-          entityType: current.logical_name ?? field.targets?.[0],
-          name: current.name ?? '',
-        },
-      ];
-    return [];
+// Skip findings are reported once per loaded portal sources (form, field, reason): every page render and quick view
+// reload would otherwise repeat them in the bounded diagnostic buffer. A source reload reports them again.
+const reportedNativeSkips = new WeakMap();
+function nativeSkipUnreported(portal, key) {
+  if (!portal || typeof portal !== 'object') return true;
+  let reported = reportedNativeSkips.get(portal);
+  if (!reported) {
+    reported = new Set();
+    reportedNativeSkips.set(portal, reported);
   }
-  if (field.control === 'multiselect') return multiSelectValues(current);
-  return scalarValue(current);
+  const text = JSON.stringify(key);
+  if (reported.has(text)) return false;
+  reported.add(text);
+  return true;
+}
+
+function nativeOtherColumnBindingMessage(component, field, ignored) {
+  const which = ignored.length === 1 ? 'that property' : 'those properties';
+  return `Code component ${component.name} on ${field.label} binds ${ignored.join(', ')} to other columns; like the Power Pages host, Mirage gives ${which} no value.`;
+}
+
+// The column facts the field host derives the bound property's attributes from (lib/code-components-client.js).
+function nativeBindingColumnFacts(field, tableFields) {
+  // LOCAL MODEL, unproven: the captured columns were not secured (IsSecured false, security editable and readable on
+  // edit, insert and read-only forms). A column-secured field reports IsSecured and, when the form renders it
+  // read-only for the visitor, a security that is not editable.
+  const secured = field.isSecured === true || tableFields[field.name]?.isSecured === true;
+  return {
+    attributes: {
+      LogicalName: field.name,
+      Options: nativeCodeComponentOptions(field) ?? null,
+      // The column's own maximum length (a text property reports it up to 100, captured).
+      MaxLength: Number.isInteger(field.maxLength) ? field.maxLength : null,
+      IsSecured: secured,
+    },
+    security: { secured, readable: true, editable: !(secured && field.readOnly === true) },
+    column: {
+      logicalName: field.name,
+      dataverseType: field.dataverseType ?? null,
+      ...(field.control === 'datetime' ? { dateOnly: nativeDateOnly(field) } : {}),
+    },
+  };
+}
+
+/** Why an exported or enabled field component is not mounted on a native field that renders without it, or null. */
+function nativeCodeComponentSkip(field, referenceForm, readOnlyForm) {
+  const enabled = field.controlStyle === 756150001;
+  if (enabled && field.hidden)
+    return {
+      reason: 'PCF_NATIVE_HIDDEN_FIELD',
+      message: `Code component metadata for ${field.label} is enabled on a hidden field; like the Power Pages host, Mirage renders neither the cell nor an input for it, so the form posts no value.`,
+    };
+  if (enabled && readOnlyForm && field.codeComponent && ['richtext', 'status', 'state'].includes(field.control))
+    return {
+      reason: 'PCF_NATIVE_READ_ONLY_FIELD',
+      message: `Code component ${field.codeComponent.name} on ${field.label} is not mounted on a read-only form: like the Power Pages host, Mirage renders the native read-only ${field.control === 'richtext' ? 'text' : 'status'} control.`,
+    };
+  if (referenceForm && field.codeComponent)
+    return {
+      reason: 'PCF_NATIVE_REFERENCE_FORM',
+      message: `Code component ${field.codeComponent.name} on ${field.label} is exported on a quick view or reference read-only form; like the Power Pages host, Mirage renders it without a code component host.`,
+    };
+  return null;
+}
+
+/** The saved primary name of the form record when the form renders the name column visibly and it is not column-secured; else null. */
+function nativeRecordName(record, mapping, fields, tableFields) {
+  const column = mapping.nameColumn;
+  const field = column && fields.find((candidate) => candidate.name === column);
+  if (!field || field.hidden || field.isSecured || tableFields[column]?.isSecured) return null;
+  const name = scalarValue(record?.[column]);
+  return name == null ? null : String(name);
+}
+
+// Choice options of a native PCF field: the column options with their colour; Two Options use the labels the native
+// control renders (No/Yes by default); a status (statecode) column hands the component none (captured).
+function nativeCodeComponentOptions(field) {
+  if (field.control === 'state') return [];
+  const options =
+    field.control === 'boolean' && !field.options?.length
+      ? [
+          { value: 0, label: 'No' },
+          { value: 1, label: 'Yes' },
+        ]
+      : field.options;
+  return options?.map((option) => ({
+    Label: option.label,
+    Value: Number(option.value),
+    ...(option.color ? { Color: option.color } : {}),
+  }));
+}
+
+/** The native control kind and date behaviour of a field, as the field host's hidden value carries them. */
+function nativeFieldColumn(field) {
+  return {
+    control: field.control,
+    behavior: field.dateTimeBehavior ?? field.behavior ?? (nativeDateOnly(field) ? 'DateOnly' : 'UserLocal'),
+  };
+}
+
+/** The Power Pages markup of a mounted field component (captured): no native control, the
+ * host element named by the FormXml control, its configuration span and control view, and the hidden input that
+ * holds the value as JSON and posts it. The local host script, mount element and mount script sit in the control view
+ * (the platform loads its bundle script before the configuration span instead). A read-only form drops the change handler and marks the container. */
+function nativeFieldComponentMarkup({
+  field,
+  component,
+  host,
+  nameAttribute,
+  current,
+  disabled,
+  readOnlyForm,
+  dynamic,
+  statics = {},
+  platformScripts = '',
+}) {
+  const id = field.id ?? field.name;
+  const column = nativeFieldColumn(field);
+  const value = nativeFieldServerValue(column, current);
+  // Set static inputs stand next to the value (captured).
+  const properties = { ...statics };
+  if (['picklist', 'multiselect', 'status'].includes(field.control)) {
+    properties.value_Options = (nativeCodeComponentOptions(field) ?? []).map((option) => ({
+      Value: option.Value,
+      Label: { LocalizedLabels: [{ Label: option.Label }], UserLocalizedLabel: { Label: option.Label } },
+      Color: option.Color ?? null,
+    }));
+    properties.value_DefaultValue = null;
+    if (field.control !== 'picklist') properties.value_DisplayName = field.label;
+  }
+  if (dynamic && value != null) properties.value = value;
+  const controlContext = {
+    UniqueId: `${id}_ControlView`,
+    ControlId: id,
+    GridDataControlId: null,
+    ControlName: component.name,
+    ControlProperties: properties,
+    IsDisabled: disabled,
+    PcfControlHiddenValueId: id,
+    PcfDynamicProperyName: dynamic ?? null,
+  };
+  // The manifest configuration (data-pcf-control) is reduced: the local mount specification carries the manifest.
+  const manifest = { SubscribedFunctionalities: {}, DataConnectors: [], AuthConfigPropertiesGroups: [], Resources: [] };
+  const hostId = nativeFieldHostId(component.controlId, id);
+  const hidden = dynamic ? nativeFieldHiddenValue(column, current) : '';
+  return `<div id="${attr(hostId)}"${readOnlyForm ? '' : ' onchange="setIsDirty(this.id);"'}><span id="${attr(id)}_Container" class="flexbox"${readOnlyForm ? ' readonly="readonly"' : ''}>${platformScripts}<span id="PcfControlConfig_${attr(id)}" data-pcf-control="${attr(JSON.stringify(manifest))}" pcf-controlcontext="${attr(JSON.stringify(controlContext))}"></span><div id="${attr(id)}_ControlView" class="flexbox">${host}</div></span></div><input type="hidden" name="${nameAttribute}" id="${attr(id)}" value="${attr(hidden)}">`;
 }
 
 function buildNativeLookupLayouts(field, lookupBase, context) {
@@ -2118,19 +2265,14 @@ function entityListLayout(listMetadata, model, modern) {
 async function entityListCodeComponent(list, model, options) {
   if (!truthy(fieldOf(list.metadata, 'iscodecomponent'))) return { notice: '' };
   const name = options.metadata?.entities?.[model.entity]?.grid?.control;
-  const details = options.portal.pages?.find((page) => canonicalId(page.id) === model.detailsPage)?.url;
+  // A list with several views binds its first view; the platform renders no view selector.
   const supported =
     !model.approximated &&
-    model.views.length === 1 &&
     !model.calendar &&
     !truthy(fieldOf(list.metadata, 'map_enabled')) &&
     !Object.values(model.userFilters).some(Boolean);
   const component =
-    supported &&
-    (await renderNativeDataset(options, model, {
-      name,
-      details: details ? { url: details, idParameter: model.idParameter } : undefined,
-    }));
+    supported && (await renderNativeDataset(options, model, { name, secure: { t: 'list', list: list.id } }));
   if (component) return { component };
   return { notice: nativeDatasetFallback(options, `List ${list.name}`, { component: 'entitylist', list: list.id }) };
 }
@@ -2207,24 +2349,38 @@ async function renderEntityList(name, context, options) {
   return { context: { entitylist: drop }, html: notice + (await renderListGrid(model, context, options)) };
 }
 
-async function renderNativeDataset(options, model, { name, args = {}, ...binding }) {
-  if (!options.codeComponent || !name || model.views.length !== 1) return null;
-  try {
-    // The portal PCF facade reads the view through the portal Web API. A table that cannot use that
-    // surface keeps its working native grid.
-    const policy = webApiPolicy(options.portal, options.store, model.entity);
-    for (const field of model.views[0].fields ?? []) policy.assert(field.name);
-    if (binding.baseFilter) policy.assert(binding.baseFilter.column);
-  } catch {
-    return null;
-  }
+/**
+ * The dataset code component of a list or subgrid, bound to its first view. Rows come from the native grid service of
+ * its kind (entity-grid-data.json / entity-subgrid-data.json), signed for the dataset host (`pcf`), never from the
+ * portal Web API (captured), so
+ * the grid service's table permissions apply and no Web API site setting gates the component.
+ */
+async function renderNativeDataset(options, model, { name, args = {}, secure, ...binding }) {
+  if (!options.codeComponent || !name || !model.views.length) return null;
+  const view = model.views[0];
+  const websiteId = canonicalId(options.portal.website?.id);
+  const layout = buildLayout({
+    view,
+    entity: model.entity,
+    idColumn: model.idColumn,
+    primaryName: model.primaryName,
+    metadata: options.metadata,
+    settings: model.settings,
+    configuration: {},
+    secure: { ...secure, w: websiteId, view: view.id, pcf: true },
+  });
+  const service = secure.t === 'subgrid' ? 'entity-subgrid-data.json' : 'entity-grid-data.json';
   return options.codeComponent({
     name,
     args,
     nativeDataset: {
       entity: model.entity,
-      viewId: model.views[0].id,
+      viewId: view.id,
+      kind: secure.t,
       pageSize: Math.min(5000, Math.max(1, Math.floor(model.pageSize) || 25)),
+      service: `/_services/${service}/${websiteId}`,
+      update: `/_services/entity-grid-update-entity/${websiteId}`,
+      secure: layout.Base64SecureConfiguration,
       ...binding,
     },
   });
@@ -3011,6 +3167,8 @@ function prepopulateValue(row, identity, now) {
   const rebuiltPostback = Boolean(postback) && truthy(fieldOf(componentMetadata, 'setentityreference'));
   const restoredPostback = Boolean(postback) && !rebuiltPostback;
   // Posted values re-render; an unchanged lookup keeps its record value, which carries the display name.
+  // The record as read, before posted values re-render (PCF record context names only saved data).
+  const readRecord = record;
   if (postback?.values)
     record = {
       ...record,
@@ -3553,12 +3711,53 @@ function prepopulateValue(row, identity, now) {
   };
 
   const renderedFields = new Set();
+  // Field components of this form: the columns the Power Pages host refused (its summary) and the columns whose
+  // hidden input a mounted component owns (both save transports decode it, lib/pcf-field-host.mjs).
+  const pcfRefusals = [];
+  const pcfFields = new Set();
+  // One page state for the platform-library scripts of this form's field hosts (options.pcfPlatformScripts).
+  const pcfPageState = options.pcfPageState ?? {};
+  const platformScriptsBefore = () => options.pcfPlatformScripts?.(pcfPageState) ?? '';
+  // A hidden field whose component the host would load renders no cell and no input at all, so the form posts no
+  // value for it (captured).
+  const pcfOmitted = new Set();
+  // A mounted field without a dynamic property (a FormXml binding of an input property only) leaves its hidden input
+  // empty and posts no value: the live save keeps the column (captured).
+  const pcfUnposted = new Set();
+  // A skip finding of a field component, once per loaded portal sources (nativeSkipUnreported).
+  const reportNativeSkip = (field, skipped) => {
+    if (skipped && nativeSkipUnreported(portal, [definition?.id ?? null, field.name, skipped.reason]))
+      options.diagnostic?.({
+        code: 'PCF_NATIVE_BINDING_UNSUPPORTED',
+        form: definition?.id,
+        field: field.name,
+        sourceFile: field.codeComponent?.sourceFile,
+        ...skipped,
+      });
+  };
+  const omittedField = (field) => {
+    if (
+      !field?.hidden ||
+      field.controlStyle !== 756150001 ||
+      !field.codeComponent ||
+      options.referenceForm ||
+      !nativeFieldAdmission(field.control, field.dataverseType).admitted
+    )
+      return false;
+    pcfOmitted.add(field.name);
+    reportNativeSkip(field, nativeCodeComponentSkip(field, null, readOnly));
+    return true;
+  };
   const input = async (field, cell) => {
     if (byName.has(field.name)) renderedFields.add(field.name);
     const original = await nativeInput(field, cell);
     // The portal's attribute metadata explicitly enables the desktop PCF from
     // FormXml. Model-driven defaults alone do not activate a portal component.
-    if (field.controlStyle !== 756150001 || field.richText || field.hidden) return original;
+    const skipped = nativeCodeComponentSkip(field, options.referenceForm, readOnly);
+    if (field.controlStyle !== 756150001 || field.hidden || skipped) {
+      reportNativeSkip(field, skipped);
+      return original;
+    }
     const component = field.codeComponent;
     const unsupported = (message) => {
       options.diagnostic?.({
@@ -3579,43 +3778,97 @@ function prepopulateValue(row, identity, now) {
       });
       return original;
     }
+    // The host refuses a column type it does not support before loading the component: the native control stays
+    // and the form's summary names the column (captured).
+    const admission = nativeFieldAdmission(field.control, field.dataverseType);
+    if (!admission.admitted) {
+      const message = nativeFieldRefusal(admission.typeCode ?? 'Unknown', field.label, field.name);
+      pcfRefusals.push({ message, link: true });
+      options.diagnostic?.({
+        code: 'PCF_NATIVE_BINDING_UNSUPPORTED',
+        reason: 'PCF_NATIVE_TYPE_UNSUPPORTED',
+        form: definition?.id,
+        field: field.name,
+        sourceFile: component.sourceFile,
+        message,
+      });
+      return original;
+    }
     if (!options.codeComponent)
       return unsupported(`The enabled code component for ${field.label} requires its solution control sources.`);
-    if (component.boundAttributes.length !== 1 || component.boundAttributes[0] !== field.name)
-      return unsupported(`Code component ${component.name} must bind only to its native form field ${field.name}.`);
-    const bindings = nativeCodeComponentBindings(field, component, value);
+    if (!component.boundAttributes.includes(field.name))
+      return unsupported(`Code component ${component.name} must bind to its native form field ${field.name}.`);
+    const bindings = nativeCodeComponentBindings(field, component);
     if (bindings.error) return unsupported(bindings.error);
-    const { args, properties, propertyTypes } = bindings;
-    const attributes = Object.fromEntries(
-      Object.entries({
-        DisplayName: field.label,
-        LogicalName: field.name,
-        RequiredLevel: field.required
-          ? 2
-          : { none: 0, systemrequired: 1, applicationrequired: 2, required: 2, recommended: 3 }[
-              String(field.requiredLevel ?? '').toLowerCase()
-            ],
-        MaxLength: field.maxLength,
-        MinValue: field.minimum,
-        MaxValue: field.maximum,
-        Precision: field.precision,
-        PrecisionSource: field.precisionSource,
-        Behavior: { UserLocal: 1, DateOnly: 2, TimeZoneIndependent: 3 }[field.dateTimeBehavior],
-        Format: field.format,
-        Targets: field.targets,
-        IsSecured: field.isSecured,
-        Options: field.options?.map((option) => ({ Label: option.label, Value: option.value })),
-        DefaultValue: field.defaultValue,
-      }).filter(([, item]) => item !== undefined),
-    );
+    const { args, properties, propertyTypes, ignored } = bindings;
+    if (ignored.length)
+      options.diagnostic?.({
+        code: 'PCF_NATIVE_BINDING_UNSUPPORTED',
+        severity: 'warning',
+        reason: 'PCF_NATIVE_OTHER_COLUMN_BINDING',
+        form: definition?.id,
+        field: field.name,
+        sourceFile: component.sourceFile,
+        message: nativeOtherColumnBindingMessage(component, field, ignored),
+      });
+    // The field label and the form record (mode.label and mode.contextInfo for the component). The record name is
+    // the saved value, and only when this form shows the name column readably to the visitor.
+    const recordName = id ? nativeRecordName(readRecord, mapping, fields, tableFields) : null;
+    let mounted = null,
+      statics = {},
+      refusal = null;
     const host = await options.codeComponent({
       name: component.name,
       args,
-      nativeBinding: { id: field.id, control: field.control, properties, propertyTypes, attributes },
+      nativeBinding: {
+        id: field.id,
+        control: field.control,
+        properties,
+        propertyTypes,
+        ...nativeBindingColumnFacts(field, tableFields),
+        context: {
+          label: field.label,
+          entityId: id ? canonicalId(id) : null,
+          entityTypeName: schema.entity,
+          entityRecordName: recordName,
+        },
+      },
+      // The saved PCF control state is scoped to this form (and step), not only to the field id.
+      stateScope: { form: definition?.id ?? name, step: schema?.stepId ?? null },
+      // The binding the component mounts with: its dynamic property is the one the hidden input carries.
+      onNativeBinding: (binding, converted) => {
+        mounted = binding;
+        statics = converted;
+      },
+      onNativeRefused: (detail) => {
+        refusal = detail;
+      },
     });
-    // Original inputs retain validators, names and the native form postback.
-    // The client hides them after a successful mount and reveals them on failure.
-    return `<div data-pcf-native-field="${attr(field.id)}"><div data-pcf-native-input>${original}</div>${host}</div>`;
+    // A static value the host cannot convert refuses the control like the platform: the native control and an
+    // "unknown problem" summary entry (captured).
+    if (refusal?.reason === 'PCF_NATIVE_STATIC_UNCONVERTIBLE') {
+      pcfRefusals.push({ message: nativeFieldUnknownProblem(field.label, field.name), link: false });
+      return original;
+    }
+    // A local refusal (sources, feature declarations, bindings) keeps the native control under its alert.
+    if (!mounted || !host.startsWith(`<script src="${PCF_HOST_SCRIPT}"></script>`)) return `${host}${original}`;
+    const dynamic = mounted.properties[0] ?? null;
+    pcfFields.add(field.name);
+    if (!dynamic) pcfUnposted.add(field.name);
+    return nativeFieldComponentMarkup({
+      field,
+      component,
+      host,
+      nameAttribute: nameAttr(field),
+      current: value(field),
+      disabled: readOnly || field.readOnly === true || ['status', 'state'].includes(field.control),
+      readOnlyForm: readOnly,
+      dynamic,
+      statics,
+      // The platform library scripts (React, ReactDOM, Fluent UI) the page loads once before the first field host's
+      // bundle, where the platform loads it: a hook for the integration of the platform-library loader; '' until then.
+      platformScripts: platformScriptsBefore(),
+    });
   };
 
   // Subgrids, quick views and notes cells.
@@ -3807,8 +4060,9 @@ function prepopulateValue(row, identity, now) {
       const dataset = parameters.filter(([, parameter]) => parameter.kind === 'dataset');
       const supported =
         dataset.length === 1 &&
-        parameters.every(([, parameter]) => ['static', 'dataset'].includes(parameter.kind)) &&
-        !model.relationship?.intersect;
+        // An N:N subgrid mounts too: the grid service scopes its rows through the intersect relationship of the signed
+        // configuration, as for the native N:N subgrid.
+        parameters.every(([, parameter]) => ['static', 'dataset'].includes(parameter.kind));
       const binding = dataset[0]?.[1];
       const component =
         supported &&
@@ -3822,7 +4076,17 @@ function prepopulateValue(row, identity, now) {
               .map(([name, parameter]) => [name, parameter.value]),
           ),
           property: dataset[0][0],
-          baseFilter: unbound ? undefined : { column: model.relationship.to, id: canonicalId(id) },
+          // The native subgrid's own signed scope: the grid service restricts rows to the parent record.
+          secure: {
+            t: 'subgrid',
+            kind,
+            form: schemaSourceId ?? definition?.id ?? name,
+            step: schema.stepId ?? null,
+            grid: cell.id,
+            parent: canonicalId(id),
+          },
+          // The parent form record the subgrid host reports as mode.contextInfo (lists send none).
+          context: { entityTypeName: schema.entity, entityId: id ? canonicalId(id) : '' },
         }));
       if (component) {
         const heading =
@@ -4115,6 +4379,7 @@ function prepopulateValue(row, identity, now) {
               const field = byName.get(cell.name);
               // A hidden cell and the repeated cells of a column already on the form render
               // nothing; spacers, the hidden owner and unsupported (Int64) columns an empty cell.
+              if (omittedField(field)) continue;
               if (cell.hidden) continue;
               if (cell.name && field) {
                 if (placed.has(cell.name)) continue;
@@ -4182,7 +4447,7 @@ function prepopulateValue(row, identity, now) {
       if (truncated) break;
     }
   } else
-    for (const field of fields)
+    for (const field of fields.filter((candidate) => !omittedField(candidate)))
       layoutHtml += `<div class="form-group"${field.hidden ? ' style="display: none;"' : ''}>${await cellControl(field)}</div>`;
 
   // Attach file (adx_attachfile*): the platform's file upload control. Its files are saved as
@@ -4509,12 +4774,17 @@ function prepopulateValue(row, identity, now) {
     fields: fields
       .filter(
         (field) =>
-          !field.ownerHidden && !field.readOnly && !['state', 'status', 'file', 'image'].includes(field.control),
+          !field.ownerHidden &&
+          !field.readOnly &&
+          !pcfOmitted.has(field.name) &&
+          !pcfUnposted.has(field.name) &&
+          !['state', 'status', 'file', 'image'].includes(field.control),
       )
       .map((field) => ({
         name: field.name,
         id: field.id,
-        control: controlForSubmit(field),
+        // A mounted field component posts its hidden input (lib/pcf-field-host.mjs nativeFieldPostedValue).
+        control: pcfFields.has(field.name) ? 'pcf' : controlForSubmit(field),
         decimalSeparator:
           transport === 'json' && decimalSeparator === ',' && ['decimal', 'money'].includes(field.control)
             ? decimalSeparator
@@ -4647,7 +4917,7 @@ function prepopulateValue(row, identity, now) {
       : '';
   // The entity form view; a reference entity read-only view (options.referenceForm) renders the
   // the "read-only" class and an empty layout configuration, and is returned on its own.
-  const viewHtml = `<div id="${attr(ids.view)}" class="${entityFormClass}${options.referenceForm ? (options.referenceForm.className ?? ' read-only') : ''}"${readOnly ? ' readonly="readonly"' : ''}>${hidden('EntityName', schema.entity)}${hidden('EntityID', id ? canonicalId(id) : '')}${hidden('EntityState', scalarValue(record?.statecode) ?? '')}${hidden('EntityStatus', scalarValue(record?.statuscode) ?? '')}<span id="${attr(ids.view)}_EntityLayoutConfig"${formLayoutAttribute(options.referenceForm, layoutConfig)}></span><div id="${attr(summaryId)}" class="${attr(fieldOf(componentMetadata, 'validationsummarycssclass') || 'validation-summary alert alert-error alert-danger alert-block')}" role="alert"${postback?.validationErrors ? '' : ' style="display:none;"'}${readOnly ? ' readonly="readonly"' : ''}>${validationSummaryMarkup(postback, summaryHeader, linksEnabled)}</div>${layoutHtml}${truncated ? '' : attachHtml + stepButtons + honeypot + '</div>'}`;
+  const viewHtml = `<div id="${attr(ids.view)}" class="${entityFormClass}${options.referenceForm ? (options.referenceForm.className ?? ' read-only') : ''}"${readOnly ? ' readonly="readonly"' : ''}>${hidden('EntityName', schema.entity)}${hidden('EntityID', id ? canonicalId(id) : '')}${hidden('EntityState', scalarValue(record?.statecode) ?? '')}${hidden('EntityStatus', scalarValue(record?.statuscode) ?? '')}<span id="${attr(ids.view)}_EntityLayoutConfig"${formLayoutAttribute(options.referenceForm, layoutConfig)}></span><div id="${attr(summaryId)}" class="${attr(fieldOf(componentMetadata, 'validationsummarycssclass') || 'validation-summary alert alert-error alert-danger alert-block')}" role="alert"${postback?.validationErrors ? '' : ' style="display:none;"'}${readOnly ? ' readonly="readonly"' : ''}>${validationSummaryMarkup(postback, summaryHeader, linksEnabled)}</div>${nativeFieldRefusalSummary(ids.view, pcfRefusals)}${layoutHtml}${truncated ? '' : attachHtml + stepButtons + honeypot + '</div>'}`;
   if (options.referenceForm) return { html: viewHtml, controls: placed };
   // ActionButtonPlacement 0 puts a basic form's action row above the form view.
   // Actions above the view leave the empty action container below it.
@@ -4682,6 +4952,7 @@ function prepopulateValue(row, identity, now) {
     const writable = fields.filter(
       (field) =>
         renderedFields.has(field.name) &&
+        !pcfUnposted.has(field.name) &&
         !field.readOnly &&
         !field.ownerHidden &&
         !field.disabled &&
@@ -4690,7 +4961,10 @@ function prepopulateValue(row, identity, now) {
     const descriptor = nativeFormPostbackDescriptor({
       kind,
       formId: definition?.id ?? name,
-      fields: writable.map((field) => ({ ...field, control: controlForSubmit(field) })),
+      fields: writable.map((field) => ({
+        ...field,
+        control: pcfFields.has(field.name) ? 'pcf' : controlForSubmit(field),
+      })),
       actions: renderedActions,
       modal,
       pageControl,
@@ -5735,6 +6009,7 @@ export async function renderQuickForm({
   params,
   metadata,
   onComponentRendered = null,
+  diagnostic = null,
 }) {
   const entity = canonicalId(params.entityname);
   const controlId = params.controlid;
@@ -5798,6 +6073,7 @@ export async function renderQuickForm({
         className: ' crmEntityFormView',
       },
       onComponentRendered,
+      diagnostic,
     },
   );
   return `<div id="ContentContainer_FormPanel">${html}</div>`;

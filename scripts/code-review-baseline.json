@@ -2831,6 +2831,41 @@
       "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
     },
     {
+      "key": "runtime:exports:mirage/lib/code-components.mjs:controlRelativePath",
+      "file": "mirage/lib/code-components.mjs",
+      "type": "exports",
+      "name": "controlRelativePath",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
+      "key": "runtime:exports:mirage/lib/code-components.mjs:liquidControlProperty",
+      "file": "mirage/lib/code-components.mjs",
+      "type": "exports",
+      "name": "liquidControlProperty",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
+      "key": "runtime:exports:mirage/lib/code-components.mjs:nativeColumnPcfType",
+      "file": "mirage/lib/code-components.mjs",
+      "type": "exports",
+      "name": "nativeColumnPcfType",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
+      "key": "runtime:exports:mirage/lib/pcf-field-host.mjs:NATIVE_FIELD_ADMISSION",
+      "file": "mirage/lib/pcf-field-host.mjs",
+      "type": "exports",
+      "name": "NATIVE_FIELD_ADMISSION",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
+      "key": "runtime:exports:mirage/lib/portal-entity-definitions.mjs:portalEntityDefinitionColumns",
+      "file": "mirage/lib/portal-entity-definitions.mjs",
+      "type": "exports",
+      "name": "portalEntityDefinitionColumns",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
       "key": "runtime:exports:mirage/liquid-conformance.mjs:classify",
       "file": "mirage/liquid-conformance.mjs",
       "type": "exports",

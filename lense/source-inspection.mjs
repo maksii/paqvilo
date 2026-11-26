@@ -16,7 +16,8 @@ import { loadProjectConfig } from '../mirage/lib/project-config.mjs';
 import { inspectPage } from '../mirage/lib/page-resources.mjs';
 import { stripLiquidLiteralBlocks } from '../mirage/lib/liquid-source.mjs';
 import { buildPermissionModel } from '../mirage/lib/permissions.mjs';
-import { importCodeComponents } from '../mirage/lib/code-components.mjs';
+import { codeComponentGuid, importCodeComponents } from '../mirage/lib/code-components.mjs';
+import { pcfBuildLayers, pcfImportOptions } from '../mirage/lib/pcf-sources.mjs';
 import { elementSourceHints, scriptSourceHints } from './element-provenance.mjs';
 import { PCF_RESOURCE_PATH, PCF_REFUSALS } from './pcf-resources.mjs';
 
@@ -695,7 +696,8 @@ export async function inspectionSources(cfg) {
     observed = configured.observed,
     dataModel = configured.dataModel;
   let deploymentProfile = configured.deploymentProfile ?? null,
-    deploymentProfiles = configured.deploymentProfiles;
+    deploymentProfiles = configured.deploymentProfiles,
+    pcf = configured.pcf;
   const diagnostics = [];
   if (configured.project) {
     try {
@@ -710,6 +712,7 @@ export async function inspectionSources(cfg) {
       dataModel = portal.dataModel ?? dataModel;
       deploymentProfile = portal.deploymentProfile ?? deploymentProfile;
       deploymentProfiles = portal.deploymentProfiles ?? deploymentProfiles;
+      pcf = project.pcf ?? pcf;
     } catch (error) {
       diagnostics.push({ code: 'INSPECT_PROJECT_UNAVAILABLE', reason: error.message });
     }
@@ -739,6 +742,13 @@ export async function inspectionSources(cfg) {
     dataModel,
     deploymentProfile: activeProfile?.profile ?? deploymentProfile,
     deploymentProfileFile: activeProfile?.pagesFile ?? null,
+    // pcf.sources build outputs (mirage/lib/pcf-sources.mjs), layered after the Solutions as Mirage layers them.
+    pcfLayers: await pcfBuildLayers(pcf, {
+      diagnostic: (entry) => diagnostics.push({ code: entry.code, reason: entry.message }),
+    }),
+    pcfImport: pcfImportOptions(pcf),
+    // The resolved pcf setting (platformLibraries for the Power Pages host admission, lense/pcf-audit.mjs).
+    pcf,
     diagnostics,
     selection: {
       rule,
@@ -1459,14 +1469,81 @@ function inspectFormDependencies(report, portal, metadata, rendered) {
   }
 }
 
-function componentLiteral(text) {
+// Learn's Liquid objects: a dataset binding argument (Mirage's local contract) that starts with one is set at run time.
+const LIQUID_OBJECT_ROOTS = [
+  'ads',
+  'blogs',
+  'entities',
+  'entitylist',
+  'entityview',
+  'events',
+  'forloop',
+  'forums',
+  'knowledge',
+  'language',
+  'log',
+  'now',
+  'page',
+  'params',
+  'polls',
+  'request',
+  'searchindex',
+  'settings',
+  'sitemap',
+  'sitemarkers',
+  'snippets',
+  'tablerowloop',
+  'user',
+  'weblinks',
+  'website',
+];
+
+/**
+ * The control name of one codecomponent tag, read as the Power Pages Liquid host reads it (as in Mirage
+ * liquid.mjs codeComponentName): the raw text of the exact `name` argument. An unquoted
+ * token is the literal name (a schema name or a customcontrolid GUID), never a variable; a quoted name renders nothing
+ * on Power Pages (`quoted`).
+ */
+function codeComponentNameOf(markup) {
+  // The tag key is case-insensitive.
+  const parameter = /(?:^|\s)name\s*:\s*/i.exec(markup);
+  const text = parameter ? markup.slice(parameter.index + parameter[0].length) : '';
+  const value = /^(?:'([^']*)'|"([^"]*)"|([^\s,%]+))/.exec(text);
+  if (!value) return { name: '', dynamic: false, missing: true };
+  if (value[3] !== undefined)
+    // A name without a namespace is read as literal too; no capture has observed that form (Mirage marks it the same).
+    return {
+      name: value[3],
+      dynamic: false,
+      ...(!value[3].includes('.') && !codeComponentGuid(value[3]) ? { unobserved: 'undotted-name' } : {}),
+    };
+  return { name: value[1] ?? value[2], dynamic: false, quoted: true };
+}
+
+/** The codecomponent tags of one Liquid body as `{ name, dynamic, quoted?, duplicate?, expression }`. */
+export function codeComponentReferences(source) {
+  // A tag inside {% raw %} or {% comment %} renders nothing (the inspection reads stripped bodies too).
+  const body = stripLiquidLiteralBlocks(String(source));
+  const seen = new Set();
+  return liquidTags(body, 'codecomponent').map((match) => {
+    const reference = { ...codeComponentNameOf(match[1]), expression: match[0], match };
+    const key = (codeComponentGuid(reference.name) ?? reference.name).toLowerCase();
+    // two-instances: a second tag of the same control renders neither.
+    if (!reference.quoted && key && seen.has(key)) reference.duplicate = true;
+    seen.add(key);
+    return reference;
+  });
+}
+
+function componentLiteral(text, variables = new Set(LIQUID_OBJECT_ROOTS)) {
   const value = /^\s*(?:'([^']+)'|"([^"]+)"|([^\s,]+))/.exec(text);
   const name = value?.[1] ?? value?.[2] ?? value?.[3] ?? '';
-  return {
-    name,
-    dynamic:
-      !value || Boolean(value[3] && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(name)),
-  };
+  // An unquoted GUID (braced or without hyphens) or dotted schema name is the literal reference Mirage renders
+  // (liquid.mjs codecomponent): Learn's tag examples write `name:abc_SampleNamespace.MapControl`.
+  const literal =
+    codeComponentGuid(name) ||
+    (/^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+$/.test(name) && !variables.has(name.split('.')[0].toLowerCase()));
+  return { name, dynamic: !value || Boolean(value[3] && !literal) };
 }
 
 function appendCodeDatasetReport(report, entity, view, table, item) {
@@ -1554,33 +1631,56 @@ function inspectMarkupDataset(match, dataset, schemaName, row, report, metadata)
   return item;
 }
 
-function inspectMarkupCodeReference(match, context) {
+function markupBindingKind(direct, schemaName) {
+  if (direct) return 'declared-schema-name';
+  return schemaName ? 'observed-component-mapping' : 'unknown';
+}
+
+function missingMarkupControlReason(dynamic, schemaName) {
+  if (dynamic) return 'The code component name is set at run time, so it cannot be matched to a file.';
+  if (schemaName) return 'Code component manifest not found in your Solution sources.';
+  return 'No code component in your Solution sources matches this name.';
+}
+
+// The control exists, but Power Pages renders nothing for this tag and ends the rest of the template.
+function noteRefusedMarkupReference(reference, row, report) {
+  let refused = null;
+  if (reference.quoted) refused = 'PCF_LIQUID_NAME_QUOTED';
+  else if (reference.duplicate) refused = 'PCF_LIQUID_DUPLICATE_CONTROL';
+  if (!refused) return;
+  row.refused = refused;
+  report.unresolved.push({
+    kind: 'code-component',
+    expression: row.expression,
+    reason: reference.quoted
+      ? 'Power Pages renders nothing for a quoted control name and ends the rest of the template: write name: unquoted.'
+      : 'Power Pages renders no host when a page renders the same control twice, and ends the rest of the template.',
+  });
+}
+
+function inspectMarkupCodeReference(reference, context) {
   const { report, metadata, observed, catalogue } = context;
-  const nameParameter = /\bname\s*:\s*/i.exec(match[1]);
-  const { name, dynamic } = componentLiteral(
-    nameParameter ? match[1].slice(nameParameter.index + nameParameter[0].length) : '',
-  );
+  const { match, name, dynamic } = reference;
   const direct = !dynamic && [...(catalogue?.controls.keys() ?? [])].find((key) => norm(key) === norm(name));
-  const schemaName = dynamic ? null : (direct ?? observed?.codeComponents?.[norm(name)] ?? null);
-  let bindingKind = 'unknown';
-  if (direct) bindingKind = 'declared-schema-name';
-  else if (schemaName) bindingKind = 'observed-component-mapping';
+  const schemaName = dynamic
+    ? null
+    : (direct ?? observed?.codeComponents?.[codeComponentGuid(name) ?? norm(name)] ?? null);
   const row = {
     name,
     dynamic,
     schemaName,
     expression: match[0],
     evidence: dynamic ? 'dynamic-reference' : 'static-reference',
-    binding: bindingKind,
+    ...(reference.unobserved ? { unobserved: reference.unobserved } : {}),
+    binding: markupBindingKind(direct, schemaName),
   };
   const control = catalogue?.controls.get(schemaName);
   if (!control) {
-    let reason = 'No code component in your Solution sources matches this name.';
-    if (dynamic) reason = 'The code component name is set at run time, so it cannot be matched to a file.';
-    else if (schemaName) reason = 'Code component manifest not found in your Solution sources.';
+    const reason = missingMarkupControlReason(dynamic, schemaName);
     report.unresolved.push({ kind: 'code-component', expression: row.expression, reason });
     return row;
   }
+  noteRefusedMarkupReference(reference, row, report);
   Object.assign(row, {
     sourceFile: control.file,
     resources: control.resources.map((resource) => ({
@@ -1759,7 +1859,7 @@ function liquidTags(text, name, limit = 500) {
 function inspectCodeComponents(report, body, metadata, observed, catalogue) {
   const context = { report, metadata, observed, catalogue };
   report.codeComponents = unique(
-    liquidTags(body, 'codecomponent').map((match) => inspectMarkupCodeReference(match, context)),
+    codeComponentReferences(body).map((reference) => inspectMarkupCodeReference(reference, context)),
     (row) => row.expression,
   );
   for (const binding of report.nativeCodeBindings ?? []) inspectNativeCodeBinding(binding, context);
@@ -3027,7 +3127,11 @@ export function createSourceInspector(cfg) {
     JSON.stringify([
       sources,
       ...(await Promise.all([
-        Promise.all([sources.sourceDir, ...sources.roots].map(inspectionDirectoryStamp)),
+        Promise.all(
+          [sources.sourceDir, ...sources.roots, ...sources.pcfLayers.map((layer) => layer.dir)].map(
+            inspectionDirectoryStamp,
+          ),
+        ),
         mappedPluginStamps(sources),
         sources.deploymentProfileFile ? fileStamp(sources.deploymentProfileFile) : null,
       ])),
@@ -3091,7 +3195,10 @@ export function createSourceInspector(cfg) {
                     observed: sources.observed,
                   })
                 : {};
-              const codeCatalogue = await importCodeComponents(metadata.layers ?? []);
+              const codeCatalogue = await importCodeComponents(
+                [...(metadata.layers ?? []), ...sources.pcfLayers],
+                sources.pcfImport,
+              );
               return { portal, metadata, codeCatalogue };
             })(),
           );
@@ -3229,7 +3336,9 @@ export function createSourceInspector(cfg) {
     async codeComponents(route = '/') {
       const { select, sources } = await load();
       const selected = await select(route);
-      return { catalogue: selected.codeCatalogue, roots: sources.roots, sourceDir: sources.sourceDir };
+      // A build output names its files as a Solution root does, so the overlay can serve them.
+      const roots = [...sources.roots, ...sources.pcfLayers.map((layer) => layer.dir)];
+      return { catalogue: selected.codeCatalogue, roots, sourceDir: sources.sourceDir };
     },
     async sourceIndexFor(route = '/', selection = null, languageId = null) {
       const { select, sources } = await load();

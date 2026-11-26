@@ -10,7 +10,7 @@ data and supported platform adapters. Use this matrix to choose the workflow for
 | Source navigation                 | Inspect page dependencies and [selected owner/source evidence](lense.md#selection-evidence), with independent certainty and freshness | The same evidence summary with local runtime context                                                                                                                                    |
 | Forms, lists and views            | Run online; Solution sources add FormXml, view and field links                                                                        | Build native forms, lists, lookups, subgrids, quick views and notes from exported metadata                                                                                              |
 | Fields and validation             | Use the online platform's controls and rules                                                                                          | Supported typed editors and exported validation; unsupported controls retain diagnostics                                                                                                |
-| PCF                               | Run online components; Inspect links manifests, resources, native FormXml and literal dataset bindings                                | Standard page controls, enabled native single-field bindings and explicit Liquid view/table dataset bindings                                                                            |
+| PCF                               | Run online with local bundles and styles laid over; Inspect links manifests and bindings; `audit` checks every tag                    | Liquid tags, form fields, lists and subgrids with the Power Pages context, grid data and saves; React via `pcf.platformLibraries`                                                       |
 | Web API and FetchXML              | Use the online backend; Inspect maps observed entity sets using Solution metadata                                                     | Supported CRUD, queries, relationships and permission checks against local tables                                                                                                       |
 | Web roles and table permissions   | Inspect exported rules; live effective access remains unknown                                                                         | Evaluate configured roles and supported permission scopes for the local identity                                                                                                        |
 | Server logic and cloud flows      | Execute online; server-side edits need deployment                                                                                     | Supported exported request/row-trigger flows and basic actions, JSON mocks, explicitly enabled server code and trusted project providers                                                |
@@ -25,9 +25,10 @@ and component manifests. Missing managed metadata and dynamic references can lea
 exported references and observed browser elements separately.
 
 Mirage supports selected platform contracts, not every Power Pages feature. Code-site (`.powerpages-site`) exports are
-imported, but SPA builds use their own tooling. PCF datasets require an explicit Liquid table/view binding or a qualified
-native list or subgrid binding. An unsupported native binding falls back to the ordinary grid. On portal pages, React/virtual controls,
-platform libraries, advanced dataset operators and record navigation remain unsupported. External connectors, custom APIs and
+imported, but SPA builds use their own tooling. PCF controls follow the Power Pages host: a dataset control gets rows
+on a list or subgrid, while the Liquid tag binds no data set unless `pcf.liquidDatasetBinding` selects the local view
+binding, and a list or subgrid outside the supported bindings falls back to the ordinary grid. React and virtual
+controls need the React, ReactDOM and Fluent UI files in `pcf.platformLibraries`. External connectors, custom APIs and
 unsupported flow actions need a project provider or a local mock. A successful local scenario does not establish
 complete platform parity.
 

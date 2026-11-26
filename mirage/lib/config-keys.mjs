@@ -16,6 +16,7 @@ import { identityProviderSettings } from './identity-provider-settings.mjs';
 import { resolveDeploymentProfiles } from './deployment-profiles.mjs';
 import { contentPolicyDefaults } from './content-policy-defaults.mjs';
 import { validateLocalOverrides } from './local-overrides.mjs';
+import { pcfSettings } from './pcf-sources.mjs';
 
 const PACK_ID = /^[a-z0-9][a-z0-9._-]*$/;
 const PRESET_ID = /^[\w.-]+$/;
@@ -492,6 +493,14 @@ export const MIRAGE_SETTINGS = Object.freeze({
     contract: 'mirage/docs/canvas-apps.md',
     doc: 'Canvas surface switch (enabled) and project canvas app sources (sources).',
     parse: lazy('canvas', 'canvas-source.mjs'),
+  },
+  pcf: {
+    scopes: ['catalogue', 'project'],
+    option: 'pcf',
+    identity: true,
+    contract: 'mirage/docs/code-components.md',
+    doc: 'Code component build outputs (sources), the per-resource byte cap (maxResourceBytes), local React/ReactDOM/Fluent UI files (platformLibraries) and the Liquid tag dataset binding (liquidDatasetBinding: none, the default as on Power Pages, or view, a local-only explicit view binding through the portal Web API).',
+    parse: (value, label, base) => pcfSettings(value, label, base),
   },
   codeApps: {
     scopes: ['project'],

@@ -23,6 +23,40 @@ import {
 } from './native-form-actions.mjs';
 import { isExactNumeric, decimalParts, compareNumeric, parseNumericLiteral } from './exact-numeric.mjs';
 import { xmlEscapeAttribute } from './fetchxml-engine.mjs';
+import {
+  isPcfHiddenValue,
+  nativeFieldAdmission,
+  nativeFieldPostedValue,
+  PcfFieldValueError,
+} from './pcf-field-host.mjs';
+
+// A column the Power Pages form host hands to a field component: code component style on the form metadata, an
+// exported desktop binding and an admitted column type (lib/pcf-field-host.mjs).
+const pcfFieldOf = (field, metadata) =>
+  Boolean(
+    field.codeComponent &&
+    Number(portalField(metadata ?? {}, 'controlstyle')) === 756150001 &&
+    nativeFieldAdmission(nativeControlKind(field), field.dataverseType).admitted,
+  );
+// The posted hidden input of a mounted field component (both transports mark it, lib/pcf-field-host.mjs) as the value
+// the native control of its column would post. Only a mounted component field may post the marker, and a hidden
+// component field posts nothing (the host renders no input for it); any other posted value is returned as is.
+function pcfFieldValue(posted, fields, key) {
+  const field = fields.find((candidate) => canonical(candidate.name) === canonical(key));
+  if (field?.pcfField && field.hidden)
+    fail(`Field '${key}' is not bound to this native form`, 403, 'FormFieldNotBound');
+  if (!isPcfHiddenValue(posted)) return posted;
+  if (!field?.pcfField)
+    fail(`Field '${key}' is not a code component field of this native form`, 400, 'FormFieldInvalid');
+  const behavior = field.dateTimeBehavior ?? field.behavior ?? (nativeDateOnly(field) ? 'DateOnly' : 'UserLocal');
+  try {
+    return nativeFieldPostedValue(posted.pcfHiddenValue, { control: nativeControlKind(field), behavior });
+  } catch (error) {
+    if (!(error instanceof PcfFieldValueError)) throw error;
+    // The platform's save fails with HTTP 500 and saves nothing (captured, one load).
+    return fail(`Field '${key}' posted a code component value the column cannot take`, 500, 'FormFieldValueMalformed');
+  }
+}
 
 const canonical = (value) =>
   String(value ?? '')
@@ -1281,13 +1315,18 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
         validationMessage: text(portalField(metadata ?? {}, 'validationerrormessage'), field.validationMessage ?? ''),
         rangeMessage: text(portalField(metadata ?? {}, 'rangevalidationerrormessage'), field.rangeMessage ?? ''),
         label: text(portalField(metadata ?? {}, 'label'), field.label ?? field.name),
+        pcfField: pcfFieldOf(field, metadata),
       };
     });
   const fields = new Set(effectiveFields.map((field) => canonical(field.name)));
   const values = {};
   const changed = {};
-  for (const [key, value] of Object.entries(body.values)) {
+  // Columns decoded from a field component's hidden input keep their exact numeric digits, as postback text does.
+  const pcfDecoded = new Set();
+  for (const [key, posted] of Object.entries(body.values)) {
     if (['__proto__', 'prototype', 'constructor'].includes(key)) fail('Invalid native form field');
+    const value = pcfFieldValue(posted, effectiveFields, key);
+    if (isPcfHiddenValue(posted)) pcfDecoded.add(canonical(key));
     const binding = key.endsWith('@odata.bind');
     const relation = binding ? mapping.relationships?.[key.slice(0, -11)] : null;
     const column = relation?.many === false ? canonical(relation.from) : canonical(key);
@@ -1474,7 +1513,7 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
         invalid(field, 'FormFieldInvalid', field.validationMessage || `${field.label} must be text.`);
       if (['integer', 'decimal', 'double', 'money'].includes(control)) {
         const number = typeof value === 'number' ? value : Number.NaN;
-        const exact = nativePostback && isExactNumeric(value) ? decimalParts(value) : null;
+        const exact = (nativePostback || pcfDecoded.has(key)) && isExactNumeric(value) ? decimalParts(value) : null;
         const valid = exact
           ? control !== 'double' && (control !== 'integer' || exact.scale === 0)
           : Number.isFinite(number) && (control !== 'integer' || Number.isInteger(number));

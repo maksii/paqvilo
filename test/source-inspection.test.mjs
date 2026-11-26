@@ -243,7 +243,7 @@ test('repeated enrichment keeps unresolved diagnostics stable and rejects absent
   t.after(fx.cleanup);
   fs.appendFileSync(
     path.join(fx.portal, 'web-pages/home/Home.webpage.copy.html'),
-    '{% codecomponent name: "unknown.Control" %}',
+    '{% codecomponent name: unknown.Control %}',
   );
   const inspector = createSourceInspector({ sourceDir: fx.portal }),
     { report } = await inspector.inspect('/');
@@ -470,7 +470,7 @@ test('PCF schema-name references trace literal dataset tables, views and columns
   );
   fs.writeFileSync(
     path.join(fx.portal, 'web-pages/home/Home.webpage.copy.html'),
-    `{% codecomponent name:'fx_Example.Grid', Rows:'child-view' %}{% codecomponent name:'fx_Example.Grid', Rows:page.view %}{% codecomponent name:'fx_example.grid', Rows:'fx_child' %}{% codecomponent name:'fx_Example.Grid', Rows:'Related children' %}`,
+    `{% codecomponent name:fx_Example.Grid, Rows:'child-view' %}{% codecomponent name:fx_Example.Grid, Rows:page.view %}{% codecomponent name:fx_example.grid, Rows:'fx_child' %}{% codecomponent name:fx_Example.Grid, Rows:'Related children' %}`,
   );
   const controlDir = path.join(fx.solution, 'Controls/fx_Example.Grid');
   fs.mkdirSync(controlDir, { recursive: true });
@@ -662,12 +662,13 @@ test('the rendered-page reader runs self-contained in a page realm and keeps onl
   });
 });
 
+// @test-kind observation: Power Pages reads an unquoted codecomponent name as the literal control name (paqvilo-developer pcf-parity summary-D, r1 lq-* pages)
 test('displayed Liquid code and component manifests do not produce component or operation bindings while emitted raw assets remain discoverable', async (t) => {
   const fx = inspectionFixture();
   t.after(fx.cleanup);
   fs.writeFileSync(
     path.join(fx.portal, 'web-pages/home/Home.webpage.copy.html'),
-    `{% raw %}{% codecomponent name:'missing.Raw' %}/_api/hidden_raw {% serverlogic name:'HiddenOperation' %}<script src="/widget.js"></script>{% endraw %}{% comment %}{% codecomponent name:'missing.Comment' %}/_api/hidden_comment{% endcomment %}{% manifest %}{"description":"{% codecomponent name:'missing.Manifest' %}"}{% endmanifest %}{% codecomponent name:page.actual_component %}{% serverlogic name:'VisibleOperation' %}`,
+    `{% raw %}{% codecomponent name:missing.Raw %}/_api/hidden_raw {% serverlogic name:'HiddenOperation' %}<script src="/widget.js"></script>{% endraw %}{% comment %}{% codecomponent name:missing.Comment %}/_api/hidden_comment{% endcomment %}{% manifest %}{"description":"{% codecomponent name:missing.Manifest %}"}{% endmanifest %}{% codecomponent name:page.actual_component %}{% serverlogic name:'VisibleOperation' %}`,
   );
   const logicDir = path.join(fx.portal, 'server-logic');
   fs.mkdirSync(logicDir);
@@ -688,7 +689,8 @@ test('displayed Liquid code and component manifests do not produce component or 
     ['VisibleOperation'],
   );
   assert.equal(report.codeComponents.length, 1);
-  assert.equal(report.codeComponents[0].dynamic, true);
+  // Power Pages reads an unquoted name as the control's literal name (paqvilo-developer pcf-parity summary-D, r1).
+  assert.equal(report.codeComponents[0].dynamic, false);
   assert.equal(
     report.assets.some((row) => row.url === '/widget.js'),
     true,
@@ -696,7 +698,8 @@ test('displayed Liquid code and component manifests do not produce component or 
   assert.equal(report.unresolved.filter((row) => row.kind === 'code-component').length, 1);
 });
 
-test('unquoted literal PCF IDs open declared manifest/resources, while dynamic component expressions stay unresolved', async (t) => {
+// @test-kind observation: Power Pages reads an unquoted codecomponent name as the literal control name (paqvilo-developer pcf-parity summary-D, r1 lq-* pages)
+test('unquoted literal PCF IDs open declared manifest/resources, and an unquoted name that matches no control stays unresolved', async (t) => {
   const fx = inspectionFixture();
   t.after(fx.cleanup);
   const componentId = '10000000-0000-4000-8000-000000000001';
@@ -726,10 +729,12 @@ test('unquoted literal PCF IDs open declared manifest/resources, while dynamic c
   assert.equal(report.codeComponents[0].schemaName, 'fx_Example.Widget');
   assert.equal(report.codeComponents[0].sourceFile, path.join(controlDir, 'ControlManifest.xml'));
   assert.equal(report.codeComponents[0].resources[0].sourceFile, path.join(controlDir, 'bundle.js'));
-  assert.equal(report.codeComponents[1].dynamic, true);
+  // An unquoted name is the literal control name on Power Pages, never a variable (paqvilo-developer pcf-parity summary-D, r1).
+  assert.equal(report.codeComponents[1].dynamic, false);
+  assert.equal(report.codeComponents[1].name, 'page.component');
   assert.equal(report.codeComponents[1].sourceFile, undefined);
   assert.equal(
-    report.unresolved.some((row) => row.kind === 'code-component' && /set at run time/.test(row.reason)),
+    report.unresolved.some((row) => row.kind === 'code-component' && /No code component/.test(row.reason)),
     true,
   );
 });

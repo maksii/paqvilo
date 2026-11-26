@@ -85,10 +85,14 @@ modelDriven:
   grants no trust. An entry that does not exist or is not a directory or ZIP file disables the whole client catalogue
   with `MODEL_CLIENT_SOURCE_INVALID`, whose message names the entry's path. Missing or escaping dependencies are
   reported and never served. Watchers include the client sources.
-- A named PCF declaration supersedes an earlier one even if it is invalid; the earlier executable never comes back. An
-  unreadable PCF identity disables the PCF catalogue with `PCF_IDENTITY_UNRESOLVED`; web resources stay available.
-- These settings and budgets govern only the model-driven client catalogue. Power Pages Liquid and native-form PCF use
-  their own Solution-backed import, which `clientSources` (even `[]`) does not change and the budget does not cover.
+- A named PCF declaration supersedes an earlier one even if it is invalid; the earlier executable never comes back. A
+  control folder without a readable identity reports `PCF_IDENTITY_UNRESOLVED` and withdraws only the earlier controls
+  it could supersede (`PCF_IDENTITY_SHADOWED`); other controls and web resources stay available. The controls of a
+  Solution ZIP are read from its `Controls` entries.
+- These settings and budgets govern only the model-driven client catalogue. Power Pages Liquid, form, list and subgrid
+  PCF use their own import of the selected Solutions and `pcf.sources`
+  ([code components](code-components.md#control-sources)), which `clientSources` (even `[]`) does not change and the
+  budget does not cover. With `clientSources` set, that import's diagnostics are reported with `catalogue: 'portal'`.
 
 ## PCF inputs and limits
 
@@ -98,7 +102,10 @@ not a substitute for the bundle. Mirage resolves the declared constructor, regis
 an unrelated global.
 
 One admission rule, shared with the Power Pages host (`pcfAdmission` in `mirage/lib/model-driven/pcf-runtime.mjs`),
-classifies a control as a `standard` field, a `standard` dataset or `virtual`.
+classifies a control as a `standard` field, a `standard` dataset or `virtual`. The model-driven host requires each
+declared platform library in its declared version; the Power Pages host option reads `pcf.platformLibraries` instead
+and serves one version of each library to every control
+([platform libraries](code-components.md#platform-libraries)).
 
 - **Dataset controls** bound to a form subgrid (`<data-set>` in the desktop `customControl`) get a DataSet over the
   subgrid view, narrowed to the parent record: `records`, `sortedRecordIds`, `columns`, `getFormattedValue`, paging

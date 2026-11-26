@@ -219,6 +219,7 @@ report as a `PROJECT_CONFIG_KEY_UNKNOWN` warning; a version 2 file is refused.
 | `localServices`        | catalogue, project         | Declared local services that are probed, never started.                                                                                                                                                                            |
 | `providers`            | catalogue, project         | `storage`, `routes`, `messaging` and `outbox`; [storage providers](../mirage/docs/storage-providers.md), [messaging](../mirage/docs/messaging-and-outbox.md).                                                                      |
 | `canvas`               | catalogue, project         | Canvas surface switch (`enabled`) and project canvas sources (`sources`); [canvas apps](../mirage/docs/canvas-apps.md#setup-and-sources).                                                                                          |
+| `pcf`                  | catalogue, project         | PCF build outputs (`sources`), byte cap (`maxResourceBytes`, 8 MiB), React/Fluent UI files (`platformLibraries`), Liquid datasets (`liquidDatasetBinding`: `none` default, `view`); [PCF](../mirage/docs/code-components.md).      |
 | `codeApps`             | project                    | Code apps served under `/_apps/code/`; [code apps](../mirage/docs/code-apps.md).                                                                                                                                                   |
 
 <!-- /settings-table -->

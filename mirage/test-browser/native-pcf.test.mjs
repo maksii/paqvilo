@@ -7,7 +7,8 @@ import path from 'node:path';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
-import { signInContext } from '../testing/session.mjs';
+import { rowsDatasetControl, writeFixtureFiles } from '../test/support/pcf-fixture-files.mjs';
+import { editorPage, localEditorState } from './native-pcf-fixture.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('explicit portal metadata activates exported form-bound PCF and saves through the native form', async (t) => {
@@ -34,43 +35,24 @@ test('explicit portal metadata activates exported form-bound PCF and saves throu
     'solution/Entities/tst_Row/FormXml/main/row-form.xml':
       '<forms><systemform><formid>{row-form}</formid><FormActivationState>1</FormActivationState><form><tabs><tab name="general"><columns><column><sections><section name="main"><rows><row><cell><labels><label description="Title" languagecode="1033"/></labels><control id="tst_title" uniqueid="field-control" datafieldname="tst_title"/></cell></row></rows></section></sections></column></columns></tab></tabs><controlDescriptions><controlDescription forControl="field-control"><customControl name="tst_Synthetic.Editor" formFactor="0"><parameters><value type="SingleLine.Text">tst_title</value><caption static="true" type="SingleLine.Text">Portal editor</caption></parameters></customControl></controlDescription></controlDescriptions></form><LocalizedNames><LocalizedName description="Portal row" languagecode="1033"/></LocalizedNames></systemform></forms>',
     'solution/Controls/tst_Synthetic.Editor/ControlManifest.xml':
-      '<manifest><control namespace="Synthetic" constructor="Editor" control-type="standard"><type-group name="Mixed"><type>DateAndTime.DateOnly</type><type>SingleLine.Text</type></type-group><property name="value" of-type-group="Mixed" usage="bound"/><property name="caption" of-type="SingleLine.Text" usage="input"/><resources><code path="bundle.js"/></resources></control></manifest>',
+      '<manifest><control namespace="Synthetic" constructor="Editor" control-type="standard"><type-group name="Mixed"><type>SingleLine.Text</type><type>DateAndTime.DateOnly</type></type-group><property name="value" of-type-group="Mixed" usage="bound"/><property name="caption" of-type="SingleLine.Text" usage="input"/><resources><code path="bundle.js"/></resources></control></manifest>',
     'solution/Controls/tst_Synthetic.Editor/ControlManifest.xml.data.xml':
       '<CustomControl><Name>tst_Synthetic.Editor</Name></CustomControl>',
     'solution/Controls/tst_Synthetic.Editor/bundle.js': `/*! Synthetic compiled SDK module */ var synthetic_sdk_exports;(()=>{class Editor{init(c,notify,_s,el){window.nativePcfAttributes=c.parameters.value.attributes;this.input=document.createElement('input');this.input.setAttribute('aria-label',c.parameters.caption.raw);this.input.disabled=c.mode.isControlDisabled;this.input.value=c.parameters.value.raw||'';this.input.addEventListener('input',notify);el.append(this.input);}updateView(){}getOutputs(){return{value:this.input.value};}destroy(){}}synthetic_sdk_exports={};Object.defineProperty(synthetic_sdk_exports,'Editor',{enumerable:true,get:()=>Editor});})();`,
   };
-  for (const [name, content] of Object.entries(files)) {
-    const file = path.join(root, name);
-    await fs.mkdir(path.dirname(file), { recursive: true });
-    await fs.writeFile(file, content);
-  }
+  await writeFixtureFiles(root, files);
   const app = await createSimulator({
     sourceDir: portal,
     solutionRoots: [solution],
     port: 0,
     watch: false,
-    initial: {
-      version: 1,
-      mappings: { tst_row: { entitySet: 'tst_rows', idColumn: 'tst_rowid', nameColumn: 'tst_title' } },
-      tables: { tst_row: [] },
-      permissions: [],
-      settings: { permissionMode: 'permissive' },
-      simulator: {
-        mode: 'local',
-        pageMode: 'local',
-        identity: { id: 'editor', roles: ['Editor'] },
-        endpoints: [],
-        live: { origin: null },
-        componentSchemas: {},
-      },
-    },
+    initial: localEditorState(
+      { tst_row: { entitySet: 'tst_rows', idColumn: 'tst_rowid', nameColumn: 'tst_title' } },
+      { tst_row: [] },
+    ),
   });
   ownedFixture(t).add(() => app.close());
-  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  ownedFixture(t).add(() => browser.close());
-  const context = await browser.newContext();
-  await signInContext(context, app, 'editor', { roles: ['Editor'] });
-  const page = await context.newPage(),
+  const page = await editorPage(t, app),
     errors = [],
     external = [];
   page.on('pageerror', (error) => errors.push(error.message));
@@ -81,17 +63,17 @@ test('explicit portal metadata activates exported form-bound PCF and saves throu
   assert.match(await page.content(), /data-pcf-schema=/, JSON.stringify(app.state().diagnostics));
   await page.locator('[data-pcf-ready=true]').waitFor();
   assert.equal(await page.evaluate(() => window.__paqviloPcf.inspect()[0].parameters.value.type), 'SingleLine.Text');
-  // The control observes actual exported column metadata rather than its property name.
-  assert.deepEqual(await page.evaluate(() => window.nativePcfAttributes), {
-    DisplayName: 'Title',
-    LogicalName: 'tst_title',
-    RequiredLevel: 2,
-    MaxLength: 72,
-    Format: 'text',
-  });
-  assert.equal(await page.locator('#tst_title').isVisible(), false);
+  // The field host names the column and the property, RequiredLevel 0 and the column's length up to 100 (captured,
+  // paqvilo-developer pcf-parity capture f1|f2 edit-full).
+  const attributes = await page.evaluate(() => window.nativePcfAttributes);
+  assert.deepEqual(
+    [attributes.DisplayName, attributes.LogicalName, attributes.RequiredLevel, attributes.MaxLength, attributes.Format],
+    ['value', 'tst_title', 0, 72, 'Text'],
+  );
+  // The field host renders no native box: the value lives in the hidden input.
+  assert.equal(await page.locator('input[type=hidden]#tst_title').count(), 1);
   await page.getByLabel('Portal editor').fill('Saved by PCF');
-  assert.equal(await page.locator('#tst_title').inputValue(), 'Saved by PCF');
+  await page.waitForFunction(() => document.getElementById('tst_title').value === '"Saved by PCF"');
   await page.getByRole('button', { name: 'Submit', exact: true }).click();
   await page.locator('#MessageLabel').filter({ hasText: 'Submission completed successfully.' }).waitFor();
   assert.equal(app.store.snapshot().tables.tst_row[0].tst_title, 'Saved by PCF');
@@ -123,7 +105,7 @@ test('explicit portal metadata activates exported form-bound PCF and saves throu
   assert.deepEqual(external, []);
 });
 
-// @test-kind contract: native list and FormXml PCF dataset bindings retain the exported view and parent relationship
+// @test-kind contract+observation: native list and FormXml PCF dataset bindings retain the exported view and parent relationship; no record navigation and grid-service rows per live capture paqvilo-developer pcf-parity summary-C (Q-041, Data transport)
 test('explicit native dataset PCF bindings load the view and keep the subgrid restricted to its parent', async (t) => {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'native-dataset-pcf-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
@@ -155,18 +137,11 @@ test('explicit native dataset PCF bindings load the view and keep the subgrid re
     'solution/Entities/tst_parent/Entity.xml': `<Entity><Name>tst_parent</Name><EntityInfo><entity><attributes>${entity}</attributes></entity></EntityInfo></Entity>`,
     'solution/Entities/tst_parent/FormXml/main/parent-form.xml': `<systemform><formid>{parent-form}</formid><type>2</type><LocalizedNames><LocalizedName description="Parent" languagecode="1033"/></LocalizedNames><form><tabs><tab name="general"><columns><column><sections><section name="main"><rows><row><cell><control id="children" indicationOfSubgrid="true"><parameters><TargetEntityType>tst_row</TargetEntityType><ViewId>${view}</ViewId><RelationshipName>tst_related_rows</RelationshipName></parameters></control></cell></row></rows></section></sections></column></columns></tab></tabs><controlDescriptions><controlDescription forControl="children"><customControl name="tst_Synthetic.Rows" formFactor="0"><parameters><data-set name="records"><ViewId>${view}</ViewId><TargetEntityType>tst_row</TargetEntityType></data-set></parameters></customControl></controlDescription></controlDescriptions></form></systemform>`,
     [`solution/Entities/tst_row/SavedQueries/${view}.xml`]: `<savedquery><savedqueryid>${view}</savedqueryid><LocalizedNames><LocalizedName description="Fixture rows" languagecode="1033"/></LocalizedNames><fetchxml><fetch><entity name="tst_row"><attribute name="tst_rowid"/><attribute name="tst_title"/><order attribute="tst_title"/></entity></fetch></fetchxml><layoutxml><grid><row><cell name="tst_title" width="200"/></row></grid></layoutxml></savedquery>`,
-    'solution/Controls/tst_Synthetic.Rows/ControlManifest.xml':
-      '<manifest><control namespace="Synthetic" constructor="Rows" control-type="standard"><data-set name="records"/><resources><code path="bundle.js"/></resources></control></manifest>',
-    'solution/Controls/tst_Synthetic.Rows/ControlManifest.xml.data.xml':
-      '<CustomControl><Name>tst_Synthetic.Rows</Name></CustomControl>',
-    'solution/Controls/tst_Synthetic.Rows/bundle.js':
+    ...rowsDatasetControl(
       "ComponentFramework.registerControl('Synthetic.Rows',class{init(_c,_n,_s,el){this.output=document.createElement('p');this.output.className='fixture-records';el.append(this.output);}updateView(c){const ds=c.parameters.records;this.output.fixtureDataset=ds;this.output.textContent=ds.errorMessage||ds.sortedRecordIds.map(id=>ds.records[id].getValue('tst_title')).join(',');}});",
+    ),
   };
-  for (const [name, content] of Object.entries(files)) {
-    const file = path.join(root, name);
-    await fs.mkdir(path.dirname(file), { recursive: true });
-    await fs.writeFile(file, content);
-  }
+  await writeFixtureFiles(root, files);
   const app = await createSimulator({
     sourceDir: path.join(root, 'portal'),
     solutionRoots: [path.join(root, 'solution')],
@@ -217,24 +192,31 @@ test('explicit native dataset PCF bindings load the view and keep the subgrid re
     'Related row',
   ]);
 
-  const details = page.waitForURL('**/details/?selected=d0000000-0000-4000-8000-000000000001', { timeout: 5000 });
-  await page
+  // Live Power Pages returns undefined and stays on the page, although the list has a details page (W6 packet 04:
+  // capture paqvilo-developer pcf-parity summary-C, Q-041); this replaced the
+  // checkpoint's details navigation.
+  const opened = await page
     .locator('.fixture-records')
     .first()
     .evaluate((node) => {
       const dataset = node.fixtureDataset;
-      dataset.openDatasetItem(dataset.records[dataset.sortedRecordIds[0]].getNamedReference());
+      return dataset.openDatasetItem(dataset.records[dataset.sortedRecordIds[0]].getNamedReference()) === undefined;
     });
-  await details;
+  assert.equal(opened, true);
+  assert.equal(new URL(page.url()).pathname, '/');
 
+  // The data sets read through the grid services, not the portal Web API: disabling the table's Web API leaves both
+  // components mounted with their rows (summary-C, Data transport).
+  // The open page reloads itself on the runtime's reload event, which would race (and abort) the next navigation.
+  await page.goto('about:blank');
   const settingsPath = 'portal/sitesetting.yml';
   await fs.writeFile(path.join(root, settingsPath), files[settingsPath].replace('adx_value: true', 'adx_value: false'));
   await app.reload();
   await page.goto(url);
-  assert.equal(await page.locator('[data-pcf-schema]').count(), 0);
-  assert.equal(await page.locator('[data-mirage-component="codecomponent"][role=alert]').count(), 2);
-  assert.match(
-    await page.locator('[data-mirage-component="codecomponent"][role=alert]').last().textContent(),
-    /native grid/,
-  );
+  assert.equal(await page.locator('[data-pcf-schema]').count(), 2);
+  await page
+    .locator('.fixture-records')
+    .filter({ hasText: /^Related row$/ })
+    .waitFor({ timeout: 5000 });
+  assert.equal(await page.locator('[data-mirage-component="codecomponent"][role=alert]').count(), 0);
 });

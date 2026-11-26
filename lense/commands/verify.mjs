@@ -71,7 +71,9 @@ async function copyVerificationControls(cfg, work) {
   const { roots } = await inspectionSources(cfg);
   const copies = [];
   for (const root of roots) {
-    const controls = path.join(root, 'Controls');
+    // The Controls folder in any letter case, as the catalogue reads it (mirage/lib/code-components.mjs).
+    const folder = fs.readdirSync(root, { withFileTypes: true }).find((entry) => /^controls$/i.test(entry.name));
+    const controls = folder ? path.join(root, folder.name) : path.join(root, 'Controls');
     if (!fs.lstatSync(controls, { throwIfNoEntry: false })?.isDirectory()) continue;
     const copy = path.join(work, 'solutions', String(copies.length));
     copyVerificationSources(controls, path.join(copy, 'Controls'));

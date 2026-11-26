@@ -116,6 +116,11 @@ const MIRAGE = {
       'providers:\n  storage:\n    invented-disk:\n      kind: local-disk\n  routes:\n    dataverseFiles: invented-disk\n    annotations: invented-disk\n  messaging:\n    invented-bus:\n      kind: local-queue\n    endpoints:\n      x-invented-endpoint: invented-bus/x_invented_queue\n  outbox:\n    kind: local\n',
   },
   canvas: { kind: 'object', stage: 3, example: 'canvas:\n  enabled: true\n  sources:\n    - ./canvas/x_invented\n' },
+  pcf: {
+    kind: 'object',
+    stage: 3,
+    example: 'pcf:\n  sources:\n    - path: ./components/x-invented/out/controls\n      publisherPrefix: inv\n',
+  },
   codeApps: { kind: 'list', stage: 3, example: 'codeApps:\n  - name: invented-app\n    dir: ./code-apps/invented\n' },
 };
 // A secret-bearing member of a non-redacted key: the application secret is an environment variable name.

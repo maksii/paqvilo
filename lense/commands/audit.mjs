@@ -1,8 +1,16 @@
 import { loadCatalogue, loadConfig, mirageOnlySite } from '../config.mjs';
 import { PortalModel } from '../portal-model.mjs';
 import { auditResources } from '../resource-audit.mjs';
+import { auditCodeComponents } from '../pcf-audit.mjs';
 
 const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
+
+// One code component finding as an audit warning: "<file>: <code> (<name>): <reason>".
+function codeComponentWarning(finding) {
+  const location = finding.relativePath ? `${finding.relativePath}: ` : '';
+  const name = finding.name ? ` (${finding.name})` : '';
+  return `${location}${finding.code}${name}: ${finding.reason}`;
+}
 
 // A Mirage-only site has no portal export to audit; under --all it is reported as skipped when the catalogue has a portal.
 function skippedReport(site) {
@@ -24,11 +32,19 @@ async function auditSite(args, catalogue, site, env = args.env) {
       site,
       env,
     });
-    return {
-      site: cfg.siteName,
-      environment: cfg.envName,
-      ...auditResources(await PortalModel.create(cfg.sourceDir), cfg.site),
-    };
+    const report = auditResources(await PortalModel.create(cfg.sourceDir), cfg.site);
+    // Code component tags against the Solution and pcf.sources catalogue (lense/pcf-audit.mjs): a finding is a warning
+    // and leaves the audit incomplete.
+    // A failure of these checks (an unreadable Solution) is their own finding, never the site's inventory error.
+    const codeComponents = await auditCodeComponents(cfg).catch((error) => ({
+      references: null,
+      findings: [{ code: 'PCF_AUDIT_FAILED', reason: error.message }],
+    }));
+    if (codeComponents.findings.length) {
+      report.warnings = [...report.warnings, ...codeComponents.findings.map(codeComponentWarning)];
+      report.coverage = { ...report.coverage, complete: false };
+    }
+    return { site: cfg.siteName, environment: cfg.envName, ...report, codeComponents };
   } catch (err) {
     return {
       site: site ?? catalogue.settings.values.PAQVILO_SITE ?? catalogue.root.defaultSite,

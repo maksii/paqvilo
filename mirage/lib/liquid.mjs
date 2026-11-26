@@ -100,6 +100,7 @@ import {
   applyElementRenderEdits,
 } from './render-provenance.mjs';
 import { componentRenderResult } from './component-provenance.mjs';
+import { codeComponentGuid, liquidRenderHalt, PCF_PAGE_STATE } from './code-components.mjs';
 
 const htmlEscape = (value) =>
   String(value ?? '').replace(
@@ -993,7 +994,13 @@ async function renderNested(engine, source, context, sourceRef = null, label = '
     throw error;
   }
   const buffer = createRenderBuffer(context);
-  await context.stack(() => template.renderInto(context, buffer));
+  try {
+    await context.stack(() => template.renderInto(context, buffer));
+  } catch (error) {
+    // A halting tag (codecomponent) ends this source and every source around it: what was written stays.
+    if (error?.liquidHalt) error.partial = buffer.join('') + (error.partial ?? '');
+    throw error;
+  }
   context.resolvedFragment = renderFragment(buffer);
   return buffer.join('');
 }
@@ -1203,6 +1210,116 @@ function /* NOSONAR */ editableSyntax(markup) {
   }
   return null;
 }
+// Where a halted editable value ends inside its wrapper (letters only, so no escaping changes it).
+const LIQUID_HALT_MARK = 'PAQVILOLIQUIDHALTMARK';
+// A source whose render a tag halted: what it wrote, the halted inner sources' text, cut where a duplicate control's
+// first host began, then the end tags of what it left open; intervals that reach past the cut are dropped.
+const VOID_ELEMENTS = new Set([
+  'area',
+  'base',
+  'br',
+  'col',
+  'embed',
+  'hr',
+  'img',
+  'input',
+  'link',
+  'meta',
+  'param',
+  'source',
+  'track',
+  'wbr',
+]);
+// The end tags of the elements a halted render left open, innermost first (comments, scripts and styles skipped), so
+// the page continues after them as the live page does (the wrappers close before the platform scripts).
+// A reduced HTML tokenizer (no tag regex): tag names match in any case, comments end at --> or --!>, a raw-text
+// element ends at its end tag in any case and with any whitespace or attributes, and quoted attribute values may hold
+// '>'. Raw-text elements are skipped whole; a tag the text ends inside is dropped, as the browser drops it.
+const RAW_TEXT_ELEMENTS = new Set(['script', 'style', 'textarea', 'title']);
+const isAsciiAlpha = (char) => (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z');
+const isTagSpace = (char) => char === ' ' || char === '\t' || char === '\n' || char === '\f' || char === '\r';
+const endsTagName = (char) => char === undefined || isTagSpace(char) || char === '/' || char === '>';
+// Where the comment opened at `at` (`<!--`) ends: after `-->` or `--!>` (`<!-->` and `<!--->` are empty), else the text end.
+function commentEnd(text, at) {
+  if (text.startsWith('>', at + 4)) return at + 5;
+  if (text.startsWith('->', at + 4)) return at + 6;
+  for (let dash = text.indexOf('--', at + 4); dash >= 0; dash = text.indexOf('--', dash + 1)) {
+    if (text[dash + 2] === '>') return dash + 3;
+    if (text[dash + 2] === '!' && text[dash + 3] === '>') return dash + 4;
+  }
+  return text.length;
+}
+// The start or end tag at `at` (`<` or `</` then a letter): its lower-case name, whether it closes or self-closes and
+// where it ends; null when the text ends inside it.
+function readTag(text, at) {
+  const closing = text[at + 1] === '/';
+  let index = at + (closing ? 2 : 1);
+  const start = index;
+  while (!endsTagName(text[index])) index++;
+  const name = text.slice(start, index).toLowerCase();
+  let quote = '';
+  let previous = '';
+  let selfClosing = false;
+  for (; index < text.length; index++) {
+    const char = text[index];
+    if (quote) {
+      if (char === quote) [quote, previous] = ['', char];
+      continue;
+    }
+    if (char === '>') return { name, closing, selfClosing, end: index + 1 };
+    if ((char === '"' || char === "'") && previous === '=') quote = char;
+    if (!isTagSpace(char)) previous = char;
+    selfClosing = char === '/';
+  }
+  return null;
+}
+// Where the raw-text element `name` whose content starts at `from` has its end tag, else the text end.
+function rawTextEnd(text, name, from) {
+  for (let at = text.indexOf('</', from); at >= 0; at = text.indexOf('</', at + 2)) {
+    const after = at + 2 + name.length;
+    if (text.slice(at + 2, after).toLowerCase() === name && endsTagName(text[after])) return at;
+  }
+  return text.length;
+}
+// Where the markup that starts with `<` at `at` and is not a tag (a comment, a doctype or a bogus comment) ends.
+function skippedMarkupEnd(text, at) {
+  if (text.startsWith('<!--', at)) return commentEnd(text, at);
+  const end = text.indexOf('>', at);
+  return end < 0 ? text.length : end + 1;
+}
+function applyTag(open, tag) {
+  if (tag.closing) {
+    const index = open.lastIndexOf(tag.name);
+    if (index >= 0) open.length = index;
+  } else if (!tag.selfClosing && !VOID_ELEMENTS.has(tag.name) && !RAW_TEXT_ELEMENTS.has(tag.name)) open.push(tag.name);
+}
+function openElementEnds(text) {
+  const open = [];
+  let at = text.indexOf('<');
+  while (at >= 0 && at < text.length) {
+    const next = text[at + 1];
+    const tag = (isAsciiAlpha(next ?? '') || (next === '/' && isAsciiAlpha(text[at + 2] ?? ''))) && readTag(text, at);
+    if (tag === null) break;
+    let end;
+    if (!tag) end = next === '!' || next === '?' || next === '/' ? skippedMarkupEnd(text, at) : at + 1;
+    else {
+      applyTag(open, tag);
+      end = !tag.closing && RAW_TEXT_ELEMENTS.has(tag.name) ? rawTextEnd(text, tag.name, tag.end) : tag.end;
+    }
+    at = text.indexOf('<', end);
+  }
+  return open
+    .reverse()
+    .map((tag) => `</${tag}>`)
+    .join('');
+}
+function haltedFragment(fragment, halt) {
+  let text = fragment.text + (halt.partial ?? '');
+  const cut = halt.truncateAt ? text.indexOf(halt.truncateAt) : -1;
+  if (cut >= 0) text = text.slice(0, cut);
+  const intervals = fragment.intervals.filter((interval) => interval.end <= text.length);
+  return { text: text + openElementEnds(text), intervals };
+}
 class EditableTag extends Tag {
   parse() {
     const m = editableSyntax(this.markup);
@@ -1221,6 +1338,15 @@ class EditableTag extends Tag {
     const target = await context.resolve(this.editable);
     const host = context.engine.portalHost;
     const html = await host.editable(target, typeof key === 'string' ? key : null, options, context);
+    const halt = context.liquidHalt;
+    if (halt) {
+      // The halted content ends inside the editable wrapper: the wrapper's opening markup and the content written so
+      // far stay, its closing markup does not (the page copy ends after the case heading).
+      context.liquidHalt = null;
+      const cut = typeof html === 'string' ? html.indexOf(LIQUID_HALT_MARK) : -1;
+      halt.partial = cut >= 0 ? html.slice(0, cut) : (halt.partial ?? '');
+      throw halt;
+    }
     if (html != null) {
       if (context.resolvedFragment?.text === html) appendRenderFragment(out, context.resolvedFragment);
       else out.push(html);
@@ -1370,6 +1496,55 @@ function claimFormTag(context, tag, args) {
   context.state.formRendered = true;
   return true;
 }
+// The control a codecomponent tag names, as the Power Pages Liquid host reads it: the raw text of the `name` argument (any key case), unquoted and always literal (a schema name or a bare customcontrolid GUID). A
+// quoted name, and a second tag of a control the page already rendered, render nothing and end the rest of the template
+// (neither tag rendered). Returns the canonical name, or throws the halt.
+function codeComponentName(markup, context, args, errorsBefore = 0) {
+  // The tag key is case-insensitive; argument names are not (lib/code-components.mjs).
+  const raw = tagAttributes(markup).get('name')?.value ?? null;
+  const halt = (code, message, details = {}) => {
+    context.diagnostic(code, `${message} Power Pages renders nothing for this tag and ends the rest of the template.`, {
+      tag: 'codecomponent',
+      name: raw,
+    });
+    throw liquidRenderHalt(code, message, details);
+  };
+  if (raw && /^['"]/.test(raw))
+    halt(
+      'PCF_LIQUID_NAME_QUOTED',
+      `The codecomponent tag names its control in quotes (name:${raw}); write it unquoted.`,
+    );
+  args.name = raw == null ? null : (codeComponentGuid(raw) ?? raw);
+  // This tag's attribute evaluation recorded the unquoted name as a missing variable; as the control's name it is none.
+  const missing = raw
+    ? (context.errors?.indexOf(`Error - Variable '${raw}' could not be found`, errorsBefore) ?? -1)
+    : -1;
+  if (missing >= 0) context.errors.splice(missing, 1);
+  // The page render state the host reads (platform libraries loaded once per page: code-components.mjs).
+  args[PCF_PAGE_STATE] = context.state;
+  const key = String(args.name ?? '').toLowerCase();
+  const first = context.state.codeComponentHosts?.get(key);
+  if (key && first) {
+    // The cut removes the first host and the platform scripts written before it.
+    context.state.pcfPlatformScripts = false;
+    halt(
+      'PCF_LIQUID_DUPLICATE_CONTROL',
+      `The template renders code component ${raw} a second time (observed within one page copy; a header, page copy and footer render separately here).`,
+      { truncateAt: first },
+    );
+  }
+  return key || null;
+}
+// The start of a rendered host, where a later duplicate tag of the same control cuts the page (no host of it survives).
+function noteCodeComponentHost(context, key, result) {
+  const html = typeof result === 'string' ? result : result?.html;
+  const id = typeof html === 'string' ? /<span id="([0-9a-f-]{36})_Container"/.exec(html)?.[1] : null;
+  if (!id) return;
+  context.state.codeComponentHosts ??= new Map();
+  const container = `<span id="${id}_Container"`;
+  context.state.codeComponentHosts.set(key, html.slice(0, html.indexOf(container) + container.length));
+}
+
 function componentTag(tag) {
   return class extends Block {
     parse(tokens) {
@@ -1378,11 +1553,10 @@ function componentTag(tag) {
       else this.nodeList = null;
     }
     async render(context, out) {
+      const errorsBefore = context.errors?.length ?? 0;
       const args = await evaluateAttributes(this.markup, context);
-      if (tag === 'codecomponent' && args.name == null) {
-        const literal = tagAttributes(this.markup).get('name')?.value;
-        if (GUID_KEY.test(literal ?? '')) args.name = literal.replace(/[{}]/g, '').toLowerCase();
-      }
+      const codeComponent =
+        tag === 'codecomponent' ? codeComponentName(this.markup, context, args, errorsBefore) : null;
       if (
         ['entityform', 'webform', 'entitylist'].includes(tag) &&
         args.name == null &&
@@ -1412,6 +1586,7 @@ function componentTag(tag) {
           { tag, args },
         );
       }
+      if (codeComponent) noteCodeComponentHost(context, codeComponent, result);
       if (typeof result === 'string') {
         out.push(result);
         return;
@@ -1807,7 +1982,13 @@ export function createPortalRenderer(
         return error.message;
       }
       const buffer = createRenderBuffer(context);
-      await context.stack(() => template.renderInto(context, buffer));
+      try {
+        await context.stack(() => template.renderInto(context, buffer));
+      } catch (error) {
+        // A halting tag inside the filtered source: its output so far stays, as renderNested keeps it.
+        if (error?.liquidHalt) error.partial = buffer.join('') + (error.partial ?? '');
+        throw error;
+      }
       context.filterOutput = renderFragment(buffer);
       return buffer.join('');
     },
@@ -2057,7 +2238,14 @@ export function createPortalRenderer(
       const defaultValue = editOptions.default == null ? null : formatItem(editOptions.default);
       const render = async (value, sourceRef = null) => {
         context.resolvedFragment = null;
-        if (liquidEnabled) return renderNested(engine, value, context, sourceRef, 'editable');
+        if (liquidEnabled)
+          try {
+            return await renderNested(engine, value, context, sourceRef, 'editable');
+          } catch (error) {
+            if (!error?.liquidHalt) throw error;
+            context.liquidHalt = error;
+            return (error.partial ?? '') + LIQUID_HALT_MARK;
+          }
         if (sourceRef)
           context.resolvedFragment = {
             text: value,
@@ -2645,7 +2833,12 @@ export function createPortalRenderer(
       return { text: error.message, intervals: [] };
     }
     const buffer = createRenderBuffer(liquidContext);
-    await template.renderInto(liquidContext, buffer);
+    try {
+      await template.renderInto(liquidContext, buffer);
+    } catch (error) {
+      if (!error?.liquidHalt) throw error;
+      return haltedFragment(renderFragment(buffer), error);
+    }
     return renderFragment(buffer);
   }
   async function renderSource(source, context, sourceRef = null, slot = null) {

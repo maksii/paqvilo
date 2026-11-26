@@ -6,17 +6,20 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import { CANVAS_ASSETS } from './canvas-assets.mjs';
 import { readLocalFile } from '../../lense/local-file.mjs';
+import { PCF_RESOURCE_LIMIT, pcfFileType } from './pcf-sources.mjs';
 
 const prepared = new WeakMap();
 // The portal key of every declared PCF resource; a Canvas page names the same resource under its own apps prefix.
 export const PORTAL_PCF = '/__sim-static/pcf/';
 export const CANVAS_PCF = '/_apps/canvas/pcf/';
-const MAX_RESOURCE_BYTES = 8 * 1024 * 1024;
 const RESOURCE_TYPES = new Map([
   ['code', 'text/javascript; charset=utf-8'],
   ['css', 'text/css; charset=utf-8'],
   ['resx', 'application/xml; charset=utf-8'],
+  ['html', 'text/html; charset=utf-8'],
 ]);
+const contentType = (asset, key) =>
+  RESOURCE_TYPES.get(asset.kind) ?? pcfFileType(asset.path ?? key) ?? 'application/octet-stream';
 
 const SCALAR =
   /^(?:SingleLine\.(?:Text(?:Area)?|Email|Phone|URL|Ticker)|Multiple|Whole\.(?:None|Duration|TimeZone|Language)|Decimal|FP|Currency|Enum|OptionSet|TwoOptions|DateAndTime\.Date(?:AndTime|Only))$/i; // NOSONAR: regex kept: a rewrite would change matches or captures
@@ -127,17 +130,22 @@ export async function servePcfResource(req, res, { assets, key, fail }) {
   if (!['GET', 'HEAD'].includes(req.method)) throw fail(405, 'PCF resources require GET or HEAD.');
   const asset = assets.get(key);
   if (!asset) throw fail(404, 'This PCF resource is not declared in a selected manifest.');
-  const real = await fs.realpath(asset.file);
-  if (real !== asset.file || (await fs.stat(real)).size > MAX_RESOURCE_BYTES)
-    throw fail(404, 'The declared PCF resource changed outside its source boundary.');
-  res.writeHead(200, {
-    'content-type': RESOURCE_TYPES.get(asset.kind) ?? 'application/octet-stream',
+  const headers = {
+    'content-type': contentType(asset, key),
     'cache-control': 'no-store',
     'x-content-type-options': 'nosniff',
-  });
-  return res.end(
-    req.method === 'HEAD' ? undefined : await readLocalFile(real, { root: asset.root, maxBytes: MAX_RESOURCE_BYTES }),
-  );
+  };
+  // A control of a Solution ZIP is served from the bytes the catalogue inflated.
+  if (Buffer.isBuffer(asset.data)) {
+    res.writeHead(200, headers);
+    return res.end(req.method === 'HEAD' ? undefined : asset.data);
+  }
+  const maxBytes = asset.maxBytes ?? PCF_RESOURCE_LIMIT;
+  const real = await fs.realpath(asset.file);
+  if (real !== asset.file || (await fs.stat(real)).size > maxBytes)
+    throw fail(404, 'The declared PCF resource changed outside its source boundary.');
+  res.writeHead(200, headers);
+  return res.end(req.method === 'HEAD' ? undefined : await readLocalFile(real, { root: asset.root, maxBytes }));
 }
 
 /** The source's Display settings with the observed ones overriding per field; undefined when neither has one. */

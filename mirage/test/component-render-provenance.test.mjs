@@ -534,7 +534,8 @@ test('a code component bound to a form field names the PCF control and the FormX
         resolveMapping: () => ({ entitySet: 'synthetics', idColumn: 'syntheticid' }),
         query: () => ({ value: [] }),
       },
-      codeComponent: async () =>
+      codeComponent: async (spec) =>
+        spec.onNativeBinding?.({ properties: ['value'] }, {}) ??
         `<script src="${PCF_HOST_SCRIPT}"></script><div data-mirage-component="codecomponent" data-pcf-schema="${schema}" aria-busy="true"></div><script>window.mounted = true;</script>`,
       onComponentRendered: (item) => components.push(item),
     },
@@ -551,7 +552,8 @@ test('a code component bound to a form field names the PCF control and the FormX
     assert.equal(span.component.controlName, 'amount');
     assert.equal(span.component.formId, 'f0000000-0000-4000-8000-0000000000bb');
   }
-  const wrapper = spans.find((span) => html.slice(span.start, span.end).includes('data-pcf-native-field'));
+  // The field host markup of the column (lib/pcf-field-host.mjs) belongs to the column.
+  const wrapper = spans.find((span) => html.slice(span.start, span.end).includes('id="PcfControl_'));
   assert.equal(wrapper.component.key, 'column:synthetic:amount');
 });
 

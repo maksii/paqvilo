@@ -271,6 +271,7 @@ export class OverlaySession extends EventEmitter {
     });
     /** Solution files that answer portal addresses: code component resources, Solution web resources (pcf-resources.mjs) */
     this.solutionResources = new SolutionResourceIndex();
+    this.rewriter.deployments = () => [...this.solutionResources.deployments.values()];
     /** @type {WeakMap<object, Set<string>>} code component addresses the page's current documents declare */
     this.pagePcf = new WeakMap();
     /** the last code component catalogue and Solution roots the inspector gave: {catalogue, roots, sourceDir} */
@@ -381,6 +382,11 @@ export class OverlaySession extends EventEmitter {
     }
     const folders = new Set(this.solutionResources.folders);
     const entries = this.solutionResources.notePcf(declarations, sources);
+    // A manifest change the page shows is not deployed joins the needsDeploy rows at once, not at the next refresh.
+    this.rewriter.unsupported = [
+      ...this.rewriter.unsupported.filter((row) => !row.pcfDeployment),
+      ...this.solutionResources.deployments.values(),
+    ];
     if (page) {
       const declared = this.pagePcf.get(page) ?? new Set();
       for (const entry of entries) declared.add(entry.url);

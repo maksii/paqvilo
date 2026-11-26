@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { readRawBody } from './http-body.mjs';
+import { isPortalEntityDefinitionsPath, portalEntityDefinition } from './portal-entity-definitions.mjs';
 import { rejectedGatewayProperty } from './webapi-gateway-fields.mjs';
 import { globalMetadataVersion } from './metadata-version.mjs';
 // Local Power Pages portals Web API (/_api) over the simulator data store.
@@ -636,6 +637,19 @@ function diagnosticEntitySet(pathname) {
         'HttpAntiForgeryException',
       );
   } else if (method !== 'GET') throw methodNotAllowed(method, 'the portals Web API');
+  // The code component EntityDefinitions read (portal-entity-definitions.mjs); other metadata paths are refused there.
+  if (isPortalEntityDefinitionsPath(url.pathname)) {
+    const answer = await portalEntityDefinition({
+      method,
+      url,
+      origin: deps.origin,
+      identity: deps.identity,
+      metadata: deps.entityMetadata?.(),
+      portal: policyPortal(deps.store, deps),
+      headers: req.headers,
+    });
+    return deps.json(res, answer.status, answer.body, apiHeaders(deps.portal));
+  }
   const target = parseWebApiRoute(url.pathname);
   if (target.kind === 'cloudflow')
     throw new DataError(

@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { readLocalFile } from '../../lense/local-file.mjs';
 import { readSolutionAssetEntries, solutionAssetName, SOLUTION_ASSET_LIMITS } from './dataverse-solution-assets.mjs';
 import { importCodeComponents, takeAdmittedFiles } from './code-components.mjs';
+import { pcfFileType } from './pcf-sources.mjs';
 import { parseSolutionXml, descendants, childText, child, serializeXml } from './solution-xml.mjs';
 import { parseAppActionCommand } from './model-driven/solution.mjs';
 
@@ -22,6 +23,9 @@ const readEntry = async (entry) => entry.data ?? entry.load();
 // Diagnostics name paths as `<Solution layer>/<path inside it>`, never as local absolute paths.
 function projectPath(value, roots) {
   if (typeof value !== 'string' || !(path.isAbsolute(value) || /^[a-z]:[\\/]/i.test(value))) return value;
+  // A Solution ZIP member is named `<archive>#<entry>`.
+  const archived = /^(.*\.zip)#(.+)$/i.exec(value);
+  if (archived) return `${path.basename(archived[1])}/${archived[2]}`;
   for (const root of roots)
     for (const dir of root.dirs)
       if (inside(dir, value)) return `${root.label}/${path.relative(dir, value).replaceAll('\\', '/')}`;
@@ -219,7 +223,11 @@ async function layerEntries(layer, budget) {
     }
     clientSources = clientSources.filter((source) => !libraryFiles.includes(source));
   }
+  // clientSources replaces the model-driven control catalogue; the selected Solution controls the portal serves keep their
+  // import diagnostics, marked with their catalogue.
+  const portalLayers = clientSources === undefined ? [] : layers;
   if (clientSources !== undefined) {
+    for (const entry of codeComponents?.diagnostics ?? []) diagnostics.push({ ...entry, catalogue: 'portal' });
     try {
       layers = await Promise.all(
         clientSources.map(async (source) => {
@@ -254,7 +262,7 @@ async function layerEntries(layer, budget) {
     }
   }
   roots = await Promise.all(
-    layers
+    [...layers, ...portalLayers]
       .filter((layer) => layer?.dir)
       .map(async (layer) => ({
         label: path.basename(layer.dir),
@@ -394,14 +402,16 @@ async function layerEntries(layer, budget) {
       if (control.file) {
         const root = path.dirname(control.file);
         await readAdmitted(admitted, control.file, { root, maxBytes: 1024 * 1024 });
-        await readAdmitted(admitted, path.join(root, 'ControlManifest.xml.data.xml'), { root, maxBytes: 1024 * 1024 });
+        // A pcf-scripts build output control has no identity file: its name comes from its source settings.
+        if (control.identityFile) await readAdmitted(admitted, control.identityFile, { root, maxBytes: 1024 * 1024 });
       }
       for (const resource of control.resources) {
         budget.take('entries', 1);
         const asset = components.assets.get(resource.url);
         if (!asset) continue;
         const url = resource.url.replace('/__sim-static/pcf/', '/_apps/controls/');
-        const data = await readAdmitted(admitted, asset.file, { root: asset.root });
+        // A control of a Solution ZIP carries its inflated bytes; a folder control is read through the admitted snapshot.
+        const data = asset.data ?? (await readAdmitted(admitted, asset.file, { root: asset.root }));
         if (['code', 'css'].includes(resource.kind)) {
           controlAssets.set(url, {
             data,
@@ -414,6 +424,19 @@ async function layerEntries(layer, budget) {
           urls[resource.kind].push(url);
           if (resource.exportGlobal) urls.exports.push(resource.exportGlobal);
         }
+      }
+      // The source maps, images and fonts a declared bundle or style refers to, as the catalogue admitted them (inside the
+      // control folder only), under the same control address.
+      const token = control.resources[0]?.url.split('/').slice(0, 4).join('/') + '/';
+      for (const [key, asset] of components.assets) {
+        if (asset.kind !== 'sibling' || !key.startsWith(token)) continue;
+        budget.take('entries', 1);
+        controlAssets.set(key.replace('/__sim-static/pcf/', '/_apps/controls/'), {
+          data: asset.data ?? (await readFile(asset.file, { root: asset.root, maxBytes: asset.maxBytes ?? limit })),
+          mime: pcfFileType(asset.path) ?? 'application/octet-stream',
+          file: asset.file,
+          name: `${control.schemaName}/${asset.path}`,
+        });
       }
       // A deterministic exported fallback; selected language support can layer over this.
       for (const resource of control.stringResources ?? [])
@@ -436,6 +459,7 @@ async function layerEntries(layer, budget) {
         })),
         features: control.features,
         libraries: control.libraries,
+        dependencies: control.dependencies ?? [],
         resources: urls,
       });
       for (const [url, asset] of controlAssets) assets.set(url, asset);

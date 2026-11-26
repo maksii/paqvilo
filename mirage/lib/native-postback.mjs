@@ -139,7 +139,11 @@ export function nativeFormPostbackDescriptor({
       name: field.name,
       wireName,
       multiple: field.multiple === true,
-      ...(field.control === 'checkbox' || field.type === 'checkbox' ? { checkbox: true } : {}),
+      // A mounted field component posts its hidden input as JSON (lib/pcf-field-host.mjs), never a check box.
+      ...(field.control === 'pcf' ? { pcf: true } : {}),
+      ...(field.control !== 'pcf' && (field.control === 'checkbox' || field.type === 'checkbox')
+        ? { checkbox: true }
+        : {}),
     });
   }
   const targets = new Set();

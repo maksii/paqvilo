@@ -1685,9 +1685,10 @@ codeApps:
                   Solution roots.
                 </li>
                 <li>
-                  On a portal page, use the Liquid tag; on a form, keep the control binding from the form designer:
+                  On a portal page, use the Liquid tag; on a form field, list or subgrid, keep the control binding from
+                  the designer:
                   <div class="cmd file">
-                    <pre><code>{% codecomponent name:'vendor.Controls.RecordGrid', Records:'&lt;view id&gt;' %}</code></pre>
+                    <pre><code>{% codecomponent name:vendor_Controls.RatingInput maxValue:5 %}</code></pre>
                   </div>
                 </li>
                 <li>
@@ -1696,12 +1697,13 @@ codeApps:
                 </li>
               </ol>
               <p class="result">
-                <b>Result</b> The control renders in place, reads its bound column or view from local rows and writes
-                through <code>context.webAPI</code>.
+                <b>Result</b> The control renders in place, reads its column or its list rows from local data and saves
+                through the form, the list or <code>context.webAPI</code>.
               </p>
               <p class="note">
-                <b>Note</b> Model-driven forms need <a href="#model-driven">trusted extensions</a>. Portal pages do not
-                host virtual (React) controls or PCF inside native lists and subgrids.
+                <b>Note</b> Write the control name unquoted, as Power Pages reads it. Model-driven forms need
+                <a href="#model-driven">trusted extensions</a>. React and virtual controls need the React, ReactDOM and
+                Fluent UI files in <code>pcf.platformLibraries</code>.
               </p>
               <p class="more">
                 <a href="https://github.com/maksii/paqvilo/blob/main/mirage/docs/code-components.md">PCF reference ↗</a>

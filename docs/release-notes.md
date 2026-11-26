@@ -21,6 +21,20 @@ Each version lists what changed for users of the package and what to do when upg
   laid over twice. See [a checkout ahead of the portal, or behind it](lense.md#a-checkout-ahead-of-the-portal-or-behind-it).
 - **Code component files.** A bundle or style sheet the page loads from `/_pcfwebresource/` is served from your
   Solution's `Controls/<name>` folder, and a Solution web resource from `WebResources/`, when the page declares them.
+- **PCF on every Power Pages host.** Mirage mounts code components where Power Pages does: the `codecomponent` Liquid
+  tag, basic and multistep form fields, lists and form subgrids (also many-to-many), each with the `context` of the
+  Power Pages host. A form field holds the column value in a hidden JSON input and saves through both form transports;
+  a list or subgrid reads its rows through the native grid services with their table permissions, and a list record
+  saves its changes. See [code components](../mirage/docs/code-components.md).
+- **The `pcf` setting.** `pcf.sources` serves pcf-scripts build outputs (an `out/controls` folder or a `.pcfproj`)
+  under the name `pac pcf push` gives them, ahead of the exported controls, and a rebuild reloads only the code
+  components. `pcf.platformLibraries` supplies React 16.14.0, ReactDOM 16.14.0 and Fluent UI 8.122.8 from project
+  files, so standard controls that declare React and virtual controls mount. `pcf.maxResourceBytes` sets the per-file
+  cap (8 MiB by default) and `pcf.liquidDatasetBinding: view` keeps a local view binding for data sets in Liquid tags.
+  See [configuration](configuration.md).
+- **Code component checks.** `lense audit` checks every `codecomponent` tag of the export against the Solution and
+  `pcf.sources` controls, and `analyze` reports the Power Pages limits of a manifest (`APP-PCF-013` to `APP-PCF-017`).
+  See [Lense](lense.md).
 - **Static analysis of large sources.** A site raises the inventory ceilings it needs in the catalogue
   (`sites.<id>.analysis.limits`) or for one run (`--analysis-limit files=50000` on `doctor` and `analyze`, repeatable),
   up to fixed maximums. The report lists every changed ceiling and names the one a source tree exhausts. See
@@ -38,6 +52,16 @@ Each version lists what changed for users of the package and what to do when upg
   over and identified like any page; the upload is sent once.
 - A local change is laid over a place only when the changed file wrote it: the same line in another template, or in
   another language's copy, keeps the served text.
+- Code components: controls of Solution ZIPs and of YAML solutions (only the folders the solution lists) are
+  imported; `html` resources, source maps, images and fonts are served with their content types; a control folder
+  without a readable name withdraws only the controls it could replace instead of the whole catalogue; strings come
+  from one language per control. Lense lays over a control's bundle and its style sheets separately, lists a manifest
+  difference under **Needs deployment or a source fix** and serves `pcf.sources` builds too.
+- The `codecomponent` tag follows the Power Pages Liquid host: an unquoted name or GUID (braced or without hyphens)
+  names the control, the `name` key takes any letter case, argument names match property names exactly, and each
+  argument reaches the control as the server writes it into the host's `ControlProperties`, in the host's markup.
+- `context.utils.getEntityMetadata` reads table and column metadata through `/_api/EntityDefinitions`, as on Power
+  Pages, and the reason of a rejected `context.webAPI` call is kept in the debugger's `webApiErrors`.
 - X-ray says what page scripts did to the page. An element of the template that a script moves keeps its template
   line and gains **Moved by this script**, also through a document fragment, a new wrapper, a range or `moveBefore`;
   one a script changes gains **Changed by this script: \<what\>**; rows, cells, captions and options that table and
@@ -45,6 +69,13 @@ Each version lists what changed for users of the package and what to do when upg
 
 ### Fixed
 
+- A code component's date-only value no longer moves a day west of UTC, a number in a comma-decimal language saves
+  its digits, and a Two Options output saves on every field style.
+- A page restored from the back/forward cache keeps working code components; before, they were destroyed and no
+  longer responded.
+- A dataset control that sets its selection inside `updateView` no longer recurses until the stack overflows.
+- A Liquid decimal argument no longer makes the `codecomponent` tag fail with "Do not know how to serialize a BigInt".
+- `lense verify` finds a Solution's `Controls` folder in any letter case.
 - A script a web template writes itself is no longer taken for a form's or page's custom script that shares its lines.
 - Short markup that merely looks like a template (a link of the header inside a menu, the portal's own breadcrumb) is
   no longer named as that template.
@@ -70,6 +101,17 @@ Each version lists what changed for users of the package and what to do when upg
 
 ### Upgrade notes
 
+- Write `codecomponent` names unquoted (`name:pub_Namespace.Control`). A quoted name, an unknown control and a second
+  tag of the same control now render nothing and end the rest of the template, as on Power Pages; `lense audit` lists
+  each one. Tag arguments reach the control only when their name equals the property name, letter case included.
+- A data set in a Liquid tag is now unbound, as on Power Pages. Set `pcf.liquidDatasetBinding: view` to keep the view
+  binding of a tag argument.
+- A form field with a code component no longer renders its native control: the value is in a hidden input as JSON,
+  `$pages` `getValue` and `setValue` throw on that field, and a page script reaches the control by changing that input
+  and raising `change`.
+- A rejected `context.webAPI` call rejects with `undefined`, and the navigation dialogs throw instead of opening a
+  browser dialog, as on Power Pages; read the reason in `__paqviloPcf.inspect(id)[0].webApiErrors`.
+- A control that declares a platform library now needs the library files in `pcf.platformLibraries`.
 - Grants from a portal export now enforce Append and Append To on lookup binds and associations. A project whose
   local grants were set for Mirage's former direction now gets the portal's 403 `90040106`; set the flags as on the
   portal (Append To on the table that holds the lookup, Append on the related table). The state setting

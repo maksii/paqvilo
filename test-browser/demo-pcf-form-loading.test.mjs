@@ -20,10 +20,16 @@ before(async () => {
 });
 after(() => browser?.close());
 
+// Every code component script request: the bundle the component tag's host markup loads from its native
+// /_pcfwebresource/ address (as Power Pages writes it), and the copy Mirage's host loads when that one did not register.
+const componentScript = (url) =>
+  url.pathname.startsWith('/_pcfwebresource/') ||
+  (url.pathname.startsWith('/__sim-static/pcf/') && url.pathname.endsWith('.js'));
+
 // The demo's PCF account page for a signed-in editor, with `bundle` deciding every code component script request.
-// `mapped: false` leaves out the demo's mapping of the page's component tag, so the host cannot render the component.
 // `host` decides the request for the Mirage component host script; `pageErrors` collects the page's uncaught errors.
-async function accountPage(t, bundle, { mapped = true, host = null, pageErrors = null } = {}) {
+// `waitUntil` is the navigation state awaited (the parsed document by default).
+async function accountPage(t, bundle, { host = null, pageErrors = null, waitUntil = 'domcontentloaded' } = {}) {
   const demo = path.join(await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-demo-pcf-')), 'demo');
   ownedFixture(t).remove(() => fs.rm(path.dirname(demo), { recursive: true, force: true, maxRetries: 10 }));
   await prepareDemo(demo);
@@ -35,7 +41,7 @@ async function accountPage(t, bundle, { mapped = true, host = null, pageErrors =
     solutionRoots: ['metadata', 'code-solution', 'solution'].map((name) => path.join(demo, name)),
     dataPacks: [{ id: 'example', module: path.join(demo, 'pack/pack.mjs') }],
     preset: 'example-demo',
-    ...(mapped ? { observed } : {}),
+    observed,
   });
   ownedFixture(t).add(() => simulator.close());
   const context = await browser.newContext();
@@ -44,10 +50,10 @@ async function accountPage(t, bundle, { mapped = true, host = null, pageErrors =
   const page = await context.newPage();
   await page.clock.install();
   if (pageErrors) page.on('pageerror', (error) => pageErrors.push(error));
-  await page.route('**/__sim-static/pcf/**/*.js', bundle);
+  await page.route(componentScript, bundle);
   if (host) await page.route('**/__sim-static/pcf-host.js', host);
-  // A bundle on its way keeps the document from finishing its load, so only the parsed document is awaited.
-  await page.goto(`${simulator.url}/approach/pcf/account/?id=${ACCOUNT}`, { waitUntil: 'domcontentloaded' });
+  // A bundle on its way keeps the document from finishing its load, so at most the parsed document is awaited.
+  await page.goto(`${simulator.url}/approach/pcf/account/?id=${ACCOUNT}`, { waitUntil });
   return page;
 }
 
@@ -56,17 +62,24 @@ test('the PCF account form becomes ready when its component bundle arrives after
   const arrived = new Promise((resolve) => (requested = resolve)),
     held = new Promise((resolve) => (release = resolve));
   ownedFixture(t).add(() => release());
-  const page = await accountPage(t, async (route) => {
-    requested();
-    await held;
-    await route.continue().catch(() => {});
-  });
+  // The bundle's script element blocks the parser where the component tag wrote it, so only the response is awaited.
+  const page = await accountPage(
+    t,
+    async (route) => {
+      requested();
+      await held;
+      await route.continue().catch(() => {});
+    },
+    { waitUntil: 'commit' },
+  );
   await arrived;
-  // Thirty seconds of the page's own time pass, one timer period at a time, while the bundle is still on its way.
+  // Thirty seconds of the page's own time pass, one timer period at a time, while the bundle is still on its way: the
+  // document waits at the component (as on Power Pages) and neither the page nor the host gives up on it.
   for (let period = 0; period < 300; period++) await page.clock.runFor(100);
+  assert.equal(await page.evaluate(() => document.readyState), 'loading');
   const status = page.locator('[data-status]');
-  assert.equal(await status.textContent(), 'Loading account and controls…');
   assert.equal(await status.evaluate((node) => node.classList.contains('error')), false);
+  assert.equal(await page.locator('[data-account-form] [role=alert]').count(), 0);
   release();
   await page.waitForFunction(() => document.querySelector('[data-account-form]')?.dataset.ready === 'true');
   assert.equal(await page.locator('[name=name]').inputValue(), 'Arcwell Services');
@@ -80,8 +93,11 @@ test('the PCF account form reports a component bundle that cannot load', async (
   assert.equal(await page.locator('[data-account-form]').getAttribute('data-ready'), 'false');
 });
 
+// A bundle that runs but registers no control (as a development build refused by the page script policy does).
 test('the PCF account form reports a component its host could not render', async (t) => {
-  const page = await accountPage(t, (route) => route.continue(), { mapped: false });
+  const page = await accountPage(t, (route) =>
+    route.fulfill({ status: 200, contentType: 'text/javascript', body: '/* registers no control */' }),
+  );
   const failure = page.locator('[data-status].error');
   await failure.waitFor();
   assert.match(await failure.textContent(), /^The PCF control did not load\. /);

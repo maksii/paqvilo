@@ -407,7 +407,7 @@ test('actual PCF render hosts retain private semantic ownership through toolkit 
   );
   fs.writeFileSync(
     path.join(fx.portal, 'web-templates/Partial.webtemplate.source.html'),
-    '{% codecomponent name:"x_Corpus.Card" value:"invented" %}<div id="lookalike" data-pcf-schema="x_Corpus.Card"></div>',
+    '{% codecomponent name:x_Corpus.Card value:"invented" %}<div id="lookalike" data-pcf-schema="x_Corpus.Card"></div>',
   );
   const app = await createSimulator({
     sourceDir: fx.portal,

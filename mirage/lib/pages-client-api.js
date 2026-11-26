@@ -961,6 +961,18 @@
       if (has(name)) return type;
     return element.tagName === 'INPUT' && element.type === 'text' ? 'String' : undefined;
   }
+  // A form field whose column a code component hosts (the field host markup, lib/pcf-field-host.mjs): not the
+  // platform's own PCF controls (MscrmControls.*).
+  const isFieldComponentCell = (cell) => {
+    const config = cell.querySelector('[id^="PcfControl_"] [pcf-controlcontext]');
+    if (!config) return false;
+    try {
+      const context = JSON.parse(config.getAttribute('pcf-controlcontext'));
+      return Boolean(context.PcfControlHiddenValueId) && !/^MscrmControls\./.test(String(context.ControlName ?? ''));
+    } catch {
+      return false;
+    }
+  };
   const ADDRESS = {
     line1: 'line1',
     line2: 'line2',
@@ -1098,7 +1110,14 @@
         return element.value;
       }
     };
+    // A code component field is a generic control on the live host: getValue and setValue throw "Method not
+    // implemented.", it is visible and not disabled, and setDisabled changes nothing the component sees (captured).
+    const pcfField = isFieldComponentCell(cell);
+    const notImplemented = () => {
+      throw new Error('Method not implemented.');
+    };
     const getValue = () => {
+      if (pcfField) return notImplemented();
       switch (type) {
         case 'Lookup':
           return getLookup();
@@ -1255,6 +1274,7 @@
       fire(element);
     };
     const setValue = (value) => {
+      if (pcfField) return notImplemented();
       if (type === 'Status' || type === 'StatusReason') throw new Error(`The ${name} control is read-only.`);
       if (type === undefined) return unsupported(member('setValue'))();
       // Guess: a read-only control refuses setValue (Learn documents isReadOnly, not the setValue outcome).
@@ -1292,7 +1312,7 @@
     const custom = new Map();
     const label = () => info?.querySelector('label')?.textContent.trim() || name;
     const control = {
-      getDisabled: () => Boolean(element?.disabled),
+      getDisabled: () => (pcfField ? false : Boolean(element?.disabled)),
       getRequired: () => Boolean(info?.classList.contains('required') || requiredBy.has(cell)),
       getVisible: () => shown(holder),
       getName: () =>
@@ -1305,6 +1325,7 @@
       getValue,
       setValue,
       setDisabled: (disabled) => {
+        if (pcfField) return;
         for (const item of cell.querySelectorAll('input, select, textarea, button')) {
           item.disabled = Boolean(disabled);
           item.toggleAttribute('aria-disabled', Boolean(disabled));

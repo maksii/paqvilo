@@ -521,7 +521,13 @@ export function createSolutionMetadataOverlay({ appsOf = () => [], parseDocument
       if (layoutxml) {
         const fields = descendants(parseSolutionXml(layoutxml), 'cell')
           .filter((cell) => cell.attrs.ishidden !== '1')
-          .map((cell) => ({ name: cell.attrs.name, width: Number(cell.attrs.width) || 180 }));
+          .map((cell) => ({
+            name: cell.attrs.name,
+            width: Number(cell.attrs.width) || 180,
+            // The same layout flags the exported view keeps (solution-metadata.mjs parseViewDocument).
+            ...(cell.attrs.width == null ? { widthless: true } : {}),
+            ...(cell.attrs.disableSorting === '1' ? { sortDisabled: true } : {}),
+          }));
         if (!isDeepStrictEqual(fields, view.fields)) view.sourceOriginVerified = false;
         view.fields = fields;
       }

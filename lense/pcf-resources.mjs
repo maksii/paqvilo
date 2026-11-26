@@ -7,9 +7,11 @@
 // can answer an explicit XML request without changing the portal's inline configuration (Type 3).
 // The declared code and style resources are joined, in order, to the resources of that kind the control's
 // ControlManifest.xml declares (the catalogue mirage/lib/code-components.mjs importCodeComponents reads, which admits
-// only manifest-declared files inside the control folder). The join is refused, and no file is ever served for it,
-// when the counts per kind differ, when resources of one kind declare different load orders (the order the page lists
-// them in is then not established) or when the control is not in the Solution sources.
+// only manifest-declared files inside the control folder). Each kind joins on its own: a kind is refused, and no file
+// is served for its addresses, when its counts differ, when its manifest resources declare different load orders (the
+// order the page lists them in is then not established) or when an entry names no admitted file; the other kinds still
+// map, and the difference (with any change of the declared parameter names) is a manifest change to deploy
+// (`deployments`, Lense needsDeploy). The whole control is refused when no kind maps or it is not in the sources.
 import fs from 'node:fs';
 import path from 'node:path';
 import { annotateRuntimeSources } from './runtime-sources.mjs';
@@ -79,7 +81,14 @@ function readDeclaration(raw) {
         : null;
     if (resource.Type !== PCF_RESX_TYPE || guid) resources.push({ type: resource.Type, guid });
   }
-  return { name: config.Name, resources };
+  // The parameter names the page configures (`Properties[].Name`), compared with the local manifest.
+  const properties =
+    Array.isArray(config.Properties) &&
+    config.Properties.length <= MAX_RESOURCES &&
+    config.Properties.every((property) => typeof property?.Name === 'string')
+      ? config.Properties.map((property) => property.Name)
+      : null;
+  return { name: config.Name, resources, ...(properties ? { properties } : {}) };
 }
 
 /**
@@ -105,26 +114,61 @@ export function pcfDeclarations(html, { limit = MAX_DECLARATIONS } = {}) {
  * `{ control, componentKey, manifestFile, resources: [{ guid, kind, order, path, file, controlRoot }] }`, or
  * `{ refused, control, componentKey?, manifestFile?, detail? }`. Only files the catalogue admitted are named.
  */
+// One kind of a declaration joined to the manifest resources of that kind: `{ resources }`, or `{ mismatch }` when the
+// counts differ, the manifest's load orders of that kind differ, or an entry names no GUID or no admitted file.
+function joinKind(declaration, control, catalogue, type, kind) {
+  const declared = declaration.resources.filter((resource) => resource.type === Number(type));
+  const manifest = (control.resources ?? []).filter((resource) => resource.kind === kind);
+  if (declared.length !== manifest.length)
+    return { declared, mismatch: { kind, declared: declared.length, manifest: manifest.length } };
+  if (new Set(manifest.map((resource) => resource.order)).size > 1)
+    return { declared, mismatch: { kind, order: 'differs' } };
+  const resources = [];
+  for (const [order, item] of declared.entries()) {
+    const resource = manifest[order];
+    const asset = catalogue.assets?.get(resource.url);
+    if (!item.guid || !asset?.file || !asset.root) return { declared, mismatch: { kind, order } };
+    resources.push({ guid: item.guid, kind, order, path: resource.path, file: asset.file, controlRoot: asset.root });
+  }
+  return { declared, resources };
+}
+
+// The declared parameter names against the manifest's: a difference is a manifest change the portal has not deployed.
+// Not yet established from live evidence: whether `Properties[]` lists every manifest property (outputs, unbound inputs) is
+// not established, so a shorter live list is never a mismatch. Only a name the page declares and the local manifest no
+// longer has is (a removed or renamed parameter). The `Type` numbers are not mapped to manifest types yet.
+function propertyMismatch(declaration, control) {
+  if (!declaration.properties) return null;
+  const local = (control.properties ?? []).map((property) => String(property.name));
+  const known = new Set(local.map((name) => name.toLowerCase()));
+  const removed = declaration.properties.filter((name) => !known.has(name.toLowerCase()));
+  return removed.length ? { kind: 'property', declared: removed, manifest: local } : null;
+}
+
 export function joinPcfDeclaration(declaration, catalogue) {
   const wanted = declaration.name.toLowerCase();
   const schema = [...(catalogue?.controls?.keys() ?? [])].find((name) => name.toLowerCase() === wanted);
   if (!schema) return { refused: 'pcf-control-not-in-sources', control: declaration.name };
   const control = catalogue.controls.get(schema);
   const identity = { control: schema, componentKey: 'pcf:' + wanted, manifestFile: control.file };
-  const resources = [];
+  // Each kind joins on its own: a kind whose resources differ from the page's (a local style added, a bundle split)
+  // refuses only its own addresses and is a manifest change to deploy; the other kinds still map.
+  const resources = [],
+    mismatches = [],
+    refusedGuids = [];
   for (const [type, kind] of Object.entries(PCF_RESOURCE_TYPES)) {
-    const declared = declaration.resources.filter((resource) => resource.type === Number(type));
-    const manifest = (control.resources ?? []).filter((resource) => resource.kind === kind);
-    const refuse = (detail) => ({ refused: 'pcf-manifest-mismatch', ...identity, detail: { kind, ...detail } });
-    if (declared.length !== manifest.length) return refuse({ declared: declared.length, manifest: manifest.length });
-    if (new Set(manifest.map((resource) => resource.order)).size > 1) return refuse({ order: 'differs' });
-    for (const [order, item] of declared.entries()) {
-      const resource = manifest[order];
-      const asset = catalogue.assets?.get(resource.url);
-      if (!item.guid || !asset?.file || !asset.root) return refuse({ order });
-      resources.push({ guid: item.guid, kind, order, path: resource.path, file: asset.file, controlRoot: asset.root });
+    const joined = joinKind(declaration, control, catalogue, type, kind);
+    if (joined.resources) resources.push(...joined.resources);
+    else {
+      mismatches.push(joined.mismatch);
+      refusedGuids.push(...joined.declared.map((item) => item.guid).filter(Boolean));
     }
   }
+  if (!resources.length && mismatches.length)
+    return { refused: 'pcf-manifest-mismatch', ...identity, detail: mismatches[0], mismatches };
+  const properties = propertyMismatch(declaration, control);
+  if (properties) mismatches.push(properties);
+  if (mismatches.length) Object.assign(identity, { mismatches, refusedGuids });
   const declaredResx = declaration.resources.filter((resource) => resource.type === PCF_RESX_TYPE);
   const manifestResx = (control.resources ?? []).filter((resource) => resource.kind === 'resx');
   if (!declaredResx.length) return { ...identity, resources };
@@ -160,6 +204,13 @@ function solutionReference(file, { sourceDir, roots }) {
   return root ? { ref: row.ref, file: row.path, root } : null;
 }
 
+// What one manifest mismatch changes, as the deployment note words it.
+function describeDeploymentMismatch(item) {
+  if (item.kind === 'property') return 'its parameters';
+  const counts = item.declared === undefined ? '' : ` (${item.declared} on the page, ${item.manifest} in the manifest)`;
+  return `its ${item.kind} resources${counts}`;
+}
+
 /**
  * The Solution files of one session that answer portal addresses: code component resources joined from the pages'
  * declarations, Solution web resources by name. Entries by address (lower-case path), by display reference and by file.
@@ -172,6 +223,8 @@ export class SolutionResourceIndex {
     this.joins = new Map();
     /** control folders and web resource folders of mapped files (watched for saves) */
     this.folders = new Set();
+    /** manifest changes the portal has not deployed, by control: { rel, control, reason } (needsDeploy rows) */
+    this.deployments = new Map();
   }
 
   /** The entry for a portal address, or undefined. */
@@ -238,6 +291,7 @@ export class SolutionResourceIndex {
       control?.sourceContentRevision ?? null,
       control?.file ?? null,
       declaration.resources,
+      declaration.properties ?? null,
     ]);
     let joined = this.joins.get(key);
     if (!joined) {
@@ -259,6 +313,7 @@ export class SolutionResourceIndex {
       ...(manifest ? { manifestRel: manifest.ref } : {}),
       refused: reason,
     });
+    this.#noteDeployment(joined, manifest);
     if (joined.refused) {
       for (const resource of declaration.resources)
         if (resource.guid) entries.push(this.#refuse(refusal(joined.refused, resource.guid)));
@@ -266,7 +321,25 @@ export class SolutionResourceIndex {
     }
     for (const resource of joined.resources)
       this.#noteResource(resource, { joined, manifest, refusal, sources }, entries);
-    for (const guid of joined.unresolvedResx ?? []) entries.push(this.#refuse(refusal('pcf-manifest-mismatch', guid)));
+    for (const guid of [...(joined.refusedGuids ?? []), ...(joined.unresolvedResx ?? [])])
+      entries.push(this.#refuse(refusal('pcf-manifest-mismatch', guid)));
+  }
+
+  // A control whose local manifest declares other resources or parameters than the page: a change that needs a deploy
+  // (the overlay keeps mapping the kinds that still match). Keyed by control; a later matching page clears it.
+  #noteDeployment(joined, manifest) {
+    const key = String(joined.control).toLowerCase();
+    if (!joined.mismatches?.length || !manifest) {
+      if (joined.componentKey) this.deployments.delete(key);
+      return;
+    }
+    const changes = joined.mismatches.map(describeDeploymentMismatch);
+    this.deployments.set(key, {
+      pcfDeployment: true,
+      rel: manifest.ref,
+      control: joined.control,
+      reason: `code component ${joined.control} changed ${changes.join(' and ')} in ControlManifest.xml; deploy the control before those changes can be previewed`,
+    });
   }
 
   #noteResource(resource, { joined, manifest, refusal, sources }, entries) {

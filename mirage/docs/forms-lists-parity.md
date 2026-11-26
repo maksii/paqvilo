@@ -200,8 +200,10 @@ and AddressComposite.
   column stays required. A read-only control refuses `setValue`.
 - A full-name control reads and writes `{ firstName, middleName, lastName }` and throws when the form has none of its
   boxes. Rich text reads and writes the editor HTML; its `getType()` is `undefined`.
-- A code component with a typed form binding reads and writes the bound field. Opaque control markup without a known
-  field type reports `PagesClientApiUnsupported` for `getValue` and `setValue`.
+- A form field hosted by a code component is a generic control, as on Power Pages: `getValue` and `setValue` throw
+  `Method not implemented.`, `getType` returns `undefined`, `getVisible` returns true, `getDisabled` returns false and
+  `setDisabled` changes nothing. Opaque control markup without a known field type reports `PagesClientApiUnsupported`
+  for `getValue` and `setValue`.
 - `$pages.agent.SendActivity` invokes a project-configured local `POST /_api/agents/<schema>/activities` endpoint.
   Use a simulator mock or a trusted pack endpoint that accepts the activity object and returns an activity or an array
   of activities. The client delivers each activity to the response callback and reports a missing endpoint to the error

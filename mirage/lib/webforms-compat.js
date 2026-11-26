@@ -519,6 +519,10 @@
         return element?.value ? element.value : null;
       case 'richtext':
         return richTextControlValue(field, element);
+      case 'pcf':
+        // A mounted field component's hidden input holds its value as JSON; the form service decodes it
+        // (lib/pcf-field-host.mjs nativeFieldPostedValue), as for the postback transport.
+        return { pcfHiddenValue: element?.value ?? '' };
       default:
         // An empty text box saves as null (Dataverse stores no empty strings).
         return element?.value === '' || element == null ? null : element.value;

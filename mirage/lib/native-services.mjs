@@ -46,6 +46,7 @@ import {
 } from './subgrid-actions.mjs';
 import { statusFromHttp } from './trace-store.mjs';
 import { decimalCell, xlsxWorkbook } from './xlsx-writer.mjs';
+import { applyPcfGridFilter, pcfGridUpdate } from './pcf-grid-query.mjs';
 
 /*
  * Local equivalents of the native Power Pages grid, lookup, subgrid, notes and
@@ -1739,18 +1740,39 @@ export async function executeGridQuery(model, request, context) {
     applySearch(fetch, request.search, layout.Columns, context.metadata, model.entity, masked);
   if (model.kind === 'list' && model.filter?.enabled)
     applyMetaFilter(fetch, request.metaFilter, model.filter.definition);
+  // A dataset code component's grid (signed `pcf`) adds its filter, `pcfFilter` (pcf-grid-query.mjs).
+  if (context.secure?.pcf) {
+    if (Number(view.queryType) === 4)
+      // A Quick Find view as the list view: the platform's grid-data answered 500.
+      fail('The dataset view is a Quick Find view.', 500, 'PcfQuickFindView');
+    applyPcfGridFilter(fetch, request.pcfFilter, {
+      parse: parseFetchTree,
+      fields: (table) => entityFields(context.metadata, table),
+      masked: masked ?? undefined,
+      invalid: () => fail('Invalid_Request', 400, 'Invalid_Request'),
+      // The platform's own message; the dataset grid route answers it as its 500 body.
+      missing: (table, column) =>
+        fail(
+          `'${table}' entity doesn't contain attribute with Name = '${column}' and NameMapping = 'Logical' (look up attribute by name is case-sensitive)`,
+          500,
+          'PcfMissingAttribute',
+        ),
+    });
+  }
   const allowedSort = new Set(
     layout.Columns.filter((column) => column.Type === 0 && !column.SortDisabled).map((column) => column.LogicalName),
   );
   applySort(fetch, parseGridSortExpression(request.sortExpression, allowedSort));
   const pageSize = Math.min(Math.max(Number(model.pageSize) || 10, 1), 250);
-  const requestedSize = Number(request.pageSize);
+  // Whole numbers only: a fractional size is floored, and the page stays a safe positive integer (at most 1,000,000).
+  const requestedSize = Math.floor(Number(request.pageSize));
   const effectiveSize = chooseLazily(
     () => requestedSize > 0 && requestedSize <= (request.allowLargePages ? 5000 : 50),
     () => requestedSize,
     () => pageSize,
   );
-  const page = Math.max(1, Math.floor(Number(request.page) || 1));
+  const requestedPage = Math.floor(Number(request.page));
+  const page = Number.isFinite(requestedPage) ? Math.min(Math.max(1, requestedPage), 1000000) : 1;
   delete fetch.attrs.top;
   fetch.attrs.count = String(effectiveSize);
   fetch.attrs.page = String(page);
@@ -2514,6 +2536,36 @@ async function runPortalListWorkflow(body, context, websiteId) {
 // A local portal write through the one portal write path (form-service.mjs portalRecordWrites) in its own store transaction.
 const portalWrite = (context, fn) =>
   context.store.transact(() => fn(portalRecordWrites(context.store)), { incremental: true });
+/**
+ * A dataset record save: the portal update path with the Web API's value coercion against the column metadata
+ * (MaxLength, precision, types) and the organization's own authorization of the write (no internal bypass).
+ */
+async function pcfRecordUpdate(context, entity, id, values) {
+  if (context.config?.mode === 'live') return writeOperation(context, 'update', entity, id, values);
+  const { store, identity } = context;
+  const writeOptions = {
+    coerce: true,
+    portalRequest: true,
+    metadata: (logical) => entityFields(context.metadata, logical),
+    dataverseWebApi: false,
+  };
+  const caller = {
+    identity,
+    portal: true,
+    caller: null,
+    method: 'POST',
+    headers: {},
+    ...store.portalAuthorization?.principal(identity),
+  };
+  return store.transact(
+    () =>
+      store.recordPipeline
+        ? store.recordPipeline.updateInternal(caller, entity, id, { ...values }, { writeOptions })
+        : store.updateRecordAsync(entity, id, values, identity, writeOptions),
+    { incremental: true },
+  );
+}
+
 async function writeOperation(context, operation, entity, id, values) {
   if (context.config?.mode !== 'live') {
     return portalWrite(context, (writes) =>
@@ -3170,6 +3222,7 @@ export function antiForgeryCookie(csrf) {
     'entity-grid-data.json',
     'entity-subgrid-data.json',
     'entity-lookup-grid-data.json',
+    'entity-grid-update-entity',
     'entity-grid-delete',
     'entity-lookup-associate',
     'entity-grid-disassociate',
@@ -3238,6 +3291,8 @@ export function antiForgeryCookie(csrf) {
     verifyToken(req, context.csrf);
     const body = await readJson(req);
     if (/^entity-(grid|subgrid|lookup-grid)-data\.json$/.test(normalized)) {
+      // Large pages are for server-side callers (downloads), never a request body's choice.
+      delete body.allowLargePages;
       const secure = unprotectConfiguration(body.base64SecureConfiguration);
       if (canonical(secure.w) !== websiteId) fail('Invalid_Request', 403, 'Invalid_Request');
       const expected = {
@@ -3266,12 +3321,25 @@ export function antiForgeryCookie(csrf) {
         if (!(await context.readProvider.get(model.schema.entity, secure.parent, context.identity)))
           return (sendSubgridAccessDenied(res), true);
       }
-      const data = await gridData(model, body, {
-        ...context,
-        secure,
-        timezoneOffset: Number(body.timezoneOffset) || 0,
-        timeZone: requestTimeZone(req, body.timezoneOffset),
-      });
+      const query = () =>
+        gridData(model, body, {
+          ...context,
+          secure,
+          timezoneOffset: Number(body.timezoneOffset) || 0,
+          timeZone: requestTimeZone(req, body.timezoneOffset),
+        });
+      let data;
+      if (secure.pcf)
+        try {
+          data = await query();
+        } catch (error) {
+          // A dataset grid's query failure (a Quick Find view, a value the column cannot take) answers the platform's
+          // 500 body; Mirage's own request refusals keep their answers.
+          if (error?.code === 'Invalid_Request' || error?.code === 'MissingPortalRequestVerificationToken') throw error;
+          sendJson(res, 500, { InternalServerError: 500, Message: String(error?.message ?? 'Internal server error') });
+          return true;
+        }
+      else data = await query();
       if (data.AccessDenied) {
         span?.event('permission', {
           message: `Table permission denies read on ${model.entity}`,
@@ -3282,6 +3350,62 @@ export function antiForgeryCookie(csrf) {
         span?.set({ rowCount: data.Records?.length ?? 0, itemCount: data.ItemCount, moreRecords: data.MoreRecords });
         sendJson(res, 200, data);
       }
+      return true;
+    }
+    if (normalized === 'entity-grid-update-entity') {
+      // A list dataset code component's record save, the captured body { Id, EntityName, Attributes }.
+      // The platform scopes it by its own session state; Mirage's dataset host also sends the list's signed
+      // configuration, and only a grid signed for the dataset host is accepted.
+      const secure = unprotectConfiguration(body.base64SecureConfiguration);
+      if (canonical(secure.w) !== websiteId || secure.t !== 'list' || !secure.pcf)
+        fail('Invalid_Request', 403, 'Invalid_Request');
+      const model = modelFor(secure, context);
+      const view =
+        model.views.find((candidate) => canonical(candidate.id) === canonical(secure.view)) ?? model.views[0];
+      // Only the bound view's own layout columns (not link-entity columns) are written (pcf-grid-query.mjs).
+      const columns = new Set(
+        (view?.fields ?? []).map((cell) => cell.name).filter((name) => !String(name).includes('.')),
+      );
+      const { id, values } = pcfGridUpdate(body, {
+        entity: model.entity,
+        fields: entityFields(context.metadata, model.entity),
+        columns,
+        idColumn: model.idColumn,
+        invalid: () => fail('Invalid_Request', 400, 'Invalid_Request'),
+      });
+      // The record must be one the visitor's bound view lists (its filters, the list's record filters and the read
+      // grant), re-read through the grid query itself.
+      const visible = await executeGridQuery(
+        model,
+        {
+          page: 1,
+          pageSize: 1,
+          pcfFilter: `<filter><condition attribute="${model.idColumn}" operator="eq" value="${id}"/></filter>`,
+        },
+        { ...context, secure },
+      );
+      if (visible.accessDenied || visible.rows.length !== 1) fail('Invalid_Request', 403, 'Invalid_Request');
+      await context.change(() => pcfRecordUpdate(context, model.entity, id, values));
+      // The answer is the serialized Entity of the update: the written columns and the key.
+      sendJson(res, 200, {
+        LogicalName: model.entity,
+        Id: id,
+        Attributes: [
+          ...Object.entries(values).map(([Key, Value]) => ({ Key, Value })),
+          { Key: model.idColumn, Value: id },
+        ],
+        EntityState: 0,
+        FormattedValues: [],
+        RelatedEntities: [],
+        RowVersion: null,
+        KeyAttributes: [],
+        HasLazyFileAttribute: false,
+        LazyFileAttributeKey: null,
+        LazyFileAttributeValue: null,
+        LazyFileSizeAttributeKey: null,
+        LazyFileSizeAttributeValue: 0,
+        ExtensionData: null,
+      });
       return true;
     }
     if (normalized === 'entity-grid-delete') {

@@ -1296,6 +1296,8 @@ export class HtmlRewriter {
     this.sourceStamps = prepared?.stamps ?? new Map();
     this.blockCache = new Map();
     this.prepared = prepared;
+    /** manifest changes the portal has not deployed (lense/pcf-resources.mjs deployments), kept across refreshes */
+    this.deployments = () => [];
     this.refresh(prepared ? [] : undefined);
   }
 
@@ -1345,6 +1347,7 @@ export class HtmlRewriter {
     /** changes that cannot be previewed locally: [{rel, reason}] */
     this.unsupported = model.deploymentChanges?.(this.baseline, changed) ?? [];
     this.#reportInactiveSources(model.inactiveSources, changed);
+    this.unsupported.push(...this.deployments());
     this.snippets = null;
 
     // in how many local scripts each line occurs: the more, the less it identifies one of them

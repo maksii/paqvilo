@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { COMPONENT_BY_TYPE } from './solution-inventory.mjs';
 import { loadOrganizationSources } from './solution-runtime-source.mjs';
 import { pcfAdmission } from './model-driven/pcf-runtime.mjs';
+import { portalPcfRefusals } from './code-components.mjs';
 import { customPageResolution, dashboardPage } from './model-driven/solution.mjs';
 import { hierarchicalIn, offlineProfileGaps } from './model-driven/offline.mjs';
 import { viewColumnPrerequisites } from './model-driven/view-prerequisites.mjs';
@@ -263,6 +264,8 @@ export function buildSourceGraph({
   bindings = {},
   clientResources = null,
   mappings = null,
+  // The Power Pages host's pcf.platformLibraries (lib/pcf-sources.mjs), which admit React and virtual controls there.
+  portalPlatformLibraries = [],
 } = {}) {
   const nodes = new Map(),
     aliases = new Map();
@@ -319,6 +322,7 @@ export function buildSourceGraph({
     portal,
     metadata,
     clientResources,
+    portalPlatformLibraries,
     inventory: scan?.inventory ?? [],
     nodes,
     relationships: Object.values(schema.relationships ?? {}),
@@ -572,7 +576,7 @@ function addCustomPageNodes(add, apps, inventory) {
       if (item.code === 'MD_NAV_CUSTOM_PAGE') addCustomPageNode(add, app, item, inventory);
 }
 
-function addPcfNodes(add, portal, clientResources) {
+function addPcfNodes(add, portal, clientResources, platformLibraries = []) {
   for (const control of clientResources?.pcf?.controls ?? []) {
     const admission = pcfAdmission(control, { platformLibraries: clientResources.pcf.platformLibraries ?? [] });
     if (admission.code === 'PCF_VIRTUAL_UNSUPPORTED')
@@ -583,15 +587,19 @@ function addPcfNodes(add, portal, clientResources) {
         level: 'contract',
         requirement: { status: 'unsupported', reason: admission.code, level: 'contract' },
       });
-    // The Power Pages host renders any Solution code component by name and supplies no platform libraries (code-components.mjs).
+    // The Power Pages host renders any Solution code component by name (code-components.mjs): the row names every reason it
+    // refuses the control, in render order, and a dependency the local host does not load.
     // ponytail: one row per Solution control a portal could render; per-reference detection in pages and forms is the upgrade.
-    if (portal && pcfAdmission(control).code === 'PCF_VIRTUAL_UNSUPPORTED')
+    if (!portal) continue;
+    const reasons = portalPcfRefusals(control, control.name, { platformLibraries }).map((refusal) => refusal.code);
+    if (control.dependencies?.length) reasons.push('PCF_DEPENDENCY_NOT_LOADED');
+    if (reasons.length)
       add({
         kind: 'portal',
         key: `pcf/${control.name}`,
         name: control.name,
         level: 'contract',
-        requirement: { status: 'unsupported', reason: 'PCF_VIRTUAL_UNSUPPORTED', level: 'contract' },
+        requirement: { status: 'unsupported', reason: reasons[0], reasons, level: 'contract' },
       });
   }
 }
@@ -736,7 +744,8 @@ export const canvasRequirementRows = (records) =>
  *   headless canvas host: placeholder CANVAS_NOT_RENDERED) when the app has the page as a type-300 component and the
  *   sources hold its canvas app, else unsupported MD_NAV_CUSTOM_PAGE with the reason;
  * - model-driven:pcf/<control>: a virtual (React) code component whose platform libraries the project does not supply;
- *   portal:pcf/<control>: the same control under a portal source (the Power Pages host supplies no platform libraries);
+ *   portal:pcf/<control>: a Solution control the Power Pages host refuses (feature declarations, control type, platform
+ *   libraries) or whose dependencies it does not load, with every reason in `requirement.reasons`;
  * - model-driven:offline/<profile>: a mobile offline profile (satisfied when every item's filter is evaluated, else
  *   MD_OFFLINE_FILTER_UNSUPPORTED naming the items), or an app naming a profile the sources do not hold (keyed by the app);
  * - model-driven:dashboard/<app>/<subarea>: a SiteMap SubArea that opens a dashboard: `satisfied` (behaviour) when the shell
@@ -747,7 +756,16 @@ export const canvasRequirementRows = (records) =>
  */
 function hostSurfaceNodes(
   add,
-  { portal, metadata, clientResources, inventory = [], nodes, tableNames = [], relationships = [] },
+  {
+    portal,
+    metadata,
+    clientResources,
+    portalPlatformLibraries = [],
+    inventory = [],
+    nodes,
+    tableNames = [],
+    relationships = [],
+  },
 ) {
   for (const node of canvasNodes(inventory)) add(node);
   // The catalogue's verdict (dashboardPage) over the catalogue's tables (the effective mappings, else the Solution tables) and their public views.
@@ -771,7 +789,7 @@ function hostSurfaceNodes(
   addPortalFindingNodes(add, portal);
   addSharepointDocumentNode(add, portal, metadata);
   addCustomPageNodes(add, metadata?.modelDrivenApps ?? [], inventory);
-  addPcfNodes(add, portal, clientResources);
+  addPcfNodes(add, portal, clientResources, portalPlatformLibraries);
   // Mobile offline (model-driven/offline.mjs): a profile whose items the simulator evaluates is satisfied; one with a filter it
   // cannot evaluate names the items (MD_OFFLINE_FILTER_UNSUPPORTED); an app naming a profile (component type 161) the
   // sources do not hold is keyed by the app (MD_OFFLINE_PROFILE_MISSING).

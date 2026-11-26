@@ -791,17 +791,21 @@ function dataFacts(text, file) {
  * Inventory records of one component file (`info` from classifyInventoryPath). `text` is its UTF-8 content when the
  * file is small enough to read; binary payloads (`.msapp`) are listed by name and size only and never inflated here.
  */
+// A control is named as the runtime catalogue names it (code-components.mjs): the exported customcontrol Name of its
+// ControlManifest.xml.data.xml, which is also its folder name. The manifest adds namespace.constructor as `controlConstructor`.
 function customControlInventoryRecord(root, component, name) {
   const control = root.name === 'manifest' ? root.children.find((item) => item.name === 'control') : null;
   const attribute = (key) => (control && Object.hasOwn(control.attrs, key) ? control.attrs[key] : null);
+  const exported =
+    root.name === 'CustomControl' ? root.children.find((item) => item.name === 'Name')?.text?.trim() : null;
   return inventoryRecord({
     component,
-    name:
-      attribute('namespace') && attribute('constructor')
-        ? `${attribute('namespace')}.${attribute('constructor')}`
-        : name,
+    name: exported && /^[\w.]+$/.test(exported) ? exported : name,
     version: attribute('version'),
     controlType: attribute('control-type'),
+    ...(attribute('namespace') && attribute('constructor')
+      ? { controlConstructor: `${attribute('namespace')}.${attribute('constructor')}` }
+      : {}),
   });
 }
 

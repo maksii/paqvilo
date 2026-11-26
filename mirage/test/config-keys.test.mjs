@@ -45,6 +45,7 @@ const NEW_KEYS = [
   'localServices',
   'providers',
   'canvas',
+  'pcf',
   'codeApps',
   'sourceMaps',
   'trace',
