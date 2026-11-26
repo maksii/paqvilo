@@ -121,12 +121,19 @@
       else signal.addEventListener('abort', abort, { once: true });
     });
   }
-  // A failed fetch is not cached: the next request asks for a token again. Concurrent callers share this promise.
+  const tokenFromHolder = () =>
+    document.querySelector?.('#antiforgerytoken input[name="__RequestVerificationToken"]')?.value;
+  // An explicit shell refresh updates the holder, which takes precedence over a cached fetch.
+  // A failed fetch clears the promise and concurrent callers still share one in-flight fetch.
   const token = (signal) => {
-    tokenRequest ??= fetchToken().catch((error) => {
-      tokenRequest = null;
-      throw error;
-    });
+    const current = tokenFromHolder();
+    if (current) return untilCallerAborts(Promise.resolve(current), signal);
+    tokenRequest ??= fetchToken()
+      .then((value) => tokenFromHolder() || value)
+      .catch((error) => {
+        tokenRequest = null;
+        throw error;
+      });
     return untilCallerAborts(tokenRequest, signal);
   };
   const parse = async (response) => {
@@ -284,13 +291,21 @@
       if (error?.status === 416) return binary('GET', path);
       throw error;
     });
-    const type = first.headers.get('mimetype') ?? first.headers.get('content-type') ?? '';
+    const responseType = (response) => response.headers.get('mimetype') ?? response.headers.get('content-type') ?? '';
+    const type = responseType(first);
     const firstBytes = await fileBytes(first);
     if (first.status !== 206) return new Blob([firstBytes], { type });
 
     const etag = first.headers.get('etag');
-    const parts = [firstBytes];
     const total = checkedFileRange(first, firstBytes, 0);
+    if (!etag && firstBytes.byteLength < total) {
+      // One whole response prevents a replacement from mixing two unvalidated byte ranges.
+      const whole = await binary('GET', path);
+      if (whole.status !== 200)
+        throw ajaxError('The server did not return the whole file.', whole.status, null, undefined);
+      return new Blob([await fileBytes(whole)], { type: responseType(whole) });
+    }
+    const parts = [firstBytes];
     let offset = firstBytes.byteLength;
     while (offset < total) {
       const response = await read(offset, etag);

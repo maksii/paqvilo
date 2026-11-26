@@ -17,14 +17,17 @@ const apiError = async (response) => ({
   sim: response.headers.get('x-sim-error-code'),
 });
 
-// @test-kind contract: Power Pages Web API custom activity allow-lists and selects require a table-specific column
+// @test-kind compatibility: Microsoft Learn Power Pages Web API limitations require a defined table-specific custom activity column
 test('custom activity Web API column lists and selections need a column of their own', () => {
   const logicalName = 'x_portalactivity';
   const mapping = {
     logicalName,
     entitySet: 'x_portalactivities',
     idColumn: 'activityid',
-    relationships: { regarding: { many: false, from: 'regardingobjectid' } },
+    relationships: {
+      regarding: { many: false, from: 'regardingobjectid' },
+      related: { many: true, from: 'activityid' },
+    },
   };
   const store = { resolveMapping: () => mapping };
   const portal = {
@@ -36,6 +39,7 @@ test('custom activity Web API column lists and selections need a column of their
         fields: {
           subject: { dataverseType: 'nvarchar' },
           x_detail: { dataverseType: 'nvarchar' },
+          x_case: { dataverseType: 'lookup' },
           regardingobjectid: { dataverseType: 'lookup' },
         },
       },
@@ -50,21 +54,28 @@ test('custom activity Web API column lists and selections need a column of their
   };
   const fieldsKey = `Webapi/${logicalName}/fields`;
   const viewKey = `Webapi/${logicalName}/UseFieldsFromView`;
-  portal.settings[fieldsKey] = 'subject,regarding';
-  assert.throws(policy, refused);
+  for (const extra of ['regarding', 'related', 'x_typo', '_x_detail_value']) {
+    portal.settings[fieldsKey] = `subject,${extra}`;
+    assert.throws(policy, refused, extra);
+  }
 
   delete portal.settings[fieldsKey];
   portal.settings[viewKey] = 'true';
   assert.throws(policy, refused);
+  portal.webApiViews[0].fields.push({ name: 'x_missing_view_column' });
+  assert.throws(policy, refused);
 
   // The column listed explicitly qualifies an otherwise inherited-only view.
-  portal.settings[fieldsKey] = 'x_detail,regardingobjectid';
+  portal.settings[fieldsKey] = 'x_detail,regardingobjectid,x_case,x_typo,_x_detail_value';
   const configured = policy();
   assert.throws(
     () => configured.assertQuery(new URLSearchParams({ $select: 'subject,_regardingobjectid_value' })),
     refused,
   );
-  assert.doesNotThrow(() => configured.assertQuery(new URLSearchParams({ $select: 'subject,x_detail' })));
+  for (const column of ['x_typo', 'x_missing_view_column', '_x_detail_value'])
+    assert.throws(() => configured.assertQuery(new URLSearchParams({ $select: 'subject,' + column })), refused);
+  for (const column of ['x_detail', '_x_case_value'])
+    assert.doesNotThrow(() => configured.assertQuery(new URLSearchParams({ $select: 'subject,' + column })));
 
   portal.webApiEntities[logicalName].isActivity = false;
   assert.doesNotThrow(() => policy().assertQuery(new URLSearchParams({ $select: 'subject' })));

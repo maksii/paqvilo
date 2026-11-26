@@ -710,6 +710,45 @@ async function portalListRun(api, config, { workflowId, entity, recordId, author
   };
 }
 
+function portalInvitationWorkflow(store, config, workflowId) {
+  const row = isGuid(workflowId) ? workflowRow(store, workflowId) : null;
+  const handler = config.handlers?.get(workflowId);
+  if (
+    !row ||
+    Number(row.type) !== TYPE.definition ||
+    Number(row.category) !== CATEGORY_WORKFLOW ||
+    Number(row.statecode) !== STATE_ACTIVATED ||
+    Number(row.mode) !== 1 ||
+    !row.ondemand ||
+    bare(row.primaryentity) !== 'contact' ||
+    !handler ||
+    classicChoice(config, row).handler !== handler
+  )
+    return null;
+  return row;
+}
+
+/** Execute a qualifying contact workflow inside a local invitation redemption transaction. */
+async function executePortalInvitationWorkflow(api, config, { workflowId, contactId, principal }) {
+  const { store } = api;
+  const row = portalInvitationWorkflow(store, config, workflowId);
+  if (!row) return false;
+  if (!store.inTransaction()) throw new TypeError('Invitation workflow execution requires its redemption transaction.');
+  const c = await principal();
+  const { target, regarding } = executionTarget(api, c, row, contactId);
+  const run = {
+    row,
+    target: { ...regarding, row: target },
+    caller: c.caller,
+    inputs: {},
+    regarding,
+    realtime: true,
+    jobId: null,
+  };
+  await tracedRun(api, run, () => runClassic(api, config, run));
+  return true;
+}
+
 function validateModernWorkflow(config, row, name, inputs) {
   const flow = config.cloudFlow?.(bare(row.workflowid));
   const trigger = flow?.definition ? inspectFlowTrigger(flow.definition) : { kind: 'unknown' };
@@ -1228,6 +1267,9 @@ export function workflowExtension(config = {}) {
     install(api) {
       api.executePortalListWorkflow = (input) =>
         attempt(api, settings, null, () => portalListRun(api, settings, input));
+      api.hasPortalInvitationWorkflow = (workflowId) =>
+        Boolean(portalInvitationWorkflow(api.store, settings, workflowId));
+      api.executePortalInvitationWorkflow = (input) => executePortalInvitationWorkflow(api, settings, input);
       api.recordHooks.add('beforeWrite', (c, mapping, info) => {
         if (mapping.logicalName === 'workflow') return workflowWriteRule(c, mapping, info);
         noteWrite(c, mapping, info);

@@ -313,13 +313,13 @@ function applyInactiveEntries(state) {
   const inactiveSources = new Set((state.model.inactiveSources ?? []).map((source) => source.file));
   for (const item of state.entries.values()) {
     const file = path.join(state.root, item.relativePath);
-    let mirage = null;
-    if (/[\\/]web-files[\\/]/.test(file)) mirage = `${file}.webfile.yml`;
-    else if (/\.[^./\\]+\.[^./\\]+$/.test(file)) mirage = file.replace(/\.[^./\\]+\.[^./\\]+$/, '.yml');
-    if (
-      ((!item.field || state.model.format === 'enhanced') && inactiveSources.has(file)) ||
-      state.metadata.get(mirage)?.inactive
-    )
+    let metadataStem = null;
+    if (/[\\/]web-files[\\/]/.test(file)) metadataStem = `${file}.webfile`;
+    else if (/\.[^./\\]+\.[^./\\]+$/.test(file)) metadataStem = file.replace(/\.[^./\\]+\.[^./\\]+$/, '');
+    const metadata = metadataStem
+      ? (state.metadata.get(`${metadataStem}.yml`) ?? state.metadata.get(`${metadataStem}.yaml`))
+      : null;
+    if (((!item.field || state.model.format === 'enhanced') && inactiveSources.has(file)) || metadata?.inactive)
       Object.assign(item, {
         status: 'inactive',
         reason: 'Inactive portal record or inactive language root is not rendered.',

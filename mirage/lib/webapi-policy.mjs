@@ -204,23 +204,22 @@ function addWebApiLookupAliases(fields, portal, mapping, columnType) {
   }
 }
 
-// Power Pages treats a custom activity selection containing only inherited columns as a wildcard.
+// Power Pages treats a custom activity selection without a column defined on that table as a wildcard.
 function assertActivityColumns(fields, mapping, portal, wildcardExempt) {
-  if (
-    !fields.length ||
-    wildcardExempt ||
-    portal.webApiEntities?.[mapping.logicalName]?.isActivity !== true ||
-    standardTableDef(mapping.logicalName)
-  )
+  const activity = portal.webApiEntities?.[mapping.logicalName];
+  if (!fields.length || wildcardExempt || activity?.isActivity !== true || standardTableDef(mapping.logicalName))
     return;
   const inherited = standardTableDef('activitypointer').attributes;
-  if (
-    fields.every((name) => {
-      const relationship = mapping.relationships?.[name];
-      const column = relationship?.many === false ? relationship.from : name.replace(/^_(.+)_value$/, '$1');
-      return Object.hasOwn(inherited, column);
-    })
-  )
+  const declarations = [activity.fields, mapping.fields, mapping.fieldMetadata].filter(Boolean);
+  const declared = (name) => declarations.find((attributes) => Object.hasOwn(attributes, name))?.[name];
+  const hasTableColumn = fields.some((name) => {
+    const relationship = mapping.relationships?.[name];
+    const lookup = /^_(.+)_value$/.exec(name)?.[1];
+    const physical = lookup && fieldKind(declared(lookup)) === 'lookup' ? lookup : name;
+    const column = relationship?.many === false ? relationship.from : physical;
+    return Boolean(declared(column)) && !Object.hasOwn(inherited, column);
+  });
+  if (!hasTableColumn)
     denied('Attribute All Columns is not enabled for Web Api.', 'WebApiWildcardDeprecated', 403, {
       table: mapping.logicalName,
     });

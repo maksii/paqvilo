@@ -20,6 +20,29 @@ const mailboxPrefix = '/local-accounts/messages';
 const statusPath = '/_sim/api/status';
 const account = { UserName: 'fixture-user', LastName: 'Fixture Account', Email: 'fixture-user@example.test' };
 
+test('the opt-in browser token pairs with isolated local account forms', async (t) => {
+  const { app } = await simulator(t, [], initialState(), {
+    identityProvider: { localAccounts: true, pairedBrowserTokens: true },
+  });
+  const browser = client(app);
+  const first = await browser.request(login);
+  assert.equal(first.status, 200);
+  const token = /name="__RequestVerificationToken" value="([0-9a-f]{64})"/.exec(await first.text())[1];
+  assert.ok(token !== app.portalToken);
+  const submit = (visitor, value) =>
+    visitor.request(
+      login,
+      formBody({
+        UserName: 'invented-missing-account',
+        Password: 'Synthetic-Password-71',
+        __RequestVerificationToken: value,
+      }),
+    );
+  assert.equal((await submit(browser, app.portalToken)).status, 403);
+  assert.equal((await submit(client(app), token)).status, 403);
+  assert.equal((await submit(browser, token)).status, 401, 'the verified request reaches the fixture credential check');
+});
+
 test('local registration, confirmation, lockout, reset, password change and email MFA use only fixture state', async (t) => {
   const { app, csrf } = await simulator(t, SETTINGS, initialState(), { identityProvider: { localAccounts: true } });
   const browser = client(app);

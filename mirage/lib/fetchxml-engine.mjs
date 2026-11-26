@@ -8,6 +8,8 @@ import { isExactNumeric, sumNumeric, averageNumeric, decimalParts, parseNumericL
 import {
   fieldKind,
   compareSortKeys,
+  dateTimeRangeError,
+  isDateOnlyField,
   dateGroupValue,
   equalityKey,
   foldText,
@@ -759,6 +761,14 @@ export function structuralIntersects(plan, mappingOf, relationshipsFor = (mappin
   return structural;
 }
 
+function validatePortalDateOnlyIn(operator, definition, values) {
+  if (operator !== 'in' || !isDateOnlyField(definition)) return;
+  // A long decimal integer is neither a date literal nor a compact calendar date.
+  // Keep the other date spellings and operand families on their existing parser.
+  const invalid = values.find((value) => /^[+-]?\d{9,}$/.test(String(value).trim()));
+  if (invalid !== undefined) throw dateTimeRangeError(invalid, null);
+}
+
 /**
  * Execute a planned FetchXML query.
  * ctx: { mapping(name), readableRows(logical), tableRows(logical),
@@ -1005,10 +1015,13 @@ export function structuralIntersects(plan, mappingOf, relationshipsFor = (mappin
         return compare(read(item), other == null ? undefined : fieldValue(other, otherAttribute));
       };
     }
+    const values = valuesOf(condition);
+    if (plan.profile === 'portal' && !plan.dataverseIdentity && !ctx.noBackendAdmission)
+      validatePortalDateOnlyIn(condition.attrs.operator, columnDefinition, values);
     // Identity operators get the bare column (the hierarchy lookup's column) and the table.
     const predicate = compileOperator(condition.attrs.operator, {
       attribute: UNSUPPORTED_FETCH_OPERATORS.has(condition.attrs.operator) ? attribute : qualified,
-      values: valuesOf(condition),
+      values,
       definition: columnDefinition,
       identity: ctx.identity,
       settings,

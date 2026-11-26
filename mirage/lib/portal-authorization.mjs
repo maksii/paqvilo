@@ -521,6 +521,16 @@ export function createPortalAuthorization({
       if (!(enhanced(identity) || portalRequest)) return false;
       return Boolean(fieldSecurity()?.maskedFor?.(reader(identity), logical, column));
     },
+    /** Whether a portal reader may restore or stream the bytes of a raw attachment column. */
+    canReadRawColumn(identity, logical, column, recordId) {
+      const fls = fieldSecurity();
+      if (!fls) return true;
+      const user = reader(identity);
+      return (
+        fls.canRead?.(user, logical, column, recordId) !== false &&
+        fls.maskedFor?.(user, logical, column, undefined, recordId) !== true
+      );
+    },
     /** The portal the Web API column policy reads: without the column permission profiles in the enhanced model. */
     webApiPortal(source) {
       if (describe().model !== 'enhanced' || !source) return source;

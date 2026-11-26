@@ -1,5 +1,6 @@
 import { cloneStateData } from './state-clone.mjs';
 import { validateDerivedColumns } from './derived-columns.mjs';
+import { relationshipsOf } from './dataverse-standard.mjs';
 // Rollup columns (SourceType 2) in the Dataverse API: the state and date columns are maintained, the value is recalculated on demand.
 //
 // A column is a rollup when its metadata says SourceType 2 (exported column facts sit under columnMetadata). Its FormulaDefinition
@@ -201,9 +202,11 @@ function readDesignerTarget(target, rule) {
     unsupported('The designer rollup does not declare a direct child relationship.');
   rule.child = relation[3].toLowerCase();
   rule.link = relation[2].toLowerCase();
-  const relationshipLabel = [rule.child, rule.link, relation[1].toLowerCase()].join('.');
+  const relationship = relation[1].toLowerCase();
+  const relationshipLabel = [rule.child, rule.link, relationship].join('.');
   if (attr(link, 'DisplayName')?.toLowerCase() !== relationshipLabel)
     unsupported('The designer rollup child relationship declarations do not match.');
+  rule.relationship = relationship;
 }
 
 function readDesignerAggregate(aggregate, rule) {
@@ -269,7 +272,7 @@ function readDesignerRollup(root, rule) {
 }
 
 /**
- * Parses a rollup FormulaDefinition into { child, link, active, aggregate, attribute, unsupported }. child and link (the 1:N
+ * Parses a rollup FormulaDefinition into { child, link, relationship?, active, aggregate, attribute, unsupported }. child and link (the 1:N
  * source) are kept even when the rest is outside the subset: unsupported is then the reason, null when the rule is supported.
  */
 export function parseRollupFormula(text) {
@@ -373,10 +376,50 @@ const asNumber = (value) => {
   return number;
 };
 
+// The named relationship disambiguates the same lookup column on a polymorphic child.
+function rollupSource(store, table, rule, allowUnresolved = false) {
+  const source = { table, link: rule.link };
+  if (!rule.relationship) return source;
+  const parentId = bare(store.state.mappings?.[table]?.idColumn);
+  if (!parentId) return allowUnresolved ? source : null;
+  const links = Object.values(relationshipsOf(store, rule.child)).filter(
+    (link) => !link.many && bare(link.from) === rule.link,
+  );
+  const toParent = links.filter((link) => bare(link.entity) === table && bare(link.to ?? parentId) === parentId);
+  const named = toParent.some((link) => bare(link.schemaName) === rule.relationship);
+  // Older explicit mappings can describe a unique direct link without a schema name.
+  const unnamed = links.length === 1 && toParent.length === 1 && !toParent[0].schemaName;
+  if (!named && !unnamed) return allowUnresolved ? source : null;
+  const targets = new Map(links.map((link) => [bare(link.entity), link]));
+  return { ...source, relationship: rule.relationship, targets: targets.size > 1 ? [...targets.values()] : null };
+}
+
+function bareRollupTarget(store, targets, row) {
+  try {
+    return bare(store.bareLookupHolder(targets, row)?.entity);
+  } catch (error) {
+    // An ambiguous or unavailable target cannot be counted for any parent.
+    if (error instanceof DataError && ['InvalidLookup', 'UnknownEntity'].includes(error.code)) return '';
+    throw error;
+  }
+}
+
+function rollupParentId(store, source, row) {
+  const lookup = row?.[source.link];
+  const id = bare(lookup);
+  if (!id || !source.relationship) return id;
+  const target = bare(lookup?.logical_name ?? lookup?.logicalName);
+  if (target) return target === source.table ? id : '';
+  return !source.targets || bareRollupTarget(store, source.targets, row) === source.table ? id : '';
+}
+
 // Aggregates the child rows whose parent column holds parentId (active rows only when the rule says so).
-function aggregateOf(rule, rows, parentId) {
+function aggregateOf(store, rule, source, rows, parentId) {
   const linked = rows.filter(
-    (row) => sameId(row[rule.link], parentId) && (!rule.active || Number(row.statecode ?? 0) === 0),
+    (row) =>
+      sameId(row[source.link], parentId) &&
+      (!rule.active || Number(row.statecode ?? 0) === 0) &&
+      rollupParentId(store, source, row) !== '',
   );
   const values = linked
     .map((row) => row[rule.attribute])
@@ -433,7 +476,17 @@ function parsedOf(state, formula) {
   return state.parsed.get(formula);
 }
 
-// The rollup columns (of any table) whose 1:N source is the given child table: [{ table, column, link }].
+function indexRollupSource(store, state, sources, table, column, formula) {
+  const rule = parsedOf(state, formula);
+  if (!rule.child || !rule.link) return;
+  const overridden = Object.hasOwn(state.overrides, `${table}.${column}`);
+  const source = rollupSource(store, table, rule, overridden);
+  if (!source) return;
+  if (!sources.has(rule.child)) sources.set(rule.child, []);
+  sources.get(rule.child).push({ ...source, column });
+}
+
+// The rollup columns (of any table) whose 1:N source is the given child table.
 function rollupsSourcedFrom(api, state, child) {
   // Resolve a current metadata snapshot once for this synchronous catalogue
   // scan. A write transaction deliberately cannot reuse a request read epoch:
@@ -443,14 +496,9 @@ function rollupsSourcedFrom(api, state, child) {
   const memo = memoOf(api, metadata);
   if (!memo.sources) {
     memo.sources = new Map();
-    for (const logical of Object.keys(api.store.state.mappings)) {
-      for (const [column, formula] of Object.entries(rollupColumnsOf(api, logical, metadata))) {
-        const rule = parsedOf(state, formula);
-        if (!rule.child || !rule.link) continue;
-        if (!memo.sources.has(rule.child)) memo.sources.set(rule.child, []);
-        memo.sources.get(rule.child).push({ table: logical, column, link: rule.link });
-      }
-    }
+    for (const table of Object.keys(api.store.state.mappings))
+      for (const [column, formula] of Object.entries(rollupColumnsOf(api, table, metadata)))
+        indexRollupSource(api.store, state, memo.sources, table, column, formula);
   }
   return memo.sources.get(child) ?? [];
 }
@@ -503,9 +551,9 @@ function scheduleMass(api, state) {
 }
 
 // The parent references a child row holds through the given rollup links: [{ table, column, id }].
-const parentsOf = (sources, row) =>
+const parentsOf = (store, sources, row) =>
   sources
-    .map((source) => ({ table: source.table, column: source.column, id: bare(row?.[source.link]) }))
+    .map((source) => ({ table: source.table, column: source.column, id: rollupParentId(store, source, row) }))
     .filter((parent) => parent.id !== '');
 
 // The platform writes rollup values as an administrator, as the cascade module does; the caller only authorizes its own write.
@@ -585,8 +633,11 @@ function calculateFormulaRollup(api, state, logical, name, formula, row, mapping
   const rule = parsedOf(state, formula);
   try {
     if (rule.unsupported) unsupported(rule.unsupported);
+    const source = rollupSource(api.store, logical, rule);
+    if (!source)
+      unsupported('The designer rollup relationship does not match a direct child lookup in the table metadata.');
     return {
-      value: aggregateOf(rule, api.store.tableRows(rule.child), row[mapping.idColumn]),
+      value: aggregateOf(api.store, rule, source, api.store.tableRows(rule.child), row[mapping.idColumn]),
       stateValue: STATE.calculated,
     };
   } catch (error) {
@@ -631,7 +682,7 @@ function install(api, options = {}) {
       }
     }
     const sources = rollupsSourcedFrom(api, state, table);
-    const before = existing ? parentsOf(sources, existing) : [];
+    const before = existing ? parentsOf(api.store, sources, existing) : [];
     if (!before.length) return;
     const list = pending.get(c) ?? [];
     list.push({ table, operation, parents: before });
@@ -649,7 +700,7 @@ function install(api, options = {}) {
         ? null
         : (api.store.tableRows(table).find((row) => sameId(row[mapping.idColumn], id)) ?? null);
     const seen = new Set();
-    for (const parent of [...(entry?.parents ?? []), ...parentsOf(sources, current)]) {
+    for (const parent of [...(entry?.parents ?? []), ...parentsOf(api.store, sources, current)]) {
       const key = `${parent.table}\u0000${parent.column}\u0000${parent.id}`;
       if (seen.has(key)) continue;
       seen.add(key);

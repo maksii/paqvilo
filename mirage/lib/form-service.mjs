@@ -15,7 +15,12 @@ import {
   resolveFormRecord,
 } from './platform.mjs';
 import { parseDateValue } from './dataverse-values.mjs';
-import { nativeFormActions, NATIVE_STATE_ACTIONS, nativeActionStateValues } from './native-form-actions.mjs';
+import {
+  nativeFormActions,
+  nativeFormActionApplies,
+  NATIVE_STATE_ACTIONS,
+  nativeActionStateValues,
+} from './native-form-actions.mjs';
 import { isExactNumeric, decimalParts, compareNumeric, parseNumericLiteral } from './exact-numeric.mjs';
 import { xmlEscapeAttribute } from './fetchxml-engine.mjs';
 
@@ -954,6 +959,8 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
     // (throws ProviderError when the route is unset or not ready); diagnostic receives the refusal.
     cloudAttachments = null,
     verifyCaptcha = null,
+    actionFiltersAvailable = true,
+    ensureActionSource = null,
     diagnostic = () => {},
     // Counts the characters the required rich-text check scans ({ scanned }) when given.
     validationWork = null,
@@ -1160,8 +1167,6 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
     if (create) fail('Record actions require an existing record', 400, 'FormRecordRequired');
     if (Object.keys(body.values).length || (body.attachments?.length ?? 0))
       fail('Record actions do not accept field changes or attachments', 400, 'FormActionInvalid');
-    if (configured.FilterCriteria)
-      fail('Native record action filter criteria are unsupported', 501, 'FormActionFilterUnsupported');
     const source = await resolveFormRecord({
       kind,
       definition,
@@ -1180,9 +1185,26 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
     const stateValues = nativeActionStateValues(schema.entity, action, { metadata, store, schema });
     if (!stateValues)
       fail('Native record actions require unambiguous state and status metadata', 501, 'FormActionStateUnresolved');
-    const { record } = await writeUnit(writeProvider, async (operations) => ({
-      record: await operations.update(schema.entity, recordId, stateValues, identity),
-    }));
+    const { record } = await writeUnit(writeProvider, async (operations) => {
+      ensureActionSource?.();
+      if (
+        !(await nativeFormActionApplies(configured, {
+          entity: schema.entity,
+          idColumn: mapping.idColumn,
+          recordId,
+          readProvider,
+          identity,
+          available: actionFiltersAvailable,
+          context: { website: portal.website },
+        }))
+      )
+        fail('This action is unavailable for the selected record.', 403, 'FormActionNotEnabled');
+      ensureActionSource?.();
+      const record = await operations.update(schema.entity, recordId, stateValues, identity);
+      // Source staging can overlap an asynchronous update. The local transaction can still roll it back here.
+      ensureActionSource?.();
+      return { record };
+    });
     const savedId = canonical(recordId),
       savedRecord = { ...current, ...record };
     const redirect = [1, 2].includes(Number(configured.OnComplete))

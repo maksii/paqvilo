@@ -121,7 +121,7 @@ export function createLocalAccounts({
   captcha = null,
   portal,
   store,
-  csrf,
+  requestTokens,
   authCookieName,
   renderPage,
   signedSession,
@@ -168,15 +168,17 @@ export function createLocalAccounts({
       route: 'local-account',
     });
   const note = (text) => `<p role="status">${escape(text)}</p>`;
-  const form = (action, body, button) =>
-    `<form method="post" action="${escape(action)}"><input type="hidden" name="__RequestVerificationToken" value="${escape(csrf)}">${body}<button type="submit">${button}</button></form>`;
+  const form = (req, res, action, body, button) =>
+    `<form method="post" action="${escape(action)}"><input type="hidden" name="__RequestVerificationToken" value="${escape(requestTokens.issue(req, res))}">${body}<button type="submit">${button}</button></form>`;
   const destination = (url, read) => safeReturnUrl(read?.('ReturnUrl') || returnUrlParameter(url.searchParams));
-  const signInForm = (returnUrl, flags) => {
+  const signInForm = (req, res, returnUrl, flags) => {
     if (!flags.localLogin) return '';
     const label = flags.emailLogin ? 'Email address' : 'Username';
     const resetLink = flags.reset ? `<p><a href="${ROUTES.forgot}">Forgot your password?</a></p>` : '';
     return (
       form(
+        req,
+        res,
         ROUTES.login,
         `<input type="hidden" name="ReturnUrl" value="${escape(returnUrl)}">${input('UserName', label)}${passwordInput}`,
         'Sign in with a local account',
@@ -247,7 +249,7 @@ export function createLocalAccounts({
       res,
       url,
       registrationTitle,
-      (message ? note(message) : '') + form(ROUTES.register, controls + challengeFields, 'Register'),
+      (message ? note(message) : '') + form(req, res, ROUTES.register, controls + challengeFields, 'Register'),
       message ? 403 : 200,
     );
   }
@@ -315,12 +317,12 @@ export function createLocalAccounts({
     const title = 'Local account sign-in';
     if (!flags.localLogin) return page(req, res, url, title, note('Local account sign-in is disabled.'), 403);
     const returnUrl = destination(url, read);
-    if (!read) return page(req, res, url, title, signInForm(returnUrl, flags));
+    if (!read) return page(req, res, url, title, signInForm(req, res, returnUrl, flags));
     const name = key(read('UserName')),
       password = read('Password');
     const account = flags.emailLogin ? [...accounts.values()].find((user) => user.email === name) : usernames.get(name);
     const refused = (message, status) =>
-      page(req, res, url, title, note(message) + signInForm(returnUrl, flags), status);
+      page(req, res, url, title, note(message) + signInForm(req, res, returnUrl, flags), status);
     if (!activeAccount(account) || !password || password.length > 256) return refused(INVALID_SIGN_IN, 401);
     if (flags.lockout && account.lockedUntil > now()) return refused('The local account is temporarily locked.', 403);
     if (!verifySecret(password, account.verifier)) {
@@ -348,7 +350,7 @@ export function createLocalAccounts({
     const account = accounts.get(id);
     const pending = flags.localLogin && flags.twoFactor && challengeFor(account, 'mfa', token);
     if (!pending) return page(req, res, url, title, note('Start a new local sign-in to receive a code.'), 403);
-    const controls = () => form(ROUTES.verify, input('Code', 'Security code'), 'Verify');
+    const controls = () => form(req, res, ROUTES.verify, input('Code', 'Security code'), 'Verify');
     if (!read) return page(req, res, url, title, controls());
     if (!sameToken(pending.code, digest(read('Code')))) {
       if (++pending.attempts >= 5) consume(account, 'mfa');
@@ -362,7 +364,7 @@ export function createLocalAccounts({
     const title = 'Reset your local password';
     if (!flags.localLogin || !flags.reset)
       return page(req, res, url, title, note('Password recovery is disabled.'), 403);
-    if (!read) return page(req, res, url, title, form(ROUTES.forgot, emailInput, 'Send reset message'));
+    if (!read) return page(req, res, url, title, form(req, res, ROUTES.forgot, emailInput, 'Send reset message'));
     const matches = [...accounts.values()].filter(
       (account) => account.email === key(read('Email')) && activeAccount(account),
     );
@@ -383,6 +385,8 @@ export function createLocalAccounts({
         url,
         title,
         form(
+          req,
+          res,
           ROUTES.reset,
           `<input type="hidden" name="Account" value="${escape(account.contactId)}"><input type="hidden" name="Token" value="${escape(token)}">${passwordInput}${confirmInput}`,
           'Reset password',
@@ -405,11 +409,17 @@ export function createLocalAccounts({
     return page(req, res, url, title, note('Your email address is confirmed.'));
   }
 
-  function accountManagementForm(isPassword, account) {
+  function accountManagementForm(req, res, isPassword, account) {
     const old = input('OldPassword', 'Current password', 'password');
-    if (isPassword) return form(ROUTES.change, old + passwordInput + confirmInput, 'Change password');
+    if (isPassword) return form(req, res, ROUTES.change, old + passwordInput + confirmInput, 'Change password');
     const button = account.twoFactor ? 'Disable two-factor authentication' : 'Enable two-factor authentication';
-    return form(ROUTES.twoFactor, old + `<input type="hidden" name="Enabled" value="${!account.twoFactor}">`, button);
+    return form(
+      req,
+      res,
+      ROUTES.twoFactor,
+      old + `<input type="hidden" name="Enabled" value="${!account.twoFactor}">`,
+      button,
+    );
   }
 
   function manage(req, res, url, read, flags, kind) {
@@ -418,7 +428,7 @@ export function createLocalAccounts({
     const account = accountForSession(signedSession(req));
     if (!account || !flags.localLogin || (!isPassword && (!flags.twoFactor || !account.confirmed)))
       return page(req, res, url, title, note('An eligible local account session is required.'), 403);
-    if (!read) return page(req, res, url, title, accountManagementForm(isPassword, account));
+    if (!read) return page(req, res, url, title, accountManagementForm(req, res, isPassword, account));
     const password = read('OldPassword');
     if (!password || password.length > 256 || !verifySecret(password, account.verifier))
       return page(req, res, url, title, note(INVALID_SIGN_IN), 403);
@@ -479,7 +489,8 @@ export function createLocalAccounts({
         return true;
       }
       const read = req.method === 'POST' ? await readForm(req) : null;
-      if (read && !sameToken(read('__RequestVerificationToken'), csrf)) {
+      const token = read?.('__RequestVerificationToken');
+      if (read && !sameToken(token, requestTokens.expected(req, token))) {
         await page(req, res, url, 'Local account request refused', note('The form token is missing or invalid.'), 403);
         return true;
       }

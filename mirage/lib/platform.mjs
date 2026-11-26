@@ -48,7 +48,7 @@ import { hasPlatformBundles, bootstrapVariant } from './platform-manifest.mjs';
 import { portalLanguage } from './portal-languages.mjs';
 import { clientPortalObjectRuntime } from './portal-client-object.mjs';
 import { parseDateValue, choiceFieldOptions } from './dataverse-values.mjs';
-import { nativeFormActions } from './native-form-actions.mjs';
+import { nativeFormActions, nativeFormActionApplies } from './native-form-actions.mjs';
 import { webApiPolicy } from './webapi-policy.mjs';
 import { timeZoneChoices } from './platform-time-zones.mjs';
 import {
@@ -363,6 +363,7 @@ export function clientRuntime(token, revision, identity = {}, traceId = null, si
       const url=document.getElementById('antiforgerytoken')?.getAttribute('data-url')||'/_layout/tokenhtml';
       return tokenRequest(url,3).then(html=>{
         for(const input of [...document.querySelectorAll('input[name="__RequestVerificationToken"]')]){const template=document.createElement('template');template.innerHTML=html;input.replaceWith(...template.content.childNodes);}
+        const holder=document.getElementById('antiforgerytoken');if(holder&&!tokenInput())holder.innerHTML=html;
         return /value="([^"]+)"/.exec(html)?.[1];
       },error=>{if(error?.responseText)console.log('GetAntiForgeryToken failedDetails: '+error.responseText);});
     };
@@ -4323,10 +4324,49 @@ function prepopulateValue(row, identity, now) {
       const canUpdate = !store.allowed || store.allowed(mapping.logicalName, 'update', record, identity);
       const canDelete = !store.allowed || store.allowed(mapping.logicalName, 'delete', record, identity);
       const linkCss = (action) => attr(`${action.ButtonCssClass || 'btn btn-default'} btn`);
-      // Both state buttons render; the app bundle hides the one the record state rules out.
-      const stateButton = (action, type) =>
-        `<button class="${type}-link ${linkCss(action)}" data-url="/_services/action-${type}/${websiteId}" href="/_services/action-${type}/${websiteId}" type="button">${escape(formLabel(action.ButtonLabel, type === 'activate' ? 'Activate' : 'Deactivate'))}</button>`;
-      for (const action of configuredActions) {
+      // The app bundle hides whichever rendered state button the current record state rules out.
+      const stateButton = async (action, type, index) => {
+        if (!action.FilterCriteria)
+          return renderStateActionButton({
+            action,
+            type,
+            css: linkCss(action),
+            url: `/_services/action-${type}/${websiteId}`,
+            formLabel,
+          });
+        try {
+          if (
+            await nativeFormActionApplies(action, {
+              entity: schema.entity,
+              idColumn: mapping.idColumn,
+              recordId: id,
+              readProvider,
+              identity,
+              available: options.config?.mode !== 'live',
+              context: { website: portal.website },
+            })
+          )
+            return renderStateActionButton({
+              action,
+              type,
+              css: linkCss(action),
+              url: `/__sim/forms/entityform/${encodeURIComponent(definition?.id ?? name)}/submit`,
+              formLabel,
+              index,
+            });
+        } catch (error) {
+          options.diagnostic?.({
+            code: 'FORM_ACTION_FILTER_UNRESOLVED',
+            severity: 'warning',
+            component: 'entityform',
+            form: definition?.name ?? name,
+            action: action.Type,
+            message: error.message,
+          });
+        }
+        return '';
+      };
+      for (const [actionIndex, action] of configuredActions.entries()) {
         if (action.Type === 'DeleteAction' && canDelete) {
           const dialog = formSettings.DeleteDialog ?? {};
           const text = (value, fallback) => formText(value, fallback, formLanguage);
@@ -4347,9 +4387,13 @@ function prepopulateValue(row, identity, now) {
               footer: `<button aria-label="${primary}" class="primary btn btn-primary${dialog.PrimaryButtonCssClass ? ' ' + attr(text(dialog.PrimaryButtonCssClass, '')) : ''}" tabindex="0" title="${primary}" type="button">${primary}</button><button aria-label="${close}" class="cancel btn btn-default${dialog.CloseButtonCssClass ? ' ' + attr(text(dialog.CloseButtonCssClass, '')) : ''}" ${bs.dismiss}="modal" tabindex="0" title="${close}" type="button">${close}</button>`,
             }),
           );
-        } else if (action.Type === 'ActivateAction' && canUpdate) recordButtons.push(stateButton(action, 'activate'));
-        else if (action.Type === 'DeactivateAction' && canUpdate) recordButtons.push(stateButton(action, 'deactivate'));
-        else if (action.Type === 'CreateRelatedRecordAction') {
+        } else if (action.Type === 'ActivateAction' && canUpdate) {
+          const button = await stateButton(action, 'activate', actionIndex);
+          if (button) recordButtons.push(button);
+        } else if (action.Type === 'DeactivateAction' && canUpdate) {
+          const button = await stateButton(action, 'deactivate', actionIndex);
+          if (button) recordButtons.push(button);
+        } else if (action.Type === 'CreateRelatedRecordAction') {
           // The platform stamps a fresh filter criteria id on the button and its dialog; the
           // dialog is the generic confirmation, posted to the button's (empty) URL.
           const criteria = randomUUID();
@@ -5180,6 +5224,11 @@ function rankTieValidator(field) {
 function constantSumMarkup(last, names, group) {
   if (!last) return '';
   return `<input name="${attr(names)}ConstantSumTotalValue${group}" type="text" value="0" id="ConstantSumTotalValue${group}" class="total" readonly="readonly" style="width:30px;"><span id="ConstantSumTotalValidator${group}" class="validator-text" style="visibility:hidden;">*</span>`;
+}
+
+function renderStateActionButton({ action, type, css, url, formLabel, index }) {
+  const bound = index === undefined ? '' : ` data-pp-form-action="${type}" data-pp-action-index="${index}"`;
+  return `<button class="${type}-link ${css}" data-url="${escape(url)}" href="${escape(url)}" type="button"${bound}>${escape(formLabel(action.ButtonLabel, type === 'activate' ? 'Activate' : 'Deactivate'))}</button>`;
 }
 
 function numberSeparatorAttribute(field, separator, attr) {

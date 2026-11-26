@@ -126,6 +126,14 @@ placeholder that ends Canceled. `ctx` has `workflow` (a copy of the row), `targe
 transaction: a throw fails the job (or rejects a real-time request) and rolls its writes back. Duplicate keys across
 packs are an error.
 
+In local Power Pages invitation redemption, the `adx_redemptionworkflow` lookup can run an active, on-demand
+real-time classic workflow targeting a Contact when the trusted pack registers the handler by exact workflow GUID.
+Mirage uses its local portal application user as the caller and supplies the redeemed contact as the target with
+empty inputs. Mirage provisions the application user, when needed, before starting the redemption transaction.
+The handler runs after local account and role assignment inside that transaction. A failure rolls back redemption,
+standard Dataverse writes made in the transaction and the workflow log. Elastic writes and external side effects
+retain their independent behavior. Other workflow configurations still emit `INVITATION_WORKFLOW_NOT_RUN`.
+
 ## Custom API handlers
 
 A trusted pack can implement its Dataverse custom APIs. Export

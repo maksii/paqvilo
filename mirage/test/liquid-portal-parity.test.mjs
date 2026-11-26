@@ -1772,6 +1772,8 @@ test('request.params carries cookies below form and query values and never the r
     `${sessionName}=session-secret-7f3a`,
     `${visitorName}=${visitor}`,
     '__RequestVerificationToken=antiforgery-secret-91c2',
+    ...Array.from({ length: 4 }, (_, slot) => `${sessionName}-request-binding-${slot}=binding-fixture-${slot}`),
+    'paqvilo-mirage-auth-4-request-binding-2=different-runtime-binding-fixture',
   ].join('; ');
   const cookieOnly = await (await fetch(`${app.url}/`, { headers: { cookie: 'theme=dark' } })).text();
   assert.match(cookieOnly, /<p id="theme">dark<\/p>/);
@@ -1786,6 +1788,9 @@ test('request.params carries cookies below form and query values and never the r
     visitor,
     '[__RequestVerificationToken=',
     'antiforgery-secret-91c2',
+    '-request-binding-',
+    'binding-fixture-',
+    'different-runtime-binding-fixture',
   ]) {
     assert.equal(page.includes(secret), false, `request.params exposed ${secret}`);
   }

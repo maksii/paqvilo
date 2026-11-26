@@ -22,6 +22,7 @@ export function identityProviderSettings(value = {}) {
         'head',
         'privateSiteContactIds',
         'localAccounts',
+        'pairedBrowserTokens',
       ].includes(key)
     )
       throw new Error(`Unknown mirage.identityProvider.${key}`);
@@ -31,6 +32,8 @@ export function identityProviderSettings(value = {}) {
     throw new Error('mirage.identityProvider.presentation must be page or dialog');
   if (value.localAccounts !== undefined && typeof value.localAccounts !== 'boolean')
     throw new Error('mirage.identityProvider.localAccounts must be true or false');
+  if (value.pairedBrowserTokens !== undefined && typeof value.pairedBrowserTokens !== 'boolean')
+    throw new Error('mirage.identityProvider.pairedBrowserTokens must be true or false');
   validateAppearance(value);
   if (
     value.privateSiteContactIds !== undefined &&

@@ -463,10 +463,10 @@ function createFieldSecurity({
   }
   // A column the caller may not use as an operand: a hidden one (hiddenKind), or a readable secured column with a masking rule
   // that the view does not unmask.
-  const maskedFor = (user, logical, column, view = defaultMaskView()) => {
+  const maskedFor = (user, logical, column, view = defaultMaskView(), recordId) => {
     if (hiddenKind(user, logical, column) !== null) return true;
     if (!isSecuredField(fieldOf(logical, column))) return false;
-    const access = accessOf(user, logical, column);
+    const access = accessOf(user, logical, column, recordId);
     return access.read && maskOf(logical, column) !== null && !unmaskable(access, view);
   };
   return {

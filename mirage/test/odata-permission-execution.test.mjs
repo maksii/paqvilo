@@ -188,33 +188,34 @@ test('native conversion faults happen before observers and retain the CDS status
     assert.deepEqual(stages, []);
   }
 });
-async function companyRead(store, params, fields = 'companyid') {
-  let status, body;
+async function companyRead(store, params, { fields = 'companyid', resource = 'companies', headers = {} } = {}) {
+  let status, body, responseHeaders;
   const response = {
     headersSent: false,
-    writeHead(code) {
+    writeHead(code, values) {
       status = code;
+      responseHeaders = values;
       this.headersSent = true;
     },
     end(value) {
-      body = JSON.parse(value);
+      body = value === undefined ? undefined : JSON.parse(value);
     },
   };
-  const url = new URL('http://127.0.0.1/_api/companies');
+  const url = new URL('http://127.0.0.1/_api/' + resource);
   url.search = new URLSearchParams(params).toString();
-  await handleWebApi({ method: 'GET', headers: {} }, response, url, {
+  await handleWebApi({ method: 'GET', headers }, response, url, {
     store,
     identity,
     portal: { settings: { 'Webapi/company/enabled': 'true', 'Webapi/company/fields': fields } },
     origin: url.origin,
     origins: [url.origin],
     csrf: 'owned-test-cursor',
-    json(res, code, value) {
-      res.writeHead(code);
+    json(res, code, value, headers) {
+      res.writeHead(code, headers);
       res.end(JSON.stringify(value));
     },
   });
-  return { status, body };
+  return { status, body, headers: responseHeaders };
 }
 
 test('actual Web API collection handler executes the qualified initial OData page rather than falling back to QueryExpression', async () => {
@@ -250,7 +251,7 @@ test('native scalar OData handles slashes in quoted filter values while refusing
       $filter: "name eq 'North/West & Partners'' Studio'",
       $count: 'true',
     },
-    'companyid,name',
+    { fields: 'companyid,name' },
   );
   assert.equal(status, 200);
   assert.deepEqual(
@@ -265,4 +266,38 @@ test('native scalar OData handles slashes in quoted filter values while refusing
       }),
     (error) => error.code === 'ODataPermissionQueryUnsupported',
   );
+});
+
+// @test-kind compatibility+contract: Microsoft Learn Power Pages OData reads document GUID-keyed data with $select and ETag, using the local Retrieve and projection path
+test('native-classic GUID-keyed scalar GET returns the authorized entity, projection and ETag', async () => {
+  const store = fixture();
+  store.state.tables.company[0].notes = 'Invented private value';
+  const reads = [];
+  store.setPluginPipeline(
+    ({ operation, stage }) => reads.push([operation, stage]),
+    () => true,
+  );
+  const read = (key, params = { $select: 'name' }, headers = {}) =>
+    companyRead(store, params, { resource: `companies(${key})`, fields: 'companyid,name', headers });
+  const entity = await read(id(10));
+  assert.equal(entity.status, 200);
+  assert.deepEqual(Object.keys(entity.body).sort(), ['@odata.context', '@odata.etag', 'companyid', 'name']);
+  assert.match(entity.body['@odata.context'], /#companies\(name\)\/\$entity$/);
+  assert.equal(entity.body.name, 'Own');
+  assert.equal(entity.body.companyid, id(10));
+  assert.match(entity.body['@odata.etag'], /^W\/".+"$/);
+  assert.deepEqual(reads, [
+    ['retrieve', 10],
+    ['retrieve', 20],
+    ['retrieve', 40],
+  ]);
+  const cached = await read(id(10), { $select: 'name' }, { 'if-none-match': entity.body['@odata.etag'] });
+  assert.deepEqual([cached.status, cached.body, cached.headers.ETag], [304, undefined, entity.body['@odata.etag']]);
+  assert.equal((await read(id(10), { $select: 'notes' })).status, 403);
+  assert.equal((await read(id(11))).status, 403);
+  assert.equal((await read(id(99))).status, 404);
+  assert.equal((await read(id(10), {})).status, 501);
+  assert.equal((await read(id(10), { $select: 'name', $top: '1' })).status, 501);
+  const property = await companyRead(store, {}, { resource: `companies(${id(10)})/name`, fields: 'companyid,name' });
+  assert.equal(property.status, 501);
 });

@@ -35,6 +35,7 @@ import { preserveDataOwnedTables, preserveOrganizationPresetSections } from './l
 import { createModelDrivenRecordService, createModelDrivenWebApi } from './lib/dataverse-model-driven.mjs';
 import { createStaffSessions, createStaffSessionHandler } from './lib/staff-session.mjs';
 import { createDataverseAdmin } from './lib/dataverse-admin.mjs';
+import { ATTACHMENT_COLUMNS } from './lib/dataverse-files.mjs';
 import { runtimeSettings } from './lib/runtime-config.mjs';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import http from 'node:http';
@@ -226,6 +227,7 @@ import {
   signInContent,
 } from './lib/auth-session.mjs';
 import { createExternalSignIn } from './lib/sign-in-flow.mjs';
+import { createPortalRequestTokens, isPortalBindingCookie } from './lib/portal-request-tokens.mjs';
 import {
   composeOrganizationHost,
   providerDescriptors,
@@ -334,6 +336,7 @@ function postbackRedirect(res, response, portal) {
 }
 import {
   siteHeaders,
+  siteHttpPolicyDiagnostics,
   webFileHeaders,
   webFileDisposition,
   tokenHtmlHeaders,
@@ -510,6 +513,7 @@ const mime = (file) =>
     '.html': 'text/html',
     '.wasm': 'application/wasm',
     '.json': 'application/json',
+    '.webmanifest': 'application/manifest+json',
     '.svg': 'image/svg+xml',
     '.png': 'image/png',
     '.jpg': 'image/jpeg',
@@ -1586,7 +1590,6 @@ export async function createSimulator(options) {
   const adminToken = randomBytes(32).toString('hex');
   // The apps listener's token (32 random bytes, hex): the app pages send it; the administration token is normalized to it.
   const appsToken = randomBytes(32).toString('hex');
-  const pageToken = (value) => sameToken(value, csrf) || sameToken(value, adminToken);
   // Attach-file uploads (/_api/file/*/note): the platform's file API stages each file under an
   // annotation id before the form posts the ids (live: InitializeFileUpload, UploadFileBlock,
   // then the postback's AttachFile_HiddenField_AnnotationIds). Staged files live in memory until
@@ -1884,6 +1887,7 @@ export async function createSimulator(options) {
     name: () => authCookieName(localOrigin ? new URL(localOrigin).port : null),
     clock: () => store.clock.now(),
     fixedLifetime: () => fixedApplicationSessionLifetime(portal),
+    identifyIssuedSessions: true,
   });
   const privateSiteSessions = createAuthSessions({ name: () => `${authSessions.name}-site-access` });
   const privateSiteContacts = new Set(providerSettings.privateSiteContactIds?.map((id) => id.toLowerCase()));
@@ -1931,6 +1935,23 @@ export async function createSimulator(options) {
   const readPortalSession = (req) => {
     const session = authSessions.read(req.headers.cookie);
     return session?.credentialStamp && !localAccounts.validSession(session) ? { contactId: null } : session;
+  };
+  const pairedBrowserTokens = providerSettings.pairedBrowserTokens === true;
+  const pairedPortalRequest = (req) => pairedBrowserTokens && !onAdmin(req) && !onApps(req) && browserRequest(req);
+  const requestTokenCookie = () => authSessions.name + '-request-binding';
+  const requestTokens = createPortalRequestTokens({
+    enabled: pairedBrowserTokens,
+    toolToken: csrf,
+    browser: pairedPortalRequest,
+    cookieName: requestTokenCookie,
+    session: () => trace.getStore()?.auth?.session,
+    clock: () => store.clock.now(),
+  });
+  const pageToken = (req, value) =>
+    sameToken(value, requestTokens.expected(req, value)) || sameToken(value, adminToken);
+  const headerToken = (req) => {
+    const supplied = req.headers.__requestverificationtoken;
+    return sameToken(supplied, adminToken) ? adminToken : requestTokens.expected(req, supplied);
   };
   const currentIdentity = () => {
     // Read without copying the contact table on every call: identity resolution copies what it returns (the
@@ -2293,12 +2314,15 @@ export async function createSimulator(options) {
     );
     return uuidV5(organization.organizationId, `systemuser:app:${appId}`);
   };
-  const listWorkflowPrincipal = async (identity) => {
-    const mapped = store.portalAuthorization?.principal(identity);
-    if (mapped?.user) return organizationPrincipalContext(store, mapped.user, { caller: mapped.caller });
+  const applicationWorkflowPrincipal = async () => {
     const id = await portalApplicationUser();
     const user = store.tableRows('systemuser').find((row) => row.systemuserid === id);
     return organizationPrincipalContext(store, user);
+  };
+  const listWorkflowPrincipal = async (identity) => {
+    const mapped = store.portalAuthorization?.principal(identity);
+    if (mapped?.user) return organizationPrincipalContext(store, mapped.user, { caller: mapped.caller });
+    return applicationWorkflowPrincipal();
   };
   const runListWorkflow = (input) => {
     const run = organization.api.executePortalListWorkflow;
@@ -2473,6 +2497,7 @@ export async function createSimulator(options) {
       // FileStorage/CloudStorageAccount: attachment bytes go to storage route portalCloudAttachments (lib/form-service.mjs).
       cloudAttachments: () => organizationHost.providers.storage.forRoute('portalCloudAttachments'),
       diagnostic: recordDiagnostic,
+      actionFiltersAvailable: config().mode !== 'live',
       verifyCaptcha: useLocalCaptcha()
         ? (scope, proof) =>
             useLocalCaptcha() &&
@@ -3583,12 +3608,13 @@ export async function createSimulator(options) {
   const scriptProofs = new Map();
   // Page inspection answers with the identity that a portal request for the inspected page,
   // carrying the same cookies, would get (requestAuth): the session, otherwise anonymous.
-  const inspectionIdentity = (req, route) => {
-    const auth = requestAuth({ headers: req.headers }, new URL(route, 'http://mirage.invalid')); // NOSONAR: reserved or loopback placeholder host, not a real transport
+  const inspectionIdentity = (req, url) => {
+    const auth = requestAuth({ headers: req.headers }, url);
     return auth.identity ? trace.run({ auth }, currentIdentity) : currentIdentity();
   };
-  const inspectRoute = (route, identity = currentIdentity()) => {
+  const inspectRoute = (route, identity, { language, previewCookie }) => {
     const permissionMode = store.snapshot({ sections: ['settings'] }).settings?.permissionMode ?? 'enforce';
+    const languageId = language?.id ?? null;
     const key = JSON.stringify([
       revision,
       store.dataRevision(),
@@ -3599,25 +3625,30 @@ export async function createSimulator(options) {
       identity.roleIds ?? [],
       identity.roleSource ?? null,
       permissionMode,
+      previewCookie,
+      languageId,
     ]);
     if (inspectionCache.has(key)) return inspectionCache.get(key);
     const mappings = store.snapshot({ sections: ['mappings'] }).mappings ?? {};
     const report = inspectPage(portal, route, {
       solutionMetadata,
+      languageId,
       sourcePortal,
       overrides: config().portalOverrides ?? {},
       identity,
-      access: (page) => pageAccess(portal, page, identity, { now: store.clock.now() }),
+      access: (page) => pageAccess(portal, page, identity, { now: store.clock.now(), previewCookie, languageId }),
       mapping: (entity) => mappings[entity] ?? null,
       tablePermissions: (entity) => tablePermissionSummary(entity, identity, permissionMode),
     });
+    const index = renderer.sourceIndex(languageId);
     const value = {
       ...report,
       // The address as requested (case, trailing slash and language prefix kept, query dropped): relative
-      // references in the page resolve against it, and Lense selects the served language from it.
+      // references in the page resolve against it.
       requestPath: new URL(route, 'http://mirage.invalid').pathname, // NOSONAR: reserved or loopback placeholder host, not a real transport
-      sourceRevision: renderer.sourceIndex().sourceRevision,
-      portalSources: renderer.sourceIndex().snapshot(report),
+      ...(language ? { language: { id: language.id, code: language.code, lcid: language.lcid } } : {}),
+      sourceRevision: index.sourceRevision,
+      portalSources: index.snapshot(report),
       portalProfile: {
         deploymentProfile: portal.deploymentProfile ?? null,
         deploymentProfileFile: portal.deploymentProfileFile ?? null,
@@ -3764,6 +3795,7 @@ export async function createSimulator(options) {
     ...configurationPresetCollisions(store.state, packConfigurations.presets),
     ...(activeProfiles.diagnostics ?? []),
     ...portal.diagnostics,
+    ...siteHttpPolicyDiagnostics(portal),
     ...(portal.observed?.siteVisibility === 'private' && !privateSiteAdmission()
       ? [
           {
@@ -4011,8 +4043,13 @@ export async function createSimulator(options) {
       );
     }
   };
-  // Note and attachment bodies for the portal readers (native services, /_api): inline or from the storage provider.
-  const noteAttachmentBody = (logical, row, options) => organizationHost.attachmentBody(logical, row, options);
+  // Rehydration reads the raw row and storage, so require the caller's column read before touching the bytes.
+  const noteAttachmentBody = (identity) => (logical, row, options) => {
+    const column = ATTACHMENT_COLUMNS[logical];
+    const id = row?.[`${logical}id`];
+    if (!column || store.portalAuthorization?.canReadRawColumn(identity, logical, column, id) === false) return null;
+    return organizationHost.attachmentBody(logical, row, options);
+  };
   // /_sim/api/messages and /_sim/api/outbox (sim-messaging-routes.mjs), created once the organization exists.
   let messagingRoutes = null;
   // /_sim/api/flow-runs and /_sim/api/flow-waits (sim-flow-routes.mjs) answer next to them.
@@ -4556,8 +4593,11 @@ export async function createSimulator(options) {
       const route = url.searchParams.get('path') ?? '/';
       if (!route.startsWith('/') || route.startsWith('//') || route.includes('\\'))
         throw error('A portal-relative page path is required.');
-      const identity = inspectionIdentity(req, route);
-      const report = inspectRoute(route, identity);
+      const target = requestTargetUrl(route, localOrigin);
+      const identity = inspectionIdentity(req, target);
+      target.pathname = target.pathname.replace(/\/{2,}/g, '/');
+      const language = requestLocale(req, target, null, identity);
+      const report = inspectRoute(route, identity, { language, previewCookie: requestPublishingPreview(req) });
       // view=summary: what a tool needs on every navigation; the full report stays on request.
       if (url.searchParams.get('view') === 'summary') {
         return json(res, 200, inspectionSummary(report));
@@ -5497,7 +5537,7 @@ export async function createSimulator(options) {
     const identity = currentIdentity();
     return handleWebApi(req, res, url, {
       store,
-      attachmentBody: noteAttachmentBody,
+      attachmentBody: noteAttachmentBody(identity),
       webApiErrorTemplates: registeredWebApiErrorTemplates,
       portal: {
         ...portal,
@@ -5509,7 +5549,7 @@ export async function createSimulator(options) {
         webApiIdentity: identity,
       },
       identity,
-      csrf,
+      csrf: headerToken(req),
       origin: url.origin,
       // Portal scripts address @odata.id targets on the live portal origin.
       origins: [url.origin, live.origin].filter(Boolean),
@@ -5854,9 +5894,17 @@ export async function createSimulator(options) {
         localOverrides,
         traced?.provenance ?? null,
       );
-      html = injectRuntime(html, csrf, renderedRevision, identity, trace.getStore()?.spanId, siteLanguageCodes(), {
-        rootTraceId: trace.getStore()?.traceSpan?.traceId,
-      });
+      html = injectRuntime(
+        html,
+        requestTokens.issue(req, res),
+        renderedRevision,
+        identity,
+        trace.getStore()?.spanId,
+        siteLanguageCodes(),
+        {
+          rootTraceId: trace.getStore()?.traceSpan?.traceId,
+        },
+      );
     }
     const headers = {
       'content-type': 'text/html; charset=utf-8',
@@ -5894,7 +5942,7 @@ export async function createSimulator(options) {
         personaReturnUrl: returnUrlParameter(url.searchParams) || status >= 400 ? returnUrl : null,
         providers,
         showPersonas,
-        csrf,
+        csrf: requestTokens.issue(req, res),
         defaultContactId: personaKey(config().identity?.contactId ?? config().identity?.id) || null,
         returnUrl,
         anonymousUrl: anonymousCanRead(returnUrl) ? returnUrl : '/',
@@ -5934,7 +5982,7 @@ export async function createSimulator(options) {
           'Local sign-in is turned off for this site (Authentication/Registration/LocalLoginEnabled is false): sign in with an external provider.',
       });
     if (form.personaKey) {
-      if (!pageToken(form.__RequestVerificationToken)) throw error('Missing simulator CSRF token.', 403);
+      if (!pageToken(req, form.__RequestVerificationToken)) throw error('Missing simulator CSRF token.', 403);
       refuseBrowserContextLaunch(req, form.personaKey);
       const result = await launchPersona({
         personaKey: form.personaKey,
@@ -5948,7 +5996,7 @@ export async function createSimulator(options) {
       });
       return res.end();
     }
-    if (personaReport().enabled && !pageToken(form.__RequestVerificationToken))
+    if ((personaReport().enabled || pairedPortalRequest(req)) && !pageToken(req, form.__RequestVerificationToken))
       throw error('Missing simulator CSRF token.', 403);
     const contactId = typeof form.contactId === 'string' ? form.contactId.trim() : '';
     const persona = personaKey(contactId)
@@ -5975,10 +6023,24 @@ export async function createSimulator(options) {
   externalSignIn = createExternalSignIn({
     portal: () => portal,
     origin: () => localOrigin,
-    csrf,
+    requestTokens,
     adminToken: () => adminToken,
     sessions: authSessions,
     store,
+    invitationTransaction: (work, workflowId) => {
+      const cfg = config();
+      const api = organization.api;
+      if (cfg.mode !== 'local' || cfg.pageMode !== 'local' || !api?.hasPortalInvitationWorkflow?.(workflowId))
+        return store.transact(work);
+      return change(async () => {
+        // Authorization indexes are built from committed role membership.
+        await portalApplicationUser();
+        const executeWorkflow = (input) =>
+          input.workflowId === workflowId &&
+          api.executePortalInvitationWorkflow({ ...input, principal: applicationWorkflowPrincipal });
+        return organization.runOwned(() => organization.runAtomic(() => work(executeWorkflow)));
+      });
+    },
     personas: signInPersonas,
     personaCatalog: personaReport,
     identityProvider: { settings: providerSettings, assets: providerAssets },
@@ -6022,7 +6084,7 @@ export async function createSimulator(options) {
     captcha: registrationCaptcha,
     portal: () => portal,
     store,
-    csrf,
+    requestTokens,
     authCookieName: () => authSessions.name,
     signedSession: readPortalSession,
     signIn: (res, account, location, cookies) =>
@@ -6202,9 +6264,8 @@ export async function createSimulator(options) {
     const value = parseCookies(req.headers.cookie).adxPreviewUnpublishedEntities;
     return value == null ? undefined : value.toLowerCase() === 'true';
   }
-  const requestLocale = (req, url, languageCode = null) =>
-    renderer.requestLanguage(url, { languageCode, languageCookie: localeCookie(req), user: currentIdentity() })
-      .selected;
+  const requestLocale = (req, url, languageCode = null, user = currentIdentity()) =>
+    renderer.requestLanguage(url, { languageCode, languageCookie: localeCookie(req), user }).selected;
   const rememberLocale = (req, res, code) => {
     if (req.method === 'GET' && code && localeCookie(req) !== code)
       res.appendHeader(
@@ -6250,8 +6311,12 @@ export async function createSimulator(options) {
       if (locale?.kind === 'rewrite') accountUrl.pathname = locale.pathname;
       if (await localAccounts.route(req, res, accountUrl)) return;
     }
-    // The admin token is accepted wherever a page or apps token is: it is replaced by that token before the routes see it.
-    normalizeTokenHeaders(req, url.pathname, { adminToken, pageToken: csrf, appsToken });
+    // Preserve the explicit administration capability in the paired profile. Its browser token is a separate value.
+    normalizeTokenHeaders(req, url.pathname, {
+      adminToken,
+      pageToken: pairedBrowserTokens ? adminToken : csrf,
+      appsToken,
+    });
     if (
       managementStorage &&
       !isDeepStrictEqual(store.state.simulator?.modelDriven?.records ?? {}, appliedManagementRecords)
@@ -6276,7 +6341,7 @@ export async function createSimulator(options) {
             .filter(Boolean);
         },
       });
-      if (await portalDocuments.handle(req, res, url, { identity: currentIdentity(), csrf })) return;
+      if (await portalDocuments.handle(req, res, url, { identity: currentIdentity(), csrf: headerToken(req) })) return;
     }
     if (canvasHandler(req, res, url)) return;
     if (await codeAppsHandler(req, res, url)) return;
@@ -6330,7 +6395,7 @@ export async function createSimulator(options) {
         if (!local()) throw error('Pack writes require local providers.', 409, 'LocalRuntimeRequired');
         if (!(identity.contactId ?? identity.id))
           throw error('Pack writes require sign-in.', 401, 'AuthenticationRequired');
-        assertPortalToken(req.headers.__requestverificationtoken, csrf);
+        assertPortalToken(req.headers.__requestverificationtoken, headerToken(req));
         const body = await jsonObjectBody(req);
         const result = await invokePackMutation({
           endpoint,
@@ -6347,7 +6412,8 @@ export async function createSimulator(options) {
     const formRoute = /^\/__sim\/forms\/(entityform|webform)\/([\w-]+)\/submit$/.exec(url.pathname);
     if (formRoute) {
       if (req.method !== 'POST') throw error('Native form submission requires POST.', 405);
-      assertPortalToken(req.headers.__requestverificationtoken, csrf);
+      assertPortalToken(req.headers.__requestverificationtoken, headerToken(req));
+      const sourceEpoch = portalSourcePublications ? null : portalSourceEpoch;
       const body = await jsonBody(req);
       const formIdentity = currentIdentity();
       // An anonymous visitor's advanced form session belongs to its browser session: the
@@ -6363,12 +6429,14 @@ export async function createSimulator(options) {
         localOrigin,
       );
       return change(async () => {
-        const result = await submitPortalForm(
-          formRoute[1],
-          formRoute[2],
-          body,
-          formSubmissionOptions(formIdentity, visitor, pageTarget),
-        );
+        const stateAction = body?.action === 'activate' || body?.action === 'deactivate';
+        const ensureActionSource =
+          stateAction && config().mode !== 'live' ? () => requirePortalSourceEpoch(sourceEpoch) : null;
+        ensureActionSource?.();
+        const result = await submitPortalForm(formRoute[1], formRoute[2], body, {
+          ...formSubmissionOptions(formIdentity, visitor, pageTarget),
+          ensureActionSource,
+        });
         return json(
           res,
           result.operation === 'create' ? 201 : 200,
@@ -6422,7 +6490,7 @@ export async function createSimulator(options) {
     if (url.pathname === '/__sim/sign-in') {
       if (req.method === 'POST') {
         const body = await signInForm(req);
-        if (!pageToken(body.__RequestVerificationToken)) throw error('Missing simulator CSRF token.', 403);
+        if (!pageToken(req, body.__RequestVerificationToken)) throw error('Missing simulator CSRF token.', 403);
         refuseBrowserContextLaunch(req, body.personaKey);
         const result = await launchPersona({ personaKey: body.personaKey, returnUrl: body.ReturnUrl });
         res.writeHead(302, {
@@ -6448,7 +6516,7 @@ export async function createSimulator(options) {
       const { renderPersonaPicker } = await import('./lib/persona-picker-view.mjs');
       const content =
         '<link rel="stylesheet" href="/__sim/persona-picker.css"><h1>Local persona sign-in</h1><p>Review the persona and sign in. This changes this browser’s local session only.</p><form method="post" action="/_sim/sign-in"><input type="hidden" name="__RequestVerificationToken" value="' +
-        csrf +
+        requestTokens.issue(req, res) +
         '"><input type="hidden" name="ReturnUrl" value="' +
         escaped(returnUrl) +
         '">' +
@@ -6504,12 +6572,15 @@ export async function createSimulator(options) {
     if (url.pathname === '/_layout/tokenhtml') {
       // Native: a self-closing hidden input plus the anti-forgery cookie token, with the page
       // headers the platform sends on it (lib/response-headers.mjs tokenHtmlHeaders).
+      const token = requestTokens.issue(req, res);
+      const paired = pairedPortalRequest(req);
+      if (paired && token) res.appendHeader('set-cookie', antiForgeryCookie(token));
       res.writeHead(200, {
         'content-type': 'text/html; charset=utf-8',
         ...tokenHtmlHeaders(portal, { confinement: confinementPolicy() }),
-        'set-cookie': antiForgeryCookie(csrf),
+        ...(paired ? {} : { 'set-cookie': antiForgeryCookie(token) }),
       });
-      return res.end(`<input name="__RequestVerificationToken" type="hidden" value="${csrf}" />`);
+      return res.end(`<input name="__RequestVerificationToken" type="hidden" value="${token}" />`);
     }
     const endpoint = (config().endpoints ?? []).find(
       (e) =>
@@ -6519,7 +6590,7 @@ export async function createSimulator(options) {
     );
     if (endpoint) {
       if (endpoint.mode === 'live') return forward(req, res, url);
-      if (isWrite(req.method)) assertPortalToken(req.headers.__requestverificationtoken, csrf);
+      if (isWrite(req.method)) assertPortalToken(req.headers.__requestverificationtoken, headerToken(req));
       if (endpoint.entity) {
         const shadow = new URL(url);
         shadow.pathname = `/_api/${endpoint.entity}`;
@@ -6554,7 +6625,8 @@ export async function createSimulator(options) {
         try {
           if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method))
             throw error('This method cannot execute server logic.', 405);
-          if (isWrite(req.method)) assertPortalToken(req.headers.__requestverificationtoken, csrf, 'Forbidden');
+          if (isWrite(req.method))
+            assertPortalToken(req.headers.__requestverificationtoken, headerToken(req), 'Forbidden');
           const raw = await executeServerLogic({
             name: serverLogic,
             method: req.method,
@@ -6644,7 +6716,7 @@ export async function createSimulator(options) {
     );
     if (flow && config().mode !== 'live') {
       if (req.method !== 'POST') throw error('Cloud-flow triggers require POST.', 405);
-      assertPortalToken(req.headers.__requestverificationtoken, csrf);
+      assertPortalToken(req.headers.__requestverificationtoken, headerToken(req));
       const identity = currentIdentity();
       assertOperationRole(flow, identity);
       const bytes = (await rawBody(req)).toString('utf8');
@@ -6848,16 +6920,20 @@ export async function createSimulator(options) {
       }
     }
     const previewCookie = requestPublishingPreview(req);
+    const nativeIdentity = currentIdentity();
     if (
       await handleNativeService(req, res, url, {
         portal,
         store,
         readProvider,
         globalChoices: localPortalGlobalChoices(),
-        identity: currentIdentity(),
+        identity: nativeIdentity,
         // The browser's visitor id, resolved for this request (lib/visitor-session.mjs); null without a visitor cookie.
         visitor: trace.getStore()?.visitor ?? null,
-        csrf,
+        csrf: headerToken(req),
+        issueCsrf: () => requestTokens.issue(req, res),
+        expectedBodyCsrf: (supplied) => requestTokens.expected(req, supplied),
+        pairedTokenCookie: pairedPortalRequest(req),
         adminToken,
         runListWorkflow,
         workflowRequestContext: () => {
@@ -6870,7 +6946,7 @@ export async function createSimulator(options) {
             metadata: modelMetadata(),
           };
         },
-        attachmentBody: noteAttachmentBody,
+        attachmentBody: noteAttachmentBody(nativeIdentity),
         config: config(),
         schemas: { ...solutionMetadata.componentSchemas, ...config().componentSchemas },
         metadata: modelMetadata(),
@@ -6913,7 +6989,7 @@ export async function createSimulator(options) {
         });
         return res.end(body === undefined ? undefined : JSON.stringify(body));
       };
-      assertPortalToken(req.headers.__requestverificationtoken, csrf);
+      assertPortalToken(req.headers.__requestverificationtoken, headerToken(req));
       const now = Date.now();
       for (const [id, entry] of stagedUploads) if (now - entry.created > 3600000) dropStaged(id);
       if (/^InitializeFileUpload$/i.test(fileApi[1])) {
@@ -7080,8 +7156,8 @@ export async function createSimulator(options) {
           // a body token, when sent, must match too.
           const tokens = controls.getAll('__RequestVerificationToken');
           const verified = tokens.length
-            ? tokens.length === 1 && pageToken(tokens[0])
-            : pageToken(nativeViewStateKey(controls.get('__VIEWSTATE')));
+            ? tokens.length === 1 && pageToken(req, tokens[0])
+            : pageToken(req, nativeViewStateKey(controls.get('__VIEWSTATE')));
           if (!verified) throw portalTokenRefusal(tokens.length > 0 || controls.has('__VIEWSTATE'));
           // The captcha refresh is an ASP.NET AJAX partial postback answered with the update panel delta.
           const captchaTarget = /^(.+\$captcha)\$CaptchaLinkButton$/.exec(controls.get('__EVENTTARGET') ?? '');
@@ -7143,8 +7219,8 @@ export async function createSimulator(options) {
       // The same rule as a page postback: a body token, or the document's own __VIEWSTATE key.
       const tokens = controls.getAll('__RequestVerificationToken');
       const verified = tokens.length
-        ? tokens.length === 1 && pageToken(tokens[0])
-        : pageToken(nativeViewStateKey(controls.get('__VIEWSTATE')));
+        ? tokens.length === 1 && pageToken(req, tokens[0])
+        : pageToken(req, nativeViewStateKey(controls.get('__VIEWSTATE')));
       if (!verified) throw portalTokenRefusal(tokens.length > 0 || controls.has('__VIEWSTATE'));
       nativeEntries = [...controls];
     } else if (!['GET', 'HEAD'].includes(req.method)) throw error('Use the local Web API for writes.', 405);
@@ -7428,6 +7504,7 @@ export async function createSimulator(options) {
       const modalDocument = injectRuntimeCompatibility(modalFragment.text, sourceDependencies, configuredHeadScripts);
       const traceModal = modalTraced && modalComposed.text === modalDocument;
       const refreshModalProof = publishRenderProof(headers, traceModal ? modalTraced.provenance : null);
+      const modalToken = requestTokens.issue(req, res);
       res.writeHead(200, headers);
       for (const item of formStyleDiagnostics(modalDocument, config().shellProfile))
         recordDiagnostic({ ...item, path: url.pathname });
@@ -7446,7 +7523,7 @@ export async function createSimulator(options) {
             observed: config().observed ?? portal.observed,
             head: req.method === 'HEAD',
           }),
-          csrf,
+          modalToken,
           renderedRevision,
           formIdentity,
           trace.getStore()?.spanId,
@@ -7636,7 +7713,9 @@ export async function createSimulator(options) {
           /* Non-JSON content follows the ordinary response or script path below. */
         }
       }
-      if (sourceMaps && kind === 'script' && !jsonPayload) {
+      const scriptDebugging = sourceMaps && kind === 'script' && !jsonPayload;
+      // The browser compares installed worker script bytes during updates. Keep that request on the authored variant.
+      if (scriptDebugging && req.headers['service-worker'] !== 'script') {
         body = withFileSourceMap(body, file);
         if (!body.toString('utf8').includes('sourceURL=')) {
           generatedDebugUrl = pathToFileURL(file).href;
@@ -7649,7 +7728,7 @@ export async function createSimulator(options) {
           Buffer.from(`\n/*# sourceMappingURL=${identityMapUrl(file, text.split(/\r\n?|\n/).length, text)} */\n`),
         ]);
       }
-      const proofHeaders = {};
+      const responseHeaders = scriptDebugging ? { vary: 'Accept-Encoding, Service-Worker' } : {};
       if (req.method === 'GET' && kind === 'script' && !jsonPayload) {
         const index = renderer.sourceIndex();
         const source = [...index.sources.values()].find(
@@ -7699,11 +7778,11 @@ export async function createSimulator(options) {
             },
           });
           while (scriptProofs.size > 128) scriptProofs.delete(scriptProofs.keys().next().value);
-          proofHeaders['x-paqvilo-script-proof'] = proofId;
-          proofHeaders['x-paqvilo-provenance-access'] = access;
+          responseHeaders['x-paqvilo-script-proof'] = proofId;
+          responseHeaders['x-paqvilo-provenance-access'] = access;
         }
       }
-      return sendFile(body, contentType, proofHeaders);
+      return sendFile(body, contentType, responseHeaders);
     }
     // The captcha challenge resources answer locally (the asset cache admits no Telerik resource URL).
     if (
@@ -7806,9 +7885,10 @@ export async function createSimulator(options) {
     if (spaPage && !route && access?.allowed) {
       const body = await readWebFileSource(codeSite.entryFile, codeSite.compiledDir, url.pathname);
       requirePageSource();
+      const token = requestTokens.issue(req, res);
       const html = injectRuntime(
         codeSiteDocument(body.toString('utf8')),
-        csrf,
+        token,
         revision,
         pageIdentity,
         nativeContext?.spanId,
@@ -7818,13 +7898,16 @@ export async function createSimulator(options) {
           site: { websiteId: portal.website?.id, isSpaSite: portal.isSpaSite },
         },
       );
-      res.writeHead(200, {
+      const headers = {
         ...PAGE_HEADERS,
         ...siteHeaders(portal, { confinement: confinementPolicy(), kind: 'page' }),
         'content-type': 'text/html; charset=utf-8',
-        'content-length': Buffer.byteLength(html),
         'x-sim-route': 'code-site-app',
-      });
+      };
+      // An unbound browser HEAD omits the GET-only token and cannot advertise the rendered length.
+      if (req.method === 'HEAD' && !token) delete headers['content-length'];
+      else headers['content-length'] = Buffer.byteLength(html);
+      res.writeHead(200, headers);
       return res.end(req.method === 'HEAD' ? undefined : html);
     }
     let renderedSource;
@@ -7985,7 +8068,7 @@ export async function createSimulator(options) {
     const responseBody = isDocument
       ? injectRuntime(
           html,
-          csrf,
+          requestTokens.issue(req, res),
           renderedSource.revision,
           pageIdentity,
           trace.getStore()?.spanId,
@@ -8161,7 +8244,9 @@ export async function createSimulator(options) {
       visitorName(),
       ANTI_FORGERY_COOKIE,
     ]);
-    const cookies = Object.entries(parseCookies(req.headers.cookie)).filter(([name]) => !own.has(name));
+    const cookies = Object.entries(parseCookies(req.headers.cookie)).filter(
+      ([name]) => !own.has(name) && !isPortalBindingCookie(name),
+    );
     return { ...Object.fromEntries(cookies), ...form, ...Object.fromEntries(url.searchParams) };
   };
   /* NOSONAR */ const onRequest = (req, res) => {

@@ -117,9 +117,9 @@ const portalInitial = () => ({
     endpoints: [],
   },
 });
-async function startPowerPages(owner, options = {}) {
+async function startPowerPages(owner, { files = portalFiles, ...options } = {}) {
   const root = await tempRoot(owner);
-  await writeTree(path.join(root, 'portal'), portalFiles);
+  await writeTree(path.join(root, 'portal'), files);
   const sim = await createSimulator({
     sourceDir: path.join(root, 'portal'),
     solutionRoots: [path.join(root, 'solution')],
@@ -419,6 +419,61 @@ for (const [name, start] of [
     for (const entry of recent) assert.match(entry.at, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/);
   });
 }
+
+// @test-kind contract+security: diagnostics describe unsupported exported HTTP policies without changing the local origin boundary.
+test('Power Pages: unsupported exported HTTP policies appear as local diagnostics', async (t) => {
+  const siteOrigin = 'https://identity.example.test';
+  const declared = [
+    ['HTTP/Access-Control-Allow-Origin', siteOrigin],
+    ['HTTP/Access-Control-Allow-Methods', 'GET, OPTIONS'],
+    ['HTTP/Strict-Transport-Security', 'max-age=50000'],
+    ['HTTP/Content-Security-Policy', "script-src 'self' 'nonce-fixtureA'"],
+    ['HTTP/Content-Security-Policy-Report-Only', "script-src 'self' 'nonce-fixtureB'"],
+    ['HTTP/Referrer-Policy', 'same-origin'],
+  ];
+  const siteSettings = declared
+    .map(([name, value], index) =>
+      [
+        '- adx_sitesettingid: invented-security-' + index,
+        '  adx_name: ' + name,
+        '  adx_value: ' + JSON.stringify(value),
+      ].join('\n'),
+    )
+    .join('\n');
+  const sim = await powerPages(t, { files: { ...portalFiles, 'sitesetting.yml': siteSettings } });
+
+  const page = await fetch(sim.url + '/');
+  assert.equal(page.status, 200);
+  assert.equal(page.headers.get('referrer-policy'), 'same-origin');
+  for (const name of [
+    'access-control-allow-origin',
+    'strict-transport-security',
+    'content-security-policy',
+    'content-security-policy-report-only',
+  ])
+    assert.equal(page.headers.get(name), null);
+  const preflight = await fetch(sim.url + '/', {
+    method: 'OPTIONS',
+    headers: { origin: siteOrigin, 'access-control-request-method': 'GET' },
+  });
+  assert.equal(preflight.status, 403);
+  assert.equal(preflight.headers.get('access-control-allow-origin'), null);
+
+  const { diagnostics } = await body(await simApi(sim, 'GET', '/diagnostics'), 200);
+  const unsupported = diagnostics.filter((entry) => entry.code.startsWith('PORTAL_HTTP_'));
+  assert.deepEqual(
+    unsupported.map((entry) => [entry.code, entry.settings]),
+    [
+      ['PORTAL_HTTP_CORS_UNSUPPORTED', ['http/access-control-allow-methods', 'http/access-control-allow-origin']],
+      ['PORTAL_HTTP_HSTS_UNSUPPORTED', ['http/strict-transport-security']],
+      [
+        'PORTAL_HTTP_CSP_NONCE_UNSUPPORTED',
+        ['http/content-security-policy', 'http/content-security-policy-report-only'],
+      ],
+    ],
+  );
+  assert.doesNotMatch(JSON.stringify(unsupported), /identity\.example|fixture[AB]|50000/);
+});
 
 // @test-kind contract+security: the local search route keeps the site's CSP, framing and nosniff headers
 test('Power Pages: /search/ carries the same site HTTP/* headers, CSP and nosniff as every portal page', async () => {

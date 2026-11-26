@@ -78,7 +78,7 @@ function termMatcher(term) {
   return (token) => wildcardMatch(pattern, token);
 }
 
-function termOf(raw, highlight) {
+function termOf(raw, highlights, visible = true) {
   const boost = /\^(\d+(?:\.\d+)?)$/.exec(raw);
   const weight = boost ? Number(boost[1]) : 1;
   if (!Number.isFinite(weight) || weight <= 0)
@@ -91,7 +91,8 @@ function termOf(raw, highlight) {
   if (/^[*?]/.test(term))
     throw invalidQuery('A search wildcard must follow the first character of a term.', SYNTAX_ERROR);
   const matchers = words.map(termMatcher);
-  highlight.push(...matchers);
+  highlights.hasWildcard ||= words.some((word) => /[*?]/.test(word));
+  if (visible) highlights.matchers.push(...matchers);
   return phrase
     ? ({ columns }) =>
         columns.some((column) =>
@@ -121,7 +122,7 @@ function scoreGroup(clauses, row) {
 
 function structuredQuery(query) {
   const tokens = queryTokens(query);
-  const highlight = [];
+  const highlights = { matchers: [], hasWildcard: false };
   let index = 0;
 
   function parseGroup(depth, shouldHighlight) {
@@ -152,12 +153,12 @@ function structuredQuery(query) {
   }
 
   function clauseScore(term, depth, visible) {
-    if (term !== '(') return termOf(term, visible ? highlight : []);
+    if (term !== '(') return termOf(term, highlights, visible);
     const group = parseGroup(depth + 1, visible);
     return group.length ? (row) => scoreGroup(group, row) : null;
   }
 
-  return { clauses: parseGroup(0, true), highlight };
+  return { clauses: parseGroup(0, true), highlights };
 }
 
 function parseQuery(query, recoverSyntax) {
@@ -166,9 +167,9 @@ function parseQuery(query, recoverSyntax) {
   } catch (error) {
     if (!recoverSyntax || error.kind !== SYNTAX_ERROR) throw error;
     // Analyze the whole input as plain text. No Lucene operators survive, and the local bounds still apply.
-    const highlight = [];
-    const clauses = searchTokens(query).map((word) => ({ mode: 'optional', score: termOf(word, highlight) }));
-    return { clauses, highlight };
+    const highlights = { matchers: [], hasWildcard: false };
+    const clauses = searchTokens(query).map((word) => ({ mode: 'optional', score: termOf(word, highlights) }));
+    return { clauses, highlights };
   }
 }
 
@@ -176,9 +177,10 @@ function parseQuery(query, recoverSyntax) {
 export function compilePortalSearchQuery(value, { recoverSyntax = false } = {}) {
   const query = String(value ?? '');
   if (query.length > MAX_QUERY_LENGTH) throw invalidQuery('The search query exceeds the local length limit.');
-  const { clauses, highlight } = parseQuery(query, recoverSyntax);
+  const { clauses, highlights } = parseQuery(query, recoverSyntax);
   return {
-    highlight: (token) => highlight.some((match) => match(token)),
+    // A wildcard query has no result fragment, even when a plain term also matches.
+    highlight: (token) => !highlights.hasWildcard && highlights.matchers.some((match) => match(token)),
     score(values) {
       if (!clauses.length) return query.trim() ? null : 0;
       const columns = values.map(searchTokens);

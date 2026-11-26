@@ -1,0 +1,68 @@
+{
+  "schema": "paqvilo.parity-cases/1",
+  "surface": "portal-file-range",
+  "suite": "hosted-20261126",
+  "oracle": {
+    "kind": "native",
+    "name": "Power Pages portal Web API",
+    "version": "2026-11-26",
+    "scope": "Two signed-in browser GET runs of one synthetic file. Captures establish status, Content-Length, Content-Range, Accept-Ranges, ETag presence, bytes and SHA-256 for the full and first-16-byte GETs. Simulator fixture names are invented. The exact hosted build is unrecorded."
+  },
+  "captures": [
+    {
+      "id": "file-range-portal-authorized",
+      "sha256": "08381c950f6ebbc2c3735073aed201e22e88c91cb98133901102d4489ac90b06",
+      "capturedAt": "2026-11-26"
+    },
+    {
+      "id": "file-range-portal-repeat",
+      "sha256": "b26dba7890b6021bf54e21db6a9b2536eca9bf9e38173f1e41d42c913a9b2d87",
+      "capturedAt": "2026-11-26"
+    }
+  ],
+  "cases": [
+    {
+      "id": "full",
+      "input": {
+        "fileBase64": "UGFxdmlsbyBzeW50aGV0aWMgZmlsZSByYW5nZSBmaXh0dXJlCjAxMjM0NTY3ODlhYmNkZWZnaGlqa2xtbm9wcXJzdHV2d3h5ego=",
+        "observed": {
+          "webApiFileDownload": "portal-range",
+          "evidence": "Authorized and repeated hosted Power Pages browser reads of a synthetic file."
+        },
+        "range": null
+      },
+      "output": {
+        "status": 200,
+        "contentRange": null,
+        "acceptRanges": null,
+        "contentLength": "74",
+        "hasValidator": false,
+        "bytes": 74,
+        "sha256": "790a1dcbd1db1a864aad7005c25412ba7c29d2ab91b55b69a7ba4297d1ac6815"
+      },
+      "volatile": []
+    },
+    {
+      "id": "first-sixteen-bytes",
+      "input": {
+        "fileBase64": "UGFxdmlsbyBzeW50aGV0aWMgZmlsZSByYW5nZSBmaXh0dXJlCjAxMjM0NTY3ODlhYmNkZWZnaGlqa2xtbm9wcXJzdHV2d3h5ego=",
+        "observed": {
+          "webApiFileDownload": "portal-range",
+          "evidence": "Authorized and repeated hosted Power Pages browser reads of a synthetic file."
+        },
+        "range": "bytes=0-15"
+      },
+      "output": {
+        "status": 206,
+        "contentRange": "bytes 0-15/74",
+        "acceptRanges": null,
+        "contentLength": "16",
+        "hasValidator": false,
+        "bytes": 16,
+        "sha256": "0a824304b649bc322ca80390eac2354417be716994cbf558e0f10b5c8f379600"
+      },
+      "volatile": []
+    }
+  ],
+  "history": []
+}

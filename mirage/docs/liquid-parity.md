@@ -96,6 +96,16 @@ The selected page variant supplies its template, form/list bindings and publishi
 uses its `adx_meta_description` or `mspp_meta_description` when an authored head snippet has no meta description.
 Exported `robots.txt` and `sitemap.xml` web files follow ordinary web-file routing.
 
+Authored `.webmanifest` files in an export or compiled code site use `application/manifest+json` when the source
+does not specify a media type. Mirage preserves the authored manifest link and file bytes. Template-site PWA setup,
+generated shell links and worker-managed offline pages remain open. [Web App Manifest specification](https://www.w3.org/TR/appmanifest/) ·
+[Power Pages SPA guide](https://learn.microsoft.com/en-us/power-pages/configure/create-code-sites).
+
+An exported `CodeSite/Enabled` setting of `true` sets the browser's `isSpaSite` flag, including on a PAC download
+without the original project. Mirage needs a readable compiled landing page from `powerpages.config.json` to serve
+the SPA entry and fall back to it on client routes. The observed download contains the HTML and its assets, but no
+explicit landing path or fallback rules.
+
 The classic `adxPreviewUnpublishedEntities` cookie controls publishing preview for signed-in visitors with the exported
 **Preview Unpublished Entities** website right. Preview defaults to enabled for an eligible visitor when the cookie is
 absent. `false` and other values that cannot be read as `true` disable it. The same request preference governs exported

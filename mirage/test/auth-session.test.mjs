@@ -571,6 +571,44 @@ test('the session API signs the calling browser in and out (CSRF-protected) with
   assert.equal(field(await text(await browser('/', { cookie })), 'user'), 'anonymous');
 });
 
+// @test-kind security+contract: the signed browser session ID distinguishes repeated sign-ins without changing existing tool cookies.
+test('the browser session ID is minted on sign-in and retained by validated role changes', async (t) => {
+  const { app, csrf, browser, signIn } = await simulator(t);
+  const id = (cookie) => {
+    const value = cookie.slice(cookie.indexOf('=') + 1).split('.')[0];
+    return JSON.parse(Buffer.from(value, 'base64url')).sid;
+  };
+  const first = await signIn('alex');
+  const second = await signIn('alex');
+  assert.equal(first.response.status, 302);
+  assert.equal(second.response.status, 302);
+  const firstId = id(first.cookie);
+  assert.ok(/^[0-9a-f]{32}$/.test(firstId ?? ''), 'HTTP sign-in must mint a private session ID');
+  assert.ok(firstId !== id(second.cookie), 'a second sign-in for the same contact gets its own session ID');
+  const update = (suffix, cookie, body) =>
+    fetch(app.adminOrigin + '/__sim/api/session' + suffix, {
+      method: 'POST',
+      headers: { cookie, origin: app.adminOrigin, 'content-type': 'application/json', 'x-sim-csrf': csrf },
+      body: JSON.stringify(body),
+    });
+  const reissue = await update('/roles', first.cookie, { roles: ['Member'] });
+  assert.equal(reissue.status, 200);
+  const sessionBody = await reissue.json();
+  assert.equal(Object.hasOwn(sessionBody, 'sessionId'), false);
+  assert.equal(Object.hasOwn(sessionBody.cookie, 'sessionId'), false);
+  const updatedCookie = reissue.headers.get('set-cookie').split(';')[0];
+  assert.equal(updatedCookie, sessionBody.cookie.name + '=' + sessionBody.cookie.value);
+  assert.ok(id(updatedCookie) === firstId, 'a role update retains the browser session ID');
+  assert.equal((await browser('/members/', { cookie: updatedCookie })).status, 200);
+
+  const signedOut = await update('/sign-out', updatedCookie, {});
+  assert.equal(signedOut.status, 200);
+  assert.equal(id(signedOut.headers.get('set-cookie').split(';')[0]), undefined);
+  const embedded = app.signIn('alex');
+  assert.equal(id(embedded.cookieHeader), undefined);
+  assert.equal((await browser('/members/', { cookie: embedded.cookieHeader })).status, 200);
+});
+
 // @test-kind security: an explicitly bounded application cookie must lose portal access when its signed deadline passes.
 test('configured fixed application session expiry survives a web-role change', async (t) => {
   const clock = fixedClock();

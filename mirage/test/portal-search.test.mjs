@@ -30,7 +30,7 @@ async function searchSite(
     'portal/Main.pagetemplate.yml': 'adx_pagetemplateid: main\nadx_webtemplateid: main',
     'portal/Main.webtemplate.yml': 'adx_webtemplateid: main\nadx_name: Main',
     'portal/Main.webtemplate.source.html':
-      '<main id=probe>{% searchindex query: request.params.q, filter: request.params.filter, logical_names: request.params.ln, page: request.params.page, page_size: request.params.ps %}<p id=n>{{ searchindex.approximate_total_hits }}</p>{% for r in searchindex.results %}<li data-n="{{ r.number }}" data-url="{{ r.url }}" data-ln="{{ r.logical_name }}">{{ r.title }}|{{ r.fragment }}</li>{% endfor %}{% endsearchindex %}</main>',
+      '<main id=probe>{% searchindex query: request.params.q, filter: request.params.filter, logical_names: request.params.ln, page: request.params.page, page_size: request.params.ps %}<p id=n>{{ searchindex.approximate_total_hits }}</p>{% for r in searchindex.results %}<li data-n="{{ r.number }}" data-url="{{ r.url }}" data-ln="{{ r.logical_name }}" data-fragment="{% if r.fragment == nil %}none{% else %}present{% endif %}">{{ r.title }}|{{ r.fragment }}</li>{% endfor %}{% endsearchindex %}</main>',
     'portal/sitesetting.yml':
       settings
         .map(([name, value], index) => `- adx_sitesettingid: s${index}\n  adx_name: ${name}\n  adx_value: "${value}"`)
@@ -126,8 +126,16 @@ async function searchSite(
     return {
       total: Number(/<p id=n>(\d*)<\/p>/.exec(main)[1]),
       items: [
-        ...main.matchAll(/<li data-n="(\d+)" data-url="([^"]*)" data-ln="([^"]*)">([^|]*)\|([\s\S]*?)<\/li>/g),
-      ].map(([, n, url, ln, title, fragment]) => ({ n: Number(n), url, ln, title, fragment })),
+        ...main.matchAll(
+          /<li data-n="(\d+)" data-url="([^"]*)" data-ln="([^"]*)" data-fragment="([^"]*)">([^|]*)\|([\s\S]*?)<\/li>/g,
+        ),
+      ].map(([, n, url, ln, fragmentState, title, fragment]) => ({
+        n: Number(n),
+        url,
+        ln,
+        title,
+        fragment: fragmentState === 'none' ? null : fragment,
+      })),
     };
   };
   return { sim, page, id };
@@ -201,6 +209,27 @@ test('searchindex treats a malformed request query as literal terms and keeps pa
     [[2, 'Lanterns pack']],
   );
   assert.equal((await page({ q: '(*' })).total, 0, 'punctuation-only input must not become an empty query');
+});
+
+test('searchindex omits highlighted fragments when a query uses wildcards', async (t) => {
+  const { page } = await searchSite(t);
+  const prefix = await page({ q: 'lantern*', ps: '1', page: '2' });
+  assert.equal(prefix.total, 2);
+  assert.deepEqual(
+    prefix.items.map(({ n, title, fragment }) => [n, title, fragment]),
+    [[2, 'Lanterns pack', null]],
+  );
+  const mixed = await page({ q: 'anchor OR lan?erns' });
+  assert.deepEqual(
+    mixed.items.map(({ title, fragment }) => [title, fragment]),
+    [
+      ['Invented anchor', null],
+      ['Lanterns pack', null],
+    ],
+  );
+  const literal = await page({ q: '(lantern*' });
+  assert.equal(literal.total, 1);
+  assert.match(literal.items[0].fragment, /<em>lantern<\/em>/);
 });
 
 test('searchindex rejects an unsupported filter even when the visitor query recovers', async (t) => {

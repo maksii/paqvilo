@@ -724,11 +724,8 @@ function addSnippet(reference, via, token, frame, context) {
     context.snippets.push(descriptor);
     context.dependencies.push(descriptor);
   }
-  const translated = context.languageId
-    ? context.portal.snippetTranslations?.[context.languageId]?.[record.name]
-    : null;
   walkSource(
-    translated ?? context.portal.snippets?.[record.name] ?? '',
+    localizedSnippet(context.portal, record.name, context.languageId) ?? '',
     childFrame(frame, token, `content-snippet:${record.name}`),
     context,
   );
@@ -1665,9 +1662,10 @@ function describePageTemplate(pageTemplate, portal) {
   return described;
 }
 
-function resolveRouteResources(portal, rawRoute, { solutionMetadata = {} } = {}) {
+function resolveRouteResources(portal, rawRoute, { solutionMetadata = {}, languageId: requestLanguageId } = {}) {
   const route = resolveInspectionRoute(portal, rawRoute);
-  const page = localizedPortalPage(route.page ?? null, route.language?.id);
+  const languageId = route.language?.id ?? requestLanguageId ?? null;
+  const page = localizedPortalPage(route.page ?? null, languageId);
   const pageRoute = ['page', 'not-found', 'sign-in'].includes(route.kind);
   const dependencies = [],
     unresolved = [],
@@ -1684,8 +1682,7 @@ function resolveRouteResources(portal, rawRoute, { solutionMetadata = {} } = {})
     webLinkSets = [],
     siteMarkers = [],
     optionalAbsent = [];
-  const languageId =
-    route.language?.id ?? portal.selectedLanguageId ?? id(field(portal.website ?? {}, 'defaultlanguage'));
+  const siteLanguageId = languageId ?? portal.selectedLanguageId ?? id(field(portal.website ?? {}, 'defaultlanguage'));
   const context = {
     portal,
     page,
@@ -1704,15 +1701,15 @@ function resolveRouteResources(portal, rawRoute, { solutionMetadata = {} } = {})
     siteMarkers,
     optionalAbsent,
     siteSettings,
-    languageId: route.language?.id ?? null,
-    siteLanguageId: languageId || null,
+    languageId,
+    siteLanguageId: siteLanguageId || null,
     templateRows: unique(
       Object.values(portal.templates ?? {}).filter((item) => item && typeof item === 'object'),
       (item) => id(item.id),
     ),
     snippetRecords: effectiveSnippetRecords(
       portal.records ?? [],
-      languageId,
+      siteLanguageId,
       field(portal.website ?? {}, 'defaultlanguage'),
     ),
     references: { snippets: [], settings: [], forms: [], lists: [], views: [], tables: new Map() },
@@ -2082,13 +2079,20 @@ function applyColumnInspection(report, solutionMetadata) {
   }
 }
 
-function applySnippetInspection(report, portal, sourcePortal, overrides) {
+function localizedSnippet(portal, name, languageId) {
+  const translations = languageId ? portal.snippetTranslations?.[languageId] : null;
+  if (Object.hasOwn(translations ?? {}, name)) return translations[name];
+  return Object.hasOwn(portal.snippets ?? {}, name) ? portal.snippets[name] : undefined;
+}
+
+function applySnippetInspection(report, portal, sourcePortal, overrides, languageId) {
   for (const snippet of report.snippets) {
     const name = snippet.name;
-    snippet.value = preview(portal.snippets?.[name]);
-    snippet.sourceValue = preview(sourcePortal.snippets?.[name]);
+    const value = localizedSnippet(portal, name, languageId);
+    snippet.value = preview(value);
+    snippet.sourceValue = preview(localizedSnippet(sourcePortal, name, languageId));
     snippet.overridden = Object.hasOwn(overrides.snippets ?? {}, name);
-    snippet.deleted = !Object.hasOwn(portal.snippets ?? {}, name);
+    snippet.deleted = value === undefined;
   }
 }
 
@@ -2161,6 +2165,7 @@ export function inspectPage(
   route,
   {
     solutionMetadata = {},
+    languageId,
     sourcePortal = portal,
     overrides = {},
     identity = null,
@@ -2169,7 +2174,7 @@ export function inspectPage(
     tablePermissions = () => null,
   } = {},
 ) {
-  const { report, page, route: resolvedRoute } = resolveRouteResources(portal, route, { solutionMetadata });
+  const { report, page, route: resolvedRoute } = resolveRouteResources(portal, route, { solutionMetadata, languageId });
   if (!page)
     return {
       ...report,
@@ -2204,7 +2209,7 @@ export function inspectPage(
   };
   applyTableInspection(report, solutionMetadata, mapping, tablePermissions);
   applyColumnInspection(report, solutionMetadata);
-  applySnippetInspection(report, portal, sourcePortal, overrides);
+  applySnippetInspection(report, portal, sourcePortal, overrides, resolvedRoute.language?.id ?? languageId);
   applySettingInspection(report, portal, sourcePortal, overrides);
   return { ...report, templateChain: templateChain(report), related: relatedMetadata(portal, page) };
 }

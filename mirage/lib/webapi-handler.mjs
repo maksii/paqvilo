@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { readRawBody } from './http-body.mjs';
 import { rejectedGatewayProperty } from './webapi-gateway-fields.mjs';
 import { globalMetadataVersion } from './metadata-version.mjs';
@@ -37,6 +37,17 @@ import {
 } from './webapi-error-details.mjs';
 import { appendObservedWebApiErrorTemplate } from './webapi-error-templates.mjs';
 import { recordHttpError } from './trace-store.mjs';
+
+// One private continuation signing key per running store. Browser verification tokens can have a separate lifetime.
+const pagingKeys = new WeakMap();
+function pagingKey(store) {
+  let key = pagingKeys.get(store);
+  if (!key) {
+    key = randomBytes(32);
+    pagingKeys.set(store, key);
+  }
+  return key;
+}
 
 const WEBAPI_COUNT_LIMIT = 5000;
 const KEY = "((?:'(?:[^']|'')*'|[^()'/])*)";
@@ -1198,7 +1209,7 @@ function getCollection(t, { mapping = t.mapping, policy = t.policy, ids } = {}) 
     prefer: t.req.headers.prefer ?? '',
     identity: deps.identity,
     revision: store.dataRevision(),
-    secret: deps.csrf,
+    secret: pagingKey(store),
   });
   const result = store.query(
     mapping.logicalName,
@@ -1359,8 +1370,14 @@ function getCount(t, { mapping = t.mapping, policy = t.policy, ids } = {}) {
   return sendText(t, Math.min(result.value.length, WEBAPI_COUNT_LIMIT));
 }
 
-function entityResponse(t, mapping, policy, id, params) {
-  const result = t.store.query(mapping.logicalName, params, t.deps.identity, undefined, queryOptions(t, { id }));
+function entityResponse(t, mapping, policy, id, params, { portalPrimaryKeyProjection = false } = {}) {
+  const result = t.store.query(
+    mapping.logicalName,
+    params,
+    t.deps.identity,
+    undefined,
+    queryOptions(t, { id, portalPrimaryKeyProjection }),
+  );
   const projected = result.value[0];
   if (!projected) throw recordNotFound(mapping, id);
   return {
@@ -1377,7 +1394,9 @@ function getEntity(t) {
   const { id } = locate(t, mapping, target.key);
   readRecord(t, mapping, id, target.key);
   assertExpandReadable(t, mapping, params.get('$expand'));
-  const body = entityResponse(t, mapping, policy, id, params);
+  const portalPrimaryKeyProjection =
+    GUID_PATTERN.test(target.key) && url.searchParams.size === 1 && Boolean(parseSelect(params.get('$select'))?.length);
+  const body = entityResponse(t, mapping, policy, id, params, { portalPrimaryKeyProjection });
   const match = t.req.headers['if-none-match'];
   if (
     match &&
@@ -1793,7 +1812,7 @@ async function putProperty(t) {
 // permission, and the table permission (Read to download, Write to upload or delete) on the row. The bytes then go through
 // the organization's file seam (store.recordPipeline.fileContentInternal, dataverse-files.mjs): column MaxSizeInKB, image
 // sniffing, storage routing, the 404 of an empty file column and the 204 of an empty image, as on /api/data.
-// Native portal response headers are not known; a download answers 200 (Learn's sample shows 204), an upload or delete 204.
+// The observed file-range profile is opt-in. Full downloads answer 200 and partial ones 206; upload or delete answer 204.
 // A download is never served as its stored type on the portal origin (an uploaded .html would run as the reader):
 // application/octet-stream, attachment disposition, nosniff, and the stored type in the mimetype header with the
 // x-ms-file-name and x-ms-file-size headers /api/data sends. An upload without a name keeps the stored file's name, else
@@ -1816,6 +1835,16 @@ const transferOf = (download, method) => {
   if (download) return 'download';
   return method === 'DELETE' ? 'delete' : 'upload';
 };
+function observedFileRange(t) {
+  return t.deps.portal?.observed?.webApiFileDownload === 'portal-range' && fileKind(t) === 'file';
+}
+
+function fileDownloadRange(t, range) {
+  if (typeof range !== 'string') return null;
+  // The observed portal interprets bytes=-N as the inclusive range from 0 to N.
+  return observedFileRange(t) ? range.trim().replace(/^bytes=-(\d+)$/, 'bytes=0-$1') : range;
+}
+
 async function fileColumnRequest(t) {
   const { mapping, policy, target, method, store, deps, url, req } = t;
   const download = method === 'GET';
@@ -1832,7 +1861,7 @@ async function fileColumnRequest(t) {
   // The table permission check above is the grant; the profile only carries it into the seam's own check.
   const principal = filePrincipal(t, mapping, operation);
   const header = (name) => (typeof req.headers?.[name] === 'string' ? req.headers[name] : null);
-  const range = download ? header('range') : null;
+  const range = download ? fileDownloadRange(t, header('range')) : null;
   // A replacement uses a new file id even when it keeps the filename and byte count.
   const etag = range === null ? null : `"${createHash('sha256').update(String(row[target.segment])).digest('hex')}"`;
   const match = etag && header('if-match');
@@ -1870,24 +1899,36 @@ async function fileColumnRequest(t) {
 function sendFileColumnResponse(t, answer, etag) {
   if (answer.statusCode === 204) return sendNoContent(t);
   const { name, size, mimeType } = answer.file;
+  const body = Buffer.from(answer.body['$content'], 'base64');
   const partial = answer.statusCode === 206;
+  const observed = observedFileRange(t);
+  const headers = apiHeaders(t.deps.portal);
+  if (observed) {
+    delete headers.etag;
+    delete headers['accept-ranges'];
+  }
+  const expose = ['mimetype', 'x-ms-file-name', 'x-ms-file-size'];
+  if (partial) expose.push('x-ms-chunk-size', 'content-range');
+  if (partial && !observed) expose.push('etag');
   t.res.writeHead(answer.statusCode, {
-    ...apiHeaders(t.deps.portal),
+    ...headers,
     'content-type': 'application/octet-stream',
     'content-disposition': contentDisposition('attachment', name),
     'x-content-type-options': 'nosniff',
     mimetype: mimeType,
     'x-ms-file-name': fileNameHeader(name),
     'x-ms-file-size': String(size),
-    'accept-ranges': 'bytes',
+    ...(observed ? { 'content-length': String(body.byteLength) } : { 'accept-ranges': 'bytes' }),
     ...(partial
-      ? { 'content-range': answer.headers['Content-Range'], 'x-ms-chunk-size': answer.headers['x-ms-chunk-size'], etag }
+      ? {
+          'content-range': answer.headers['Content-Range'],
+          'x-ms-chunk-size': answer.headers['x-ms-chunk-size'],
+          ...(!observed ? { etag } : {}),
+        }
       : {}),
-    'access-control-expose-headers': partial
-      ? 'mimetype, x-ms-file-name, x-ms-file-size, x-ms-chunk-size, content-range, etag'
-      : 'mimetype, x-ms-file-name, x-ms-file-size',
+    'access-control-expose-headers': expose.join(', '),
   });
-  return t.res.end(Buffer.from(answer.body['$content'], 'base64'));
+  return t.res.end(body);
 }
 
 function fileColumnRow(t, download, id) {

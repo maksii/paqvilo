@@ -18,6 +18,7 @@ async function fixture(
     redirect = false,
     readOnly = false,
     wizard = false,
+    actionSettings = null,
     captcha = null,
     captchaFixture = false,
     registrationCaptcha = false,
@@ -46,6 +47,8 @@ async function fixture(
       '<!doctype html><html><body><form id="liquid_form">{% webform name: "Wizard" %}</form></body></html>';
     files['Wizard.advancedform.yml'] = 'adx_webformid: wizard\nadx_name: Wizard';
   }
+  if (actionSettings)
+    files['Second.basicform.yml'] += `\nadx_settings: ${JSON.stringify(JSON.stringify(actionSettings))}`;
   const captchaFields = captcha
     ? { adx_captcharequired: true, adx_showcaptchaforauthenticatedusers: captcha === 'all' }
     : undefined;
@@ -66,6 +69,24 @@ async function fixture(
     { name: 'count', dataverseType: 'int', minimum: 0, maximum: 10 },
   ];
   if (lookup) fields.push({ name: 'customerid', type: 'lookup' });
+  const stateFields = actionSettings
+    ? {
+        statecode: {
+          dataverseType: 'state',
+          states: [
+            { value: 0, defaultStatus: 1 },
+            { value: 1, defaultStatus: 2 },
+          ],
+        },
+        statuscode: {
+          dataverseType: 'status',
+          statuses: [
+            { value: 1, state: 0 },
+            { value: 2, state: 1 },
+          ],
+        },
+      }
+    : {};
   const app = await createSimulator({
     sourceDir: root,
     watch: false,
@@ -99,6 +120,7 @@ async function fixture(
             title: { dataverseType: 'nvarchar' },
             description: { dataverseType: 'memo' },
             count: { dataverseType: 'int', minValue: 0, maxValue: 10 },
+            ...stateFields,
           },
           ...(lookup
             ? {
@@ -172,7 +194,7 @@ async function fixture(
         ...extra,
       ]),
     });
-  return { app, post, route, controls };
+  return { app, post, route, controls, root };
 }
 
 async function initializeFile(app, headers) {
@@ -383,6 +405,121 @@ test('a page whose second entityform tag is not rendered refuses a postback addr
     app.store.snapshot().tables.sample.map((row) => row.title),
     ['First', 'Second'],
   );
+});
+
+// @test-kind contract: the rendered local state button uses the form action endpoint and rechecks author-owned FetchXML before a write.
+test('a filtered state action refuses a stale button request and updates only the selected eligible record', async (t) => {
+  const { app, route } = await fixture(t, {
+    actionSettings: {
+      Actions: [
+        {
+          Type: 'DeactivateAction',
+          ButtonLabel: 'Close entry',
+          FilterCriteria:
+            '<fetch><entity name="sample"><attribute name="sampleid"/><filter><condition attribute="title" operator="eq" value="Second"/></filter></entity></fetch>',
+        },
+      ],
+    },
+  });
+  const page = await (await fetch(app.url + route)).text();
+  const button = page.match(/<button[^>]*data-pp-form-action="deactivate"[^>]*>/)?.[0];
+  assert.ok(button, 'the matching record has a form-bound button');
+  const submitUrl = button.match(/data-url="([^"]+)"/)[1];
+  assert.equal(submitUrl, '/__sim/forms/entityform/second/submit');
+  const script = await fs.readFile(new URL('../lib/entity-grid-compat.js', import.meta.url), 'utf8');
+  const begin = script.indexOf('  function formActionClick(');
+  const end = script.indexOf("  document.addEventListener('click'", begin);
+  const handler = new Function('location', 'post', script.slice(begin, end) + '\nreturn formActionClick;');
+  const submit = async (recordId = 'second-row') => {
+    let response;
+    const location = new URL(route, app.url);
+    location.reload = () => {};
+    const click = handler(location, (url, body) => {
+      response = fetch(app.url + url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', __RequestVerificationToken: app.portalToken },
+        body: JSON.stringify(body),
+      });
+      return response;
+    });
+    const control = { querySelector: (selector) => ({ value: selector.includes('EntityName') ? 'sample' : recordId }) };
+    const rendered = {
+      closest: () => ({ closest: () => control }),
+      getAttribute: (name) => (name === 'data-url' ? submitUrl : null),
+      classList: { contains: () => false },
+      dataset: { ppFormAction: 'deactivate', ppActionIndex: button.match(/data-pp-action-index="([0-9]+)"/)[1] },
+    };
+    await click({ target: { closest: () => rendered }, preventDefault() {} });
+    return response;
+  };
+
+  await app.store.update('sample', 'second-row', { title: 'Ineligible after render' }, { admin: true });
+  const stale = await submit();
+  assert.equal(stale.status, 403);
+  assert.equal((await stale.json()).error.code, 'FormActionNotEnabled');
+  assert.doesNotMatch(await (await fetch(app.url + route)).text(), /data-pp-form-action="deactivate"/);
+  assert.notEqual(app.store.state.tables.sample[1].statecode, 1);
+
+  await app.store.update('sample', 'second-row', { title: 'Second' }, { admin: true });
+  const other = await submit('first-row');
+  assert.equal(other.status, 403);
+  assert.equal((await other.json()).error.code, 'FormRecordMismatch');
+  assert.equal((await submit()).status, 200);
+  assert.equal(app.store.state.tables.sample[1].statecode, 1);
+  assert.equal(app.store.state.tables.sample[1].statuscode, 2);
+  assert.notEqual(app.store.state.tables.sample[0].statecode, 1);
+});
+
+test('a local state action rolls back when a source publication starts during its write', async (t) => {
+  const { app, root } = await fixture(t, { actionSettings: { Actions: [{ Type: 'DeactivateAction' }] } });
+  const actionRequest = () =>
+    fetch(app.url + '/__sim/forms/entityform/second/submit', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', __RequestVerificationToken: app.portalToken },
+      body: JSON.stringify({
+        action: 'deactivate',
+        recordId: 'second-row',
+        values: {},
+        query: { secondrow: 'second-row' },
+      }),
+    });
+  const wrote = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  const publishing = Promise.withResolvers();
+  t.signal.addEventListener('abort', release.resolve, { once: true });
+  const records = app.store.recordPipeline;
+  const update = records.updateInternal.bind(records);
+  const updateMock = t.mock.method(records, 'updateInternal', async (...args) => {
+    const value = await update(...args);
+    wrote.resolve();
+    await release.promise;
+    return value;
+  });
+  const formSource = path.join(root, 'Second.basicform.yml');
+  const readFile = fs.readFile.bind(fs);
+  const readMock = t.mock.method(fs, 'readFile', (file, ...args) => {
+    if (path.resolve(String(file)).toLowerCase() === formSource.toLowerCase()) publishing.resolve();
+    return readFile(file, ...args);
+  });
+
+  const pending = actionRequest();
+  let reload;
+  try {
+    await Promise.race([wrote.promise, pending.then(() => assert.fail('The action never entered its write'))]);
+    reload = app.reload();
+    await Promise.race([publishing.promise, reload.then(() => assert.fail('Reload never read the form source'))]);
+  } finally {
+    release.resolve();
+  }
+  const response = await pending;
+  await reload;
+  updateMock.mock.restore();
+  readMock.mock.restore();
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).error.code, 'SourceRefreshConflict');
+  assert.notEqual(app.store.state.tables.sample[1].statecode, 1);
+  assert.equal((await actionRequest()).status, 200);
+  assert.equal(app.store.state.tables.sample[1].statecode, 1);
 });
 
 test('default JSON route and JSON profile remain unchanged', async (t) => {

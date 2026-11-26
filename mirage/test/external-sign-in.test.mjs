@@ -1036,6 +1036,124 @@ test('invitation codes register into the invited contact with its account and we
   assert.match(await text(disabled), /New accounts are closed\./);
 });
 
+// @test-kind security+contract: local invitation redemption runs only an exact trusted workflow and rolls back all writes on failure.
+test('trusted invitation workflows run on the redeemed contact and failure rolls back provisioning', async (t) => {
+  const exact = '77777777-7777-4777-8777-777777777720';
+  const nameOnly = '77777777-7777-4777-8777-777777777721';
+  const phase = (id, code, workflowId) => ({
+    adx_invitationid: id,
+    adx_invitationcode: code,
+    adx_type: 756150001,
+    adx_maximumredemptions: 1,
+    adx_redemptions: 0,
+    adx_assigntoaccount: { id: 'helios', logical_name: 'account' },
+    adx_redemptionworkflow: { id: workflowId, logical_name: 'workflow' },
+    statecode: 0,
+  });
+  const invitations = [
+    phase('workflow-invite-success', 'WORKFLOW-SUCCESS', exact),
+    phase('workflow-invite-failure', 'WORKFLOW-ROLLBACK', exact),
+    phase('workflow-invite-unsupported', 'WORKFLOW-NAME-ONLY', nameOnly),
+  ];
+  const state = initialState({
+    tables: {
+      adx_invitation: invitations,
+      adx_invitation_mspp_webrole_powerpagecomponent: invitations.map((row) => ({
+        adx_invitationid: row.adx_invitationid,
+        powerpagecomponentid: 'reviewer',
+      })),
+      workflow: [exact, nameOnly].map((workflowid) => ({
+        workflowid,
+        name: 'Invented invitation workflow',
+        uniquename: 'InventedInvitation',
+        category: 0,
+        type: 1,
+        mode: 1,
+        ondemand: true,
+        primaryentity: 'contact',
+        statecode: 1,
+        statuscode: 2,
+      })),
+    },
+    mappings: {
+      adx_invitation: { entitySet: 'adx_invitations', idColumn: 'adx_invitationid', nameColumn: 'adx_name' },
+    },
+  });
+  const settings = [...LOCAL_PROVIDER, ['Authentication/Registration/OpenRegistrationEnabled', 'false']];
+  const pack = [
+    'export default {',
+    '  id: "invitation-fixture", name: "Invitation fixture", description: "Invented local workflow",',
+    '  matches: () => true, presets: () => ({}),',
+    '  workflows: {',
+    '    ' + JSON.stringify(exact) + ': async ({ api, target, caller, inputs }) => {',
+    '      if (target.logicalName !== "contact" || target.row.parentcustomerid?.id !== "helios" || Object.keys(inputs).length)',
+    '        throw new Error("Unexpected workflow target.");',
+    '      await api.store.updateRecordAsync("contact", target.id, { jobtitle: caller.systemuserid }, { admin: true });',
+    '      if (target.row.firstname === "Rollback") throw new Error("Private fixture handler error.");',
+    '      return { message: "Local invitation handler completed" };',
+    '    },',
+    '    InventedInvitation: () => { throw new Error("Name-only handler must not run for invitation."); },',
+    '  },',
+    '};',
+  ].join('\n');
+  const { app, idp, csrf } = await simulator(t, settings, state, {
+    dataverse: { enabled: true, tls: false, tds: { enabled: false } },
+    fixturePack: pack,
+  });
+  const invite = async (code, givenName) => {
+    const browser = client(app);
+    const pending = await signInThrough(browser, idp, {
+      newUser: { given_name: givenName, family_name: 'Fixture', email: givenName.toLowerCase() + '@example.test' },
+    });
+    assert.equal(pending.headers.get('x-sim-route'), 'invitation-required');
+    const response = await browser.request(
+      '/Account/Login/RedeemInvitation',
+      formBody({ __RequestVerificationToken: csrf, InvitationCode: code }),
+    );
+    return { response, browser };
+  };
+  const success = await invite('WORKFLOW-SUCCESS', 'Accepted');
+  assert.equal(success.response.status, 302);
+  const signed = await json(success.browser, '/_sim/api/session');
+  const target = app.store.tableRows('contact').find((row) => row.contactid === signed.contactId);
+  const caller = app.store.tableRows('systemuser').find((row) => row.systemuserid === target.jobtitle);
+  assert.ok(caller?.fullname.startsWith('# Portals-'), 'the local application user runs the exact trusted workflow');
+  assert.ok(signed.roles.includes('Reviewer'));
+  const logs = app.store.tableRows('workflowlog');
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0].regardingobjectid.id, target.contactid);
+  assert.equal(logs[0].message, 'Local invitation handler completed');
+
+  const sections = {
+    sections: ['simulator'],
+    tables: ['contact', 'adx_externalidentity', 'adx_invitation', 'workflowlog'],
+  };
+  const snapshot = () => {
+    const {
+      simulator: { contactRoles, signInRegistrations },
+      tables,
+    } = app.store.snapshot(sections);
+    return { contactRoles, signInRegistrations, tables };
+  };
+  const before = snapshot();
+  const failed = await invite('WORKFLOW-ROLLBACK', 'Rollback');
+  assert.equal(failed.response.status, 500);
+  const returned = await text(failed.response);
+  assert.match(returned, /The local invitation workflow could not complete/);
+  assert.doesNotMatch(returned, /Private fixture handler error/);
+  assert.equal((await json(failed.browser, '/_sim/api/session')).signedIn, false);
+  assert.deepEqual(snapshot(), before);
+
+  const fallback = await invite('WORKFLOW-NAME-ONLY', 'Fallback');
+  assert.equal(fallback.response.status, 302);
+  assert.equal((await json(fallback.browser, '/_sim/api/session')).signedIn, true);
+  assert.equal(app.store.tableRows('workflowlog').length, 1);
+  const { diagnostics } = await json(fallback.browser, '/_sim/api/diagnostics');
+  assert.ok(
+    diagnostics.some((row) => row.code === 'INVITATION_WORKFLOW_NOT_RUN' && row.id === 'workflow-invite-unsupported'),
+  );
+});
+
 test("LoginButtonAuthenticationType sends the sign-in page to its provider; LogOff runs the provider's end-session when external logout is on", async (t) => {
   const settings = [
     ...LOCAL_PROVIDER,

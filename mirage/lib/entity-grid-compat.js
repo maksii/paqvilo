@@ -364,12 +364,19 @@
       LogicalName: control.querySelector('input[id$="_EntityFormView_EntityName"]')?.value ?? '',
       Id: (control.querySelector('input[id$="_EntityFormView_EntityID"]')?.value ?? '').replace(/[{}]/g, ''),
     };
+    const formAction = button.dataset.ppFormAction;
+    const body = formAction
+      ? {
+          action: formAction,
+          actionIndex: Number(button.dataset.ppActionIndex),
+          recordId: reference.Id,
+          values: {},
+          query: Object.fromEntries(new URLSearchParams(location.search)),
+          pageUrl: location.pathname + location.search,
+        }
+      : { entityReference: reference };
     const submit = () =>
-      post(
-        /* NOSONAR */ button.getAttribute('data-url') || location.href,
-        { entityReference: reference },
-        { json: false },
-      ).then(
+      post(/* NOSONAR */ button.getAttribute('data-url') || location.href, body, { json: false }).then(
         // NOSONAR: read actual attributes, not inherited dataset properties
         // NOSONAR: actual attributes exclude inherited dataset values
         () => location.reload(),
@@ -2168,8 +2175,9 @@
     const url = `${note.AttachmentUrl}?t=${Date.now()}`;
     const toolbar = bs5NoteToolbar(note);
     const attachment = bs5NoteAttachment(note, url);
+    const text = esc(note.UnformattedText).replaceAll(/\r\n?|\n/g, '<br />');
     const postedBy = note.PostedByName ? `<div class="createdby text-muted">${esc(note.PostedByName)}</div>` : '';
-    return `<div class="note" data-attachmentfilename="${esc(note.AttachmentFileName ?? '')}" data-attachmentfilesize="${esc(note.AttachmentSizeDisplay ?? '')}" data-attachmentisimage="${note.AttachmentIsImage}" data-attachmenturl="${esc(url)}" data-candelete="${note.CanDelete}" data-canedit="${note.CanWrite}" data-hasattachment="${note.HasAttachment}" data-id="${esc(note.Id)}" data-isprivate="${note.IsPrivate}" data-subject="${esc(note.Subject ?? '')}" data-unformattedtext="${esc(note.UnformattedText)}"><div class="row"><div class="col-md-3 metadata"><div class="postedon" tabindex="0"><abbr class="timeago" data-datetime="${esc(note.CreatedOnDisplay ?? '')}" title="${esc(stamp && pattern ? formatLocal(stamp, pattern) : (note.CreatedOnDisplay ?? ''))}">${esc(stamp ? timeAgo(stamp) : (note.CreatedOnDisplay ?? ''))}</abbr></div>${postedBy}${note.IsPrivate ? '<div class="label label-warning">Private</div>' : ''}</div><div class="col-md-9 content">${toolbar}<div class="text" tabindex="1">${note.UnformattedText ?? ''}</div>${attachment}</div></div></div>`;
+    return `<div class="note" data-attachmentfilename="${esc(note.AttachmentFileName ?? '')}" data-attachmentfilesize="${esc(note.AttachmentSizeDisplay ?? '')}" data-attachmentisimage="${note.AttachmentIsImage}" data-attachmenturl="${esc(url)}" data-candelete="${note.CanDelete}" data-canedit="${note.CanWrite}" data-hasattachment="${note.HasAttachment}" data-id="${esc(note.Id)}" data-isprivate="${note.IsPrivate}" data-subject="${esc(note.Subject ?? '')}" data-unformattedtext="${esc(note.UnformattedText)}"><div class="row"><div class="col-md-3 metadata"><div class="postedon" tabindex="0"><abbr class="timeago" data-datetime="${esc(note.CreatedOnDisplay ?? '')}" title="${esc(stamp && pattern ? formatLocal(stamp, pattern) : (note.CreatedOnDisplay ?? ''))}">${esc(stamp ? timeAgo(stamp) : (note.CreatedOnDisplay ?? ''))}</abbr></div>${postedBy}${note.IsPrivate ? '<div class="label label-warning">Private</div>' : ''}</div><div class="col-md-9 content">${toolbar}<div class="text" tabindex="1">${text}</div>${attachment}</div></div></div>`;
   }
 
   function initNotes(container) {
@@ -2183,7 +2191,8 @@
       }
     })();
     const list = container.querySelector('.notes');
-    const state = { page: 1 };
+    const pager = container.querySelector('.notes-pagination');
+    const state = { page: 1, request: 0 };
     // The Bootstrap 5 control (data-bs-target) moves its dialogs to the document body and shows
     // its list only when it has notes.
     const bs5 = container.hasAttribute('data-bs-target'); // NOSONAR: actual attributes exclude inherited dataset values
@@ -2205,6 +2214,7 @@
       }
     };
     const load = (page = 1) => {
+      const request = ++state.request;
       state.page = page;
       show('.notes-loading');
       return post(
@@ -2219,11 +2229,11 @@
         bs5 ? { jsonType: 'application/json', global: false } : {},
       )
         .then((data) => {
+          if (request !== state.request) return;
+          const pages = Number(data.PageCount);
+          if (Number.isSafeInteger(pages) && pages >= 0 && page > Math.max(1, pages)) return load(Math.max(1, pages));
           show(data.Records?.length ? null : '.notes-empty');
-          // The Bootstrap 5 control hides its pager for a single page of notes; without notes the
-          // pager is left as rendered.
-          const pager = bs5 && container.querySelector('.notes-pagination');
-          if (pager && data.Records?.length && !((data.PageCount ?? 0) > 1)) pager.style.display = 'none'; // NOSONAR: operand can be NaN or undefined, the negated test differs
+          renderNotesPagination(pager, pages, page, data.Records?.length, bs5);
           const pattern = document.body?.getAttribute('data-datetimeformat'); // NOSONAR: actual attributes exclude inherited dataset values
           const legacyNoteCard = (note) => {
             const toolbar = note.DisplayToolbar
@@ -2240,11 +2250,16 @@
           trigger(container, 'loaded');
         })
         .catch((error) => {
+          if (request !== state.request) return;
           show('.notes-error');
           const details = container.querySelector('.notes-error .details');
           if (details) details.textContent = error.message;
         });
     };
+    pager?.addEventListener('click', (event) => {
+      const button = event.target.closest('button[data-page]');
+      if (button && !button.disabled) void load(Number(button.dataset.page));
+    });
     const readFile = (input) =>
       new Promise((resolve, reject) => {
         const file = input?.files?.[0];
@@ -2370,6 +2385,29 @@
       if (event.target === container) void load(Number(page) || state.page);
     });
     void load(1);
+  }
+
+  function notesPageButton(page, label, disabled, bs5) {
+    const item = bs5 ? ' class="page-item"' : '';
+    const css = bs5 ? 'page-link' : 'btn btn-default btn-sm';
+    return `<li${item}><button type="button" class="${css}" data-page="${page}"${disabled ? ' disabled' : ''}>${label}</button></li>`;
+  }
+
+  function renderNotesPagination(pager, pages, page, records, bs5) {
+    if (!pager) return;
+    // The Bootstrap 5 control hides its pager for one populated page and leaves the initial empty one alone.
+    if (Number.isSafeInteger(pages) && pages > 1 && records) {
+      pager.dataset.pages = String(pages);
+      pager.dataset.currentPage = String(page);
+      pager.style.removeProperty('display');
+      pager.innerHTML = `<ul class="pagination">${notesPageButton(page - 1, 'Previous page', page <= 1, bs5)}<li aria-current="page"><span class="${bs5 ? 'page-link' : ''}">Page ${page} of ${pages}</span></li>${notesPageButton(page + 1, 'Next page', page >= pages, bs5)}</ul>`;
+      return;
+    }
+    pager.replaceChildren();
+    pager.dataset.pages = '1';
+    pager.dataset.currentPage = '1';
+    if (records && bs5) pager.style.display = 'none';
+    else if (pager.style.display) pager.style.removeProperty('display');
   }
 
   // ---- metadata filter apply (serialized-query)

@@ -21,7 +21,7 @@ test('imported Web API view columns combine with explicit fields without exposin
   const files = {
     'portal/website.yml': 'adx_websiteid: invented-site\nadx_name: Invented column-view site',
     'portal/settings.sitesetting.yml':
-      "- adx_name: Webapi/viewwidget/enabled\n  adx_value: 'true'\n- adx_name: Webapi/viewwidget/fields\n  adx_value: tagline,subject\n- adx_name: Webapi/viewwidget/UseFieldsFromView\n  adx_value: 'true'",
+      "- adx_name: Webapi/viewwidget/enabled\n  adx_value: 'true'\n- adx_name: Webapi/viewwidget/fields\n  adx_value: tagline,subject,unknowncolumn\n- adx_name: Webapi/viewwidget/UseFieldsFromView\n  adx_value: 'true'",
     'solution/Entities/viewwidget/Entity.xml': `<Entity><Name>viewwidget</Name><EntityInfo><entity><IsActivity>1</IsActivity><attributes>${attribute('activityid', 'primarykey')}${attribute('subject')}${attribute('title')}${attribute('tagline')}${attribute('groupid', 'lookup')}${attribute('filteronly')}${attribute('sortonly')}${attribute('relatedlabel')}</attributes></entity></EntityInfo></Entity>`,
     'solution/Entities/viewwidget/SavedQueries/{column-view}.xml':
       '<savedqueries><savedquery><savedqueryid>{column-view}</savedqueryid><querytype>0</querytype><layoutxml><grid><row><cell name="title"/><cell name="groupid"/><cell name="g.relatedlabel"/></row></grid></layoutxml><fetchxml><fetch><entity name="viewwidget"><attribute name="title"/><attribute name="groupid"/><attribute name="filteronly"/><attribute name="sortonly"/><filter><condition attribute="filteronly" operator="eq" value="included"/></filter><order attribute="sortonly"/><link-entity name="viewgroup" alias="g" from="viewgroupid" to="groupid"><attribute name="relatedlabel"/></link-entity></entity></fetch></fetchxml><LocalizedNames><LocalizedName description="Power Pages Web API Columns" languagecode="1033"/></LocalizedNames></savedquery></savedqueries>',
@@ -90,12 +90,14 @@ test('imported Web API view columns combine with explicit fields without exposin
     tagline: 'Explicit tagline',
     _groupid_value: groupId,
   });
-  const inherited = await get({ $select: 'subject,activityid' });
-  assert.equal(inherited.status, 403);
-  assert.deepEqual((await inherited.json()).error, {
-    code: '90040101',
-    message: 'Attribute All Columns is not enabled for Web Api.',
-  });
+  for (const $select of ['subject,activityid', 'subject,unknowncolumn']) {
+    const inherited = await get({ $select });
+    assert.equal(inherited.status, 403, $select);
+    assert.deepEqual((await inherited.json()).error, {
+      code: '90040101',
+      message: 'Attribute All Columns is not enabled for Web Api.',
+    });
+  }
   for (const query of [
     { $select: 'relatedlabel' },
     { $select: 'filteronly' },

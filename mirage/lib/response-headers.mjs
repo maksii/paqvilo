@@ -19,7 +19,7 @@ export function sitePolicy(portal) {
     return { policy: null, reason: 'disabled' };
   if (lower(siteSetting(portal, 'HTTP/Content-Security-Policy/InjectHeader')) === 'false')
     return { policy: null, reason: 'not-injected' };
-  if (/'nonce/i.test(value)) return { policy: null, reason: 'nonce' };
+  if (nonceSource(value)) return { policy: null, reason: 'nonce' };
   return { policy: value, reason: 'site-setting' };
 }
 /** HTTP/* settings handled separately or not sent by the loopback runtime. */
@@ -27,6 +27,44 @@ const SEPARATE = new Set(['content-security-policy', 'content-security-policy-re
 // Access-Control-* answer cross-origin requests and are not echoed on loopback;
 // Strict-Transport-Security belongs to the HTTPS hosting front end.
 const NOT_ECHOED = /^(?:access-control-.*|strict-transport-security)$/;
+const nonceSource = (value) => /'nonce/i.test(value);
+const REPORT_ONLY_SETTING = 'HTTP/Content-Security-Policy-Report-Only';
+
+const configuredValue = (portal, name) => String(siteSetting(portal, name) ?? '').trim();
+
+/** Report source-declared policies whose hosted handling is outside local HTTP header simulation. */
+export function siteHttpPolicyDiagnostics(portal) {
+  const diagnostics = [];
+  const cors = Object.keys(portal.settings ?? {})
+    .filter((name) => /^http\/access-control-[a-z0-9-]+$/i.test(name) && configuredValue(portal, name))
+    .map((name) => name.toLowerCase())
+    .sort(/* NOSONAR: preserve default string coercion */);
+  if (cors.length)
+    diagnostics.push({
+      code: 'PORTAL_HTTP_CORS_UNSUPPORTED',
+      severity: 'warning',
+      settings: [...new Set(cors)],
+      message: 'The local portal does not apply the exported CORS settings to cross-origin admission.',
+    });
+  if (configuredValue(portal, 'HTTP/Strict-Transport-Security'))
+    diagnostics.push({
+      code: 'PORTAL_HTTP_HSTS_UNSUPPORTED',
+      severity: 'warning',
+      settings: ['http/strict-transport-security'],
+      message: 'The local HTTP listener cannot verify the configured HSTS policy of the hosted HTTPS front end.',
+    });
+  const nonce = [];
+  if (sitePolicy(portal).reason === 'nonce') nonce.push('http/content-security-policy');
+  if (nonceSource(configuredValue(portal, REPORT_ONLY_SETTING))) nonce.push(REPORT_ONLY_SETTING.toLowerCase());
+  if (nonce.length)
+    diagnostics.push({
+      code: 'PORTAL_HTTP_CSP_NONCE_UNSUPPORTED',
+      severity: 'warning',
+      settings: nonce,
+      message: 'The local portal omits the configured nonce policy because it does not issue matching script nonces.',
+    });
+  return diagnostics;
+}
 
 /**
  * Portal page and web file headers derived only from HTTP/* site settings, one header
@@ -64,8 +102,8 @@ function appendPolicyHeaders(headers, portal, confinement) {
   headers['x-frame-options'] = String(siteSetting(portal, 'HTTP/X-Frame-Options') ?? '').trim() || 'SAMEORIGIN';
   const policies = [sitePolicy(portal).policy, confinement].filter(Boolean);
   if (policies.length) headers['content-security-policy'] = policies.length === 1 ? policies[0] : policies;
-  const reportOnly = String(siteSetting(portal, 'HTTP/Content-Security-Policy-Report-Only') ?? '').trim();
-  if (reportOnly && !/'nonce/i.test(reportOnly)) headers['content-security-policy-report-only'] = reportOnly;
+  const reportOnly = configuredValue(portal, REPORT_ONLY_SETTING);
+  if (reportOnly && !nonceSource(reportOnly)) headers['content-security-policy-report-only'] = reportOnly;
 }
 
 function appendObservedHeaders(headers, portal, kind) {

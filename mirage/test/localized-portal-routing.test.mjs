@@ -5,6 +5,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { stringify } from 'yaml';
+import { createSourceInspector } from '../../lense/source-inspection.mjs';
 import { createSimulator } from '../api.mjs';
 import { AssetCache } from '../lib/asset-cache.mjs';
 import { importPortal } from '../lib/importer.mjs';
@@ -28,7 +29,13 @@ const PUBLISHED_LINK_SET = '77777777-7777-4777-8777-777777777721';
 
 async function fixture(
   t,
-  { displayLanguageCode = true, authoredDescription, customErrors = false, withState = false } = {},
+  {
+    displayLanguageCode = true,
+    authoredDescription,
+    customErrors = false,
+    withState = false,
+    inspectionSnippets = false,
+  } = {},
 ) {
   const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'localized-portal-routing-'));
   const owned = ownedFixture(t);
@@ -201,6 +208,14 @@ async function fixture(
     files[`${name}.webtemplate.yml`] = record('webtemplate', `template-${name}`);
     files[`${name}.webtemplate.source.html`] =
       `${name}|{{ page.adx_entityform.id }}|{{ page.adx_webform.id }}|{{ page.adx_entitylist.id }}`;
+    if (inspectionSnippets) {
+      files[`${name}.webtemplate.source.html`] += `|{{ snippets['Fixture label'] }}`;
+      files[`${name}.contentsnippet.yml`] = record('contentsnippet', `${name}-label`, {
+        name: 'Fixture label',
+        contentsnippetlanguageid: name === 'english' ? 'en' : 'fr',
+      });
+      files[`${name}.contentsnippet.value.html`] = `<p id="${name}-label">${name}</p>`;
+    }
   }
   for (const [file, value] of Object.entries(files))
     await fs.writeFile(path.join(dir, file), typeof value === 'string' ? value : stringify(value));
@@ -249,6 +264,82 @@ test('language pages render their own template and form bindings and enforce the
 
   const resources = resolvePageResources(await importPortal(dir), '/fr-FR/visible/');
   assert.equal(resources.pageTemplate.id, 'template-french');
+});
+
+test('page inspection follows the localized publishing preview cookie across cached reports', async (t) => {
+  const { app, get } = await fixture(t);
+  const editor = signInHeaders(app, CONTACT, { roles: ['Editor'] });
+  const pagePath = '/fr-FR/restricted/';
+  const inspectUrl = new URL('/_sim/api/page-resources', app.adminOrigin);
+  inspectUrl.searchParams.set('path', pagePath);
+  for (const [value, status] of [
+    ['true', 200],
+    ['false', 403],
+    ['invalid', 403],
+    ['true', 200],
+  ]) {
+    const headers = { cookie: `${editor.cookie}; adxPreviewUnpublishedEntities=${value}` };
+    const pageResponse = await get(pagePath, { headers });
+    assert.equal(pageResponse.status, status, value);
+    const inspected = await fetch(inspectUrl, { headers });
+    assert.equal(inspected.status, 200);
+    const report = await inspected.json();
+    assert.equal(report.route.language.code, 'fr-FR');
+    assert.equal(report.page.access.status, pageResponse.status, value);
+    assert.equal(report.page.access.allowed, status === 200, value);
+    assert.equal(report.page.access.code, status === 403 ? 'PAGE_UNPUBLISHED' : null, value);
+  }
+});
+
+test('page inspection uses the same request language as the portal and keeps localized source links', async (t) => {
+  const { app, dir, get } = await fixture(t, { inspectionSnippets: true });
+  const contact = signInHeaders(app, CONTACT);
+  const cases = [
+    ['/restricted/', 'en-US', 'en-US', 'english', 200],
+    ['/restricted/', 'fr-FR', 'fr-FR', 'french', 403],
+    ['/restricted/', null, 'fr-FR', 'french', 403],
+    ['/en-US/restricted/', 'fr-FR', 'en-US', 'english', 200],
+    ['/fr-FR/restricted/', 'en-US', 'fr-FR', 'french', 403],
+    ['/restricted/', 'en-US', 'en-US', 'english', 200],
+  ];
+  const reports = [];
+  for (const [route, cookie, code, name, status] of cases) {
+    const headers = cookie ? { cookie: `${contact.cookie}; ContextLanguageCode=${cookie}` } : contact;
+    const response = await get(route, { headers });
+    assert.equal(response.status, status, `${route} ${cookie}`);
+    await response.arrayBuffer();
+    const inspect = new URL('/_sim/api/page-resources', app.adminOrigin);
+    inspect.searchParams.set('path', route);
+    const inspected = await fetch(inspect, { headers });
+    assert.equal(inspected.status, 200);
+    const report = await inspected.json();
+    assert.equal(report.page.access.status, response.status, `${route} ${cookie}`);
+    assert.equal(report.page.access.code, status === 403 ? 'PAGE_UNPUBLISHED' : null);
+    assert.equal(report.pageTemplate.id, `template-${name}`);
+    const snippet = report.snippets.find((row) => row.recordId === `${name}-label`);
+    assert.equal(snippet?.value, `<p id="${name}-label">${name}</p>`);
+    assert.equal(snippet.sourceValue, snippet.value);
+    reports.push({ report, code });
+  }
+  for (const { report, code } of reports) assert.equal(report.language.code, code);
+
+  const inspector = createSourceInspector({ sourceDir: dir });
+  const offline = (await inspector.inspect('/restricted/')).report;
+  assert.equal(offline.pageTemplate.id, 'template-english');
+  const enriched = await inspector.enrich(reports[1].report);
+  assert.ok(enriched.elementSources.some((row) => row.selector === '#french-label' && row.recordId === 'french-label'));
+  const source = enriched.portalSources.find((row) => row.recordId === 'french-label');
+  assert.ok(source);
+  assert.equal(source.languageId, 'fr');
+  const opened = await inspector.lookupSource({
+    sourceKey: source.key,
+    sourceRevision: source.sourceRevision,
+    contentRevision: source.contentRevision,
+    languageId: enriched.language.id,
+    route: enriched.requestPath,
+  });
+  assert.equal(opened.state, 'exact');
+  assert.equal(opened.editorTarget.file, path.join(dir, 'french.contentsnippet.value.html'));
 });
 
 test('rendered sitemap checks web file shortcuts, localized parents and external target precedence', async (t) => {

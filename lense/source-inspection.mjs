@@ -3101,14 +3101,15 @@ export function createSourceInspector(cfg) {
       // never label an older parsed body with the newer file's stamp.
       const signature = await fingerprint(sources);
       const initial = await variant();
-      const select = async (route, rendered = {}) => {
+      const select = async (route, rendered = {}, requestLanguageId = null) => {
         const pathname = String(route ?? '/').split(/[?#]/)[0];
         const prefix = pathname.split('/')[1];
         const direct = initial.portal.pages.some(
           (page) => normalizePortalPath(page.url) === normalizePortalPath(pathname),
         );
-        const language =
+        const pathLanguage =
           !direct && initial.portal.websiteLanguages?.find((row) => row.code?.toLowerCase() === prefix?.toLowerCase());
+        const language = pathLanguage || initial.portal.websiteLanguages?.find((row) => row.id === requestLanguageId);
         const selected = language ? await variant(language) : initial;
         const admitted = admittedTables.get(language?.id ?? '') ?? new Set();
         const declared = [
@@ -3122,7 +3123,7 @@ export function createSourceInspector(cfg) {
         return {
           ...selected,
           language,
-          route: language ? pathname.slice(prefix.length + 1) || '/' : pathname,
+          route: pathLanguage ? pathname.slice(prefix.length + 1) || '/' : pathname,
           requestPath: pathname,
           // Load further exported tables the enrichment finds (Liquid, Web API, lookups) into this language's catalogue.
           loadTables: (names) => admit(selected, language, names),
@@ -3230,9 +3231,9 @@ export function createSourceInspector(cfg) {
       const selected = await select(route);
       return { catalogue: selected.codeCatalogue, roots: sources.roots, sourceDir: sources.sourceDir };
     },
-    async sourceIndexFor(route = '/', selection = null) {
+    async sourceIndexFor(route = '/', selection = null, languageId = null) {
       const { select, sources } = await load();
-      const selected = await select(route);
+      const selected = await select(route, {}, languageId);
       let { portal, metadata } = selected;
       const { language } = selected;
       if (
@@ -3267,12 +3268,13 @@ export function createSourceInspector(cfg) {
       contentRevision,
       region,
       route = '/',
+      languageId = null,
       selection = null,
       portalProfile = selection,
     } = {}) {
       // Editor links must re-import current identities, never trust a stale file+array ordinal.
       this.invalidate();
-      const index = await this.sourceIndexFor(route, portalProfile);
+      const index = await this.sourceIndexFor(route, portalProfile, languageId);
       const matches = [...index.sources.values()].filter(
         (source) => source.key === sourceKey || source.id === sourceKey,
       );
@@ -3344,9 +3346,10 @@ export function createSourceInspector(cfg) {
         throw new TypeError('Source inspection requires a page report object.');
       const { sources, select } = await load();
       const route = report.requestPath ?? report.path;
-      const selected = await select(route, rendered);
+      const languageId = report.language?.id ?? null;
+      const selected = await select(route, rendered, languageId);
       const { codeCatalogue } = selected;
-      const index = await this.sourceIndexFor(route, report.portalProfile);
+      const index = await this.sourceIndexFor(route, report.portalProfile, languageId);
       const { portal, metadata } = index;
       const enriched = await remember('enrich:' + JSON.stringify([report, rendered]), async () => {
         counters.enrichments++;

@@ -17,7 +17,7 @@ const ITEM = '77777777-7777-4777-8777-777777777772';
 const OTHER = '77777777-7777-4777-8777-777777777773';
 const CONTACT = '77777777-7777-4777-8777-777777777774';
 
-async function simulator(t, { images = false, fullImage = false, applicationUser } = {}) {
+async function simulator(t, { images = false, fullImage = false, applicationUser, observed } = {}) {
   const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'portal-file-columns-'));
   let app;
   // Every runtime this helper starts is closed by its own registration (ownedClose), before the state directory is
@@ -100,14 +100,14 @@ async function simulator(t, { images = false, fullImage = false, applicationUser
     stateFile: path.join(dir, 'state.json'),
     initial,
     watch: false,
-    ...(applicationUser
-      ? {
-          observed: {
+    observed:
+      observed ??
+      (applicationUser
+        ? {
             portalApplicationUserId: applicationUser,
             evidence: 'Invented loopback application principal without a field-security profile.',
-          },
-        }
-      : {}),
+          }
+        : null),
   };
   app = ownedClose(t, await createSimulator(options));
   let cookie, token;
@@ -414,6 +414,41 @@ test('portal file ranges return partial bytes and reject continuation after repl
   assert.equal((await call('PATCH', file, 'other', bytes)).status, 204);
   const replaced = await call('GET', `${file}/$value`, undefined, { Range: 'bytes=2-9', 'If-Match': etag });
   assert.equal(replaced.status, 412);
+});
+
+// @test-kind observation: authorized Power Pages file range and repeat browser receipts in paqvilo-developer .paqvilo/pages-gaps-audit/file-range-portal-authorized.json and file-range-portal-repeat.json
+test('observed portal file range matches the captured download envelopes', async (t) => {
+  const { call } = await simulator(t, {
+    observed: { webApiFileDownload: 'portal-range', evidence: 'Authorized Power Pages file range browser receipts.' },
+  });
+  const file = `x_items(${ITEM})/x_doc`;
+  // The synthetic source body matches the full and prefix digests in both browser receipts.
+  const content = 'Paqvilo synthetic file range fixture\n0123456789abcdefghijklmnopqrstuvwxyz\n';
+  const upload = await call('PATCH', file, content, {
+    'content-type': 'application/octet-stream',
+    'x-ms-file-name': 'invented.txt',
+  });
+  assert.equal(upload.status, 204);
+  for (const [headers, status, contentRange, bytes] of [
+    [{}, 200, null, content],
+    [{ Range: 'bytes=0-15' }, 206, 'bytes 0-15/74', content.slice(0, 16)],
+    [{ Range: 'bytes=0-15', 'If-Range': '"different"' }, 206, 'bytes 0-15/74', content.slice(0, 16)],
+    [{ Range: 'bytes=-8' }, 206, 'bytes 0-8/74', content.slice(0, 9)],
+  ]) {
+    const response = await call('GET', `${file}/$value`, undefined, headers);
+    assert.equal(response.status, status);
+    assert.equal(response.headers.get('content-range'), contentRange);
+    assert.equal(response.headers.get('content-type'), 'application/octet-stream');
+    assert.equal(response.headers.get('etag'), null);
+    assert.equal(response.headers.get('accept-ranges'), null);
+    assert.equal(response.headers.get('content-length'), String(Buffer.byteLength(bytes)));
+    assert.deepEqual(Buffer.from(await response.arrayBuffer()), Buffer.from(bytes));
+  }
+  const outside = await call('GET', `${file}/$value`, undefined, { Range: 'bytes=74-80' });
+  assert.equal(outside.status, 416);
+  assert.match(outside.headers.get('content-type'), /^application\/json;\s*charset=utf-8$/i);
+  for (const header of ['content-range', 'etag', 'accept-ranges']) assert.equal(outside.headers.get(header), null);
+  assert.equal((await outside.json()).error.code, '9004010D');
 });
 
 test('closing the runtime drains an accepted blob release before its state directory is removed', async () => {

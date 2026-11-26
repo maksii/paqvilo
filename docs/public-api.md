@@ -257,7 +257,7 @@ The `createSimulator` handle exposes fields fixed for the runtime's life:
 | `setupUrl`                | `/_setup/` on the administration origin                                                               | Same                              |
 | `appsOrigin`, `appsUrl`   | Apps origin on its own ephemeral port, and its root                                                   | Absent                            |
 | `csrf`                    | Administration token, sent as `x-sim-csrf`; also in `state()` and status                              | Same                              |
-| `portalToken`             | The `__RequestVerificationToken` value portal forms send                                              | Absent                            |
+| `portalToken`             | The `__RequestVerificationToken` value for programmatic portal requests                               | Absent                            |
 | `appsToken`               | Token the apps pages send                                                                             | Equals the main page token        |
 
 A client that sends neither `Sec-Fetch-Site` nor `Origin` (Node `fetch`, `connectRuntime`) uses `/_sim/api`

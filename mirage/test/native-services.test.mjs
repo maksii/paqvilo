@@ -567,6 +567,83 @@ test('portal notes follow the KnowledgeManagement/NotesFilter site setting, *WEB
   );
 });
 
+async function assertPrivateNoteAccess(t, hideSubject = false) {
+  const { app, get } = await fixture(t);
+  const state = app.store.snapshot();
+  const other = 'c0000000-0000-4000-8000-000000000002';
+  const privateId = 'e0000000-0000-4000-8000-000000000003';
+  const genericId = 'e0000000-0000-4000-8000-000000000004';
+  state.tables.contact.push({ contactid: other, fullname: 'Other Reader', statecode: 0 });
+  if (hideSubject) {
+    state.mappings.annotation.fields = {
+      ...state.mappings.annotation.fields,
+      subject: { dataverseType: 'nvarchar', validForRead: false },
+    };
+  }
+  const annotation = {
+    objecttypecode: 'contact',
+    objectid: { id: CONTACT, logical_name: 'contact' },
+    filename: 'fixture.txt',
+    mimetype: 'text/plain',
+    documentbody: Buffer.from('attachment bytes').toString('base64'),
+  };
+  state.tables.annotation.push(
+    {
+      ...annotation,
+      annotationid: privateId,
+      subject: `Note created on 1/2/2026 3:04 AM by Ada [contact:${CONTACT}] *PRIVATE*`,
+      notetext: '*WEB*Invented private note',
+    },
+    {
+      ...annotation,
+      annotationid: genericId,
+      subject: 'Invented generic attachment',
+      notetext: '',
+    },
+  );
+  state.permissions.find((rule) => rule.entity === 'annotation').roles = [];
+  await app.store.replaceState(state);
+
+  const otherHeaders = signInHeaders(app, other, { roles: ['Editor'] });
+  const list = async (headers) => {
+    const response = await fetch(`${app.url}/_services/entity-notes/${SITE}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', __RequestVerificationToken: app.csrf, ...headers },
+      body: JSON.stringify({ regarding: { LogicalName: 'contact', Id: CONTACT } }),
+    });
+    assert.equal(response.status, 200);
+    return (await response.json()).Records;
+  };
+  const authorNotes = await list(signInHeaders(app, CONTACT, { roles: ['Editor'] }));
+  const privateNote = authorNotes.find((record) => record.Id === privateId);
+  assert.ok(privateNote);
+  if (hideSubject) assert.equal(privateNote.Subject, '');
+  const otherNotes = await list(otherHeaders);
+  assert.equal(
+    otherNotes.some((record) => record.Id === privateId || record.Id === genericId),
+    false,
+  );
+
+  const privateLink = `/_entity/annotation/${privateId}/${SITE}`;
+  const genericLink = `/_entity/annotation/${genericId}`;
+  assert.equal((await get(privateLink)).status, 200);
+  for (const headers of [{}, otherHeaders]) {
+    assert.equal((await fetch(app.url + privateLink, { headers })).status, 404);
+    assert.equal((await fetch(app.url + privateLink, { headers, method: 'HEAD' })).status, 404);
+    assert.equal((await fetch(app.url + genericLink, { headers })).status, 200);
+  }
+}
+
+// @test-kind security: native private note downloads use the same contact visibility as the notes listing.
+test('private native notes restrict their attachment links to the listed author', async (t) => {
+  await assertPrivateNoteAccess(t);
+});
+
+// @test-kind security: a hidden subject must preserve the independently enforced private note visibility rule.
+test('private native notes stay private when field security hides the subject marker', async (t) => {
+  await assertPrivateNoteAccess(t, true);
+});
+
 test("notes follow the request's createdon direction and keep creation order for notes of the same instant", async (t) => {
   const { app, post } = await fixture(t);
   const state = app.store.snapshot();

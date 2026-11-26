@@ -6,6 +6,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { DataError } from './data.mjs';
+import { collectFetchXmlPages } from './paging-validation.mjs';
 import { csvCell } from './csv.mjs';
 import { isExactNumeric } from './exact-numeric.mjs';
 import { xmlAttributes, xmlStartTag, xmlTokens } from './xml-text.mjs';
@@ -2250,7 +2251,9 @@ function reportPlaceholder(context, placeholder, pathname) {
 }
 
 // The page token, or the admin token when the context names one (an empty or missing admin token matches nothing).
-const bodyTokenAccepted = (token, context) => sameToken(token, context.csrf) || sameToken(token, context.adminToken);
+const bodyTokenAccepted = (token, context) =>
+  sameToken(token, context.expectedBodyCsrf ? context.expectedBodyCsrf(token) : context.csrf) ||
+  sameToken(token, context.adminToken);
 
 /** A note form body: JSON, urlencoded fields or multipart (the file part becomes {name, type, content}). */
 /* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ async function readNoteBody(req) {
@@ -2560,39 +2563,84 @@ function defaultStatus(metadata, entity, state) {
   );
 }
 
+// Undefined means an ordinary annotation. A private note is visible only to its marked author.
+function privateNoteVisibility(row, contact) {
+  const subject = String(row.subject ?? '');
+  if (!subject.includes('*PRIVATE*')) return undefined;
+  return Boolean(contact) && subject.toLowerCase().includes(`[contact:${contact}]`);
+}
+
+// Evaluate the stored marker only for rows already admitted by the portal read. Pass on just the visibility decision.
+function annotationNoteVisibility(context, row, stored, contact, id) {
+  if (context.config?.mode === 'live') return privateNoteVisibility(row, contact);
+  if (stored) return privateNoteVisibility(stored, contact);
+  if (context.store?.portalAuthorization?.canReadRawColumn?.(context.identity, 'annotation', 'subject', id) === false)
+    return false;
+  return privateNoteVisibility(row, contact);
+}
+
+function canDownloadAnnotation(context, row, id) {
+  const stored =
+    context.config?.mode === 'live'
+      ? null
+      : context.store?.tableRows?.('annotation').find((item) => canonical(item.annotationid) === canonical(id));
+  const contact = canonical(context.identity?.contactId ?? context.identity?.id);
+  return annotationNoteVisibility(context, row, stored, contact, id) !== false;
+}
+
 /** Notes (annotations) visible on portal forms: the NotesFilter prefix (`*WEB*`), private notes only for their author. */
-export function portalNotes(rows, identity, prefix = '*WEB*') {
+export function portalNotes(rows, identity, prefix = '*WEB*', visibility = privateNoteVisibility) {
   const contact = canonical(identity?.contactId ?? identity?.id);
-  return rows.filter((row) => {
-    const text = String(row.notetext ?? '');
-    const subject = String(row.subject ?? '');
-    const isPrivate = subject.includes('*PRIVATE*');
-    return (
-      (text.startsWith(prefix) && !isPrivate) ||
-      (isPrivate && contact && subject.toLowerCase().includes(`[contact:${contact}]`))
-    );
-  });
+  return rows.filter((row) => visibility(row, contact) ?? String(row.notetext ?? '').startsWith(prefix));
+}
+
+// Note totals are calculated after portal visibility rules, so a provider total is insufficient.
+// Bound repeated reads of annotation payloads on each request and refuse an incomplete total.
+async function readAnnotationPages(context, query, idColumn) {
+  try {
+    const { records } = await collectFetchXmlPages({
+      idColumn,
+      maxPages: 4,
+      readPage: async ({ page, cookie, pageSize }) => {
+        const continuation = cookie ? ` paging-cookie="${xmlEscape(cookie)}"` : '';
+        const result = await context.readProvider.fetchXml(
+          `<fetch count="${pageSize}" page="${page}"${continuation}>${query}</fetch>`,
+          context.identity,
+        );
+        return { ...result, entities: result.entities ?? result.value };
+      },
+    });
+    return records;
+  } catch (error) {
+    if (error.status ?? error.statusCode) throw error;
+    fail('The notes provider could not complete pagination within the supported limits.', 501, 'NotesPagingUnresolved');
+  }
 }
 
 // The notes service orders by createdon as the request's orders say (Direction 1 descending, null
 // ascending); notes of the same instant keep creation order ascending and its reverse descending.
-async function annotationRows(context, entity, id, descending = true) {
+async function annotationRows(context, entity, id, prefix, descending) {
   const mapping = mappingFor(context.store, 'annotation');
-  const xml = `<fetch><entity name="annotation"><all-attributes/><filter type="and"><condition attribute="objectid" operator="eq" value="${xmlEscape(id)}"/></filter><order attribute="createdon"/></entity></fetch>`;
-  const result = await context.readProvider.fetchXml(xml, context.identity);
+  // The paging cursor needs an explicit primary key when permission expansion adds DISTINCT.
+  const key = xmlEscape(mapping.idColumn);
+  const query = `<entity name="annotation"><all-attributes/><attribute name="${key}"/><filter type="and"><condition attribute="objectid" operator="eq" value="${xmlEscape(id)}"/></filter><order attribute="createdon"/><order attribute="${key}"/></entity>`;
+  const records = await readAnnotationPages(context, query, mapping.idColumn);
   // Notes of the same instant (seeded together) keep the order they were created in, as sequential
   // creates do natively; the query's own tie-break is the table's key order.
   let created = new Map();
   try {
     created = new Map(
-      (context.store?.tableRows?.('annotation') ?? []).map((row, index) => [canonical(row[mapping.idColumn]), index]),
+      (context.store?.tableRows?.('annotation') ?? []).map((row, index) => [
+        canonical(row[mapping.idColumn]),
+        { row, index },
+      ]),
     );
   } catch {
     created = new Map();
   }
   const time = (row) => Date.parse(row.createdon ?? '') || 0;
-  const rows = [...(result.entities ?? result.value ?? [])]
-    .map((row, index) => ({ row, index, order: created.get(canonical(row[mapping.idColumn])) ?? Infinity }))
+  const rows = records
+    .map((row, index) => ({ row, index, order: created.get(canonical(row[mapping.idColumn]))?.index ?? Infinity }))
     .sort((a, b) => {
       const byTime = time(a.row) - time(b.row);
       if (byTime) return byTime;
@@ -2601,14 +2649,16 @@ async function annotationRows(context, entity, id, descending = true) {
     })
     .map((entry) => entry.row);
   if (descending) rows.reverse();
-  return rows
-    .filter(
-      (row) =>
-        !row.objecttypecode ||
-        canonical(scalar(row.objecttypecode)) === canonical(entity) ||
-        canonical(row.objectid?.logical_name) === canonical(entity),
-    )
-    .map((row) => ({ ...row, [mapping.idColumn]: row[mapping.idColumn] }));
+  const associated = rows.filter(
+    (row) =>
+      !row.objecttypecode ||
+      canonical(scalar(row.objecttypecode)) === canonical(entity) ||
+      canonical(row.objectid?.logical_name) === canonical(entity),
+  );
+  return portalNotes(associated, context.identity, prefix, (row, contact) => {
+    const id = row[mapping.idColumn];
+    return annotationNoteVisibility(context, row, created.get(canonical(id))?.row, contact, id);
+  }).map((row) => ({ ...row }));
 }
 
 // The notes service's record Attributes: the note row's columns in the platform's order, as grid
@@ -2721,11 +2771,7 @@ const fileSizeDisplay = (bytes) =>
       ? body.orders.find((entry) => String(entry?.Attribute ?? '').toLowerCase() === 'createdon')
       : null;
     const descending = Array.isArray(body.orders) ? Number(order?.Direction) === 1 : true;
-    const rows = portalNotes(
-      await annotationRows(context, regarding.LogicalName, regarding.Id, descending),
-      context.identity,
-      prefix,
-    );
+    const rows = await annotationRows(context, regarding.LogicalName, regarding.Id, prefix, descending);
     const contact = canonical(context.identity?.contactId ?? context.identity?.id);
     const pageRows = rows.slice((page - 1) * pageSize, page * pageSize);
     for (const row of pageRows) row.filesize = await noteSize(context, row);
@@ -2904,7 +2950,7 @@ async function handleAnnotation(req, res, id, context) {
   } catch (error) {
     if (![403, 404].includes(error.status)) throw error;
   }
-  if (!note) {
+  if (!note || !canDownloadAnnotation(context, note, id)) {
     res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' });
     return res.end(req.method === 'HEAD' ? undefined : 'Not Found');
   }
@@ -3106,12 +3152,14 @@ export function antiForgeryCookie(csrf) {
   const token = /^\/_portal\/([^/]+)\/Layout\/GetAntiForgeryToken\/?$/i.exec(url.pathname);
   if (token) {
     if (canonical(token[1]) !== websiteId) return false;
+    const tokenValue = context.issueCsrf ? context.issueCsrf() : context.csrf;
+    if (context.pairedTokenCookie && tokenValue) res.appendHeader('set-cookie', antiForgeryCookie(tokenValue));
     res.writeHead(200, {
       'content-type': 'text/html; charset=utf-8',
       'cache-control': 'no-store',
-      'set-cookie': antiForgeryCookie(context.csrf),
+      ...(context.pairedTokenCookie ? {} : { 'set-cookie': antiForgeryCookie(tokenValue) }),
     });
-    res.end(`<input name="__RequestVerificationToken" type="hidden" value="${xmlEscape(context.csrf)}" />`);
+    res.end(`<input name="__RequestVerificationToken" type="hidden" value="${xmlEscape(tokenValue)}" />`);
     return true;
   }
   const match = SERVICE.exec(url.pathname);

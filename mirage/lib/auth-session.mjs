@@ -15,6 +15,7 @@ export const authCookieName = (port) => (port ? `${AUTH_COOKIE}-${port}` : AUTH_
 
 const encode = (value) => Buffer.from(JSON.stringify(value), 'utf8').toString('base64url');
 const decode = (value) => JSON.parse(Buffer.from(value, 'base64url').toString('utf8'));
+const validSessionId = (value) => typeof value === 'string' && /^[0-9a-f]{32}$/.test(value);
 
 /** Cookie header to { name: value } (first occurrence wins). */
 export function parseCookies(header = '') {
@@ -34,6 +35,7 @@ export function createAuthSessions({
   name = AUTH_COOKIE,
   clock = Date.now,
   fixedLifetime = () => null,
+  identifyIssuedSessions = false,
 } = {}) {
   const cookieName = () => (typeof name === 'function' ? name() : name) || AUTH_COOKIE;
   const signature = (payload) => createHmac('sha256', secret).update(payload).digest('base64url');
@@ -48,6 +50,7 @@ export function createAuthSessions({
             // The external identity provider that established the session (sign-out uses it).
             ...(typeof session.provider === 'string' && session.provider ? { p: session.provider } : {}),
             ...(typeof session.credentialStamp === 'string' && { cs: session.credentialStamp }),
+            ...(validSessionId(session.sessionId) && { sid: session.sessionId }),
             ...(Number.isSafeInteger(expiresAt) && { exp: expiresAt }),
           }
         : { c: null },
@@ -78,6 +81,7 @@ export function createAuthSessions({
           ...(Array.isArray(data.r) ? { roles: data.r.filter((role) => typeof role === 'string') } : {}),
           ...(typeof data.p === 'string' && data.p ? { provider: data.p } : {}),
           ...(typeof data.cs === 'string' && { credentialStamp: data.cs }),
+          ...(validSessionId(data.sid) && { sessionId: data.sid }),
           ...(Number.isSafeInteger(data.exp) && { expiresAt: data.exp }),
         };
       } catch {
@@ -85,9 +89,13 @@ export function createAuthSessions({
       }
     },
     value,
-    /** Set-Cookie header for a session ({ contactId: null } = signed out). */
+    /** Set-Cookie for an issued session. Re-signing a validated session retains its private ID. */
     cookie(session) {
-      return `${cookieName()}=${value(session)}; Path=/; HttpOnly; SameSite=Lax`;
+      const issued =
+        identifyIssuedSessions && session?.contactId && !validSessionId(session.sessionId)
+          ? { ...session, sessionId: randomBytes(16).toString('hex') }
+          : session;
+      return `${cookieName()}=${value(issued)}; Path=/; HttpOnly; SameSite=Lax`;
     },
   };
 }

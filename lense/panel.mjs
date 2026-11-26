@@ -2084,6 +2084,7 @@ export function enablePanel(context, session, opts = {}) {
             contentRevision: body.contentRevision,
             region: body.region,
             route: new URL(page.url()).pathname,
+            languageId: cfg.mirage ? (runtime?.report?.language?.id ?? null) : null,
             portalProfile: runtime?.report?.portalProfile ?? null,
           });
         let admission;

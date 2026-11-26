@@ -136,15 +136,23 @@ export function initialState({ tables = {}, mappings = {} } = {}) {
   };
 }
 
-export async function simulator(t, settings = LOCAL_PROVIDER, state = initialState(), options = {}) {
+export async function simulator(
+  t,
+  settings = LOCAL_PROVIDER,
+  state = initialState(),
+  { fixturePack, ...options } = {},
+) {
   const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'pp-external-')));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   for (const [name, body] of Object.entries(portalFiles(settings))) {
     await fs.mkdir(path.dirname(path.join(dir, name)), { recursive: true });
     await fs.writeFile(path.join(dir, name), body);
   }
+  const module = path.join(dir, 'fixture-pack.mjs');
+  if (fixturePack) await fs.writeFile(module, fixturePack);
   const app = await createSimulator({
     sourceDir: dir,
+    ...(fixturePack ? { projectRoot: dir, dataPacks: [{ module }] } : {}),
     stateFile: path.join(dir, 'state.json'),
     port: 0,
     watch: false,

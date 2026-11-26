@@ -64,6 +64,35 @@ test('blocked, inactive and disabled are explicit instead of disappearing from t
   });
 });
 
+test('inactive page and web-file sidecars keep their status with either YAML extension', (t) => {
+  const fx = fixture(t);
+  fx.write('website.yml', 'mspp_name: Enhanced test\nmspp_websiteid: mspp-audit-test\n');
+  const inactiveFiles = [];
+  for (const extension of ['yml', 'yaml']) {
+    const page = `web-pages/inactive-${extension}/Old.webpage`;
+    const css = `web-files/old-${extension}.css`;
+    fx.write(
+      `${page}.${extension}`,
+      `mspp_statecode: 1\nmspp_webpageid: inactive-${extension}\nmspp_partialurl: inactive-${extension}\n`,
+    );
+    fx.write(`${page}.custom_javascript.js`, 'void 0;');
+    fx.write(
+      `${css}.webfile.${extension}`,
+      `mspp_statecode: 1\nmspp_name: Old script styles\nmspp_partialurl: old-${extension}.css\nmspp_parentpageid: ${HOME_ID}\n`,
+    );
+    fx.write(css, '.old {}');
+    inactiveFiles.push(`${page}.custom_javascript.js`, css);
+  }
+  const report = audit(fx);
+  const status = (file) => report.resources.find((item) => item.id === file)?.status;
+  assert.deepEqual(
+    inactiveFiles.map((file) => [file, status(file)]),
+    inactiveFiles.map((file) => [file, 'inactive']),
+  );
+  assert.equal(status('web-files/app.js'), 'mapped');
+  assert.equal(report.totals.gaps, 0);
+});
+
 test('configured file and directory routes account for otherwise unregistered sources', (t) => {
   const fx = fixture(t);
   fx.write('custom/widget.js', 'console.log("widget");');

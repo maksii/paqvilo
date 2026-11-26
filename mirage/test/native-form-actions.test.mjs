@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { DataStore } from '../lib/data.mjs';
 import { submitPortalForm } from '../lib/form-service.mjs';
 import { renderComponent } from '../lib/platform.mjs';
+import { nativeFormActionApplies } from '../lib/native-form-actions.mjs';
 
 const id = '00000000-0000-4000-8000-000000000001';
 const other = '00000000-0000-4000-8000-000000000002';
@@ -67,6 +68,7 @@ async function fixture() {
 const body = (action, overrides = {}) => ({ action, recordId: id, values: {}, query: { row: id }, ...overrides });
 const submit = (options, input) => submitPortalForm('entityform', 'entry-form', input, options);
 
+// @test-kind contract: local native actions apply metadata-derived state without writing unrelated fields.
 test('native actions derive default status, skip field validation and keep unrelated values untouched', async () => {
   const options = await fixture();
   const closed = await submit(options, body('deactivate'));
@@ -87,6 +89,7 @@ test('native actions derive default status, skip field validation and keep unrel
   );
 });
 
+// @test-kind security: native action requests cannot bypass resolved configuration, record source or permissions.
 test('native action requests re-resolve configured actions, record source, metadata and permissions', async () => {
   const options = await fixture();
   for (const [input, code] of [
@@ -114,6 +117,102 @@ test('native action requests re-resolve configured actions, record source, metad
   assert.equal((await options.store.get('sample', other, options.identity)).statecode, 0);
 });
 
+// @test-kind contract: local basic form state actions re-evaluate the selected record against the exported FetchXML criterion.
+test('basic form state-action filters gate rendering and are rechecked before the update', async () => {
+  const options = await fixture();
+  const definition = options.portal.forms[0];
+  const authored = JSON.parse(definition.metadata.adx_settings);
+  const filter =
+    '<fetch><entity name="sample"><attribute name="sampleid"/><filter><condition attribute="title" operator="eq" value="Original"/></filter></entity></fetch>';
+  authored.Actions[0].FilterCriteria = filter;
+  definition.metadata.adx_settings = JSON.stringify(authored);
+  const render = (row = id, renderOptions = {}) =>
+    renderComponent(
+      'entityform',
+      'Entry',
+      {
+        identity: options.identity,
+        request: { params: { row } },
+      },
+      { ...options, ...renderOptions },
+    );
+
+  const admitted = await render();
+  assert.match(
+    admitted,
+    /data-url="\/__sim\/forms\/entityform\/entry-form\/submit"[^>]*data-pp-form-action="deactivate" data-pp-action-index="0"/,
+  );
+  assert.doesNotMatch(await render(other), /deactivate-link/);
+  assert.match(await render(other), /activate-link/);
+  assert.doesNotMatch(await render(id, { config: { mode: 'live' } }), /deactivate-link/);
+
+  await options.store.update('sample', id, { title: 'No longer eligible' }, options.identity);
+  await assert.rejects(
+    submit(options, body('deactivate', { actionIndex: 0 })),
+    (error) => error.code === 'FormActionNotEnabled' && error.status === 403,
+  );
+  assert.equal((await options.store.get('sample', id, options.identity)).statecode, 0);
+  await options.store.update('sample', id, { title: 'Original' }, options.identity);
+  await assert.rejects(
+    submit({ ...options, actionFiltersAvailable: false }, body('deactivate', { actionIndex: 0 })),
+    (error) => error.code === 'FormActionFilterUnsupported',
+  );
+  authored.Actions[0].FilterCriteria = filter.replace('name="sample"', 'name="account"');
+  definition.metadata.adx_settings = JSON.stringify(authored);
+  await assert.rejects(
+    submit(options, body('deactivate', { actionIndex: 0 })),
+    (error) => error.code === 'FormActionFilterUnsupported',
+  );
+  assert.equal((await options.store.get('sample', id, options.identity)).statecode, 0);
+  authored.Actions[0].FilterCriteria = filter;
+  definition.metadata.adx_settings = JSON.stringify(authored);
+  const done = await submit(options, body('deactivate', { actionIndex: 0 }));
+  assert.equal(done.record.statuscode, 30);
+  assert.equal(done.record.title, 'Original');
+});
+
+// @test-kind contract: a filtered state action binds the record before applying a distinct authored projection.
+test('distinct form-action projections can omit the primary key and still filter the selected record', async () => {
+  const options = await fixture();
+  const definition = options.portal.forms[0];
+  const authored = JSON.parse(definition.metadata.adx_settings);
+  const filter =
+    '<fetch distinct="true"><entity name="sample"><attribute name="title"/><filter><condition attribute="title" operator="eq" value="Original"/></filter></entity></fetch>';
+  authored.Actions[0].FilterCriteria = filter;
+  definition.metadata.adx_settings = JSON.stringify(authored);
+  const render = (row) =>
+    renderComponent('entityform', 'Entry', { identity: options.identity, request: { params: { row } } }, options);
+  assert.equal((await render(id)).includes('data-pp-form-action="deactivate"'), true);
+  assert.equal((await render(other)).includes('data-pp-form-action="deactivate"'), false);
+  await assert.rejects(
+    submit(options, body('deactivate', { recordId: other, query: { row: other } })),
+    (error) => error.code === 'FormActionNotEnabled',
+  );
+  const saved = await submit(options, body('deactivate'));
+  assert.equal(saved.recordId, id);
+  assert.equal(saved.record.statecode, 1);
+  assert.equal((await options.store.get('sample', other, options.identity)).statecode, 0);
+});
+
+// @test-kind contract: this same-table action subset refuses group and aggregate projections and other operation kinds.
+test('native state filters fail closed before evaluating unqualified query or action types', async () => {
+  const fetchXml = () => assert.fail('unsupported filters must not call the provider');
+  const scope = { entity: 'sample', idColumn: 'sampleid', recordId: id, readProvider: { fetchXml } };
+  for (const action of [
+    {
+      Type: 'DeactivateAction',
+      FilterCriteria:
+        '<fetch aggregate="true"><entity name="sample"><attribute name="title" alias="count" aggregate="count"/></entity></fetch>',
+    },
+    { Type: 'DeleteAction', FilterCriteria: '<fetch><entity name="sample" /></fetch>' },
+  ])
+    await assert.rejects(
+      nativeFormActionApplies(action, scope),
+      (error) => error.code === 'FormActionFilterUnsupported',
+    );
+});
+
+// @test-kind security: a current-user action cannot replace its target with a different contact.
 test('native current-user actions cannot select another contact even with broad table grants', async () => {
   const options = await fixture();
   options.portal.forms[0].metadata.adx_entitysourcetype = 756150002;
@@ -125,6 +224,7 @@ test('native current-user actions cannot select another contact even with broad 
   assert.equal((await submit(options, body('deactivate'))).recordId, id);
 });
 
+// @test-kind contract: invalid native action configuration gives explicit local render and write errors.
 test('malformed exported native action settings fail explicitly before rendering or writing', async () => {
   const options = await fixture();
   for (const settings of [null, [], { Actions: null }, { Actions: {} }, { Actions: [null] }, { Actions: [{}] }]) {
@@ -141,6 +241,7 @@ test('malformed exported native action settings fail explicitly before rendering
   assert.equal((await options.store.get('sample', id, options.identity)).statecode, 0);
 });
 
+// @test-kind compatibility: the rendered state action buttons retain the platform client markup.
 test('native rendering keeps state action-only forms and does not invent unresolved action controls', async () => {
   const options = await fixture(),
     diagnostics = [];

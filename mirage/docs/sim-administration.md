@@ -248,18 +248,30 @@ and it sets the binding cookie `paqvilo-mirage-ticket-<portal port>` (`HttpOnly`
 
 ### Tokens
 
-Each token is 32 random bytes, fixed for the life of the runtime.
+The three tooling tokens are 32 random bytes each, fixed for the life of the runtime.
 
 - `csrf`, the administration token: on the handle, and in `csrf` of status and state. It is accepted in `x-sim-csrf` on
-  the administration writes under `/_sim/api`, and in the body-token fields of the sign-in and persona forms. On any
-  other path the gate replaces it with the page token or the apps token before a route sees it, so it is accepted
-  wherever those tokens are, and no page carries it.
-- `portalToken`, the portal's anti-forgery token: the value the portal's markup and `/_layout/tokenhtml` carry as
-  `__RequestVerificationToken`. The portal's form posts, pack endpoint writes and native view state check it.
+  the administration writes under `/_sim/api`, and in the body-token fields of the sign-in and persona forms.
+  Portal and apps handlers also accept it on supported writes. By default those requests use the page or apps token
+  after normalization. The paired browser profile checks the trusted administration token separately. No page carries it.
+- `portalToken`, the programmatic portal anti-forgery token. By default the portal markup and `/_layout/tokenhtml`
+  also carry it as `__RequestVerificationToken`. Local form posts, pack endpoint writes and native view state check
+  the request's current verification token.
 - `appsToken`, the apps token: on the handle (on the standalone host it is the page token). The app pages send it: the
   model-driven shell in `meta[name="mirage-csrf"]`, the Canvas player in `data-csrf` and the `_csrf` field of its form
   posts, and the Code Apps `GET context` response in `x-sim-csrf`. It is accepted in `x-sim-csrf` by the apps Web API,
   the Canvas actions, the Code Apps routes and `/__sim/api/dataverse/session`.
+
+Set `identityProvider.pairedBrowserTokens` to `true` to opt a local portal into browser-specific verification. The
+browser receives a signed, runtime-scoped HttpOnly binding cookie when it first reads a portal document, account
+form, or token fragment. Verification tokens bind to that browser and its current portal sign-in. After changing
+sign-in, reload open forms or refresh the token before sending another request. Existing form, WebForms and Web API
+transport shapes apply. Programmatic callers still use `simulator.portalToken`, and the existing trusted
+administration token keeps its supported uses. Sites without this option keep the existing shared browser token.
+
+A runtime has four cookie slots for overlapping first loads. Each signed binding expires after 24 hours, and requests
+with a valid binding reuse it. More than four overlapping first issuances can reuse a slot. If a tab's binding expires
+or its slot is replaced, open the form with a fresh GET before submitting again.
 
 ### Residual
 

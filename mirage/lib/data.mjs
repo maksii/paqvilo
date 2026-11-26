@@ -4699,6 +4699,18 @@ export class DataStore {
       !identity.admin &&
       this.observed?.odataPermissionQueryPipeline === 'native-classic'
     ) {
+      // The keyed route has already run Retrieve. Its scalar projection uses the local indexed row reader
+      // without dispatching a second RetrieveMultiple or manufacturing a native collection query.
+      if (
+        options.portalPrimaryKeyProjection === true &&
+        typeof options.id === 'string' &&
+        GUID_PATTERN.test(options.id) &&
+        !paging &&
+        !options.ids &&
+        Object.keys(p).length === 1 &&
+        Object.hasOwn(p, '$select')
+      )
+        return this.queryCore(entity, params, identity, paging, options);
       if (
         (paging && (paging.offset !== 0 || paging.pageSize !== 5000 || paging.preferenceApplied)) ||
         options.id != null ||
@@ -7629,6 +7641,7 @@ export class DataStore {
       mapping: (name) => this.resolveMapping(name),
       relationships: ctx.relationships,
       readableRows: options.noBackendAdmission ? () => [] : ctx.readRows,
+      noBackendAdmission: options.noBackendAdmission === true,
       permissionLink: (node) => permissionLinkNodes.has(node),
       permissionTerminalConditions: options.permissionQuery?.generatedTerminalConditions ?? [],
       nativePagingCookies:

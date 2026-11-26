@@ -98,6 +98,7 @@ const OBSERVED_CHOICES = {
   webApiErrorDetails: ['diagnostic', 'odata-wrapper'],
   webApiWriteResponse: ['local', 'portal-classic'],
   webApiReadResponse: ['local', 'jsonnet-indented'],
+  webApiFileDownload: ['portal-range'],
   webApiRequestBody: ['strict', 'portal-classic'],
   anonymousDataAccess: ['allowed', 'blocked'],
   // Replay a recorded inactive-parent defect only for a site observed to have it.

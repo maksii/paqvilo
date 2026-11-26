@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import vm from 'node:vm';
 import { clientPortalObjectRuntime } from '../lib/portal-client-object.mjs';
-import { injectRuntime, PAGES_CLIENT_API_SCRIPT } from '../lib/platform.mjs';
+import { clientRuntime, injectRuntime, PAGES_CLIENT_API_SCRIPT } from '../lib/platform.mjs';
 import { platformShell } from '../lib/platform-manifest.mjs';
 
 const SOURCE = await fs.readFile(new URL('../lib/pages-client-api.js', import.meta.url), 'utf8');
@@ -368,6 +368,27 @@ test('webAPI downloads a large file in 4 MiB ranges and carries the file validat
   assert.equal(content.at(-1), 42);
 });
 
+// @test-kind contract: a whole-file fallback keeps the local client from combining unvalidated file versions
+test('webAPI uses one whole response when an incomplete range has no validator', async () => {
+  const { window, requests } = browser();
+  window.Blob = Blob;
+  window.fetch = async (url, init) => {
+    requests.push({ url, init });
+    if (requests.length === 1) return new Response('old', { status: 206, headers: { 'content-range': 'bytes 0-2/7' } });
+    return new Response('replaced', { headers: { mimetype: 'text/plain' } });
+  };
+  const $pages = await window.Microsoft.PowerPages.onPagesClientApiReady();
+  const blob = await $pages.webAPI.downloadFileFromColumn('x_items', SITE, 'x_file');
+  assert.deepEqual(
+    requests.map(({ init }) => [init.headers.Range, init.headers['If-Match']]),
+    [
+      ['bytes=0-4194303', undefined],
+      [undefined, undefined],
+    ],
+  );
+  assert.deepEqual([await blob.text(), blob.type], ['replaced', 'text/plain']);
+});
+
 test('lists, languages, user, ajax and webAPI work over the local services', async () => {
   const { window, requests } = browser();
   const $pages = await window.Microsoft.PowerPages.onPagesClientApiReady();
@@ -442,6 +463,48 @@ test('injected pages load the client API right after the runtime; a page with th
     /<script data-paqvilo-mirage-runtime>[\s\S]*(?:window|globalThis)\.__paqviloPages = \$pages[\s\S]*?<\/script><title>/,
   );
   assert.doesNotMatch(bundled, /__sim-static/);
+});
+
+// @test-kind contract: refreshing the paired portal token updates the shell holder used by subsequent local client requests
+test('a shell refresh replaces the cached token for subsequent webAPI writes', async () => {
+  const { window, requests } = browser({ withApi: false });
+  let expected = 'first-token';
+  let input = null;
+  const holder = {
+    getAttribute: () => '/_layout/tokenhtml',
+    set innerHTML(html) {
+      input = { value: /value="([^"]+)"/.exec(html)[1] };
+    },
+  };
+  window.document.getElementById = (id) => (id === 'antiforgerytoken' ? holder : null);
+  window.document.querySelector = (selector) =>
+    selector === '#antiforgerytoken input[name="__RequestVerificationToken"]' ? input : null;
+  const isToken = (url) => String(url).startsWith('/_layout/tokenhtml');
+  window.fetch = async (url, init = {}) => {
+    requests.push({ url, init });
+    if (isToken(url))
+      return new Response(`<input name="__RequestVerificationToken" type="hidden" value="${expected}" />`);
+    return init.headers.__RequestVerificationToken === expected
+      ? new Response(null, { status: 204 })
+      : Response.json({ error: { code: '90040107' } }, { status: 403 });
+  };
+  vm.runInNewContext(clientRuntime('first-token', 1), window);
+  vm.runInNewContext(SOURCE, window);
+  const $pages = await window.Microsoft.PowerPages.onPagesClientApiReady();
+  const write = (name) => $pages.webAPI.updateRecord('x_items', SITE, { x_name: name });
+  await Promise.all([write('A'), write('B')]);
+  assert.equal(requests.filter(({ url }) => isToken(url)).length, 1);
+  assert.equal(input, null);
+
+  expected = 'refreshed-token';
+  assert.equal(await window.shell.refreshToken(), expected);
+  await write('C');
+  assert.equal(input.value, expected);
+  assert.equal(requests.filter(({ url }) => isToken(url)).length, 2);
+  assert.deepEqual(
+    requests.filter(({ url }) => !isToken(url)).map(({ init }) => init.headers.__RequestVerificationToken),
+    ['first-token', 'first-token', 'refreshed-token'],
+  );
 });
 
 // @test-kind contract: a token response that is not 2xx or carries no token is a failed request, not a token to reuse.

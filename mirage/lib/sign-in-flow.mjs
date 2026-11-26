@@ -192,7 +192,7 @@ function pendingExternalHtml(provider, external) {
 /**
  * Create the external sign-in flow of one runtime.
  * - portal(), origin(): the current portal model and the runtime's origin.
- * - csrf: the anti-forgery token /_layout/tokenhtml hands out; adminToken(): the admin console token or null, also
+ * - requestTokens: the token issuer and expected browser verification token; adminToken(): the admin console token or null, also
  *   accepted as a form's anti-forgery field.
  * - sessions: lib/auth-session.mjs createAuthSessions().
  * - store: the DataStore; personas(): active local personas; webRoles(): exported web roles.
@@ -206,9 +206,11 @@ export function createExternalSignIn({
   portal,
   origin,
   csrf,
+  requestTokens = { expected: () => csrf, issue: () => csrf },
   adminToken = () => null,
   sessions,
   store,
+  invitationTransaction = (work) => store.transact(work),
   personas,
   personaCatalog = () => null,
   identityProvider = {},
@@ -290,7 +292,8 @@ export function createExternalSignIn({
     return providerCache.get(current);
   };
   // The page's anti-forgery token, or the admin token when the host configured one (an empty or null admin token matches nothing).
-  const antiForgeryAccepted = (token) => token === csrf || (Boolean(adminToken()) && token === adminToken());
+  const antiForgeryAccepted = (req, token) =>
+    Boolean(token && (token === requestTokens.expected(req, token) || token === adminToken()));
   const redirectUri = (provider) => new URL(provider.callbackPath, origin()).href;
   const settings = () => authenticationSettings(portal());
 
@@ -754,7 +757,7 @@ export function createExternalSignIn({
         url.searchParams.get('InvitationCode') ??
         url.searchParams.get('invitationCode'),
     );
-    if (!antiForgeryAccepted(form.__RequestVerificationToken))
+    if (!antiForgeryAccepted(req, form.__RequestVerificationToken))
       return fail(
         req,
         res,
@@ -1186,7 +1189,7 @@ export function createExternalSignIn({
       key(contactId),
     );
   }
-  async function register(provider, external, invitation = null) {
+  async function register(provider, external, invitation = null, invitationCode = null) {
     const claims = external.c ?? {};
     const userinfo = userinfoOf(provider, external);
     const email =
@@ -1208,7 +1211,11 @@ export function createExternalSignIn({
       );
     let contactId;
     let externalIdentityId;
-    await store.transact(async () => {
+    const transact = invitation
+      ? (work) => invitationTransaction(work, lookupOf(invitation.row, 'adx_redemptionworkflow'))
+      : (work) => store.transact(work);
+    await transact(async (executeWorkflow) => {
+      if (invitation) invitation = currentInvitation(invitationCode, invitation);
       contactId = await createContactRow(provider, claims, userinfo);
       externalIdentityId = await createIdentityRow(
         provider,
@@ -1217,7 +1224,7 @@ export function createExternalSignIn({
         invitation ? 'invitation' : 'registration',
         invitation ? { invitationId: invitation.id } : {},
       );
-      if (invitation) await applyInvitation(invitation, contactId);
+      if (invitation) await applyInvitation(invitation, contactId, executeWorkflow);
     });
     const origin = invitation ? 'invitation' : 'registration';
     record(
@@ -1310,7 +1317,7 @@ export function createExternalSignIn({
     ].filter((roleId) => known.has(roleId));
   }
   /** Inside a transaction: the documented redemption effects (account, web roles, redemption state). */
-  async function applyInvitation(invitation, contactId) {
+  async function applyInvitation(invitation, contactId, executeWorkflow) {
     const contact = contactMapping();
     const account = lookupOf(invitation.row, 'adx_assigntoaccount');
     if (account && contact)
@@ -1337,28 +1344,51 @@ export function createExternalSignIn({
         : {}),
       ...(done ? { statuscode: INVITATION_REDEEMED } : {}),
     });
-    if (lookupOf(invitation.row, 'adx_redemptionworkflow'))
-      diagnostic({
-        code: 'INVITATION_WORKFLOW_NOT_RUN',
-        severity: 'info',
-        message: "The invitation's redemption workflow is a Dataverse process; the local runtime does not run it.",
-        id: invitation.id,
-      });
+    await applyInvitationWorkflow(invitation, contactId, executeWorkflow);
     return roles;
   }
+
+  async function applyInvitationWorkflow(invitation, contactId, executeWorkflow) {
+    const workflowId = lookupOf(invitation.row, 'adx_redemptionworkflow');
+    if (!workflowId) return;
+    try {
+      if (await executeWorkflow?.({ workflowId, contactId })) return;
+    } catch {
+      throw new SignInProblem('The local invitation workflow could not complete.', 'INVITATION_WORKFLOW_FAILED', 500);
+    }
+    diagnostic({
+      code: 'INVITATION_WORKFLOW_NOT_RUN',
+      severity: 'info',
+      message: "The invitation's workflow has no eligible trusted local contact handler.",
+      id: invitation.id,
+    });
+  }
+
+  function currentInvitation(code, expected) {
+    const found = findInvitation(code);
+    if (found.problem) throw new SignInProblem(found.problem, 'INVITATION_INVALID');
+    if (found.invitation.id !== expected.id || found.invitation.type !== expected.type)
+      throw new SignInProblem('The invitation is no longer available.', 'INVITATION_INVALID');
+    return found.invitation;
+  }
+
   async function redeem(provider, external, code) {
     const found = findInvitation(code);
     if (found.problem) throw new SignInProblem(found.problem, 'INVITATION_INVALID');
-    const { invitation } = found;
-    if (invitation.type === 'group') return register(provider, external, invitation);
+    let { invitation } = found;
+    if (invitation.type === 'group') return register(provider, external, invitation, code);
     let externalIdentityId;
     let roles = [];
-    await store.transact(async () => {
-      externalIdentityId = await createIdentityRow(provider, external.s, invitation.invited, 'invitation', {
-        invitationId: invitation.id,
-      });
-      roles = await applyInvitation(invitation, invitation.invited);
-    });
+    await invitationTransaction(
+      async (executeWorkflow) => {
+        invitation = currentInvitation(code, invitation);
+        externalIdentityId = await createIdentityRow(provider, external.s, invitation.invited, 'invitation', {
+          invitationId: invitation.id,
+        });
+        roles = await applyInvitation(invitation, invitation.invited, executeWorkflow);
+      },
+      lookupOf(invitation.row, 'adx_redemptionworkflow'),
+    );
     record(
       'registration',
       IDENTITY_TABLE,
@@ -1476,7 +1506,7 @@ export function createExternalSignIn({
       error ? `<div class="alert alert-danger" role="alert">${escapeHtml(error)}</div>` : '',
       pending,
       `<form method="post" action="/Account/Login/RedeemInvitation?ReturnUrl=${escapeHtml(encodeURIComponent(returnUrl))}">`,
-      `<input name="__RequestVerificationToken" type="hidden" value="${escapeHtml(csrf)}">`,
+      `<input name="__RequestVerificationToken" type="hidden" value="${escapeHtml(requestTokens.issue(req, res))}">`,
       `<div class="form-group"><label for="InvitationCode">Invitation code</label><input class="form-control" id="InvitationCode" name="InvitationCode" type="text" value="${escapeHtml(code)}" required></div>`,
       `<button type="submit" class="btn btn-primary">Register</button>`,
       `</form>`,
@@ -1499,7 +1529,7 @@ export function createExternalSignIn({
       });
     const form = formOf(await readBody(req));
     const code = text(form.InvitationCode) ?? '';
-    if (!antiForgeryAccepted(form.__RequestVerificationToken))
+    if (!antiForgeryAccepted(req, form.__RequestVerificationToken))
       return redeemPage(req, res, url, {
         status: 400,
         code,

@@ -1264,6 +1264,9 @@ async function readEnhancedSiteMetadata(files, contents, siteIds, records, diagn
   });
   // Platform changes the runtime reports instead of modelling (lib/platform-changes.mjs).
   diagnostics.push(...platformChangeDiagnostics({ website, lists, forms, records, pages, templates }));
+  const codeSiteSetting = Object.keys(settings).find((name) => name.toLowerCase() === 'codesite/enabled');
+  const codeSiteEnabled =
+    codeSiteSetting !== undefined && flagOf(settings['CodeSite/Enabled'] ?? settings[codeSiteSetting]);
   // A source with zero recognised pages is not a portal (serve, inspect and bootstrap-report
   // refuse it through assertPortalSource, lib/source-dialect.mjs).
   if (!pages.length)
@@ -1284,7 +1287,7 @@ async function readEnhancedSiteMetadata(files, contents, siteIds, records, diagn
     dataModel,
     dataModelSource,
     codeSite,
-    isSpaSite: Boolean(codeSite?.entryFile) || flagOf(field(website, 'isspasite', false)),
+    isSpaSite: Boolean(codeSite?.entryFile) || flagOf(field(website, 'isspasite', false)) || codeSiteEnabled,
     website,
     pages,
     templates,
