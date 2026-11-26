@@ -118,6 +118,7 @@ const emailInput = input('Email', 'Email address', 'email');
 /** Loopback-only account fixtures. Credentials, one-time challenges and messages end with this runtime. */
 export function createLocalAccounts({
   enabled,
+  captcha = null,
   portal,
   store,
   csrf,
@@ -226,22 +227,35 @@ export function createLocalAccounts({
   };
   const contactEmailMatches = (email) => store.tableRows('contact').some((row) => key(row.emailaddress1) === email);
 
+  const registrationTitle = 'Register a local account';
+  const registrationUnavailable = 'Local open registration is unavailable.';
+  const registrationAllowed = (flags) =>
+    flags.localLogin && flags.registration && (!flags.captcha || Boolean(captcha?.available()));
+
+  function registrationPage(req, res, url, requireCaptcha, message = '') {
+    if (req.method === 'HEAD') return page(req, res, url, registrationTitle);
+    const challenge = requireCaptcha ? captcha.issue(req, res) : null;
+    if (requireCaptcha && !challenge)
+      return page(req, res, url, registrationTitle, note(message || registrationUnavailable), 403);
+    const controls =
+      input('UserName', 'Username') + input('LastName', 'Last name') + emailInput + passwordInput + confirmInput;
+    const challengeFields = challenge
+      ? `<input type="hidden" name="CaptchaChallengeToken" value="${escape(challenge.id)}"><label>${escape(challenge.prompt)} <input name="CaptchaAnswerToken" type="text" maxlength="80" autocomplete="off" required></label>`
+      : '';
+    return page(
+      req,
+      res,
+      url,
+      registrationTitle,
+      (message ? note(message) : '') + form(ROUTES.register, controls + challengeFields, 'Register'),
+      message ? 403 : 200,
+    );
+  }
+
   async function register(req, res, url, read, flags) {
-    const title = 'Register a local account';
-    if (!flags.localLogin || !flags.registration || flags.captcha)
-      return page(req, res, url, title, note('Local open registration is unavailable.'), 403);
-    if (!read)
-      return page(
-        req,
-        res,
-        url,
-        title,
-        form(
-          ROUTES.register,
-          input('UserName', 'Username') + input('LastName', 'Last name') + emailInput + passwordInput + confirmInput,
-          'Register',
-        ),
-      );
+    const title = registrationTitle;
+    if (!registrationAllowed(flags)) return page(req, res, url, title, note(registrationUnavailable), 403);
+    if (!read) return registrationPage(req, res, url, flags.captcha);
     const username = key(read('UserName')),
       email = key(read('Email')),
       lastname = read('LastName').trim();
@@ -264,6 +278,11 @@ export function createLocalAccounts({
         note('Enter valid local account details and a matching password that meets the site policy.'),
         400,
       );
+    if (
+      flags.captcha &&
+      !captcha.redeem(req, { challengeId: read('CaptchaChallengeToken'), answer: read('CaptchaAnswerToken') })
+    )
+      return registrationPage(req, res, url, true, 'The CAPTCHA answer is incorrect or expired. Try a new challenge.');
     const reserved = [`name:${username}`, ...(flags.uniqueEmail || flags.emailLogin ? [`email:${email}`] : [])];
     if (
       accounts.size + reservations.size >= MAX_ACCOUNTS ||
@@ -447,11 +466,7 @@ export function createLocalAccounts({
       enabled && settingsFor(portal()).localLogin
         ? `<p><a href="${ROUTES.login}?ReturnUrl=${encodeURIComponent(returnUrl)}">Sign in with a local account</a></p>`
         : '',
-    registrationAvailable: () => {
-      if (!enabled) return false;
-      const flags = settingsFor(portal());
-      return flags.localLogin && flags.registration && !flags.captcha;
-    },
+    registrationAvailable: () => enabled && registrationAllowed(settingsFor(portal())),
     async route(req, res, url) {
       if (!enabled) return false;
       const path = key(url.pathname).replace(/\/$/, '');

@@ -171,6 +171,34 @@ async function site(t, state, overrides = {}, permissionSource = 'configured') {
 const mappedUser = (sim) =>
   sim.store.tableRows('systemuser').find((row) => row.fullname === 'Alex Local' && row.systemmanagedusertype === 1);
 
+test('enhanced Dataverse role links distinguish source web role IDs that share a name', async (t) => {
+  const { sim, ids } = await site(t, 3, {
+    'webrole.yml': files(3)['webrole.yml'].replace('adx_name: Reviewer', 'adx_name: Member'),
+  });
+  const items = '/_api/x_items?$select=x_name';
+  assert.deepEqual(await ids(items), ['i1', 'i2']);
+  const userId = mappedUser(sim).systemuserid;
+  const candidates = sim.store.tableRows('role').filter((row) => row.name === 'Member');
+  assert.equal(candidates.length, 2, 'both source web roles must have separate Dataverse roles');
+  const candidateIds = new Set(candidates.map((row) => row.roleid));
+  const linked = () =>
+    sim.store
+      .tableRows('systemuserroles')
+      .filter((row) => row.systemuserid.id === userId && candidateIds.has(row.roleid.id))
+      .map((row) => row.roleid.id);
+
+  const primary = linked();
+  assert.equal(primary.length, 1, 'the same-name role is not an implicit membership');
+  await sim.store.transact(() => {
+    sim.store.state.simulator.contactRoles = [{ contactId: 'alex', roleId: '77777777-7777-4777-8777-777777777702' }];
+  });
+  assert.deepEqual(await ids(items), ['i1', 'i2']);
+  assert.deepEqual(
+    linked(),
+    [...candidateIds].filter((roleId) => roleId !== primary[0]),
+  );
+});
+
 async function grantSecretRead(sim) {
   const user = mappedUser(sim);
   await sim.store.transact(() => {

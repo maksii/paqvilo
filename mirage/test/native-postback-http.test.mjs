@@ -8,6 +8,7 @@ import http from 'node:http';
 import { createSimulator } from '../server.mjs';
 import { nativeFormControlIds } from '../lib/native-postback.mjs';
 import { redactPayload } from '../lib/trace-store.mjs';
+import { client, formBody, hiddenFields } from './support/external-sign-in.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 async function fixture(
@@ -19,6 +20,7 @@ async function fixture(
     wizard = false,
     captcha = null,
     captchaFixture = false,
+    registrationCaptcha = false,
     allowLiveWrites = false,
     lookup = false,
     attachments = false,
@@ -49,6 +51,11 @@ async function fixture(
     : undefined;
   if (captchaFields)
     for (const [key, value] of Object.entries(captchaFields)) files['Second.basicform.yml'] += `\n${key}: ${value}`;
+  if (registrationCaptcha)
+    files['sitesetting.yml'] = [
+      '- adx_sitesettingid: captcha\n  adx_name: Authentication/Registration/CaptchaEnabled\n  adx_value: "true"',
+      '- adx_sitesettingid: confirm\n  adx_name: Authentication/Registration/RequiresConfirmation\n  adx_value: "true"',
+    ].join('\n');
   if (attachments) files['Second.basicform.yml'] += '\nadx_attachfile: true\nadx_attachfilemaxsize: 8';
   if (maxFiles > 1)
     files['Second.basicform.yml'] += `\nadx_attachfileallowmultiple: true\nadx_maximumnooffiles: ${maxFiles}`;
@@ -62,6 +69,7 @@ async function fixture(
   const app = await createSimulator({
     sourceDir: root,
     watch: false,
+    ...(registrationCaptcha && { identityProvider: { localAccounts: true } }),
     allowLiveWrites,
     packs: captchaFixture
       ? [
@@ -72,7 +80,12 @@ async function fixture(
             matches: () => true,
             presets: () => ({}),
             serviceFixtures: {
-              captcha: { challenge: () => ({ prompt: 'What is 2 + 3?', answer: '5' }) },
+              captcha: {
+                challenge:
+                  typeof captchaFixture === 'function'
+                    ? captchaFixture
+                    : () => ({ prompt: 'What is 2 + 3?', answer: '5' }),
+              },
             },
           },
         ]
@@ -480,6 +493,168 @@ test('a trusted local CAPTCHA fixture accepts one solved challenge through eithe
       assert.equal(app.store.state.tables.sample[1].title, 'Solved');
     });
   }
+});
+
+// @test-kind security: committed admin resets invalidate outstanding form and registration fixture challenges without discarding them on rollback.
+test('CAPTCHA challenges survive a failed reset and expire after a committed reset on both surfaces', async (t) => {
+  const { app, route, controls } = await fixture(t, {
+    captcha: 'anonymous',
+    captchaFixture: true,
+    registrationCaptcha: true,
+  });
+  const browser = client(app);
+  const registration = '/Account/Login/Register';
+  const reset = () => fetch(app.url + '/_sim/api/reset', { method: 'POST', headers: { 'x-sim-csrf': app.csrf } });
+  const formProof = async () => {
+    const page = await browser.request(route);
+    const html = await page.text();
+    assert.equal(page.status, 200);
+    return html.match(/data-pp-captcha-challenge[^>]*value="([a-f0-9-]+)"/)[1];
+  };
+  const registrationProof = async () => {
+    const page = await browser.request(registration);
+    assert.equal(page.status, 200);
+    const { CaptchaChallengeToken } = hiddenFields(await page.text());
+    assert.match(CaptchaChallengeToken, /^[a-f0-9-]{36}$/);
+    return CaptchaChallengeToken;
+  };
+  const submitJson = (title, challengeId) =>
+    browser.request('/__sim/forms/entityform/second/submit', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', __RequestVerificationToken: app.portalToken },
+      body: JSON.stringify({
+        recordId: 'second-row',
+        values: { title },
+        captchaProofToken: { challengeId, answer: '5' },
+        pageUrl: route,
+      }),
+    });
+  const submitNative = (title, challengeId) =>
+    browser.request(
+      route,
+      formBody({
+        __EVENTTARGET: controls.buttons + 'UpdateButton',
+        __EVENTARGUMENT: '',
+        __RequestVerificationToken: app.portalToken,
+        [controls.names + 'title']: title,
+        [controls.names + 'captcha$FixtureChallengeToken']: challengeId,
+        [controls.names + 'captcha$FixtureAnswerToken']: '5',
+      }),
+    );
+  const register = (username, challengeId) =>
+    browser.request(
+      registration,
+      formBody({
+        __RequestVerificationToken: app.portalToken,
+        UserName: username,
+        LastName: 'Fixture Account',
+        Email: `${username}@example.test`,
+        Password: 'Fixture-reset-14',
+        ConfirmPassword: 'Fixture-reset-14',
+        CaptchaChallengeToken: challengeId,
+        CaptchaAnswerToken: '5',
+      }),
+    );
+
+  const initialContacts = app.store.state.tables.contact.length;
+  await app.store.update('sample', 'second-row', { title: 'Before reset' }, { admin: true });
+  const beforeFailedForm = await formProof();
+  const beforeFailedRegistration = await registrationProof();
+  const persist = app.store.save;
+  let failedSave = false;
+  app.store.save = async () => {
+    failedSave = true;
+    throw new Error('Synthetic reset persistence failure');
+  };
+  try {
+    const failed = await reset();
+    assert.equal(failed.status, 500);
+    await failed.arrayBuffer();
+  } finally {
+    app.store.save = persist;
+  }
+  assert.equal(failedSave, true);
+  assert.equal(app.store.state.tables.sample[1].title, 'Before reset');
+  assert.equal((await submitJson('Survived failure', beforeFailedForm)).status, 200);
+  const saved = await register('before-reset', beforeFailedRegistration);
+  assert.equal(saved.status, 200);
+  assert.match(await saved.text(), /Confirm your email before signing in/);
+  assert.equal(app.store.state.tables.contact.length, initialContacts + 1);
+
+  const beforeReset = { json: await formProof(), native: await formProof(), registration: await registrationProof() };
+  const committed = await reset();
+  assert.equal(committed.status, 200);
+  await committed.arrayBuffer();
+  const rejectedJson = await submitJson('Stale JSON challenge', beforeReset.json);
+  const rejectedNative = await submitNative('Stale native challenge', beforeReset.native);
+  const rejectedRegistration = await register('after-reset', beforeReset.registration);
+  const [json, native, registrationPage] = await Promise.all([
+    rejectedJson.json(),
+    rejectedNative.text(),
+    rejectedRegistration.text(),
+  ]);
+  assert.deepEqual([rejectedJson.status, rejectedNative.status, rejectedRegistration.status], [400, 200, 403]);
+  assert.equal(json.error.code, 'CaptchaInvalid');
+  assert.match(native, /Captcha is incorrect, please re-enter captcha/);
+  assert.match(registrationPage, /CAPTCHA answer is incorrect or expired/);
+  assert.equal(app.store.state.tables.sample[1].title, 'Second');
+  assert.equal(app.store.state.tables.contact.length, initialContacts);
+  assert.equal((await submitJson('Fresh challenge', await formProof())).status, 200);
+  assert.equal((await register('after-reset', await registrationProof())).status, 200);
+  assert.equal(app.store.state.tables.contact.length, initialContacts + 1);
+});
+
+// @test-kind security: HEAD requests do not allocate one-use fixture proofs for known visitors.
+test('CAPTCHA HEAD requests issue no challenge and native validation still renews it', async (t) => {
+  const issued = [];
+  const { app, route, controls } = await fixture(t, {
+    captcha: 'anonymous',
+    captchaFixture: ({ surface }) => {
+      issued.push(surface);
+      return { prompt: 'What is 2 + 3?', answer: '5' };
+    },
+    registrationCaptcha: true,
+  });
+  const browser = client(app);
+  const registration = '/Account/Login/Register';
+  const challengeId = (html) => html.match(/data-pp-captcha-challenge[^>]*value="([a-f0-9-]+)"/)[1];
+  const original = challengeId(await (await browser.request(route)).text());
+  const registrationPage = await browser.request(registration);
+  assert.equal(registrationPage.status, 200);
+  await registrationPage.arrayBuffer();
+  assert.deepEqual(issued, ['entityform', 'registration']);
+
+  for (const target of [route, registration]) {
+    const response = await browser.request(target, { method: 'HEAD' });
+    assert.equal(response.status, 200);
+    assert.equal(await response.text(), '');
+  }
+  assert.deepEqual(issued, ['entityform', 'registration']);
+
+  const submit = (challenge, answer) =>
+    browser.request(
+      route,
+      formBody({
+        __EVENTTARGET: controls.buttons + 'UpdateButton',
+        __EVENTARGUMENT: '',
+        __RequestVerificationToken: app.portalToken,
+        [controls.names + 'title']: 'Solved with the renewed challenge',
+        [controls.names + 'captcha$FixtureChallengeToken']: challenge,
+        [controls.names + 'captcha$FixtureAnswerToken']: answer,
+      }),
+    );
+  const invalid = await submit(original, '7');
+  assert.equal(invalid.status, 200);
+  const body = await invalid.text();
+  assert.match(body, /Captcha is incorrect, please re-enter captcha/);
+  const renewed = challengeId(body);
+  assert.notEqual(renewed, original);
+  assert.deepEqual(issued, ['entityform', 'registration', 'entityform']);
+  assert.equal(app.store.state.tables.sample[1].title, 'Second');
+  const accepted = await submit(renewed, '5');
+  assert.equal(accepted.status, 200);
+  assert.match(await accepted.text(), /Saved source message/);
+  assert.equal(app.store.state.tables.sample[1].title, 'Solved with the renewed challenge');
 });
 
 // @test-kind security: trace capture treats both CAPTCHA transport fields as credentials.

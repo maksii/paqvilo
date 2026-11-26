@@ -1064,7 +1064,8 @@ function globalOptionSetMetadata(c, { set, key, select, metadata, collection, si
     );
   if (key == null) return collection(shape(metadata.globalOptionSets()), set);
   const name = /^Name=['"]?([^'")]+)/i.exec(key)?.[1];
-  const found = name ? metadata.globalOptionSet(name) : null;
+  const reference = name ?? (GUID_TEXT.test(key) ? key : null);
+  const found = reference ? metadata.globalOptionSet(reference) : null;
   // A global option set is typed OptionSetMetadata in the context URL.
   return found
     ? single(metadata.selectMetadata(found, select), `${set}/Microsoft.Dynamics.CRM.OptionSetMetadata/$entity`)

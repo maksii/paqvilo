@@ -50,6 +50,8 @@ test('a compiled-only code site serves its configured entry on root and client r
     '<!DOCTYPE html><html lang="en-US"><head><title>App</title><script type="module" src="./assets/app.js"></script></head><body><main>Build entry</main></body></html>',
   );
   await write(root, 'dist/assets/app.js', 'export const feature = "bundled";');
+  const wasm = Uint8Array.of(0, 97, 115, 109, 1, 0, 0, 0);
+  await write(root, 'dist/assets/feature.wasm', wasm);
   await write(root, 'dist/.private', 'invented build dotfile');
   await write(root, 'outside.txt', 'invented project file');
   const portal = await importPortal(root);
@@ -76,6 +78,11 @@ test('a compiled-only code site serves its configured entry on root and client r
     assert.equal(asset.headers.get('x-sim-resource-provider'), 'code-site-build');
     assert.match(asset.headers.get('content-type'), /^application\/javascript\b/);
     assert.equal(await asset.text(), 'export const feature = "bundled";');
+    const binary = await fetch(app.url + '/assets/feature.wasm');
+    assert.equal(binary.headers.get('x-sim-resource-provider'), 'code-site-build');
+    assert.deepEqual(new Uint8Array(await binary.clone().arrayBuffer()), wasm);
+    const { instance } = await WebAssembly.instantiateStreaming(binary);
+    assert.ok(instance instanceof WebAssembly.Instance);
     const head = await fetch(app.url + '/reports/current/', { method: 'HEAD' });
     assert.equal(head.status, 200);
     assert.equal(await head.text(), '');

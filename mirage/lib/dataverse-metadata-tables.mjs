@@ -20,7 +20,8 @@ import {
   layerStack,
   projectManagedFlags,
 } from './dataverse-metadata-relationships.mjs';
-import { grantTablePrivileges, revokeTablePrivileges, uuidV5 } from './dataverse-security.mjs';
+import { grantTablePrivileges, revokeTablePrivileges } from './dataverse-security.mjs';
+import { standardGlobalOptionSets } from './dataverse-standard.mjs';
 import { resyncMessageFilters } from './dataverse-plugin-registration.mjs';
 import { pluralizeEntitySetName } from './solution-standard.mjs';
 import { alternateKeyOf, alternateKeyValues, alternateKeyKinds } from './alternate-key-values.mjs';
@@ -116,6 +117,7 @@ const ids = (api) =>
     organizationId: api.settings.organizationId,
     schema: api.schema ?? null,
     mappings: () => api.store.state.mappings,
+    globalOptionSets: () => ({ ...standardGlobalOptionSets(), ...api.store.state.dataverse?.globalOptionSets }),
   });
 const urlOf = (c, path) => `${c.origin}/api/data/${c.version}/${path}`;
 // MSCRM.MergeLabels is case-insensitive in the name and the value, as the relationships module reads it.
@@ -154,18 +156,11 @@ function nextObjectTypeCode(mappings) {
 function globalNameOf(api, bind) {
   const m = GLOBAL_BIND.exec(String(bind));
   if (!m) throw fail('GlobalOptionSet@odata.bind must name a global option set by Name or MetadataId.');
-  const org = api.settings.organizationId;
-  const schema = typeof api.schema === 'function' ? api.schema() : api.schema;
-  const known = [
-    ...Object.values(api.store.state.dataverse?.globalOptionSets ?? {}).map((set) => set.name),
-    ...Object.values(schema?.optionSets ?? {}).map((set) => set.name),
-  ];
-  const wanted = m[1]
-    ? (name) => lower(name) === lower(m[1])
-    : (name) => uuidV5(org, `optionset:${name}`).toLowerCase() === guidOf(m[2]);
-  const name = known.find(wanted);
-  if (!name) throw fail(`Global option set ${m[1] ?? m[2]} does not exist.`, 404, 'NotFound');
-  return name;
+  const reference = m[1] ?? guidOf(m[2]);
+  const choice = (api.metadata ?? ids(api)).globalOptionSet(reference);
+  if (!choice) throw fail(`Global option set ${reference} does not exist.`, 404, 'NotFound');
+  if (choice.OptionSetType !== 'Picklist') throw fail(`Global option set ${choice.Name} is not a picklist.`);
+  return choice.Name;
 }
 
 // Picklist facts: a global bind, or local options. Option values use the shared rule (null takes the next free value).

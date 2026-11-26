@@ -8,6 +8,8 @@ import { siteSetting } from './redirects.mjs';
 import {
   schemaFromFormXml,
   nativeControlKind,
+  formChoiceField,
+  acceptsFormChoice,
   nativeRangeMessage,
   nativeDateOnly,
   resolveFormRecord,
@@ -935,6 +937,7 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
     store,
     schemas = {},
     metadata = null,
+    globalChoices,
     identity = {},
     writeProvider = store,
     readProvider = store,
@@ -1219,7 +1222,16 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
       (canonical(portalField(row, 'entityform')) === canonical(definition.id) ||
         (schema.stepId && canonical(portalField(row, 'webformstep')) === canonical(schema.stepId))),
   );
+  const choiceColumns = metadata?.entities?.[canonical(schema.entity)]?.fields ?? {};
   const effectiveFields = (schema.fields ?? [])
+    .map((field) =>
+      formChoiceField(
+        field,
+        choiceColumns[canonical(field.name)],
+        globalChoices,
+        language.lcid ?? language.defaultLcid,
+      ),
+    )
     .filter(
       (field) =>
         !(field.name === 'ownerid' && portalField(definition.metadata ?? {}, 'showownerfields', false) === false),
@@ -1431,11 +1443,7 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
       const control = nativeControlKind(field);
       // Native lists validate posted values against the exported options, before
       // invoking Dataverse. The Web API may accept unlisted integer values.
-      if (
-        control === 'picklist' &&
-        field.options?.length &&
-        !field.options.some((option) => Number(option.value) === Number(value))
-      )
+      if (control === 'picklist' && !acceptsFormChoice(field, value))
         fail('Invalid postback or callback argument. Event validation is enabled.', 500, 'FormEventValidationInvalid');
       if (control === 'email' && (typeof value !== 'string' || !/^[^\s@<>]+@[^\s@<>]+$/.test(value)))
         invalid(field, 'FormFieldInvalid', field.validationMessage || `${field.label} must be a valid email address.`);

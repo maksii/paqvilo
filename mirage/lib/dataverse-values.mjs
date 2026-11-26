@@ -1129,6 +1129,26 @@ const formatNumber = (value, digits) => {
 };
 const optionLabel = (definition, value) => choiceLabelOf(definition, value);
 
+/** A published choice's translation or the label already selected by the metadata catalog. */
+export function optionMetadataLabel(option, lcid) {
+  const label = option?.Label;
+  return (
+    label?.LocalizedLabels?.find((item) => item.LanguageCode === Number(lcid))?.Label ??
+    label?.UserLocalizedLabel?.Label
+  );
+}
+
+/** Existing authored options take precedence over a column's published global binding. */
+export function choiceFieldOptions(field, globalChoices, lcid) {
+  if (field?.options != null) return field.options;
+  if (!field?.globalOptionSet || !globalChoices) return [];
+  const catalog = globalChoices(field.globalOptionSet);
+  if (catalog?.OptionSetType !== 'Picklist') return [];
+  return (catalog.Options ?? [])
+    .filter((option) => Number.isSafeInteger(option.Value))
+    .map((option) => ({ value: option.Value, label: optionMetadataLabel(option, lcid) }));
+}
+
 /**
  * Formatted values follow Dataverse's defaults for the calling user (en-US),
  * optionally overridden by explicit simulator formatting settings.

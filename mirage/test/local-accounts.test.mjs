@@ -1,7 +1,7 @@
 // @test-kind security+contract: loopback local account fixtures protect credentials, session renewal after credential changes and one-time challenges.
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { client, formBody, initialState, simulator } from './support/external-sign-in.mjs';
+import { client, formBody, hiddenFields, initialState, simulator } from './support/external-sign-in.mjs';
 
 const SETTINGS = [
   ['Authentication/Registration/RequiresConfirmation', 'true'],
@@ -126,6 +126,122 @@ test('credential routes remain opt-in and honor disabled local sign-in and regis
     'disabled mailbox must not be listed',
   );
   assert.equal((await legacyBrowser.request(mailbox, { headers: { 'x-sim-csrf': legacy.csrf } })).status, 404);
+});
+
+const CAPTCHA_SETTINGS = [
+  ['Authentication/Registration/CaptchaEnabled', 'true'],
+  ['Authentication/Registration/RequiresConfirmation', 'true'],
+];
+const captchaOptions = {
+  identityProvider: { localAccounts: true },
+  packs: [
+    {
+      id: 'registration-captcha',
+      name: 'Local registration challenge',
+      description: 'Invented challenge for local account tests',
+      matches: () => true,
+      presets: () => ({}),
+      serviceFixtures: {
+        captcha: {
+          challenge: ({ surface }) =>
+            surface === 'registration' ? { prompt: 'What is 2 + 3? <test>', answer: '5' } : null,
+        },
+      },
+    },
+  ],
+};
+
+const registrationFields = (app, proof = {}, overrides = {}) => ({
+  __RequestVerificationToken: app.portalToken,
+  ...account,
+  Password: 'Fixture-register-19',
+  ConfirmPassword: 'Fixture-register-19',
+  ...proof,
+  ...overrides,
+});
+
+async function registrationProof(browser) {
+  const response = await browser.request(register);
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /What is 2 \+ 3\? &lt;test&gt;/);
+  const { CaptchaChallengeToken } = hiddenFields(html);
+  assert.match(CaptchaChallengeToken, /^[a-f0-9-]{36}$/);
+  return { CaptchaChallengeToken, CaptchaAnswerToken: '5' };
+}
+
+test('a local registration proof requires browser ownership, CSRF and one successful challenge', async (t) => {
+  const { app } = await simulator(t, CAPTCHA_SETTINGS, initialState(), captchaOptions);
+  const browser = client(app),
+    foreign = client(app);
+  const original = app.store.snapshot().tables.contact.length;
+  const head = await browser.request(register, { method: 'HEAD' });
+  assert.equal(head.status, 200);
+  assert.equal(head.headers.get('set-cookie'), null);
+  const proof = await registrationProof(browser);
+  await registrationProof(foreign);
+  const send = (owner, provided, overrides) =>
+    owner.request(register, formBody(registrationFields(app, provided, overrides)));
+
+  const crossBrowser = await send(foreign, proof);
+  assert.equal(crossBrowser.status, 403);
+  assert.match(await crossBrowser.text(), /CAPTCHA answer is incorrect or expired/);
+  assert.equal((await send(browser, proof, { __RequestVerificationToken: '' })).status, 403);
+  assert.equal(app.store.snapshot().tables.contact.length, original);
+
+  const accepted = await send(browser, proof);
+  assert.equal(accepted.status, 200);
+  assert.match(await accepted.text(), /Confirm your email before signing in/);
+  assert.equal(app.store.snapshot().tables.contact.length, original + 1);
+  const replay = await send(browser, proof, { UserName: 'other-fixture-account', Email: 'other-fixture@example.test' });
+  assert.equal(replay.status, 403);
+  assert.match(await replay.text(), /CAPTCHA answer is incorrect or expired/);
+  assert.equal(app.store.snapshot().tables.contact.length, original + 1);
+});
+
+test('a failed local registration write rolls back and a new challenge can retry the same account', async (t) => {
+  const { app } = await simulator(t, CAPTCHA_SETTINGS, initialState(), captchaOptions);
+  const browser = client(app);
+  const original = app.store.snapshot().tables.contact.length;
+  let reachedPostOperation = false;
+  app.store.setPluginPipeline(({ entity, stage }) => {
+    if (entity === 'contact' && stage === 40) {
+      reachedPostOperation = true;
+      throw new Error('Synthetic contact registration rollback');
+    }
+  });
+  const submit = (proof) => browser.request(register, formBody(registrationFields(app, proof)));
+  const proof = await registrationProof(browser);
+  const failed = await submit(proof);
+  assert.equal(failed.status, 500);
+  await failed.arrayBuffer();
+  assert.equal(reachedPostOperation, true);
+  assert.equal(app.store.snapshot().tables.contact.length, original);
+  app.store.setPluginPipeline(
+    () => {},
+    () => false,
+  );
+  assert.equal((await submit(proof)).status, 403);
+  const retry = await submit(await registrationProof(browser));
+  assert.equal(retry.status, 200);
+  assert.match(await retry.text(), /Confirm your email before signing in/);
+  assert.equal(app.store.snapshot().tables.contact.length, original + 1);
+});
+
+test('a local CAPTCHA fixture does not enable invitation-only registration or run when live writes are authorized', async (t) => {
+  const invite = await simulator(
+    t,
+    [...CAPTCHA_SETTINGS, ['Authentication/Registration/RequiresInvitation', 'true']],
+    initialState(),
+    captchaOptions,
+  );
+  const live = await simulator(t, CAPTCHA_SETTINGS, initialState(), { ...captchaOptions, allowLiveWrites: true });
+  for (const app of [invite.app, live.app]) {
+    const response = await client(app).request(register);
+    assert.equal(response.status, 403);
+    assert.equal(response.headers.get('set-cookie'), null);
+    assert.doesNotMatch(await response.text(), /CaptchaChallengeToken/);
+  }
 });
 
 test('reserved fixture credential routes never reach the live bridge', async (t) => {

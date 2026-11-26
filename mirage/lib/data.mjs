@@ -138,6 +138,7 @@ import {
   foldText,
   makeSortKey,
   compareSortKeys,
+  optionMetadataLabel,
 } from './dataverse-values.mjs';
 // The store's query error type lives in data-error.mjs; this re-export keeps imports working.
 export { DataError };
@@ -366,7 +367,15 @@ const choiceDefinition = (definition) => {
       !['bit', 'boolean', 'int', 'integer', 'bigint', 'decimal', 'double', 'float', 'money'].includes(type))
   );
 };
-function choiceLabel(definition, value, lcid) {
+function boundChoiceLabel(name, value, lcid, globalChoices) {
+  if (!name || !globalChoices) return undefined;
+  const option = globalChoices(name)?.Options?.find((item) => item.Value === Number(value));
+  return optionMetadataLabel(option, lcid);
+}
+
+function choiceLabel(definition, value, lcid, globalChoices) {
+  const bound = boundChoiceLabel(definition?.globalOptionSet, value, lcid, globalChoices);
+  if (bound != null) return bound;
   if (lcid != null) {
     const set = definition?.columnMetadata?.optionSet;
     for (const options of [set?.options, set?.states, set?.statuses]) {
@@ -393,34 +402,29 @@ export function withLiquidEntityId(record, mapping = {}, { aggregate = false } =
 }
 
 /** Format permission-filtered local reads for Liquid; never change persisted/API scalars. */
-export function normalizeMockLiquidRecord(
-  record,
-  mapping = {},
-  { aggregate = false, mappings = {}, aliasFields = {}, lcid } = {},
-) {
+export function normalizeMockLiquidRecord(record, mapping = {}, options = {}) {
   if (record == null || typeof record !== 'object') return record;
-  if (Array.isArray(record))
-    return record.map((row) =>
-      normalizeMockLiquidRecord(row, mapping, {
-        aggregate,
-        mappings,
-        aliasFields,
-        lcid,
-      }),
-    );
+  if (Array.isArray(record)) return record.map((row) => normalizeMockLiquidRecord(row, mapping, options));
   const out = clone(record);
   for (const [key, value] of Object.entries(record))
-    normalizeLiquidRecordField(record, out, key, value, mapping, { aggregate, mappings, aliasFields, lcid });
-  return withLiquidEntityId(out, mapping, { aggregate });
+    normalizeLiquidRecordField(record, out, key, value, mapping, options);
+  return withLiquidEntityId(out, mapping, { aggregate: options.aggregate });
 }
 
-function normalizeLiquidRecordField(record, out, key, value, mapping, { aggregate, mappings, aliasFields, lcid }) {
+function normalizeLiquidRecordField(
+  record,
+  out,
+  key,
+  value,
+  mapping,
+  { aggregate, mappings = {}, aliasFields = {}, lcid, globalChoices },
+) {
   if (key.includes('@')) return;
   const definition = ownMember(aliasFields, key) ?? metadataField(mapping, key);
   if (!aggregate && typeof value === 'number' && choiceDefinition(definition)) {
     out[key] = {
       value,
-      label: choiceLabel(definition, value, lcid) ?? record[key + formattedAnnotation] ?? '',
+      label: choiceLabel(definition, value, lcid, globalChoices) ?? record[key + formattedAnnotation] ?? '',
     };
     return;
   }
@@ -428,18 +432,18 @@ function normalizeLiquidRecordField(record, out, key, value, mapping, { aggregat
     // Preserve explicit typed fixture values. A label omitted by a caller may
     // be supplied from metadata without mutating that caller's record.
     if (!aggregate && choiceDefinition(definition) && !own(value, 'label'))
-      out[key].label = choiceLabel(definition, value.value, lcid) ?? '';
+      out[key].label = choiceLabel(definition, value.value, lcid, globalChoices) ?? '';
     return;
   }
   if (value && typeof value === 'object' && mapping.relationships?.[key] && !own(value, 'id')) {
     const target = mapping.relationships[key].entity;
     const targetMapping = typeof mappings === 'function' ? mappings(target) : ownMember(mappings, target);
-    out[key] = normalizeMockLiquidRecord(value, targetMapping ?? {}, { aggregate, mappings, lcid });
+    out[key] = normalizeMockLiquidRecord(value, targetMapping ?? {}, { aggregate, mappings, lcid, globalChoices });
   }
 }
 
 /** Resolve attribute aliases from the authored FetchXML, retaining aggregates as numbers. */
-export function normalizeMockLiquidFetchXml(result, xml, mappingResolver, { lcid } = {}) {
+export function normalizeMockLiquidFetchXml(result, xml, mappingResolver, { lcid, globalChoices } = {}) {
   const fetch = parseFetchXml(xml),
     root = fetch.children.find((node) => node.name === 'entity');
   if (!root) throw new DataError('FetchXML requires a root entity');
@@ -480,6 +484,7 @@ export function normalizeMockLiquidFetchXml(result, xml, mappingResolver, { lcid
         aliasFields,
         mappings: resolve,
         lcid,
+        globalChoices,
       }),
     ),
   };
@@ -4699,8 +4704,7 @@ export class DataStore {
         options.id != null ||
         options.ids ||
         Object.keys(p).some((key) => !['$select', '$filter', '$orderby', '$count'].includes(key)) ||
-        (p.$count !== undefined && !['true', 'false'].includes(p.$count)) ||
-        Object.values(p).some((value) => String(value).includes('/'))
+        (p.$count !== undefined && !['true', 'false'].includes(p.$count))
       )
         throw new DataError(
           'This OData navigation, paging or option conversion requires a qualified native adapter.',
@@ -4715,6 +4719,7 @@ export class DataStore {
           ? lookup[1]
           : attribute;
       };
+      // The scalar writer checks parsed paths. A slash in a quoted literal is part of its value.
       const permissionQuery = compileODataPermissionQuery(
         authoredScalarODataFetch(mapping.logicalName, scalarParams, { resolveAttribute }),
         {

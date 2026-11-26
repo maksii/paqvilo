@@ -9,6 +9,7 @@ const scopeKey = ({ owner, kind, formId, stepId }) =>
 export function createLocalCaptcha({ challenge, now = Date.now, lifetimeMs = 120_000, limit = 1_000 }) {
   const issued = new Map();
   return {
+    clear: () => issued.clear(),
     issue(scope) {
       const key = scopeKey(scope);
       if (!key) return null;

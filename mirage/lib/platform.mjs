@@ -47,7 +47,7 @@ import { isNativeTextarea, systemFormSchemaFor } from './solution-metadata.mjs';
 import { hasPlatformBundles, bootstrapVariant } from './platform-manifest.mjs';
 import { portalLanguage } from './portal-languages.mjs';
 import { clientPortalObjectRuntime } from './portal-client-object.mjs';
-import { parseDateValue } from './dataverse-values.mjs';
+import { parseDateValue, choiceFieldOptions } from './dataverse-values.mjs';
 import { nativeFormActions } from './native-form-actions.mjs';
 import { webApiPolicy } from './webapi-policy.mjs';
 import { timeZoneChoices } from './platform-time-zones.mjs';
@@ -661,6 +661,28 @@ function componentError(message, status, code) {
   if (field.type === 'number') return 'integer';
   if (field.type === 'email' || String(field.format ?? '').toLowerCase() === 'email') return 'email';
   return 'text';
+}
+
+const boundFormChoice = Symbol('boundFormChoice');
+
+/** Use published options for an authored native picklist with a bound Dataverse column. */
+export function formChoiceField(field, column, globalChoices, lcid) {
+  if (
+    column?.dataverseType !== 'picklist' ||
+    !column.globalOptionSet ||
+    !globalChoices ||
+    field.codeComponent ||
+    nativeControlKind(field) !== 'picklist'
+  )
+    return field;
+  const options = choiceFieldOptions({ ...column, options: field.options }, globalChoices, lcid);
+  return { ...field, options, [boundFormChoice]: true };
+}
+
+export function acceptsFormChoice(field, value) {
+  if (field[boundFormChoice] && !Number.isSafeInteger(value)) return false;
+  if (!field[boundFormChoice] && !field.options?.length) return true;
+  return field.options.some((option) => Number(option.value) === Number(value));
 }
 
 /** Native numeric range messages use the column's exported decimal precision. */
@@ -1508,6 +1530,7 @@ function gridLayouts(
   { secureBase, websiteId, metadata, actions, selectColumn = false, language = {}, masked = null },
 ) {
   const actionColumn = actions.some((action) => action.position === 'item');
+  const choiceLabelLcid = language.lcid ?? language.defaultLcid;
   return model.views.map((view) =>
     buildLayout({
       view,
@@ -1517,7 +1540,7 @@ function gridLayouts(
       metadata,
       settings: model.settings,
       configuration: viewConfiguration(model, view, { actions, websiteId, language }),
-      secure: { ...secureBase, view: view.id },
+      secure: { ...secureBase, view: view.id, choiceLabelLcid },
       selectColumn,
       actionColumn,
       masked,
@@ -1950,7 +1973,9 @@ async function filterChoices(group, context, options, model = null) {
   if (group.type === 'rangeset') return indexed(node.filters ?? []);
   if (group.type === 'dynamicpicklistset') {
     const attribute = node['adx.attribute'] ?? node.conditions?.[0]?.attribute;
-    return (options?.metadata?.entities?.[model?.entity]?.fields?.[attribute]?.options ?? []).map((option) => ({
+    const field = options?.metadata?.entities?.[model?.entity]?.fields?.[attribute];
+    const { lcid, defaultLcid } = requestLanguage(context, options?.portal);
+    return choiceFieldOptions(field, options?.globalChoices, lcid ?? defaultLcid).map((option) => ({
       id: String(option.value),
       label: String(option.label ?? option.value),
     }));
@@ -3014,19 +3039,27 @@ function prepopulateValue(row, identity, now) {
   // column display name; the logical name is used only when the table metadata is absent.
   const tableFields = metadata?.entities?.[canonicalId(schema.entity)]?.fields ?? {};
   const fields = (schema.fields ?? []).map((field) =>
-    normalizedFormField(field, {
-      metadataRows,
-      mode,
-      formLabel,
-      tableFields,
-      componentMetadata,
-      formLanguage,
-      forceRequired,
-      recommendedRequired,
-      identity,
-      now,
-      readOnly,
-    }),
+    normalizedFormField(
+      formChoiceField(
+        field,
+        tableFields[canonicalId(field.name)],
+        options.globalChoices,
+        formLanguage.lcid ?? formLanguage.defaultLcid,
+      ),
+      {
+        metadataRows,
+        mode,
+        formLabel,
+        tableFields,
+        componentMetadata,
+        formLanguage,
+        forceRequired,
+        recommendedRequired,
+        identity,
+        now,
+        readOnly,
+      },
+    ),
   );
   // A column placed on the form more than once renders only its first cell (see layout below).
   const byName = new Map();

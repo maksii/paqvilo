@@ -1,3 +1,4 @@
+// @test-kind contract: an invented fixture exercises the local opted-in native-classic OData adapter
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore } from '../lib/data.mjs';
@@ -187,13 +188,7 @@ test('native conversion faults happen before observers and retain the CDS status
     assert.deepEqual(stages, []);
   }
 });
-test('actual Web API collection handler executes the qualified initial OData page rather than falling back to QueryExpression', async () => {
-  const store = fixture(),
-    queries = [];
-  store.setPluginPipeline(
-    (event) => queries.push(event.query.$type),
-    () => true,
-  );
+async function companyRead(store, params, fields = 'companyid') {
   let status, body;
   const response = {
     headersSent: false,
@@ -205,11 +200,12 @@ test('actual Web API collection handler executes the qualified initial OData pag
       body = JSON.parse(value);
     },
   };
-  const url = new URL('http://127.0.0.1/_api/companies?$select=companyid&$orderby=companyid&$count=true');
+  const url = new URL('http://127.0.0.1/_api/companies');
+  url.search = new URLSearchParams(params).toString();
   await handleWebApi({ method: 'GET', headers: {} }, response, url, {
     store,
     identity,
-    portal: { settings: { 'Webapi/company/enabled': 'true', 'Webapi/company/fields': 'companyid' } },
+    portal: { settings: { 'Webapi/company/enabled': 'true', 'Webapi/company/fields': fields } },
     origin: url.origin,
     origins: [url.origin],
     csrf: 'owned-test-cursor',
@@ -218,6 +214,21 @@ test('actual Web API collection handler executes the qualified initial OData pag
       res.end(JSON.stringify(value));
     },
   });
+  return { status, body };
+}
+
+test('actual Web API collection handler executes the qualified initial OData page rather than falling back to QueryExpression', async () => {
+  const store = fixture(),
+    queries = [];
+  store.setPluginPipeline(
+    (event) => queries.push(event.query.$type),
+    () => true,
+  );
+  const { status, body } = await companyRead(store, {
+    $select: 'companyid',
+    $orderby: 'companyid',
+    $count: 'true',
+  });
   assert.equal(status, 200);
   assert.deepEqual(
     body.value.map((row) => row.companyid),
@@ -225,4 +236,33 @@ test('actual Web API collection handler executes the qualified initial OData pag
   );
   assert.equal(body['@odata.count'], 1);
   assert.deepEqual(queries, ['FetchExpression', 'FetchExpression', 'FetchExpression']);
+});
+
+// @test-kind compatibility+contract: Microsoft Learn Power Pages read operations document scalar equality and table permissions, and the local profile limits navigation
+test('native scalar OData handles slashes in quoted filter values while refusing navigation paths', async () => {
+  const store = fixture();
+  store.state.tables.company[0].name = "North/West & Partners' Studio";
+  store.state.tables.company[1].name = store.state.tables.company[0].name;
+  const { status, body } = await companyRead(
+    store,
+    {
+      $select: 'companyid',
+      $filter: "name eq 'North/West & Partners'' Studio'",
+      $count: 'true',
+    },
+    'companyid,name',
+  );
+  assert.equal(status, 200);
+  assert.deepEqual(
+    body.value.map((row) => row.companyid),
+    [id(10)],
+  );
+  assert.equal(body['@odata.count'], 1);
+  assert.throws(
+    () =>
+      store.query('companies', { $select: 'companyid', $filter: "parent/name eq 'North/West'" }, identity, undefined, {
+        portalRequest: true,
+      }),
+    (error) => error.code === 'ODataPermissionQueryUnsupported',
+  );
 });

@@ -508,6 +508,7 @@ const mime = (file) =>
     '.mjs': 'application/javascript',
     '.css': 'text/css',
     '.html': 'text/html',
+    '.wasm': 'application/wasm',
     '.json': 'application/json',
     '.svg': 'image/svg+xml',
     '.png': 'image/png',
@@ -2023,10 +2024,11 @@ export async function createSimulator(options) {
       ? createLocalCaptcha({ challenge: challengeFixture.run, now: () => store.clock.now() })
       : null;
   const useLocalCaptcha = () => localCaptcha && config().mode !== 'live' && config().pageMode !== 'live';
-  const issueFormCaptcha = (scope) =>
-    useLocalCaptcha()
-      ? localCaptcha.issue({ ...scope, owner: webFormSessionOwner(currentIdentity(), trace.getStore()?.visitor) })
-      : null;
+  const issueFormCaptcha = (scope) => {
+    const request = trace.getStore();
+    if (!useLocalCaptcha() || request?.method === 'HEAD') return null;
+    return localCaptcha.issue({ ...scope, owner: webFormSessionOwner(currentIdentity(), request?.visitor) });
+  };
 
   // Column types come from the Solution's metadata first, then from the mapping's own fields, so a table that only
   // a mapping declares answers with the types it declares there.
@@ -2038,6 +2040,27 @@ export async function createSimulator(options) {
     };
   };
   const liveMapping = (entity) => mappingWithFields(entity, solutionMetadata);
+  const liquidMappings = (metadata) => {
+    const mappings = new Map();
+    return (entity) => {
+      if (!mappings.has(entity)) {
+        const mapping = store.resolveMapping(entity);
+        const stored = mapping.fields ?? mapping.fieldMetadata;
+        const source = metadata.entities?.[mapping.logicalName]?.fields;
+        mappings.set(entity, { ...mapping, fields: source ? { ...stored, ...source } : stored });
+      }
+      return mappings.get(entity);
+    };
+  };
+  const portalGlobalChoices = () => {
+    const sets = new Map();
+    return (name) => {
+      const key = name.toLowerCase();
+      if (!sets.has(key)) sets.set(key, organization.metadata.globalOptionSet(name));
+      return sets.get(key);
+    };
+  };
+  const localPortalGlobalChoices = () => (config().mode === 'live' ? undefined : portalGlobalChoices());
   const liveJson = async (pathname) => {
     const response = await live.request(pathname, {
       prefer: 'odata.include-annotations="*"',
@@ -2141,8 +2164,8 @@ export async function createSimulator(options) {
               }),
             ),
             xml,
-            (entity) => mappingWithFields(entity, metadata),
-            { lcid: fetchOptions.language?.lcid },
+            liquidMappings(metadata),
+            { lcid: fetchOptions.language?.lcid, globalChoices: portalGlobalChoices() },
           ),
         );
       }
@@ -2153,36 +2176,38 @@ export async function createSimulator(options) {
     },
     async get(entity, id, identity, readOptions = {}) {
       if (config().mode !== 'live')
-        return normalizeMockLiquidRecord(
-          await readPortalData(() =>
-            store.withPortalReadSources(identity, { table: entity, id }, () =>
+        return readPortalData(async () => {
+          const mappings = liquidMappings(solutionMetadata);
+          return normalizeMockLiquidRecord(
+            await store.withPortalReadSources(identity, { table: entity, id }, () =>
               store.get(entity, id, identity, { portalRequest: true }),
             ),
-          ),
-          liveMapping(entity),
-          { mappings: liveMapping, lcid: readOptions.language?.lcid },
-        );
+            mappings(entity),
+            { mappings, lcid: readOptions.language?.lcid, globalChoices: portalGlobalChoices() },
+          );
+        });
       const mapping = liveMapping(entity);
       return normalizeLiveRecord(await liveJson(`/_api/${mapping.entitySet}(${encodeURIComponent(id)})`), mapping);
     },
     async query(entity, params, identity) {
-      if (config().mode !== 'live') {
-        const result = await readPortalData(() =>
-          store.withPortalReadSources(
+      if (config().mode !== 'live')
+        return readPortalData(async () => {
+          const queryValue = (name) => (params instanceof URLSearchParams ? params.get(name) : params?.[name]);
+          const result = await store.withPortalReadSources(
             identity,
-            { table: entity, expand: params instanceof URLSearchParams ? params.get('$expand') : params?.$expand },
+            { table: entity, expand: queryValue('$expand') },
             () => store.query(entity, params, identity, undefined, { portalRequest: true }),
-          ),
-        );
-        const aggregate = Boolean(params instanceof URLSearchParams ? params.get('$apply') : params?.$apply);
-        return {
-          ...result,
-          value: normalizeMockLiquidRecord(result.value, liveMapping(entity), {
-            aggregate,
-            mappings: liveMapping,
-          }),
-        };
-      }
+          );
+          const mappings = liquidMappings(solutionMetadata);
+          return {
+            ...result,
+            value: normalizeMockLiquidRecord(result.value, mappings(entity), {
+              aggregate: Boolean(queryValue('$apply')),
+              mappings,
+              globalChoices: portalGlobalChoices(),
+            }),
+          };
+        });
       const mapping = liveMapping(entity);
       const query = new URLSearchParams(params ?? {});
       const result = await liveJson(`/_api/${mapping.entitySet}${query.size ? '?' + query : ''}`);
@@ -2458,6 +2483,7 @@ export async function createSimulator(options) {
         ...config().componentSchemas,
       },
       metadata: modelMetadata(),
+      globalChoices: localPortalGlobalChoices(),
       readProvider,
       writeProvider: {
         create: (entity, values, identity) => writeFormRecord(entity, null, values, identity),
@@ -2710,6 +2736,7 @@ export async function createSimulator(options) {
             args: typeof args === 'string' ? { name: args } : (args ?? {}),
             serviceFixtures: organizationHost.providers.serviceFixtures,
             metadata: modelMetadata(),
+            globalChoices: localPortalGlobalChoices(),
             codeComponent: (spec) =>
               renderCodeComponent({
                 ...spec,
@@ -5342,6 +5369,7 @@ export async function createSimulator(options) {
             if (store.state.tables?.[table]) next.tables[table] = store.state.tables[table];
         }
         await saveState(next);
+        localCaptcha?.clear();
         localAccounts.clear();
         await organization?.reseed();
         void stateResponse(req, res);
@@ -5966,8 +5994,32 @@ export async function createSimulator(options) {
     renderPage: renderAccountPage,
     readBody: rawBody,
   });
+  const registrationCaptchaScope = (visitor) => ({
+    kind: 'registration',
+    formId: 'local-registration',
+    owner: `visitor:${visitor}`,
+  });
+  const registrationCaptcha = {
+    available: useLocalCaptcha,
+    issue(req, res) {
+      if (!useLocalCaptcha()) return null;
+      const cookie = readVisitor(req.headers.cookie, visitorName());
+      if (cookie) return localCaptcha.issue(registrationCaptchaScope(cookie));
+      if (req.method !== 'GET') return null;
+      // Account routes do not otherwise begin a browser visitor session.
+      const visitor = newVisitor(visitorName());
+      const challenge = localCaptcha.issue(registrationCaptchaScope(visitor.id));
+      if (challenge) res.appendHeader('set-cookie', visitor.cookie);
+      return challenge;
+    },
+    redeem(req, proof) {
+      const visitor = readVisitor(req.headers.cookie, visitorName());
+      return Boolean(visitor && useLocalCaptcha() && localCaptcha.redeem(registrationCaptchaScope(visitor), proof));
+    },
+  };
   const localAccounts = createLocalAccounts({
     enabled: localAccountsEnabled,
+    captcha: registrationCaptcha,
     portal: () => portal,
     store,
     csrf,
@@ -6801,6 +6853,7 @@ export async function createSimulator(options) {
         portal,
         store,
         readProvider,
+        globalChoices: localPortalGlobalChoices(),
         identity: currentIdentity(),
         // The browser's visitor id, resolved for this request (lib/visitor-session.mjs); null without a visitor cookie.
         visitor: trace.getStore()?.visitor ?? null,
@@ -7186,6 +7239,7 @@ export async function createSimulator(options) {
           readProvider,
           args: { id: definition.id },
           metadata: modelMetadata(),
+          globalChoices: localPortalGlobalChoices(),
           config: config(),
           modal: true,
           observed: config().observed ?? portal.observed,
@@ -7485,13 +7539,16 @@ export async function createSimulator(options) {
         : null;
     if (compiledFile && assetAccess?.allowed) {
       const body = await readWebFileSource(compiledFile, codeSite.compiledDir, url.pathname);
+      const contentType = mime(compiledFile);
       const headers = {
         ...siteHeaders(portal, { confinement: confinementPolicy(), kind: 'webFile' }),
         ...webFileHeaders({
           body,
-          contentType: mime(compiledFile),
+          contentType,
           fileName: path.basename(compiledFile),
           caching: 'revalidate',
+          // Streaming WebAssembly requires exactly application/wasm, without MIME parameters.
+          mimeCharset: contentType === 'application/wasm' ? 'source' : 'utf8',
         }),
         'content-length': body.byteLength,
         'x-sim-resource-provider': 'code-site-build',

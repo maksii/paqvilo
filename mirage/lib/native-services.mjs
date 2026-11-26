@@ -9,7 +9,7 @@ import { DataError } from './data.mjs';
 import { csvCell } from './csv.mjs';
 import { isExactNumeric } from './exact-numeric.mjs';
 import { xmlAttributes, xmlStartTag, xmlTokens } from './xml-text.mjs';
-import { parseDateValue } from './dataverse-values.mjs';
+import { parseDateValue, choiceFieldOptions } from './dataverse-values.mjs';
 import { normalizePortalPath, portalField } from './importer.mjs';
 import { metaFilterGroups } from './metafilters.mjs';
 import { siteSetting } from './redirects.mjs';
@@ -1613,13 +1613,30 @@ function gridAttributes(row, model, layout, context, fetch, id) {
   return attributes;
 }
 
+function gridChoiceField(field, context) {
+  if (
+    field?.dataverseType !== 'multiselectpicklist' ||
+    field.options != null ||
+    !field.globalOptionSet ||
+    !context.globalChoices
+  )
+    return field;
+  if (context.choiceFields?.has(field)) return context.choiceFields.get(field);
+  const local = {
+    ...field,
+    options: choiceFieldOptions(field, context.globalChoices, context.secure?.choiceLabelLcid),
+  };
+  context.choiceFields?.set(field, local);
+  return local;
+}
+
 function pushGridAttribute(attributes, seen, { name, value, row, model, context, fetch, id }) {
   if (seen.has(name) || value == null || value === '') return;
   seen.add(name);
   const { table, field } = columnMetadata(context.metadata, model.entity, fetch, name);
   attributes.push(
     attributeEntry(name, value, {
-      field,
+      field: gridChoiceField(field, context),
       settings: context.portal.settings,
       entity: table,
       primaryName: model.primaryName,
@@ -1671,6 +1688,13 @@ function readDenied(context, entity) {
   return !permissive && !store.rules(entity, 'read', identity).length;
 }
 
+function includeGridStateColumns(root, tableFields) {
+  if (childNodes(root, 'all-attributes').length) return;
+  for (const name of ['statecode', 'statuscode'])
+    if (tableFields[name] && !childNodes(root, 'attribute').some((node) => node.attrs.name === name))
+      root.children.unshift({ name: 'attribute', attrs: { name }, children: [], text: '' });
+}
+
 /**
  * Run one view query with the native grid semantics (relationship, user and
  * metadata filters, quick search, sort, 1-based pages, 5,000 count cap).
@@ -1701,10 +1725,7 @@ export async function executeGridQuery(model, request, context) {
   const root = rootEntity(fetch);
   const tableFields = entityFields(context.metadata, model.entity);
   if (context.calendarWindow) applyCalendarWindow(root, model.calendar, tableFields, context.calendarWindow);
-  if (!childNodes(root, 'all-attributes').length)
-    for (const name of ['statecode', 'statuscode'])
-      if (tableFields[name] && !childNodes(root, 'attribute').some((node) => node.attrs.name === name))
-        root.children.unshift({ name: 'attribute', attrs: { name }, children: [], text: '' });
+  includeGridStateColumns(root, tableFields);
   applyRelationship(fetch, model, context.secure?.parent, store);
   applyUserFilters(fetch, model, request, identity, context.portal.website?.id);
   if (context.workflowRecordId)
@@ -1734,7 +1755,13 @@ export async function executeGridQuery(model, request, context) {
   fetch.attrs.page = String(page);
   fetch.attrs.returntotalrecordcount = 'true';
   delete fetch.attrs['paging-cookie'];
-  const result = await readProvider.fetchXml(serializeFetchTree(fetch), identity);
+  // The server-issued layout binds the label language to this grid. Leave query language and grants unchanged.
+  const lcid = context.secure?.choiceLabelLcid;
+  const result = await readProvider.fetchXml(
+    serializeFetchTree(fetch),
+    identity,
+    lcid == null ? undefined : { language: { lcid } },
+  );
   const rows = result.entities ?? result.value ?? [];
   const total = Number(result.total_record_count);
   const itemCount = Number.isFinite(total) && total >= 0 ? Math.min(total, 5000) : -1;
@@ -1759,7 +1786,8 @@ export async function gridData(model, request, context) {
   const { identity, readProvider } = context;
   model = query.model;
   const result = { more_records: query.moreRecords };
-  const records = rows.map((row) => gridRecord(row, model, layout, context));
+  const rowContext = { ...context, choiceFields: new Map() };
+  const records = rows.map((row) => gridRecord(row, model, layout, rowContext));
   const disabled = [];
   // A download writes record values only; item actions are not evaluated per record.
   const itemActions = request.download

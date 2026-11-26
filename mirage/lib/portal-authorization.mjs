@@ -252,14 +252,13 @@ export function createPortalAuthorization({
     const names = new Set(rule.roles ?? []);
     return roles.filter((role) => names.has(role.name)).map((role) => role.id);
   };
-  // The web roles a visitor holds: resolved ids, the web roles its names match and, for a local override persona, the
-  // authenticated or anonymous web roles membership resolution would give it.
+  // Membership resolution already includes default roles and resolves exact IDs. Display names are for local overrides.
   const identityRoles = (identity, roles) => {
     const ids = new Set((identity.roleIds ?? []).map(key));
+    if (identity.roleSource === 'memberships') return [...ids];
     const names = new Set(identity.roles ?? []);
     for (const role of roles) if (names.has(role.name)) ids.add(role.id);
-    if (identity.roleSource !== 'memberships')
-      for (const role of roles) if (contactOf(identity) ? role.authenticated : role.anonymous) ids.add(role.id);
+    for (const role of roles) if (contactOf(identity) ? role.authenticated : role.anonymous) ids.add(role.id);
     return [...ids];
   };
   const noun = (logical) => principals.privilegeNoun(logical);

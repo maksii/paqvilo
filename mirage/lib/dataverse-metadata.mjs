@@ -2249,9 +2249,11 @@ export function createMetadataService({
 
     globalOptionSets: ({ labelLanguages } = {}) => limitLabels(globalSets(), labelLanguages),
 
-    globalOptionSet(name, { labelLanguages } = {}) {
-      const wanted = String(name).toLowerCase();
-      const hit = globalSets().find((set) => set.Name.toLowerCase() === wanted) ?? null;
+    globalOptionSet(nameOrId, { labelLanguages } = {}) {
+      const wanted = String(nameOrId).toLowerCase();
+      const hit =
+        globalSets().find((set) => set.Name.toLowerCase() === wanted || set.MetadataId.toLowerCase() === wanted) ??
+        null;
       return limitLabels(hit, labelLanguages);
     },
 
