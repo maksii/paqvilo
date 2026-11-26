@@ -179,7 +179,7 @@ export function assertServerLogicTimeout(value, name = 'timeout') {
  * `services` carries the host bridges of one RPC channel (exported-operation-worker.mjs), each optional:
  * - invokeCustomApi({ method, url, payload, identity }) -> { status, body, headers }: Dataverse.InvokeCustomApi (organizationCustomApi below);
  * - triggerFlow({ flowId, payload, identity }) -> { status, body }: CloudFlow.TriggerAsync through the portal cloud-flow pipeline
- *   (web-role check included); the payload carries siteId and userId;
+ *   (web-role check included); the payload carries siteId, the host's siteUrl and userId;
  * - httpRewrites: { 'https://cloud.example.test/': 'http://127.0.0.1:7071/' } for HttpClient (contract: loopback only);
  * - log(entry) and diagnostic(entry): Logger lines and bridge diagnostics, each with the operation id (Server.Context.ActivityId).
  * A bridge without its service answers the envelope with ServerError true, never a success.
@@ -194,6 +194,9 @@ export function assertServerLogicTimeout(value, name = 'timeout') {
   body = '',
   input = '',
   query = {},
+  requestUrl,
+  requestHeaders = {},
+  siteUrl,
   timeout,
   environmentVariables,
   services = {},
@@ -233,8 +236,8 @@ export function assertServerLogicTimeout(value, name = 'timeout') {
     Input: input,
     QueryParameters: query,
     ServerLogicName: record.name,
-    Headers: {},
-    Url: `/_api/serverlogics/${encodeURIComponent(record.name)}`,
+    Headers: requestHeaders,
+    Url: requestUrl ?? `/_api/serverlogics/${encodeURIComponent(record.name)}`,
   };
   const note = (entry) =>
     (services.diagnostic ?? (() => {}))({ serverLogic: record.name, operationId: context.ActivityId, ...entry });
@@ -288,10 +291,10 @@ export function assertServerLogicTimeout(value, name = 'timeout') {
     },
     async flow(message) {
       if (!services.triggerFlow) return unavailable('CloudFlow.TriggerAsync', 'SERVER_LOGIC_FLOW_UNAVAILABLE');
-      // The platform adds siteId, siteUrl and userId to the payload; their native casing is a guess and siteUrl is not known here.
       const payload = {
         ...parsePayload(message.payload),
         siteId: portal.website?.id ?? null,
+        ...(siteUrl ? { siteUrl } : {}),
         userId: identity?.contactId ?? identity?.id ?? null,
       };
       const answer = await services.triggerFlow({ flowId: canonical(message.flowId), payload, identity });
@@ -786,8 +789,14 @@ export function runExportedCloudFlow({
     context,
   };
   const runs = flowRunsOf(store);
-  const skipped = (answer) =>
-    answer?.status === 'Skipped' ? { status: 202, body: { status: 'Skipped', reason: answer.reason } } : answer;
+  const portalAnswer = (answer) => {
+    if (answer?.status === 'Skipped') return { status: 202, body: { status: 'Skipped', reason: answer.reason } };
+    // An explicitly undefined body renders zero bytes through the portal JSON helper.
+    if (answer?.status === 'Succeeded') return { status: 202, body: undefined };
+    if (answer?.status === 'Cancelled')
+      throw failure('The flow run was cancelled before it answered with a Response.', 409, 'FlowRunCancelled');
+    return answer;
+  };
   // The flow-run span nests under the portal request's current span (trace-store.mjs AsyncLocalStorage).
   if (!runs) {
     const answer = traceFlowRun(
@@ -795,7 +804,7 @@ export function runExportedCloudFlow({
       { processId: record.processId, name: record.name ?? workflow.name ?? null, trigger: 'PowerPages', input },
       () => executeFlowDefinition(args),
     );
-    return typeof answer?.then === 'function' ? answer.then(skipped) : skipped(answer);
+    return typeof answer?.then === 'function' ? answer.then(portalAnswer) : portalAnswer(answer);
   }
   // The native answer of a Power Pages flow request whose run waits before its Response is a guess (natively the request
   // waits for the Response until the portal times out), as is the flowrun triggertype text.
@@ -808,6 +817,6 @@ export function runExportedCloudFlow({
   }).then((answer) =>
     answer?.status === 'Waiting'
       ? (answer.response ?? { status: 202, body: { runId: answer.runId, status: 'Waiting' } })
-      : skipped(answer),
+      : portalAnswer(answer),
   );
 }

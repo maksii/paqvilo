@@ -425,6 +425,27 @@ function classicChoice(config, row) {
   return handler ? { mode: 'handler', handler } : { mode: 'placeholder' };
 }
 
+/** Readiness uses the same local execution choice as a real-time or background run. */
+export function classicWorkflowReadiness(store, config) {
+  return store
+    .tableRows('workflow')
+    .filter(
+      (row) =>
+        Number(row.type) === TYPE.definition &&
+        Number(row.category) === CATEGORY_WORKFLOW &&
+        Number(row.statecode) === STATE_ACTIVATED,
+    )
+    .map((row) => {
+      const { mode } = classicChoice(config, row);
+      return {
+        key: `classic-workflow:${bare(row.workflowid)}`,
+        kind: 'classic-workflow',
+        mode,
+        registered: mode === 'handler',
+      };
+    });
+}
+
 // The writes of one run of a classic workflow, inside the caller's transaction. A handler or mock run logs a workflowlog row.
 // A throw fails the job (or rejects the request for a real-time run); the caller writes the failure log.
 async function runClassic(api, config, run) {
@@ -548,10 +569,17 @@ function tracedRun(api, run, work, { cloud = false } = {}) {
 }
 
 // One run, atomic: the handler's writes commit or roll back with it. A failed run records its log outside the rolled-back work.
-async function attempt(api, config, run) {
+async function attempt(api, config, run, prepare) {
+  const atomic = (fn) => api.change(() => api.runAtomic(fn));
+  const execute = () => runClassic(api, config, run);
   try {
-    return await tracedRun(api, run, () => api.change(() => api.runAtomic(() => runClassic(api, config, run))));
+    if (!prepare) return await tracedRun(api, run, () => atomic(execute));
+    return await atomic(async () => {
+      run = await prepare();
+      return tracedRun(api, run, execute);
+    });
   } catch (error_) {
+    if (!run) throw error_;
     const error = run.realtime ? realtimeFailure(error_) : error_;
     const choice = classicChoice(config, run.row);
     const logged = choice.mode === 'handler' || choice.mode === 'mock';
@@ -658,6 +686,28 @@ function executionTarget(api, c, row, entityId) {
       id: bare(entityId),
     });
   return { target, regarding: { logicalName: primary.logicalName, id: bare(entityId) } };
+}
+
+async function portalListRun(api, config, { workflowId, entity, recordId, authorize, principal }) {
+  // The selected row, workflow definition and caller are resolved in the same transaction as the handler.
+  const c = await principal(await authorize());
+  const { row, realtime } = executionWorkflow(api, c, workflowId);
+  if (!realtime || !row.ondemand || bare(row.primaryentity) !== entity || classicChoice(config, row).mode !== 'handler')
+    throw new DataError(
+      'A portal list requires an on-demand real-time classic workflow with a trusted local handler for its table.',
+      501,
+      'WorkflowUnsupported',
+    );
+  const { target, regarding } = executionTarget(api, c, row, recordId);
+  return {
+    row,
+    target: { logicalName: regarding.logicalName, id: regarding.id, row: target },
+    caller: c.caller,
+    inputs: {},
+    regarding,
+    realtime,
+    jobId: null,
+  };
 }
 
 function validateModernWorkflow(config, row, name, inputs) {
@@ -1176,6 +1226,8 @@ export function workflowExtension(config = {}) {
       return { workflow: seedWorkflows(api.store, indexBypass(api, facts)) };
     },
     install(api) {
+      api.executePortalListWorkflow = (input) =>
+        attempt(api, settings, null, () => portalListRun(api, settings, input));
       api.recordHooks.add('beforeWrite', (c, mapping, info) => {
         if (mapping.logicalName === 'workflow') return workflowWriteRule(c, mapping, info);
         noteWrite(c, mapping, info);

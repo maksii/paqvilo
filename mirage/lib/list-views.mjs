@@ -98,8 +98,9 @@ function wallClock(ms, zone) {
 
 const variantPath = (variant) => (variant === 'BootstrapV5' ? 'BootstrapV5/' : '');
 /** Stylesheets (end of head) and scripts (after the platform bundles) of a calendar list page. */
-export function calendarResources({ websiteId, variant }) {
+export function calendarResources({ websiteId, variant, culture, defaultCulture = 'en-US' }) {
   const v = variantPath(variant);
+  const languageQuery = culture && culture !== defaultCulture ? `?culture=${encodeURIComponent(culture)}` : '';
   const stylesheets = [
     `/Areas/EntityList/css/${v}calendar.min.css`,
     `/Areas/EntityList/css/${v}entitylist-calendar.css`,
@@ -107,7 +108,7 @@ export function calendarResources({ websiteId, variant }) {
   const scripts = [
     `/Areas/EntityList/js/${v}calendar.min.js`,
     '/Areas/EntityList/js/entitylist-calendar.js',
-    `/EntityList/Calendar/${canonical(websiteId)}/language.js`,
+    `/EntityList/Calendar/${canonical(websiteId)}/language.js${languageQuery}`,
   ];
   return {
     stylesheets,

@@ -17,19 +17,22 @@ function skippedReport(site) {
   };
 }
 
-async function auditSite(args, catalogue, site) {
+async function auditSite(args, catalogue, site, env = args.env) {
   try {
     const cfg = await loadConfig({
       ...args,
       site,
-      ...(args.all
-        ? { env: catalogue.sites[site].defaultEnv ?? Object.keys(catalogue.sites[site].environments)[0] }
-        : {}),
+      env,
     });
-    return { site: cfg.siteName, ...auditResources(await PortalModel.create(cfg.sourceDir), cfg.site) };
+    return {
+      site: cfg.siteName,
+      environment: cfg.envName,
+      ...auditResources(await PortalModel.create(cfg.sourceDir), cfg.site),
+    };
   } catch (err) {
     return {
       site: site ?? catalogue.settings.values.PAQVILO_SITE ?? catalogue.root.defaultSite,
+      ...(env ? { environment: env } : {}),
       coverage: { inventoryComplete: false, complete: false, runtimeVerified: false },
       errors: [{ reason: err.message }],
       resources: [],
@@ -47,23 +50,35 @@ function printReports(reports) {
     let summary = 'inventory failed';
     if (item.totals)
       summary = `${item.totals.mapped}/${item.totals.resources} mapped, ${item.totals.blocked} blocked, ${plural(item.totals.gaps, 'gap')}, ${item.totals.inactive} inactive, ${item.totals.deployment} deployment metadata, ${item.totals.disabled} disabled`;
-    console.log(`\n${item.site}: ${summary}`);
+    const label = item.environment ? `${item.site} (${item.environment})` : item.site;
+    console.log(`\n${label}: ${summary}`);
     for (const resource of item.resources.filter((entry) => entry.status === 'gap' || entry.status === 'blocked'))
       console.log(`  ${resource.status.toUpperCase()}: ${resource.id}: ${resource.reason}`);
     for (const error of item.errors) console.log(`  ERROR: ${error.relativePath ?? ''}: ${error.reason}`);
     for (const diagnostic of item.diagnostics ?? [])
       console.log(`  WARNING: ${diagnostic.relativePath}: ${diagnostic.reason}`);
+    for (const warning of item.warnings ?? []) console.log(`  WARNING: ${warning}`);
   }
+}
+
+async function auditTargets(args, catalogue) {
+  const hasPortal = Object.values(catalogue.sites).some((site) => !mirageOnlySite(site));
+  const reports = [];
+  for (const site of args.all ? Object.keys(catalogue.sites) : [args.site]) {
+    if (args.all && hasPortal && mirageOnlySite(catalogue.sites[site])) {
+      reports.push(skippedReport(site));
+      continue;
+    }
+    const environments = args.all ? Object.keys(catalogue.sites[site].environments) : [];
+    for (const env of environments.length ? environments : [args.env])
+      reports.push(await auditSite(args, catalogue, site, env));
+  }
+  return reports;
 }
 
 export default async function audit(_cfg, args) {
   const catalogue = loadCatalogue(args);
-  const hasPortal = Object.values(catalogue.sites).some((site) => !mirageOnlySite(site));
-  const reports = [];
-  for (const site of args.all ? Object.keys(catalogue.sites) : [args.site]) {
-    if (args.all && hasPortal && mirageOnlySite(catalogue.sites[site])) reports.push(skippedReport(site));
-    else reports.push(await auditSite(args, catalogue, site));
-  }
+  const reports = await auditTargets(args, catalogue);
   const audited = reports.filter((report) => !report.skipped);
   const complete = audited.length > 0 && audited.every((report) => report.coverage.complete);
   const ok =
@@ -71,12 +86,17 @@ export default async function audit(_cfg, args) {
   const errors = reports.flatMap((report) => report.errors ?? []);
   if (args.strict && !complete) {
     const total = (key) => reports.reduce((sum, report) => sum + (report.totals?.[key] ?? 0), 0);
-    const diagnostics = reports.reduce((sum, report) => sum + (report.diagnostics?.length ?? 0), 0);
+    const diagnostics = reports.reduce(
+      (sum, report) => sum + (report.diagnostics?.length ?? 0) + (report.warnings?.length ?? 0),
+      0,
+    );
     errors.push({
       code: 'strict_failed',
-      message: `Strict source audit failed: ${plural(total('blocked'), 'blocked resource')}, ${plural(total('gaps'), 'gap')} and ${plural(diagnostics, 'diagnostic')}; inventory is incomplete or coverage needs attention.`,
+      message: `Strict source audit failed: ${plural(total('blocked'), 'blocked resource')}, ${plural(total('gaps'), 'gap')}, ${plural(total('disabled'), 'disabled resource')} and ${plural(diagnostics, 'diagnostic')}; inventory is incomplete or coverage needs attention.`,
       blocked: total('blocked'),
       gaps: total('gaps'),
+      disabled: total('disabled'),
+      diagnostics,
     });
   }
   const report = { schemaVersion: 1, command: 'audit', ok, offline: true, writesFiles: [], errors, complete, reports };

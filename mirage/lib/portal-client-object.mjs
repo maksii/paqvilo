@@ -8,7 +8,7 @@
 // - the site id is the exported website id; tenant and organisation ids are stable local
 //   GUIDs derived from it; correlationId is the request trace id;
 // - type, geo and portalProductionOrTrialType remain unknown unless the page supplies them;
-//   activeLanguages is the page language; batching and SPA flags use local compatibility values;
+//   activeLanguages is the page language; the SPA flag follows the imported site;
 // - isTelemetryEnabled is "False" (a local runtime sends no telemetry); isClientApiEnabled starts
 //   "False" and lib/pages-client-api.js, which runs right after this object in the page runtime script, sets it to "True" and installs
 //   the $pages client API. Without it (this object alone), onPagesClientApiReady rejects with a named
@@ -53,7 +53,7 @@ function localGuid(seed) {
  */
 export function portalClientObject(
   identity = {},
-  { websiteId = '', language = '', languages = null, traceId = null } = {},
+  { websiteId = '', language = '', languages = null, traceId = null, isSpaSite = false } = {},
 ) {
   identity ??= {};
   const site = String(websiteId ?? '').toLowerCase();
@@ -83,7 +83,7 @@ export function portalClientObject(
     timerProfileForBatching: 'NEAR_REAL_TIME',
     activeLanguages: languageList,
     isClientApiEnabled: 'False',
-    isSpaSite: 'False',
+    isSpaSite: isSpaSite ? 'True' : 'False',
     dynamics365PortalAnalytics: '',
   };
 }

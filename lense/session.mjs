@@ -12,7 +12,13 @@ import { scriptSourceBody, scriptResourceProof } from './script-source-evidence.
 import { createSourceInspector } from './source-inspection.mjs';
 import { ServedVersions } from './served-version.mjs';
 import { RequestLedger, ledgerUrl, platformRule } from './request-classes.mjs';
-import { SolutionResourceIndex, pcfDeclarations, PCF_RESOURCE_PATH, WEB_RESOURCE_PATH } from './pcf-resources.mjs';
+import {
+  SolutionResourceIndex,
+  acceptsPcfResx,
+  pcfDeclarations,
+  PCF_RESOURCE_PATH,
+  WEB_RESOURCE_PATH,
+} from './pcf-resources.mjs';
 import { siteHeaders, webFileDisposition, rfc5987 } from '../mirage/lib/response-headers.mjs';
 
 // Editors and tools leave scratch files next to the sources (safe-write temporaries, swap and
@@ -855,14 +861,16 @@ export class OverlaySession extends EventEmitter {
       return;
     }
 
-    if (this.bypass) {
+    if (this.bypass || this.model.ambiguousSite) {
       let navigation = false;
       try {
         navigation = type === 'document' && request.frame().parentFrame() === null;
       } catch {
         /* no frame yet */
       }
-      const fields = this.#classify(url, method, type, { servedReason: 'bypass' });
+      const fields = this.#classify(url, method, type, {
+        servedReason: this.model.ambiguousSite ? 'ambiguous-site' : 'bypass',
+      });
       if (navigation) this.#record(route, { type: 'html', url: url.pathname, sources: [], navigation }, fields);
       else this.#ledger(route, fields);
       return route.fallback();
@@ -884,7 +892,9 @@ export class OverlaySession extends EventEmitter {
     if (method === 'GET' || method === 'HEAD') {
       const solution = await this.#solutionEntry(url);
       if (solution && !this.disabled.has(solution.rel)) {
-        if (!(await this.#solutionInScope(solution))) solutionReason = 'out-of-scope';
+        if (solution.resourceKind === 'resx' && !acceptsPcfResx(request.headers().accept))
+          solutionReason = 'pcf-transport-unverified';
+        else if (!(await this.#solutionInScope(solution))) solutionReason = 'out-of-scope';
         else if (!isSourceFile(solution.folder, solution.file) || !isSourceFile(solution.solutionRoot, solution.file))
           readFailed = solution.rel;
         else {

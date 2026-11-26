@@ -160,6 +160,22 @@ test('a navigation $count answers 403 where the navigation read is refused, and 
   assert.equal(visibleCount.body, '1');
 });
 
+// @test-kind contract: a modeled portal navigation count applies the same filters as the root collection count
+test('a navigation $count applies authored filters within the visible related rows', async (t) => {
+  const get = await navigationGet(t, [
+    { id: 'account-read', entity: 'account', scope: 'global', roles: ['Writer'], operations: ['read'] },
+    { id: 'contact-read', entity: 'contact', scope: 'self', roles: ['Writer'], operations: ['read'] },
+  ]);
+  for (const [name, count] of [
+    ['Ada', '1'],
+    ['Bob', '0'],
+    ['Unmatched', '0'],
+  ]) {
+    const params = new URLSearchParams({ $filter: 'fullname eq @name', '@name': `'${name}'` });
+    assert.deepEqual(await get(`${NAVIGATION}/$count?${params}`), { status: 200, body: count });
+  }
+});
+
 // @test-kind security: a single-valued navigation's $count is refused as its GET is, so a caller who cannot read the related table cannot tell the cardinality from the status
 test('a single-valued navigation $count answers the refusal its GET answers, not a 404', async (t) => {
   const SINGLE = `/_api/contacts(${G(11)})/parentcustomerid`;

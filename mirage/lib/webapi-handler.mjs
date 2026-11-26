@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readRawBody } from './http-body.mjs';
 import { rejectedGatewayProperty } from './webapi-gateway-fields.mjs';
 import { globalMetadataVersion } from './metadata-version.mjs';
@@ -697,6 +698,14 @@ function webApiOperation(method, target) {
 }
 
 async function routeTarget(t, method, target, url) {
+  // The portal has no predefined-query contract. Refuse these options before any route projects or discards them.
+  for (const option of ['savedQuery', 'userQuery'])
+    if (url.searchParams.has(option))
+      throw queryPhase(
+        new DataError(`The ${option} query option is not supported by the portal Web API.`, 400, 'UnsupportedQuery', {
+          option,
+        }),
+      );
   // A read observer can issue independently committed SDK writes. Finish the
   // serialized read unit before sending a successful response, including text
   // properties and conditional 304s, so persistence failures remain errors.
@@ -732,7 +741,26 @@ async function dispatchRead(t) {
     },
   };
   await t.store.readOperation(async () => {
-    await dispatch(buffered);
+    if (
+      typeof t.store.withPortalReadSources !== 'function' ||
+      (t.target.kind === 'collection' && t.url.searchParams.has('fetchXml')) ||
+      t.target.kind === 'ref'
+    )
+      await dispatch(buffered);
+    else {
+      if (t.target.kind === 'collection' || t.target.kind === 'entity') t.policy.assertQuery(t.url.searchParams);
+      const key = t.target.key;
+      await t.store.withPortalReadSources(
+        t.deps.identity,
+        {
+          table: t.mapping.logicalName,
+          id: key != null && !String(key).includes('=') ? locate(t, t.mapping, key).id : null,
+          expand: t.url.searchParams.get('$expand'),
+          navigation: t.mapping.relationships?.[t.target.segment] ? t.target.segment : null,
+        },
+        () => dispatch(buffered),
+      );
+    }
   });
   if (!response) throw new DataError('The read operation produced no response.', 500, 'InvalidReadResponse');
   if (!response.raw && response.status === 200) await hydrateAttachments(t, response.body);
@@ -966,6 +994,7 @@ const send = async (t, status, body, headers = {}) => {
           id: row[mapping.idColumn],
           column,
           operation: 'download',
+          portalImage: true,
         });
         row[column] = answer.statusCode === 200 ? answer.body.$content : null;
       }
@@ -1049,7 +1078,7 @@ function shapeEntity(t, policy, mapping, projected, { fill = false, expand = nul
 function locate(t, mapping, key) {
   const text = String(key).trim();
   if (text.includes('=')) {
-    const row = t.store.findByKey(mapping, text);
+    const row = t.store.findByKey(mapping, text, { portalRequest: t.method === 'GET' });
     return { id: row ? row[mapping.idColumn] : null, alternate: parseKeySegment(text) };
   }
   return {
@@ -1231,7 +1260,7 @@ function fetchContext(t, mapping, info, { empty = false } = {}) {
   return `${t.deps.origin}/_api/$metadata#${mapping.entitySet}(${[...parts, ...lookups].join(',')})`;
 }
 
-function getFetch(t) {
+async function getFetch(t) {
   const { url, store, deps, mapping } = t;
   const authoredXml = url.searchParams.get('fetchXml');
   const xml = deps.identity?.admin
@@ -1243,12 +1272,17 @@ function getFetch(t) {
   // has no read permission for the caller, instead of silently empty joins.
   if (!nativePolicy) admitFetchTables(store, xml, deps);
   const counted = url.searchParams.get('$count') === 'true';
-  const fetched = store.fetchXml(authoredXml, deps.identity, {
-    profile: 'webapi',
-    portalRequest: true,
-    metadata: deps.metadata,
-    returnTotal: counted,
-  });
+  const execute = () =>
+    store.fetchXml(authoredXml, deps.identity, {
+      profile: 'webapi',
+      portalRequest: true,
+      metadata: deps.metadata,
+      returnTotal: counted,
+    });
+  const fetched =
+    typeof store.withPortalReadSources === 'function'
+      ? await store.withPortalReadSources(deps.identity, { fetchXml: xml }, execute)
+      : execute();
   const info = fetched.columns;
   const body = { '@odata.context': fetchContext(t, mapping, info, { empty: fetched.entities.length === 0 }) };
   if (counted || (nativePolicy && fetched.total_record_count >= 0))
@@ -1309,12 +1343,19 @@ function addFetchResponseAnnotations(body, fetched, info, nativePolicy, xml, sto
     );
 }
 
-function getCount(t) {
-  const { url, store, deps, mapping, policy } = t;
-  const params = pick(url.searchParams, ['$filter']);
+function getCount(t, { mapping = t.mapping, policy = t.policy, ids } = {}) {
+  const { url, store, deps } = t;
+  const aliases = [...url.searchParams.keys()].filter((key) => key.startsWith('@'));
+  const params = pick(url.searchParams, ['$filter', ...aliases]);
   policy.assertQuery(params);
   params.set('$select', mapping.idColumn);
-  const result = store.query(mapping.logicalName, params, deps.identity, undefined, queryOptions(t));
+  const result = store.query(
+    mapping.logicalName,
+    params,
+    deps.identity,
+    undefined,
+    queryOptions(t, ids ? { ids } : {}),
+  );
   return sendText(t, Math.min(result.value.length, WEBAPI_COUNT_LIMIT));
 }
 
@@ -1360,7 +1401,7 @@ function navigationTarget(t) {
   const { id } = locate(t, t.mapping, t.target.key);
   const parent = readRecord(t, t.mapping, id, t.target.key);
   const related = t.store
-    .queryContext(t.deps.identity, { metadata: t.deps.metadata })
+    .queryContext(t.deps.identity, { metadata: t.deps.metadata, portalRequest: true })
     .related(parent, rel)
     .map((row) => row[targetMapping.idColumn]);
   return { rel, targetMapping, targetPolicy, related };
@@ -1381,10 +1422,12 @@ function getNavigation(t) {
 
 function getNavigationCount(t) {
   if (!t.mapping.relationships?.[t.target.segment]) throw notFound(t.target.segment);
-  const { rel, related } = navigationTarget(t);
+  const { rel, targetMapping, targetPolicy, related } = navigationTarget(t);
   // The count reads the related table: refused where the navigation read is refused, before the cardinality answers.
   assertExpandReadable(t, t.mapping, null, [{ navigation: t.target.segment, expand: [] }]);
   if (rel.many === false) throw notFound('$count');
+  if (t.url.searchParams.has('$filter'))
+    return getCount(t, { mapping: targetMapping, policy: targetPolicy, ids: related });
   return sendText(t, Math.min(related.length, WEBAPI_COUNT_LIMIT));
 }
 
@@ -1755,8 +1798,6 @@ async function putProperty(t) {
 // application/octet-stream, attachment disposition, nosniff, and the stored type in the mimetype header with the
 // x-ms-file-name and x-ms-file-size headers /api/data sends. An upload without a name keeps the stored file's name, else
 // <column>.bin (seam defaultName).
-// ponytail: one request carries the whole file (Range and chunked transfer are not served on /_api); add Range when a
-// portal file passes 16 MB, the Learn single-call limit.
 const FILE_BODY_LIMIT = 128 * 1024 * 1024; // Learn: a single-request Web API upload is under 128 MB.
 const fileKind = (t) =>
   t.store.recordPipeline?.fileContentInternal?.kindOf?.(t.mapping.logicalName, t.target.segment) ?? null;
@@ -1791,6 +1832,12 @@ async function fileColumnRequest(t) {
   // The table permission check above is the grant; the profile only carries it into the seam's own check.
   const principal = filePrincipal(t, mapping, operation);
   const header = (name) => (typeof req.headers?.[name] === 'string' ? req.headers[name] : null);
+  const range = download ? header('range') : null;
+  // A replacement uses a new file id even when it keeps the filename and byte count.
+  const etag = range === null ? null : `"${createHash('sha256').update(String(row[target.segment])).digest('hex')}"`;
+  const match = etag && header('if-match');
+  if (match && match !== '*' && !match.split(',').some((value) => value.trim() === etag))
+    throw new DataError('The file changed during the download.', 412, 'PreconditionFailed');
   const fileName = header('x-ms-file-name') ?? url.searchParams.get('x-ms-file-name');
   // A file name is a name, never a path: separators, NUL and "."/".." are refused before anything is read or stored.
   // The platform's code and wording for such a name are a guess.
@@ -1802,10 +1849,12 @@ async function fileColumnRequest(t) {
     column: target.segment,
     operation: transferOf(download, method),
     size: download && url.searchParams.get('size') === 'full' ? 'full' : null,
+    range,
     content: download || method === 'DELETE' ? null : await rawBody(req),
     fileName,
     contentType: header('content-type'),
     defaultName: true,
+    portalImage: true,
   });
   // The file transfer on the Web API span: the column, the operation and (once known) the file's name, size and type.
   t.span?.set({
@@ -1815,17 +1864,28 @@ async function fileColumnRequest(t) {
       ? { fileName: answer.file.name, fileSize: answer.file.size, mimetype: answer.file.mimeType }
       : { fileName: fileName ?? undefined }),
   });
-  if (answer.statusCode !== 200) return sendNoContent(t);
+  return sendFileColumnResponse(t, answer, etag);
+}
+
+function sendFileColumnResponse(t, answer, etag) {
+  if (answer.statusCode === 204) return sendNoContent(t);
   const { name, size, mimeType } = answer.file;
-  t.res.writeHead(200, {
-    ...apiHeaders(deps.portal),
+  const partial = answer.statusCode === 206;
+  t.res.writeHead(answer.statusCode, {
+    ...apiHeaders(t.deps.portal),
     'content-type': 'application/octet-stream',
     'content-disposition': contentDisposition('attachment', name),
     'x-content-type-options': 'nosniff',
     mimetype: mimeType,
     'x-ms-file-name': fileNameHeader(name),
     'x-ms-file-size': String(size),
-    'access-control-expose-headers': 'mimetype, x-ms-file-name, x-ms-file-size',
+    'accept-ranges': 'bytes',
+    ...(partial
+      ? { 'content-range': answer.headers['Content-Range'], 'x-ms-chunk-size': answer.headers['x-ms-chunk-size'], etag }
+      : {}),
+    'access-control-expose-headers': partial
+      ? 'mimetype, x-ms-file-name, x-ms-file-size, x-ms-chunk-size, content-range, etag'
+      : 'mimetype, x-ms-file-name, x-ms-file-size',
   });
   return t.res.end(Buffer.from(answer.body['$content'], 'base64'));
 }

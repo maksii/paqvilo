@@ -29,10 +29,17 @@ export function parseCookies(header = '') {
 }
 
 /** `name`: the cookie name, or a function returning it (known once the runtime listens). */
-export function createAuthSessions({ secret = randomBytes(32), name = AUTH_COOKIE } = {}) {
+export function createAuthSessions({
+  secret = randomBytes(32),
+  name = AUTH_COOKIE,
+  clock = Date.now,
+  fixedLifetime = () => null,
+} = {}) {
   const cookieName = () => (typeof name === 'function' ? name() : name) || AUTH_COOKIE;
   const signature = (payload) => createHmac('sha256', secret).update(payload).digest('base64url');
   const value = (session) => {
+    const lifetime = session?.contactId && session.expiresAt === undefined ? fixedLifetime() : null;
+    const expiresAt = session?.expiresAt ?? (lifetime === null ? null : clock() + lifetime);
     const payload = encode(
       session?.contactId
         ? {
@@ -40,6 +47,8 @@ export function createAuthSessions({ secret = randomBytes(32), name = AUTH_COOKI
             ...(Array.isArray(session.roles) ? { r: session.roles.map(String) } : {}),
             // The external identity provider that established the session (sign-out uses it).
             ...(typeof session.provider === 'string' && session.provider ? { p: session.provider } : {}),
+            ...(typeof session.credentialStamp === 'string' && { cs: session.credentialStamp }),
+            ...(Number.isSafeInteger(expiresAt) && { exp: expiresAt }),
           }
         : { c: null },
     );
@@ -63,10 +72,13 @@ export function createAuthSessions({ secret = randomBytes(32), name = AUTH_COOKI
         const data = decode(payload);
         if (data.c === null) return { contactId: null };
         if (typeof data.c !== 'string' || !data.c) return null;
+        if (Number.isSafeInteger(data.exp) && clock() >= data.exp) return { contactId: null };
         return {
           contactId: data.c,
           ...(Array.isArray(data.r) ? { roles: data.r.filter((role) => typeof role === 'string') } : {}),
           ...(typeof data.p === 'string' && data.p ? { provider: data.p } : {}),
+          ...(typeof data.cs === 'string' && { credentialStamp: data.cs }),
+          ...(Number.isSafeInteger(data.exp) && { expiresAt: data.exp }),
         };
       } catch {
         return null;

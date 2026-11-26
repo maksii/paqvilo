@@ -32,6 +32,7 @@ import {
 import { portalWebRoles } from './permissions.mjs';
 import { SYSTEM_ADMINISTRATOR_STAND_IN } from './dataverse-fls.mjs';
 import { ENHANCED_AUTHORIZATION_STATES } from './platform-changes.mjs';
+import { CUSTOM_ACCESS_ENABLED_STATE } from './custom-table-permission.mjs';
 
 const key = (value) =>
   String(value?.id ?? value ?? '')
@@ -432,6 +433,7 @@ export function createPortalAuthorization({
 
   return {
     describe,
+    customAccessEnabled: () => describe().state === CUSTOM_ACCESS_ENABLED_STATE,
     /** The table permissions of `granted` that the mapped user's Dataverse privileges keep (data.mjs rules()). */
     filterRules(granted, entity, operation, identity = {}) {
       if (!enhanced(identity) || !granted.length || !RIGHT[operation]) return granted;

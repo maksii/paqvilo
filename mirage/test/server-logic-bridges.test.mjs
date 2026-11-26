@@ -172,7 +172,8 @@ test('CloudFlow.TriggerAsync answers the trigger pipeline envelope, including th
   };
   const code =
     "async function post(){ const a = JSON.parse(await Server.Connector.CloudFlow.TriggerAsync('{77777777-7777-4777-8777-777777777750}', JSON.stringify({ Location: 'Invented' }))); const b = JSON.parse(await Server.Connector.CloudFlow.TriggerAsync('77777777-7777-4777-8777-777777777751')); return [a, b]; }";
-  const [answered, accepted] = await run(t, code, { services: { triggerFlow } });
+  const siteUrl = 'http://127.0.0.1:12345/';
+  const [answered, accepted] = await run(t, code, { siteUrl, services: { triggerFlow } });
   assert.deepEqual(
     [answered.StatusCode, answered.IsSuccessStatusCode, JSON.parse(answered.Body)],
     [200, true, { Echo: 'Invented' }],
@@ -180,7 +181,7 @@ test('CloudFlow.TriggerAsync answers the trigger pipeline envelope, including th
   assert.deepEqual([accepted.StatusCode, accepted.IsSuccessStatusCode, accepted.Body], [202, true, '']);
   assert.deepEqual(calls[0], {
     flowId: '77777777-7777-4777-8777-777777777750',
-    payload: { Location: 'Invented', siteId: SITE, userId: CONTACT },
+    payload: { Location: 'Invented', siteId: SITE, siteUrl, userId: CONTACT },
   });
   const refused = JSON.parse(
     await runExportedServerLogic({

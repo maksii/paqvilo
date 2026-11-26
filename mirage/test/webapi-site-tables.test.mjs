@@ -1,3 +1,4 @@
+// @test-kind contract: the local simulator serves source-derived site tables and relationship data.
 // Site components and web role memberships through the local Web API:
 // the documented N:N powerpagecomponent_mspp_webrole_contact (enhanced) and
 // adx_webrole_contact (standard), with rows derived from the export and the
@@ -23,7 +24,7 @@ const setting = (index, name, value) => [
   component(`00000000-0000-0000-0000-00000000010${index}`, 9, name, { value, source: 0 }),
 ];
 
-async function start(t, files, { permissions, contactRoles, dataModel }) {
+async function start(t, files, { permissions, contactRoles, dataModel, membershipTable = null }) {
   const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-site-tables-'));
   ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   for (const [file, content] of Object.entries(files)) {
@@ -35,12 +36,18 @@ async function start(t, files, { permissions, contactRoles, dataModel }) {
     dataModel,
     watch: false,
     initial: {
-      mappings: { contact: { entitySet: 'contacts', idColumn: 'contactid', nameColumn: 'fullname' } },
+      mappings: {
+        contact: { entitySet: 'contacts', idColumn: 'contactid', nameColumn: 'fullname' },
+        ...(membershipTable && {
+          [membershipTable]: { entitySet: `${membershipTable}s`, idColumn: `${membershipTable}id` },
+        }),
+      },
       tables: {
         contact: [
           { contactid: ME, fullname: 'Me', statecode: 0 },
           { contactid: OTHER, fullname: 'Other', statecode: 0 },
         ],
+        ...(membershipTable && { [membershipTable]: [] }),
       },
       permissions,
       settings: { permissionMode: 'enforce' },
@@ -91,6 +98,47 @@ const contactSelf = {
   roles: ['Authenticated Users'],
   operations: ['read'],
 };
+
+// @test-kind security: portal requests reflect current stored membership and never restore a revoked role from legacy persona settings.
+test('standard and enhanced persisted role intersections authorize and revoke an existing portal session', async (t) => {
+  for (const { dataModel, membershipTable, roleColumn } of [
+    { dataModel: 'standard', membershipTable: 'adx_webrole_contact', roleColumn: 'adx_webroleid' },
+    {
+      dataModel: 'enhanced',
+      membershipTable: 'powerpagecomponent_mspp_webrole_contact',
+      roleColumn: 'powerpagecomponentid',
+    },
+  ]) {
+    await t.test(dataModel, async (t) => {
+      const files =
+        dataModel === 'enhanced'
+          ? ENHANCED
+          : {
+              'webrole.yml': `- adx_webroleid: ${READER}\n  adx_name: Readers`,
+              'sitesetting.yml':
+                '- adx_name: Webapi/contact/enabled\n  adx_value: true\n- adx_name: Webapi/contact/fields\n  adx_value: fullname',
+            };
+      const { app } = await start(t, files, {
+        dataModel,
+        membershipTable,
+        contactRoles: [{ contactId: ME, roleId: READER }],
+        permissions: [{ ...contactSelf, roles: ['Readers'] }],
+      });
+      const session = app.signIn(ME);
+      const getContact = () => fetch(`${app.url}/_api/contacts(${ME})`, { headers: { cookie: session.cookieHeader } });
+      assert.equal((await getContact()).status, 403, 'empty stored membership takes precedence over old settings');
+      const idColumn = `${membershipTable}id`;
+      const association = await app.store.create(
+        membershipTable,
+        { contactid: ME, [roleColumn]: READER },
+        { admin: true },
+      );
+      assert.equal((await getContact()).status, 200, 'stored association grants its source role');
+      await app.store.remove(membershipTable, association[idColumn], { admin: true });
+      assert.equal((await getContact()).status, 403, 'last revocation never reactivates the old role');
+    });
+  }
+});
 
 test('enhanced model: contacts expand their web roles through powerpagecomponent_mspp_webrole_contact', async (t) => {
   const { get } = await start(t, ENHANCED, {

@@ -25,8 +25,8 @@ and component manifests. Missing managed metadata and dynamic references can lea
 exported references and observed browser elements separately.
 
 Mirage supports selected platform contracts, not every Power Pages feature. Code-site (`.powerpages-site`) exports are
-imported, but SPA builds use their own tooling. PCF dataset hosting requires an explicit Liquid table/view binding.
-Native list/subgrid PCF hosting is diagnosed and falls back to the native grid. On portal pages, React/virtual controls,
+imported, but SPA builds use their own tooling. PCF datasets require an explicit Liquid table/view binding or a qualified
+native list or subgrid binding. An unsupported native binding falls back to the ordinary grid. On portal pages, React/virtual controls,
 platform libraries, advanced dataset operators and record navigation remain unsupported. External connectors, custom APIs and
 unsupported flow actions need a project provider or a local mock. A successful local scenario does not establish
 complete platform parity.

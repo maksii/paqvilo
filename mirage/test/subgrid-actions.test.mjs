@@ -15,13 +15,25 @@ const layoutsOf = (html) => {
   return JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'));
 };
 
-test('configured native dataset PCF is diagnosed rather than silently presented as a supported native grid', async () => {
+test('configured native dataset PCF without an exported control binding is diagnosed and keeps the native grid', async () => {
   const { portal, schemas, state } = model(),
     store = await new DataStore({ state }).init(),
-    diagnostics = [];
+    diagnostics = [],
+    hosted = [];
   portal.records[0].adx_type = 100000003;
   portal.records[0].kind = 'basicformmetadata';
   portal.records[0].adx_controlstyle = 756150001;
+  // The specific unsupported reason: the fixture exports no custom control for the subgrid cell and no grid control
+  // for the list table, so no component is resolved and the PCF host is never asked to render.
+  const codeComponent = (request) => {
+    hosted.push(request);
+    return '<div data-pcf-schema="unexpected"></div>';
+  };
+  assert.equal(
+    formCells(schemas.parent).find((cell) => cell.id === 'Children').codeComponent,
+    undefined,
+    'the fixture subgrid cell must not export a custom control',
+  );
   const context = {
     request: { url: 'http://localhost/?id=' + parentId, params: { id: parentId } },
     user: state.simulator.identity,
@@ -30,11 +42,16 @@ test('configured native dataset PCF is diagnosed rather than silently presented 
     portal,
     store,
     schemas,
+    codeComponent,
     diagnostic: (entry) => diagnostics.push(entry),
   });
-  assert.match(html, /hosted relationship binding is not implemented locally/);
-  assert.ok(diagnostics.some((entry) => entry.code === 'PCF_NATIVE_DATASET_UNSUPPORTED'));
+  assert.match(
+    html,
+    /Subgrid Children uses a configured dataset code component. No supported exported view binding is available locally; the native grid below is a fallback./,
+  );
+  assert.ok(diagnostics.some((entry) => entry.code === 'PCF_NATIVE_DATASET_UNSUPPORTED' && entry.grid === 'Children'));
   assert.match(html, /data-ref-id="11111111-1111-1111-1111-111111111111"/);
+  assert.doesNotMatch(html, /data-pcf-schema|pcf-host.js/);
   portal.lists = [
     { id: 'children-list', name: 'Children list', entityName: 'child', metadata: { adx_iscodecomponent: true } },
   ];
@@ -43,12 +60,31 @@ test('configured native dataset PCF is diagnosed rather than silently presented 
     'entitylist',
     'Children list',
     { ...context, key: 'Children list' },
-    { portal, store, schemas, args: { key: 'Children list' }, diagnostic: (entry) => diagnostics.push(entry) },
+    {
+      portal,
+      store,
+      schemas,
+      codeComponent,
+      args: { key: 'Children list' },
+      diagnostic: (entry) => diagnostics.push(entry),
+    },
   );
-  assert.match(list.html, /hosted list binding is not implemented locally/);
+  assert.match(
+    list.html,
+    /List Children list uses a configured dataset code component. No supported exported view binding is available locally; the native grid below is a fallback./,
+  );
+  assert.doesNotMatch(list.html, /not implemented locally/);
   assert.ok(
-    diagnostics.some((entry) => entry.component === 'entitylist' && entry.code === 'PCF_NATIVE_DATASET_UNSUPPORTED'),
+    diagnostics.some(
+      (entry) =>
+        entry.component === 'entitylist' &&
+        entry.code === 'PCF_NATIVE_DATASET_UNSUPPORTED' &&
+        entry.list === 'children-list',
+    ),
   );
+  assert.match(list.html, /class="entity-grid entitylist"[^>]*data-selected-view="children-list"/);
+  assert.doesNotMatch(list.html, /data-pcf-schema|pcf-host.js/);
+  assert.deepEqual(hosted, [], 'no PCF host is requested for an unbound native dataset');
 });
 
 test('subgrid quick search derives from the exported form control and filters related rows only', async () => {

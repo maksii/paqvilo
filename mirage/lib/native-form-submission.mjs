@@ -1,13 +1,9 @@
 import { NativePostbackError, parseNativePostback, decodeNativeViewState } from './native-postback.mjs';
-import { nativeFormSubmissionContext, submitPortalForm } from './form-service.mjs';
+import { nativeFormSubmissionContext, submitPortalForm, validateFormCaptcha } from './form-service.mjs';
 import { approximateFormSchema, approximateAdvancedFormSchema } from './form-schema-fallback.mjs';
 import { nativeControlKind, schemaFromFormXml } from './platform.mjs';
 import { parseNumericLiteral } from './exact-numeric.mjs';
 import { formWriteError } from './form-error-presentation.mjs';
-import { portalField } from './importer.mjs';
-
-const truthy = (value) => value === true || value === 1 || /^(?:true|1)$/i.test(String(value ?? ''));
-const CAPTCHA_MESSAGE = 'Captcha is incorrect, please re-enter captcha.';
 
 function nativeSubmissionContext(item) {
   const context = nativeFormSubmissionContext(item?.context ?? {});
@@ -122,18 +118,6 @@ function resolveSubmissionSchema(submission, options, definition) {
   return schema;
 }
 
-function validateNativeCaptcha(submission, options, schema, definition) {
-  const captchaSettings = schema?.metadata ?? definition?.metadata ?? {};
-  if (submission.body.action !== 'submit' || !truthy(portalField(captchaSettings, 'captcharequired', false))) return;
-  const signedIn = Boolean(options?.identity?.contactId ?? options?.identity?.id);
-  if (!signedIn || truthy(portalField(captchaSettings, 'showcaptchaforauthenticatedusers', false)))
-    throw Object.assign(new Error(CAPTCHA_MESSAGE), {
-      status: 400,
-      code: 'CaptchaInvalid',
-      details: { validationErrors: [{ field: 'captcha', code: 'CaptchaInvalid', message: CAPTCHA_MESSAGE }] },
-    });
-}
-
 /** Decode against descriptors collected while rendering this server-owned page. */
 export function resolveNativeFormSubmission(entries, rendered, requestUrl) {
   if (!Array.isArray(rendered)) throw new NativePostbackError('Rendered native forms required');
@@ -165,6 +149,22 @@ export function resolveNativeFormSubmission(entries, rendered, requestUrl) {
   };
 }
 
+function fixtureProof(posted, names) {
+  const controls = new URLSearchParams(posted);
+  const ids = controls.getAll(`${names}captcha$FixtureChallengeToken`);
+  const answers = controls.getAll(`${names}captcha$FixtureAnswerToken`);
+  return ids.length === 1 && answers.length === 1 ? { challengeId: ids[0], answer: answers[0] } : null;
+}
+
+function applyNativeCaptcha(submission, schema, definition, descriptor, posted, options) {
+  if (options.verifyCaptcha && submission.body.action === 'submit') {
+    submission.body.captchaProofToken = fixtureProof(posted, descriptor.ids.names);
+    return;
+  }
+  // Without a local fixture, retain the native CAPTCHA outcome before textbox coercion and lookup binding.
+  validateFormCaptcha(submission.body.action, schema?.metadata ?? definition.metadata, options.identity);
+}
+
 /** Transport-neutral adapter: source/session/permission checks stay in the service. */
 export async function submitNativePostback(entries, rendered, options) {
   const posted = [...entries];
@@ -182,21 +182,18 @@ export async function submitNativePostback(entries, rendered, options) {
       result: await submitPortalForm(submission.kind, submission.formId, submission.body, options),
       context: submission.context,
     };
+  const descriptor = rendered.find(
+    (item) => item.descriptor.kind === submission.kind && item.descriptor.formId === submission.formId,
+  ).descriptor;
   let schema = resolveSubmissionSchema(submission, options, definition);
-  // A basic form or step that requires the captcha (for a signed-in visitor only with "show
-  // captcha for authenticated users") rejects its save postback with the captcha message and
-  // re-renders with the posted values (status 200).
-  // The local challenge has no verifiable answer; keep CAPTCHA-required saves closed.
-  validateNativeCaptcha(submission, options, schema, definition);
+  applyNativeCaptcha(submission, schema, definition, descriptor, posted, options);
+
   if (schema?.formXml)
     schema = {
       ...schema,
       ...schemaFromFormXml(schema.formXml, { ...schema, entity: schema.entity ?? definition?.entityName }),
     };
   const mapping = schema?.entity ? options.store.resolveMapping(schema.entity) : null;
-  const descriptor = rendered.find(
-    (item) => item.descriptor.kind === submission.kind && item.descriptor.formId === submission.formId,
-  ).descriptor;
   for (const field of schema?.fields ?? []) {
     if (!Object.hasOwn(submission.body.values, field.name)) continue;
     let value = submission.body.values[field.name];
@@ -217,6 +214,8 @@ const nativeValidationCodes = new Set([
   'FormFieldInvalid',
   'FormFieldOutOfRange',
   'FormFieldTooLong',
+  'FormAttachmentRequired',
+  'FormAttachmentTooMany',
   'CaptchaInvalid',
 ]);
 

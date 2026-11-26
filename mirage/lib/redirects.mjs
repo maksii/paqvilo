@@ -325,7 +325,7 @@ export function resolveUnmatchedRoute(portal, url, { readable, urlHistory = fals
  * and query, RFC 3986 escaped> with the "Access Denied" page as the response body; signed-in visitors receive the "Access Denied" site-marker page with 403
  * (else Page Not Found with 404).
  */
-export function deniedPageRoute(portal, url, identity, access = {}, { origin = '' } = {}) {
+export function deniedPageRoute(portal, url, identity, access = {}, { origin = '', languageCode, returnUrl } = {}) {
   if (access.status === 404) {
     const notFound = servicePages(portal).notFound;
     return notFound
@@ -335,11 +335,11 @@ export function deniedPageRoute(portal, url, identity, access = {}, { origin = '
   const authenticated = Boolean(identity?.contactId ?? identity?.id);
   const { accessDenied, notFound } = servicePages(portal);
   if (!authenticated) {
-    const code = portal.language?.code ?? urlLanguages(portal)[0]?.code;
+    const code = languageCode ?? portal.language?.code ?? urlLanguages(portal)[0]?.code;
     return {
       kind: 'redirect',
       status: 302,
-      location: `${origin}${code ? '/' + code : ''}${loginPath(portal)}?ReturnUrl=${escapeDataString(url.pathname + url.search)}`,
+      location: `${origin}${code ? '/' + code : ''}${loginPath(portal)}?ReturnUrl=${escapeDataString(returnUrl ?? url.pathname + url.search)}`,
       source: 'sign-in',
       code: access.code,
       ...(accessDenied ? { page: accessDenied } : {}),

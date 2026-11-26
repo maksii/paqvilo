@@ -90,8 +90,32 @@ test('savedQuery and userQuery are refused with 400 9004010A instead of answerin
     'userQuery=11111111-1111-4111-8111-111111111111',
     'savedQuery=not-a-guid',
   ]) {
-    const answer = await call('GET', `x_items?${query}`);
-    assert.deepEqual([answer.status, answer.json.error.code], [400, '9004010A'], query);
+    for (const route of [
+      `x_items?${query}`,
+      `x_items/$count?${query}`,
+      `x_items?${query}&fetchXml=${encodeURIComponent('<fetch><entity name="x_item"/></fetch>')}`,
+      `x_items(77777777-7777-4777-8777-000000000000)/x_name?${query}`,
+      `x_items(77777777-7777-4777-8777-000000000000)/x_name/$value?${query}`,
+    ]) {
+      const answer = await call('GET', route);
+      assert.deepEqual([answer.status, answer.json.error.code], [400, '9004010A'], route);
+    }
+  }
+});
+
+// @test-kind contract: the local portal publishes no organization metadata, multipart batch or management operations
+test('portal rejects organization metadata, batch, functions, actions and configuration tables', async (t) => {
+  const call = await portal(t);
+  for (const [method, route, status, code] of [
+    ['GET', '$metadata', 404, '9004010C'],
+    ['GET', 'EntityDefinitions', 400, '9004010A'],
+    ['POST', '$batch', 404, '9004010C'],
+    ['GET', 'WhoAmI()', 400, '9004010A'],
+    ['POST', 'x_items(77777777-7777-4777-8777-000000000000)/Microsoft.Dynamics.CRM.Assign', 404, '9004010C'],
+    ['GET', 'adx_contentsnippets', 404, '9004010E'],
+  ]) {
+    const answer = await call(method, route);
+    assert.deepEqual([answer.status, answer.json.error.code], [status, code], `${method} ${route}`);
   }
 });
 

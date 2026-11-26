@@ -1,3 +1,4 @@
+// @test-kind contract: local SharePoint document storage, location transactions and provider failures
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -38,7 +39,7 @@ const tables = {
   systemuser: [{ systemuserid: NOBODY, fullname: 'Invented nobody', isdisabled: false, accessmode: 0 }],
 };
 
-async function setup(t, { withStorage = true } = {}) {
+async function setup(t, { withStorage = true, wrapStorage = (storage) => storage } = {}) {
   const diagnostics = [];
   const owner = ownedFixture(t);
   let storage, local;
@@ -46,7 +47,7 @@ async function setup(t, { withStorage = true } = {}) {
     const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'sharepoint-documents-'));
     owner.remove(() => fs.rm(root, { recursive: true, force: true }));
     local = createLocalDiskStorage({ root });
-    storage = createStorageRouter({ config: storageSettings({}), providers: { local } });
+    storage = createStorageRouter({ config: storageSettings({}), providers: { local: wrapStorage(local) } });
   }
   let api;
   // The fixture returns the HTTP handle; the wrapper keeps the internal api the module installs on.
@@ -101,6 +102,56 @@ test('concurrent ensureLocation calls for one record create one record location'
   assert.equal(first.sharepointdocumentlocationid, second.sharepointdocumentlocationid);
   assert.equal(store.state.tables.sharepointdocumentlocation.length, 2);
   assert.equal((await sp.locationsFor(regarding, ADMIN)).length, 1);
+});
+
+test('a failed provider deletion leaves the document folder addressable for retry', async (t) => {
+  const providerError = new Error('Invented provider failure');
+  let blocked = true;
+  const { sp } = await setup(t, {
+    wrapStorage: (provider) => ({
+      ...provider,
+      delete(key, options) {
+        if (blocked && key.endsWith('/retry.txt')) throw providerError;
+        return provider.delete(key, options);
+      },
+    }),
+  });
+  const { sharepointdocumentlocationid: id } = await sp.ensureLocation({ logicalName: 'x_case', id: CASE }, {}, ADMIN);
+  await sp.createFolder(id, { path: [], name: 'Pending' }, ADMIN);
+  await sp.createFolder(id, { path: ['Pending'], name: 'Nested' }, ADMIN);
+  await sp.upload(id, { path: ['Pending', 'Nested'], name: 'retry.txt', bytes: Buffer.from('fixture') }, ADMIN);
+  await assert.rejects(sp.deleteFolder(id, ['Pending'], ADMIN), providerError);
+  const remaining = await sp.listDocuments(id, ADMIN, { path: ['Pending', 'Nested'] });
+  assert.deepEqual(
+    remaining.map((item) => item.name),
+    ['retry.txt'],
+  );
+
+  blocked = false;
+  await sp.deleteFolder(id, ['Pending'], ADMIN);
+  assert.deepEqual(await sp.listDocuments(id, ADMIN), []);
+});
+
+test('a failed provider folder creation leaves no document location rows', async (t) => {
+  const providerError = new Error('Invented provider failure');
+  let blocked = true;
+  const { sp, store } = await setup(t, {
+    wrapStorage: (provider) => ({
+      ...provider,
+      put(key, body, options) {
+        if (blocked && key.endsWith('/_folder')) throw providerError;
+        return provider.put(key, body, options);
+      },
+    }),
+  });
+  const regarding = { logicalName: 'x_case', id: CASE };
+  await assert.rejects(sp.ensureLocation(regarding, {}, ADMIN), providerError);
+  assert.equal(store.state.tables.sharepointdocumentlocation.length, 0);
+
+  blocked = false;
+  const location = await sp.ensureLocation(regarding, {}, ADMIN);
+  assert.equal(store.state.tables.sharepointdocumentlocation.length, 2);
+  assert.deepEqual(await sp.listDocuments(location.sharepointdocumentlocationid, ADMIN), []);
 });
 
 test('upload, list and delete carry provider ETags and honour If-Match', async (t) => {

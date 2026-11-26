@@ -428,7 +428,7 @@
   // Dataset bindings come from selected solution views/table metadata, never from table-name guessing.
   function datasetAdapter(binding, api, updated) {
     let page = 1,
-      pageSize = 25,
+      pageSize = binding.pageSize ?? 25,
       filter = null,
       selected = [],
       generation = 0;
@@ -516,12 +516,34 @@
             visualSizeFactor: 100,
           });
       },
-      openDatasetItem() {
+      openDatasetItem(reference) {
+        if (binding.details) {
+          const url = new URL(binding.details.url, location.origin);
+          if (url.origin !== location.origin || reference?.etn?.toLowerCase() !== binding.entity)
+            throw new Error('PCF dataset record navigation needs a reference to its exported table');
+          const id = recordId(reference.id?.guid ?? reference.id);
+          if (!Object.hasOwn(dataset.records, id))
+            throw new Error('PCF dataset record navigation needs a record on the current page');
+          url.searchParams.set(binding.details.idParameter, id);
+          location.assign(url.href);
+          return;
+        }
         throw new Error(
           'PCF dataset record navigation requires a portal page/form binding; the view alone does not supply it',
         );
       },
     };
+    function applySorting(xml, entity) {
+      for (const node of Array.from(entity.children).filter((node) => node.tagName === 'order')) node.remove();
+      for (const sort of dataset.sorting) {
+        if (!dataset.columns.some((column) => column.name === sort.name) || ![0, 1].includes(sort.sortDirection))
+          throw new Error('PCF dataset sorting requires an exported column and ascending/descending direction');
+        const node = xml.createElement('order');
+        node.setAttribute('attribute', sort.name);
+        node.setAttribute('descending', String(sort.sortDirection === 1));
+        entity.append(node);
+      }
+    }
     function query() {
       const xml = new DOMParser().parseFromString(binding.fetchXml, 'text/xml');
       const fetch = xml.documentElement,
@@ -549,16 +571,15 @@
           node.setAttribute('name', column.name);
           entity.append(node);
         }
-      if (dataset.sorting.length) {
-        for (const node of Array.from(entity.children).filter((node) => node.tagName === 'order')) node.remove();
-        for (const sort of dataset.sorting) {
-          if (!dataset.columns.some((column) => column.name === sort.name) || ![0, 1].includes(sort.sortDirection))
-            throw new Error('PCF dataset sorting requires an exported column and ascending/descending direction');
-          const node = xml.createElement('order');
-          node.setAttribute('attribute', sort.name);
-          node.setAttribute('descending', String(sort.sortDirection === 1));
-          entity.append(node);
-        }
+      if (dataset.sorting.length) applySorting(xml, entity);
+      if (binding.baseFilter) {
+        const scope = xml.createElement('filter');
+        const condition = xml.createElement('condition');
+        condition.setAttribute('attribute', binding.baseFilter.column);
+        condition.setAttribute('operator', 'eq');
+        condition.setAttribute('value', binding.baseFilter.id);
+        scope.append(condition);
+        entity.append(scope);
       }
       if (filter != null) entity.append(datasetFilterNode(xml, dataset, filter, 0, { count: 0 }));
       return '?fetchXml=' + encodeURIComponent(new XMLSerializer().serializeToString(xml));

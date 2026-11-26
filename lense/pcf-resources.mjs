@@ -3,8 +3,9 @@
 // A live page declares each code component itself: `<span id="PcfControlConfig_<id>" data-pcf-control="{JSON}">`,
 // HTML-entity encoded. The JSON names the Solution control (`Name`) and its resources in order; a resource of
 // `Type` 0 is the code bundle and `Type` 1 a style sheet, each with `Path` the GUID the page requests as
-// `/_pcfwebresource/<guid>`. Other types carry inline JSON (3) or are never requested by the page (2), so they are not
-// mapped. The declared resources of a type are joined, in order, to the resources of that kind the control's
+// `/_pcfwebresource/<guid>`. Type 2 can name a localization GUID. When exactly one local RESX matches it, the mapping
+// can answer an explicit XML request without changing the portal's inline configuration (Type 3).
+// The declared code and style resources are joined, in order, to the resources of that kind the control's
 // ControlManifest.xml declares (the catalogue mirage/lib/code-components.mjs importCodeComponents reads, which admits
 // only manifest-declared files inside the control folder). The join is refused, and no file is ever served for it,
 // when the counts per kind differ, when resources of one kind declare different load orders (the order the page lists
@@ -22,6 +23,19 @@ export const WEB_RESOURCE_PATH = /^\/_webresource\/(\w[\w./-]{0,255})$/;
 const MIRAGE_PCF_PREFIX = '/__sim-static/pcf/';
 /** Declared resource types that the page requests, and the manifest resource kind each one is. */
 const PCF_RESOURCE_TYPES = Object.freeze({ 0: 'code', 1: 'css' });
+const PCF_RESX_TYPE = 2;
+
+export function acceptsPcfResx(value) {
+  return (
+    typeof value === 'string' &&
+    value
+      .split(',')
+      .some(
+        (item) =>
+          /^\s*(?:application|text)\/xml\s*(?:;|$)/i.test(item) && !/;\s*q\s*=\s*0(?:\.0+)?\s*(?:;|$)/i.test(item),
+      )
+  );
+}
 
 /** Why a declared code component resource is not mapped to a file. */
 export const PCF_REFUSALS = Object.freeze({
@@ -58,20 +72,20 @@ function readDeclaration(raw) {
   if (!Array.isArray(config.Resources) || config.Resources.length > MAX_RESOURCES) return null;
   const resources = [];
   for (const resource of config.Resources) {
-    if (!resource || !Object.hasOwn(PCF_RESOURCE_TYPES, resource.Type)) continue;
+    if (!resource || (!Object.hasOwn(PCF_RESOURCE_TYPES, resource.Type) && resource.Type !== PCF_RESX_TYPE)) continue;
     const guid =
       typeof resource.Path === 'string' && new RegExp(`^${GUID}$`, 'i').test(resource.Path)
         ? resource.Path.toLowerCase()
         : null;
-    resources.push({ type: resource.Type, guid });
+    if (resource.Type !== PCF_RESX_TYPE || guid) resources.push({ type: resource.Type, guid });
   }
   return { name: config.Name, resources };
 }
 
 /**
  * Every code component the HTML declares: `{ name, resources: [{ type, guid }] }`, resources of the requested types
- * only (PCF_RESOURCE_TYPES), in the order the page lists them. `guid` is lower-case, or null when the entry has no GUID
- * path (the join then refuses the declaration). An unreadable declaration is skipped.
+ * only, in the order the page lists them. A requestable RESX declaration has a GUID. Code and CSS entries without
+ * their GUID are kept for the manifest check. An unreadable declaration is skipped.
  */
 export function pcfDeclarations(html, { limit = MAX_DECLARATIONS } = {}) {
   const found = [];
@@ -111,6 +125,21 @@ export function joinPcfDeclaration(declaration, catalogue) {
       resources.push({ guid: item.guid, kind, order, path: resource.path, file: asset.file, controlRoot: asset.root });
     }
   }
+  const declaredResx = declaration.resources.filter((resource) => resource.type === PCF_RESX_TYPE);
+  const manifestResx = (control.resources ?? []).filter((resource) => resource.kind === 'resx');
+  if (!declaredResx.length) return { ...identity, resources };
+  const resource = manifestResx.length === 1 ? manifestResx[0] : null;
+  const asset = resource && catalogue.assets?.get(resource.url);
+  if (declaredResx.length !== 1 || !asset?.file || !asset.root)
+    return { ...identity, resources, unresolvedResx: declaredResx.map((item) => item.guid) };
+  resources.push({
+    guid: declaredResx[0].guid,
+    kind: 'resx',
+    order: 0,
+    path: resource.path,
+    file: asset.file,
+    controlRoot: asset.root,
+  });
   return { ...identity, resources };
 }
 
@@ -237,6 +266,7 @@ export class SolutionResourceIndex {
     }
     for (const resource of joined.resources)
       this.#noteResource(resource, { joined, manifest, refusal, sources }, entries);
+    for (const guid of joined.unresolvedResx ?? []) entries.push(this.#refuse(refusal('pcf-manifest-mismatch', guid)));
   }
 
   #noteResource(resource, { joined, manifest, refusal, sources }, entries) {

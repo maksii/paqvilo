@@ -7,6 +7,7 @@ import os from 'node:os';
 import http from 'node:http';
 import { createSimulator } from '../server.mjs';
 import { nativeFormControlIds } from '../lib/native-postback.mjs';
+import { redactPayload } from '../lib/trace-store.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 async function fixture(
@@ -16,8 +17,12 @@ async function fixture(
     redirect = false,
     readOnly = false,
     wizard = false,
+    captcha = null,
+    captchaFixture = false,
+    allowLiveWrites = false,
     lookup = false,
     attachments = false,
+    maxFiles = 1,
     forms = ['Second'],
   } = {},
 ) {
@@ -39,7 +44,14 @@ async function fixture(
       '<!doctype html><html><body><form id="liquid_form">{% webform name: "Wizard" %}</form></body></html>';
     files['Wizard.advancedform.yml'] = 'adx_webformid: wizard\nadx_name: Wizard';
   }
+  const captchaFields = captcha
+    ? { adx_captcharequired: true, adx_showcaptchaforauthenticatedusers: captcha === 'all' }
+    : undefined;
+  if (captchaFields)
+    for (const [key, value] of Object.entries(captchaFields)) files['Second.basicform.yml'] += `\n${key}: ${value}`;
   if (attachments) files['Second.basicform.yml'] += '\nadx_attachfile: true\nadx_attachfilemaxsize: 8';
+  if (maxFiles > 1)
+    files['Second.basicform.yml'] += `\nadx_attachfileallowmultiple: true\nadx_maximumnooffiles: ${maxFiles}`;
   for (const [name, source] of Object.entries(files)) await fs.writeFile(path.join(root, name), source);
   const fields = [
     { name: 'title', type: 'text', label: 'Title', required: true },
@@ -50,6 +62,21 @@ async function fixture(
   const app = await createSimulator({
     sourceDir: root,
     watch: false,
+    allowLiveWrites,
+    packs: captchaFixture
+      ? [
+          {
+            id: 'test-captcha',
+            name: 'Invented CAPTCHA fixture',
+            description: 'Loopback form fixture',
+            matches: () => true,
+            presets: () => ({}),
+            serviceFixtures: {
+              captcha: { challenge: () => ({ prompt: 'What is 2 + 3?', answer: '5' }) },
+            },
+          },
+        ]
+      : [],
     initial: {
       mappings: {
         sample: {
@@ -97,6 +124,7 @@ async function fixture(
               {
                 stepId: 'create',
                 nextStepId: 'edit',
+                metadata: captchaFields,
                 entity: 'sample',
                 mode: 100000000,
                 fields: [{ name: 'title', required: true }],
@@ -356,6 +384,125 @@ test('default JSON route and JSON profile remain unchanged', async (t) => {
   assert.equal((await response.json()).outcome.message, 'Saved source message');
 });
 
+// @test-kind security: the selected form's CAPTCHA requirement applies on each submission transport.
+test('both basic form transports reject CAPTCHA-required saves and honor the configured signed-in exemption', async (t) => {
+  const { app, post, route } = await fixture(t, { captcha: 'anonymous' });
+  const native = await post({ title: 'Native attempt' });
+  assert.equal(native.status, 200);
+  assert.match(await native.text(), /Captcha is incorrect, please re-enter captcha/);
+
+  const submitJson = (title, headers = {}) =>
+    fetch(app.url + '/__sim/forms/entityform/second/submit', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', __RequestVerificationToken: app.csrf, ...headers },
+      body: JSON.stringify({ recordId: 'second-row', values: { title }, pageUrl: route }),
+    });
+  const refused = await submitJson('JSON attempt');
+  assert.equal(refused.status, 400);
+  assert.equal((await refused.json()).error.code, 'CaptchaInvalid');
+  assert.equal(app.store.state.tables.sample[1].title, 'Second');
+
+  const signedIn = { cookie: app.signIn('owned-contact').cookieHeader };
+  const accepted = await submitJson('Signed-in edit', signedIn);
+  assert.equal(accepted.status, 200);
+  assert.equal(app.store.state.tables.sample[1].title, 'Signed-in edit');
+});
+
+// @test-kind security: a CAPTCHA-enabled advanced step refuses saving when the exported setting requires it for authenticated visitors.
+test('JSON submissions to an advanced step enforce CAPTCHA when it is required for signed-in visitors', async (t) => {
+  const { app } = await fixture(t, { wizard: true, captcha: 'all' });
+  const response = await fetch(app.url + '/__sim/forms/webform/wizard/submit', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      __RequestVerificationToken: app.csrf,
+      cookie: app.signIn('owned-contact').cookieHeader,
+    },
+    body: JSON.stringify({ values: { title: 'Attempted create' } }),
+  });
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).error.code, 'CaptchaInvalid');
+  assert.equal(app.store.state.tables.sample.length, 2);
+  assert.equal(app.store.state.portalFormSessions?.length ?? 0, 0);
+});
+
+// @test-kind security: a trusted local CAPTCHA fixture requires a rendered visitor-bound one-time proof on either form transport.
+test('a trusted local CAPTCHA fixture accepts one solved challenge through either form transport', async (t) => {
+  for (const transport of ['postback', 'json']) {
+    await t.test(transport, async (sub) => {
+      const { app, post, route, controls } = await fixture(sub, {
+        captcha: 'anonymous',
+        captchaFixture: true,
+        transport,
+      });
+      const page = await fetch(app.url + route);
+      const cookie = page.headers.get('set-cookie').split(';')[0];
+      const html = await page.text();
+      assert.match(html, /What is 2 \+ 3\?/);
+      const challengeId = html.match(/data-pp-captcha-challenge[^>]*value="([a-f0-9-]+)"/)[1];
+      const submit = (title, browser = cookie) =>
+        transport === 'json'
+          ? fetch(app.url + '/__sim/forms/entityform/second/submit', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', __RequestVerificationToken: app.csrf, cookie: browser },
+              body: JSON.stringify({
+                recordId: 'second-row',
+                values: { title },
+                captchaProofToken: { challengeId, answer: '5' },
+                pageUrl: route,
+              }),
+            })
+          : post(
+              { title },
+              [
+                [controls.names + 'captcha$FixtureChallengeToken', challengeId],
+                [controls.names + 'captcha$FixtureAnswerToken', '5'],
+              ],
+              undefined,
+              { cookie: browser },
+            );
+      const refuse = async (response) => {
+        if (transport === 'json') {
+          assert.equal(response.status, 400);
+          assert.equal((await response.json()).error.code, 'CaptchaInvalid');
+        } else {
+          assert.equal(response.status, 200);
+          assert.match(await response.text(), /Captcha is incorrect, please re-enter captcha/);
+        }
+      };
+      await refuse(await submit('Different visitor', ''));
+      assert.equal(app.store.state.tables.sample[1].title, 'Second');
+      const accepted = await submit('Solved');
+      assert.equal(accepted.status, 200);
+      assert.equal(app.store.state.tables.sample[1].title, 'Solved');
+      await accepted.arrayBuffer();
+      await refuse(await submit('Replayed'));
+      assert.equal(app.store.state.tables.sample[1].title, 'Solved');
+    });
+  }
+});
+
+// @test-kind security: trace capture treats both CAPTCHA transport fields as credentials.
+test('CAPTCHA fixture proofs are redacted from full request traces', () => {
+  const challenge = 'control$captcha$FixtureChallengeToken';
+  const answer = 'control$captcha$FixtureAnswerToken';
+  assert.deepEqual(redactPayload({ [challenge]: 'challenge', [answer]: 'answer' }).value, {
+    [challenge]: '[redacted]',
+    [answer]: '[redacted]',
+  });
+  assert.deepEqual(redactPayload({ captchaProofToken: { challengeId: 'challenge', answer: 'answer' } }).value, {
+    captchaProofToken: '[redacted]',
+  });
+});
+
+// @test-kind security: authorizing external writes prevents local fixture challenge issuance.
+test('a CAPTCHA fixture is unavailable when the runtime is authorized for live writes', async (t) => {
+  const { app, route } = await fixture(t, { captcha: 'anonymous', captchaFixture: true, allowLiveWrites: true });
+  const html = await (await fetch(app.url + route)).text();
+  assert.match(html, /pp-captcha/);
+  assert.doesNotMatch(html, /data-pp-captcha-challenge/);
+});
+
 // @test-kind security: the attach-file API stages nothing without the token
 test('the attach-file API stages a file under an annotation id only with the token and in order', async (t) => {
   const { app } = await fixture(t);
@@ -488,7 +635,7 @@ test('staging capacity rejects a new upload without evicting an existing visitor
 });
 
 test('staged attachments survive failed validation and are consumed only once by a committed postback', async (t) => {
-  const { app, post: postForm, controls } = await fixture(t, { attachments: true });
+  const { app, post: postForm, controls } = await fixture(t, { attachments: true, maxFiles: 2 });
   const headers = {
     __RequestVerificationToken: app.csrf,
     'x-ms-file-name': '<draft>.txt',
@@ -568,6 +715,41 @@ test('staged attachments survive failed validation and are consumed only once by
     app.store.state.tables.annotation.length,
     2,
     'Concurrent postbacks cannot save the same staged file twice',
+  );
+});
+
+test('a second distinct staged attachment cannot exceed the existing record quota', async (t) => {
+  const { app, post, controls } = await fixture(t, { attachments: true });
+  const headers = {
+    __RequestVerificationToken: app.csrf,
+    'x-ms-file-size': '3',
+    'x-ms-file-type': 'text/plain',
+  };
+  const stage = async (name) => {
+    headers['x-ms-file-name'] = name;
+    const response = await initializeFile(app, headers);
+    assert.equal(response.status, 200);
+    const { AnnotationId, FileContinuationToken } = await response.json();
+    const part = await fetch(app.url + `/_api/file/UploadFileBlock/note?noteId=${AnnotationId}&offset=0`, {
+      method: 'PUT',
+      headers: { ...headers, 'x-ms-file-continuation-token': FileContinuationToken },
+      body: 'abc',
+    });
+    assert.equal(part.status, 204);
+    return [[controls.names + 'AttachFile_HiddenField_AnnotationIds', JSON.stringify([AnnotationId])]];
+  };
+  const postStaged = async (title, name) => post({ title }, await stage(name), undefined, { cookie: headers.cookie });
+  const accepted = await postStaged('One attachment saved', 'first.txt');
+  assert.equal(accepted.status, 200);
+  assert.match(await accepted.text(), /Saved source message/);
+
+  const refused = await postStaged('Would exceed attachment limit', 'second.txt');
+  assert.equal(refused.status, 200);
+  assert.match(await refused.text(), /You can upload a maximum of 0 more files/);
+  assert.equal(app.store.state.tables.sample[1].title, 'One attachment saved');
+  assert.deepEqual(
+    app.store.state.tables.annotation.map((note) => note.filename),
+    ['first.txt'],
   );
 });
 

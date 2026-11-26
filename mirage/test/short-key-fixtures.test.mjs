@@ -2,10 +2,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { importPortal } from '../lib/importer.mjs';
-import { PortalModel } from '../../lense/portal-model.mjs';
+import { componentEnvelope, componentIdentity, PortalModel } from '../../lense/portal-model.mjs';
+import { enhancedPortalRecords, enhancedSiteLookup } from '../lib/portal-solution.mjs';
+import { serializeXml } from '../lib/solution-xml.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 // Optional public ecosystem checkouts. The synthetic code-site fixture always runs;
 // these additional checks run only when PAQ_TEST_ECOSYSTEM_FIXTURES is supplied (ci:prepare provides
@@ -27,6 +31,62 @@ const codeSites = (dir, out = []) => {
   }
   return out;
 };
+
+async function componentTypeSources(t, source) {
+  const assets = path.join(source, 'Assets');
+  const websiteFile = path.join(assets, 'powerpagesites.xml');
+  const sites = enhancedPortalRecords(fs.readFileSync(websiteFile, 'utf8'), 'powerpagesite');
+  if (sites.length <= 1) return [{ dir: source }];
+
+  // The public package can contain several complete sites. A runtime must refuse that whole
+  // package. This mapping test exercises every component through a one-site fixture.
+  await assert.rejects(importPortal(source), { code: 'AMBIGUOUS_PORTAL_SITE' });
+  assert.throws(() => new PortalModel(source), { code: 'AMBIGUOUS_PORTAL_SITE' });
+  const work = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-ecosystem-sites-'));
+  t.after(() => fs.promises.rm(work, { recursive: true, force: true }));
+  const partition = new Map(
+    sites.map((site, index) => [
+      site.attrs.powerpagesiteid,
+      {
+        site,
+        dir: path.join(work, `site-${index}`),
+        componentIds: [],
+      },
+    ]),
+  );
+  assert.equal(partition.size, sites.length, 'the package lists each site identity once');
+  const languages = enhancedPortalRecords(
+    fs.readFileSync(path.join(assets, 'powerpagesitelanguages.xml'), 'utf8'),
+    'powerpagesitelanguage',
+  );
+  for (const [owner, selected] of partition) {
+    const target = path.join(selected.dir, 'Assets');
+    fs.mkdirSync(target, { recursive: true });
+    fs.writeFileSync(
+      path.join(target, 'powerpagesites.xml'),
+      `<powerpagesites>${serializeXml(selected.site)}</powerpagesites>`,
+    );
+    const owned = languages.filter((language) => enhancedSiteLookup(language) === owner);
+    fs.writeFileSync(
+      path.join(target, 'powerpagesitelanguages.xml'),
+      `<powerpagesitelanguages>${owned.map(serializeXml).join('')}</powerpagesitelanguages>`,
+    );
+    fs.mkdirSync(path.join(selected.dir, 'powerpagecomponents'));
+  }
+
+  const components = path.join(source, 'powerpagecomponents');
+  for (const entry of fs.readdirSync(components, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const dir = path.join(components, entry.name);
+    const xml = fs.readFileSync(path.join(dir, 'powerpagecomponent.xml'), 'utf8');
+    const envelope = componentEnvelope(xml);
+    const selected = partition.get(envelope?.powerpagesiteid || envelope?.websiteid);
+    assert.ok(selected, `component ${entry.name} has one owner in the public fixture`);
+    selected.componentIds.push(componentIdentity(xml) ?? entry.name);
+    fs.cpSync(dir, path.join(selected.dir, 'powerpagecomponents', entry.name), { recursive: true });
+  }
+  return [...partition].map(([websiteId, selected]) => ({ ...selected, websiteId }));
+}
 
 test(
   'every power-pages-samples code site imports with IDs, pages and web files, in the Mirage and the toolkit',
@@ -93,7 +153,7 @@ test(
 test(
   'public unpacked Solutions import component types 24, 26, 27, 33 and 34 without unmapped types',
   { skip: missing(R2) },
-  async () => {
+  async (t) => {
     const sources = [
       [
         path.join(
@@ -112,15 +172,25 @@ test(
     ].filter(([dir]) => fs.existsSync(dir));
     assert.ok(sources.length, 'Supply at least one supported public Solution checkout.');
     for (const [dir, types] of sources) {
-      const portal = await importPortal(dir);
+      const records = [];
+      for (const source of await componentTypeSources(t, dir)) {
+        const portal = await importPortal(source.dir);
+        if (source.websiteId) {
+          assert.equal(portal.website.id, source.websiteId);
+          const components = portal.records.filter((record) => Number.isInteger(record.powerpagecomponenttype));
+          assert.deepEqual(components.map((record) => record.id).toSorted(), source.componentIds.toSorted());
+          assert.ok(new PortalModel(source.dir).pages.size > 0);
+        }
+        records.push(...portal.records);
+      }
       assert.deepEqual(
-        portal.records.filter((record) => /^component:/.test(record.kind)).map((record) => record.kind),
+        records.filter((record) => /^component:/.test(record.kind)).map((record) => record.kind),
         [],
         dir,
       );
       for (const type of types)
         assert.ok(
-          portal.records.some((record) => record.powerpagecomponenttype === type && !/^component:/.test(record.kind)),
+          records.some((record) => record.powerpagecomponenttype === type && !/^component:/.test(record.kind)),
           `${dir} type ${type}`,
         );
     }

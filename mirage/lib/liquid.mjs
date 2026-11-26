@@ -11,11 +11,12 @@ import { FetchRenderCache } from './fetch-render-cache.mjs';
 // lists, views, search, chart, powerbi, codecomponent, redirect, outputcache, log,
 // manifest), web template resolution (active web templates by name, then the embedded
 // runtime templates) and the page shell. Behaviour: mirage/docs/liquid-parity.md.
+import { parseFragment } from 'parse5';
 import { normalizePortalPath, portalField, pageTemplateKind } from './importer.mjs';
 import { metaFilterOptionGroups } from './metafilters.mjs';
 import { DataError } from './data-error.mjs';
 import { multiChoiceText } from './webapi-format.mjs';
-import { pageAccess } from './page-access.mjs';
+import { canPreviewUnpublished, pageAccess, pageRuleMatcher, shortcutAccess } from './page-access.mjs';
 import { siteSetting, servicePages } from './redirects.mjs';
 import { reconcileFooterLogos } from './footer-capture.mjs';
 import { reconcileHeaderNotifications } from './header-notification-capture.mjs';
@@ -72,8 +73,8 @@ import { clockFunction, systemClock } from './runtime-clock.mjs';
 import { CMS_VIEW_TEMPLATES, EMBEDDED_TEMPLATES } from './liquid-builtins.mjs';
 import { createAdsDrop, createPollsDrop } from './liquid-community.mjs';
 import { serverLogicFallback } from './liquid-service-observations.mjs';
-import { RESX_CULTURES } from './liquid-resx.mjs';
-import { portalLanguage } from './portal-languages.mjs';
+import { resxCulture } from './liquid-resx.mjs';
+import { localizedPortalPage, portalLanguage, preferredPortalLanguage } from './portal-languages.mjs';
 import fs from 'node:fs/promises';
 import { buildPortalSourceIndex } from './portal-source-index.mjs';
 import {
@@ -674,9 +675,12 @@ class EntityTableDrop extends LiquidDrop {
         cacheKey,
         (async () => {
           try {
-            const record = liquidRecord((await this.read?.(this.name, id, this.user)) ?? null, ENTITY_PROPERTIES, {
-              multiSelect: this.choiceColumns(this.name),
-            });
+            const language = context?.environments?.[0]?.get('__language');
+            const record = liquidRecord(
+              (await this.read?.(this.name, id, this.user, { language })) ?? null,
+              ENTITY_PROPERTIES,
+              { multiSelect: this.choiceColumns(this.name) },
+            );
             // EntityDrop always exposes id and logical_name.
             if (record && typeof record === 'object') {
               if (!Object.hasOwn(record, 'id')) record.id = id;
@@ -729,11 +733,12 @@ class EntitiesDrop extends LiquidDrop {
   }
 }
 class KnowledgeDrop extends LiquidDrop {
-  constructor(fetchXml, user, choiceColumns) {
+  constructor(fetchXml, user, choiceColumns, language) {
     super();
     this.fetchXml = fetchXml;
     this.user = user;
     this.choiceColumns = choiceColumns;
+    this.language = language;
     this.cache = new Map();
   }
   liquidGet(key) {
@@ -755,6 +760,8 @@ class KnowledgeDrop extends LiquidDrop {
       const result = await this.fetchXml(
         `<fetch count="500" page="${page}"${paging}><entity name="${entity}"><all-attributes/><order attribute="${entity}id"/>${articleFilter}</entity></fetch>`,
         this.user,
+        null,
+        { language: this.language },
       );
       const multiSelect = this.choiceColumns(entity);
       rows.push(
@@ -838,16 +845,6 @@ const RESX = {
   Pagination_Page: 'Page {0}',
   Pagination_Previous_Page: 'Previous page',
 };
-/** Resource strings of a culture (lib/liquid-resx.mjs); English and unknown cultures use RESX. */
-function resxCulture(code) {
-  const text = String(code ?? '');
-  if (!text || /^en(?:-|$)/i.test(text)) return null;
-  const cultures = Object.keys(RESX_CULTURES);
-  const exact = cultures.find((culture) => culture.toLowerCase() === text.toLowerCase());
-  const family = text.split('-')[0].toLowerCase();
-  const sibling = exact ?? cultures.find((culture) => culture.split('-')[0].toLowerCase() === family);
-  return sibling ? RESX_CULTURES[sibling] : null;
-}
 class ResxDrop extends LiquidDrop {
   constructor(culture = null) {
     super();
@@ -1058,6 +1055,7 @@ class LazyFetchXmlQueryDrop extends LiquidDrop {
         (await fetchXml.call(this.host, xml, user, request, {
           right,
           fetchCache: this.context.state.fetchCache,
+          language: this.context.environments[0]?.get('__language'),
           liquidTag: true,
         })) ?? {};
     } catch (error) {
@@ -1126,6 +1124,7 @@ class FetchXmlTag extends Block {
         (await fetchXml.call(host, xml, user, request, {
           right: queryRight,
           fetchCache: context.state.fetchCache,
+          language: context.environments[0]?.get('__language'),
           liquidTag: true,
         })) ?? {};
     } catch (error) {
@@ -1259,9 +1258,33 @@ class NoOutputTag extends Tag {
   }
 }
 class ManifestTag extends RawBlock {
-  async render() {
-    // Intentionally empty: manifest tags do not produce output in the local renderer.
+  parse(tokens) {
+    super.parse(tokens);
+    try {
+      this.issue = webTemplateManifestIssue(JSON.parse(this.source));
+    } catch {
+      this.issue = 'A web template component manifest must be a JSON object.';
+    }
   }
+  async render(context) {
+    if (this.issue) context.diagnostic('WEB_TEMPLATE_MANIFEST_INVALID', this.issue);
+  }
+}
+
+function webTemplateManifestIssue(value) {
+  if (value?.type !== 'Functional' || typeof value.displayName !== 'string' || !value.displayName.trim())
+    return 'A web template component manifest needs type Functional and a displayName.';
+  if (
+    value.tables !== undefined &&
+    (!Array.isArray(value.tables) || value.tables.some((name) => typeof name !== 'string'))
+  )
+    return 'Web template component manifest tables must be an array of logical names.';
+  if (value.params === undefined) return null;
+  if (!Array.isArray(value.params)) return 'Web template component manifest params must be an array.';
+  const ids = value.params.map((parameter) => parameter?.id);
+  if (ids.some((id) => typeof id !== 'string' || !id.trim()) || new Set(ids).size !== ids.length)
+    return 'Web template component manifest parameters need distinct IDs.';
+  return null;
 }
 /**
  * {% serverlogic name: 'record', operation: 'function', input: value, output: variable %} (the
@@ -1652,6 +1675,7 @@ export function createPortalRenderer(
   const clock = clockFunction(options.clock ?? systemClock);
   const choiceColumns = (entity) => choiceColumnsOf(options.metadata, entity);
   const renderedFragments = new WeakMap();
+  const webLinkEditingMetadata = new WeakMap();
   const finishRender = (fragment, index, fields) => {
     const result = {
       ...(options.provenance && fields.isDocument
@@ -1876,8 +1900,7 @@ export function createPortalRenderer(
    * LanguageDrop): the published website languages with a URL language code (import) in
    * export order; the selected language is the language code that starts the URL path (sites with
    * MultiLanguage/DisplayLanguageCodeInURL keep it; the server passes a code it removed as
-   * extra.languageCode), else the website default language. The session cookie and the user's
-   * preferred language, which the platform consults before the default, are not simulated.
+   * extra.languageCode). The visitor's language cookie and contact preference precede the site default.
    */
   const siteLanguages = () =>
     (portal.websiteLanguages ?? [])
@@ -1900,6 +1923,12 @@ export function createPortalRenderer(
     const selected =
       byCode(extra.languageCode) ??
       fromPath ??
+      byCode(extra.languageCookie) ??
+      preferredPortalLanguage(
+        languages,
+        Object.hasOwn(extra, 'user') ? extra.user : options.user,
+        portal.format === 'enhanced',
+      ) ??
       languages.find((language) => language.isDefault) ??
       byCode(portal.language?.code) ??
       languages[0] ??
@@ -1928,11 +1957,6 @@ export function createPortalRenderer(
     context.website?.selected_language?.code ??
     portalLanguage({ lcid: portalField(portal.website ?? {}, 'website_language') })?.code ??
     'en-US';
-  /** A page with the language content page of the selected website language, when it has one. */
-  const localizedPage = (page, languageId) => {
-    const variant = languageId ? page?.translations?.[languageId] : null;
-    return variant ? { ...page, ...variant } : page;
-  };
   const wrapEditable = ({
     value,
     hasValue,
@@ -2157,8 +2181,7 @@ export function createPortalRenderer(
           metadata,
         });
       }
-      // Web link sets and other editable objects render editing metadata for editors only.
-      return null;
+      return key ? null : (webLinkEditingMetadata.get(target) ?? null);
     },
   };
   engine.portalHost = portalHost;
@@ -2184,7 +2207,7 @@ export function createPortalRenderer(
   }
 
   function decoratePageNode(base, isCurrent, languageId) {
-    const p = localizedPage(base, languageId);
+    const p = localizedPortalPage(base, languageId);
     const attributes = {};
     for (const [key, value] of Object.entries(p.metadata ?? {})) {
       if (key.startsWith('_')) continue;
@@ -2285,7 +2308,7 @@ export function createPortalRenderer(
       sitemarkers: null,
       resx: new ResxDrop(language.selected?.code),
       entities: new EntitiesDrop(options.entity, user, options.entityMembers, choiceColumns),
-      knowledge: new KnowledgeDrop(options.fetchXml, user, choiceColumns),
+      knowledge: new KnowledgeDrop(options.fetchXml, user, choiceColumns, language.selected),
       uniqueId: new UniqueDrop(),
       // The request's website language for hosts (forms, lists): { id, code, lcid, name, isDefault }.
       __language: language.selected
@@ -2321,6 +2344,7 @@ export function createPortalRenderer(
     // Power Pages exposes the request parameters again as the top-level params object.
     context.params = request.params;
     delete context.languageCode;
+    delete context.previewCookie;
     context.snippets = new SnippetsDrop({
       // Snippet values of the selected language win over the import language's values.
       snippets:
@@ -2333,9 +2357,10 @@ export function createPortalRenderer(
       diagnostics: context.__diagnostics,
       sourceIndex: sourceIndex(languageId),
     });
+    const accessOptions = { now: clock(), languageId, previewCookie: extra.previewCookie };
     const visible = (p) =>
-      !portalField(p.metadata ?? {}, 'hiddenfromsitemap', false) &&
-      pageAccess(portal, p, identity, { now: clock() }).allowed;
+      !portalField(localizedPortalPage(p, languageId).metadata ?? {}, 'hiddenfromsitemap', false) &&
+      pageAccess(portal, p, identity, accessOptions).allowed;
     const nodes = new Map(portal.pages.map((p) => [p.id, decorate(p)]));
     for (const p of portal.pages) {
       const node = nodes.get(p.id);
@@ -2347,15 +2372,7 @@ export function createPortalRenderer(
     // hidden target pages may still be exposed through an authorized shortcut.
     for (const shortcut of portal.shortcuts ?? []) {
       const parentNode = nodes.get(shortcut.parentId);
-      const targetPage = portal.pages.find((p) => p.id === shortcut.targetPageId);
-      if (
-        !parentNode ||
-        !shortcut.url ||
-        (!shortcut.disableTargetValidation &&
-          targetPage &&
-          !pageAccess(portal, targetPage, identity, { now: clock() }).allowed)
-      )
-        continue;
+      if (!parentNode || !shortcut.url || !shortcutAccess(portal, shortcut, identity, accessOptions).allowed) continue;
       // Shortcut names are internal metadata; sitemap navigation exposes Title.
       const child = {
         ...shortcut,
@@ -2430,15 +2447,37 @@ export function createPortalRenderer(
     context.sitemarkers = Object.fromEntries(
       Object.entries(portal.sitemarkers ?? {}).map(([name, target]) => [name, recordedMarker(name, target)]),
     );
-    context.weblinks = buildWeblinks(identity, page, languageId, new Set(current.breadcrumbs.map((crumb) => crumb.id)));
+    const previewUnpublished = canPreviewUnpublished(portal, identity, accessOptions.previewCookie);
+    context.weblinks = buildWeblinks({
+      identity,
+      page,
+      accessOptions,
+      previewUnpublished,
+      ancestorIds: new Set(current.breadcrumbs.map((crumb) => crumb.id)),
+    });
     // Community objects over exported adx_poll*/adx_ad* records (Adxstudio PollsDrop/AdsDrop).
     // Each poll, ad, placement and option object names its record (render provenance record contexts).
     const recordSource = (id) => recordRef(id, languageId);
     context.polls ??= createPollsDrop(portal, { now: context.now, recordSource });
-    context.ads ??= createAdsDrop(portal, { now: context.now, recordSource });
+    context.ads ??= createAdsDrop(portal, {
+      now: context.now,
+      recordSource,
+      previewUnpublished,
+    });
     return context;
   }
-  function buildWeblinks(identity, page, languageId = null, ancestorIds = new Set()) {
+  function buildWeblinks({ identity, page, accessOptions, previewUnpublished, ancestorIds }) {
+    const { languageId } = accessOptions;
+    const matchesRole = pageRuleMatcher(portal, identity);
+    const canEdit = (portal.websiteAccess ?? []).some(
+      (access) => access.manageWebLinkSets && matchesRole(access.roleIds),
+    );
+    const publishingStates = new Map((portal.publishingStates ?? []).map((state) => [guidText(state.id), state]));
+    const inVisibleState = (record) => {
+      const reference = portalField(record.metadata ?? record, 'publishingstateid');
+      const state = publishingStates.get(guidText(reference?.id ?? reference?.value ?? reference));
+      return !state || state.isVisible || previewUnpublished;
+    };
     const link = (item) => {
       const metadata = item.metadata ?? {};
       const target = item.pageId ? portal.pages.find((p) => p.id === item.pageId) : null;
@@ -2477,11 +2516,12 @@ export function createPortalRenderer(
       setRecordSources(drop, [recordRef(item.setId, languageId), recordRef(item.id, languageId)]);
       return drop;
     };
-    // Web links to pages the current identity cannot read are omitted (CMS security provider).
+    // The link's own publishing state applies even to external links and links that skip target validation.
     const allowed = (item) => {
+      if (!inVisibleState(item)) return false;
       if (!item.pageId || item.disable_page_validation) return true;
       const target = portal.pages.find((p) => p.id === item.pageId);
-      return !target || pageAccess(portal, target, identity, { now: clock() }).allowed;
+      return !target || pageAccess(portal, target, identity, accessOptions).allowed;
     };
     const convertSet = (set) => ({
       ...Object.fromEntries(
@@ -2494,19 +2534,25 @@ export function createPortalRenderer(
       logical_name: 'adx_weblinkset',
       title: set.title ?? null,
       copy: set.copy ?? null,
-      editable: false,
+      editable: canEdit,
       weblinks: (set.weblinks ?? []).filter(allowed).map(link),
     });
     const convert = (set) => {
       const drop = convertSet(set);
       setRecordSources(drop, [recordRef(set.id, languageId)]);
+      if (canEdit) {
+        const label = portalField(set.metadata ?? {}, 'display_name') ?? set.name;
+        // The local preview exposes source metadata without the classic CMS service links.
+        webLinkEditingMetadata.set(
+          drop,
+          `<span hidden aria-hidden="true" data-mirage-editable="weblinkset" data-logicalname="adx_weblinkset" data-id="${htmlEscape(set.id)}" data-label="${htmlEscape(label)}"></span>`,
+        );
+      }
       return drop;
     };
-    // Every active set is reachable by ID (portal.weblinkSets lists same-name sets too); the
-    // name map holds the set a name selects (WebLinkSetDataAdapter: first active set). Sites with
-    // website languages select the sets of the request's language (adx_websitelanguageid); sets
-    // without a language apply to every language.
-    const wanted = languageId ? String(languageId).toLowerCase() : null;
+    // The adapter selects the first active set by name before applying publishing access. A denied first set
+    // remains absent by name even if a later set is readable by ID. Sets without a language apply to every language.
+    const wanted = String(languageId ?? '').toLowerCase();
     const inLanguage = (set) => {
       if (!wanted) return true;
       const language = weblinkSetLanguages().get(String(set?.id ?? '').toLowerCase());
@@ -2514,15 +2560,15 @@ export function createPortalRenderer(
     };
     const all = new Map();
     for (const set of [...(portal.weblinkSets ?? []), ...Object.values(portal.weblinks ?? {})])
-      if (set?.id != null && inLanguage(set) && !all.has(String(set.id).toLowerCase()))
+      if (set?.id != null && inLanguage(set) && inVisibleState(set) && !all.has(String(set.id).toLowerCase()))
         all.set(String(set.id).toLowerCase(), convert(set));
-    const byName = {};
+    const byName = Object.create(null);
     for (const set of portal.weblinkSets ?? [])
-      if (set?.name != null && !Object.hasOwn(byName, set.name) && all.has(String(set.id ?? '').toLowerCase()))
-        byName[set.name] = all.get(String(set.id).toLowerCase());
+      if (set?.name != null && set.id != null && !Object.hasOwn(byName, set.name) && inLanguage(set))
+        byName[set.name] = all.get(String(set.id).toLowerCase()) ?? null;
     for (const [name, set] of Object.entries(portal.weblinks ?? {}))
       if (!Object.hasOwn(byName, name) && inLanguage(set))
-        byName[name] = all.get(String(set.id ?? '').toLowerCase()) ?? convert(set);
+        byName[name] = all.get(String(set.id ?? '').toLowerCase()) ?? (inVisibleState(set) ? convert(set) : null);
     return new WebLinkSetsDrop(byName, all);
   }
   /** Web link set id -> website language id (lower case), from the exported set records. */
@@ -2635,7 +2681,7 @@ export function createPortalRenderer(
     const context = contextForPage(found, url, extra);
     const index = sourceIndex(context.__language?.id);
     context.__provenance = createRenderTrace({ sourceRevision: index.sourceRevision, traces: options.traces, span });
-    const page = localizedPage(found, context.__language?.id);
+    const page = localizedPortalPage(found, context.__language?.id);
     const diagnostics = context.__diagnostics;
     try {
       const pageTemplate = portal.pageTemplates.find((t) => t.id === page.pageTemplateId);
@@ -2661,6 +2707,11 @@ export function createPortalRenderer(
       // Legacy ASPX page templates render their WebForms layout with the page's attached
       // advanced form, basic form and list (lib/platform-manifest.mjs).
       const rewriteLayout = template ? null : rewritePageLayout(page, pageTemplate);
+      if (rewriteSelected && physicalRewrite && !rewriteLayout)
+        diagnostics.push({
+          code: 'REWRITE_LAYOUT_UNSUPPORTED',
+          message: `The rewrite layout '${physicalRewrite}' has no local implementation. The page copy is rendered.`,
+        });
       const sourceDescription = () => {
         if (template) return null;
         if (rewriteLayout) return 'rewrite layout';
@@ -2855,6 +2906,17 @@ export function createPortalRenderer(
         index.snippet('Head/Bottom'),
         'snippet Head/Bottom',
       );
+      const description = portalField(page.metadata ?? {}, 'meta_description');
+      const pageDescription =
+        typeof description === 'string' &&
+        description.trim() &&
+        !parseFragment(headFragment.text + (extra.headHtml ?? '')).childNodes.some(
+          (node) =>
+            node.tagName === 'meta' &&
+            node.attrs.some(({ name, value }) => name === 'name' && /^description$/i.test(value)),
+        )
+          ? `<meta name="description" content="${htmlEscape(description)}">`
+          : '';
       const titleSuffix = await renderSource(
         portal.snippets['Browser Title Suffix'] ?? '',
         context,
@@ -2871,7 +2933,12 @@ export function createPortalRenderer(
       // A calendar list adds its stylesheets at the end of the head and its scripts after the
       // form scripts (lib/list-views.mjs).
       const calendar = CALENDAR_MARKER.test(content)
-        ? calendarResources({ websiteId: portal.website?.id, variant: platform.variant })
+        ? calendarResources({
+            websiteId: portal.website?.id,
+            variant: platform.variant,
+            culture: context.__language?.code,
+            defaultCulture: portal.websiteLanguages?.find((language) => language.isDefault)?.code,
+          })
         : null;
       const nativeRegions = nativePageRegions({
         content,
@@ -2935,6 +3002,7 @@ export function createPortalRenderer(
         ),
         tags('<title>', 'title', titleRefs),
         `${htmlEscape(page.title)}${encodedTitleSuffix()}</title>`,
+        tags(pageDescription, 'meta', [index.source(page.metadata, 'meta_description')?.id]),
         headStartFragment(platform, {
           index,
           bootstrapMarkup: contentStyles?.bootstrapSnippet && !options.shellStyles ? contentStyles.bootstrap : null,
@@ -3257,7 +3325,7 @@ export function createPortalRenderer(
 }
 const AUTO_ENCODE_ROOTS = new Set(['user', 'request']);
 
-/** WebLinkSetsDrop: a GUID key selects any active set by ID, other keys the set a name selects. */
+/** WebLinkSetsDrop: GUIDs select readable sets by ID, other keys read the first matching active set. */
 class WebLinkSetsDrop extends LiquidDrop {
   constructor(byName, byId = new Map()) {
     super();

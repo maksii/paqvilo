@@ -563,6 +563,8 @@ readable like any other. Writes through the portal and `/_sim/` are audited too,
   cancelled (job status 32, `errorcode` `0x80044182`, which the Web API returns as the signed integer -2147204734,
   "This workflow job was canceled because the workflow that started it included an infinite loop. …"). Background runs
   are committed jobs ([asynchronous steps](dataverse-plugins.md#asynchronous-steps-and-system-jobs)).
+  Preflight lists active definitions as `classic-workflow:<workflowid>` requirements. A trusted handler satisfies the
+  requirement. Placeholder, mock and disabled choices remain visible to a scenario that requires the workflow.
 
 ### Model-driven app customization
 

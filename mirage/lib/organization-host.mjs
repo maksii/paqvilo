@@ -17,7 +17,7 @@ import { bulkMessageAvailabilityRecord } from './bulk-message-availability.mjs';
 import { pluginBypassOwnership } from './plugin-bypass.mjs';
 import { operationHandlers, describe as serverLogicDescribe } from './exported-operations.mjs';
 import { operationCatalogue } from './operation-catalogue.mjs';
-import { workflowHandlers, workflowsWithActivation } from './dataverse-workflows.mjs';
+import { classicWorkflowReadiness, workflowHandlers, workflowsWithActivation } from './dataverse-workflows.mjs';
 import { customApiHandlers, powerFxRequirements } from './dataverse-customapi.mjs';
 import { addonHandlers } from './dataverse-addon-common.mjs';
 import { sourceOrganizationExtensions } from './source-organization-extensions.mjs';
@@ -1989,7 +1989,10 @@ function hostReports(c) {
         simulation: level,
         registry: c.registry(),
         graph: sourceGraph,
-        operations: c.operations(),
+        operations: [
+          ...c.operations(),
+          ...classicWorkflowReadiness(store, { handlers: c.handlers.workflows, overrides: c.workflowOverrides }),
+        ],
         packs: c.packs,
         localServices,
         portal,

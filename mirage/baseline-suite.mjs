@@ -79,19 +79,22 @@ export const list = (value) => {
   return ids;
 };
 
+function validateScenarioDefinition(scenario, personas, ids) {
+  validateScenarioId(scenario.id);
+  if (ids.has(scenario.id)) throw new Error(`Duplicate scenario id: ${scenario.id}`);
+  ids.add(scenario.id);
+  if (!Array.isArray(scenario.steps) || !scenario.steps.length) throw new Error(`Scenario ${scenario.id} needs steps.`);
+  if (scenario.persona && !personas?.[scenario.persona])
+    throw new Error(`Scenario ${scenario.id} uses unknown persona ${scenario.persona}.`);
+  if (scenario.compareScreenshot !== undefined && typeof scenario.compareScreenshot !== 'boolean')
+    throw new Error(`Scenario ${scenario.id} compareScreenshot must be a Boolean.`);
+}
+
 export function validateMatrix(matrix) {
   if (matrix?.version !== 1 || !Array.isArray(matrix.scenarios) || !matrix.scenarios.length)
     throw new Error('A version 1 matrix with scenarios is required.');
   const ids = new Set();
-  for (const scenario of matrix.scenarios) {
-    validateScenarioId(scenario.id);
-    if (ids.has(scenario.id)) throw new Error(`Duplicate scenario id: ${scenario.id}`);
-    ids.add(scenario.id);
-    if (!Array.isArray(scenario.steps) || !scenario.steps.length)
-      throw new Error(`Scenario ${scenario.id} needs steps.`);
-    if (scenario.persona && !matrix.personas?.[scenario.persona])
-      throw new Error(`Scenario ${scenario.id} uses unknown persona ${scenario.persona}.`);
-  }
+  for (const scenario of matrix.scenarios) validateScenarioDefinition(scenario, matrix.personas, ids);
   for (const pattern of matrix.writeScope?.paths ?? []) new RegExp(pattern); // NOSONAR: constructor validates the pattern or has side effects
   if (matrix.origin && !/^https:\/\/[^/?#]+$/.test(matrix.origin))
     throw new Error('matrix.origin must be a bare HTTPS origin.');
@@ -1029,6 +1032,7 @@ async function runCompareAction({ action, values, matrix, outDir, only }) {
       verdict: result.verdict,
       counts: result.counts,
       signatures: result.signatures,
+      ...(result.screenshot ? { screenshot: result.screenshot } : {}),
       reason: result.reason,
     });
     console.log(

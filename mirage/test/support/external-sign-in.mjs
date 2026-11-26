@@ -153,7 +153,7 @@ export async function simulator(t, settings = LOCAL_PROVIDER, state = initialSta
   });
   let closed = false;
   ownedFixture(t).add(() => (closed ? undefined : app.close()));
-  const { csrf } = await (await fetch(app.url + '/__sim/api/state?summary=1')).json();
+  const { csrf } = await (await fetch(app.adminOrigin + '/__sim/api/state?summary=1')).json();
   return { app, csrf, idp: app.identityProvider, close: async () => ((closed = true), app.close()) };
 }
 

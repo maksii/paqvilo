@@ -74,3 +74,25 @@ export function portalLanguage({ name, lcid } = {}) {
   const number = Number(lcid);
   return Number.isInteger(number) ? (PORTAL_LANGUAGES.find((language) => language.lcid === number) ?? null) : null;
 }
+
+export function localizedPortalPage(page, languageId) {
+  const variant = languageId && page?.translations?.[languageId];
+  return variant ? { ...page, ...variant } : page;
+}
+
+export const CONTEXT_LANGUAGE_COOKIE = 'ContextLanguageCode';
+
+/** Contact preferred language: the standard Portal Language lookup or the standard/enhanced LCID choice. */
+export function preferredPortalLanguage(languages, contact, enhanced) {
+  if (!contact?.contactId && !contact?.id) return null;
+  const reference = contact.adx_preferredlanguageid ?? contact._adx_preferredlanguageid_value;
+  const valueOf = (value) => (value && typeof value === 'object' ? (value.id ?? value.value) : value);
+  const normalizedId = (value) => key(valueOf(value)).replace(/[{}]/g, '');
+  const preferredId = normalizedId(reference);
+  const lcid = Number(valueOf(enhanced ? contact.mspp_userpreferredlcid : contact.adx_preferredlcid));
+  return (
+    languages.find((language) => preferredId && normalizedId(language.portalLanguageId) === preferredId) ??
+    languages.find((language) => lcid > 0 && Number(language.lcid) === lcid) ??
+    null
+  );
+}

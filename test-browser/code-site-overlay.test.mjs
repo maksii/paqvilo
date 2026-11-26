@@ -10,6 +10,7 @@ import path from 'node:path';
 import http from 'node:http';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { createSimulator } from '../mirage/server.mjs';
 import { proxiedOverlay } from './helpers/proxied-overlay.mjs';
 
 const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
@@ -60,5 +61,47 @@ test("real browser: a code site's per-folder web file and language page script r
   assert.equal(await page.evaluate(() => window.syntheticApp), 'from the web file');
   assert.equal(await page.evaluate(() => window.syntheticHome), 'local edit');
   assert.ok(!requests.includes('/app.js'), 'the local web file never reached the online server');
+  assert.deepEqual(faults, []);
+});
+
+test('a configured build runs on a client route and Lense overlays its exported web file in the browser', async (t) => {
+  const work = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-compiled-overlay-')));
+  const site = path.join(work, '.powerpages-site');
+  fs.cpSync(FIXTURE, site, { recursive: true });
+  fs.mkdirSync(path.join(work, 'dist'));
+  fs.writeFileSync(
+    path.join(work, 'powerpages.config.json'),
+    JSON.stringify({ siteName: 'Invented code site', compiledPath: 'dist', defaultLandingPage: 'index.html' }),
+  );
+  fs.writeFileSync(
+    path.join(work, 'dist', 'index.html'),
+    '<!doctype html><html><head><title>Compiled app</title><script src="./app.js"></script></head><body><main>Compiled app</main></body></html>',
+  );
+  fs.writeFileSync(path.join(work, 'dist', 'app.js'), 'window.syntheticApp = "from the build";');
+  const app = await createSimulator({ sourceDir: work, watch: false, requirePortalSource: true });
+  t.after(() => app.close());
+  const requests = [];
+  const server = http.createServer(async (request, response) => {
+    try {
+      requests.push(request.url);
+      const upstream = await fetch(app.url + request.url, { redirect: 'manual' });
+      response.writeHead(upstream.status, Object.fromEntries(upstream.headers));
+      response.end(Buffer.from(await upstream.arrayBuffer()));
+    } catch {
+      response.writeHead(502).end('loopback build fixture failed');
+    }
+  });
+  const { origin, page, faults } = await proxiedOverlay(t, server, {
+    work,
+    session: { sourceDir: site, siteName: 'code-site-test' },
+  });
+  await page.goto(app.url + '/reports/calendar/', { waitUntil: 'load' });
+  assert.equal(await page.evaluate(() => window.syntheticApp), 'from the build');
+  assert.equal(await page.evaluate(() => window.Microsoft.Dynamic365.Portal.isSpaSite), 'True');
+  const fallback = await page.goto(origin + '/reports/calendar/', { waitUntil: 'load' });
+  assert.equal(fallback.status(), 200);
+  assert.equal(await page.evaluate(() => window.syntheticApp), 'from the web file');
+  assert.equal(await page.evaluate(() => window.Microsoft.Dynamic365.Portal.isSpaSite), 'True');
+  assert.ok(!requests.includes('/app.js'), 'the local web file never reached the upstream build');
   assert.deepEqual(faults, []);
 });

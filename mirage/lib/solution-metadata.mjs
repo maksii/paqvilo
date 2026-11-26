@@ -584,6 +584,7 @@ function selectFormTabs(tree, definition, lcid) {
       isOptimisticConcurrencyEnabled: table.isOptimisticConcurrencyEnabled,
       primaryIdAttribute: table.primaryIdAttribute,
       primaryNameAttribute: table.primaryNameAttribute,
+      ...(table.isActivity === undefined ? {} : { isActivity: table.isActivity }),
       schemaComplete: table.schemaComplete,
       completeness: table.completeness,
     };

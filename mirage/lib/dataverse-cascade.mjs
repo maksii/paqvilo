@@ -28,6 +28,7 @@
 // test reads them.
 import { onceReporter } from './dataverse-addon-common.mjs';
 import { reparentAccess } from './dataverse-security.mjs';
+import { cascadeAction } from './relationship-cascade.mjs';
 
 const ASSIGN_BEHAVIOURS = new Set(['Cascade', 'Active', 'UserOwned']);
 const CASCADING = new Set(['Cascade', 'Active', 'UserOwned']);
@@ -63,7 +64,7 @@ function reparentParents(api, logical) {
   const parents = [];
   for (const [parent, references] of api.store.referencesByTable({ admin: true }))
     for (const reference of references)
-      if (reference.entity === logical && CASCADING.has(reference.cascade?.reparent))
+      if (reference.entity === logical && CASCADING.has(cascadeAction(reference.cascade, 'reparent')))
         parents.push({ parent, column: reference.column });
   return parents;
 }
@@ -72,7 +73,7 @@ function reparentParents(api, logical) {
 // yields each child write as [table, id, values, identity], so the caller runs it on its own drive (cascadeAssign).
 function* assignChildren(api, state, c, parent, previousOwner, newOwner, visited) {
   for (const reference of api.store.referencesTo(parent.logicalName, c.identity ?? {})) {
-    const behaviour = reference.cascade?.assign;
+    const behaviour = cascadeAction(reference.cascade, 'assign');
     if (behaviour == null) {
       report(state, {
         code: 'CASCADE_ASSIGN_DEFAULTED',

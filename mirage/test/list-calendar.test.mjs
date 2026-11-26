@@ -77,7 +77,11 @@ test('calendar event feed returns rows in the requested period with summary and 
   const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'list-calendar-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const files = {
-    'website.yml': `adx_websiteid: ${SITE}\nadx_name: Calendar`,
+    'website.yml': `adx_websiteid: ${SITE}\nadx_name: Calendar\nadx_defaultlanguage: lang-en\nadx_website_language: 1033`,
+    'websitelanguage.yml':
+      '- adx_websitelanguageid: lang-en\n  adx_name: English\n  adx_languagecode: en-US\n- adx_websitelanguageid: lang-fr\n  adx_name: French\n  adx_languagecode: fr-FR',
+    'sitesetting.yml':
+      'adx_sitesettingid: locale-paths\nadx_name: MultiLanguage/DisplayLanguageCodeInURL\nadx_value: true',
     'Home.webpage.yml':
       'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\nadx_isroot: true\nadx_pagetemplateid: template',
     'Main.pagetemplate.yml': 'adx_pagetemplateid: template\nadx_webtemplateid: main',
@@ -147,6 +151,16 @@ test('calendar event feed returns rows in the requested period with summary and 
   assert.equal(language.status, 200);
   assert.equal(language.headers.get('vary'), '*');
   assert.match(await language.text(), /calendar_languages/);
+  const frenchCalendar = await fetch(`${app.url}/fr-FR/`, { headers });
+  assert.equal(frenchCalendar.status, 200);
+  const frenchHtml = await frenchCalendar.text();
+  const calendarLanguage = /data-view="calendar"[^>]*\blang="([^"]+)"/.exec(frenchHtml)?.[1];
+  assert.equal(calendarLanguage, 'fr-FR');
+  const script = `/EntityList/Calendar/${SITE}/language.js?culture=fr-FR`;
+  assert.ok(frenchHtml.includes(script));
+  const frenchScript = await (await fetch(app.url + script, { headers })).text();
+  assert.match(frenchScript, /window\.calendar_languages\["fr-FR"\]/);
+  assert.match(frenchScript, /m2: "mars",/);
   // A list without an end date column: the platform feed's error (live).
   const open = await (
     await fetch(
@@ -163,6 +177,26 @@ test('calendar event feed returns rows in the requested period with summary and 
   const client = await fetch(`${app.url}/Areas/EntityList/js/entitylist-calendar.js`, { headers });
   assert.equal(client.status, 200);
   assert.match(await client.text(), /data-view="calendar"/);
+
+  const packed = app.store.snapshot();
+  packed.tables.account = [
+    ...Array.from({ length: 5000 }, (_, index) => ({
+      accountid: `a0000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+      name: `Earlier ${index}`,
+      opens: '2025-01-01T00:00:00Z',
+    })),
+    {
+      accountid: 'f0000000-0000-4000-8000-000000000001',
+      name: 'Later record in requested interval',
+      opens: '2026-03-20T00:00:00Z',
+    },
+  ];
+  await app.store.replaceState(packed);
+  const window = await (await fetch(`${base}?from=2026-03-01T00:00:00Z&to=2026-04-01T00:00:00Z`, { headers })).json();
+  assert.deepEqual(
+    window.result.map((event) => event.title),
+    ['Later record in requested interval'],
+  );
 });
 
 test("a fixed-zone calendar feed sends user-local instants as the zone's wall clock with the behaviour flags", async () => {

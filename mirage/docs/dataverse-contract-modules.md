@@ -352,7 +352,8 @@ the child column that holds the parent id (the 1:N relationship). Three operatio
 The rollup columns per table and the child-to-parent links are memoised per `store.tablesRevision([])` and cleared on
 reset.
 
-**Supported subset.** The FetchXML subset recalculated by this module:
+**Supported subset.** The designer export's unfiltered, non-hierarchical one-to-many `Count` is read from its XAML
+and mapped to the child table, parent lookup and counted column. The FetchXML form supports these parts:
 
 | Part                                                                               | Meaning                                                                                  |
 | ---------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
@@ -489,7 +490,7 @@ operation to undo a write, so the external change stays. The capability record l
 | update, or an upsert that updates | `update(id, patch, ctx)` | the returned row, merged (the primary key is kept); nothing returned keeps the patch        |
 | delete                            | `delete(id, ctx)`        | the local row is removed by the write itself                                                |
 
-**Reads.** Before a Web API read answers, the records layer runs the `source` record hook. A collection, `$count` or
+**Organization Web API reads.** Before a Web API read answers, the records layer runs the `source` record hook. A collection, `$count` or
 navigation read calls the provider's `retrieveMultiple({ select, filter, orderby, top }, ctx)`: `select`, `filter` and
 `orderby` are the caller's `$select`, `$filter` and `$orderby` text, `top` is `$top` as a number, each `null` when
 absent. A single record, property or `$value` read calls `retrieve(id, ctx)`; `null` means the row does not exist (404).
@@ -499,8 +500,16 @@ read path, so `$filter`, `$select`, `$orderby`, paging, `$expand`, column securi
 rows as to any rows. `api.virtualProviders.query(table, { select, filter, orderby, top })` calls `retrieveMultiple`
 directly and resolves with its rows, or `null` when the table is not virtual, declares the local fallback, or its
 provider has no `retrieveMultiple`; a virtual table with neither a provider nor the fallback rejects with 501
-`VirtualProviderMissing`. Portal reads outside the Web API read the mirror as the last Web API read or write
-left it.
+`VirtualProviderMissing`.
+
+**Portal reads.** Local Liquid, list queries and portal Web API reads load current provider rows for the root table,
+authored FetchXML links and explicit OData navigation or expand targets that the visitor has a table grant to read.
+The same snapshot supplies provider-backed ancestors in applicable Parent table permission paths.
+Collection and FetchXML reads ask `retrieveMultiple` for the complete source so the portal applies row and column
+permissions, filters, joins and pagination locally. Where available, `retrieve` answers direct primary-key reads.
+The provider rows live for that read and leave the stored mirror intact. A declared `fallback: 'local'` keeps reading
+local rows. A missing provider or operation, or a provider that fails, follows the same provider error classifications
+as the organization API.
 
 **SDK reads.** SDK `Retrieve`, `RetrieveMultiple` and FetchXML (a CLR plug-in's `IOrganizationService`, the flow
 Dataverse connector) are synchronous and never read the mirror. A virtual table without a provider (and without the

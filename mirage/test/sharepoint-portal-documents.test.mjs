@@ -8,10 +8,11 @@ import fs from 'node:fs/promises';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
+import { setImmediate as nextTurn } from 'node:timers/promises';
 import { EXTENSION, createPortalDocumentService, PORTAL_DOCUMENTS_ROUTE } from '../lib/sharepoint-documents.mjs';
 import { portalDocumentAccess } from '../lib/permissions.mjs';
 import { createLocalDiskStorage } from '../lib/storage-local-disk.mjs';
-import { createStorageRouter, storageSettings } from '../lib/storage-provider.mjs';
+import { createStorageRouter, ProviderError, storageSettings } from '../lib/storage-provider.mjs';
 import { contractModuleFixture } from './contract-module-fixture.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
@@ -52,14 +53,17 @@ const child = (operations) => ({
   relationship: { entity: 'x_case', from: 'regardingobjectid', to: 'x_caseid' },
 });
 
-async function documents(t, { permissions, settings = {}, withStorage = true } = {}) {
+async function documents(
+  t,
+  { permissions, settings = {}, withStorage = true, wrapStorage = (provider) => provider } = {},
+) {
   const owner = ownedFixture(t);
   let storage, local;
   if (withStorage) {
     const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'portal-documents-'));
     owner.remove(() => fs.rm(root, { recursive: true, force: true }));
     local = createLocalDiskStorage({ root });
-    storage = createStorageRouter({ config: storageSettings({}), providers: { local } });
+    storage = createStorageRouter({ config: storageSettings({}), providers: { local: wrapStorage(local) } });
   }
   // The organization and its API close before the storage they write to, and that storage before its directory goes.
   const { api, store } = await contractModuleFixture(
@@ -202,6 +206,102 @@ test('New folder, navigation, upload, download and delete inside subfolders (Lea
   assert.equal((await call('DELETE', '?folder=Contracts')).status, 204);
   assert.deepEqual((await (await call('GET')).json()).folders, []);
   assert.equal((await call('GET', '?folder=Contracts/2026')).status, 404, 'a deleted folder takes its subfolders');
+});
+
+// @test-kind contract: a provider conflict preserves the portal duplicate-folder response and winning metadata
+test('concurrent portal creates of a folder with case-equivalent names return Created and Conflict', async (t) => {
+  const all = [parent(['read', 'appendTo', 'update']), child(['read', 'create', 'update', 'append'])];
+  const arrived = Promise.withResolvers();
+  let writes = 0;
+  const { call } = await documents(t, {
+    permissions: all,
+    wrapStorage: (provider) => ({
+      ...provider,
+      async put(key, body, options) {
+        if (key.endsWith('/review/_folder')) {
+          if (++writes === 2) arrived.resolve();
+          await arrived.promise;
+        }
+        return provider.put(key, body, options);
+      },
+    }),
+  });
+  assert.equal((await call('POST', '?newFolder=Container')).status, 201);
+  const responses = await Promise.all([
+    call('POST', '?folder=Container&newFolder=Review'),
+    call('POST', '?folder=Container&newFolder=review'),
+  ]);
+  assert.deepEqual(
+    responses.map(({ status }) => status).sort((a, b) => a - b),
+    [201, 409],
+  );
+  const [created, refused] = responses[0].status === 201 ? responses : responses.toReversed();
+  assert.equal((await refused.json()).error.code, 'SharePointFolderExists');
+  const winner = await created.json();
+  const listed = await (await call('GET', '?folder=Container')).json();
+  assert.deepEqual(listed.folders, [{ name: winner.name, lastModified: winner.lastModified }]);
+});
+
+// @test-kind contract: simultaneous provider-backed file and folder creates share the case-insensitive local namespace
+test('concurrent portal file and folder creates with the same name return Created and Conflict', async (t) => {
+  const scenarios = [
+    { firstKind: 'file', failure: false, statuses: [201, 409], names: [[], ['REVIEW']] },
+    { firstKind: 'folder', failure: false, statuses: [201, 409], names: [['Review'], []] },
+    { firstKind: 'folder', failure: true, statuses: [503, 201], names: [[], ['REVIEW']] },
+  ];
+  for (const { firstKind, failure, statuses, names } of scenarios) {
+    const detail = failure ? ' and fails' : '';
+    await t.test(`${firstKind} starts first${detail}`, async (t) => {
+      const all = [parent(['read', 'appendTo', 'update']), child(['read', 'create', 'update', 'append'])];
+      const fileWrite = '?folder=Container&name=REVIEW';
+      const folderWrite = '?folder=Container&newFolder=Review';
+      const first = firstKind === 'file' ? fileWrite : folderWrite;
+      const second = firstKind === 'file' ? folderWrite : fileWrite;
+      const firstKey = firstKind === 'file' ? '/container/review' : '/container/review/_folder';
+      const firstPut = Promise.withResolvers();
+      const secondAdmitted = Promise.withResolvers();
+      const releaseFirst = Promise.withResolvers();
+      let firstReachedProvider = false;
+      const { call } = await documents(t, {
+        permissions: all,
+        wrapStorage: (provider) => ({
+          ...provider,
+          async head(key) {
+            const found = await provider.head(key);
+            if (firstReachedProvider && key.endsWith('/container/_folder')) secondAdmitted.resolve();
+            return found;
+          },
+          async put(key, body, options) {
+            if (key.endsWith(firstKey)) {
+              firstReachedProvider = true;
+              firstPut.resolve();
+              await releaseFirst.promise;
+              if (failure) throw new ProviderError('Unavailable', 'Invented provider failure.');
+            }
+            return provider.put(key, body, options);
+          },
+        }),
+      });
+      assert.equal((await call('POST', '?newFolder=Container')).status, 201);
+      const start = (suffix) => call('POST', suffix, suffix === fileWrite ? 'payload' : undefined);
+      const pendingFirst = start(first);
+      await firstPut.promise;
+      const pendingSecond = start(second);
+      try {
+        await secondAdmitted.promise;
+        // Let the competing handler proceed from its parent lookup while the first provider write is suspended.
+        await nextTurn();
+      } finally {
+        releaseFirst.resolve();
+      }
+      const [firstAnswer, secondAnswer] = await Promise.all([pendingFirst, pendingSecond]);
+      assert.deepEqual([firstAnswer.status, secondAnswer.status], statuses);
+      const refused = failure ? firstAnswer : secondAnswer;
+      assert.equal((await refused.json()).error.code, failure ? 'Unavailable' : 'SharePointNameExists');
+      const listed = await (await call('GET', '?folder=Container')).json();
+      assert.deepEqual([listed.folders.map(({ name }) => name), listed.documents.map(({ name }) => name)], names);
+    });
+  }
 });
 
 // @test-kind security: each document operation requires its permission and an upload is capped by the size setting

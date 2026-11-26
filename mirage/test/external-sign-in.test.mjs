@@ -839,6 +839,60 @@ test("a new user's first sign-in follows the registration settings: open registr
   }
 });
 
+// @test-kind security: external identity and single invitation lookups require an existing eligible contact.
+test('sign-in and single invitation redemption refuse an absent contact target', async (t) => {
+  const contact = { id: 'missing-contact', logical_name: 'contact' };
+  const state = initialState({
+    tables: {
+      adx_externalidentity: [
+        {
+          adx_externalidentityid: 'identity-unresolved',
+          adx_username: presetSubject({ id: AUTHORITY }, 'alex'),
+          adx_identityprovidername: AUTHORITY,
+          adx_contactid: contact,
+        },
+      ],
+      adx_invitation: [
+        {
+          adx_invitationid: 'inv-contact-unresolved',
+          adx_invitationcode: 'FIXTURE-MISSING-CONTACT',
+          adx_type: 756150000,
+          adx_invitecontact: contact,
+          adx_redemptions: 0,
+        },
+      ],
+    },
+    mappings: {
+      adx_externalidentity: {
+        entitySet: 'adx_externalidentities',
+        idColumn: 'adx_externalidentityid',
+        nameColumn: 'adx_username',
+      },
+      adx_invitation: {
+        entitySet: 'adx_invitations',
+        idColumn: 'adx_invitationid',
+        nameColumn: 'adx_name',
+      },
+    },
+  });
+  const { app, csrf, idp } = await simulator(t, LOCAL_PROVIDER, state);
+  const invitee = client(app);
+  const invitation = await invitee.request(
+    '/Account/Login/RedeemInvitation',
+    formBody({ __RequestVerificationToken: csrf, InvitationCode: 'FIXTURE-MISSING-CONTACT' }),
+  );
+  const visitor = client(app);
+  const signIn = await signInThrough(visitor, idp, { contactId: 'alex' });
+  assert.deepEqual([invitation.status, signIn.status], [400, 403], 'both unresolved contact lookups must be refused');
+  assert.match(await text(invitation), /The invited contact is missing or inactive/);
+  assert.match(await text(signIn), /Invalid sign-in attempt\./);
+  assert.equal((await json(visitor, '/_sim/api/session')).signedIn, false);
+  assert.deepEqual(
+    app.store.snapshot({ tables: ['adx_invitation'] }).tables.adx_invitation,
+    state.tables.adx_invitation,
+  );
+});
+
 test('invitation codes register into the invited contact with its account and web roles; group invitations count redemptions', async (t) => {
   const settings = [...LOCAL_PROVIDER, ['Authentication/Registration/OpenRegistrationEnabled', 'false']];
   const invitations = [

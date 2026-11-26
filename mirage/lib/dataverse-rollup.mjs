@@ -3,8 +3,8 @@ import { validateDerivedColumns } from './derived-columns.mjs';
 // Rollup columns (SourceType 2) in the Dataverse API: the state and date columns are maintained, the value is recalculated on demand.
 //
 // A column is a rollup when its metadata says SourceType 2 (exported column facts sit under columnMetadata). Its FormulaDefinition
-// is the aggregate FetchXML the platform stores: one <entity> (the child table), one aggregate <attribute>, and a <filter> whose
-// condition with value="{id}" names the child column holding the parent's id (the 1:N relationship). Behaviour:
+// is either designer-exported XAML for the simple child Count or an aggregate FetchXML model: one <entity> (the child table),
+// one aggregate <attribute>, and a <filter> whose condition with value="{id}" names the child's parent lookup. Behaviour:
 //   1. create: a new parent row is stamped <column>_state = 0 (NotCalculated) and <column>_date = null when the payload omits
 //      them. An explicit write to <column> itself is refused with 400 (create, update and upsert).
 //   2. child write (create, update, upsert, delete): every parent linked through a rollup column gets <column>_state = 0 (stale),
@@ -28,8 +28,8 @@ import { validateDerivedColumns } from './derived-columns.mjs';
 // count counts the non-null values of the attribute; sum, min, max and avg read numbers and ignore nulls. A row without a
 // statecode value counts as active. Anything else (link-entity, or-filters, other conditions, several attributes) is outside
 // the subset.
-// Assumed native behavior: the FormulaDefinition is FetchXML, as the CalculateRollupField handler reads it; aggregation
-// follows SQL (SUM over no rows is 0, MIN, MAX and AVG over none are null, COUNT counts non-null values).
+// The designer's unfiltered, non-hierarchical one-to-many Count is parsed into the same model. Other XAML is unsupported.
+// Aggregation follows SQL (SUM over no rows is 0, MIN, MAX and AVG over none are null, COUNT counts non-null values).
 // State 2 (OverflowError) for a definition outside the subset is this module's choice: the nearest documented error state, as
 // OtherError (3) describes an internal failure.
 // Guesses: the refusal of a write to a rollup column reuses the calculated module's invalid-property shape (0x80048d19), and the
@@ -177,6 +177,97 @@ function readAggregateRule(rule, attributes) {
   if (!rule.attribute) unsupported('The aggregate attribute has no name.');
 }
 
+function designerSteps(node, names) {
+  const nodes = elements(node);
+  if (nodes.length !== names.length || nodes.some((item, index) => localName(item.name) !== names[index]))
+    unsupported('The designer rollup has activities outside the unfiltered child Count.');
+  return nodes;
+}
+
+function checkDesignerSource(source) {
+  const [variables] = designerSteps(source, ['sequence.variables']);
+  const [hierarchy] = designerSteps(variables, ['variable']);
+  if (attr(hierarchy, 'Name') !== 'HierarchicalRelationshipName' || attr(hierarchy, 'Default') !== '[Nothing]')
+    unsupported('The designer rollup has a hierarchical source.');
+}
+
+function readDesignerTarget(target, rule) {
+  const [link] = designerSteps(target, ['setattributevalue']);
+  const relation =
+    /^\[CreatedEntities\("relatedlinked_([a-z][\da-z_]*)#([a-z][\da-z_]*)#([a-z][\da-z_]*)#Temp"\)\]$/i.exec(
+      attr(link, 'Entity') ?? '',
+    );
+  if (!relation || attr(link, 'EntityName')?.toLowerCase() !== relation[3].toLowerCase())
+    unsupported('The designer rollup does not declare a direct child relationship.');
+  rule.child = relation[3].toLowerCase();
+  rule.link = relation[2].toLowerCase();
+  const relationshipLabel = [rule.child, rule.link, relation[1].toLowerCase()].join('.');
+  if (attr(link, 'DisplayName')?.toLowerCase() !== relationshipLabel)
+    unsupported('The designer rollup child relationship declarations do not match.');
+}
+
+function readDesignerAggregate(aggregate, rule) {
+  const [, property, expression] = designerSteps(aggregate, [
+    'sequence.variables',
+    'getentityproperty',
+    'activityreference',
+  ]);
+  const column = attr(property, 'Attribute');
+  const variable = /^\[([a-z][\da-z_]*)\]$/i.exec(attr(property, 'Value') ?? '')?.[1];
+  if (
+    !/^[a-z][\da-z_]*$/i.test(column ?? '') ||
+    !variable ||
+    attr(property, 'Entity') !== '[InputEntities("primaryEntity")]' ||
+    attr(property, 'EntityName')?.toLowerCase() !== rule.child ||
+    attr(expression, 'AssemblyQualifiedName')?.split(',')[0] !== 'Microsoft.Crm.Workflow.Activities.EvaluateExpression'
+  )
+    unsupported('The designer aggregate does not read a child column for Count.');
+  const [args] = designerSteps(expression, ['activityreference.arguments']);
+  const [operator, parameters, type, result] = designerSteps(args, [
+    'inargument',
+    'inargument',
+    'inargument',
+    'outargument',
+  ]);
+  if (
+    attr(operator, 'Key') !== 'ExpressionOperator' ||
+    operator.text.trim() !== 'Count' ||
+    attr(parameters, 'Key') !== 'Parameters' ||
+    parameters.text.trim() !== `[New Object() { ${variable} }]` ||
+    attr(type, 'Key') !== 'TargetType' ||
+    attr(result, 'Key') !== 'Result'
+  )
+    unsupported('The designer aggregate does not match the exported child Count expression.');
+  rule.aggregate = 'count';
+  rule.attribute = column.toLowerCase();
+  rule.active = false;
+}
+
+function readDesignerRollup(root, rule) {
+  const activity = attr(root, 'Class')?.toLowerCase();
+  if (!/^xrmworkflow[\da-f]{32}$/.test(activity ?? ''))
+    unsupported('The designer rollup requires a generated Workflow class.');
+  const [, , , , workflow] = designerSteps(root, [
+    'members',
+    `${activity}.inputentities`,
+    `${activity}.createdentities`,
+    'visualbasic.settings',
+    'workflow',
+  ]);
+  const [sequence] = designerSteps(workflow, ['sequence']);
+  const [source, target, aggregate] = designerSteps(sequence, ['sequence', 'sequence', 'sequence']);
+  if (
+    !/^RollupRuleStep\d+$/.test(attr(sequence, 'DisplayName') ?? '') ||
+    attr(source, 'DisplayName') !== 'Source' ||
+    attr(target, 'DisplayName') !== 'Target' ||
+    attr(aggregate, 'DisplayName') !== 'Aggregate'
+  )
+    unsupported('The designer rollup is outside the unfiltered child Count layout.');
+  checkDesignerSource(source);
+  readDesignerTarget(target, rule);
+  readDesignerAggregate(aggregate, rule);
+}
+
 /**
  * Parses a rollup FormulaDefinition into { child, link, active, aggregate, attribute, unsupported }. child and link (the 1:N
  * source) are kept even when the rest is outside the subset: unsupported is then the reason, null when the rule is supported.
@@ -185,7 +276,9 @@ export function parseRollupFormula(text) {
   const rule = { child: null, link: null, unsupported: null };
   if (!text || !String(text).trim()) return { ...rule, unsupported: 'The column has no FormulaDefinition.' };
   try {
-    readFetch(parseSolutionXml(text), rule);
+    const root = parseSolutionXml(text);
+    if (localName(root.name) === 'activity') readDesignerRollup(root, rule);
+    else readFetch(root, rule);
   } catch (error) {
     rule.unsupported =
       error instanceof Unsupported ? error.message : `The FormulaDefinition is not readable XML: ${error.message}`;

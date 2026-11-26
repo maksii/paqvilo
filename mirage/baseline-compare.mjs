@@ -4,13 +4,18 @@ import { stripLastLineQuery } from './lib/strip-last-line-query.mjs';
 // A second independent live capture, when present, proves which differences are live-run
 // variance. No normalisation hides a difference: every delta is listed, allowed or not.
 import fs from 'node:fs/promises';
+import { constants } from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { parse, defaultTreeAdapter as adapter } from 'parse5';
+import { PNG } from 'pngjs';
+import { comparePngPixels } from './lib/screenshot-comparison.mjs';
 import { readJsonOption } from './lib/path-options.mjs';
 import { isToolkitAttribute, isToolkitElement, isToolkitHeader } from './lib/render-provenance.mjs';
 
 const sha = (value) => createHash('sha256').update(String(value)).digest('hex').slice(0, 12);
+const SCREENSHOT_MAX_BYTES = 24 * 1024 * 1024;
+const SCREENSHOT_MAX_PIXELS = 16_000_000;
 const readJson = async (file, fallback = null) => {
   try {
     return JSON.parse(await fs.readFile(file, 'utf8'));
@@ -594,6 +599,14 @@ export async function compareScenario({
   diffFrames(live.frames, mirage.frames, deltas);
   compareElements(live.elements, mirage.elements, deltas);
   compareConsole(live.console, mirage.console, deltas);
+  if (scenario.compareScreenshot) {
+    try {
+      result.screenshot = await compareScenarioScreenshots(liveDir, mirageDir, deltas);
+    } catch (error) {
+      result.reason = `Screenshot evidence unavailable: ${error.message}`;
+      return result;
+    }
+  }
   // Live-run variance: the live-vs-live-2 deltas, classified like the Mirage ones, witness the
   // live-run-variance entries they match. Tokens sit in element ids, field names and request
   // indexes, so the proof is per entry within the scenario, not per exact location.
@@ -613,6 +626,64 @@ export async function compareScenario({
   result.deltas = deltas;
   tally(result);
   return result;
+}
+
+async function loadScreenshot(dir, label) {
+  const filename = path.join(dir, 'screenshot.png');
+  const flags = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
+  const file = await fs.open(filename, flags).catch(() => null);
+  if (!file) throw new Error(`${label} screenshot missing or unreadable`);
+  try {
+    // Verify the path against the open handle on platforms without no-follow support, then read
+    // from that handle exclusively. Replacing the path cannot replace the object being read.
+    const opened = await file.stat({ bigint: true });
+    const entry = await fs.lstat(filename, { bigint: true });
+    if (
+      !opened.isFile() ||
+      !entry.isFile() ||
+      opened.nlink !== 1n ||
+      entry.dev !== opened.dev ||
+      entry.ino !== opened.ino
+    )
+      throw new Error('is not an ordinary, independently owned file');
+    if (opened.size < 24n || opened.size > BigInt(SCREENSHOT_MAX_BYTES))
+      throw new Error('size outside the comparison limit');
+    const size = Number(opened.size);
+    const bytes = Buffer.alloc(size);
+    const { bytesRead } = await file.read(bytes, 0, size, 0);
+    if (
+      bytesRead !== size ||
+      !bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) ||
+      bytes.toString('ascii', 12, 16) !== 'IHDR'
+    )
+      throw new Error('invalid PNG');
+    if (bytes.readUInt32BE(16) * bytes.readUInt32BE(20) > SCREENSHOT_MAX_PIXELS)
+      throw new Error('dimensions outside the comparison limit');
+    return PNG.sync.read(bytes);
+  } catch (error) {
+    throw new Error(`${label} screenshot ${error.message}`, { cause: error });
+  } finally {
+    await file.close();
+  }
+}
+
+async function compareScenarioScreenshots(liveDir, mirageDir, deltas) {
+  const [live, mirage] = await Promise.all([loadScreenshot(liveDir, 'live'), loadScreenshot(mirageDir, 'Mirage')]);
+  if (Math.max(live.width, mirage.width) * Math.max(live.height, mirage.height) > SCREENSHOT_MAX_PIXELS)
+    throw new Error('combined dimensions outside the comparison limit');
+  const { pixels } = comparePngPixels(live, mirage);
+  if (live.width !== mirage.width || live.height !== mirage.height)
+    deltas.push(
+      delta(
+        'screenshot',
+        'screenshot.png',
+        'dimensions',
+        `${live.width}x${live.height}`,
+        `${mirage.width}x${mirage.height}`,
+      ),
+    );
+  if (pixels.different) deltas.push(delta('screenshot', 'screenshot.png', 'differentPixels', 0, pixels.different));
+  return pixels;
 }
 
 function compareLiveVariance(live, second, secondDir, allowlist, result, isVariance) {

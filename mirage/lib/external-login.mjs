@@ -33,6 +33,16 @@ export function timeSpanMs(value) {
   return (((Number(days) * 24 + Number(hours)) * 60 + Number(minutes)) * 60 + Number(seconds)) * 1000;
 }
 
+/** The explicit non-sliding application-cookie lifetime supported by the local runtime. */
+export function fixedApplicationSessionLifetime(portal) {
+  const setting = (name) => siteSetting(portal, 'Authentication/ApplicationCookie/' + name);
+  if (lower(setting('SlidingExpiration')) !== 'false') return null;
+  const value = text(setting('ExpireTimeSpan'));
+  if (!/^(?:\d+\.)?\d{1,2}:[0-5]\d:[0-5]\d$/.test(value ?? '')) return null;
+  const duration = timeSpanMs(value);
+  return Number.isSafeInteger(duration) && duration > 0 ? duration : null;
+}
+
 /** Registration and sign-in switches with their documented defaults. */
 export function authenticationSettings(portal) {
   const s = (name) => siteSetting(portal, `Authentication/Registration/${name}`);

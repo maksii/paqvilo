@@ -28,9 +28,11 @@ Each side is the capture folder named by its label (`--live`, default `live`; `-
 `label`. `compare` exits 1 when any scenario is `FAIL` or `ERROR`. `summary.md` groups deltas into signatures,
 unexplained first: that is the work list.
 
-Not compared: pixels (`screenshot.png` is kept for review only); non-JSON script elements and their inline contents
-(script requests and response bodies still are); cross-origin traffic the capture does not record, such as platform CDN
-bundles; cross-origin iframe contents; console `log` and `info`.
+Set `compareScreenshot: true` on a scenario with stable visual evidence to compare both captures' dimensions and pixels.
+A missing, unreadable, or oversized PNG is an `ERROR`. A dimension or pixel difference is a `FAIL`.
+
+The comparison omits non-JSON script elements and inline contents, cross-origin traffic outside the capture,
+cross-origin iframe contents, and console `log` and `info`. It still compares script requests and response bodies.
 
 ### Normalizations
 

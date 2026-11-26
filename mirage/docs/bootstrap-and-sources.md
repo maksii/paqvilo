@@ -1,9 +1,9 @@
 # Sources and bootstrap
 
-The importer accepts standard portal exports, enhanced unpacked component XML and short-key `.powerpages-site` code-site
-exports. It uses record types and IDs, exported page/template relationships, languages, settings, snippets, forms/lists,
-permissions and web-file metadata. Ambiguous or incomplete inputs produce diagnostics; `serve` rejects sources with no
-recognized pages.
+The importer accepts portal YAML records with `adx_` or `mspp_` keys, enhanced unpacked component XML, and short-key
+`.powerpages-site` exports. It resolves record IDs, relationships, languages, settings, snippets, forms, lists, permissions,
+and web files. Use a separate source folder for each site. An enhanced Solution with records owned by different sites is
+refused. `serve` also requires a recognized page.
 
 Solution roots contribute table/entity-set identities, columns, relationships, views, system forms, choices, environment
 variables and permission relationships. Roots are a set layered in dependency order; explicit ordering is an opt-in and

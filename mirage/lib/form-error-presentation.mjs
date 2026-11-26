@@ -21,7 +21,8 @@ const customPluginErrors = (portal) =>
  * malformed/forged control failures keep their original error response. */
 export function formWriteError(error, observed, kind = 'entityform', portal = null) {
   // Advanced forms keep their own failure path; Basic Form.aspx documents use the error MessagePanel postback.
-  if (kind !== 'entityform' || error?.nativeFormWriteFailure !== true) return null;
+  if (kind !== 'entityform' || error?.nativeFormWriteFailure !== true || error.details?.validationErrors?.length)
+    return null;
   const markup = observed?.formSubmissionErrorMarkup ? { markup: observed.formSubmissionErrorMarkup } : {};
   // A plug-in's InvalidPluginExecutionException (observed natively, basic-form create and update): the generic text with
   // an Error ID that is the response's x-ms-request-id, or the plug-in's message when Site/EnableCustomPluginError is true.

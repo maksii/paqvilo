@@ -105,6 +105,7 @@ test('a declaration is read from its entity-encoded attribute, with the requeste
     {
       name: SCHEMA,
       resources: [
+        { type: 2, guid: G.strings },
         { type: 0, guid: G.bundle },
         { type: 1, guid: G.first },
         { type: 1, guid: G.second },
@@ -113,6 +114,7 @@ test('a declaration is read from its entity-encoded attribute, with the requeste
     {
       name: 'inv_Other.Thing',
       resources: [
+        { type: 2, guid: G.strings },
         { type: 0, guid: G.bundle },
         { type: 1, guid: G.first },
         { type: 1, guid: G.second },
@@ -138,6 +140,13 @@ test('declared resources join to the manifest by kind and order', async (t) => {
       { guid: G.bundle, kind: 'code', order: 0, rel: 'bundle.js', file: path.join(control, 'bundle.js') },
       { guid: G.first, kind: 'css', order: 0, rel: 'css/first.css', file: path.join(control, 'css', 'first.css') },
       { guid: G.second, kind: 'css', order: 1, rel: 'css/second.css', file: path.join(control, 'css', 'second.css') },
+      {
+        guid: G.strings,
+        kind: 'resx',
+        order: 0,
+        rel: 'strings/Widget.1033.resx',
+        file: path.join(control, 'strings', 'Widget.1033.resx'),
+      },
     ],
   );
 });
@@ -197,7 +206,7 @@ test('only manifest-declared files inside a configured Solution root are ever ma
   const entries = index.notePcf([declared], { catalogue, roots: [root], sourceDir });
   assert.deepEqual(
     entries.map((entry) => [entry.url, entry.refused, entry.file]),
-    Object.values({ a: G.bundle, b: G.first, c: G.second }).map((guid) => [
+    [G.strings, G.bundle, G.first, G.second].map((guid) => [
       `/_pcfwebresource/${guid}`,
       'pcf-control-not-in-sources',
       undefined,
@@ -302,6 +311,7 @@ test('the resources a page declares are answered from the Solution files and rec
     { url: `/_pcfwebresource/${G.bundle}`, control: SCHEMA, kind: 'code', path: 'bundle.js' },
     { url: `/_pcfwebresource/${G.first}`, control: SCHEMA, kind: 'css', path: 'css/first.css' },
     { url: `/_pcfwebresource/${G.second}`, control: SCHEMA, kind: 'css', path: 'css/second.css' },
+    { url: `/_pcfwebresource/${G.strings}`, control: SCHEMA, kind: 'resx', path: 'strings/Widget.1033.resx' },
   ]);
   // Only the document was asked of the portal.
   assert.deepEqual(

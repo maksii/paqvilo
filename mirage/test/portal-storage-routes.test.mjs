@@ -1,3 +1,4 @@
+// @test-kind contract: Mirage storage provider routing and note-body round trips over loopback
 // Portal storage routes (organization-host.mjs providers, dataverse-storage-routing.mjs): note bodies leave state and are read
 // back by the portal readers, web files stored in Azure Blob Storage come from route portalWebFiles, cloud attachments put
 // their bytes on route portalCloudAttachments behind the documented placeholder note, staged uploads are provider blocks,
@@ -255,6 +256,65 @@ test('a cloud attachment puts its bytes on route portalCloudAttachments behind a
   for await (const chunk of body) chunks.push(Buffer.from(chunk));
   assert.equal(Buffer.concat(chunks).toString(), 'pdf bytes');
   assert.ok(saved.recordId);
+});
+
+// @test-kind contract: the form's exported attachment location controls provider routing
+test('an explicit note location stays in Dataverse and an explicit Azure location uses its provider', async () => {
+  const options = await formFixture();
+  const cloud = guardProvider(createMemoryStorage({ id: 'cloud' }));
+  const save = (fullname) =>
+    submitPortalForm(
+      'entityform',
+      'notes',
+      { values: { fullname }, attachments: [upload] },
+      { ...options, cloudAttachments: () => cloud },
+    );
+  const metadata = options.portal.forms[0].metadata;
+  metadata.adx_attachfilestoragelocation = 756150000;
+  await save('Use Dataverse');
+  const [note] = options.store.state.tables.annotation;
+  assert.equal(note.filename, upload.name);
+  assert.equal(note.documentbody, upload.content);
+
+  delete options.portal.settings['FileStorage/CloudStorageAccount'];
+  metadata.adx_attachfilestoragelocation = 756150001;
+  await save('Use cloud provider');
+  const [, placeholder] = options.store.state.tables.annotation;
+  assert.equal(placeholder.filename, upload.name + '.txt');
+  const { Url } = JSON.parse(Buffer.from(placeholder.documentbody, 'base64').toString());
+  assert.ok(await cloud.get(Url));
+});
+
+test('a partial cloud upload cleans attempted objects and a retry saves only one set of files', async () => {
+  const options = await formFixture();
+  options.portal.forms[0].metadata.adx_attachfileallowmultiple = true;
+  const objects = new Map();
+  let puts = 0;
+  const storage = {
+    async put(key, bytes) {
+      objects.set(key, bytes);
+      if (++puts === 2) throw new Error('Upload result was unavailable');
+    },
+    async delete(key) {
+      objects.delete(key);
+    },
+  };
+  const save = () =>
+    submitPortalForm(
+      'entityform',
+      'notes',
+      { values: { fullname: 'Invented' }, attachments: [upload, { ...upload, name: 'Report 2.pdf' }] },
+      { ...options, cloudAttachments: () => storage },
+    );
+  await assert.rejects(save(), /Upload result was unavailable/);
+  assert.equal(objects.size, 0);
+  assert.equal(options.store.state.tables.annotation.length, 0);
+  assert.equal(options.store.state.tables.contact.length, 0);
+
+  await save();
+  assert.equal(objects.size, 2);
+  assert.equal(options.store.state.tables.annotation.length, 2);
+  assert.equal(options.store.state.tables.contact.length, 1);
 });
 
 test('a cloud attachment without route portalCloudAttachments fails the save and stores nothing', async () => {

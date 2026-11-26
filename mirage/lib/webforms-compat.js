@@ -514,7 +514,7 @@
       case 'multiselect':
         return element?.value ? element.value : null;
       case 'number':
-        return numberControlValue(element);
+        return numberControlValue(element, field.decimalSeparator);
       case 'datetime':
         return element?.value ? element.value : null;
       case 'richtext':
@@ -553,11 +553,16 @@
     const checked = element?.querySelector('input:checked');
     return checked ? Number(checked.value) : null;
   }
-  function numberControlValue(element) {
+  function numberControlValue(element, decimalSeparator) {
     if (element?.value === '' || element == null) return null;
     const text = String(element.value);
-    const decimal = element.dataset.numberdecimalseparator === ',' ? ',' : '.';
-    const normalized = numberText(text, decimal);
+    // Decimal and Money have no locale expando on their native markup. When a visitor enters a comma in a
+    // comma-decimal locale, parse that edit in the selected locale. Keep previously accepted invariant dot input.
+    const unmarkedSeparator = text.includes(',') ? decimalSeparator : '.';
+    const decimal = (element.dataset.numberdecimalseparator ?? unmarkedSeparator) === ',' ? ',' : '.';
+    // The server emits an invariant value even for a comma-decimal field. Use that value as
+    // written when the browser still holds it, and parse edited text using the field's locale.
+    const normalized = text === element.defaultValue && PLAIN_DECIMAL.test(text) ? text : numberText(text, decimal);
     // Only plain decimal text is a number. Anything else keeps the textbox text, so the native server
     // format validator rejects it without a write (JSON.stringify(NaN) would become null).
     const number = normalized !== null && PLAIN_DECIMAL.test(normalized) ? Number(normalized) : Number.NaN;
@@ -892,6 +897,11 @@
     if (target.href === location.href) location.reload();
     else location.assign(target.href);
   }
+  function fixtureCaptchaProof(form) {
+    const challengeId = form.querySelector('[data-pp-captcha-challenge]')?.value;
+    const answer = form.querySelector('[data-pp-captcha-answer]')?.value;
+    return challengeId ? { challengeId, answer } : undefined;
+  }
   async function submitNativeForm(form, action, button, eventArgument = '', eventTarget = '') {
     const config = configOf(form);
     if (!config) return;
@@ -920,6 +930,7 @@
           ...(button?.dataset?.ppActionIndex != null ? { actionIndex: Number(button.dataset.ppActionIndex) } : {}),
           values,
           attachments,
+          captchaProofToken: fixtureCaptchaProof(form),
           query: Object.fromEntries(new URLSearchParams(location.search)),
           pageUrl: location.pathname + location.search,
         }),

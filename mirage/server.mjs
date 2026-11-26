@@ -48,6 +48,8 @@ import {
   publicPersonaReport,
 } from './lib/persona-catalog.mjs';
 import { identityProviderSettings, identityProviderAssets } from './lib/identity-provider-settings.mjs';
+import { createLocalAccounts } from './lib/local-accounts.mjs';
+import { createLocalCaptcha } from './lib/local-captcha.mjs';
 import { closestPersonaKeys } from './lib/persona-search.mjs';
 import { createPersonaContexts } from './lib/persona-contexts.mjs';
 import { personaContextSettings } from './lib/persona-context-settings.mjs';
@@ -181,6 +183,8 @@ import { captureObservedSnippetComposition } from './lib/observed-snippet-compos
 import { captureObservedStylesheets, resolveObservedStylesheet } from './lib/observed-stylesheets.mjs';
 import { resolveRichTextConfiguration, richTextConfigurationStatus } from './lib/richtext-config.mjs';
 import { pageAccess } from './lib/page-access.mjs';
+import { codeSiteDocument, codeSiteNavigation, compiledCodeSiteAsset } from './lib/code-site.mjs';
+import { CONTEXT_LANGUAGE_COOKIE, localizedPortalPage } from './lib/portal-languages.mjs';
 import { cachedImplementationSourceFingerprint, observedEvidence, implementationEvidence } from './lib/evidence.mjs';
 import { verificationWitness, verificationTableSelection } from './lib/verification-witness.mjs';
 import { importSolutionMetadata, portalMetadataEntities } from './lib/solution-metadata.mjs';
@@ -248,12 +252,12 @@ import { createFlowRoutes, routes as FLOW_ROUTES } from './lib/sim-flow-routes.m
 import { createTraceChannel, createTraceRoutes, routes as TRACE_ROUTES } from './lib/sim-trace-routes.mjs';
 import { logPage, resolveRenderSources, writeActivityBundle } from './lib/sim-activity.mjs';
 import { LOG_RETAIN_DEFAULT } from './lib/config-keys.mjs';
-import { recordHttpError, statusFromHttp, TRACE_HOSTS } from './lib/trace-store.mjs';
+import { recordHttpError, redactPayload, statusFromHttp, TRACE_HOSTS } from './lib/trace-store.mjs';
 import { browserProbe, setTraceHeaders, sseClients, traceSessionKey } from './lib/trace-hosts.mjs';
 import { buildSourceGraph } from './lib/source-graph.mjs';
 import { scenarioSettings } from './lib/capability-report.mjs';
 import { environmentVariablePayload } from './lib/secret-resolver.mjs';
-import { authenticationSettings } from './lib/external-login.mjs';
+import { authenticationSettings, fixedApplicationSessionLifetime } from './lib/external-login.mjs';
 import { dataverseHostStatus, dataverseSettings, managedIdentityStatusReader } from './lib/dataverse-settings.mjs';
 import { uuidV5, createApplicationUser } from './lib/dataverse-security.mjs';
 import { ensureCertificate } from './lib/dataverse-tls.mjs';
@@ -373,6 +377,7 @@ import {
 } from './lib/native-postback.mjs';
 import { readVisitor, newVisitor, visitorCookieName } from './lib/visitor-session.mjs';
 import { handleNativeService, antiForgeryCookie, portalNotes } from './lib/native-services.mjs';
+import { organizationPrincipalContext } from './lib/dataverse-principal-context.mjs';
 import {
   antiForgeryHolder,
   isAspNetScript,
@@ -391,7 +396,12 @@ import {
   portalDocumentAccess,
 } from './lib/permissions.mjs';
 import { handleWebApi } from './lib/webapi-handler.mjs';
-import { buildSiteTables } from './lib/site-tables.mjs';
+import {
+  buildSiteTables,
+  configureContactRoles,
+  contactRoleIntersection,
+  grantContactRoles,
+} from './lib/site-tables.mjs';
 import {
   adminServes,
   answerVerdict,
@@ -1688,6 +1698,21 @@ export async function createSimulator(options) {
     externalSignIn = null,
     // Stops the model-driven handler's warm metadata compiler thread, set once the handler exists.
     closeModelDriven = null;
+  let portalSourceEpoch = 0,
+    portalSourcePublications = 0;
+  const publishPortalSource = async (work) => {
+    portalSourceEpoch++;
+    portalSourcePublications++;
+    try {
+      return await work();
+    } finally {
+      portalSourcePublications--;
+    }
+  };
+  const requirePortalSourceEpoch = (epoch) => {
+    if (portalSourcePublications || epoch !== portalSourceEpoch)
+      throw error('Portal sources changed while resolving this page.', 409, 'SourceRefreshConflict');
+  };
   // GET observers may commit SDK writes too. Drain every accepted handler
   // before stopping its services; event-stream handlers finish on registration.
   const activeRequests = new Map();
@@ -1856,10 +1881,37 @@ export async function createSimulator(options) {
   // cookies across ports, and every local runtime keeps its own session.
   const authSessions = createAuthSessions({
     name: () => authCookieName(localOrigin ? new URL(localOrigin).port : null),
+    clock: () => store.clock.now(),
+    fixedLifetime: () => fixedApplicationSessionLifetime(portal),
   });
+  const privateSiteSessions = createAuthSessions({ name: () => `${authSessions.name}-site-access` });
+  const privateSiteContacts = new Set(providerSettings.privateSiteContactIds?.map((id) => id.toLowerCase()));
+  const privateSiteAdmission = () =>
+    portal.observed?.siteVisibility === 'private' && providerSettings.privateSiteContactIds !== undefined;
+  const allowedPrivateSiteIdentity = (contactId) => {
+    if (!privateSiteAdmission() || !privateSiteContacts.has(personaKey(contactId))) return false;
+    const mapping = store.state.mappings.contact;
+    return (store.state.tables.contact ?? []).some(
+      (row) =>
+        personaKey(row[mapping?.idColumn ?? 'contactid']) === personaKey(contactId) &&
+        Number(row.statecode?.value ?? row.statecode ?? 0) === 0,
+    );
+  };
+  const hasPrivateSiteSession = (req) =>
+    allowedPrivateSiteIdentity(privateSiteSessions.read(req.headers.cookie)?.contactId);
+  const refusePrivateSite = (
+    res,
+    status = 401,
+    code = 'PRIVATE_SITE_ACCESS_REQUIRED',
+    message = 'Private site admission is required.',
+  ) => {
+    const routed = trace.getStore();
+    if (routed) routed.httpError = { code, message };
+    return json(res, status, { error: { code, message } }, { 'cache-control': 'no-store' });
+  };
   // Advanced form sessions of this runtime (lib/form-service.mjs) and the anonymous visitor
   // cookie that keeps an anonymous visitor's sessions to its browser session.
-  const webFormSessions = createWebFormSessions();
+  const webFormSessions = createWebFormSessions({ store });
   const visitorName = () => visitorCookieName(localOrigin ? new URL(localOrigin).port : null);
   const ANONYMOUS_VISITOR = Object.freeze({ id: null, contactId: null, roles: [], roleSource: 'memberships' });
   const sessionIdentity = (session) => {
@@ -1869,18 +1921,22 @@ export async function createSimulator(options) {
     return { id: session.contactId, contactId: session.contactId, roles: [], roleSource: 'memberships' };
   };
   const requestAuth = (req, url) => {
-    const session = authSessions.read(req.headers.cookie);
+    const session = readPortalSession(req);
     if (url.pathname.startsWith('/__sim/api')) return { session };
     if (session) return { session, identity: sessionIdentity(session) };
     if (['configured', 'all-requests'].includes(config().identityScope)) return { session };
     return { session, identity: ANONYMOUS_VISITOR };
+  };
+  const readPortalSession = (req) => {
+    const session = authSessions.read(req.headers.cookie);
+    return session?.credentialStamp && !localAccounts.validSession(session) ? { contactId: null } : session;
   };
   const currentIdentity = () => {
     // Read without copying the contact table on every call: identity resolution copies what it returns (the
     // configured identity in live mode and the matched contact are copied here).
     const state = store.projectionOf({
       sections: ['simulator'],
-      tables: ['contact'],
+      tables: ['contact', contactRoleIntersection(portal).table],
       mappings: ['contact'],
     });
     const fromSession = state.simulator?.mode === 'live' ? undefined : trace.getStore()?.auth?.identity;
@@ -1961,16 +2017,27 @@ export async function createSimulator(options) {
   // Findings of the project file (an unknown key of a version-1 project is ignored and reported) at startup.
   for (const entry of project?.diagnostics ?? []) recordDiagnostic(entry);
   await organizationHost.createBackend();
+  const challengeFixture = organizationHost.providers.serviceFixtures.resolve('captcha', 'challenge');
+  const localCaptcha =
+    challengeFixture.level === 'fixture' && !allowLiveWrites && ['127.0.0.1', '::1'].includes(host)
+      ? createLocalCaptcha({ challenge: challengeFixture.run, now: () => store.clock.now() })
+      : null;
+  const useLocalCaptcha = () => localCaptcha && config().mode !== 'live' && config().pageMode !== 'live';
+  const issueFormCaptcha = (scope) =>
+    useLocalCaptcha()
+      ? localCaptcha.issue({ ...scope, owner: webFormSessionOwner(currentIdentity(), trace.getStore()?.visitor) })
+      : null;
 
   // Column types come from the Solution's metadata first, then from the mapping's own fields, so a table that only
   // a mapping declares answers with the types it declares there.
-  const liveMapping = (entity) => {
+  const mappingWithFields = (entity, metadata) => {
     const mapping = store.resolveMapping(entity);
     return {
       ...mapping,
-      fields: solutionMetadata.entities?.[mapping.logicalName]?.fields ?? mapping.fields ?? mapping.fieldMetadata,
+      fields: metadata.entities?.[mapping.logicalName]?.fields ?? mapping.fields ?? mapping.fieldMetadata,
     };
   };
+  const liveMapping = (entity) => mappingWithFields(entity, solutionMetadata);
   const liveJson = async (pathname) => {
     const response = await live.request(pathname, {
       prefer: 'odata.include-annotations="*"',
@@ -2037,41 +2104,75 @@ export async function createSimulator(options) {
       throw cause;
     }
   };
+  // Form quota and condition reads can run inside their record write. They share its open store transaction.
+  const requireRenderSource = ({ mutable = false } = {}) => {
+    const admitted = trace.getStore()?.admittedPortalRender;
+    if (!admitted) return;
+    if (mutable) admitted.usedMutableInputs = true;
+    try {
+      requirePortalSourceEpoch(admitted.epoch);
+    } catch (error_) {
+      admitted.sourceConflict = error_;
+      throw error_;
+    }
+  };
+  const readPortalData = (execute) => {
+    const read = () => {
+      // A queued read can start after a source publication; its permission model must still match admission.
+      requireRenderSource();
+      return execute();
+    };
+    return store.inTransaction() ? read() : store.readOperation(read);
+  };
   const rawReadProvider = {
     async fetchXml(xml, identity, fetchOptions = {}) {
-      if (config().mode !== 'live')
-        return normalizeMockLiquidFetchXml(
-          await store.readOperation(() =>
-            store.fetchXml(xml, identity, {
-              platformLanguageCode: 'en-US',
-              portalRequest: true,
-              right: fetchOptions.right,
-              fetchCache: fetchOptions.fetchCache,
-              diagnostic: fetchOptions.diagnostic,
-              liquidTag: fetchOptions.liquidTag,
-            }),
+      if (config().mode !== 'live') {
+        const metadata = solutionMetadata;
+        return readPortalData(async () =>
+          normalizeMockLiquidFetchXml(
+            await store.withPortalReadSources(identity, { fetchXml: xml, right: fetchOptions.right }, () =>
+              store.fetchXml(xml, identity, {
+                platformLanguageCode: fetchOptions.language?.code ?? 'en-US',
+                portalRequest: true,
+                right: fetchOptions.right,
+                fetchCache: fetchOptions.fetchCache,
+                diagnostic: fetchOptions.diagnostic,
+                liquidTag: fetchOptions.liquidTag,
+              }),
+            ),
+            xml,
+            (entity) => mappingWithFields(entity, metadata),
+            { lcid: fetchOptions.language?.lcid },
           ),
-          xml,
-          liveMapping,
         );
+      }
+      requireRenderSource({ mutable: true });
       const entity = parseFetchXml(xml).children.find((n) => n.name === 'entity')?.attrs.name;
       if (!entity) throw error('FetchXML requires a root entity.');
       return live.fetchXml(xml, liveMapping(entity));
     },
-    async get(entity, id, identity) {
+    async get(entity, id, identity, readOptions = {}) {
       if (config().mode !== 'live')
         return normalizeMockLiquidRecord(
-          await store.readOperation(() => store.get(entity, id, identity, { portalRequest: true })),
+          await readPortalData(() =>
+            store.withPortalReadSources(identity, { table: entity, id }, () =>
+              store.get(entity, id, identity, { portalRequest: true }),
+            ),
+          ),
           liveMapping(entity),
-          { mappings: liveMapping },
+          { mappings: liveMapping, lcid: readOptions.language?.lcid },
         );
       const mapping = liveMapping(entity);
       return normalizeLiveRecord(await liveJson(`/_api/${mapping.entitySet}(${encodeURIComponent(id)})`), mapping);
     },
     async query(entity, params, identity) {
       if (config().mode !== 'live') {
-        const result = await store.readOperation(() =>
-          store.query(entity, params, identity, undefined, { portalRequest: true }),
+        const result = await readPortalData(() =>
+          store.withPortalReadSources(
+            identity,
+            { table: entity, expand: params instanceof URLSearchParams ? params.get('$expand') : params?.$expand },
+            () => store.query(entity, params, identity, undefined, { portalRequest: true }),
+          ),
         );
         const aggregate = Boolean(params instanceof URLSearchParams ? params.get('$apply') : params?.$apply);
         return {
@@ -2098,8 +2199,8 @@ export async function createSimulator(options) {
       auditRead('liquid-fetchxml', /<entity\b[^>]*\bname\s*=\s*["']([^"']+)/i.exec(xml)?.[1], xml, identity, () =>
         rawReadProvider.fetchXml(xml, identity, fetchOptions),
       ),
-    get: (entity, id, identity) =>
-      auditRead('entity-read', entity, { id }, identity, () => rawReadProvider.get(entity, id, identity)),
+    get: (entity, id, identity, readOptions) =>
+      auditRead('entity-read', entity, { id }, identity, () => rawReadProvider.get(entity, id, identity, readOptions)),
     query: (entity, params, identity) =>
       auditRead('entity-query', entity, params, identity, () => rawReadProvider.query(entity, params, identity)),
   };
@@ -2166,6 +2267,18 @@ export async function createSimulator(options) {
       { appId, displayName: `# Portals-${portal.website?.name ?? 'site'}`, roles: ['System Administrator'] },
     );
     return uuidV5(organization.organizationId, `systemuser:app:${appId}`);
+  };
+  const listWorkflowPrincipal = async (identity) => {
+    const mapped = store.portalAuthorization?.principal(identity);
+    if (mapped?.user) return organizationPrincipalContext(store, mapped.user, { caller: mapped.caller });
+    const id = await portalApplicationUser();
+    const user = store.tableRows('systemuser').find((row) => row.systemuserid === id);
+    return organizationPrincipalContext(store, user);
+  };
+  const runListWorkflow = (input) => {
+    const run = organization.api.executePortalListWorkflow;
+    if (!run) throw error('Classic workflow execution is unavailable.', 501, 'WorkflowUnsupported');
+    return run({ ...input, principal: listWorkflowPrincipal });
   };
   // Server-object bridges of exported server logic (exported-operations.mjs runExportedServerLogic `services`).
   const serverLogicServices = () => ({
@@ -2260,7 +2373,16 @@ export async function createSimulator(options) {
       () => flowHandler({ ...context, runExportedCloudFlow: () => runExportedCloudFlow(context) }),
     );
   };
-  const executeServerLogic = async ({ name, method = 'GET', operation, body = '', input = '', query = {} }) => {
+  const executeServerLogic = async ({
+    name,
+    method = 'GET',
+    operation,
+    body = '',
+    input = '',
+    query = {},
+    requestUrl,
+    requestHeaders,
+  }) => {
     const record = operationPortal().serverLogics.find(
       (record) => record.name.toLowerCase() === String(name).toLowerCase(),
     );
@@ -2291,6 +2413,9 @@ export async function createSimulator(options) {
       body,
       input,
       query,
+      requestUrl,
+      requestHeaders,
+      siteUrl: new URL('/', localOrigin).href,
       timeout: serverLogicTimeoutMs,
       environmentVariables: environmentVariablePayload(store.state),
       services: serverLogicServices(),
@@ -2323,6 +2448,11 @@ export async function createSimulator(options) {
       // FileStorage/CloudStorageAccount: attachment bytes go to storage route portalCloudAttachments (lib/form-service.mjs).
       cloudAttachments: () => organizationHost.providers.storage.forRoute('portalCloudAttachments'),
       diagnostic: recordDiagnostic,
+      verifyCaptcha: useLocalCaptcha()
+        ? (scope, proof) =>
+            useLocalCaptcha() &&
+            localCaptcha.redeem({ ...scope, owner: webFormSessionOwner(formIdentity, visitor) }, proof)
+        : null,
       schemas: {
         ...solutionMetadata.componentSchemas,
         ...config().componentSchemas,
@@ -2470,10 +2600,16 @@ export async function createSimulator(options) {
     const referenced = await relatedRows(reverse, referenceValue(source?.[relationship.to]));
     return { is_reflexive: true, referenced: referenced[0] ?? null, referencing: rows };
   };
+  const mutableRenderInput =
+    (read) =>
+    (...args) => {
+      requireRenderSource({ mutable: true });
+      return read(...args);
+    };
   const entityMembers = {
-    notes: async (_table, id) => entityNotes(id),
-    permissions: entityPermissions,
-    related: entityRelated,
+    notes: mutableRenderInput((_table, id) => entityNotes(id)),
+    permissions: mutableRenderInput(entityPermissions),
+    related: mutableRenderInput(entityRelated),
   };
   const buildRenderer = (source = portal) =>
     createPortalRenderer(source, {
@@ -2484,7 +2620,7 @@ export async function createSimulator(options) {
       codeCatalogue: codeComponents,
       render,
       observed: config().observed ?? source.observed,
-      serverLogic: async ({ name, operation, input }) => {
+      serverLogic: mutableRenderInput(async ({ name, operation, input }) => {
         try {
           const raw = await executeServerLogic({ name, operation, input });
           if (raw === null) return null;
@@ -2499,10 +2635,11 @@ export async function createSimulator(options) {
           recordDiagnostic({ code: cause.code ?? 'SERVER_LOGIC_FAILED', name, message: cause.message });
           return { success: false, status_code: cause.status ?? 500, data: null, raw_result: '' };
         }
-      },
+      }),
       observationOrigin: live.origin,
       sourceDependencies,
       fetchXml: async (xml, _user, _request, fetchOptions) => {
+        requireRenderSource();
         const empty =
           config().mode === 'live'
             ? null
@@ -2518,7 +2655,7 @@ export async function createSimulator(options) {
           })
         );
       },
-      previewFetchXml: (xml, _user, _request, fetchOptions) => {
+      previewFetchXml: mutableRenderInput((xml, _user, _request, fetchOptions) => {
         if (config().mode === 'live')
           throw error(
             'A local permission preview cannot qualify remote Liquid execution.',
@@ -2526,14 +2663,15 @@ export async function createSimulator(options) {
             'LocalFetchPreviewUnsupported',
           );
         return store.previewPermissionFetchXml(xml, currentIdentity(), fetchOptions);
-      },
+      }),
       entityMembers,
-      entity: async (entity, id) =>
+      entity: mutableRenderInput((entity, id, _user, readOptions) =>
         observedLiquidEntityRead(
-          () => readProvider.get(entity, id, currentIdentity()),
+          () => readProvider.get(entity, id, currentIdentity(), readOptions),
           config().observed ?? source.observed,
         ),
-      renderComponent: async (kind, args, context) => {
+      ),
+      renderComponent: mutableRenderInput(async (kind, args, context) => {
         // Render provenance of the component's markup (lib/component-provenance.mjs): what the renderer reports it
         // rendered (components) and the elements it bound by offset (bindings).
         const components = [],
@@ -2600,6 +2738,7 @@ export async function createSimulator(options) {
                 ? (item) => trace.getStore()?.nativePostbacks?.push(item)
                 : undefined,
             nativePostbackState: trace.getStore()?.nativePostbackState,
+            issueCaptcha: issueFormCaptcha,
             onProgressRendered: (binding) => bindings.push(binding),
             onComponentRendered: (component) => components.push(component),
             // Component diagnostics name the page that rendered the component.
@@ -2607,7 +2746,7 @@ export async function createSimulator(options) {
           },
         );
         return provenance(renderedComponent);
-      },
+      }),
       user: currentIdentity(),
       shellProfile: config().shellProfile,
     });
@@ -2813,7 +2952,7 @@ export async function createSimulator(options) {
   // is taken, compiled and replaced in one store transaction, which asynchronous jobs queue with, so a job that commits
   // while the change prepares keeps its rows and neither side conflicts. Without it the replacement expects the
   // snapshot's revision and refuses (409) a state that changed meanwhile.
-  const persistState = async (state, { reload = true, rebase = null } = {}) => {
+  const persistStateCore = async (state, { reload = true, rebase = null } = {}) => {
     // Keep the snapshot's original revision across source/profile I/O. SDK
     // transactions can commit outside the host mutation queue during that work.
     const expectedRevision = store.snapshotRevision(state) ?? store.revision;
@@ -2900,6 +3039,7 @@ export async function createSimulator(options) {
     }
     appliedManagementRecords = structuredClone(store.state.simulator?.modelDriven?.records ?? {});
   };
+  const persistState = (state, options) => publishPortalSource(() => persistStateCore(state, options));
   // Every whole-state write that changes the operations map (configuration, import, reset, presets, scenarios) applies it
   // like PATCH /_sim/api/operations/<key>: CLR runtimes are prepared first and the trigger hosts re-synchronize after.
   const saveState = (state, options) =>
@@ -2909,7 +3049,7 @@ export async function createSimulator(options) {
   // Source import happens after the record transaction commits. The short
   // publication transaction checks its overlay snapshot again, so background
   // SDK writes during source I/O cannot be overwritten by rematerialization.
-  const refreshManagementSource = async () => {
+  const refreshManagementSourceCore = async () => {
     for (let attempt = 0; attempt < 3; attempt++) {
       const records = structuredClone(store.state.simulator?.modelDriven?.records ?? {});
       if (isDeepStrictEqual(records, appliedManagementRecords)) return;
@@ -2948,14 +3088,15 @@ export async function createSimulator(options) {
       'SourceRefreshConflict',
     );
   };
+  const refreshManagementSource = () => publishPortalSource(refreshManagementSourceCore);
   const applyPresetSections = (state, preset, name) => {
     if (preset.personaCatalog !== undefined)
       state.personaCatalog = validatePersonaCatalog(preset.personaCatalog, 'Preset ' + name);
     if (preset.identity) state.simulator.identity = structuredClone(preset.identity);
     if (preset.endpoints) state.simulator.endpoints = structuredClone(preset.endpoints);
-    if (preset.contactRoles) state.simulator.contactRoles = structuredClone(preset.contactRoles);
+    if (preset.contactRoles) configureContactRoles(portal, state, structuredClone(preset.contactRoles));
     if (preset.personaRoles) {
-      state.simulator.contactRoles = membershipsForRoles(portal, preset.personaRoles);
+      configureContactRoles(portal, state, membershipsForRoles(portal, preset.personaRoles));
       state.simulator.identity = {
         ...state.simulator.identity,
         roleSource: 'memberships',
@@ -3013,6 +3154,16 @@ export async function createSimulator(options) {
     await (storageAdapter ? storageAdapter.presetApplication(() => saveState(state)) : saveState(state));
     return returnState ? exposedState() : undefined;
   };
+  const validateContactRoles = (roles) => {
+    if (
+      !Array.isArray(roles) ||
+      roles.some(
+        (assignment) =>
+          !assignment || typeof assignment.contactId !== 'string' || typeof assignment.roleId !== 'string',
+      )
+    )
+      throw error('contactRoles must contain contactId and roleId assignments.');
+  };
   const validateConfig = (cfg) => {
     profileSelection(profileConfig, cfg.deploymentProfilePin ?? null);
     validatePlatformOverrides(cfg.platformOverrides);
@@ -3037,15 +3188,7 @@ export async function createSimulator(options) {
       throw error('identity.roleSource must be memberships or override.');
     if (cfg.permissionSource && !['configured', 'exported', 'combined'].includes(cfg.permissionSource))
       throw error('permissionSource must be configured, exported or combined.');
-    if (
-      cfg.contactRoles &&
-      (!Array.isArray(cfg.contactRoles) ||
-        cfg.contactRoles.some(
-          (assignment) =>
-            !assignment || typeof assignment.contactId !== 'string' || typeof assignment.roleId !== 'string',
-        ))
-    )
-      throw error('contactRoles must contain contactId and roleId assignments.');
+    if (cfg.contactRoles != null) validateContactRoles(cfg.contactRoles);
     new LiveBridge(cfg.live ?? {}); // NOSONAR: constructor validates the pattern or has side effects
     if (!Array.isArray(cfg.endpoints)) throw error('endpoints must be an array.');
   };
@@ -3594,6 +3737,16 @@ export async function createSimulator(options) {
     ...configurationPresetCollisions(store.state, packConfigurations.presets),
     ...(activeProfiles.diagnostics ?? []),
     ...portal.diagnostics,
+    ...(portal.observed?.siteVisibility === 'private' && !privateSiteAdmission()
+      ? [
+          {
+            code: 'PRIVATE_SITE_ADMISSION_UNCONFIGURED',
+            severity: 'warning',
+            message:
+              'The private-site observation renders the banner. Configure local identityProvider.privateSiteContactIds to exercise admission.',
+          },
+        ]
+      : []),
     ...(cfg.importDiagnostics ?? []),
     ...(appliedPermissionModel?.diagnostics ?? []),
     ...(solutionMetadata.diagnostics ?? []),
@@ -4240,6 +4393,14 @@ export async function createSimulator(options) {
     staffSession,
     simulation: () => organizationHost.simulationReport(storageAdapter?.report(store.state) ?? simulationReport()),
   });
+  const localAccountsEnabled = providerSettings.localAccounts === true;
+  const localAccountMailboxPath = '/local-accounts/messages';
+  const localAccountMailbox = (req, res, _url, relative) => {
+    if (relative !== localAccountMailboxPath || req.method !== 'GET') throw adminEndpointNotFound();
+    if (!onAdmin(req) || !sameToken(req.headers['x-sim-csrf'], adminToken))
+      throw error('The local account mailbox requires the administration origin and token.', 403);
+    return json(res, 200, { items: localAccounts.messages() }, { 'cache-control': 'no-store' });
+  };
   // One table of [prefix, handler] for the /_sim/api prefixes this host answers after the shared routers: admin() dispatches
   // through it and PORTAL_ADMIN_ROUTES (status `routes`) is read from it. /session is sessionApi, which the request handler
   // also mounts before admin() so the sign-in page keeps its own rules; /__sim/events is not under /_sim/api and is not listed.
@@ -4301,6 +4462,7 @@ export async function createSimulator(options) {
       '/presets',
     ].map((prefix) => [prefix, portalAdmin]),
   ];
+  if (localAccountsEnabled) PORTAL_ADMIN.push([localAccountMailboxPath, localAccountMailbox]);
   const PORTAL_ADMIN_ROUTES = PORTAL_ADMIN.map(([prefix]) => prefix);
   // The /state payload with its verification evidence re-read (evidence/latest/report.json) and the implementation
   // fingerprints recomputed: browser adapters and admin assets are read on demand, so a startup-only digest cannot detect
@@ -4620,10 +4782,11 @@ export async function createSimulator(options) {
         const created = await store.create(mapping.logicalName, values, { admin: true });
         try {
           const state = store.snapshot(undefined, { forkTables: true });
-          state.simulator.contactRoles = [
-            ...(state.simulator.contactRoles ?? []),
-            ...[...new Set(roleIds)].map((roleId) => ({ contactId, roleId })),
-          ];
+          grantContactRoles(
+            portal,
+            state,
+            roleIds.map((roleId) => ({ contactId, roleId })),
+          );
           if (body.select === true)
             state.simulator.identity = { id: contactId, contactId, roleSource: 'memberships', roles: [] };
           validateConfig(state.simulator);
@@ -4971,10 +5134,13 @@ export async function createSimulator(options) {
           );
         const { permissionMode } = patch;
         delete patch.permissionMode;
+        if (patch.contactRoles != null) validateContactRoles(patch.contactRoles);
         // The change as a function of a state: checked on this snapshot, applied again to the live state when it
         // commits (persistState rebase), so a job's commit in between is kept.
         const configure = (target) => {
           if (permissionMode) target.settings.permissionMode = permissionMode;
+          if (patch.contactRoles !== undefined)
+            configureContactRoles(portal, target, structuredClone(patch.contactRoles ?? []));
           target.simulator = {
             ...target.simulator,
             ...structuredClone(patch),
@@ -5163,6 +5329,8 @@ export async function createSimulator(options) {
       return change(async () => {
         // replaceCompiledState applies the current Solution data to the replacement.
         const next = structuredClone(seededInitialState());
+        // A data reset keeps no multistep form progress.
+        delete next.portalFormSessions;
         // Saved scenario definitions are workspace tooling and survive a reset.
         const scenarios = config().scenarios;
         if (Array.isArray(scenarios)) next.simulator = { ...next.simulator, scenarios };
@@ -5174,9 +5342,8 @@ export async function createSimulator(options) {
             if (store.state.tables?.[table]) next.tables[table] = store.state.tables[table];
         }
         await saveState(next);
+        localAccounts.clear();
         await organization?.reseed();
-        // Advanced form sessions belong to the reset state: a reset ends them.
-        webFormSessions.clear();
         void stateResponse(req, res);
       });
     if (relative === '/reload' && method === 'POST') {
@@ -5400,13 +5567,12 @@ export async function createSimulator(options) {
       ...extra,
     };
   };
-  const sessionCookie = (session) => ({
-    name: authSessions.name,
-    value: authSessions.value(session),
-    path: '/',
-    httpOnly: true,
-    sameSite: 'Lax',
-  });
+  const sendSession = (res, session, extra = {}) => {
+    const header = authSessions.cookie(session);
+    const name = authSessions.name;
+    const cookie = { name, value: parseCookies(header)[name], path: '/', httpOnly: true, sameSite: 'Lax' };
+    return json(res, 200, describeSession(session, { ...extra, cookie }), { 'set-cookie': header });
+  };
   const sessionRolesResponse = (res, auth, body) => {
     if (!auth.session?.contactId)
       throw error('Sign this browser in through the portal first.', 409, 'SESSION_NOT_SIGNED_IN');
@@ -5417,9 +5583,7 @@ export async function createSimulator(options) {
     if (unknown.length) throw error(`Unknown web roles: ${unknown.join(', ')}`, 400, 'UNKNOWN_WEB_ROLES');
     const { roles: _previous, ...base } = auth.session; // NOSONAR: binding is excluded from the rest object or is a placeholder
     const session = body.roles === null ? base : { ...base, roles: [...new Set(body.roles)] };
-    return json(res, 200, describeSession(session, { cookie: sessionCookie(session) }), {
-      'set-cookie': authSessions.cookie(session),
-    });
+    return sendSession(res, session);
   };
   async function sessionApi(req, res, url) {
     const relative = url.pathname.slice('/__sim/api/session'.length).replace(/\/$/, '');
@@ -5448,9 +5612,7 @@ export async function createSimulator(options) {
     const returnUrl = safeReturnUrl(body?.returnUrl);
     const session =
       relative === '/sign-in' ? signInSession(body?.contactId, { roles: body?.roles }) : { contactId: null };
-    return json(res, 200, describeSession(session, { returnUrl, cookie: sessionCookie(session) }), {
-      'set-cookie': authSessions.cookie(session),
-    });
+    return sendSession(res, session, { returnUrl });
   }
   // Sign-in tickets for the administration console (design section 4): a single-use navigation from the administration
   // to the portal, in memory only, at most TICKET_LIMIT at a time, each valid for TICKET_LIFETIME_MS on the store clock.
@@ -5557,11 +5719,11 @@ export async function createSimulator(options) {
     return res.end();
   }
   // The local sign-in's answer: the persona's session cookie and a redirect, for the sign-in form and for a console ticket.
-  function localSignInResponse(res, contactId, location, cookies = []) {
+  function localSignInResponse(res, contactId, location, cookies = [], sessionDetails = {}) {
     traceSignIn(contactId, 'local');
     res.writeHead(302, {
       location,
-      'set-cookie': [authSessions.cookie({ contactId }), ...cookies],
+      'set-cookie': [authSessions.cookie({ contactId, ...sessionDetails }), ...cookies],
       'cache-control': 'no-store',
       'x-sim-route': 'sign-in',
     });
@@ -5647,6 +5809,7 @@ export async function createSimulator(options) {
     const identity = currentIdentity();
     const rendered = await shell.value.renderPage(shell.page.url, {
       user: identity,
+      previewCookie: requestPublishingPreview(req),
       request: { url: url.href, path: url.pathname, params: requestParams(req, url, {}), method: req.method },
     });
     for (const diagnostic of rendered.diagnostics ?? []) recordDiagnostic({ ...diagnostic, path: url.pathname });
@@ -5685,6 +5848,8 @@ export async function createSimulator(options) {
     url,
     { status = 200, returnUrl = '/', error: problem = null, invitationCode = null, code = null } = {},
   ) {
+    if (privateSiteAdmission() && !hasPrivateSiteSession(req))
+      return refusePrivateSite(res, status >= 400 ? status : 401, code ?? undefined, problem ?? undefined);
     // A refused sign-in answers its own page: the root names the refusal (D-R3-4).
     const routed = status >= 400 && problem ? trace.getStore() : null;
     if (routed) routed.httpError = { code: code ?? 'SignInRefused', message: String(problem) };
@@ -5694,7 +5859,7 @@ export async function createSimulator(options) {
     const content = (copy) =>
       signInContent({
         copy,
-        registerTab: flags.registration && flags.openRegistration,
+        registerTab: flags.registration && (flags.openRegistration || localAccounts.registrationAvailable()),
         redeemTab: flags.registration && flags.invitation && !invitationCode,
         personas: showPersonas ? signInPersonas() : [],
         personaCatalog: showPersonas ? { ...personaReport(), administrationUrl: personaAdministrationUrl() } : null,
@@ -5709,7 +5874,7 @@ export async function createSimulator(options) {
         redeemInvitation: providers.length > 0 && !invitationCode && flags.registration && flags.invitation,
         error: problem,
         title: signInRenderer().page.title,
-      });
+      }) + localAccounts.signInLink(returnUrl);
     return renderAccountPage(req, res, url, { status, content, route: 'sign-in-page' });
   }
   async function signInForm(req) {
@@ -5789,6 +5954,8 @@ export async function createSimulator(options) {
     personas: signInPersonas,
     personaCatalog: personaReport,
     identityProvider: { settings: providerSettings, assets: providerAssets },
+    privateSiteSession: (contactId) =>
+      allowedPrivateSiteIdentity(contactId) ? privateSiteSessions.cookie({ contactId }) : null,
     webRoles: () => appliedPermissionModel?.webRoles ?? [],
     identity: currentIdentity,
     audit,
@@ -5798,6 +5965,30 @@ export async function createSimulator(options) {
     renderSignIn,
     renderPage: renderAccountPage,
     readBody: rawBody,
+  });
+  const localAccounts = createLocalAccounts({
+    enabled: localAccountsEnabled,
+    portal: () => portal,
+    store,
+    csrf,
+    authCookieName: () => authSessions.name,
+    signedSession: readPortalSession,
+    signIn: (res, account, location, cookies) =>
+      localSignInResponse(res, account.contactId, location, cookies, { credentialStamp: account.stamp }),
+    renderPage(req, res, _url, { status, content, route }) {
+      res.writeHead(status, {
+        'content-type': 'text/html; charset=utf-8',
+        'cache-control': 'no-store',
+        'referrer-policy': 'no-referrer',
+        'content-security-policy': "default-src 'none'; form-action 'self'; frame-ancestors 'none'",
+        'x-sim-route': route,
+      });
+      res.end(
+        req.method === 'HEAD'
+          ? undefined
+          : `<!doctype html><meta charset="utf-8"><title>Local account</title><main>${content}</main>`,
+      );
+    },
   });
   const modelDrivenCatalogue = storeCatalogue({
     store,
@@ -5953,6 +6144,22 @@ export async function createSimulator(options) {
     csrf: () => appsToken,
     diagnostic: recordDiagnostic,
   });
+  const localeCookie = (req) => parseCookies(req.headers.cookie)[CONTEXT_LANGUAGE_COOKIE];
+  // Classic PreviewPermission reads a Boolean. An invalid present cookie disables preview, like false.
+  function requestPublishingPreview(req) {
+    const value = parseCookies(req.headers.cookie).adxPreviewUnpublishedEntities;
+    return value == null ? undefined : value.toLowerCase() === 'true';
+  }
+  const requestLocale = (req, url, languageCode = null) =>
+    renderer.requestLanguage(url, { languageCode, languageCookie: localeCookie(req), user: currentIdentity() })
+      .selected;
+  const rememberLocale = (req, res, code) => {
+    if (req.method === 'GET' && code && localeCookie(req) !== code)
+      res.appendHeader(
+        'set-cookie',
+        `${CONTEXT_LANGUAGE_COOKIE}=${encodeURIComponent(code)}; Path=/; HttpOnly; SameSite=Lax`,
+      );
+  };
   /* NOSONAR: single-pass routine, splitting it would change shared state */ async function handle(req, res) {
     // Normalize the admin alias before security checks so rejected requests
     // keep the same JSON error contract for both spellings.
@@ -5974,6 +6181,23 @@ export async function createSimulator(options) {
     if (req.headers['sec-fetch-site'] === 'cross-site' && isWrite(req.method))
       throw error('Cross-site writes are not allowed.', 403);
     const url = requestTargetUrl(req.url, localOrigin);
+    if (!onAdmin(req) && !onApps(req) && privateSiteAdmission() && !hasPrivateSiteSession(req)) {
+      if (await externalSignIn.route(req, res, url, { privateSiteOnly: true })) return;
+      const wantsDocument =
+        documentNavigation(req) ||
+        (['GET', 'HEAD'].includes(req.method) && /\btext\/html\b/i.test(req.headers.accept ?? ''));
+      if (wantsDocument && (await externalSignIn.beginSiteAdmission(res, safeReturnUrl(url.pathname + url.search))))
+        return;
+      return refusePrivateSite(res);
+    }
+    if (!onAdmin(req) && !onApps(req) && localAccounts.enabled) {
+      // Local credential routes take precedence over live page and endpoint forwarding, even with a language prefix.
+      const accountUrl = new URL(url);
+      accountUrl.pathname = accountUrl.pathname.replace(/\/{2,}/g, '/');
+      const locale = languageRoute(portal, accountUrl, 'POST');
+      if (locale?.kind === 'rewrite') accountUrl.pathname = locale.pathname;
+      if (await localAccounts.route(req, res, accountUrl)) return;
+    }
     // The admin token is accepted wherever a page or apps token is: it is replaced by that token before the routes see it.
     normalizeTokenHeaders(req, url.pathname, { adminToken, pageToken: csrf, appsToken });
     if (
@@ -6284,6 +6508,8 @@ export async function createSimulator(options) {
             method: req.method,
             body: isWrite(req.method) ? (await rawBody(req)).toString('utf8') : '',
             query: Object.fromEntries(url.searchParams),
+            requestUrl: url.href,
+            requestHeaders: redactPayload(req.headers).value,
           });
           if (raw !== null)
             return json(
@@ -6317,12 +6543,16 @@ export async function createSimulator(options) {
       recordDiagnostic({ ...answer.diagnostic, path: url.pathname });
       return json(res, answer.status, answer.body, answer.headers);
     }
-    // The default search page when the export has none at /search/ (portal-search.mjs).
+    // The fallback search route also accepts a language prefix when the site displays language codes.
+    const searchLanguage = config().pageMode === 'live' ? null : languageRoute(portal, url, req.method);
+    const searchPath = searchLanguage?.kind === 'rewrite' ? searchLanguage.pathname : url.pathname;
     if (
-      /^\/search\/?$/i.test(url.pathname) &&
+      /^\/search\/?$/i.test(searchPath) &&
       req.method === 'GET' &&
       !portal.pages.some((page) => /^\/search\/?$/i.test(page.url ?? ''))
     ) {
+      const locale = requestLocale(req, url, searchLanguage?.code);
+      rememberLocale(req, res, searchLanguage?.code);
       const html = await renderPortalSearchPage({
         portal,
         store,
@@ -6331,6 +6561,8 @@ export async function createSimulator(options) {
         config: config(),
         identity: currentIdentity(),
         params: url.searchParams,
+        languageCode: locale?.code,
+        action: searchLanguage?.kind === 'rewrite' ? `/${encodeURIComponent(searchLanguage.code)}/search/` : '/search/',
         diagnostic: (entry) => recordDiagnostic({ ...entry, path: url.pathname }),
       });
       // The same page response headers as every portal page: site HTTP/* settings, the confinement CSP, nosniff.
@@ -6341,7 +6573,7 @@ export async function createSimulator(options) {
         'x-sim-route': 'portal-search-local',
       };
       // The default search page is the platform's (platform-shell:search-page), configured by the Search/* settings.
-      const index = renderer.sourceIndex();
+      const index = renderer.sourceIndex(locale?.id);
       const traced = platformDocumentProof(
         req,
         html,
@@ -6563,6 +6795,7 @@ export async function createSimulator(options) {
         return res.end(`<!doctype html><title>Quick view</title><p role="alert">${escaped(cause.message)}</p>`);
       }
     }
+    const previewCookie = requestPublishingPreview(req);
     if (
       await handleNativeService(req, res, url, {
         portal,
@@ -6573,6 +6806,17 @@ export async function createSimulator(options) {
         visitor: trace.getStore()?.visitor ?? null,
         csrf,
         adminToken,
+        runListWorkflow,
+        workflowRequestContext: () => {
+          const current = config();
+          return {
+            portal,
+            identity: currentIdentity(),
+            config: current,
+            schemas: { ...solutionMetadata.componentSchemas, ...current.componentSchemas },
+            metadata: modelMetadata(),
+          };
+        },
         attachmentBody: noteAttachmentBody,
         config: config(),
         schemas: { ...solutionMetadata.componentSchemas, ...config().componentSchemas },
@@ -6594,12 +6838,12 @@ export async function createSimulator(options) {
           return renderer.contentStylesheets(home, renderer.contextForPage(home, target, { user: currentIdentity() }));
         },
         renderLiquid: (source, ctx) => renderer.renderString(source, ctx),
-        serviceLayout: (target) => renderer.serviceLayout(target, { user: currentIdentity() }),
+        serviceLayout: (target) => renderer.serviceLayout(target, { user: currentIdentity(), previewCookie }),
         pageContext: (target) =>
           renderer.contextForPage(
             servicePages(portal).home ?? { id: 'service', url: '/', name: '', title: '', metadata: {} },
             target,
-            { user: currentIdentity() },
+            { user: currentIdentity(), previewCookie },
           ),
       })
     )
@@ -6711,11 +6955,18 @@ export async function createSimulator(options) {
     }
     if (url.pathname.startsWith('/_api/')) return api(req, res, url);
     if (config().pageMode === 'live') return forward(req, res, url);
+    // A read may yield to a source publication between routing, authorization, and Liquid rendering.
+    const requestedPortalSource = portalSourcePublications ? null : portalSourceEpoch;
+    const requirePageSource = () => {
+      if (['GET', 'HEAD'].includes(req.method)) requirePortalSourceEpoch(requestedPortalSource);
+    };
     // Routing and sign-in : repeated slashes collapse before resolution (portal
     // navigation builds "../" + "/page" links and Power Pages resolves them); a website language code
     // prefix is removed with a 302; the local sign-in and sign-out routes answer here.
     if (url.pathname.includes('//')) url.pathname = url.pathname.replace(/\/{2,}/g, '/');
+    const originalPagePath = url.pathname;
     const language = languageRoute(portal, url, req.method);
+    rememberLocale(req, res, language?.code);
     if (language?.kind === 'redirect') {
       // The platform's language redirect carries its page caching headers (live 302 to /SignIn).
       const { vary: _languageVary, ...languageHeaders } = PAGE_HEADERS; // NOSONAR: binding is excluded from the rest object or is a placeholder
@@ -6729,6 +6980,8 @@ export async function createSimulator(options) {
       return res.end();
     }
     if (language?.kind === 'rewrite') url.pathname = language.pathname;
+    const selectedLanguage = requestLocale(req, url, language?.code);
+    const pageAccessOptions = { now: store.clock.now(), languageId: selectedLanguage?.id, previewCookie };
     // /Register is the platform's invitation redemption page (the sign-in page's "Redeem
     // invitation" tab); locally it is the RedeemInvitation route.
     if (/^\/register\/?$/i.test(url.pathname) && !exportedPageFor(portal, url.pathname)) {
@@ -6738,7 +6991,7 @@ export async function createSimulator(options) {
     }
     // External sign-in: ExternalLogin, the provider's response at the reply URL,
     // ExternalLoginCallback, RedeemInvitation, LogOff and the default-provider redirect.
-    if (await externalSignIn.route(req, res, url, { language: language?.code ?? null })) return;
+    if (await externalSignIn.route(req, res, url, { language: selectedLanguage?.code ?? null })) return;
     const signInRoute = authRoute(url.pathname, req.method, { loginPath: loginPath(portal) });
     if (signInRoute) return authenticate(req, res, url, signInRoute);
     let formParams = {};
@@ -6747,7 +7000,10 @@ export async function createSimulator(options) {
     const nativePostbackEnabled = nativeFormTransport(config().observed ?? portal.observed) === 'postback';
     const postedPage =
       req.method === 'POST' &&
-      portal.pages.find((page) => normalizePortalPath(page.url) === normalizePortalPath(url.pathname));
+      localizedPortalPage(
+        portal.pages.find((page) => normalizePortalPath(page.url) === normalizePortalPath(url.pathname)),
+        selectedLanguage?.id,
+      );
     const postedTemplate =
       postedPage && portal.pageTemplates.find((template) => template.id === postedPage.pageTemplateId);
     // Exported Liquid AJAX pages often use POST for DataTables filters. Rendering
@@ -6883,7 +7139,7 @@ export async function createSimulator(options) {
         : null;
       if (requestedPage && !explicitPage) throw error('The modal parent page is not exported.', 404);
       if (explicitPage) {
-        const access = pageAccess(portal, explicitPage, formIdentity, { now: store.clock.now() });
+        const access = pageAccess(portal, explicitPage, formIdentity, pageAccessOptions);
         if (!access.allowed)
           throw error(access.diagnostics?.[0]?.message || 'Page access denied.', access.status ?? 403, access.code);
       }
@@ -6906,7 +7162,8 @@ export async function createSimulator(options) {
         renderedRevision = revision;
       const context = modalRenderer.contextForPage(page, url.pathname + url.search, {
         user: formIdentity,
-        languageCode: language?.code ?? null,
+        languageCode: selectedLanguage?.code ?? null,
+        previewCookie,
       });
       if (!explicitPage) {
         context.page = null;
@@ -7053,7 +7310,7 @@ export async function createSimulator(options) {
       );
       const layout = await modalRenderer.serviceLayout(url.pathname + url.search, {
         user: formIdentity,
-        languageCode: language?.code ?? null,
+        languageCode: selectedLanguage?.code ?? null,
       });
       const modalAntiForgeryPath = `/_portal/${scopedSite}/Layout/GetAntiForgeryToken`;
       const modalIndex = renderer.sourceIndex();
@@ -7192,22 +7449,59 @@ export async function createSimulator(options) {
       return res.end(req.method === 'HEAD' ? undefined : body);
     }
     // Absolute sign-in redirects use the local origin (listenerVerdictOf admits only the listener's Host).
-    const routeOptions = { origin: localOrigin };
+    const routeOptions = {
+      origin: localOrigin,
+      languageCode: selectedLanguage?.code,
+      returnUrl: originalPagePath + url.search,
+    };
     const key = normalizePortalPath(url.pathname);
+    const knownPage = portal.pages.find((page) => normalizePortalPath(page.url) === key);
+    const codeSite = portal.codeSite?.entryFile && ['GET', 'HEAD'].includes(req.method) ? portal.codeSite : null;
+    const codeSiteRoot = codeSite ? portal.pages.find((page) => normalizePortalPath(page.url) === '/') : null;
+    const codeSiteEntry = codeSiteRoot && (key === '/' || url.pathname === codeSite.entryPath);
+    const compiledFile =
+      codeSiteRoot && !knownPage && !codeSiteEntry ? await compiledCodeSiteAsset(codeSite, url.pathname) : null;
     // A path ending with "/" is looked up as a page first (legacy slash rule); a web file
     // answers only when no page has that URL.
-    const pageFirst = url.pathname.endsWith('/') && portal.pages.some((p) => normalizePortalPath(p.url) === key);
+    const pageFirst = url.pathname.endsWith('/') && knownPage;
     const webFile = pageFirst ? null : portal.webFiles.find((f) => normalizePortalPath(f.url) === key);
-    const webFileAccess = webFile ? pageAccess(portal, webFile, currentIdentity(), { now: store.clock.now() }) : null;
+    const webFileAccess = webFile ? pageAccess(portal, webFile, currentIdentity(), pageAccessOptions) : null;
     // A web file outside its release or expiration dates is not visible (Learn, web files): it is absent, as an unknown path is.
     const asset = webFileAccess?.code === 'WEB_FILE_NOT_RELEASED' ? null : webFile;
     // Routing : a denied web file follows the denied-page outcome below.
-    const assetAccess = asset ? webFileAccess : null;
+    const compiledAccess =
+      compiledFile && !webFile
+        ? pageAccess(
+            portal,
+            { file: compiledFile, metadata: { parentpageid: codeSiteRoot.id } },
+            currentIdentity(),
+            pageAccessOptions,
+          )
+        : null;
+    const assetAccess = asset ? webFileAccess : compiledAccess;
     const deniedRoute =
       assetAccess && !assetAccess.allowed
         ? deniedPageRoute(portal, url, currentIdentity(), assetAccess, routeOptions)
         : null;
-    if (asset && !deniedRoute) {
+    if (compiledFile && assetAccess?.allowed) {
+      const body = await readWebFileSource(compiledFile, codeSite.compiledDir, url.pathname);
+      const headers = {
+        ...siteHeaders(portal, { confinement: confinementPolicy(), kind: 'webFile' }),
+        ...webFileHeaders({
+          body,
+          contentType: mime(compiledFile),
+          fileName: path.basename(compiledFile),
+          caching: 'revalidate',
+        }),
+        'content-length': body.byteLength,
+        'x-sim-resource-provider': 'code-site-build',
+        ...(assetAccess.previewOnly ? { 'cache-control': 'private, no-store' } : {}),
+      };
+      const status = notModified(req.headers, headers) ? 304 : 200;
+      res.writeHead(status, headers);
+      return res.end(req.method === 'HEAD' || status === 304 ? undefined : body);
+    }
+    if (asset && !deniedRoute && (!codeSiteEntry || url.pathname !== codeSite.entryPath)) {
       const { root, file } = await webFileSourcePaths(portal.sourceDir, asset.file, url.pathname);
       const relative = path.relative(root, file);
       if (relative.startsWith('..') || path.isAbsolute(relative))
@@ -7221,11 +7515,15 @@ export async function createSimulator(options) {
             body,
             contentType,
             fileName: asset.metadata?.filename ?? asset.metadata?._attachment?.name ?? path.basename(file),
-            caching: store.state.settings?.webFileCaching === 'revalidate' ? 'revalidate' : 'platform',
+            caching:
+              webFileAccess.previewOnly || store.state.settings?.webFileCaching === 'revalidate'
+                ? 'revalidate'
+                : 'platform',
             disposition: webFileDisposition(asset.metadata),
             mimeCharset: portal.observed?.webFileMimeCharset,
           }),
           ...extra,
+          ...(webFileAccess.previewOnly ? { 'cache-control': 'private, no-store' } : {}),
           'content-length': Buffer.byteLength(body),
         };
         res.writeHead(notModified(req.headers, headers) ? 304 : 200, headers);
@@ -7361,6 +7659,7 @@ export async function createSimulator(options) {
       const cached = await cache.get(url.pathname + url.search, {
         origin: live.origin,
       });
+      requirePageSource();
       if (cached) {
         res.writeHead(cached.status, {
           'cache-control': 'no-cache',
@@ -7369,6 +7668,7 @@ export async function createSimulator(options) {
         return res.end(cached.body);
       }
     }
+    requirePageSource();
     // Routing (lib/redirects.mjs): page URLs end with "/" (case-insensitive);
     // the "Knowledge Article" site-marker route answers before redirects; unresolved
     // paths try redirects and the canonical slash (URL history only with
@@ -7388,12 +7688,16 @@ export async function createSimulator(options) {
       return res.end();
     }
     const pageIdentity = currentIdentity();
-    const exportedPage = deniedRoute
-      ? null
-      : portal.pages.find((p) => normalizePortalPath(p.url) === key && (url.pathname.endsWith('/') || key === '/'));
+    const exportedPage = !deniedRoute && (url.pathname.endsWith('/') || key === '/') ? knownPage : null;
     const markerRoute = exportedPage || deniedRoute ? null : siteMarkerRoute(portal, url);
-    const routedPage = exportedPage ?? markerRoute?.page ?? null;
-    const access = routedPage ? pageAccess(portal, routedPage, pageIdentity, { now: store.clock.now() }) : null;
+    const spaPage =
+      codeSiteRoot &&
+      !deniedRoute &&
+      !markerRoute &&
+      (!webFile || asset) &&
+      (codeSiteEntry || (!knownPage && !webFile && codeSiteNavigation(codeSite, url.pathname)));
+    const routedPage = exportedPage ?? markerRoute?.page ?? (spaPage ? codeSiteRoot : null);
+    const access = routedPage ? pageAccess(portal, routedPage, pageIdentity, pageAccessOptions) : null;
     // The Profile site-marker page requires a signed-in user (platform profile page).
     const profile = servicePages(portal).profile;
     const signInRequired = Boolean(
@@ -7402,7 +7706,7 @@ export async function createSimulator(options) {
     const pageRouteOf = () => {
       if (!routedPage)
         return resolveUnmatchedRoute(portal, url, {
-          readable: (page) => pageAccess(portal, page, pageIdentity, { now: store.clock.now() }).allowed,
+          readable: (page) => pageAccess(portal, page, pageIdentity, pageAccessOptions).allowed,
           urlHistory: store.state.settings?.urlHistoryRedirects === true,
         });
       if (!access.allowed) return deniedPageRoute(portal, url, pageIdentity, access, routeOptions);
@@ -7413,7 +7717,10 @@ export async function createSimulator(options) {
     const route = deniedRoute ?? pageRouteOf();
     if (route?.kind === 'redirect' && !route.page) {
       res.writeHead(route.status, {
-        location: route.location,
+        location:
+          route.source === 'canonical' && language?.kind === 'rewrite'
+            ? `/${language.code}${route.location}`
+            : route.location,
         'cache-control': 'no-store',
         'x-sim-route': route.source ?? 'redirect',
       });
@@ -7439,10 +7746,45 @@ export async function createSimulator(options) {
     const nativeContext = trace.getStore();
     if (nativeEntries && (route || !routedPage || !access?.allowed))
       throw error('Native form page is not accessible.', 403);
+    if (spaPage && !route && access?.allowed) {
+      const body = await readWebFileSource(codeSite.entryFile, codeSite.compiledDir, url.pathname);
+      requirePageSource();
+      const html = injectRuntime(
+        codeSiteDocument(body.toString('utf8')),
+        csrf,
+        revision,
+        pageIdentity,
+        nativeContext?.spanId,
+        siteLanguageCodes(),
+        {
+          rootTraceId: nativeContext?.traceSpan?.traceId,
+          site: { websiteId: portal.website?.id, isSpaSite: portal.isSpaSite },
+        },
+      );
+      res.writeHead(200, {
+        ...PAGE_HEADERS,
+        ...siteHeaders(portal, { confinement: confinementPolicy(), kind: 'page' }),
+        'content-type': 'text/html; charset=utf-8',
+        'content-length': Buffer.byteLength(html),
+        'x-sim-route': 'code-site-app',
+      });
+      return res.end(req.method === 'HEAD' ? undefined : html);
+    }
     let renderedSource;
     const renderCurrentPage = () => {
+      requirePageSource();
       if (nativeContext) nativeContext.nativePostbacks = [];
-      renderedSource = { renderer, revision };
+      renderedSource = {
+        epoch: requestedPortalSource,
+        renderer,
+        revision,
+        dependencies: sourceDependencies,
+        shellProfile: config().shellProfile,
+        headers: siteHeaders(portal, { confinement: confinementPolicy(), kind: 'page' }),
+        languageCodes: siteLanguageCodes(),
+        isSpaSite: portal.isSpaSite,
+      };
+      if (nativeContext && ['GET', 'HEAD'].includes(req.method)) nativeContext.admittedPortalRender = renderedSource;
       const late = nativeContext?.lateRoot?.();
       return late ? traces.run(late, renderPageNow) : renderPageNow();
     };
@@ -7452,8 +7794,8 @@ export async function createSimulator(options) {
       else if (markerRoute) renderPath = markerRoute.page.url;
       return renderedSource.renderer.renderPage(renderPath + url.search, {
         user: pageIdentity,
-        // The website language whose code the language route removed from the path .
-        languageCode: language?.code ?? null,
+        languageCode: selectedLanguage?.code ?? null,
+        previewCookie,
         request: {
           url: url.href,
           path: url.pathname,
@@ -7463,6 +7805,10 @@ export async function createSimulator(options) {
       });
     };
     let rendered = await renderCurrentPage();
+    // Plain authored rendering may finish with its admitted source and permission-checked read result.
+    // The mutable-input callbacks above still require the original source at response time.
+    if (renderedSource.sourceConflict) throw renderedSource.sourceConflict;
+    if (renderedSource.usedMutableInputs) requirePageSource();
     if (nativeEntries) {
       const collected = nativeContext?.nativePostbacks ?? [];
       const submission = resolveNativeFormSubmission(nativeEntries, collected, url.href);
@@ -7526,13 +7872,13 @@ export async function createSimulator(options) {
       }
     }
     if (isDocument) {
-      html = injectRuntimeDependencies(html, sourceDependencies);
+      html = injectRuntimeDependencies(html, renderedSource.dependencies);
       html = injectLocalHead(
-        injectRuntimeCompatibility(html, sourceDependencies),
+        injectRuntimeCompatibility(html, renderedSource.dependencies),
         localOverrides,
         rendered.provenance ?? null,
       );
-      for (const item of formStyleDiagnostics(html, config().shellProfile))
+      for (const item of formStyleDiagnostics(html, renderedSource.shellProfile))
         recordDiagnostic({ ...item, path: url.pathname });
       if (localOverrides.assets.length || Object.keys(localOverrides.compat).length)
         recordDiagnostic({
@@ -7548,7 +7894,7 @@ export async function createSimulator(options) {
     const headers = {
       'content-type': contentType,
       ...PAGE_HEADERS,
-      ...siteHeaders(portal, { confinement: confinementPolicy(), kind: 'page' }),
+      ...renderedSource.headers,
       ...(nativeContext?.nativePostbackState?.outcome?.requestId
         ? { 'x-ms-request-id': nativeContext.nativePostbackState.outcome.requestId }
         : {}),
@@ -7586,8 +7932,8 @@ export async function createSimulator(options) {
           renderedSource.revision,
           pageIdentity,
           trace.getStore()?.spanId,
-          siteLanguageCodes(),
-          { rootTraceId: trace.getStore()?.traceSpan?.traceId },
+          renderedSource.languageCodes,
+          { rootTraceId: trace.getStore()?.traceSpan?.traceId, site: { isSpaSite: renderedSource.isSpaSite } },
         )
       : html;
     if (rendered.provenance) {
@@ -7618,10 +7964,14 @@ export async function createSimulator(options) {
       });
   };
   const writePageRequestError = (err, req, res, status) => {
+    const queryValidation = err?.code === 'PAGE_QUERY_REQUEST_VALIDATION';
     const presentation = observedPageErrorResponse({
       method: req.method,
       error: err,
       observed: config().observed ?? portal.observed,
+      portal,
+      languageId: queryValidation ? requestLocale(req, requestTargetUrl(req.url, localOrigin))?.id : undefined,
+      now: store.clock.now(),
     });
     // An error document is the runtime's (platform-shell:error-page); a failure to trace it never replaces the answer.
     const errorProof = (body) => {
@@ -7633,7 +7983,12 @@ export async function createSimulator(options) {
     };
     if (presentation) {
       const traced = errorProof(presentation.body);
-      const headers = { ...presentation.headers };
+      const headers = {
+        ...(presentation.custom
+          ? { ...PAGE_HEADERS, ...siteHeaders(portal, { confinement: confinementPolicy(), kind: 'page' }) }
+          : {}),
+        ...presentation.headers,
+      };
       const refreshProof = publishRenderProof(headers, traced?.provenance);
       res.writeHead(presentation.status, headers);
       return res.end(traced ? refreshProof(traced.html) : presentation.body);
@@ -7742,7 +8097,13 @@ export async function createSimulator(options) {
   // request.params in ASP.NET order: the request's cookies, then form values, then query values, so the later source wins.
   // The runtime's own session, visitor and anti-forgery cookies are never a parameter.
   const requestParams = (req, url, form) => {
-    const own = new Set([authSessions.name, visitorName(), ANTI_FORGERY_COOKIE]);
+    const own = new Set([
+      authSessions.name,
+      `${authSessions.name}-mfa`,
+      privateSiteSessions.name,
+      visitorName(),
+      ANTI_FORGERY_COOKIE,
+    ]);
     const cookies = Object.entries(parseCookies(req.headers.cookie)).filter(([name]) => !own.has(name));
     return { ...Object.fromEntries(cookies), ...form, ...Object.fromEntries(url.searchParams) };
   };
@@ -8199,6 +8560,7 @@ export async function createSimulator(options) {
     JSON.stringify([
       (solutionData.layers ?? []).map((layer) => layer.dir),
       solutionMetadata.plugins?.sourceFiles ?? [],
+      portal.codeSite?.compiledDir ?? null,
     ]);
   async function reload() {
     if (closing) return;
@@ -8214,7 +8576,7 @@ export async function createSimulator(options) {
     if (closing) return;
     reloadRequested = true;
     if (reloadPromise) return reloadPromise;
-    reloadPromise = (async () => {
+    reloadPromise = publishPortalSource(async () => {
       while (reloadRequested && !closing) {
         reloadRequested = false;
         // The notifications this pass reads; a later one is covered by the next pass.
@@ -8318,7 +8680,7 @@ export async function createSimulator(options) {
           if (!reloadRequested || closing) throw err;
         }
       }
-    })().finally(() => {
+    }).finally(() => {
       reloadPromise = null;
     });
     return reloadPromise;
@@ -8338,6 +8700,8 @@ export async function createSimulator(options) {
     ];
     const pluginSourceKeys = new Set(pluginSources.map((file) => path.resolve(file).toLowerCase()));
     const clientSources = modelDrivenSettingsValue.clientSources ?? [];
+    const codeSite = portal.codeSite;
+    const codeSiteSources = [codeSite?.configFile, codeSite?.compiledDir].filter(Boolean);
     const canvasWatch = canvasSourceWatch(settingOptionsRest.canvas?.sources, projectRoot);
     // A <Library>@<version>.js clientSources entry is a file root (watched as that file), never a directory layer.
     const ignoreSource = solutionWatchFilter({
@@ -8350,11 +8714,14 @@ export async function createSimulator(options) {
       exclude: stateFile ? [path.dirname(path.resolve(stateFile))] : [],
     });
     watcher = sourceWatcher(
-      [sourceDir, ...solutionRoots, ...clientSources, ...pluginSources, ...canvasWatch.roots],
+      [sourceDir, ...solutionRoots, ...clientSources, ...pluginSources, ...canvasWatch.roots, ...codeSiteSources],
       {
         ignoreInitial: true,
         ignored: (file, stats) =>
-          pluginSourceKeys.has(path.resolve(file).toLowerCase()) || canvasWatch.contains(file)
+          pluginSourceKeys.has(path.resolve(file).toLowerCase()) ||
+          canvasWatch.contains(file) ||
+          file === codeSite?.configFile ||
+          (codeSite?.compiledDir && (file === codeSite.compiledDir || file.startsWith(codeSite.compiledDir + path.sep)))
             ? false
             : ignoreSource(file, stats),
         awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 100 },

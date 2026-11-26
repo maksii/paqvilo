@@ -22,6 +22,7 @@ import { createSimulator } from '../server.mjs';
 import { settleCommittedWork } from '../lib/committed-work.mjs';
 import { createTraceStore } from '../lib/trace-store.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { signInHeaders } from '../testing/session.mjs';
 import { bearerCall } from './support/web-api.mjs';
 
 const APP_ID = '22222222-2222-2222-2222-222222222222';
@@ -912,4 +913,154 @@ describe('dataverse workflows: a portal write is unchanged by a background trigg
     assert.deepEqual(withTrigger.jobs, [{ name: 'Invented 51', statuscode: 32, regarding: widget }]);
     assert.deepEqual(withTrigger.logs, ['Invented real-time mock'], 'the real-time mock ran inside the portal write');
   });
+});
+
+// @test-kind security: the local list workflow bridge binds trusted execution to an exported action and an authorized row
+it('runs a trusted real-time workflow only for its authorized native list action', async (t) => {
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-workflow-list-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const id = WF(61);
+  const unlisted = WF(62);
+  const withoutHandler = WF(63);
+  const selected = 'aaaaaaaa-0000-4000-8000-000000000091';
+  const filtered = 'aaaaaaaa-0000-4000-8000-000000000092';
+  const site = 'aaaaaaaa-0000-4000-8000-000000000093';
+  const list = 'aaaaaaaa-0000-4000-8000-000000000094';
+  const contact = 'aaaaaaaa-0000-4000-8000-000000000095';
+  const pack = path.join(dir, 'pack.mjs');
+  const action = {
+    Type: 'CrmEntityFormView-WorkflowAction',
+    Workflow: { Id: id },
+    FilterCriteria:
+      '<fetch><entity name="contoso_widget"><attribute name="contoso_widgetid"/><filter><condition attribute="name" operator="eq" value="alpha"/></filter></entity></fetch>',
+  };
+  const files = {
+    'website.yml': `adx_websiteid: ${site}\nadx_name: Workflow list\n`,
+    'Home.webpage.yml':
+      'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\nadx_isroot: true\nadx_pagetemplateid: template',
+    'Main.pagetemplate.yml': 'adx_pagetemplateid: template\nadx_webtemplateid: main',
+    'Main.webtemplate.yml': 'adx_webtemplateid: main\nadx_name: Main',
+    'Main.webtemplate.source.html': "{% include 'entity_list' key: 'Widgets' %}",
+    'Widgets.list.yml': [
+      `adx_entitylistid: ${list}`,
+      'adx_name: Widgets',
+      'adx_entityname: contoso_widget',
+      'adx_settings: |-',
+      `  ${JSON.stringify({ ItemActions: [action, { ...action, Workflow: { Id: withoutHandler } }] })}`,
+    ].join('\n'),
+    'pack.mjs': `
+      export default {
+        id: 'workflow-list-fixture', name: 'Workflow list fixture', description: 'Invented list handlers',
+        matches: () => true, presets: () => ({}),
+        workflows: {
+          '${id}': ({ api, target }) => {
+            api.store.state.tables.contoso_widget.find((row) => row.contoso_widgetid === target.id).status =
+              target.row.status + 10;
+            return { message: 'Portal list handler ran' };
+          },
+          '${unlisted}': () => { throw new Error('The unavailable action ran.'); },
+        },
+      };
+    `,
+  };
+  for (const [name, content] of Object.entries(files)) await fs.writeFile(path.join(dir, name), content);
+  const state = triggerState();
+  state.settings.permissionMode = 'enforce';
+  state.permissions = [
+    { id: 'list-reader', entity: 'contoso_widget', scope: 'global', roles: ['Reader', 'Editor'], operations: ['read'] },
+    { id: 'list-editor', entity: 'contoso_widget', scope: 'global', roles: ['Editor'], operations: ['update'] },
+  ];
+  state.tables.contact = [{ contactid: contact, fullname: 'Invented visitor' }];
+  state.tables.contoso_widget = [
+    { contoso_widgetid: selected, name: 'alpha', status: 1 },
+    { contoso_widgetid: filtered, name: 'beta', status: 1 },
+  ];
+  state.tables.workflow = [id, unlisted, withoutHandler].map((workflowid) => ({
+    workflowid,
+    name: 'Invented list workflow',
+    category: 0,
+    type: 1,
+    mode: 1,
+    ondemand: true,
+    primaryentity: 'contoso_widget',
+    statecode: 1,
+    statuscode: 2,
+  }));
+  state.simulator = {
+    componentSchemas: { Widgets: { entity: 'contoso_widget', fields: [{ name: 'name', label: 'Widget' }] } },
+  };
+  const app = await createSimulator({
+    sourceDir: dir,
+    projectRoot: dir,
+    watch: false,
+    port: 0,
+    initial: state,
+    dataverse: { enabled: true },
+    dataPacks: [{ module: pack }],
+  });
+  t.after(() => app.close());
+  const editor = signInHeaders(app, contact, { roles: ['Editor'] });
+  const reader = signInHeaders(app, contact, { roles: ['Reader'] });
+  const html = await (await fetch(app.url, { headers: editor })).text();
+  const encoded = /data-view-layouts="([^"]+)"/.exec(html)?.[1];
+  assert.ok(encoded, 'list rendered its protected grid view');
+  const [layout] = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'));
+  const post = ({
+    workflowId = id,
+    recordId = selected,
+    secure = layout.Base64SecureConfiguration,
+    session = editor,
+  } = {}) =>
+    fetch(`${app.url}/_services/execute-workflow/${site}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', __RequestVerificationToken: app.csrf, ...session },
+      body: JSON.stringify({
+        workflow: { Id: workflowId, LogicalName: 'workflow' },
+        entity: { Id: recordId, LogicalName: 'contoso_widget' },
+        base64SecureConfiguration: secure,
+      }),
+    });
+  const originalTransact = app.store.transact;
+  const transactBetweenAdmissionAndRun = async (change) => {
+    const entered = Promise.withResolvers();
+    const resume = Promise.withResolvers();
+    app.store.transact = function holdWorkflowTransaction(work, options) {
+      if (!options?.isolated || !options.pluginVisible) return originalTransact.call(this, work, options);
+      this.transact = originalTransact;
+      entered.resolve();
+      return resume.promise.then(() => originalTransact.call(this, work, options));
+    };
+    const answer = post();
+    try {
+      // On the unpatched branch the stub replies before attempting a transaction.
+      await Promise.race([entered.promise, answer]);
+      await originalTransact.call(app.store, change);
+    } finally {
+      app.store.transact = originalTransact;
+      resume.resolve();
+      await answer;
+    }
+    return answer;
+  };
+  const answer = await transactBetweenAdmissionAndRun(() => {
+    app.store.tableRows('contoso_widget').find((row) => row.contoso_widgetid === selected).status = 7;
+  });
+  assert.equal(answer.status, 204, await answer.text());
+  assert.deepEqual(layout.Configuration.ItemActionLinks[0].Workflow, { Id: id, LogicalName: 'workflow' });
+  assert.equal((await post({ session: reader })).status, 403);
+  assert.equal((await post({ session: {} })).status, 403);
+  assert.equal((await post({ workflowId: unlisted })).status, 403);
+  assert.equal((await post({ recordId: filtered })).status, 403);
+  assert.equal((await post({ secure: 'tampered' })).status, 403);
+  assert.equal((await post({ workflowId: withoutHandler })).status, 501);
+  assert.equal(app.store.tableRows('contoso_widget')[0].status, 17);
+  const deactivated = await transactBetweenAdmissionAndRun(() => {
+    app.store.tableRows('workflow').find((row) => row.workflowid === id).statecode = 0;
+  });
+  assert.equal(deactivated.status, 400);
+  assert.equal(app.store.tableRows('contoso_widget')[0].status, 17);
+  assert.deepEqual(
+    app.store.tableRows('workflowlog').map((row) => row.message),
+    ['Portal list handler ran'],
+  );
 });

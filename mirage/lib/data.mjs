@@ -33,6 +33,7 @@ import {
 } from './alternate-key-values.mjs';
 import { assertElasticRecord, isElastic, samePartition, recordKey } from './dataverse-elastic.mjs';
 import { customerAddressColumns, relationshipsOf, standardTableDef } from './dataverse-standard.mjs';
+import { cascadeAction } from './relationship-cascade.mjs';
 import { ownershipOf, traceDecision } from './dataverse-security.mjs';
 import { countWork, trackWork, workOf } from './work-counter.mjs';
 import { StateStorage } from './state-storage.mjs';
@@ -78,6 +79,11 @@ import {
 } from './plugin-query.mjs';
 import { pluginStepBypassed } from './plugin-bypass.mjs';
 import { compilePermissionFetchXml, serializePermissionFetchXml } from './permission-query.mjs';
+import {
+  compileCustomTablePermission,
+  customTablePermissionFilter,
+  customTablePermissionDefinition,
+} from './custom-table-permission.mjs';
 import { rebindPermissionQuery } from './permission-query-mutation.mjs';
 import { preparePortalFetchXml } from './portal-fetchxml.mjs';
 import {
@@ -186,6 +192,7 @@ const unchangedSince = (state, backup) =>
   lazyBackup(backup) ? backup.equals(state) : privateRecordEqual(state, backup);
 // Per async context, the transaction frame of each DataStore (see DataStore#transact).
 const transactionFrames = new AsyncLocalStorage();
+const portalRowSources = new AsyncLocalStorage();
 const transactionFrameOf = (store, { closed = false } = {}) => {
   for (let frame = transactionFrames.getStore(); frame; frame = frame.parent)
     if (frame.store === store && (closed || !frame.closed)) return frame;
@@ -359,10 +366,19 @@ const choiceDefinition = (definition) => {
       !['bit', 'boolean', 'int', 'integer', 'bigint', 'decimal', 'double', 'float', 'money'].includes(type))
   );
 };
-const choiceLabel = (definition, value) =>
-  Array.isArray(definition?.options)
+function choiceLabel(definition, value, lcid) {
+  if (lcid != null) {
+    const set = definition?.columnMetadata?.optionSet;
+    for (const options of [set?.options, set?.states, set?.statuses]) {
+      const match = options?.find((option) => Number(option.value) === Number(value));
+      const label = ownMember(match?.labels, String(lcid));
+      if (label != null) return label;
+    }
+  }
+  return Array.isArray(definition?.options)
     ? definition.options.find((option) => Number(option.value) === Number(value))?.label
     : undefined;
+}
 
 /** Native Liquid entity.id is metadata, not an additional Dataverse JSON column. */
 export function withLiquidEntityId(record, mapping = {}, { aggregate = false } = {}) {
@@ -380,7 +396,7 @@ export function withLiquidEntityId(record, mapping = {}, { aggregate = false } =
 export function normalizeMockLiquidRecord(
   record,
   mapping = {},
-  { aggregate = false, mappings = {}, aliasFields = {} } = {},
+  { aggregate = false, mappings = {}, aliasFields = {}, lcid } = {},
 ) {
   if (record == null || typeof record !== 'object') return record;
   if (Array.isArray(record))
@@ -389,21 +405,22 @@ export function normalizeMockLiquidRecord(
         aggregate,
         mappings,
         aliasFields,
+        lcid,
       }),
     );
   const out = clone(record);
   for (const [key, value] of Object.entries(record))
-    normalizeLiquidRecordField(record, out, key, value, mapping, { aggregate, mappings, aliasFields });
+    normalizeLiquidRecordField(record, out, key, value, mapping, { aggregate, mappings, aliasFields, lcid });
   return withLiquidEntityId(out, mapping, { aggregate });
 }
 
-function normalizeLiquidRecordField(record, out, key, value, mapping, { aggregate, mappings, aliasFields }) {
+function normalizeLiquidRecordField(record, out, key, value, mapping, { aggregate, mappings, aliasFields, lcid }) {
   if (key.includes('@')) return;
   const definition = ownMember(aliasFields, key) ?? metadataField(mapping, key);
   if (!aggregate && typeof value === 'number' && choiceDefinition(definition)) {
     out[key] = {
       value,
-      label: choiceLabel(definition, value) ?? record[key + formattedAnnotation] ?? '',
+      label: choiceLabel(definition, value, lcid) ?? record[key + formattedAnnotation] ?? '',
     };
     return;
   }
@@ -411,18 +428,18 @@ function normalizeLiquidRecordField(record, out, key, value, mapping, { aggregat
     // Preserve explicit typed fixture values. A label omitted by a caller may
     // be supplied from metadata without mutating that caller's record.
     if (!aggregate && choiceDefinition(definition) && !own(value, 'label'))
-      out[key].label = choiceLabel(definition, value.value) ?? '';
+      out[key].label = choiceLabel(definition, value.value, lcid) ?? '';
     return;
   }
   if (value && typeof value === 'object' && mapping.relationships?.[key] && !own(value, 'id')) {
     const target = mapping.relationships[key].entity;
     const targetMapping = typeof mappings === 'function' ? mappings(target) : ownMember(mappings, target);
-    out[key] = normalizeMockLiquidRecord(value, targetMapping ?? {}, { aggregate, mappings });
+    out[key] = normalizeMockLiquidRecord(value, targetMapping ?? {}, { aggregate, mappings, lcid });
   }
 }
 
 /** Resolve attribute aliases from the authored FetchXML, retaining aggregates as numbers. */
-export function normalizeMockLiquidFetchXml(result, xml, mappingResolver) {
+export function normalizeMockLiquidFetchXml(result, xml, mappingResolver, { lcid } = {}) {
   const fetch = parseFetchXml(xml),
     root = fetch.children.find((node) => node.name === 'entity');
   if (!root) throw new DataError('FetchXML requires a root entity');
@@ -462,6 +479,7 @@ export function normalizeMockLiquidFetchXml(result, xml, mappingResolver) {
         aggregate: fetch.attrs.aggregate === 'true',
         aliasFields,
         mappings: resolve,
+        lcid,
       }),
     ),
   };
@@ -1131,8 +1149,7 @@ function validateStatePermissions(result) {
 function validatePermissionRule(rule) {
   if (!rule.entity) throw new DataError('Permission requires entity');
   if (rule.entity !== '*') safeName(rule.entity);
-  if (rule.enabled !== false && !['global', 'contact', 'account', 'self', 'parent'].includes(rule.scope ?? 'global'))
-    throw new DataError(`Unsupported permission scope ${rule.scope}`);
+  validatePermissionScope(rule);
   if (rule.operations && !Array.isArray(rule.operations)) throw new DataError('Permission operations must be an array');
   for (const op of rule.operations ?? [])
     if (!['read', 'create', 'update', 'delete', 'append', 'appendTo'].includes(op))
@@ -1144,6 +1161,18 @@ function validatePermissionRule(rule) {
     (!rule.relationship?.entity || !rule.relationship.from || !rule.relationship.to)
   )
     throw new DataError('Parent permission requires relationship entity/from/to');
+}
+
+function validatePermissionScope(rule) {
+  if (
+    rule.enabled !== false &&
+    !['global', 'contact', 'account', 'self', 'parent', 'custom'].includes(rule.scope ?? 'global')
+  )
+    throw new DataError(`Unsupported permission scope ${rule.scope}`);
+  if (rule.enabled !== false && rule.scope === 'custom') {
+    if (!rule.imported) throw new DataError('Custom Access requires an exported permission.');
+    customTablePermissionFilter(rule.permissionFetchXml, rule.entity);
+  }
 }
 
 // Members every object literal inherits from Object.prototype, and the legacy __define*__/__lookup*__ accessors.
@@ -1301,6 +1330,7 @@ function concurrencyBehaviorOption(options) {
   const scope = rule.scope ?? 'global';
   if (scope === 'global') return true;
   if (!row) return false;
+  if (scope === 'custom') return memo.customFilter(rule, mapping)(row);
   if (rule.observedOrphanParent?.field) return field(row, rule.observedOrphanParent.field) != null;
   if (rule.identityRelationship)
     return permissionIdentityRelationshipAllows(store, rule.identityRelationship, row, identity, memo);
@@ -1987,6 +2017,113 @@ export class DataStore {
   readOperation(fn) {
     return this.transact(fn, { skipSaveIfUnchanged: true, cloneResult: false, lazyReadSnapshot: true });
   }
+  /** Resolve provider reads before the synchronous query engine evaluates and authorizes the rows. */
+  async withPortalReadSources(identity, { table, id = null, fetchXml, expand, navigation, right }, fn) {
+    const source = this.recordPipeline?.virtualProviders;
+    if (!source) return fn();
+    const permitted = (logical, operation = 'read') =>
+      identity?.admin ||
+      this.state.settings.permissionMode === 'permissive' ||
+      this.rules(logical, operation, identity).length;
+    const requests = new Map();
+    const reads = new Map();
+    const add = (logical, key = null) => {
+      const mapping = this.resolveMapping(logical);
+      if (source.status(mapping.logicalName).virtual) requests.set(mapping.logicalName, { mapping, id: key });
+      return mapping;
+    };
+    const addRead = (logical, key = null, operation = 'read') => {
+      const mapping = add(logical, key);
+      reads.set(`${mapping.logicalName}\u0000${operation}`, [mapping.logicalName, operation]);
+      return mapping;
+    };
+    const admitted =
+      fetchXml != null
+        ? this.collectPortalFetchReadSources(fetchXml, right, permitted, addRead)
+        : this.collectPortalNavigationReadSources({ table, id, expand, navigation }, permitted, addRead);
+    if (!admitted) return fn();
+    if (!identity?.admin && this.state.settings.permissionMode !== 'permissive')
+      this.addPortalPermissionSources(identity, reads.values(), add);
+    if (!requests.size) return fn();
+    const tables = new Map();
+    for (const [logical, { mapping, id: key }] of requests) {
+      const rows = await source.readPortalRows(mapping, key);
+      if (rows !== null) tables.set(logical, rows);
+    }
+    if (!tables.size) return fn();
+    try {
+      return await portalRowSources.run({ store: this, tables }, fn);
+    } finally {
+      tables.clear();
+    }
+  }
+  collectPortalFetchReadSources(xml, right, permitted, addRead) {
+    const fetch = parseFetchXml(xml);
+    const root = fetch.children.find((node) => node.name === 'entity')?.attrs.name;
+    const operation = this.liquidFetchPermissionOptions({ right }).operation;
+    if (!root || !permitted(this.resolveMapping(root).logicalName, operation)) return false;
+    const visit = (node) => {
+      if (node.name === 'link-entity' && node.attrs.name && permitted(this.resolveMapping(node.attrs.name).logicalName))
+        addRead(node.attrs.name);
+      for (const child of node.children) visit(child);
+    };
+    addRead(root, null, operation);
+    visit(fetch);
+    return true;
+  }
+  collectPortalNavigationReadSources({ table, id, expand, navigation }, permitted, addRead) {
+    const root = addRead(table, id);
+    if (!permitted(root.logicalName)) return false;
+    const related = (mapping, name) => {
+      const relationship = ownMember(mapping.relationships, name);
+      if (!relationship || !permitted(this.resolveMapping(relationship.entity).logicalName)) return null;
+      return addRead(relationship.entity);
+    };
+    const visit = (mapping, specs) => {
+      for (const spec of specs) {
+        const target = related(mapping, spec.navigation);
+        if (target) visit(target, spec.expand);
+      }
+    };
+    const expanded = navigation ? related(root, navigation) : root;
+    if (expanded && expand) visit(expanded, parseExpand(expand));
+    return true;
+  }
+  /** Materialize provider-backed ancestors without changing which parent grant the visitor can exercise. */
+  addPortalPermissionSources(identity, reads, add) {
+    const seen = new Set();
+    const pending = [...reads];
+    while (pending.length) {
+      const [logical, operation, permissionId] = pending.pop();
+      const key = `${logical}\u0000${operation}\u0000${permissionId ?? ''}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const grants = this.rules(logical, operation, identity).filter(
+        (rule) => !permissionId || equal(rule.id, permissionId),
+      );
+      if (grants.some(({ scope }) => scope == null || scope === 'global')) continue;
+      for (const grant of grants) {
+        const parent = this.portalParentPermissionSource(grant, identity);
+        if (!parent) continue;
+        add(parent[0]);
+        pending.push(parent);
+      }
+    }
+  }
+  portalParentPermissionSource(grant, identity) {
+    if (grant.scope !== 'parent' || grant.observedOrphanParent) return null;
+    const logical = grant.relationship?.entity;
+    if (!logical) return null;
+    const permissionId = grant.parentPermissionId ?? grant.parentId;
+    if (!this.rules(logical, 'read', identity).some((rule) => !permissionId || equal(rule.id, permissionId)))
+      return null;
+    return [logical, 'read', permissionId];
+  }
+  /** Provider snapshots never enter the stored rows or the write path. */
+  portalReadRows(logical) {
+    const scope = portalRowSources.getStore();
+    return (scope?.store === this ? scope.tables.get(logical) : undefined) ?? this.tableRows(logical);
+  }
   /** Only a host-owned store with no published readers may initialize in place.
    * Nested saves are deferred; a failed stage discards this store and leaves its
    * durable checkpoint authoritative. Public transactions retain isolation. */
@@ -2628,8 +2765,8 @@ export class DataStore {
    * The stored rows of a local table whose primary key is one of `ids` (string ids), in table
    * order; null when the caller must scan (site/expiring tables, non-string keys).
    */
-  primaryKeySubset(mapping, ids) {
-    const rows = this.tableRows(mapping.logicalName);
+  primaryKeySubset(mapping, ids, { portalRequest = false } = {}) {
+    const rows = portalRequest ? this.portalReadRows(mapping.logicalName) : this.tableRows(mapping.logicalName);
     if (rows !== this.state.tables[mapping.logicalName] || !ids.every((id) => typeof id === 'string')) return null;
     if (
       !pagedRecordsOf(rows)?.keyTree &&
@@ -3449,6 +3586,7 @@ export class DataStore {
     const granted = this.state.permissions.filter(
       (p) =>
         p.enabled !== false &&
+        (p.scope !== 'custom' || this.portalAuthorization?.customAccessEnabled?.()) &&
         (p.entity === entity || p.entity === '*') &&
         (p.operations ?? ['read']).includes(operation) &&
         (identity.roleSource === 'memberships' && (p.imported || p.roleIds?.length)
@@ -3470,7 +3608,7 @@ export class DataStore {
    */
   grantsWithoutContact(rule, seen = new Set()) {
     const scope = rule.scope ?? 'global';
-    if (scope === 'global') return true;
+    if (scope === 'global' || scope === 'custom') return true;
     if (rule.observedOrphanParent?.field) return true;
     if (scope !== 'parent' || seen.has(rule.id)) return false;
     seen.add(rule.id);
@@ -3486,15 +3624,17 @@ export class DataStore {
    * only valid while the store state is unchanged, so it never outlives one
    * rows() call or one top-level allowed() call.
    */
-  permissionMemo() {
+  permissionMemo({ portalRead = false } = {}) {
     const indexes = new Map(),
       results = new WeakMap(),
-      rules = new Map();
+      rules = new Map(),
+      customFilters = new WeakMap();
     const lookup = (logical, column, value) => {
       const key = `${logical}\u0000${column}`;
       if (!indexes.has(key)) {
         const index = new Map();
-        for (const item of this.tableRows(logical)) {
+        const rows = portalRead ? this.portalReadRows(logical) : this.tableRows(logical);
+        for (const item of rows) {
           const raw = field(item, column);
           if (raw == null) continue;
           const itemKey = comparable(raw);
@@ -3508,6 +3648,18 @@ export class DataStore {
     return {
       lookup,
       results,
+      customFilter: (rule, mapping) => {
+        if (!customFilters.has(rule)) {
+          const filter = customTablePermissionFilter(rule.permissionFetchXml, mapping.logicalName);
+          const predicate = compileCustomTablePermission(filter, {
+            table: mapping.logicalName,
+            definition: (attribute) => customTablePermissionDefinition(mapping, attribute),
+            settings: this.querySettings(),
+          });
+          customFilters.set(rule, predicate);
+        }
+        return customFilters.get(rule);
+      },
       rules: (entity, operation, identity) => {
         const key = `${entity}\u0000${operation}`;
         if (!rules.has(key)) rules.set(key, this.rules(entity, operation, identity));
@@ -3528,7 +3680,15 @@ export class DataStore {
       },
     };
   }
-  allowed(entity, operation, row, identity = {}, chain = new Set(), permissionId = null, memo = this.permissionMemo()) {
+  allowed(
+    entity,
+    operation,
+    row,
+    identity = {},
+    chain = new Set(),
+    permissionId = null,
+    memo = this.permissionMemo({ portalRead: operation === 'read' }),
+  ) {
     if (identity.admin || this.state.settings.permissionMode === 'permissive') return true;
     const mapping = this.resolveMapping(entity);
     const visit = `${mapping.logicalName}:${scalar(row?.[mapping.idColumn])}:${operation}:${permissionId ?? '*'}`;
@@ -3553,7 +3713,7 @@ export class DataStore {
     return result;
   }
   assertAllowed(entity, operation, row, identity, related) {
-    const memo = this.permissionMemo();
+    const memo = this.permissionMemo({ portalRead: operation === 'read' });
     if (this.allowed(entity, operation, row, identity, new Set(), null, memo))
       this.tracePermission(entity, operation, identity, memo, { result: 'allow' });
     else {
@@ -3653,7 +3813,7 @@ export class DataStore {
   }
   rows(entity, identity = {}, subset) {
     const m = this.resolveMapping(entity);
-    const memo = this.permissionMemo();
+    const memo = this.permissionMemo({ portalRead: true });
     const rows = subset ?? this.tableRows(m.logicalName);
     const kept = this.permittedRows(m, rows, identity, memo);
     this.traceFiltered(m.logicalName, identity, rows, kept.length, memo);
@@ -3681,7 +3841,7 @@ export class DataStore {
     const m = this.resolveMapping(entity);
     const rows = subset ?? this.tableRows(m.logicalName);
     const unrestricted = identity.admin || this.state.settings.permissionMode === 'permissive';
-    const memo = unrestricted ? null : this.permissionMemo();
+    const memo = unrestricted ? null : this.permissionMemo({ portalRead: true });
     const count = this.permittedCount(m, rows, identity, unrestricted, memo);
     this.traceFiltered(m.logicalName, identity, rows, count, memo);
     return count;
@@ -3769,7 +3929,7 @@ export class DataStore {
       } catch {
         continue;
       }
-      const rows = this.tableRows(target.logicalName),
+      const rows = this.portalReadRows(target.logicalName),
         hit = rows[this.rowIndex(target, rows, id)];
       if (!hit && wanted.length > 1) continue;
       out[column] = {
@@ -3826,8 +3986,10 @@ export class DataStore {
   }
   /* NOSONAR */ readRecord(entity, id, identity = {}, options = {}) {
     const m = this.resolveMapping(entity);
+    const sourceRows = () =>
+      options.portalRequest ? this.portalReadRows(m.logicalName) : this.tableRows(m.logicalName);
     const read = (key, columns = options.sdkColumns) => {
-      const rows = options.readRow ? null : this.tableRows(m.logicalName);
+      const rows = options.readRow ? null : sourceRows();
       let row = options.readRow ? options.readRow(key) : rows[this.rowIndex(m, rows, key, options)];
       if (!row) return null;
       this.traceRecord(m.logicalName, row[m.idColumn]);
@@ -3859,7 +4021,7 @@ export class DataStore {
         typeof id === 'string' && GUID_PATTERN.test(id)
           ? id
           : (() => {
-              const rows = this.tableRows(m.logicalName);
+              const rows = sourceRows();
               return rows[this.rowIndex(m, rows, id, options)]?.[m.idColumn] ?? '00000000-0000-0000-0000-000000000000';
             })();
       const record = { [m.idColumn]: originalId },
@@ -4170,8 +4332,10 @@ export class DataStore {
     // Enhanced authorization: the visitor's field security profiles mask every read (portal-authorization.mjs rowMasker).
     const portalMask = !options.backendRowsMask && this.portalAuthorization?.rowMasker(identity);
     if (portalMask) options = { ...options, backendRowsMask: portalMask };
+    const portalSource = options.portalRequest === true && portalRowSources.getStore()?.store === this;
+    const sourceRows = (name) => (portalSource ? this.portalReadRows(name) : this.tableRows(name));
     const readable =
-      options.fetchCache && !options.backendRowsFilter && !options.backendRowsMask
+      options.fetchCache && !portalSource && !options.backendRowsFilter && !options.backendRowsMask
         ? options.fetchCache.readable(this, identity)
         : new Map();
     // Row filters are read-only (the security read filter, or a backend profile that copies the row
@@ -4202,13 +4366,13 @@ export class DataStore {
       return out;
     };
     const visibleRows = (name, subset) => {
-      const source = subset ?? this.tableRows(name),
+      const source = subset ?? sourceRows(name),
         paged = pagedRecordsOf(source);
       // Query filters, calculations and masks are read-only. Decode private
       // values directly instead of retaining a mutable facade for every row.
       // Public rows() and custom authorization hooks keep stored-row semantics.
       if (!paged || this.allowed !== DataStore.prototype.allowed) return this.rows(name, identity, source);
-      const memo = this.permissionMemo();
+      const memo = this.permissionMemo({ portalRead: options.portalRequest === true });
       let unrestricted = identity.admin || this.state.settings.permissionMode === 'permissive';
       if (!unrestricted && paged.present) {
         const rules = memo.rules(name, 'read', identity);
@@ -4228,7 +4392,7 @@ export class DataStore {
     const readRows = (logical, node, subset) => {
       const name = this.resolveMapping(logical).logicalName;
       if (options.permissionLinkNodes?.has(node) || options.rawQueryNodes?.has(node))
-        return backend(name, readCopies(subset ?? this.tableRows(name)));
+        return backend(name, readCopies(subset ?? sourceRows(name)));
       if (subset) return backend(name, visibleRows(name, subset));
       if (!readable.has(name)) readable.set(name, backend(name, visibleRows(name)));
       return readable.get(name);
@@ -4256,7 +4420,7 @@ export class DataStore {
       const value = key(columnValue(row, rel.from));
       if (value == null) return [];
       if (!rel.intersect && rel.to === target.idColumn && !isElastic(target)) {
-        const subset = this.primaryKeySubset(target, [value]);
+        const subset = this.primaryKeySubset(target, [value], options);
         if (subset) return readRows(target.logicalName, undefined, subset);
       }
       const targets = indexBy(`t\u0000${target.logicalName}\u0000${rel.to}`, readRows(target.logicalName), rel.to);
@@ -4297,7 +4461,7 @@ export class DataStore {
       } catch {
         return undefined;
       }
-      const rows = this.tableRows(mapping.logicalName),
+      const rows = sourceRows(mapping.logicalName),
         stored = pagedRecordsOf(rows);
       const identifier = key(reference.id);
       if (identifier == null) return undefined;
@@ -4317,7 +4481,7 @@ export class DataStore {
       }
       if (!names.has(mapping.logicalName)) {
         const index = new Map();
-        for (const row of this.tableRows(mapping.logicalName)) {
+        for (const row of rows) {
           const id = key(row[mapping.idColumn]);
           if (id != null) index.set(id, primaryNameValue(mapping, row));
         }
@@ -4963,7 +5127,7 @@ export class DataStore {
     // the row-security filter, instead of filtering the whole table.
     let subset = null;
     if (options.id != null || options.ids)
-      subset = this.primaryKeySubset(mapping, options.id != null ? [options.id] : [...options.ids]);
+      subset = this.primaryKeySubset(mapping, options.id != null ? [options.id] : [...options.ids], options);
     let rows = ctx.readRows(mapping.logicalName, undefined, subset ?? undefined);
     if (options.backendRowFilter) rows = rows.filter((row) => options.backendRowFilter(clone(row)) === true);
     // Single-record and navigation routes restrict the readable rows first.
@@ -5185,8 +5349,8 @@ export class DataStore {
    * Resolve a key segment: a primary key (GUID with or without braces) or an
    * alternate key (attr='v',attr2=1) declared in mapping.alternateKeys.
    */
-  findByKey(mapping, key) {
-    const rows = this.tableRows(mapping.logicalName);
+  findByKey(mapping, key, { portalRequest = false } = {}) {
+    const rows = portalRequest ? this.portalReadRows(mapping.logicalName) : this.tableRows(mapping.logicalName);
     const parts = parseKeySegment(key);
     if (!parts) return rows[this.rowIndex(mapping, rows, key)];
     const names = Object.keys(parts).sort(/* NOSONAR: preserve default string coercion */);
@@ -6770,8 +6934,9 @@ export class DataStore {
       return equal(scalar(value), target);
     });
     if (!children.length) return;
-    const behaviour = reference.cascade?.delete ?? 'RemoveLink';
-    if (reference.cascade?.delete == null) this.noteCascadeDefault(mapping.logicalName, reference);
+    const configured = cascadeAction(reference.cascade, 'delete');
+    const behaviour = configured ?? 'RemoveLink';
+    if (configured == null) this.noteCascadeDefault(mapping.logicalName, reference);
     if (behaviour === 'Restrict')
       throw new DataError(
         'The object you tried to delete is associated with another object and cannot be deleted.',
@@ -7441,7 +7606,19 @@ export class DataStore {
       options.portalRequest === true &&
       this.observed?.tablePermissionQueryPipeline === 'native-classic' &&
       options.permissionQuery?.permissionGranted;
-    const rawQueryNodes = nativeBackend ? new Set([plan.root, ...plan.links]) : undefined;
+    let rawQueryNodes;
+    if (nativeBackend) {
+      const nodes = [plan.root, ...plan.links];
+      // Retain the store predicate for Custom Access even if an observed legacy pipeline is configured
+      // and a trusted query observer replaces the compiler's root/linked filters.
+      rawQueryNodes = new Set(
+        this.portalAuthorization?.customAccessEnabled?.()
+          ? nodes.filter(
+              (node) => !this.rules(node.attrs.name, 'read', identity).some((rule) => rule.scope === 'custom'),
+            )
+          : nodes,
+      );
+    }
     const ctx = this.queryContext(identity, { ...options, permissionLinkNodes, rawQueryNodes });
     return executeFetch(plan, {
       mapping: (name) => this.resolveMapping(name),

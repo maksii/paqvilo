@@ -67,6 +67,9 @@ platform's markup and `/_services/` wire format are not documented. The grid cal
   trailing space, no trailing dot, none of the reserved names (`CON`, `PRN`, `AUX`, `NUL`, `COM0`–`COM9`,
   `LPT0`–`LPT9`, `.lock`, `desktop.ini`, `_private`, `~$…`, `_vti_`), else 400 `SharePointInvalidName`. An existing
   folder answers 409 `SharePointFolderExists`; a file and a folder cannot share a name (409 `SharePointNameExists`).
+  Document requests using the same in-process storage adapter coordinate concurrent file and folder writes to the
+  same case-insensitive name. Independent provider adapters sharing a backend can condition individual keys only.
+  A file and a folder marker use distinct keys, so mixed creates across separate runtimes can still conflict.
 - Permissions follow the documented Power Pages rules: the parent table permission needs Read and Append To (and Write
   to upload); the Document Location permission needs Read to list, Create, Write and Append to upload or create a
   folder, and Delete to delete (otherwise 403 `PermissionDenied`). Writes need the portal verification token in the
@@ -81,6 +84,8 @@ platform's markup and `/_services/` wire format are not documented. The grid cal
   even an empty one, replaces it.
 - Any other member answers 501 `PortalDocumentMemberUnsupported`. Without storage every call answers 501; a route whose
   provider is declared but not ready answers 503 `Unavailable`.
+- Recursive folder deletion removes the files before their folder markers. If the provider fails, the site can still
+  address the remaining subtree and retry the deletion.
 
 ## Adapter B: Graph and SharePoint REST contract fixture
 

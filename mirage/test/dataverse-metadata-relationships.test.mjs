@@ -680,16 +680,15 @@ test('CreatePolymorphicLookupAttribute creates one lookup with a target per rela
   assert.equal(t.store.state.mappings.sample_bank.fields.sample_dup, undefined);
 });
 
-test('1:N and N:N associations work through the record handlers once the relationships exist', async () => {
-  const t = await setup();
-  const store = t.store;
+function recordRequest(t) {
+  const { store } = t;
   const records = createRecordHandlers({
     store,
     change: (fn) => fn(),
     principals: t.api.principals,
     metadataFields: () => undefined,
   });
-  const send = async (method, path, body) => {
+  return async (method, path, body) => {
     const url = new URL(path, ORIGIN);
     return records.handle({
       method,
@@ -706,6 +705,49 @@ test('1:N and N:N associations work through the record handlers once the relatio
       requestId: 'test',
     });
   };
+}
+
+test('metadata API delete configuration is read back and applied by record DELETE', async () => {
+  const t = await setup();
+  const send = recordRequest(t);
+  const parentId = '11111111-0000-4000-8000-000000000003';
+  const childId = '22222222-0000-4000-8000-000000000004';
+  const schema = 'sample_bank_parent';
+  const relationship = `${relationshipPath()}(${relationshipId(schema)})`;
+  const cascade = () =>
+    readService(t).relationship(schema, { cast: 'OneToManyRelationshipMetadata' }).CascadeConfiguration.Delete;
+  await metadata(t, 'POST', relationshipPath(), parentRelation({ CascadeConfiguration: { Delete: 'Restrict' } }));
+  assert.equal(cascade(), 'Restrict');
+  t.store.state.tables.sample_parent.push({ sample_parentid: parentId, sample_name: 'Referenced' });
+  t.store.state.tables.sample_bank.push({
+    sample_bankid: childId,
+    sample_name: 'Referencing',
+    sample_parentid: { id: parentId, logical_name: 'sample_parent' },
+  });
+  const record = `/api/data/${VERSION}/sample_parents(${parentId})`;
+  await assert.rejects(
+    send('DELETE', record),
+    (error) => error.status === 405 && error.details.innerCode === '0x80040227',
+  );
+  assert.deepEqual(
+    t.store.tableRows('sample_parent').map((row) => row.sample_parentid),
+    [parentId],
+  );
+  assert.equal(t.store.tableRows('sample_bank')[0].sample_parentid.id, parentId);
+
+  await metadata(t, 'PUT', relationship, { CascadeConfiguration: { Delete: 'Cascade' } }, { headers: MERGE });
+  assert.equal(cascade(), 'Cascade');
+  assert.equal(t.store.state.mappings.sample_parent.relationships[schema].cascade.Delete, 'Cascade');
+  assert.equal((await send('DELETE', record)).status, 204);
+  assert.deepEqual(t.store.tableRows('sample_parent'), []);
+  assert.deepEqual(t.store.tableRows('sample_bank'), []);
+  assert.deepEqual(t.store.cascadeDiagnostics(), []);
+});
+
+test('1:N and N:N associations work through the record handlers once the relationships exist', async () => {
+  const t = await setup();
+  const { store } = t;
+  const send = recordRequest(t);
 
   await metadata(t, 'POST', relationshipPath(), oneToMany());
   await metadata(t, 'POST', relationshipPath(), manyToMany());

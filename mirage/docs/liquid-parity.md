@@ -73,7 +73,8 @@ Omitting a setting keeps the default.
 - **Page template type.** An explicit Type selects Rewrite or Web Template even when both references are set. Rewrite
   uses the ASP.NET layout and its page copy; the web template header/footer switch applies only to web template
   responses, and resource inspection leaves an unselected web template out of the include chain. A populated portal
-  route is not a physical rewrite target and answers a route-handler error; other `.aspx` layouts are not rendered.
+  route is not a physical rewrite target and answers a route-handler error. An unimplemented `.aspx` layout produces
+  `REWRITE_LAYOUT_UNSUPPORTED` and falls back to page copy.
   The breadcrumb above a rewrite layout's title is the portal's own control, not the site's Breadcrumbs web template:
   one linked item per page of the path, hidden pages included, each with its whole title and no `title` attribute,
   written with the AntiXSS encoder, with the Bootstrap 5 item classes when `Site/BootstrapV5Enabled` is true. It is
@@ -89,11 +90,35 @@ Liquid `page.id` uses the exported language-content identity when there is one; 
 identity. Compare like authentication contexts: a synthetic signed-in persona gives the local authentication class,
 not equal contact IDs or business data.
 
+An explicit published language in the URL wins over `ContextLanguageCode`, then the signed-in contact's preferred
+language, then the site default. Local requests that select a published language set the session language cookie.
+The selected page variant supplies its template, form/list bindings and publishing state. The default document shell
+uses its `adx_meta_description` or `mspp_meta_description` when an authored head snippet has no meta description.
+Exported `robots.txt` and `sitemap.xml` web files follow ordinary web-file routing.
+
+The classic `adxPreviewUnpublishedEntities` cookie controls publishing preview for signed-in visitors with the exported
+**Preview Unpublished Entities** website right. Preview defaults to enabled for an eligible visitor when the cookie is
+absent. `false` and other values that cannot be read as `true` disable it. The same request preference governs exported
+page and web-file access, filtered navigation to that content and Liquid ads. A web file available only with preview uses
+`private, no-store`. See [publishing states](https://learn.microsoft.com/en-us/power-pages/configure/publishing-states)
+and [classic preview permission](https://github.com/Adoxio/xRM-Portals-Community-Edition/blob/868decd55a6f/Framework/Adxstudio.Xrm/Web/Security/PreviewPermission.cs#L35-L94).
+
+Web templates with Functional manifests still use ordinary Liquid `include` parameters. The manifest itself produces
+no markup. A malformed manifest reports `WEB_TEMPLATE_MANIFEST_INVALID` without suppressing the template's body.
+
 Web link sets keep their exported title, copy and logical attributes by name or ID; standard exports can supply copy in
-a separate file, and localized titles use the import LCID. `is_sitemap_ancestor` follows the linked page's place in the
-current page's ancestor chain, so sibling routes sharing a URL prefix are not ancestors. See Microsoft's
-[web links](https://learn.microsoft.com/en-us/power-pages/configure/manage-web-links) and
-[Liquid objects](https://learn.microsoft.com/en-us/power-pages/configure/liquid/liquid-objects).
+a separate file, and localized titles use the import LCID. Each set and link honors its own exported publishing state.
+`Disable Page Validation` skips the target page check only. A name matches the first active set before its state is
+checked, while a different readable set with the same name is still reachable by its ID. `is_sitemap_ancestor` follows
+the linked page's place in the current page's ancestor chain. [Web links](https://learn.microsoft.com/en-us/power-pages/configure/manage-web-links) ·
+[Liquid objects](https://learn.microsoft.com/en-us/power-pages/configure/liquid/liquid-objects) ·
+[Classic publishing state source](https://github.com/Adoxio/xRM-Portals-Community-Edition/blob/868decd55a6f/Framework/Adxstudio.Xrm/Cms/PublishingStateAccessProvider.cs#L52-L87).
+
+For users granted **Manage Web Link Sets**, `set.editable` is true on accessible sets. The no-key `{% editable set %}`
+tag emits hidden local metadata with the set ID and display label. This lets the authored navigation render its editing
+branch for an eligible persona. Front-side CMS controls, service links and operations need a separate implementation.
+[Editable tag contract](https://learn.microsoft.com/en-us/power-pages/configure/liquid/dataverse-liquid-tags#editable) ·
+[Website access permissions](https://learn.microsoft.com/en-us/power-pages/security/website-access-permission).
 
 ## Search
 
@@ -111,22 +136,28 @@ current page's ancestor chain, so sibling routes sharing a URL prefix are not an
 - Parameters read: `query`, `filter` (`+column:value` and `-column:value` only; others answer 501
   `PORTAL_SEARCH_FILTER_UNSUPPORTED`), `logical_names`, `page` and `page_size` (default 10, at most 1000). Every page of
   each indexed view is read, so `approximate_total_hits` counts the matching rows the visitor may read.
-- Matching is token matching (any term, `term*` prefixes; the score is the number of matched terms), not Dataverse
-  relevance search: Lucene operators, fuzzy and proximity are ignored, and `Search/Query` weights are not applied
-  (`PORTAL_SEARCH_QUERY_WEIGHTS_IGNORED`).
+- The local scan accepts ordinary terms, quoted phrases, `*` and `?` within terms, Boolean clauses and groups, and
+  positive `^` boosts. The Liquid tag treats a query as plain text when this parser detects malformed syntax. The local
+  length and group-depth limits still apply. The score sums matching local term weights. Dataverse relevance, fuzzy and proximity ranking,
+  attachment indexing and `Search/Query` weights remain outside this scan (`PORTAL_SEARCH_QUERY_WEIGHTS_IGNORED`).
+- The default local page supports readable record-type counts and filters with `Search/FacetedView` and
+  `Search/RecordTypeFacetsEntities`. Modified date, product and rating facets remain unsupported. The Liquid
+  `searchindex` results contain no facets.
 - With no indexed table, or Dataverse search off for the organization, search returns no results and
   `PORTAL_SEARCH_UNAVAILABLE`; with `liquidServiceTags: observed` it renders the observed Liquid error. When the export
-  has no `/search/` page, the host serves a default one ([local portal routes](operations.md#local-portal-routes)).
+  has no `/search/` page, the default local page keeps the selected language, query and record type while paging.
+  See [local portal routes](operations.md#local-portal-routes).
 
 ## Error pages
 
 `pageErrorPresentation: generic-error` replaces the simulator diagnostic for an HTTP 500 `PAGE_QUERY_REQUEST_VALIDATION`
 GET page-query rejection (raised only with `observed.requestValidation: aspnet-query`, which rejects dangerous decoded
 query values before Liquid runs) with the generic title and heading, a fresh local Error ID in square brackets and the
-fixed rejection message. Other errors, methods and API responses are unchanged. It does not reproduce native CSS,
-scripts, opaque identifiers or exact HTML, and custom `Portal Generic Error` snippets are not used (on the platform,
-Liquid in that snippet is not evaluated; [error
-log](https://learn.microsoft.com/en-us/power-pages/admin/view-portal-error-log)).
+fixed rejection message. An exported `Portal Generic Error` snippet can replace that message in this mode. Mirage
+chooses the localized snippet, honors its Text or HTML type, skips Liquid, and adds the local error ID, time and portal
+record ID. Other errors, methods and API responses retain their normal response. The presentation models this error
+class and leaves native styling and detailed ASP.NET exception output outside the local contract.
+[Power Pages error log](https://learn.microsoft.com/en-us/power-pages/admin/view-portal-error-log).
 
 ## Golden-liquid conformance
 

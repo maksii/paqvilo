@@ -37,6 +37,7 @@ const FETCH_LIMITS = Object.freeze({
   top: 5000,
   totalRecordCount: 5000,
   aggregateRecords: 50000,
+  simplePagingRecords: 50000,
   // Local bound on intermediate joined rows (not a Dataverse limit).
   joinRows: 250000,
   xmlDepth: 64,
@@ -1545,8 +1546,10 @@ export function structuralIntersects(plan, mappingOf, relationshipsFor = (mappin
       const seek = seekIndex(cookie, keys);
       if (seek != null) start = seek;
     }
-    end = Math.min(start + plan.pageSize, entities.length);
-    more = entities.length > start + plan.pageSize;
+    // Queries without cookie support fall back to Dataverse's bounded simple paging.
+    const rowLimit = cookieSupported ? entities.length : Math.min(entities.length, FETCH_LIMITS.simplePagingRecords);
+    end = Math.min(start + plan.pageSize, rowLimit);
+    more = end < rowLimit;
   }
   const pageEntities = deferredProjection ? entities.slice(start, end).map(project) : entities.slice(start, end);
   if (plan.top == null && cookieSupported && pageEntities.length)

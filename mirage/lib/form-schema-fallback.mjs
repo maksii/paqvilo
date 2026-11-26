@@ -35,6 +35,32 @@ function formMetadataRows(portal, definition, stepId) {
   );
 }
 
+function reportApproximatedForm({ definition, step, diagnostic, entity, names, systemForm }) {
+  const subject = step
+    ? `Advanced form step '${step.name ?? step.id}' of '${definition.name}'`
+    : `Basic form '${definition.name}'`;
+  const systemFormId = systemForm?.id ?? (canonicalId(fieldOf(definition.metadata, 'formid')).trim() || null);
+  const formName = definition.formName ?? systemForm?.name ?? null;
+  const reference =
+    [formName && `'${formName}'`, systemFormId && `(ID ${systemFormId})`].filter(Boolean).join(' ') || '(unnamed)';
+  const problem = systemForm
+    ? 'matches an exported systemform whose portal layout could not be mapped'
+    : 'does not match an active systemform in the configured solutions';
+  diagnostic({
+    code: 'COMPONENT_SCHEMA_REQUIRED',
+    severity: 'warning',
+    component: step ? 'webform' : 'entityform',
+    form: definition.name,
+    formName,
+    systemFormId,
+    reason: systemForm ? 'SYSTEMFORM_MAPPING_UNRESOLVED' : 'SYSTEMFORM_UNRESOLVED',
+    entity,
+    fields: names,
+    ...(step ? { step: step.name ?? step.id } : {}),
+    message: `${subject}: form reference ${reference} for table ${entity} ${problem}; the local layout is approximated as one section with ${names.length} field(s).`,
+  });
+}
+
 /**
  * The platform renders a basic form from its Dataverse systemform. When the
  * configured solutions do not contain that form, approximate it locally: one
@@ -44,9 +70,10 @@ function formMetadataRows(portal, definition, stepId) {
  */
 export function approximateFormSchema({ definition, portal, metadata, diagnostic, step = null }) {
   const matches = matchingSystemForms(definition, metadata?.forms);
+  const systemForm = matches.find(portalFormEligible);
   // An absent layout can be approximated; an explicitly ineligible exported
   // layout must not silently become an editable invented form.
-  if (matches.length && !matches.some(portalFormEligible)) {
+  if (matches.length && !systemForm) {
     diagnostic?.({
       code: 'SYSTEMFORM_INELIGIBLE_TYPE',
       component: step ? 'webform' : 'entityform',
@@ -78,20 +105,7 @@ export function approximateFormSchema({ definition, portal, metadata, diagnostic
     label: known[attribute]?.label ?? attribute,
     readOnly: known[attribute] ? !usable(known[attribute]) : false,
   }));
-  const subject = step
-    ? `Advanced form step '${step.name ?? step.id}' of '${definition.name}'`
-    : `Basic form '${definition.name}'`;
-  diagnostic?.({
-    code: 'COMPONENT_SCHEMA_REQUIRED',
-    severity: 'warning',
-    component: step ? 'webform' : 'entityform',
-    form: definition.name,
-    formName: definition.formName ?? null,
-    entity,
-    fields: names,
-    ...(step ? { step: step.name ?? step.id } : {}),
-    message: `${subject} uses form '${definition.formName ?? '(unnamed)'}' of table ${entity}, which is absent in the configured solutions; the local layout is approximated as one section with ${names.length} field(s).`,
-  });
+  if (diagnostic) reportApproximatedForm({ definition, step, diagnostic, entity, names, systemForm });
   return {
     entity,
     mode,

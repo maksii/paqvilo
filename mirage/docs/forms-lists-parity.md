@@ -50,6 +50,10 @@ the attach-file control) successful controls to the form action, including modal
   emulated. The postback keeps exact decimal and Int64 tokens, repeated and omitted controls, and converts textarea line
   endings to LF. Files post only through the attach-file control's multipart form; URL-encoded file submission is
   rejected. File selections do not survive a reload.
+- **Attachments.** Both save transports validate the required-file setting and the remaining slots on the target
+  record. Each existing attachment accepted by the record reader uses a slot and satisfies the required-file setting.
+  A Dataverse attachment location saves the file in a note. An Azure Blob Storage location uses the configured
+  `portalCloudAttachments` provider route. A form without an exported location uses the site-level storage setting.
 - **Checkboxes** follow ASP.NET successful-control rules: a non-empty posted value (including a script's custom value)
   saves `true`, empty or omitted saves `false`. Only editable checkboxes rendered by the selected form participate.
   Boolean radio and select controls decode `1`/`0` and reject other text; the JSON API requires typed Booleans.
@@ -87,8 +91,8 @@ the attach-file control) successful controls to the form action, including modal
 - A lookup dialog restores the current selection only when both record ID and table match a row of the authorized grid
   query. Selecting a row updates the control; the record changes only after a successful save.
 - Native subgrid quick-find visibility follows the exported FormXml flag. Native PCF fields need explicit portal
-  attribute enablement and a desktop binding; list and subgrid PCF hosting keeps the native grid
-  ([code components](code-components.md)).
+  attribute enablement and a desktop binding. Standard dataset controls can use qualified list and subgrid view
+  bindings. See [code components](code-components.md) for supported bindings and fallback.
 - On sites where a signed-in page opens an authored modal iframe, configure `observed.modalFormShell` with site
   evidence. `signed-in-zero-website` allows the all-zero website ID with a non-empty query.
   `signed-in-exported-or-zero-website` also allows the current exported website ID and permits either ID without a
@@ -126,6 +130,13 @@ later one; a Rewrite page renders no tag from its copy and keeps its attached ba
   missing next step cannot become success and a repeated condition chain cannot become a load step. Direct references
   are checked before writes; branch checks use the saved row inside the provider's write unit, before session and
   history updates, so a failed check rolls back (a provider without transactions may already have committed).
+- The forward path rejects an already visited load step. Previous opens an earlier step and allows a new forward path
+  from it. Each condition can read its named earlier step, query record, current contact, or associated contact
+  record. The preceding step provides the default record.
+- Committed progress is stored alongside local records and survives a restart with the same state file. Signed-in
+  contacts resume after signing back in. Anonymous visitors need their browser-session cookie on the same listener
+  port. The runtime keeps up to 1,000 sessions and removes them on an explicit data reset. A stale concurrent save
+  must reload before it can continue.
 - Conditions compare Int64 and Decimal values and literals with exact arithmetic. Unquoted multiword values
   (`new_name = Jane Doe`, as in the
   [conditional step documentation](https://learn.microsoft.com/en-us/power-pages/configure/add-conditional-step)) run to
@@ -160,7 +171,7 @@ platform bundles, otherwise from `/__sim-static/pages-client-api.js`.
 | `currentPage.forms`                                        | `getAll`, `getFormById`, `getFormByName` over rendered basic and multistep forms; see below                                                                                                                                                                                 |
 | `ajax.request`, `webAPI`, `user.signIn`, `user.signOut`    | Work; `webAPI` record methods use `/_api`                                                                                                                                                                                                                                   |
 | `webAPI.uploadFileToColumn(set, id, column, file)`         | Sends the whole file in one request with `x-ms-file-name` (no 4 MB chunks)                                                                                                                                                                                                  |
-| `webAPI.downloadFileFromColumn(set, id, column, { size })` | A Blob typed from the `mimetype` header; `size` is `full` (default) or `thumbnail` for image columns. Errors are the request's `AjaxError`                                                                                                                                  |
+| `webAPI.downloadFileFromColumn(set, id, column, { size })` | Combines 4 MiB ranges into a Blob typed from the `mimetype` header. `size` is `full` (default) or `thumbnail` for images. A replaced file fails the download. Errors are the request's `AjaxError`                                                                          |
 | `languages.getAll()`, `languages.setActive(code)`          | The site's published languages (else the page language). `setActive` loads the page under `/<code>` like the language picker; an unknown code throws `TypeError` without navigating                                                                                         |
 
 `getAll` lists every basic form wrapper (`EntityFormControl_…`), then every multistep form wrapper
@@ -189,5 +200,10 @@ and AddressComposite.
   column stays required. A read-only control refuses `setValue`.
 - A full-name control reads and writes `{ firstName, middleName, lastName }` and throws when the form has none of its
   boxes. Rich text reads and writes the editor HTML; its `getType()` is `undefined`.
-- Code component controls throw `PagesClientApiUnsupported` for `Control.getValue` and `Control.setValue`, as do the
-  Copilot Studio `agents` members; each logs `PAGES_CLIENT_API_MEMBER_UNSUPPORTED` once.
+- A code component with a typed form binding reads and writes the bound field. Opaque control markup without a known
+  field type reports `PagesClientApiUnsupported` for `getValue` and `setValue`.
+- `$pages.agent.SendActivity` invokes a project-configured local `POST /_api/agents/<schema>/activities` endpoint.
+  Use a simulator mock or a trusted pack endpoint that accepts the activity object and returns an activity or an array
+  of activities. The client delivers each activity to the response callback and reports a missing endpoint to the error
+  callback. This contract runs locally, including the request, token check and callback handling. Copilot Studio's
+  hosted conversation and Direct Line transport need their own provider.

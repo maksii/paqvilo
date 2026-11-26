@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import pathModule from 'node:path';
 import { createHash } from 'node:crypto';
 import { PNG } from 'pngjs';
-import pixelmatch from 'pixelmatch';
+import { comparePngPixels } from './lib/screenshot-comparison.mjs';
 import { parseToolArgs } from './tool-options.mjs';
 import { localUnreachable } from './lib/local-state-fetch.mjs';
 import { connectLoopbackBrowser, stripAnsi } from './lib/live.mjs';
@@ -467,28 +467,9 @@ function compareScreenshots(result, livePng, localPng) {
     result.differences.push(
       `Screenshot dimensions differ: live ${live.width}×${live.height}, local ${local.width}×${local.height}.`,
     );
-  const width = Math.max(live.width, local.width);
-  const height = Math.max(live.height, local.height);
-  const pad = (image) => {
-    if (image.width === width && image.height === height) return image;
-    const padded = new PNG({ width, height });
-    padded.data.fill(255);
-    PNG.bitblt(image, padded, 0, 0, image.width, image.height, 0, 0);
-    return padded;
-  };
-  const diff = new PNG({ width, height });
-  const differentPixels = pixelmatch(pad(live).data, pad(local).data, diff.data, width, height, {
-    threshold: 0,
-    includeAA: true,
-  });
-  result.pixels = {
-    width,
-    height,
-    total: width * height,
-    different: differentPixels,
-    fraction: differentPixels / (width * height),
-  };
-  return { diff, differentPixels };
+  const comparison = comparePngPixels(live, local);
+  result.pixels = comparison.pixels;
+  return comparison;
 }
 
 function recordOneObservationDifferences(result, label) {

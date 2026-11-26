@@ -1,3 +1,4 @@
+// @test-kind contract: Mirage multistep lifecycle through a loopback portal and invented records
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -45,7 +46,7 @@ async function fixture(t, { formYaml = '', mode = 'local', liveBridge, forms = {
     ...forms,
   };
   for (const [name, content] of Object.entries(files)) await fs.writeFile(path.join(root, name), content);
-  const app = await createSimulator({
+  const simulatorOptions = {
     sourceDir: root,
     stateFile: path.join(root, 'state.json'),
     initial: {
@@ -76,7 +77,8 @@ async function fixture(t, { formYaml = '', mode = 'local', liveBridge, forms = {
     // Live submissions need the runtime's live-write permission (cli --allow-live-writes).
     allowLiveWrites: true,
     watch: false,
-  });
+  };
+  let app = await createSimulator(simulatorOptions);
   ownedFixture(t).add(async () => {
     await app.close();
     await fs.rm(root, { recursive: true, force: true });
@@ -87,9 +89,19 @@ async function fixture(t, { formYaml = '', mode = 'local', liveBridge, forms = {
       headers: { 'content-type': 'application/json', __RequestVerificationToken: app.csrf, ...headers },
       body: JSON.stringify(body),
     });
-  return { app, submit };
+  return {
+    app,
+    submit,
+    async restart() {
+      const port = Number(new URL(app.url).port);
+      await app.close();
+      app = await createSimulator({ ...simulatorOptions, port });
+      return app;
+    },
+  };
 }
 
+// @test-kind security: an unrelated browser cannot read or submit another visitor's step
 test("an anonymous visitor's advanced form session belongs to its browser session", async (t) => {
   const { app, submit } = await fixture(t);
   const response = await submit('webform', 'wizard', {
@@ -143,6 +155,37 @@ test("an anonymous visitor's advanced form session belongs to its browser sessio
   );
 });
 
+// @test-kind contract: committed multistep history and owner persist with local record state, while data reset clears both
+test('a restart restores a multistep session only to its original owner', async (t) => {
+  const { submit, restart } = await fixture(t);
+  const started = await submit('webform', 'wizard', { values: { fullname: 'Before restart' } });
+  assert.equal(started.status, 201);
+  const visitor = { cookie: started.headers.get('set-cookie').split(';')[0] };
+  const { recordId, outcome } = await started.json();
+  const app = await restart();
+  const resumed = await fetch(app.url + outcome.url, { headers: visitor });
+  assert.ok(/id="jobtitle"/.test(await resumed.text()), 'the restored owner sees the edit controls');
+  const edit = { stepId: 'edit', recordId, values: { fullname: 'After restart' } };
+  const refused = await submit('webform', 'wizard', edit);
+  assert.equal(refused.status, 400);
+  assert.equal((await refused.json()).error.code, 'InvalidFormStep');
+  const saved = await submit('webform', 'wizard', edit, visitor);
+  assert.equal(saved.status, 200);
+  assert.equal((await saved.json()).recordId, recordId);
+
+  const again = await submit('webform', 'wizard', { values: { fullname: 'Next record' } }, visitor);
+  assert.equal(again.status, 201);
+  const reset = await fetch(app.url + '/_sim/api/reset', {
+    method: 'POST',
+    headers: { 'x-sim-csrf': app.csrf },
+  });
+  assert.equal(reset.status, 200, await reset.text());
+  const afterReset = await fetch(app.url + outcome.url, { headers: visitor, redirect: 'manual' });
+  assert.equal(afterReset.status, 302);
+  assert.match(afterReset.headers.get('location'), /msg=source-invalid/);
+});
+
+// @test-kind security: authentication-required multistep forms refuse anonymous submissions
 test('Authentication Required sends anonymous visitors to sign in and back, and refuses their submissions', async (t) => {
   const { app, submit } = await fixture(t, { formYaml: 'adx_authenticationrequired: true' });
   const anonymous = await fetch(app.url + '/?ref=1', { redirect: 'manual' });

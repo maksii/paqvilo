@@ -1,4 +1,5 @@
 import { portalField as field, normalizePortalPath } from './importer.mjs';
+import { localizedPortalPage } from './portal-languages.mjs';
 const normalize = (value) =>
   String(typeof value === 'object' ? (value?.id ?? value?.adx_webroleid ?? value?.mspp_webroleid ?? '') : (value ?? ''))
     .replace(/[{}]/g, '')
@@ -193,63 +194,68 @@ function addProvidedRoles(identity, roleRecords, authenticated, memberships, pro
       }
 }
 
-function canPreviewContent(portal, previewCookie, roles, hasRole) {
+function canPreviewContent(portal, previewCookie, matchesRoles) {
   return (
     previewCookie !== false &&
-    (portal.websiteAccess ?? []).some(
-      (access) =>
-        access.previewUnpublishedEntities && access.roleIds.some((roleId) => roles.has(roleId) && hasRole(roleId)),
-    )
+    (portal.websiteAccess ?? []).some((access) => access.previewUnpublishedEntities && matchesRoles(access.roleIds))
   );
+}
+
+/** Publishing preview for Liquid records outside page/asset access, using the same website right. */
+export function canPreviewUnpublished(portal, identity, previewCookie) {
+  return canPreviewContent(portal, previewCookie, pageRuleMatcher(portal, identity));
+}
+
+function outsideWebFileWindow(asset, now) {
+  if (!asset) return false;
+  const release = Date.parse(field(asset.metadata, 'releasedate') ?? '');
+  const expiration = Date.parse(field(asset.metadata, 'expirationdate') ?? '');
+  return now < release || now > expiration;
 }
 
 function contentAvailability(portal, asset, page, canPreview, now, diagnostics) {
   const subject = asset ?? page;
   const stateId = normalize(field(subject.metadata ?? subject, 'publishingstateid'));
-  if (stateId) {
-    const state = (portal.publishingStates ?? []).find((item) => item.id === stateId);
-    if (!state && portal.publishingStates)
-      diagnostics.push({
-        code: 'PUBLISHING_STATE_UNRESOLVED',
-        publishingStateId: stateId,
-        message: 'The referenced publishing state is not exported; the content is treated as visible.',
-      });
-    else if (state && !state.isVisible && !canPreview)
-      return {
-        stateId,
-        denial: {
-          allowed: false,
-          status: 403,
-          code: 'PAGE_UNPUBLISHED',
-          diagnostics: [
-            ...diagnostics,
-            {
-              code: 'PAGE_UNPUBLISHED',
-              publishingStateId: stateId,
-              message: `The ${asset ? 'web file' : 'page'} is in the non-visible publishing state '${state.name}'.`,
-            },
-          ],
-        },
-      };
-  }
-  if (asset && !canPreview) {
-    const release = Date.parse(field(asset.metadata, 'releasedate') ?? ''),
-      expiration = Date.parse(field(asset.metadata, 'expirationdate') ?? '');
-    if ((Number.isFinite(release) && now < release) || (Number.isFinite(expiration) && now > expiration))
-      return {
-        stateId,
-        denial: {
-          allowed: false,
-          status: 403,
-          code: 'WEB_FILE_NOT_RELEASED',
-          diagnostics: [
-            ...diagnostics,
-            { code: 'WEB_FILE_NOT_RELEASED', message: 'The web file is outside its release/expiration dates.' },
-          ],
-        },
-      };
-  }
-  return { stateId, denial: null };
+  const state = stateId ? (portal.publishingStates ?? []).find((item) => item.id === stateId) : null;
+  const unpublished = Boolean(state && !state.isVisible);
+  if (stateId && !state && portal.publishingStates)
+    diagnostics.push({
+      code: 'PUBLISHING_STATE_UNRESOLVED',
+      publishingStateId: stateId,
+      message: 'The referenced publishing state is not exported; the content is treated as visible.',
+    });
+  if (unpublished && !canPreview)
+    return {
+      stateId,
+      denial: {
+        allowed: false,
+        status: 403,
+        code: 'PAGE_UNPUBLISHED',
+        diagnostics: [
+          ...diagnostics,
+          {
+            code: 'PAGE_UNPUBLISHED',
+            publishingStateId: stateId,
+            message: `The ${asset ? 'web file' : 'page'} is in the non-visible publishing state '${state.name}'.`,
+          },
+        ],
+      },
+    };
+  const outsideWindow = outsideWebFileWindow(asset, now);
+  if (outsideWindow && !canPreview)
+    return {
+      stateId,
+      denial: {
+        allowed: false,
+        status: 403,
+        code: 'WEB_FILE_NOT_RELEASED',
+        diagnostics: [
+          ...diagnostics,
+          { code: 'WEB_FILE_NOT_RELEASED', message: 'The web file is outside its release/expiration dates.' },
+        ],
+      },
+    };
+  return { stateId, denial: null, previewOnly: unpublished || outsideWindow };
 }
 
 /**
@@ -263,10 +269,10 @@ function contentAvailability(portal, asset, page, canPreview, now, diagnostics) 
  * - A role on a Grant Change rule grants full access; every Restrict Read page needs
  *   one of its roles. Anonymous visitors have no page roles (the Anonymous Users role
  *   "respects only table permissions"); signed-in visitors get Authenticated Users roles.
- * `options.previewCookie === false` disables preview for a permitted persona
- * (the platform auto-enables the preview cookie for permitted users).
+ * `options.previewCookie === false` disables preview for a permitted persona.
+ * The classic portal defaults to preview when the cookie is absent and the visitor holds the website right.
  */
-export function pageAccess(portal, target, identity = {}, { previewCookie, now = Date.now() } = {}) {
+export function pageAccess(portal, target, identity = {}, { previewCookie, languageId, now = Date.now() } = {}) {
   identity ??= {};
   const { page, asset, pageId, ancestors, denial: identityDenial } = resolvePageTarget(portal, target);
   // A web file without a parent page is served at its own partial URL and has no page
@@ -280,8 +286,9 @@ export function pageAccess(portal, target, identity = {}, { previewCookie, now =
   );
   if (!asset && servicePageIds.has(page.id)) return { allowed: true, status: 200, reason: 'service-page', diagnostics };
   // Preview Unpublished Entities website access (role-based; anonymous has no roles).
-  const canPreview = canPreviewContent(portal, previewCookie, roles, hasRole);
-  if (portal.language?.published === false && !canPreview)
+  const canPreview = canPreviewContent(portal, previewCookie, matchesRoles);
+  const language = portal.websiteLanguages?.find((item) => item.id === languageId) ?? portal.language;
+  if (language?.published === false && !canPreview)
     return {
       allowed: false,
       status: 404,
@@ -290,11 +297,16 @@ export function pageAccess(portal, target, identity = {}, { previewCookie, now =
         ...diagnostics,
         {
           code: 'LANGUAGE_UNPUBLISHED',
-          message: `The ${portal.language.name ?? 'selected'} website language is not in a visible publishing state.`,
+          message: `The ${language.name ?? 'selected'} website language is not in a visible publishing state.`,
         },
       ],
     };
-  const { stateId, denial: contentDenial } = contentAvailability(portal, asset, page, canPreview, now, diagnostics);
+  const localized = localizedPortalPage(page, languageId);
+  const {
+    stateId,
+    denial: contentDenial,
+    previewOnly,
+  } = contentAvailability(portal, asset, localized, canPreview, now, diagnostics);
   if (contentDenial) return contentDenial;
   // Release/expiration dates apply to web files only.
   let scopePages;
@@ -317,9 +329,14 @@ export function pageAccess(portal, target, identity = {}, { previewCookie, now =
     diagnostics,
   });
   // Grant Change rules tied to the content's publishing state take precedence.
-  const decision = pageRuleDecision(rules, scopePages, stateId, diagnostics);
-  if (decision) return decision;
-  return { allowed: true, status: 200, reason: 'public-or-role', diagnostics };
+  const decision = pageRuleDecision(rules, scopePages, stateId, diagnostics) ?? {
+    allowed: true,
+    status: 200,
+    reason: 'public-or-role',
+    diagnostics,
+  };
+  if (decision.allowed && (previewOnly || language?.published === false)) return { ...decision, previewOnly: true };
+  return decision;
 }
 
 /**

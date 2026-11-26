@@ -146,6 +146,26 @@ function storageOf(api) {
   throw unavailable(); // the route is set to `export`, which has no document store
 }
 
+const storageNameWrites = new WeakMap();
+
+// A file and its competing folder marker have distinct storage keys. Coordinate their writes through
+// the in-process provider adapter while leaving same-kind writes to the existing provider conditions.
+function withDocumentName(storage, key, kind, operation) {
+  let names = storageNameWrites.get(storage);
+  if (!names) {
+    names = new Map();
+    storageNameWrites.set(storage, names);
+  }
+  const previous = names.get(key);
+  const wait = previous?.kind === kind ? previous.wait : previous?.done;
+  const run = Promise.resolve(wait).then(operation);
+  const done = Promise.allSettled([previous?.done, run]).then(() => {
+    if (names.get(key)?.done === done) names.delete(key);
+  });
+  names.set(key, { kind, wait, done });
+  return run;
+}
+
 function rowOf(store, logical, id) {
   const mapping = store.resolveMapping(logical);
   const rows = store.tableRows(mapping.logicalName);
@@ -381,13 +401,26 @@ function createApi(api) {
       throw new DataError(`Folders nest at most ${MAX_FOLDER_DEPTH} levels.`, 400, 'SharePointInvalidName');
     const parent = await folderOf(locationId, identity, 'write', path);
     assertNewName(name);
-    const key = `${parent}/${encodeSegment(name)}/${FOLDER_MARKER}`;
+    const key = `${parent}/${encodeSegment(name)}`;
     const storage = storageOf(api);
-    if (await storage.head(key))
-      throw new DataError(`A folder named '${name}' already exists.`, 409, 'SharePointFolderExists');
-    if (await storage.head(`${parent}/${encodeSegment(name)}`)) throw sameNameExists();
-    const stored = await storage.put(key, Buffer.alloc(0), { contentType: 'application/x-folder', metadata: { name } });
-    return { name, folder: true, lastModified: stored.lastModified };
+    return withDocumentName(storage, key, 'folder', async () => {
+      const marker = `${key}/${FOLDER_MARKER}`;
+      const folderExists = () =>
+        new DataError(`A folder named '${name}' already exists.`, 409, 'SharePointFolderExists');
+      if (await storage.head(marker)) throw folderExists();
+      if (await storage.head(key)) throw sameNameExists();
+      try {
+        const stored = await storage.put(marker, Buffer.alloc(0), {
+          contentType: 'application/x-folder',
+          metadata: { name },
+          ifNoneMatch: '*',
+        });
+        return { name, folder: true, lastModified: stored.lastModified };
+      } catch (error) {
+        if (error?.code === 'Conflict') throw folderExists();
+        throw error;
+      }
+    });
   }
 
   // Deletes a subfolder and everything in it.
@@ -403,7 +436,13 @@ function createApi(api) {
       keys.push(...page.items.map((item) => item.key));
       continuation = page.continuation;
     } while (continuation);
-    for (const key of keys) await storage.delete(key);
+    const markers = [];
+    for (const key of keys) {
+      if (key.endsWith(`/${FOLDER_MARKER}`)) markers.push(key);
+      else await storage.delete(key);
+    }
+    // A provider failure must leave the remaining folder addressable. Keep every marker until its data is gone.
+    for (const key of markers.sort((left, right) => right.length - left.length)) await storage.delete(key);
     return { deleted: true };
   }
 
@@ -419,20 +458,23 @@ function createApi(api) {
         413,
         'SharePointFileTooLarge',
       );
+    const key = `${folder}/${encodeSegment(name)}`;
     const storage = storageOf(api);
-    if (await storage.head(`${folder}/${encodeSegment(name)}/${FOLDER_MARKER}`)) throw sameNameExists();
-    const stored = await storage.put(`${folder}/${encodeSegment(name)}`, body, {
-      contentType: contentType ?? 'application/octet-stream',
-      metadata: { name },
-      ...(ifMatch !== undefined ? { ifMatch } : {}),
+    return withDocumentName(storage, key, 'file', async () => {
+      if (await storage.head(`${key}/${FOLDER_MARKER}`)) throw sameNameExists();
+      const stored = await storage.put(key, body, {
+        contentType: contentType ?? 'application/octet-stream',
+        metadata: { name },
+        ...(ifMatch !== undefined ? { ifMatch } : {}),
+      });
+      return {
+        name,
+        size: stored.size,
+        etag: stored.etag,
+        contentType: stored.contentType,
+        lastModified: stored.lastModified,
+      };
     });
-    return {
-      name,
-      size: stored.size,
-      etag: stored.etag,
-      contentType: stored.contentType,
-      lastModified: stored.lastModified,
-    };
   }
 
   async function remove(locationId, name, { ifMatch, path = [] } = {}, identity) {

@@ -4,6 +4,7 @@ import { recordedStamp } from '../../lense/file-cache.mjs';
 import { normalizePortalPath, portalField, pageTemplateKind, effectiveSnippetRecords } from './importer.mjs';
 import { stripLiquidLiteralBlocks, scanLiquidTokens, findWebTemplate } from './liquid-source.mjs';
 import { pageRuleMatcher } from './page-access.mjs';
+import { localizedPortalPage } from './portal-languages.mjs';
 import { tagAttributes } from './liquid-engine.mjs';
 import { runtimeTemplateFallback } from './liquid.mjs';
 import { rewritePageLayout } from './platform-manifest.mjs';
@@ -1666,7 +1667,7 @@ function describePageTemplate(pageTemplate, portal) {
 
 function resolveRouteResources(portal, rawRoute, { solutionMetadata = {} } = {}) {
   const route = resolveInspectionRoute(portal, rawRoute);
-  const page = route.page ?? null;
+  const page = localizedPortalPage(route.page ?? null, route.language?.id);
   const pageRoute = ['page', 'not-found', 'sign-in'].includes(route.kind);
   const dependencies = [],
     unresolved = [],

@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
-import { isSourceFile, isEnhancedSiteMetadata } from './portal-model.mjs';
+import { isSourceFile, isEnhancedSiteMetadata, isServerLogicPath } from './portal-model.mjs';
 import { Resolver } from './resolver.mjs';
 import { inspectComponentJson } from './audit-json.mjs';
 import { hasDelimitedText } from '../mirage/lib/text-scanning.mjs';
@@ -17,16 +17,8 @@ const compare = (a, b) => {
   return a > b ? 1 : 0;
 };
 const normalize = (file) => file.replaceAll('\\', '/');
-const SOURCE_FIELDS = new Set([
-  'adx_copy',
-  'adx_summary',
-  'adx_source',
-  'adx_value',
-  'copy',
-  'summary',
-  'source',
-  'value',
-]);
+const SOURCE_FIELDS = new Set(['copy', 'summary', 'source', 'value']);
+const barePortalField = (key) => key.replace(/^(?:adx|mspp)_/, '');
 
 // Recognize standard content fields even when empty. Unknown nonempty HTML/code fields
 // remain gaps until a handler or a precise deployment-only classification is supplied.
@@ -40,7 +32,8 @@ function languageOf(key, value, context) {
     hasDelimitedText(value, '{{', '}}')
   )
     return 'html';
-  if (SOURCE_FIELDS.has(key) && /(?:webpage|webtemplate|contentsnippet|type:[278])\b/i.test(context)) return 'html';
+  if (SOURCE_FIELDS.has(barePortalField(key)) && /(?:webpage|webtemplate|contentsnippet|type:[278])\b/i.test(context))
+    return 'html';
   return null;
 }
 
@@ -85,12 +78,14 @@ function yamlStrings(node, document, visit, parts = [], ancestors = new Set()) {
   ancestors.delete(node);
 }
 
-function metadataReason(rel, key) {
+function metadataReason(rel, key, context) {
   if (/^deployment-profiles\//i.test(rel))
     return 'Environment-specific deployment-profile override; the overlay does not apply deployment transformations.';
   if (key === 'notetext' && /\.webfile\.ya?ml$/i.test(rel))
     return 'Attachment annotation metadata, not the web-file response body.';
-  if (/^(?:adx_)?(?:filter_definition|subgrid_settings|settings)$/i.test(key))
+  if (barePortalField(key) === 'title' && (/\.webpage\.ya?ml$/i.test(rel) || context === 'type:2'))
+    return 'The portal renders the configured page title as text; Lense does not replace this field in the response.';
+  if (/^(?:filter_definition|subgrid_settings|settings)$/i.test(barePortalField(key)))
     return 'Serialized server-interpreted configuration; changing its rendering or queries requires deployment.';
   return null;
 }
@@ -178,7 +173,8 @@ function parseAuditYamlFile(file, rel, state) {
       code: error.code,
       reason: 'Duplicate YAML key; every occurrence was inventoried, but deployment interpretation is ambiguous.',
     });
-  const inactive = YAML.isMap(document.contents) && Number(document.get('statecode')) === 1;
+  const inactive =
+    YAML.isMap(document.contents) && Number(document.get('statecode') ?? document.get('mspp_statecode')) === 1;
   return { document, record: undefined, context: rel, inactive };
 }
 function parseAuditComponentFile(file, rel, state) {
@@ -212,9 +208,12 @@ function auditValueIsInactive(parts, state, source) {
       parts.some((_part, index) => {
         const prefix = parts.slice(0, index);
         return (
-          Number(source.document.getIn([...prefix, 'statecode'])) === 1 ||
-          ['adx_entityform', 'adx_webform', 'entityform', 'webform'].some((formKey) =>
-            state.model.inactiveForms?.has(String(source.document.getIn([...prefix, formKey]) ?? '').toLowerCase()),
+          Number(
+            source.document.getIn([...prefix, 'statecode']) ?? source.document.getIn([...prefix, 'mspp_statecode']),
+          ) === 1 ||
+          ['adx_entityform', 'adx_webform', 'mspp_entityform', 'mspp_webform', 'entityform', 'webform'].some(
+            (formKey) =>
+              state.model.inactiveForms?.has(String(source.document.getIn([...prefix, formKey]) ?? '').toLowerCase()),
           )
         );
       }),
@@ -257,7 +256,7 @@ function nestedAuditStrings(parts, value, inheritedReason, depth, state, source)
 function visitAuditValue(parts, value, state, source, inheritedReason = null, depth = 0) {
   const key = parts.at(-1) ?? '';
   const language = languageOf(key, value, source.context);
-  let reason = inheritedReason ?? metadataReason(source.rel, key);
+  let reason = inheritedReason ?? metadataReason(source.rel, key, source.context);
   const entryInactive = auditValueIsInactive(parts, state, source);
   let nestedCount = 0;
   // Localized metadata is a serialized JSON array. Inventory its literal strings
@@ -268,7 +267,11 @@ function visitAuditValue(parts, value, state, source, inheritedReason = null, de
     nestedCount = nested.count;
     reason = nested.reason;
   }
-  if (!nestedCount && (!language || (!value.trim() && !CODE_FIELD.test(key) && !SOURCE_FIELDS.has(key)))) return 0;
+  if (
+    !nestedCount &&
+    (!language || (!value.trim() && !CODE_FIELD.test(key) && !SOURCE_FIELDS.has(barePortalField(key))))
+  )
+    return 0;
   addAuditEntry(state, source.file, parts.join('.'), {
     language: language ?? 'container',
     empty: !value.trim(),
@@ -413,7 +416,7 @@ function applyExplicitRoutes(state, site, resolver) {
       });
     // Server logic code (.powerpages-site server-logic/<name>/<name>.js) runs on the Power Pages server,
     // never in a page response: the overlay cannot apply it and changes need deployment.
-    if (item.status === 'gap' && /^server-logics?\//i.test(item.relativePath))
+    if (item.status === 'gap' && isServerLogicPath(item.relativePath))
       Object.assign(item, {
         status: 'deployment',
         reason:
@@ -484,7 +487,12 @@ export function auditResources(model, site) {
       accountedPercent: state.errors.length ? null : accountedPercent,
       mappedPercent: state.errors.length ? null : mappedPercent,
       complete:
-        state.errors.length === 0 && state.diagnostics.length === 0 && totals.gaps === 0 && totals.blocked === 0,
+        state.errors.length === 0 &&
+        state.diagnostics.length === 0 &&
+        model.warnings.length === 0 &&
+        totals.gaps === 0 &&
+        totals.blocked === 0 &&
+        totals.disabled === 0,
       runtimeVerified: false,
     },
     scope:

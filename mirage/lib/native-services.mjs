@@ -355,6 +355,7 @@ export function buildLayout({
 
 // The platform's default action tooltips.
 const ACTION_TOOLTIPS = { 1: 'View details', 2: 'Edit', 3: 'Create', 4: 'Delete' };
+const actionWorkflowId = (action) => canonical(action.Workflow?.Id ?? action.Workflow?.id ?? action.WorkflowId);
 /** Native action link objects (subset of the managed ViewActionLink contract). */
 export function actionLinks(settings, { portal, requestUrl, website }) {
   const actions = [];
@@ -403,7 +404,10 @@ function actionLink(position, action, { portal, requestUrl, website }) {
       url = null;
     }
   }
-  return makeActionLink(position, action, type, target, url, website);
+  const link = makeActionLink(position, action, type, target, url, website);
+  if (type !== 7) return link;
+  const id = actionWorkflowId(action);
+  return GUID.test(id) ? { ...link, Workflow: { Id: id, LogicalName: 'workflow' } } : null;
 }
 
 function makeActionLink(position, action, type, target, url, website) {
@@ -616,8 +620,15 @@ export function listModel({ portal: _portal, metadata, store, list, schemas = {}
 async function handleCalendarService(req, res, url, context, websiteId) {
   const route = parseCalendarPath(url.pathname);
   if (!route || route.website !== websiteId || !['GET', 'HEAD'].includes(req.method)) return false;
-  const culture = context.portal.websiteLanguages?.find((language) => language.isDefault)?.code ?? 'en-US';
-  if (route.kind === 'language') return serveCalendarLanguage(req, res, context, culture);
+  if (route.kind === 'language') {
+    const languages = context.portal.websiteLanguages ?? [];
+    const requested = url.searchParams.get('culture')?.toLowerCase();
+    const culture =
+      languages.find((language) => language.code?.toLowerCase() === requested)?.code ??
+      languages.find((language) => language.isDefault)?.code ??
+      'en-US';
+    return serveCalendarLanguage(req, res, context, culture);
+  }
   const list = (context.portal.lists ?? []).find((candidate) => canonical(candidate.id) === route.list);
   if (!list) return false;
   try {
@@ -633,39 +644,33 @@ async function handleCalendarService(req, res, url, context, websiteId) {
       return (sendJson(res, 200, { success: 0, error: 'Calendars require both a start and end date.' }), true);
     const from = Date.parse(url.searchParams.get('from') ?? '');
     const to = Date.parse(url.searchParams.get('to') ?? '');
-    const query = await executeGridQuery(
-      model,
-      {
-        viewId: route.view,
-        page: 1,
-        pageSize: 5000,
-        allowLargePages: true,
-        search: url.searchParams.get('search') ?? '',
-      },
-      context,
-    );
-    if (query.accessDenied)
-      return (sendJson(res, 200, { success: 0, error: "You don't have permissions to view these records." }), true);
-    // The view can omit calendar columns; a permission-checked record read supplies them for each selected row.
-    const rows = [];
-    for (const row of query.rows) {
-      const id = row[model.idColumn];
-      rows.push({
-        ...row,
-        ...(id != null && (await context.readProvider.get(model.entity, id, context.identity))),
-      });
-    }
     const details = model.detailsPage
       ? context.portal.pages.find((page) => canonical(page.id) === model.detailsPage)?.url
       : null;
-    const events = calendarEvents(rows, {
-      calendar: model.calendar,
-      idColumn: model.idColumn,
-      detailsUrl: details,
-      idParameter: model.idParameter,
-      from,
-      to,
-    });
+    const events = [];
+    const pageSize = 5000;
+    let page = 1;
+    while (events.length < pageSize) {
+      const query = await executeGridQuery(
+        model,
+        { viewId: route.view, page, pageSize, allowLargePages: true, search: url.searchParams.get('search') ?? '' },
+        { ...context, calendarWindow: { from, to } },
+      );
+      if (query.accessDenied)
+        return (sendJson(res, 200, { success: 0, error: "You don't have permissions to view these records." }), true);
+      const matching = calendarEvents(query.rows, {
+        calendar: model.calendar,
+        idColumn: model.idColumn,
+        detailsUrl: details,
+        idParameter: model.idParameter,
+        from,
+        to,
+      });
+      events.push(...matching.slice(0, pageSize - events.length));
+      if (!query.moreRecords || !query.rows.length) break;
+      page++;
+    }
+    events.sort((a, b) => a.start - b.start);
     if (route.kind === 'icalendar') {
       const body = Buffer.from(calendarIcs(events));
       res.writeHead(200, {
@@ -685,7 +690,9 @@ async function handleCalendarService(req, res, url, context, websiteId) {
 }
 
 function serveCalendarLanguage(req, res, context, culture) {
-  const body = Buffer.from(calendarLanguageScript(/^[a-z]{2}(-[A-Z]{2})?$/.test(culture) ? culture : 'en-US'));
+  const body = Buffer.from(
+    calendarLanguageScript(/^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/i.test(culture) ? culture : 'en-US'),
+  );
   // A day of private caching from the render time; Vary: * on every answer.
   const now = Date.now();
   res.writeHead(200, {
@@ -945,6 +952,43 @@ const filterNode = (type, children) => ({
   children,
   text: '',
 });
+
+function applyCalendarWindow(root, calendar, fields, { from, to }) {
+  const names = [
+    calendar.start,
+    calendar.end,
+    calendar.summary,
+    calendar.description,
+    calendar.location,
+    calendar.organizer,
+  ];
+  if (!childNodes(root, 'all-attributes').length)
+    for (const name of new Set(names.filter(safeName)))
+      if (!childNodes(root, 'attribute').some((node) => node.attrs.name === name))
+        root.children.unshift({ name: 'attribute', attrs: { name }, children: [], text: '' });
+  const typed = (name) => safeName(name) && /^datetime$/i.test(fields[name]?.dataverseType ?? '');
+  const dateCondition = (attribute, operator, timestamp, direction) => {
+    const day = 86400000;
+    // A list can render the stored instant in a fixed time zone. Widen the Dataverse query so clock shifts
+    // and DateOnly precision cannot omit an event. The feed checks the exact displayed interval on every page.
+    const widen = calendar.timeZoneMode === 'specific' || fields[attribute]?.dateTimeBehavior === 'DateOnly';
+    const value = new Date(timestamp + (widen ? day * direction : 0));
+    if (Number.isNaN(value.getTime())) return null;
+    return conditionNode({ attribute, operator, value: value.toISOString() });
+  };
+  const before = typed(calendar.start) ? dateCondition(calendar.start, 'lt', to, 1) : null;
+  const startedAfter = typed(calendar.start) ? dateCondition(calendar.start, 'ge', from, -1) : null;
+  const endedAfter = typed(calendar.end) ? dateCondition(calendar.end, 'ge', from, -1) : null;
+  const conditions = [before].filter(Boolean);
+  if (startedAfter && endedAfter)
+    conditions.push(
+      filterNode('or', [
+        endedAfter,
+        filterNode('and', [conditionNode({ attribute: calendar.end, operator: 'null' }), startedAfter]),
+      ]),
+    );
+  if (conditions.length) root.children.push(filterNode('and', conditions));
+}
 
 function applySort(fetch, sort) {
   if (!sort.length) return;
@@ -1656,12 +1700,19 @@ export async function executeGridQuery(model, request, context) {
   // The service also reads the record state (statecode, statuscode) for the state actions.
   const root = rootEntity(fetch);
   const tableFields = entityFields(context.metadata, model.entity);
+  if (context.calendarWindow) applyCalendarWindow(root, model.calendar, tableFields, context.calendarWindow);
   if (!childNodes(root, 'all-attributes').length)
     for (const name of ['statecode', 'statuscode'])
       if (tableFields[name] && !childNodes(root, 'attribute').some((node) => node.attrs.name === name))
         root.children.unshift({ name: 'attribute', attrs: { name }, children: [], text: '' });
   applyRelationship(fetch, model, context.secure?.parent, store);
   applyUserFilters(fetch, model, request, identity, context.portal.website?.id);
+  if (context.workflowRecordId)
+    root.children.push(
+      filterNode('and', [
+        conditionNode({ attribute: model.idColumn, operator: 'eq', value: context.workflowRecordId }),
+      ]),
+    );
   if (model.search?.enabled !== false)
     applySearch(fetch, request.search, layout.Columns, context.metadata, model.entity, masked);
   if (model.kind === 'list' && model.filter?.enabled)
@@ -2340,6 +2391,93 @@ function modelFor(secure, context) {
     };
   }
   fail('Invalid_Request', 403, 'Invalid_Request');
+}
+
+const workflowUnsupported = () =>
+  fail('This portal list workflow does not have a supported local execution.', 501, 'WorkflowUnsupported');
+
+function listWorkflowRequest(body, context, websiteId) {
+  if (!body?.base64SecureConfiguration || context.config?.mode === 'live' || !context.runListWorkflow)
+    workflowUnsupported();
+  const secure = unprotectConfiguration(body.base64SecureConfiguration);
+  if (canonical(secure.w) !== websiteId || canonical(context.portal.website?.id) !== websiteId)
+    fail('Invalid_Request', 403, 'Invalid_Request');
+  if (secure.t !== 'list') workflowUnsupported();
+  const workflowId = canonical(body.workflow?.Id);
+  const recordId = canonical(body.entity?.Id);
+  const entity = canonical(body.entity?.LogicalName);
+  if (canonical(body.workflow?.LogicalName) !== 'workflow' || !GUID.test(workflowId) || !GUID.test(recordId))
+    fail('Invalid workflow or selected record.', 400, 'InvalidRequest');
+  const model = modelFor(secure, context);
+  if (
+    model.entity !== entity ||
+    !secure.view ||
+    !model.views.some((view) => canonical(view.id) === canonical(secure.view))
+  )
+    fail('Invalid_Request', 403, 'Invalid_Request');
+  if (model.approximated) workflowUnsupported();
+  if (context.store.recordPipeline?.virtualProviders?.status(entity)?.virtual) workflowUnsupported();
+  return { secure, model, workflowId, entity, recordId, filter: body.filter };
+}
+
+function assertLocalWorkflowWriteScope(store, entity, identity) {
+  const providers = store.recordPipeline?.virtualProviders;
+  if (!providers) return;
+  store.addPortalPermissionSources(identity, [[entity, 'update']], (parent) => {
+    if (providers.status(parent).virtual) workflowUnsupported();
+  });
+}
+
+async function authorizeListWorkflow(input, context) {
+  const { secure, model, workflowId, entity, recordId, filter } = input;
+  const { store, identity, readProvider } = context;
+  const actions = (model.settings?.ItemActions ?? []).filter(
+    (action) => ACTION_TYPES[action?.Type] === 7 && actionWorkflowId(action) === workflowId,
+  );
+  if (!actions.length) fail('This action is not available on the list.', 403, 'AccessDenied');
+  const row = await readProvider.get(entity, recordId, identity);
+  const stored = row && store.get(entity, recordId, { admin: true });
+  if (!stored) fail('This action requires read and write access to the selected record.', 403, 'AccessDenied');
+  assertLocalWorkflowWriteScope(store, entity, identity);
+  if (!store.allowed(entity, 'update', stored, identity))
+    fail('This action requires read and write access to the selected record.', 403, 'AccessDenied');
+  const view = await executeGridQuery(
+    model,
+    { pageSize: 1, filter },
+    { ...context, secure, workflowRecordId: recordId },
+  );
+  if (!view.rows.some((record) => canonical(record[model.idColumn]) === recordId))
+    fail('The selected record is outside this list view.', 403, 'AccessDenied');
+  for (const action of actions) {
+    if (action.ViewId && canonical(action.ViewId) !== canonical(view.view.id)) continue;
+    if (
+      await subgridActionApplies(action, {
+        entity,
+        idColumn: model.idColumn,
+        recordId,
+        readProvider,
+        identity,
+        context: { website: context.portal.website },
+      })
+    )
+      return;
+  }
+  fail('This action is not available for the selected record.', 403, 'AccessDenied');
+}
+
+async function runPortalListWorkflow(body, context, websiteId) {
+  const { workflowId, entity, recordId } = listWorkflowRequest(body, context, websiteId);
+  await context.runListWorkflow({
+    workflowId,
+    entity,
+    recordId,
+    authorize: async () => {
+      const current = { ...context, ...context.workflowRequestContext() };
+      const input = listWorkflowRequest(body, current, websiteId);
+      await authorizeListWorkflow(input, current);
+      return current.identity;
+    },
+  });
 }
 
 // A local portal write through the one portal write path (form-service.mjs portalRecordWrites) in its own store transaction.
@@ -3208,12 +3346,12 @@ export function antiForgeryCookie(csrf) {
       sendJson(res, 200, { success: true, sessionKey: key });
       return true;
     }
-    if (normalized === 'execute-workflow')
-      fail(
-        'Classic workflows are not executed by the local runtime. Model the backend effect with a declarative plugin.',
-        501,
-        'WorkflowUnsupported',
-      );
+    if (normalized === 'execute-workflow') {
+      await runPortalListWorkflow(body, context, websiteId);
+      res.writeHead(204, PAGE_HEADERS);
+      res.end();
+      return true;
+    }
     return false;
   } catch (error) {
     span?.fail(error);

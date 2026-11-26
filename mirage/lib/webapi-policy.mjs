@@ -11,6 +11,7 @@ import {
   dateTimeRangeError,
 } from './dataverse-values.mjs';
 import { isExactNumeric } from './exact-numeric.mjs';
+import { standardTableDef } from './dataverse-standard.mjs';
 import { attachODataReaderDetails, odataConversionDetails } from './webapi-error-details.mjs';
 import {
   applyPaths,
@@ -141,7 +142,7 @@ export const POWER_PAGES_TABLES = new Map(
   ].map((logical) => [logical === 'mspp_websiteaccess' ? 'mspp_websiteaccesses' : `${logical}s`, logical]),
 );
 
-/* NOSONAR */ function configuredWebApiFields(portal, mapping, prefix, settings, columnType) {
+/* NOSONAR */ function configuredWebApiFields(portal, mapping, prefix, settings, columnType, wildcardExempt) {
   if (
     WEBAPI_UNSUPPORTED_TABLES.has(mapping.logicalName) ||
     String(settings[prefix + 'enabled'] ?? 'false').toLowerCase() !== 'true'
@@ -171,7 +172,7 @@ export const POWER_PAGES_TABLES = new Map(
         if (['lookup', 'customer', 'owner'].includes(columnType(field.name))) fields.add(`_${field.name}_value`);
       }
   }
-  if (fields.has('*') && portal.observed?.webApiWildcard !== 'exempt')
+  if (fields.has('*') && !wildcardExempt)
     denied(
       `Webapi/${mapping.logicalName}/fields uses the deprecated wildcard value (*); requests for this table fail until explicit columns are configured.`,
       'WebApiWildcardDeprecated',
@@ -201,6 +202,28 @@ function addWebApiLookupAliases(fields, portal, mapping, columnType) {
     )
       fields.add(match[1]);
   }
+}
+
+// Power Pages treats a custom activity selection containing only inherited columns as a wildcard.
+function assertActivityColumns(fields, mapping, portal, wildcardExempt) {
+  if (
+    !fields.length ||
+    wildcardExempt ||
+    portal.webApiEntities?.[mapping.logicalName]?.isActivity !== true ||
+    standardTableDef(mapping.logicalName)
+  )
+    return;
+  const inherited = standardTableDef('activitypointer').attributes;
+  if (
+    fields.every((name) => {
+      const relationship = mapping.relationships?.[name];
+      const column = relationship?.many === false ? relationship.from : name.replace(/^_(.+)_value$/, '$1');
+      return Object.hasOwn(inherited, column);
+    })
+  )
+    denied('Attribute All Columns is not enabled for Web Api.', 'WebApiWildcardDeprecated', 403, {
+      table: mapping.logicalName,
+    });
 }
 
 function webApiPermissionProfiles(portal, store, mapping) {
@@ -243,7 +266,12 @@ export function webApiPolicy(portal, store, entity) {
   // admin exemption applies (troubleshoot: migrate-web-api-wildcard), so requests for
   // such a table fail by default. A site observed with an exemption
   // (observed.webApiWildcard "exempt") keeps exposing every column.
-  const fields = configuredWebApiFields(portal, mapping, prefix, settings, columnType);
+  const expiry = portal.observed?.webApiWildcardExpiresAt;
+  const wildcardExempt =
+    portal.observed?.webApiWildcard === 'exempt' &&
+    (expiry === undefined || Date.parse(expiry) > Number(store.clock?.now() ?? Date.now()));
+  const fields = configuredWebApiFields(portal, mapping, prefix, settings, columnType, wildcardExempt);
+  assertActivityColumns([...fields], mapping, portal, wildcardExempt);
   const writeFields = new Set(fields);
   // Some sites require the wire property to be explicitly enabled.
   // Keep the usual metadata-derived aliases unless that site observation opts in.
@@ -402,25 +430,13 @@ export function webApiPolicy(portal, store, entity) {
   // Every column a query reads must be enabled, including navigation paths,
   // lambda bodies, Dataverse query function PropertyName values and $apply.
   const query = (params, inheritedAliases) => {
-    // The portal Web API documents no predefined queries (Power Pages read operations); the Dataverse savedQuery and
-    // userQuery parameters are refused as an unsupported query option rather than ignored. The platform's answer is not
-    // captured.
-    for (const name of ['savedQuery', 'userQuery'])
-      if (params.has(name))
-        throw new DataError(
-          `The ${name} query option is not supported by the portal Web API.`,
-          400,
-          'UnsupportedQuery',
-          {
-            option: name,
-          },
-        );
     const aliases =
       inheritedAliases ?? Object.fromEntries([...params.entries()].filter(([key]) => key.startsWith('@')));
-    for (const field of (params.get('$select') ?? '')
+    const selection = (params.get('$select') ?? '')
       .split(',')
       .map((item) => item.trim())
-      .filter(Boolean)) {
+      .filter(Boolean);
+    for (const field of selection) {
       if (!reserved(field) && lookupColumn(field))
         throw new DataError(
           `Select _${field}_value instead of the lookup or navigation property ${field}.`,
@@ -433,6 +449,7 @@ export function webApiPolicy(portal, store, entity) {
         );
       path(field);
     }
+    assertActivityColumns(selection, mapping, portal, wildcardExempt);
     for (const spec of parseOrderBy(params.get('$orderby'), { dialect: 'dataverse' })) path(spec.path);
     const filter = params.get('$filter');
     if (filter)

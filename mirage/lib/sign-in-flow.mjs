@@ -27,6 +27,7 @@ import { loginPath } from './redirects.mjs';
 import { tracedFetch } from './trace-hosts.mjs';
 import { registrationSnippetText } from './registration-snippet-text.mjs';
 import { stripTrailingCharacter } from './text-scanning.mjs';
+import { grantContactRoles } from './site-tables.mjs';
 
 /**
  * The portal side of external sign-in.
@@ -156,7 +157,7 @@ const scalar = (value) =>
 const lookupId = (value) => key(value && typeof value === 'object' ? (value.id ?? value.value) : value);
 // A lookup column as local rows hold it: { id, logical_name } under its name, or the Web API _<name>_value.
 const lookupOf = (row, name) => lookupId(row?.[name] ?? row?.[`_${name}_value`]);
-const active = (row) => Number(scalar(row?.statecode) ?? 0) === 0;
+const active = (row) => row != null && Number(scalar(row.statecode) ?? 0) === 0;
 const trimPath = (value) => stripTrailingCharacter(String(value ?? ''), '/').toLowerCase() || '/';
 const escapeHtml = (value) =>
   String(value ?? '').replace(
@@ -211,6 +212,7 @@ export function createExternalSignIn({
   personas,
   personaCatalog = () => null,
   identityProvider = {},
+  privateSiteSession = () => null,
   webRoles = () => [],
   identity,
   audit,
@@ -502,6 +504,8 @@ export function createExternalSignIn({
       personaCatalog,
       registration: settings,
       settings: identityProvider.settings,
+      siteAdmission: ({ state }) =>
+        state?.startsWith(STATE_PREFIX) && unprotect(state.slice(STATE_PREFIX.length))?.g === true,
       assets: identityProvider.assets,
       fullPicker: origin() + '/_sim/#identity',
       provision,
@@ -675,6 +679,7 @@ export function createExternalSignIn({
       prompt = null,
       parameters = {},
       cookies = [],
+      siteAdmission = false,
     },
   ) {
     const meta = await metadata(provider);
@@ -689,6 +694,7 @@ export function createExternalSignIn({
         r: returnUrl,
         ...(invitationCode ? { i: invitationCode } : {}),
         ...(verifier ? { v: verifier } : {}),
+        ...(siteAdmission ? { g: true } : {}),
         t: now(),
       });
     const params = new URLSearchParams({
@@ -704,8 +710,10 @@ export function createExternalSignIn({
     // login_hint: an ExternalLogin request parameter (Learn); the toolkit panel posts it to
     // pick a preset user without a click.
     if (loginHint) params.set('login_hint', loginHint);
-    // The Prompt site setting takes priority over the request's prompt parameter (Learn).
-    const effectivePrompt = provider.prompt ?? prompt;
+    // The portal's silent prompt cannot start a separate site-admission session in a fresh browser.
+    // For portal sign-in the Prompt site setting takes priority over the request parameter (Learn).
+    const configuredPrompt = provider.prompt ?? prompt;
+    const effectivePrompt = siteAdmission && configuredPrompt === 'none' ? null : configuredPrompt;
     if (effectivePrompt) params.set('prompt', effectivePrompt);
     if (provider.acrValues) params.set('acr_values', provider.acrValues);
     if (verifier) {
@@ -729,6 +737,12 @@ export function createExternalSignIn({
         'EXTERNAL_LOGIN_PROVIDER_UNKNOWN',
       );
     return challenge(res, resolved, { returnUrl, loginHint, language: languageCode(null), cookies });
+  }
+  async function beginSiteAdmission(res, returnUrl, language = null) {
+    const provider = idp && providerList().find((candidate) => candidate.builtIn);
+    if (!provider) return false;
+    await challenge(res, provider, { returnUrl, language: languageCode(language), siteAdmission: true });
+    return true;
   }
   async function externalLogin(req, res, url, { language }) {
     const bytes = await readBody(req);
@@ -1060,40 +1074,71 @@ export function createExternalSignIn({
     return { failed: false, cleared };
   }
 
-  async function providerResponse(req, res, url, message) {
-    const raw = message.state.startsWith(STATE_PREFIX) ? message.state.slice(STATE_PREFIX.length) : null;
-    const props = unprotect(raw);
-    const returnUrl = safeReturnUrl(props?.r);
-    const initial = initialProviderResponse(req, res, url, message, props, returnUrl);
-    if (initial.handled) return initial.response;
-    const { provider } = initial;
+  async function providerClaims(provider, message, verifier) {
     // The code flow signs in with the token response's id_token; the hybrid and implicit flows
     // with the front-channel id_token (Learn: hybrid follows the implicit grant).
     let idToken = message.id_token;
     let accessToken = message.access_token;
-    let claims;
-    try {
-      const usesCodeFlow = codeFlow(provider);
-      if (usesCodeFlow && !message.code)
+    if (codeFlow(provider)) {
+      if (!message.code)
         throw new SignInProblem('The sign-in response has no authorization code.', 'EXTERNAL_LOGIN_TOKEN_INVALID');
-      if (usesCodeFlow) {
-        const tokens = await redeemCode(provider, message.code, props.v ?? null);
-        idToken = tokens.id_token;
-        accessToken = tokens.access_token ?? null;
-        if (!idToken)
-          throw new SignInProblem('The token response has no id_token.', 'EXTERNAL_LOGIN_TOKEN_INVALID', 502);
-      } else if (!idToken)
-        throw new SignInProblem('The sign-in response has no id_token.', 'EXTERNAL_LOGIN_TOKEN_INVALID');
-      claims = await validateToken(provider, idToken);
-      // OpenID Connect Core 3.2.2.9 and 3.3.2.11: an at_hash binds the access token to the id_token.
-      validateAccessTokenHash(accessToken, claims);
+      const tokens = await redeemCode(provider, message.code, verifier);
+      idToken = tokens.id_token;
+      accessToken = tokens.access_token ?? null;
+      if (!idToken) throw new SignInProblem('The token response has no id_token.', 'EXTERNAL_LOGIN_TOKEN_INVALID', 502);
+    } else if (!idToken)
+      throw new SignInProblem('The sign-in response has no id_token.', 'EXTERNAL_LOGIN_TOKEN_INVALID');
+    const claims = await validateToken(provider, idToken);
+    // OpenID Connect Core 3.2.2.9 and 3.3.2.11: an at_hash binds the access token to the id_token.
+    validateAccessTokenHash(accessToken, claims);
+    return { claims, accessToken };
+  }
+
+  function finishSiteAdmission(req, res, url, { provider, subject, returnUrl, cleared }) {
+    const user = provider.builtIn && presetUsers(provider).find((item) => item.subject === subject);
+    const cookie = user && privateSiteSession(user.contactId);
+    if (!cookie)
+      return fail(
+        req,
+        res,
+        url,
+        new SignInProblem(
+          'This local identity does not have access to the private site.',
+          'PRIVATE_SITE_ACCESS_DENIED',
+          403,
+        ),
+        { returnUrl, cookies: [cleared] },
+      );
+    return redirect(res, returnUrl, 'private-site-admission', [cleared, cookie]);
+  }
+
+  async function providerResponse(req, res, url, message, privateSiteOnly) {
+    const raw = message.state.startsWith(STATE_PREFIX) ? message.state.slice(STATE_PREFIX.length) : null;
+    const props = unprotect(raw);
+    if (privateSiteOnly && props?.g !== true)
+      return fail(
+        req,
+        res,
+        url,
+        new SignInProblem('Private site admission is required.', 'PRIVATE_SITE_ACCESS_REQUIRED', 401),
+      );
+    const returnUrl = safeReturnUrl(props?.r);
+    const initial = initialProviderResponse(req, res, url, message, props, returnUrl);
+    if (initial.handled) return initial.response;
+    const { provider } = initial;
+    let validated;
+    try {
+      validated = await providerClaims(provider, message, props.v ?? null);
     } catch (error) {
       if (!(error instanceof SignInProblem)) throw error;
       return fail(req, res, url, error, { returnUrl });
     }
+    const { claims, accessToken } = validated;
     const nonce = validateProviderNonce(req, res, url, message, claims, provider, returnUrl);
     if (nonce.failed) return nonce.response;
     const { cleared } = nonce;
+    if (props.g === true)
+      return finishSiteAdmission(req, res, url, { provider, subject: claims.sub, returnUrl, cleared });
     const kept = keptClaims(claims, ['nonce', 'c_hash', 'at_hash', 'iat', 'nbf', 'exp', 'aud', 'iss']);
     const userinfoClaims = provider.useUserInfo ? await userInfo(provider, accessToken, claims.sub, url) : null;
     const external = protect({
@@ -1271,18 +1316,12 @@ export function createExternalSignIn({
     if (account && contact)
       await updateRow(contact.logicalName, contactId, { parentcustomerid: { id: account, logical_name: 'account' } });
     const roles = invitationRoles(invitation);
-    if (roles.length) {
-      const simulator = (store.state.simulator ??= {});
-      const existing = new Set(
-        (simulator.contactRoles ?? []).map((item) => `${key(item.contactId)}:${key(item.roleId)}`),
+    if (roles.length)
+      grantContactRoles(
+        portal(),
+        store.state,
+        roles.map((roleId) => ({ contactId: key(contactId), roleId })),
       );
-      simulator.contactRoles = [
-        ...(simulator.contactRoles ?? []),
-        ...roles
-          .filter((roleId) => !existing.has(`${key(contactId)}:${roleId}`))
-          .map((roleId) => ({ contactId: key(contactId), roleId })),
-      ];
-    }
     const redemptions = invitation.redemptions + 1;
     const done = invitation.type === 'single' || (invitation.maximum && redemptions >= invitation.maximum);
     await updateRow(invitation.mapping.logicalName, invitation.id, {
@@ -1565,36 +1604,35 @@ export function createExternalSignIn({
     return provider && idp ? provider : null;
   }
 
+  async function routeProviderReply(req, res, url, path, privateSiteOnly) {
+    if (!callbackPaths().has(path)) return false;
+    let message;
+    // A query answer only where a provider of that reply URL uses response_mode=query.
+    if (['GET', 'HEAD'].includes(req.method)) message = queryCallbackMessage(url, path);
+    else if (req.method === 'POST' && isForm(req)) {
+      const bytes = await readBody(req);
+      message = providerMessage(formOf(bytes));
+      if (!message) replayUnrecognizedProviderForm(req, bytes);
+    }
+    if (!message) return false;
+    await providerResponse(req, res, url, message, privateSiteOnly);
+    return true;
+  }
+
   /**
    * Answers the external sign-in routes; false when the request is not one of them.
    * `language`: the request's website language code, when its URL carried one.
    */
-  async function route(req, res, url, { language = null } = {}) {
+  async function route(req, res, url, { language = null, privateSiteOnly = false } = {}) {
     const path = trimPath(url.pathname);
     const account = ACCOUNT_PATH.exec(path)?.[1];
     const accountRoute = ACCOUNT_ROUTES[account];
-    if (accountRoute?.methods.includes(req.method)) {
+    if (!privateSiteOnly && accountRoute?.methods.includes(req.method)) {
       await accountRoute.handle(req, res, url, language);
       return true;
     }
-    if (callbackPaths().has(path)) {
-      // A query answer only where a provider of that reply URL uses response_mode=query.
-      if (['GET', 'HEAD'].includes(req.method)) {
-        const message = queryCallbackMessage(url, path);
-        if (message) {
-          await providerResponse(req, res, url, message);
-          return true;
-        }
-      } else if (req.method === 'POST' && isForm(req)) {
-        const bytes = await readBody(req);
-        const message = providerMessage(formOf(bytes));
-        if (message) {
-          await providerResponse(req, res, url, message);
-          return true;
-        }
-        replayUnrecognizedProviderForm(req, bytes);
-      }
-    }
+    if (await routeProviderReply(req, res, url, path, privateSiteOnly)) return true;
+    if (privateSiteOnly) return false;
     // LoginButtonAuthenticationType: the sign-in page goes straight to the default provider.
     const provider = ['GET', 'HEAD'].includes(req.method) ? autoSignInProvider(req, url, path) : null;
     if (provider) {
@@ -1752,6 +1790,7 @@ export function createExternalSignIn({
     close,
     route,
     begin,
+    beginSiteAdmission,
     acceptsOrigin,
     status,
     identities,

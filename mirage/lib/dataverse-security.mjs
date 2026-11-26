@@ -5,6 +5,7 @@ import { DataError } from './data-error.mjs';
 import { countWork } from './work-counter.mjs';
 import { standardTable } from './solution-standard.mjs';
 import { relationshipsOf, standardTableDef } from './dataverse-standard.mjs';
+import { cascadeAction } from './relationship-cascade.mjs';
 import { guidKey } from './dataverse-values.mjs';
 import { isDeepStrictEqual } from 'node:util';
 import { uuidV5 } from './uuid-v5.mjs';
@@ -1268,7 +1269,7 @@ function cascadedChildren(store, target, action) {
   if (!parent) return [];
   const children = [];
   for (const reference of store.referencesTo(mapping.logicalName, { admin: true })) {
-    const behaviour = reference.cascade?.[action];
+    const behaviour = cascadeAction(reference.cascade, action);
     const linked = refId(parent[reference.targetColumn ?? mapping.idColumn]);
     if (!CASCADING.has(behaviour) || linked == null) continue;
     const childMapping = store.resolveMapping(reference.entity);

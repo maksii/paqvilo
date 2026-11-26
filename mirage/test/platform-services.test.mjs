@@ -121,6 +121,38 @@ test('the implicit grant token endpoint issues a signed ID token for the signed-
   assert.equal(redirect.status, 302);
 });
 
+// @test-kind contract: the portal token endpoint accepts the documented implicit token response type and rejects other explicit types.
+test('the implicit grant endpoint validates the requested response type', async (t) => {
+  const { app, session } = await servicesFixture(t);
+  const route = app.url + '/_services/auth/token';
+  const issue = (query = '', fields) =>
+    fetch(route + query, {
+      method: 'POST',
+      headers: session,
+      ...(fields && { body: new URLSearchParams(fields) }),
+    });
+
+  for (const response of [
+    await issue('?response_type=code'),
+    await issue('?response_type='),
+    await issue('', { response_type: 'id_token' }),
+  ]) {
+    assert.equal(response.status, 400, 'an unsupported response type must not issue a token');
+    assert.equal(response.headers.get('expires_in'), null);
+    assert.equal((await response.json()).ErrorId, 'PortalSTS0004');
+  }
+
+  for (const response of [
+    await issue(),
+    await issue('?response_type=token'),
+    await issue('', { response_type: 'token' }),
+  ]) {
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('expires_in'), '900');
+    await response.arrayBuffer();
+  }
+});
+
 test('the implicit grant flow can be turned off by site setting', async (t) => {
   const { app, session } = await servicesFixture(t, [['Connector/ImplicitGrantFlowEnabled', 'False']]);
   const response = await fetch(`${app.url}/_services/auth/token`, { method: 'POST', headers: session });

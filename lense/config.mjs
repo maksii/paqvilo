@@ -563,7 +563,7 @@ function selectedConfigSource(siteName, site, opts, settings, configDir, { valid
     const layout = unsupportedSourceLayout(sourceDir);
     if (layout)
       throw configurationError(
-        `"${sourceDir}" (source of site "${siteName}") is ${layout.label}, which the toolkit does not treat as a portal: use a PAC YAML export with adx_ keys, a .powerpages-site export or the site's unpacked Solution (powerpagecomponents/)`,
+        `"${sourceDir}" (source of site "${siteName}") is ${layout.label}, which the toolkit does not treat as a portal: use a PAC YAML export, a .powerpages-site export or the site's unpacked Solution (powerpagecomponents/)`,
         'source_unsupported_layout',
       );
     throw configurationError(

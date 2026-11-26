@@ -17,6 +17,80 @@ const apiError = async (response) => ({
   sim: response.headers.get('x-sim-error-code'),
 });
 
+// @test-kind contract: Power Pages Web API custom activity allow-lists and selects require a table-specific column
+test('custom activity Web API column lists and selections need a column of their own', () => {
+  const logicalName = 'x_portalactivity';
+  const mapping = {
+    logicalName,
+    entitySet: 'x_portalactivities',
+    idColumn: 'activityid',
+    relationships: { regarding: { many: false, from: 'regardingobjectid' } },
+  };
+  const store = { resolveMapping: () => mapping };
+  const portal = {
+    settings: { [`Webapi/${logicalName}/enabled`]: 'true' },
+    webApiIdentity: {},
+    webApiEntities: {
+      [logicalName]: {
+        isActivity: true,
+        fields: {
+          subject: { dataverseType: 'nvarchar' },
+          x_detail: { dataverseType: 'nvarchar' },
+          regardingobjectid: { dataverseType: 'lookup' },
+        },
+      },
+    },
+    webApiViews: [{ entity: logicalName, name: 'Power Pages Web API Columns', fields: [{ name: 'subject' }] }],
+  };
+  const policy = () => webApiPolicy(portal, store, logicalName);
+  const refused = {
+    status: 403,
+    code: 'WebApiWildcardDeprecated',
+    message: 'Attribute All Columns is not enabled for Web Api.',
+  };
+  const fieldsKey = `Webapi/${logicalName}/fields`;
+  const viewKey = `Webapi/${logicalName}/UseFieldsFromView`;
+  portal.settings[fieldsKey] = 'subject,regarding';
+  assert.throws(policy, refused);
+
+  delete portal.settings[fieldsKey];
+  portal.settings[viewKey] = 'true';
+  assert.throws(policy, refused);
+
+  // The column listed explicitly qualifies an otherwise inherited-only view.
+  portal.settings[fieldsKey] = 'x_detail,regardingobjectid';
+  const configured = policy();
+  assert.throws(
+    () => configured.assertQuery(new URLSearchParams({ $select: 'subject,_regardingobjectid_value' })),
+    refused,
+  );
+  assert.doesNotThrow(() => configured.assertQuery(new URLSearchParams({ $select: 'subject,x_detail' })));
+
+  portal.webApiEntities[logicalName].isActivity = false;
+  assert.doesNotThrow(() => policy().assertQuery(new URLSearchParams({ $select: 'subject' })));
+});
+
+// @test-kind contract: an evidenced local wildcard exemption can expire on the runtime clock
+test('a dated Web API wildcard exemption expires at the exact instant', () => {
+  const mapping = { logicalName: 'x_table', entitySet: 'x_tables', idColumn: 'x_tableid' };
+  const expires = '2027-01-05T16:00:00Z';
+  let now = Date.parse(expires) - 1;
+  const store = { resolveMapping: () => mapping, clock: { now: () => now } };
+  const portal = {
+    settings: { 'Webapi/x_table/enabled': 'true', 'Webapi/x_table/fields': '*' },
+    webApiIdentity: {},
+    observed: { webApiWildcard: 'exempt', webApiWildcardExpiresAt: expires },
+  };
+  assert.deepEqual(webApiPolicy(portal, store, mapping.logicalName).fields, ['*']);
+  now++;
+  assert.throws(() => webApiPolicy(portal, store, mapping.logicalName), {
+    status: 403,
+    code: 'WebApiWildcardDeprecated',
+  });
+  delete portal.observed.webApiWildcardExpiresAt;
+  assert.deepEqual(webApiPolicy(portal, store, mapping.logicalName).fields, ['*']);
+});
+
 const fixture = () => ({
   version: 1,
   mappings: {

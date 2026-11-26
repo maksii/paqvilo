@@ -72,6 +72,8 @@ Browser selection (dev/list/verify/doctor)
 
 Other
   --path <urlpath>  dev: optional first tab only; verify: page to test
+  --verify-path <urlpath>
+                    verify: add a page to the verification matrix (repeatable)
   --headless        dev/verify: no browser window
   --headed          dev/verify: show the browser window
   --signed-in       verify: use the signed-in profile of "dev" instead of an anonymous one
@@ -81,7 +83,8 @@ Other
   --debug-port <n>  dev: launched browser's debugger port (0 = off; incompatible with CDP attachment)
   --check           map: request every mapped URL online
   --settings        list: also show every setting .env understands
-  --all             doctor/analyze/audit: check every configured site's default environment offline
+  --all             doctor/analyze: check the default environment of each site
+                    audit: check every configured environment of each site offline
   --mirage          doctor: also gate Sources diagnostics and Mirage configuration
   --lint-profiles   doctor: lint all exported deployment-profiles as warnings
   --fail-on <none|error|warning|hint> doctor/analyze: static analysis threshold
@@ -139,7 +142,7 @@ Agent session access
   --out <file>      mirage init: project file to write (default: the site's catalogued
                     mirage.project, else .paqvilo/mirage/<site>.project.yml)
   --force           mirage init: replace an existing project file
-  --strict          verify: fail on new diagnostics; audit: fail on blocked or unmapped resources
+  --strict          verify: fail on new diagnostics; audit: fail on incomplete coverage
 `;
 
 let values, positionals;
@@ -311,6 +314,8 @@ try {
 
   if (values.pick && values.json)
     throw new Error('--pick cannot be combined with --json; provide --site and --env explicitly');
+  if (values.path !== undefined && values['verify-path'] !== undefined)
+    throw new Error('--path cannot be combined with --verify-path');
   if (values.headless && values.headed) throw new Error('--headless and --headed cannot be used together');
   if (values.all && (values.site || values.env))
     throw new Error(`${command} --all cannot be combined with --site or --env`);

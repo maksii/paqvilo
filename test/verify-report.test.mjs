@@ -126,6 +126,36 @@ test('JSON verification emits one final failure report when temporary cleanup al
   assert.deepEqual(JSON.parse(fs.readFileSync(report.evidence.report, 'utf8')), report);
 });
 
+test('verification matrix deduplicates targets and returns one report with redacted per-page outcomes', async (t) => {
+  const stateDir = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-verify-targets-'));
+  t.after(() => fs.rmSync(stateDir, { recursive: true, force: true }));
+  const output = [];
+  t.mock.method(console, 'log', (line) => output.push(line));
+  t.mock.method(console, 'error', () => {});
+  const cfg = {
+    stateDir,
+    siteName: 'fixture',
+    envName: 'local',
+    origin: 'https://portal.invalid',
+    sourceDir: path.join(stateDir, 'missing-extract'),
+    site: { startPath: '/' },
+  };
+  assert.equal(await verify(cfg, { json: true, 'verify-path': ['/en/', '/fr/?key=INVENTED', '/en/'] }), 1);
+  assert.equal(output.length, 1);
+  assert.doesNotMatch(output[0], /INVENTED/);
+  const report = JSON.parse(output[0]);
+  assert.deepEqual(report.paths, ['https://portal.invalid/en/', 'https://portal.invalid/fr/?[redacted]']);
+  assert.deepEqual(
+    report.reports.map(({ url, passed, cleanup }) => [url, passed, cleanup.temporarySourceRemoved]),
+    report.paths.map((url) => [url, false, true]),
+  );
+  assert.equal(report.writesFiles.length, 2);
+  await assert.rejects(
+    () => verify(cfg, { 'verify-path': ['/en/', '//another.invalid/'] }),
+    /--verify-path must be a same-origin path/,
+  );
+});
+
 // @test-kind security: a sign-in redirect carries state and nonce values that verification output must not print.
 test('verify sign-in message names the page location without query or fragment values', () => {
   const { redactedPageUrl } = verifyModule;

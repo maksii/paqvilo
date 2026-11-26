@@ -136,13 +136,15 @@ const initial = () => ({
   },
 });
 
-async function site(t, state, overrides = {}) {
+async function site(t, state, overrides = {}, permissionSource = 'configured') {
+  const input = initial();
+  input.simulator.permissionSource = permissionSource;
   const sim = await simulatorFixture(t, {
     prefix: 'portal-authorization-',
     files: { ...files(state), ...overrides },
     port: 0,
     watch: false,
-    initial: initial(),
+    initial: input,
   });
   const alex = signInHeaders(sim, 'alex');
   const call = (method, route, body, headers = alex) =>
@@ -242,6 +244,74 @@ test('the same site grants exactly what its table permissions allow in the stand
       const own = fixture.sim.store.tableRows('x_item').find((row) => row.x_itemid === 'i1');
       assert.equal(own.modifiedby?.id, user.systemuserid, 'the write runs as the mapped user (impersonation)');
     }
+  }
+});
+
+const customAccess = (fetchXml) => ({
+  'table-permissions/Filtered.tablepermission.yml': [
+    'adx_entitypermissionid: 77777777-7777-4777-8777-777777777772',
+    'adx_name: Filtered access',
+    'adx_entitylogicalname: x_item',
+    'adx_scope: 756150005',
+    'adx_create: true',
+    'adx_read: true',
+    'adx_write: true',
+    'adx_delete: true',
+    'adx_entitypermission_webrole:',
+    `- ${MEMBER}`,
+    'mspp_permissionfetchxml: >-',
+    `  ${fetchXml}`,
+  ].join('\n'),
+});
+
+// @test-kind security+contract: documented Custom Access source shape uses the same restrictive predicate for portal reads and writes.
+test('enabled enhanced Custom Access filters Liquid, API and mutations through a source root predicate', async (t) => {
+  const source = customAccess(
+    '<fetch top="1"><entity name="x_item"><attribute name="x_secret"/><filter type="and"><condition attribute="x_contactid" operator="eq" value="alex"/><filter type="or"><condition attribute="x_name" operator="in"><value>Own</value><value>Own edited</value></condition><condition attribute="x_name" operator="eq" value="Own created"/></filter></filter></entity></fetch>',
+  );
+  const { sim, call, ids } = await site(t, 3, source, 'exported');
+  assert.deepEqual(await ids('/_api/x_items?$select=x_name'), ['i1']);
+  assert.equal((await call('GET', '/_api/x_items(i2)')).status, 403);
+  const fetchXml = '<fetch><entity name="x_item"><attribute name="x_name"/></entity></fetch>';
+  const fetched = await (await call('GET', '/_api/x_items?fetchXml=' + encodeURIComponent(fetchXml))).json();
+  assert.deepEqual(
+    fetched.value.map((row) => row.x_name),
+    ['Own'],
+  );
+  const liquid = await (await call('GET', '/')).text();
+  assert.match(liquid, /<li>Own=/);
+  assert.doesNotMatch(liquid, /<li>Foreign=/);
+  assert.equal((await call('PATCH', '/_api/x_items(i1)', { x_name: 'Own edited' })).status, 204);
+  assert.equal((await call('PATCH', '/_api/x_items(i1)', { x_contactid: 'bea' })).status, 403);
+  assert.equal((await call('PATCH', '/_api/x_items(i2)', { x_name: 'Own' })).status, 403);
+  assert.equal((await call('POST', '/_api/x_items', { x_name: 'Own created', x_contactid: 'alex' })).status, 204);
+  assert.equal((await call('POST', '/_api/x_items', { x_name: 'Own created', x_contactid: 'bea' })).status, 403);
+  const all = await (await call('GET', '/_api/x_items?$select=x_name')).json();
+  assert.deepEqual(all.value.map((row) => row.x_name).sort(), ['Own created', 'Own edited'], 'only root filters apply');
+  assert.equal((await call('DELETE', '/_api/x_items(i2)')).status, 403);
+  assert.equal((await call('DELETE', '/_api/x_items(i1)')).status, 204);
+  assert.deepEqual(
+    sim.store
+      .tableRows('x_item')
+      .map((row) => row.x_name)
+      .sort(),
+    ['Foreign', 'Own created'],
+  );
+});
+
+// @test-kind security: disabled enhanced states, unknown fields and unsupported filter structure fail closed.
+test('unqualified Custom Access source never becomes a blanket grant', async (t) => {
+  const scope =
+    '<fetch><entity name="x_item"><filter><condition attribute="x_contactid" operator="eq" value="alex"/></filter></entity></fetch>';
+  for (const [state, filter, code] of [
+    ...[0, 1, 2].map((state) => [state, scope, 'PERMISSION_CUSTOM_ACCESS_REQUIRES_ENABLED_AUTHORIZATION']),
+    [3, scope.replace('x_contactid', 'unknown_column'), 'PERMISSION_CUSTOM_ACCESS_FILTER_UNSUPPORTED'],
+    [3, scope.replace('<filter>', '<filter><filter/>'), 'PERMISSION_CUSTOM_ACCESS_FILTER_UNSUPPORTED'],
+    [3, scope.replace('name="x_item"', 'name="x_order"'), 'PERMISSION_CUSTOM_ACCESS_FILTER_UNSUPPORTED'],
+  ]) {
+    const { sim, call } = await site(t, state, customAccess(filter), 'exported');
+    assert.equal((await call('GET', '/_api/x_items')).status, 403);
+    assert.ok(sim.state().diagnostics.some((item) => item.code === code));
   }
 });
 

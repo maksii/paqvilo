@@ -13,6 +13,8 @@ import { guidKey } from './dataverse-values.mjs';
 import { contentDisposition, fileNameHeader } from './response-headers.mjs';
 import { authorizeGrant, validateServiceProfile } from './local-organization-service.mjs';
 import { denied as fieldDenied } from './dataverse-fls.mjs';
+import { stripJpegExif } from './portal-jpeg.mjs';
+import { pngThumbnail, stripPngExif } from './portal-png.mjs';
 
 const CHUNK_SIZE = 4194304;
 const BLOCK_LIMIT = 4194304; // The docs say a block is under 4 MB; the exact native bound is a guess.
@@ -799,7 +801,14 @@ export function install(api) {
     // canStoreFullImage defaults to false, as the metadata does, so size=full answers 204 unless the column stores full images.
     if (kind === 'image' && c.url.searchParams.get('size') === 'full' && def?.canStoreFullImage !== true)
       return { status: 204 };
-    const size = entry.data != null ? Buffer.from(String(entry.data), 'base64').length : entry.size;
+    // The bare portal image route and record projection use the same thumbnail bytes.
+    const thumbnail = kind === 'image' && c.url.searchParams.get('size') !== 'full';
+    const preview =
+      c.portalImage && thumbnail && entry.mimeType === 'image/png'
+        ? pngThumbnail(await readStoredBytes(api, entry))
+        : null;
+    const size =
+      preview?.length ?? (entry.data != null ? Buffer.from(String(entry.data), 'base64').length : entry.size);
     // Simple token names retain the organization file-column wire format. Other
     // names use the RFC 6266 fallback so Unicode and punctuation stay safe.
     const base = {
@@ -811,12 +820,11 @@ export function install(api) {
     };
     const range = header(c, 'range');
     // An image without size=full answers the thumbnail with no file headers at all.
-    const thumbnail = kind === 'image' && c.url.searchParams.get('size') !== 'full';
     if (range === undefined)
       return {
         status: 200,
         headers: { ...(thumbnail ? {} : base), ...(kind === 'file' ? { 'OData-Version': undefined } : {}) },
-        body: await readStoredBytes(api, entry),
+        body: preview ?? (await readStoredBytes(api, entry)),
       };
     const match = /^bytes=(\d+)-(\d*)$/.exec(String(range).trim());
     if (!match) throw plain(invalid('The Range header must be bytes=start-end.'));
@@ -843,7 +851,7 @@ export function install(api) {
         'OData-Version': '4.0',
         'Content-Range': `bytes ${start}-${end}/${size}`,
       },
-      body: await readStoredBytes(api, entry, { start, end }),
+      body: preview ? preview.subarray(start, end + 1) : await readStoredBytes(api, entry, { start, end }),
     };
   }
 
@@ -874,10 +882,12 @@ export function install(api) {
     id,
     column,
     size = /** @type {unknown} */ (null),
+    range = /** @type {unknown} */ (null),
     content = null,
     fileName = null,
     contentType = null,
     defaultName = false,
+    portalImage = false,
   } = {}) {
     validateServiceProfile(principal);
     const mapping = store.resolveMapping(entity);
@@ -893,27 +903,33 @@ export function install(api) {
       return { statusCode: (await clear({ authorized: true }, { mapping, id, ...found })).status, body: {} };
     const url = new URL(`http://localhost/${download && size === 'full' ? '?size=full' : ''}`);
     if (download) {
-      const answer = await downloadFile({ authorized: true, url, headers: {} }, { mapping, id, ...found });
+      const headers = typeof range === 'string' ? { range } : {};
+      const answer = await downloadFile({ authorized: true, url, headers, portalImage }, { mapping, id, ...found });
       if (answer.status === 204) return { statusCode: 204, body: {} };
       const entry = filesRead(store)[row[column]];
       const bytes = Buffer.from(answer.body ?? []);
       // file: the stored entry's name, size and MIME type, for callers that send their own download headers (the portal /_api).
       return {
-        statusCode: 200,
+        statusCode: answer.status,
         body: { '$content-type': entry?.mimeType ?? 'application/octet-stream', $content: bytes.toString('base64') },
         file: {
           name: entry?.name ?? column,
-          size: bytes.length,
+          size: answer.status === 206 ? Number(answer.headers['x-ms-file-size']) : bytes.length,
           mimeType: entry?.mimeType ?? 'application/octet-stream',
         },
+        ...(answer.status === 206 ? { headers: answer.headers } : {}),
       };
     }
     const shaped =
       content !== null && typeof content === 'object' && !Buffer.isBuffer(content) && !(content instanceof Uint8Array);
     const raw = shaped ? content.$content : content;
     if (raw == null) throw invalid('The file content is required.');
-    const bytes =
+    let bytes =
       Buffer.isBuffer(raw) || raw instanceof Uint8Array ? Buffer.from(raw) : Buffer.from(String(raw), 'base64');
+    if (portalImage && found.kind === 'image') {
+      assertSize(found.kind, maxBytes(found.kind, found.def), bytes.length);
+      bytes = sniffImage(bytes) === 'image/jpeg' ? stripJpegExif(bytes) : stripPngExif(bytes);
+    }
     // defaultName (the portal /_api, whose documented sample sends no name): the stored file's name, else <column>.bin.
     // The name the platform stores for a nameless portal upload is a guess.
     const name = fileName || (defaultName ? (filesRead(store)[row[column]]?.name ?? `${column}.bin`) : null);

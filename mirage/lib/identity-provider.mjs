@@ -148,6 +148,7 @@ function verifyPkce(entry, verifier) {
   assets = [],
   fullPicker = null,
   provision = async () => {},
+  siteAdmission = () => false,
   allowRedirect = () => false,
   clock = () => Date.now(),
   // The runtime's trace store (docs/design/tracing.md): each request is an http root of host identity-provider, joined to
@@ -410,7 +411,9 @@ function verifyPkce(entry, verifier) {
     const parameters = new URLSearchParams(query);
     for (const [key, value] of Object.entries({ ...extras, ...params })) if (value) parameters.set(key, value);
     if (parameters.get('view') === 'picker') return chooserResults(report, parameters, action, chooserWork);
-    const policy = newUserPolicy(settings, registration(), provider, params),
+    const policy = siteAdmission(params)
+        ? { allowed: false }
+        : newUserPolicy(settings, registration(), provider, params),
       presentation = parameters.get('presentation') === 'dialog' ? 'dialog' : settings.presentation;
     const requested =
       [
@@ -684,15 +687,16 @@ function verifyPkce(entry, verifier) {
               'login_required',
               'prompt=none: no user is signed in to the local identity provider in this browser and login_hint names no preset user.',
             );
-          if (silent.contactId) await provision(provider, silent);
+          if (silent.contactId && !siteAdmission(params)) await provision(provider, silent);
           return answer(res, provider, params, silent);
         }
         const match = prompts.length ? null : hinted(list, params.login_hint);
         if (!match) return respond(res, 200, chooser(provider, params, extras, list, url.searchParams));
-        await provision(provider, match);
+        if (!siteAdmission(params)) await provision(provider, match);
         return answer(res, provider, params, match);
       }
       if (form.subject === 'new') {
+        if (siteAdmission(params)) return fail(res, 403, 'Private site admission requires an existing local identity.');
         const policy = newUserPolicy(settings, registration(), provider, params);
         if (!policy.allowed)
           return fail(
@@ -725,7 +729,7 @@ function verifyPkce(entry, verifier) {
       }
       const user = list.find((item) => item.subject === form.subject);
       if (!user) return fail(res, 400, 'Choose one of the preset users.');
-      await provision(provider, user);
+      if (!siteAdmission(params)) await provision(provider, user);
       return answer(res, provider, params, user);
     }
     if (req.method === 'GET' && route === 'oauth2/logout') {

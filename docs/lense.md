@@ -148,19 +148,23 @@ A ticked setting is not proof that the browser serves the endpoint; the `Server 
 Run `npx --no-install paqvilo lense --help` for every option; [command-line usage](cli.md) covers output streams and
 exit status.
 
-| Command                | Purpose                                                                                    |
-| ---------------------- | ------------------------------------------------------------------------------------------ |
-| `list`, `use`          | Show targets and settings in effect; remember a site/environment in `.env`                 |
-| `doctor`               | Check configuration, source mapping, Solution inputs and baseline offline                  |
-| `map`, `resources`     | Online-to-local mappings; editable source descriptors and metadata relationships (offline) |
-| `audit --all --strict` | Inventory export code independently and expose blocked or unaccounted resources            |
-| `analyze`              | [Offline source analysis](static-analysis.md)                                              |
-| `dev`                  | Dedicated browser with local overlays, watching saves                                      |
-| `status`               | Compare local web files with what the environment serves to an anonymous request           |
-| `verify`               | Edit a disposable copy and check the browser applies supported changes                     |
-| `agent`                | Inspect and control a running owned browser ([reference](#agent-api-reference))            |
-| `model-driven`         | `inspect` or `dev` (default) of exported Solution web resources and mapped PCF bundles     |
-| `mirage`               | `init`, `start`, `dev`, `status`, `inspect`, `stop` of local [Mirage](../mirage/README.md) |
+| Command                | Purpose                                                                                                                        |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `list`, `use`          | Show targets and settings in effect; remember a site/environment in `.env`                                                     |
+| `doctor`               | Check configuration, source mapping, Solution inputs and baseline offline                                                      |
+| `map`, `resources`     | Online-to-local mappings; editable source descriptors and metadata relationships (offline)                                     |
+| `audit --all --strict` | Inventory export code for every configured environment and fail on gaps, blocked or disabled resources, and source diagnostics |
+| `analyze`              | [Offline source analysis](static-analysis.md)                                                                                  |
+| `dev`                  | Dedicated browser with local overlays, watching saves                                                                          |
+| `status`               | Compare local web files with what the environment serves to an anonymous request                                               |
+| `verify`               | Edit a disposable copy and check the browser applies supported changes                                                         |
+| `agent`                | Inspect and control a running owned browser ([reference](#agent-api-reference))                                                |
+| `model-driven`         | `inspect` or `dev` (default) of exported Solution web resources and mapped PCF bundles                                         |
+| `mirage`               | `init`, `start`, `dev`, `status`, `inspect`, `stop` of local [Mirage](../mirage/README.md)                                     |
+
+Use repeated `verify --verify-path /en/ --verify-path /fr/` to exercise multiple pages on one site and environment.
+Each page gets a separate disposable source copy and evidence report. The JSON result includes the requested pages,
+individual outcomes, and evidence paths. Configured form script kinds that the page does not render are listed as skips.
 
 - `doctor --all --mirage --json` gates on Lense, Sources and Mirage readiness. Without `--mirage` the exit status covers
   Lense only and source diagnostics stay warnings; each site line names all three states. Duplicate exported YAML keys

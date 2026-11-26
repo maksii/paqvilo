@@ -696,3 +696,18 @@ test('observed listODataFeeds names whether the site still serves list OData fee
   );
   assert.throws(() => observedConfig({ listODataFeeds: 'maybe', evidence: 'Invented feed capture' }), /listODataFeeds/);
 });
+
+test('a wildcard exemption expiry is an exact UTC instant and needs an exempt observation', () => {
+  const until = '2027-01-05T16:00:00.000Z';
+  const evidence = 'Invented site exemption';
+  assert.equal(
+    observedConfig({ webApiWildcard: 'exempt', webApiWildcardExpiresAt: until, evidence }).webApiWildcardExpiresAt,
+    until,
+  );
+  assert.throws(() => observedConfig({ webApiWildcardExpiresAt: until, evidence }), /webApiWildcardExpiresAt/);
+  for (const invalid of ['2027-01-05', '2027-02-30T16:00:00Z', '2027-01-05T16:00:00-02:00'])
+    assert.throws(
+      () => observedConfig({ webApiWildcard: 'exempt', webApiWildcardExpiresAt: invalid, evidence }),
+      /webApiWildcardExpiresAt/,
+    );
+});

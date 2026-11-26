@@ -554,6 +554,53 @@ async function readControlSlot({ parent, name, readFile }) {
   return { controls, assets, diagnostics };
 }
 
+/** Whether a native field binding names the control's declared bound properties of a non-dataset control. */
+function validNativeBinding(control, nativeBinding) {
+  const properties = nativeBinding.properties;
+  return !(
+    control.dataset ||
+    typeof nativeBinding.id !== 'string' ||
+    !nativeBinding.id ||
+    !Array.isArray(properties) ||
+    !properties.length ||
+    properties.some(
+      (name) => !control.properties.some((property) => property.name === name && property.usage === 'bound'),
+    )
+  );
+}
+
+/** The control's resolved datasets, bound to the native list view when there is one; or the first error. */
+function resolveCodeComponentDatasets(control, { args, metadata, mappings, schema, nativeDataset }) {
+  const datasets = [];
+  for (const dataset of control.datasets ?? []) {
+    const bindingArgs = nativeDataset ? { ...args, [dataset.name]: nativeDataset.viewId } : args;
+    const result = resolveComponentDataset(dataset, { args: bindingArgs, metadata, mappings, schema });
+    if (result.error) return { error: result.error };
+    if (nativeDataset) {
+      if (result.dataset.entity !== nativeDataset.entity)
+        return { error: `Code component ${schema} has a native dataset view for a different table.` };
+      Object.assign(result.dataset, {
+        baseFilter: nativeDataset.baseFilter,
+        details: nativeDataset.details,
+        pageSize: nativeDataset.pageSize,
+      });
+    }
+    datasets.push(result.dataset);
+  }
+  return { datasets };
+}
+
+/** The user language the PCF host reports for the selected website language. */
+function codeComponentLanguage(language) {
+  return language
+    ? {
+        code: language.code,
+        lcid: languageLcid(language),
+        isRTL: /^(ar|fa|he|ur)(-|$)/i.test(language.code ?? ''),
+      }
+    : null;
+}
+
 export function renderCodeComponent({
   name,
   args = {},
@@ -564,6 +611,7 @@ export function renderCodeComponent({
   metadata = {},
   language,
   nativeBinding,
+  nativeDataset,
   diagnostic,
   onRendered,
 }) {
@@ -573,6 +621,7 @@ export function renderCodeComponent({
   const control = schema && catalog.controls.get(schema);
   const unsupported = (message, details = {}) => {
     diagnostic?.({ code: 'PCF_HOST_UNSUPPORTED', name, schema, message, ...details });
+    if (nativeDataset) return null;
     return `<div role="alert" data-mirage-component="codecomponent">${escape(message)}</div>`;
   };
   if (!schema)
@@ -591,29 +640,26 @@ export function renderCodeComponent({
   // The Power Pages host supplies no platform libraries: virtual (React) components answer PCF_VIRTUAL_UNSUPPORTED.
   const admission = pcfAdmission({ ...control, name: schema });
   if (!admission.admitted) return unsupported(admission.reason, { reason: admission.code });
-  if (nativeBinding) {
-    const properties = nativeBinding.properties;
-    if (
-      control.dataset ||
-      typeof nativeBinding.id !== 'string' ||
-      !nativeBinding.id ||
-      !Array.isArray(properties) ||
-      !properties.length ||
-      properties.some(
-        (name) => !control.properties.some((property) => property.name === name && property.usage === 'bound'),
-      )
-    )
-      return unsupported(
-        `Code component ${schema} has no valid single-field native binding to its declared bound properties. Input-only and dataset properties cannot save this field.`,
-      );
-  }
-  const datasets = [];
-  for (const dataset of control.datasets ?? []) {
-    const result = resolveComponentDataset(dataset, { args, metadata, mappings, schema });
-    if (result.error) return unsupported(result.error);
-    datasets.push(result.dataset);
-  }
-  const id = `pcf-${createHash('sha256').update(schema).update(json(args)).digest('hex').slice(0, 16)}`;
+  if (
+    nativeDataset &&
+    (control.datasets?.length !== 1 || (nativeDataset.property && control.datasets[0].name !== nativeDataset.property))
+  )
+    return unsupported(`Code component ${schema} requires one matching exported native dataset property.`);
+  if (nativeBinding && !validNativeBinding(control, nativeBinding))
+    return unsupported(
+      `Code component ${schema} has no valid single-field native binding to its declared bound properties. Input-only and dataset properties cannot save this field.`,
+    );
+  const { datasets, error } = resolveCodeComponentDatasets(control, {
+    args,
+    metadata,
+    mappings,
+    schema,
+    nativeDataset,
+  });
+  if (error) return unsupported(error);
+  const hash = createHash('sha256').update(schema).update(json(args));
+  if (nativeDataset) hash.update(json(nativeDataset));
+  const id = `pcf-${hash.digest('hex').slice(0, 16)}`;
   const defaultLanguage = (portal.websiteLanguages ?? []).find((language) => language.isDefault);
   const selectedLanguage = language ?? portal.language ?? defaultLanguage;
   const localized = localizedStrings(control, selectedLanguage, defaultLanguage, (entry) =>
@@ -628,13 +674,7 @@ export function renderCodeComponent({
     sourceAssets: undefined,
     args,
     nativeBinding,
-    language: selectedLanguage
-      ? {
-          code: selectedLanguage.code,
-          lcid: languageLcid(selectedLanguage),
-          isRTL: /^(ar|fa|he|ur)(-|$)/i.test(selectedLanguage.code ?? ''),
-        }
-      : null,
+    language: codeComponentLanguage(selectedLanguage),
     identity: { id: identity?.id ?? identity?.contactId ?? null, roles: identity?.roles ?? [] },
     mappings: Object.fromEntries(
       Object.entries(mappings).map(([name, mapping]) => [

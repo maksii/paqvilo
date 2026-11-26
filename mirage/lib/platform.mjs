@@ -37,6 +37,8 @@ import {
   appendRedirectRecordId,
   nativeFormSubmissionContext,
   formCreateAllowed,
+  formAttachmentCount,
+  formAttachmentLimit,
 } from './form-service.mjs';
 import { formErrorPanel, createAccessDeniedForm } from './form-error-presentation.mjs';
 import { deniedPageRoute } from './redirects.mjs';
@@ -47,6 +49,7 @@ import { portalLanguage } from './portal-languages.mjs';
 import { clientPortalObjectRuntime } from './portal-client-object.mjs';
 import { parseDateValue } from './dataverse-values.mjs';
 import { nativeFormActions } from './native-form-actions.mjs';
+import { webApiPolicy } from './webapi-policy.mjs';
 import { timeZoneChoices } from './platform-time-zones.mjs';
 import {
   missingLiquidComponent,
@@ -446,6 +449,11 @@ function captchaChallenge(unique, pathname, guid = randomUUID(), selfClose = fal
     `${applicationRoot(pathname)}Telerik.Web.UI.WebResource.axd?type=${type}&amp;isc=cust&amp;guid=${guid}`;
   return `<img id="${client}_CaptchaImageUP" alt="This&#32;is&#32;a&#32;CAPTCHA&#32;image,&#32;use&#32;shortcut&#32;Ctrl&#32;+&#32;Alt&#32;+&#32;P&#32;to&#32;play&#32;the&#32;alphabet&#32;audio&#32;for&#32;this&#32;image" src="${resource('rca')}" style="height:50px;width:180px;display:block;"${selfClose ? ' /' : ''}><a id="${client}_CaptchaLinkButton" class="rcRefreshImage" title="Generate&#32;a&#32;new&#32;image" href="javascript:__doPostBack(&#39;${attr(jsText(unique))}$CaptchaLinkButton&#39;,&#39;&#39;)" style="display:block;">Generate a new image</a><a href="${resource('cah')}" id="${client}_CaptchaAudioCodeUP" title="Play&#32;the&#32;audio&#32;code" class="rcCaptchaAudioLink" style="display:block;">Play the audio code</a>`;
 }
+function renderFixtureCaptcha(unique, challenge) {
+  const client = unique.replaceAll('$', '_');
+  return `<div class="tr"><div class="captcha-cell" id="captcha"><span id="${attr(client)}_ctl00" style="display:none"></span><input type="hidden" data-pp-captcha-challenge name="${attr(unique)}$FixtureChallengeToken" value="${attr(challenge.id)}"><label for="${attr(client)}_Answer">${escape(challenge.prompt)}</label><input type="text" data-pp-captcha-answer name="${attr(unique)}$FixtureAnswerToken" id="${attr(client)}_Answer" maxlength="80" autocomplete="off" required></div></div>`;
+}
+
 /** The RadCaptcha control after a form's honeypot box; rcInvalid after a rejected answer. */
 function captchaControl(unique, pathname, invalid = false) {
   const client = unique.replaceAll('$', '_');
@@ -520,7 +528,7 @@ export function injectRuntime(
   languages = null,
   // rootTraceId: the page's trace-store trace id; sent: shown the document as it leaves here (the caller's record of
   // what it answers), it changes nothing
-  { rootTraceId = null, sent = null } = {},
+  { rootTraceId = null, sent = null, site = {} } = {},
 ) {
   // The trace id travels in the x-sim-trace-id header and the runtime script only: a meta
   // element would shift every head child the platform renders (charset, viewport, links).
@@ -529,6 +537,7 @@ export function injectRuntime(
   const runtime = clientRuntime(token, revision, identity, traceId, {
     ...pageSite(html),
     ...(languages?.length ? { languages } : {}),
+    ...site,
     rootTraceId,
   });
   const script = hasPlatformBundles(html)
@@ -539,7 +548,7 @@ export function injectRuntime(
   // fields only (the bodies carry no __RequestVerificationToken; lib/native-postback.mjs
   // nativeViewStateKey, lib/webforms-compat.js).
   // Decode the attribute once: chained replacements would decode nested entities twice.
-  if (token)
+  if (token && !site.isSpaSite)
     html = html.replace(
       /(<input type="hidden" name="__VIEWSTATE" id="__VIEWSTATE" value=")([^"]*)(")/g,
       (_match, open, value, close) =>
@@ -557,7 +566,7 @@ export function injectRuntime(
   // the native app bundle, so authored ready handlers are registered first. Documents
   // with the platform bundles get it from the app bundle's local equivalent.
   const grid = `<script src="${NATIVE_GRID_SCRIPT}" data-paqvilo-mirage-native></script>`;
-  if (!html.includes(NATIVE_GRID_SCRIPT) && !hasPlatformBundles(html))
+  if (!site.isSpaSite && !html.includes(NATIVE_GRID_SCRIPT) && !hasPlatformBundles(html))
     html = /<\/body>/i.test(html) ? html.replace(/<\/body>(?![\s\S]*<\/body>)/i, `${grid}$&`) : html + grid;
   const answered = /<head\b[^<>]*>/i.test(html)
     ? html.replace(/<head\b[^<>]*>/i, (head) => head + script)
@@ -1596,7 +1605,10 @@ async function renderListGrid(model, context, options) {
       websiteId,
       viewId: model.views[0].id,
       variant: bootstrapVariant(options.portal.settings),
-      culture: options.portal.websiteLanguages?.find((candidate) => candidate.isDefault)?.code ?? 'en-US',
+      culture:
+        context.__language?.code ??
+        options.portal.websiteLanguages?.find((candidate) => candidate.isDefault)?.code ??
+        'en-US',
     });
   const language = requestLanguage(context, options.portal);
   const page = `/_portal/modal-form-template-path/${websiteId}`;
@@ -2073,6 +2085,30 @@ function entityListLayout(listMetadata, model, modern) {
   return modern ? 'modern' : 'grid';
 }
 
+/**
+ * The dataset code component a list configured with one renders (component), or the fallback notice above its native
+ * grid when no supported view binding is available; neither for a list without a code component.
+ */
+async function entityListCodeComponent(list, model, options) {
+  if (!truthy(fieldOf(list.metadata, 'iscodecomponent'))) return { notice: '' };
+  const name = options.metadata?.entities?.[model.entity]?.grid?.control;
+  const details = options.portal.pages?.find((page) => canonicalId(page.id) === model.detailsPage)?.url;
+  const supported =
+    !model.approximated &&
+    model.views.length === 1 &&
+    !model.calendar &&
+    !truthy(fieldOf(list.metadata, 'map_enabled')) &&
+    !Object.values(model.userFilters).some(Boolean);
+  const component =
+    supported &&
+    (await renderNativeDataset(options, model, {
+      name,
+      details: details ? { url: details, idParameter: model.idParameter } : undefined,
+    }));
+  if (component) return { component };
+  return { notice: nativeDatasetFallback(options, `List ${list.name}`, { component: 'entitylist', list: list.id }) };
+}
+
 async function renderEntityList(name, context, options) {
   const list = findList(options.portal, options.args, name);
   if (!list) {
@@ -2112,18 +2148,6 @@ async function renderEntityList(name, context, options) {
       options.args?.name == null &&
       context.key != null &&
       String(context.key) === String(key));
-  let notice = '';
-  if (builtin && truthy(fieldOf(list.metadata, 'iscodecomponent'))) {
-    const message = `List ${list.name} uses a configured dataset code component. Its hosted list binding is not implemented locally; the native grid below is a fallback. Use an explicit exported view/table binding with a standard Liquid code component for local dataset development.`;
-    options.diagnostic?.({
-      code: 'PCF_NATIVE_DATASET_UNSUPPORTED',
-      severity: 'warning',
-      component: 'entitylist',
-      list: list.id,
-      message,
-    });
-    notice = `<div role="alert" data-mirage-component="codecomponent">${escape(message)}</div>`;
-  }
   if (!builtin) return { context: { entitylist: drop }, html: '' };
   // Render provenance (lib/component-provenance.mjs): the list, its views and its action settings.
   const modern = /^true$/i.test(String(context.isModern ?? options.args?.isModern ?? ''));
@@ -2139,6 +2163,8 @@ async function renderEntityList(name, context, options) {
     settings: model.settings ?? {},
     scriptRecord: list.js != null ? list.metadata : null,
   });
+  const { component, notice } = await entityListCodeComponent(list, model, options);
+  if (component) return { context: { entitylist: drop }, html: component };
   // The design studio's Modern list toggle is exported as the include's isModern argument (platform-changes.mjs).
   if (/^true$/i.test(String(context.isModern ?? options.args?.isModern ?? ''))) {
     // The same rule preflight applies (platform-changes.mjs modernListFallback); page controls are a render-time case.
@@ -2153,6 +2179,35 @@ async function renderEntityList(name, context, options) {
     });
   }
   return { context: { entitylist: drop }, html: notice + (await renderListGrid(model, context, options)) };
+}
+
+async function renderNativeDataset(options, model, { name, args = {}, ...binding }) {
+  if (!options.codeComponent || !name || model.views.length !== 1) return null;
+  try {
+    // The portal PCF facade reads the view through the portal Web API. A table that cannot use that
+    // surface keeps its working native grid.
+    const policy = webApiPolicy(options.portal, options.store, model.entity);
+    for (const field of model.views[0].fields ?? []) policy.assert(field.name);
+    if (binding.baseFilter) policy.assert(binding.baseFilter.column);
+  } catch {
+    return null;
+  }
+  return options.codeComponent({
+    name,
+    args,
+    nativeDataset: {
+      entity: model.entity,
+      viewId: model.views[0].id,
+      pageSize: Math.min(5000, Math.max(1, Math.floor(model.pageSize) || 25)),
+      ...binding,
+    },
+  });
+}
+
+function nativeDatasetFallback(options, label, source) {
+  const message = `${label} uses a configured dataset code component. No supported exported view binding is available locally; the native grid below is a fallback.`;
+  options.diagnostic?.({ code: 'PCF_NATIVE_DATASET_UNSUPPORTED', severity: 'warning', ...source, message });
+  return `<div role="alert" data-mirage-component="codecomponent">${escape(message)}</div>`;
 }
 
 async function renderEntityView(name, context, options) {
@@ -2333,6 +2388,7 @@ async function renderSearchIndex(context, options) {
     config: options.config,
     identity: context.user ?? context.identity,
     query: args.query ?? '',
+    recoverQuerySyntax: true,
     filter: args.filter ?? null,
     logicalNames: args.logical_names ?? null,
     page: args.page ?? 1,
@@ -3701,19 +3757,6 @@ function prepopulateValue(row, identity, now) {
       ...(options.referenceForm ? { settings: {} } : {}),
     };
     const gridMetadata = metadataFor(metadataRows, 100000003, (row) => fieldOf(row, 'subgrid_name') === cell.id);
-    let codeComponentNotice = '';
-    if (Number(fieldOf(gridMetadata, 'controlstyle')) === 756150001) {
-      const message = `Subgrid ${label} uses a configured dataset code component. Its hosted relationship binding is not implemented locally; the native related grid below is a fallback.`;
-      options.diagnostic?.({
-        code: 'PCF_NATIVE_DATASET_UNSUPPORTED',
-        severity: 'warning',
-        component: kind,
-        form: definition?.id,
-        grid: cell.id,
-        message,
-      });
-      codeComponentNotice = `<div role="alert" data-mirage-component="codecomponent">${escape(message)}</div>`;
-    }
     // A subgrid without a relationship (empty RelationshipName) lists its whole view and carries no
     // parent attributes.
     const unbound = !String(cell.relationship ?? '').trim();
@@ -3723,6 +3766,44 @@ function prepopulateValue(row, identity, now) {
         501,
         'SUBGRID_RELATIONSHIP_REQUIRED',
       );
+    let codeComponentNotice = '';
+    if (Number(fieldOf(gridMetadata, 'controlstyle')) === 756150001) {
+      const control = cell.codeComponent;
+      const parameters = Object.entries(control?.parameters ?? {});
+      const dataset = parameters.filter(([, parameter]) => parameter.kind === 'dataset');
+      const supported =
+        dataset.length === 1 &&
+        parameters.every(([, parameter]) => ['static', 'dataset'].includes(parameter.kind)) &&
+        !model.relationship?.intersect;
+      const binding = dataset[0]?.[1];
+      const component =
+        supported &&
+        (!binding.entity || binding.entity === model.entity) &&
+        (!binding.viewId || binding.viewId === model.views[0].id) &&
+        (await renderNativeDataset(options, model, {
+          name: control?.name,
+          args: Object.fromEntries(
+            parameters
+              .filter(([, parameter]) => parameter.kind === 'static')
+              .map(([name, parameter]) => [name, parameter.value]),
+          ),
+          property: dataset[0][0],
+          baseFilter: unbound ? undefined : { column: model.relationship.to, id: canonicalId(id) },
+        }));
+      if (component) {
+        const heading =
+          cell.showLabel === false
+            ? ''
+            : `<h3 class="${bs.info} form-subgrid-heading"><label class="field-label">${escape(label)}</label></h3>`;
+        extraControls.set(cell.id, `${heading}<div class="control">${component}</div>`);
+        continue;
+      }
+      codeComponentNotice = nativeDatasetFallback(options, `Subgrid ${label}`, {
+        component: kind,
+        form: definition?.id,
+        grid: cell.id,
+      });
+    }
     const actions = actionLinks(model.settings, {
       portal,
       requestUrl: context.request?.url ?? 'http://localhost/',
@@ -4080,7 +4161,6 @@ function prepopulateValue(row, identity, now) {
       fieldOf(componentMetadata, 'attachfileaccept') ?? fieldOf(componentMetadata, 'accept') ?? '',
     ).trim();
     const extensions = String(fieldOf(componentMetadata, 'attachfileacceptextensions') ?? '').trim();
-    const requiredFile = truthy(fieldOf(componentMetadata, 'attachfilerequired'));
     const multiple = truthy(
       fieldOf(componentMetadata, 'attachfileallowmultiple') ?? fieldOf(componentMetadata, 'allowmultiplefiles'),
     );
@@ -4089,19 +4169,9 @@ function prepopulateValue(row, identity, now) {
     // The control counts five files when several are allowed (platform default) unless the step sets its count.
     // The record's existing note attachments use up the count (a revisited start step whose
     // record already carries one attachment offers 2 of 3).
-    let attached = 0;
-    if (id && readProvider?.fetchXml) {
-      const xml = `<fetch><entity name="annotation"><all-attributes/><filter type="and"><condition attribute="objectid" operator="eq" value="${attr(canonicalId(id))}"/></filter></entity></fetch>`;
-      const rows = await readProvider.fetchXml(xml, identity).then(
-        (result) => result.entities ?? result.value ?? [],
-        () => [],
-      );
-      attached = rows.filter((row) => row.filename || truthy(row.isdocument)).length;
-    }
-    const maxFiles = Math.max(
-      0,
-      (Number(fieldOf(componentMetadata, 'maximumnooffiles')) || (multiple ? 5 : 1)) - attached,
-    );
+    const attached = await formAttachmentCount(readProvider, identity, schema.entity, id).catch(() => 0);
+    const requiredFile = !attached && truthy(fieldOf(componentMetadata, 'attachfilerequired'));
+    const maxFiles = Math.max(0, formAttachmentLimit(componentMetadata) - attached);
     const sizeMb = maxKb ? Math.round((maxKb / 1024) * 10) / 10 : 0;
     const kinds = [mime ? mime.replace(/\/\*$/, '').replace(/^[^/]+\//, '') : '', extensions]
       .filter(Boolean)
@@ -4340,6 +4410,7 @@ function prepopulateValue(row, identity, now) {
   // Hidden configuration consumed by the local postback runtime (scripts are
   // excluded from semantic DOM comparison).
   const queryName = source.queryName ?? 'id';
+  const transport = nativeFormTransport(options.observed ?? portal.observed);
   const submitConfig = {
     kind,
     formId: definition?.id ?? name,
@@ -4355,7 +4426,7 @@ function prepopulateValue(row, identity, now) {
       : {}),
     // A Power Pages export is a WebForms portal: native forms post the page back unless the
     // project selects the JSON transport (observed.nativeFormTransport: json).
-    ...(nativeFormTransport(options.observed ?? portal.observed) === 'postback' ? { transport: 'postback' } : {}),
+    ...(transport === 'postback' ? { transport } : {}),
     // A page rendered by a postback (hosted controls render their postback markup: multiselect-compat.js).
     ...(postback ? { postback: true } : {}),
     fields: fields
@@ -4367,6 +4438,10 @@ function prepopulateValue(row, identity, now) {
         name: field.name,
         id: field.id,
         control: controlForSubmit(field),
+        decimalSeparator:
+          transport === 'json' && decimalSeparator === ',' && ['decimal', 'money'].includes(field.control)
+            ? decimalSeparator
+            : undefined,
         readOnly: false,
         bindings: field.bindings,
       })),
@@ -4465,14 +4540,22 @@ function prepopulateValue(row, identity, now) {
     truthy(fieldOf(componentMetadata, 'captcharequired')) &&
     (!signedIn || truthy(fieldOf(componentMetadata, 'showcaptchaforauthenticatedusers')));
   const captchaInvalid = Boolean(postback?.validationErrors?.some((item) => item.field === 'captcha'));
-  const captchaHtml =
-    captchaShown && !readOnly && !autoSteps
-      ? captchaControl(
-          `${ids.names}captcha`,
-          new URL(context.request?.url ?? 'http://localhost/').pathname,
-          captchaInvalid,
-        )
-      : '';
+  const captchaVisible = captchaShown && !readOnly && !autoSteps;
+  const captchaUnique = `${ids.names}captcha`;
+  const issueOnResponse =
+    context.request?.method !== 'POST' || postback?.validationErrors?.length || postback?.outcome?.type === 'error';
+  const fixtureCaptcha =
+    captchaVisible && issueOnResponse
+      ? options.issueCaptcha?.({ kind, formId: definition?.id ?? name, stepId: schema.stepId })
+      : null;
+  let captchaHtml = '';
+  if (fixtureCaptcha) captchaHtml = renderFixtureCaptcha(captchaUnique, fixtureCaptcha);
+  else if (captchaVisible)
+    captchaHtml = captchaControl(
+      captchaUnique,
+      new URL(context.request?.url ?? 'http://localhost/').pathname,
+      captchaInvalid,
+    );
   if (captchaHtml)
     validators.push({
       id: `${ids.names.replaceAll('$', '_')}captcha_ctl00`,
@@ -4566,7 +4649,7 @@ function prepopulateValue(row, identity, now) {
     kind === 'webform' && truthy(fieldOf(definition?.metadata ?? {}, 'savechangeswarningonclose'))
       ? `<input type="hidden" name="${attr(ids.buttons)}confirmOnExit" id="confirmOnExit" value="true"><input type="hidden" name="${attr(ids.buttons)}confirmOnExitMessage" id="confirmOnExitMessage" value="${attr(formLabel(fieldOf(definition?.metadata ?? {}, 'savechangeswarningmessage'), ''))}">`
       : '';
-  const beforeProgress = `${runtime}<!--pp-native-form-->${captchaShown ? CAPTCHA_MARKER : ''}<div id="${attr(ids.wrapper)}"${viewState}>${formStartupMarkup(script)}<script type="application/json" data-paqvilo-mirage-form-config>${json(submitConfig)}</script>${kind === 'webform' ? '<div class="row">' : ''}`;
+  const beforeProgress = `${runtime}<!--pp-native-form-->${captchaShown && !fixtureCaptcha ? CAPTCHA_MARKER : ''}<div id="${attr(ids.wrapper)}"${viewState}>${formStartupMarkup(script)}<script type="application/json" data-paqvilo-mirage-form-config>${json(submitConfig)}</script>${kind === 'webform' ? '<div class="row">' : ''}`;
   const formContent = `${formInstructionsMarkup(instructions)}${confirmOnExit}${formHtml}`;
   if (progress && (progressTop || (!truncated && progressBottom))) {
     const offset = beforeProgress.length + (progressTop ? 0 : formContent.length);

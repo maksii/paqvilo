@@ -2826,9 +2826,13 @@ export function executeFlowDefinition({
       });
     return invokeConnector(request);
   };
-  // A row, recurrence, connector or on-demand (context.background) run completes without a Response; any other run must answer one.
+  // Power Pages request flows can omit the Response action entirely.
   const rowLike = ['dataverse', 'dataverse-action', 'recurrence', 'connector'].includes(trigger.kind),
-    answersWithout = rowLike || context.background || trigger.kind === 'http';
+    answersWithout =
+      rowLike ||
+      context.background ||
+      trigger.kind === 'http' ||
+      (trigger.kind === 'powerpages' && !contract.actions.some((action) => action.type === 'Response'));
   const resolveSecretParameters = function* () {
     for (const [name, secret] of parameters.secrets) {
       const answer = yield { secret, name };

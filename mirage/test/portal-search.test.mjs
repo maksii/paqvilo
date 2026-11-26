@@ -1,9 +1,11 @@
+// @test-kind contract: locally hosted portal search applies its documented query subset, authored search views and visitor permissions.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
+import { compilePortalSearchQuery } from '../lib/portal-search-query.mjs';
 import { signInHeaders } from '../testing.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
@@ -14,7 +16,10 @@ const entity = (name, columns) =>
 const view = (table, id, name, columns, filter = '') =>
   `<savedquery><savedqueryid>{${id}}</savedqueryid><querytype>0</querytype><isdefault>0</isdefault><LocalizedNames><LocalizedName description="${name}" languagecode="1033"/></LocalizedNames><fetchxml><fetch><entity name="${table}">${columns.map((column) => `<attribute name="${column}"/>`).join('')}${filter}</entity></fetch></fetchxml><layoutxml><grid><row>${columns.map((column) => `<cell name="${column}" width="100"/>`).join('')}</row></grid></layoutxml></savedquery>`;
 
-async function searchSite(t, { settings = [['Search/EnableAdditionalEntities', 'true']], markers = true } = {}) {
+async function searchSite(
+  t,
+  { settings = [['Search/EnableAdditionalEntities', 'true']], markers = true, moreItems = 0 } = {},
+) {
   const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'portal-search-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const files = {
@@ -25,7 +30,7 @@ async function searchSite(t, { settings = [['Search/EnableAdditionalEntities', '
     'portal/Main.pagetemplate.yml': 'adx_pagetemplateid: main\nadx_webtemplateid: main',
     'portal/Main.webtemplate.yml': 'adx_webtemplateid: main\nadx_name: Main',
     'portal/Main.webtemplate.source.html':
-      '<main id=probe>{% searchindex query: request.params.q, logical_names: request.params.ln, page: request.params.page, page_size: request.params.ps %}<p id=n>{{ searchindex.approximate_total_hits }}</p>{% for r in searchindex.results %}<li data-n="{{ r.number }}" data-url="{{ r.url }}" data-ln="{{ r.logical_name }}">{{ r.title }}|{{ r.fragment }}</li>{% endfor %}{% endsearchindex %}</main>',
+      '<main id=probe>{% searchindex query: request.params.q, filter: request.params.filter, logical_names: request.params.ln, page: request.params.page, page_size: request.params.ps %}<p id=n>{{ searchindex.approximate_total_hits }}</p>{% for r in searchindex.results %}<li data-n="{{ r.number }}" data-url="{{ r.url }}" data-ln="{{ r.logical_name }}">{{ r.title }}|{{ r.fragment }}</li>{% endfor %}{% endsearchindex %}</main>',
     'portal/sitesetting.yml':
       settings
         .map(([name, value], index) => `- adx_sitesettingid: s${index}\n  adx_name: ${name}\n  adx_value: "${value}"`)
@@ -81,6 +86,12 @@ async function searchSite(t, { settings = [['Search/EnableAdditionalEntities', '
         { x_itemid: id(2), x_name: 'Invented anchor', x_note: 'heavy', x_kind: 'open' },
         { x_itemid: id(3), x_name: 'Invented lantern spare', x_note: 'kept', x_kind: 'hidden' },
         { x_itemid: id(4), x_name: 'Lanterns pack', x_note: 'many', x_kind: 'open' },
+        ...Array.from({ length: moreItems }, (_, index) => ({
+          x_itemid: id(index + 10),
+          x_name: 'Paging fixture ' + String(index + 1).padStart(2, '0'),
+          x_note: 'paging probe',
+          x_kind: 'open',
+        })),
       ],
       x_secret: [{ x_secretid: id(5), x_name: 'Invented lantern secret' }],
       x_plain: [{ x_plainid: id(6), x_name: 'Invented lantern plain' }],
@@ -110,7 +121,7 @@ async function searchSite(t, { settings = [['Search/EnableAdditionalEntities', '
   const page = async (query, headers = {}) => {
     const response = await fetch(`${sim.url}/?${new URLSearchParams(query)}`, { headers });
     const html = await response.text();
-    assert.equal(response.status, 200, html.slice(0, 500));
+    assert.equal(response.status, 200, 'the Liquid search page returns results');
     const main = /<main id=probe>([\s\S]*?)<\/main>/.exec(html)[1];
     return {
       total: Number(/<p id=n>(\d*)<\/p>/.exec(main)[1]),
@@ -164,6 +175,80 @@ test('additional tables need Search/EnableAdditionalEntities and Search/Enabled 
   assert.equal((await disabled.page({ q: 'lantern' })).total, 0);
   const diagnostics = JSON.stringify(disabled.sim.state().diagnostics ?? []);
   assert.match(diagnostics, /PORTAL_SEARCH_DISABLED/);
+});
+
+test('portal search keeps phrases, operators, wildcard matching and term boosts distinct', async (t) => {
+  const { page } = await searchSite(t);
+  const titles = async (q) => (await page({ q })).items.map((item) => item.title);
+  assert.deepEqual(await titles('"bright lantern"'), ['Invented lantern']);
+  assert.deepEqual(await titles('"lantern bright"'), []);
+  assert.deepEqual(await titles('"invented bright"'), [], 'a phrase cannot span two columns');
+  assert.deepEqual(await titles('invented AND "bright lantern"'), ['Invented lantern']);
+  assert.deepEqual(await titles('(anchor OR lantern) AND bright'), ['Invented lantern']);
+  assert.deepEqual(await titles('invented NOT lantern'), ['Invented anchor']);
+  assert.deepEqual(await titles('invented +anchor -heavy'), []);
+  assert.deepEqual(await titles('anchor OR lan?erns'), ['Invented anchor', 'Lanterns pack']);
+  assert.deepEqual(await titles('anchor OR l*erns^2'), ['Lanterns pack', 'Invented anchor']);
+  assert.deepEqual(await titles('lantern AND lanterns'), [], 'plain words remain exact terms');
+});
+
+test('searchindex treats a malformed request query as literal terms and keeps paging', async (t) => {
+  const { page } = await searchSite(t);
+  const found = await page({ q: '(lantern -lanterns', ps: '1', page: '2' });
+  assert.equal(found.total, 2);
+  assert.deepEqual(
+    found.items.map(({ n, title }) => [n, title]),
+    [[2, 'Lanterns pack']],
+  );
+  assert.equal((await page({ q: '(*' })).total, 0, 'punctuation-only input must not become an empty query');
+});
+
+test('searchindex rejects an unsupported filter even when the visitor query recovers', async (t) => {
+  const { sim } = await searchSite(t);
+  const query = new URLSearchParams({ q: '(lantern', filter: 'unsupported' });
+  const response = await fetch(`${sim.url}/?${query}`);
+  assert.equal(response.status, 501);
+  assert.doesNotMatch(await response.text(), /Invented lantern/);
+  assert.match(JSON.stringify(sim.state().diagnostics), /PORTAL_SEARCH_FILTER_UNSUPPORTED/);
+});
+
+test('literal query recovery preserves the local length and nesting bounds', () => {
+  const code = { code: 'PORTAL_SEARCH_QUERY_INVALID' };
+  assert.throws(() => compilePortalSearchQuery('('.repeat(17), { recoverSyntax: true }), code);
+  assert.throws(() => compilePortalSearchQuery('x'.repeat(1025), { recoverSyntax: true }), code);
+  assert.throws(() => compilePortalSearchQuery('(lantern'), code);
+});
+
+test('the default search result pager preserves the current query and record type', async (t) => {
+  const { sim } = await searchSite(t, { moreItems: 11 });
+  const first = await fetch(sim.url + '/search/?q=paging%20probe&logicalNames=x_item');
+  assert.equal(first.status, 200);
+  const firstHtml = await first.text();
+  assert.match(firstHtml, /Paging fixture 01/);
+  assert.doesNotMatch(firstHtml, /Paging fixture 11/);
+  const next = /<a rel="next" href="([^"]+)"/.exec(firstHtml)?.[1].replaceAll('&amp;', '&');
+  assert.equal(next, '/search/?q=paging+probe&page=2&logicalNames=x_item');
+  const secondHtml = await (await fetch(sim.url + next)).text();
+  assert.match(secondHtml, /Paging fixture 11/);
+  assert.doesNotMatch(secondHtml, /Paging fixture 01|rel="next"/);
+  assert.match(secondHtml, /rel="prev" href="\/search\/\?q=paging\+probe&amp;page=1&amp;logicalNames=x_item"/);
+});
+
+// @test-kind security: record-type facets expose names and counts only for results this visitor can read.
+test('default record-type facets group readable results without exposing restricted table matches', async (t) => {
+  const { sim } = await searchSite(t, {
+    settings: [
+      ['Search/EnableAdditionalEntities', 'true'],
+      ['Search/RecordTypeFacetsEntities', 'Matching fixtures:x_item,x_secret'],
+    ],
+  });
+  const search = async (headers) => (await fetch(sim.url + '/search/?q=lantern', { headers })).text();
+  const anonymous = await search();
+  assert.match(anonymous, /aria-label="Record Type"/);
+  assert.match(anonymous, /logicalNames=x_item">Matching fixtures \(1\)/);
+  assert.doesNotMatch(anonymous, /x_secret|Invented lantern secret/);
+  const member = await search(signInHeaders(sim, 'alex', { roles: ['Member'] }));
+  assert.match(member, /logicalNames=x_item%2Cx_secret">Matching fixtures \(2\)/);
 });
 
 test('the default /search/ page renders the search results markup and states a disabled search', async () => {

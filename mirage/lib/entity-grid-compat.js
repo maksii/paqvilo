@@ -1467,7 +1467,7 @@
         case ACTION.Delete:
           return record.CanDelete ? 'delete-link' : null;
         case ACTION.Workflow:
-          return 'workflow-link';
+          return record.CanWrite && action.Workflow?.Id ? 'workflow-link' : null;
         case ACTION.Disassociate:
           return this.disassociateActionClass(record);
         case ACTION.Deactivate:
@@ -1618,6 +1618,8 @@
                 {
                   workflow: { LogicalName: 'workflow', Id: action.Workflow?.Id },
                   entity: { LogicalName: record.EntityName, Id: record.Id },
+                  base64SecureConfiguration: this.layout.Base64SecureConfiguration,
+                  filter: this.state.filter ?? this.userFilter(),
                 },
                 { json: false },
               ),

@@ -38,8 +38,8 @@
 // mirror with the provider's answer (a provider that applies $top answers one page; later pages page the local mirror);
 // pushing a parsed query and provider paging down is the upgrade path. SDK reads (Retrieve, RetrieveMultiple, FetchXML)
 // never read the mirror: they go to the provider's optional synchronous retrieveSync(ctx, id) and
-// retrieveMultipleSync(ctx, request) (readSync below), else answer 501 SdkVirtualReadUnsupported. Portal reads (store reads
-// outside the Web API records layer) read the mirror as the last Web API read or write left it.
+// retrieveMultipleSync(ctx, request) (readSync below), else answer 501 SdkVirtualReadUnsupported. Portal reads load fresh
+// provider rows into a request-local read scope before evaluating table permissions and the local query.
 //
 // Transactions. A data provider's plug-ins run in stage 30, the main core transaction stage of the operation; the pipeline's
 // transaction is a SQL transaction committed or aborted with the operation, and ExecuteTransaction and a $batch changeset run
@@ -502,6 +502,20 @@ const requestOf = (params) => {
   };
 };
 
+async function readPortalRows(state, mapping, id) {
+  const resolved = resolveTable(state, mapping);
+  if (!resolved.virtual || !assertProvider(state, resolved)) return null;
+  if (id != null && typeof resolved.provider.retrieve === 'function') {
+    const row = await providerRead(state, resolved, 'retrieve', id, null);
+    if (!row) return [];
+    row[mapping.idColumn] ??= id;
+    return [row];
+  }
+  // Fetch the complete set so portal row filters, joins, ordering and pagination run before projection.
+  const rows = await providerRead(state, resolved, 'retrieveMultiple', requestOf(null), null);
+  return rows.filter((row) => row[mapping.idColumn] != null);
+}
+
 // Replaces the mirror (all rows for a collection answer, the one row for a single answer) in one store write, without write hooks.
 async function mirror(api, mapping, rows, { id = null } = {}) {
   const logical = mapping.logicalName,
@@ -629,6 +643,7 @@ function install(api, options = {}) {
       return { virtual: resolved.virtual, provider: Boolean(resolved.provider), fallback: resolved.fallback };
     },
     readSync: (c, table, options) => readSync(state, resolve(table), c, options),
+    readPortalRows: (mapping, id) => readPortalRows(state, mapping, id),
     diagnostics: () => [...state.reporter.diagnostics],
   };
   // The SDK service and records.readInternal reach the synchronous reads through the store's record pipeline.

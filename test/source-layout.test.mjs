@@ -1,3 +1,4 @@
+// @test-kind contract: catalogue source selection and Lense's supported portal layout inventory.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -15,8 +16,7 @@ import {
 
 // The toolkit reads .powerpages-site short-key exports like PAC YAML, and a code-site project
 // through its .powerpages-site/ folder (`mirage init/dev/start`, `dev`, `doctor` and the other
-// catalogue commands resolve sources through loadConfig). A layout it cannot read (mspp_ YAML) is
-// refused with its layout named.
+// catalogue commands resolve sources through loadConfig). An empty project wrapper is refused with its layout named.
 
 const FIXTURE = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'test-browser', 'fixtures', 'code-site');
 const write = (root, files) => {
@@ -26,7 +26,7 @@ const write = (root, files) => {
   }
 };
 
-test('short-key exports and code-site projects are portal sources; mspp_ YAML is refused; adx_ exports and unpacked Solutions are unchanged', async (t) => {
+test('short-key exports, code-site projects, prefixed YAML exports and unpacked Solutions are portal sources', async (t) => {
   const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-layout-')));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   write(root, {
@@ -66,7 +66,9 @@ test('short-key exports and code-site projects are portal sources; mspp_ YAML is
   assert.equal(unsupportedSourceLayout(site), null);
   assert.equal(portalSourceDir(path.join(root, 'code')), site);
   assert.equal(portalSourceDir(path.join(root, 'classic')), path.join(root, 'classic'));
-  assert.equal(unsupportedSourceLayout(path.join(root, 'mspp'))?.dialect, 'enhanced-yaml');
+  assert.equal(unsupportedSourceLayout(path.join(root, 'mspp')), null);
+  assert.equal(detectFormat(path.join(root, 'mspp')), 'classic');
+  assert.equal(yamlKeyStyle(path.join(root, 'mspp')), 'mspp');
   // A project folder whose .powerpages-site/ holds no site is named, never served empty.
   assert.equal(unsupportedSourceLayout(path.join(root, 'empty-project'))?.dialect, 'code-site-project');
   assert.equal(detectFormat(path.join(root, 'classic')), 'classic');
@@ -81,10 +83,7 @@ test('short-key exports and code-site projects are portal sources; mspp_ YAML is
     loadConfig({ config, site: 'empty' }, {}),
     /source of site "empty"\) is a code-site project folder whose \.powerpages-site\/ folder holds short-key YAML/,
   );
-  await assert.rejects(
-    loadConfig({ config, site: 'mspp' }, {}),
-    /source of site "mspp"\) is PAC YAML with mspp_ keys, which the toolkit does not treat as a portal: use a PAC YAML export with adx_ keys, a \.powerpages-site export or the site's unpacked Solution \(powerpagecomponents\/\)/,
-  );
+  assert.equal((await loadConfig({ config, site: 'mspp' }, {})).sourceDir, path.join(root, 'mspp'));
   assert.equal((await loadConfig({ config, site: 'classic' }, {})).sourceDir, path.join(root, 'classic'));
 });
 

@@ -12,6 +12,7 @@ import {
   signInContent,
 } from '../lib/auth-session.mjs';
 import { signInHeaders } from '../testing/session.mjs';
+import { fixedClock } from '../lib/runtime-clock.mjs';
 import { makeFixtureDirectory, startLocalSimulator, writeFixtureFiles } from './support/origin-requests.mjs';
 
 const page = (id, name, partial, parent = 'home') =>
@@ -129,10 +130,13 @@ const initialState = (identity = { contactId: 'alex', roleSource: 'memberships',
   },
 });
 
-async function simulator(t, initial = initialState()) {
+async function simulator(t, initial = initialState(), { clock, settings = [] } = {}) {
   const dir = await makeFixtureDirectory(t, 'pp-auth-');
-  await writeFixtureFiles(dir, portalFiles);
-  const app = await startLocalSimulator(t, dir, initial);
+  await writeFixtureFiles(dir, {
+    ...portalFiles,
+    'sitesetting.yml': [portalFiles['sitesetting.yml'], ...settings].join('\n'),
+  });
+  const app = await startLocalSimulator(t, dir, initial, { clock });
   const state = await (await fetch(app.url + '/__sim/api/state?summary=1')).json();
   // A browser sends Fetch Metadata (Sec-Fetch-Site) with every request.
   const browser = (target, { cookie, headers = {}, ...init } = {}) =>
@@ -565,6 +569,40 @@ test('the session API signs the calling browser in and out (CSRF-protected) with
   snapshot.tables.contact.find((row) => row.contactid === 'alex').statecode = 1;
   await app.store.replaceState(snapshot);
   assert.equal(field(await text(await browser('/', { cookie })), 'user'), 'anonymous');
+});
+
+// @test-kind security: an explicitly bounded application cookie must lose portal access when its signed deadline passes.
+test('configured fixed application session expiry survives a web-role change', async (t) => {
+  const clock = fixedClock();
+  const state = initialState();
+  state.simulator.identityScope = 'configured';
+  const settings = [
+    '- adx_sitesettingid: absolute\n  adx_name: Authentication/ApplicationCookie/ExpireTimeSpan\n  adx_value: "00:00:10"',
+    '- adx_sitesettingid: sliding\n  adx_name: Authentication/ApplicationCookie/SlidingExpiration\n  adx_value: "false"',
+  ];
+  const { app, browser, csrf, signIn } = await simulator(t, state, { clock, settings });
+  const { response, cookie } = await signIn('alex', '/members/');
+  assert.equal(response.status, 302);
+  assert.equal((await browser('/members/', { cookie })).status, 200);
+
+  clock.advance(9999);
+  const update = await fetch(app.adminOrigin + '/__sim/api/session/roles', {
+    method: 'POST',
+    headers: { cookie, origin: app.adminOrigin, 'content-type': 'application/json', 'x-sim-csrf': csrf },
+    body: JSON.stringify({ roles: ['Member'] }),
+  });
+  assert.equal(update.status, 200);
+  const updated = (await update.json()).cookie;
+  const updatedCookie = `${updated.name}=${updated.value}`;
+  assert.equal(update.headers.get('set-cookie').split(';')[0], updatedCookie);
+  assert.equal((await browser('/members/', { cookie: updatedCookie })).status, 200);
+
+  clock.advance(1);
+  assert.equal((await browser('/members/', { cookie })).status, 302, 'original application session expires');
+  assert.equal((await browser('/members/', { cookie: updatedCookie })).status, 302);
+  assert.equal(field(await text(await browser('/', { cookie: updatedCookie })), 'user'), 'anonymous');
+  assert.equal((await browser('/members/')).status, 200, 'cookie-less tooling still uses its configured identity');
+  assert.equal((await browser('/members/', { cookie: (await signIn('alex')).cookie })).status, 200);
 });
 
 test('simulator.identityScope configured (alias all-requests) gives cookie-less portal requests the configured identity', async (t) => {

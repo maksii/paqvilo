@@ -5,6 +5,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { parseFragment } from 'parse5';
+import { PNG } from 'pngjs';
 import {
   compareRequests,
   diffDom,
@@ -581,6 +582,37 @@ test('compareScenario verdicts, allowlist classification, second-live variance a
   assert.match(md, /PASS 1 · ALLOWED 1 · FAIL 1 · ERROR 1/);
   assert.match(md, /\| s1 \| FAIL \| 1 \| 0 \| 1 \|/);
   assert.match(md, /\| dom \| text \|/);
+});
+
+test('an opted-in screenshot records exact pixel differences and reports missing evidence', async (t) => {
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-visual-baseline-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const liveDir = path.join(root, 'live');
+  const mirageDir = path.join(root, 'mirage');
+  await Promise.all([writeFolder(liveDir), writeFolder(mirageDir)]);
+  const compare = (compareScreenshot) =>
+    compareScenario({ scenario: { id: 'page', compareScreenshot }, liveDir, mirageDir, allowlist: { entries: [] } });
+  assert.equal((await compare(false)).verdict, 'PASS');
+  const missing = await compare(true);
+  assert.equal(missing.verdict, 'ERROR');
+  assert.match(missing.reason, /Screenshot evidence unavailable/);
+
+  const screenshot = new PNG({ width: 2, height: 2 });
+  screenshot.data.fill(255);
+  await fs.writeFile(path.join(liveDir, 'screenshot.png'), PNG.sync.write(screenshot));
+  await fs.writeFile(path.join(mirageDir, 'screenshot.png'), PNG.sync.write(screenshot));
+  assert.equal((await compare(true)).verdict, 'PASS');
+  screenshot.data.fill(0, 0, 3);
+  await fs.writeFile(path.join(mirageDir, 'screenshot.png'), PNG.sync.write(screenshot));
+  const different = await compare(true);
+  assert.equal(different.verdict, 'FAIL');
+  assert.equal(different.screenshot.different, 1);
+  assert.equal(different.deltas[0].scope, 'screenshot');
+
+  await fs.link(path.join(liveDir, 'screenshot.png'), path.join(root, 'linked-screenshot.png'));
+  const linked = await compare(true);
+  assert.equal(linked.verdict, 'ERROR');
+  assert.match(linked.reason, /independently owned file/);
 });
 
 test('JSON that differs below the nesting limit yields one delta for the subtree, identical subtrees none', () => {

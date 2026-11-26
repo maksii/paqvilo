@@ -152,8 +152,18 @@ function parentPredicate(permission, role, chain, context) {
   return parentResult ? { scope: permission.scope ?? 'global', relationship: rel, parent: parentResult } : parentResult;
 }
 
+function identityPredicate(permission, scope, { relationship, issue }) {
+  if (permission.identityRelationship) {
+    const rel = relationship(permission.identityRelationship, permission);
+    return rel ? { scope, relationship: rel } : null;
+  }
+  if (typeof permission.field === 'string' && permission.field) return { scope, field: permission.field };
+  issue('PERMISSION_DIFF_RELATIONSHIP_UNRESOLVED', id(permission.id));
+  return null;
+}
+
 function permissionPredicate(permission, role, chain, context) {
-  const { work, issue, relationship } = context;
+  const { work, issue } = context;
   work();
   const key = id(permission.id);
   if (chain.has(key) || chain.size >= MAX_DEPTH) {
@@ -166,16 +176,10 @@ function permissionPredicate(permission, role, chain, context) {
   }
   const scope = permission.scope ?? 'global';
   if (scope === 'global') return { scope };
+  if (scope === 'custom' && typeof permission.permissionFetchXml === 'string')
+    return { scope, definition: permission.permissionFetchXml };
   if (scope === 'self') return { scope, field: permission.field ?? null };
-  if (scope === 'contact' || scope === 'account') {
-    if (permission.identityRelationship) {
-      const rel = relationship(permission.identityRelationship, permission);
-      return rel ? { scope, relationship: rel } : null;
-    }
-    if (typeof permission.field === 'string' && permission.field) return { scope, field: permission.field };
-    issue('PERMISSION_DIFF_RELATIONSHIP_UNRESOLVED', key);
-    return null;
-  }
+  if (scope === 'contact' || scope === 'account') return identityPredicate(permission, scope, context);
   if (scope === 'parent') return parentPredicate(permission, role, chain, context);
   issue('PERMISSION_DIFF_SCOPE_UNRESOLVED', key);
   return null;

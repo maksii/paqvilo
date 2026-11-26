@@ -11,8 +11,8 @@
 // - ajax.request, webAPI record and file-column methods: behaviour over the local /_api and server endpoints.
 // - user.signIn/signOut, languages: behaviour over the local sign-in routes, page languages and language-prefixed paths.
 // - currentPage.forms: behaviour over the rendered basic and multistep forms (formOf below).
-// - Members the rendered form cannot serve (getValue/setValue of a control whose type is not available) and
-//   agents throw a PagesClientApiUnsupported error naming the member and log PAGES_CLIENT_API_MEMBER_UNSUPPORTED once.
+// - Opaque form controls and the legacy `agents` namespace report unsupported members.
+// - `agent.SendActivity` dispatches through a project-configured local endpoint.
 // It also hydrates the local SharePoint document grid ([data-pp-documents], platform.mjs) over /_apps/portal-documents/.
 (function () {
   'use strict';
@@ -162,27 +162,33 @@
       throw new TypeError(`$pages.ajax.request does not support ${method}.`);
     return method;
   }
-  async function request(options) {
+  function ajaxHeaders(supplied, sendBody) {
+    const headers = {};
+    for (const [name, value] of Object.entries(supplied ?? {}))
+      if (!/^(?:__requestverificationtoken|x-requested-with)$/i.test(name)) headers[name] = value;
+    if (sendBody && !Object.keys(headers).some((name) => name.toLowerCase() === 'content-type'))
+      headers['content-type'] = 'application/json';
+    return headers;
+  }
+  async function request(options, localOnly = false) {
     validateRequestUrl(options);
     const hasBody = options.body !== undefined;
     const method = requestMethod(options, hasBody);
     const url = new URL(options.url, location.href);
     for (const [name, value] of Object.entries(options.params ?? {})) url.searchParams.append(name, String(value));
-    const headers = {};
-    for (const [name, value] of Object.entries(options.headers ?? {}))
-      if (!/^(?:__requestverificationtoken|x-requested-with)$/i.test(name)) headers[name] = value;
     // ponytail: browsers refuse a GET body (fetch and XMLHttpRequest drop or reject it), so a GET sends its body only as documented intermediaries do: not at all.
     const sendBody = hasBody && method !== 'GET';
-    if (sendBody && !Object.keys(headers).some((name) => name.toLowerCase() === 'content-type'))
-      headers['content-type'] = 'application/json';
+    const headers = ajaxHeaders(options.headers, sendBody);
     if (url.origin === location.origin) headers.__RequestVerificationToken = await token(options.signal);
     headers['x-requested-with'] = 'XMLHttpRequest';
+    if (localOnly) headers['x-paqvilo-local-only'] = 'true';
     let response;
     try {
       response = await fetch(url.href, {
         method,
         headers,
         credentials: 'same-origin',
+        ...(localOnly ? { mode: 'same-origin', redirect: 'error' } : {}),
         body: sendBody ? JSON.stringify(options.body) : undefined,
         signal: options.signal,
       });
@@ -207,6 +213,7 @@
   const key = (id) => String(id ?? '').replace(/[{}]/g, '');
   const api = (method, path, body) =>
     request({ method, url: '/_api/' + path, ...(body === undefined ? {} : { body }) });
+  const FILE_CHUNK_SIZE = 4 * 1024 * 1024;
   const webAPI = {
     async createRecord(entitySetName, data) {
       const response = await api('POST', entitySetName, data ?? {});
@@ -259,16 +266,58 @@
     },
     async downloadFileFromColumn(entitySetName, id, columnName, options) {
       const size = options?.size === 'thumbnail' ? 'thumbnail' : 'full';
-      // The route answers application/octet-stream; the stored type comes in the mimetype header and types the Blob.
-      const response = await binary('GET', `${entitySetName}(${key(id)})/${columnName}/$value?size=${size}`);
-      const bytes = await response.arrayBuffer().catch((error) => {
-        throw bodyFailure(error);
-      });
-      return new Blob([bytes], {
-        type: response.headers.get('mimetype') ?? response.headers.get('content-type') ?? '',
-      });
+      return downloadFile(`${entitySetName}(${key(id)})/${columnName}/$value?size=${size}`);
     },
   };
+
+  async function downloadFile(path) {
+    const fileBytes = (response) =>
+      response.arrayBuffer().catch((error) => {
+        throw bodyFailure(error);
+      });
+    const read = (start, etag) =>
+      binary('GET', path, {
+        headers: { Range: `bytes=${start}-${start + FILE_CHUNK_SIZE - 1}`, ...(etag ? { 'If-Match': etag } : {}) },
+      });
+    const first = await read(0).catch((error) => {
+      // A stored zero-byte file cannot satisfy even the first range.
+      if (error?.status === 416) return binary('GET', path);
+      throw error;
+    });
+    const type = first.headers.get('mimetype') ?? first.headers.get('content-type') ?? '';
+    const firstBytes = await fileBytes(first);
+    if (first.status !== 206) return new Blob([firstBytes], { type });
+
+    const etag = first.headers.get('etag');
+    const parts = [firstBytes];
+    const total = checkedFileRange(first, firstBytes, 0);
+    let offset = firstBytes.byteLength;
+    while (offset < total) {
+      const response = await read(offset, etag);
+      const bytes = await fileBytes(response);
+      checkedFileRange(response, bytes, offset, total);
+      parts.push(bytes);
+      offset += bytes.byteLength;
+    }
+    return new Blob(parts, { type });
+  }
+
+  function checkedFileRange(response, bytes, offset, expectedTotal) {
+    const match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(response.headers.get('content-range') ?? '');
+    const [start, end, total] = (match?.slice(1) ?? []).map(Number);
+    if (
+      response.status !== 206 ||
+      start !== offset ||
+      !Number.isSafeInteger(total) ||
+      (expectedTotal != null && total !== expectedTotal) ||
+      end >= total ||
+      !bytes.byteLength ||
+      bytes.byteLength !== end - start + 1
+    )
+      throw ajaxError('The file response has an invalid byte range.', response.status, null, undefined);
+    return total;
+  }
+
   async function binary(method, path, init = {}) {
     const headers = { 'x-requested-with': 'XMLHttpRequest', ...init.headers };
     if (method !== 'GET') headers.__RequestVerificationToken = await token();
@@ -966,8 +1015,9 @@
     const holder = cell.closest('td.cell, .form-group') ?? cell;
     const info = holder.querySelector('.info');
     const id = info?.querySelector('label[id$="_label"]')?.id.replace(/_label$/, '') || name;
-    const element = byId(cell, id) ?? cell.querySelector('input:not([type="hidden"]), select, textarea');
-    const type = typeOf(cell, element, id);
+    const inputScope = cell.querySelector('[data-pcf-native-input]') ?? cell;
+    const element = byId(inputScope, id) ?? inputScope.querySelector('input:not([type="hidden"]), select, textarea');
+    const type = typeOf(inputScope, element, id);
     const member = (method) => `Control.${method}`;
     const fileInput = cell.querySelector('input[type="file"]');
     const modal = type === 'Lookup' && element?.tagName !== 'SELECT';
@@ -1397,6 +1447,35 @@
     const path = CODE.test(active) && first.toLowerCase() === active.toLowerCase() ? rest : location.pathname;
     location.assign(`/${code}${path || '/'}${location.search}`);
   }
+  function sendActivity(schema, activity, onResponse, onError) {
+    const invalidAgent = 'Invalid bot schema name or access denied. Check the bot schema name and try again.';
+    const report = (error) => {
+      if (typeof onError === 'function') onError(error);
+      else console.error(error.message);
+    };
+    if (typeof schema !== 'string' || !/^[A-Za-z_][\w-]{0,127}$/.test(schema)) {
+      queueMicrotask(() => report(new TypeError(invalidAgent)));
+      return;
+    }
+    if (activity === null || typeof activity !== 'object' || Array.isArray(activity)) {
+      queueMicrotask(() => report(new TypeError('$pages.agent.SendActivity needs an activity object.')));
+      return;
+    }
+    request(
+      { url: `/_api/agents/${encodeURIComponent(schema)}/activities`, method: 'POST', body: activity },
+      true,
+    ).then(
+      ({ data }) => {
+        if (typeof onResponse !== 'function' || data == null) return;
+        for (const item of Array.isArray(data) ? data : [data]) onResponse(item);
+      },
+      (error) => {
+        if (error.status === 404) report(new PagesClientApiUnsupported(`agent.SendActivity (${schema})`));
+        else if (error.status === 401 || error.status === 403) report(new Error(invalidAgent));
+        else report(error);
+      },
+    );
+  }
   const $pages = {
     currentPage: {
       forms: {
@@ -1421,7 +1500,8 @@
       setActive,
     },
     ajax: { request },
-    // Copilot Studio agents are out of scope for the local runtime.
+    agent: { SendActivity: sendActivity },
+    // Preserve the older local diagnostic for the undocumented plural name.
     agents: unsupportedAny('agents'),
   };
   // A local, non-native marker: the contract version of this object.

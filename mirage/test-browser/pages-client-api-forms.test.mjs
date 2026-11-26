@@ -360,6 +360,8 @@ test('$pages full name, rich text and code component controls read and write the
         init(context, notify, state, container) {
           this.box = document.createElement('output');
           this.box.id = 'echo';
+          // An opaque PCF marker inside a component is not the typed input for the form binding.
+          this.box.setAttribute('pcf-controlcontext', '{}');
           container.append(this.box);
           this.box.textContent = context.parameters.value.raw ?? '';
         }

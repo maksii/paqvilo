@@ -102,6 +102,48 @@ test('offline host descriptions resolve installed core seams and retain absent p
   assert.equal(report.requirements.find((row) => row.id === 'provider:messaging/missing')?.status, 'missing');
 });
 
+test('strict scenario preflight distinguishes active classic workflows with a trusted handler from placeholders', async (t) => {
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'classic-workflow-preflight-'));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
+  const solution = path.join(root, 'solution');
+  const workflows = path.join(solution, 'Workflows');
+  const pack = path.join(root, 'pack.mjs');
+  const handled = 'bc000000-0000-4000-8000-000000000001';
+  const missing = 'bc000000-0000-4000-8000-000000000002';
+  const draft = 'bc000000-0000-4000-8000-000000000003';
+  await fs.mkdir(workflows, { recursive: true });
+  for (const [id, state] of [
+    [handled, 1],
+    [missing, 1],
+    [draft, 0],
+  ]) {
+    await fs.writeFile(
+      path.join(workflows, `${id}.data.xml`),
+      `<Workflow WorkflowId="${id}" Name="Invented workflow" Category="0" Type="1" Mode="0" OnDemand="1" PrimaryEntity="account" StateCode="${state}" />`,
+    );
+  }
+  await fs.writeFile(
+    pack,
+    `export default {
+      id: 'classic-workflow', name: 'Classic workflow', description: 'Invented handler pack', matches: () => true,
+      presets: () => ({}), workflows: { '${handled}': () => ({ message: 'Local outcome' }) }
+    };`,
+  );
+  const sim = await standalone(t, { solutionRoots: [solution], projectRoot: root, dataPacks: [{ module: pack }] });
+  const report = await sim.preflight({
+    scenario: { id: 'classic workflow', requires: ['classic-workflow:*'] },
+    strict: true,
+  });
+  const rows = report.requirements.filter(({ kind }) => kind === 'classic-workflow');
+  assert.deepEqual(
+    rows.map(({ id, status, blocking }) => [id, status, blocking]),
+    [
+      [`classic-workflow:${handled}`, 'satisfied', false],
+      [`classic-workflow:${missing}`, 'placeholder', true],
+    ],
+  );
+});
+
 test('standalone status carries the registry summary and report; preflight answers over HTTP and on the handle', async (t) => {
   const sim = await standalone(t);
   const status = sim.status();

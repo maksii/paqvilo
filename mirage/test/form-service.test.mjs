@@ -1,3 +1,4 @@
+// @test-kind contract: Mirage form schema, validation, transactions and session behavior over invented data
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore } from '../lib/data.mjs';
@@ -5,6 +6,7 @@ import {
   submitPortalForm,
   createWebFormSessions,
   webFormSessionOwner,
+  portalRecordWrites,
   formText,
   redirectTarget,
 } from '../lib/form-service.mjs';
@@ -765,6 +767,63 @@ test("a submission's record and notes are one unit: a refused note or a rejected
   );
 });
 
+// @test-kind contract: the form save service enforces configured attachment requirements before mutating records
+test('both form save transports enforce required attachments and remaining slots', async () => {
+  const options = await setupUnits();
+  const metadata = {
+    adx_attachfile: true,
+    adx_attachfilerequired: true,
+    adx_attachfileallowmultiple: true,
+    adx_maximumnooffiles: 2,
+    adx_attachfilerequirederrormessage: 'Please attach a document.',
+  };
+  options.portal.forms.push(
+    { id: 'attach-create', mode: 100000000, metadata },
+    { id: 'attach-edit', mode: 100000001, metadata },
+  );
+  options.schemas['attach-create'] = options.schemas.create;
+  options.schemas['attach-edit'] = options.schemas.edit;
+  const state = options.store.snapshot();
+  state.permissions.push({ entity: 'annotation', scope: 'global', roles: ['Editor'], operations: ['create', 'read'] });
+  await options.store.replaceState(state);
+  const values = { fullname: 'With attachments' };
+  const files = ['a.txt', 'b.txt', 'c.txt'].map((name) => file(name, 10));
+
+  for (const nativePostback of [false, true]) {
+    const inputs = { ...options, nativePostback };
+    const before = options.store.snapshot().tables;
+    await assert.rejects(
+      submitPortalForm('entityform', 'attach-create', { values }, inputs),
+      (error) => error.code === 'FormAttachmentRequired' && error.message === 'Please attach a document.',
+    );
+    await assert.rejects(
+      submitPortalForm('entityform', 'attach-create', { values, attachments: files }, inputs),
+      (error) => error.code === 'FormAttachmentTooMany',
+    );
+    assert.deepEqual(options.store.snapshot().tables, before);
+
+    const { recordId } = await submitPortalForm(
+      'entityform',
+      'attach-create',
+      { values, attachments: files.slice(0, 1) },
+      inputs,
+    );
+    await submitPortalForm('entityform', 'attach-edit', { values, recordId }, inputs);
+    const responses = await Promise.allSettled(
+      files
+        .slice(1)
+        .map((attachment) =>
+          submitPortalForm('entityform', 'attach-edit', { values, recordId, attachments: [attachment] }, inputs),
+        ),
+    );
+    assert.equal(responses.filter(({ status }) => status === 'fulfilled').length, 1);
+    assert.deepEqual(
+      responses.filter(({ status }) => status === 'rejected').map(({ reason }) => reason.code),
+      ['FormAttachmentTooMany'],
+    );
+  }
+});
+
 test('a failing association rolls back the record a provider transaction created', async () => {
   const options = await setupUnits();
   const writes = [];
@@ -941,6 +1000,147 @@ test("submitted steps follow the session or the page's stepid: saved steps reope
     ),
     (e) => e.code === 'InvalidFormStep',
   );
+});
+
+// @test-kind compatibility: Microsoft Learn multistep form steps reject reuse earlier on the same forward path
+test('forward revisits refuse direct and conditional targets without saving or changing history', async () => {
+  for (const conditional of [false, true]) {
+    const options = await setupUnits();
+    const steps = options.schemas.wizard.steps;
+    steps[1].nextStepId = conditional ? 'check' : 'first';
+    steps.push({
+      stepId: 'check',
+      type: 'condition',
+      condition: 'fullname = Loop',
+      nextStepId: 'first',
+      conditionDefaultNextStepId: 'redirect',
+    });
+    const first = await submitPortalForm('webform', 'wizard', { values: { fullname: 'Step one' } }, options);
+    const [session] = options.sessions.list('wizard', webFormSessionOwner(options.identity));
+    const before = structuredClone(session);
+    const post = (fullname) =>
+      submitPortalForm(
+        'webform',
+        'wizard',
+        { stepId: 'second', recordId: first.recordId, values: { fullname } },
+        options,
+      );
+    await assert.rejects(post('Loop'), (error) => error.code === 'FormStepReused');
+    assert.deepEqual(session, before);
+    assert.equal((await options.store.get('contact', first.recordId, options.identity)).fullname, 'Step one');
+    if (conditional) {
+      await post('Finish');
+      assert.equal(session.completed, true);
+      assert.equal((await options.store.get('contact', first.recordId, options.identity)).fullname, 'Finish');
+    }
+  }
+});
+
+// @test-kind contract: an explicitly selected step or query record is the condition input
+test('multistep conditions read the configured record source and otherwise use the saved step', async () => {
+  for (const source of ['named step', 'query string', 'default']) {
+    const options = await setupUnits();
+    const steps = options.schemas.wizard.steps;
+    const contact = options.schemas.create;
+    steps[1].mode = 100000000;
+    steps[1].nextStepId = 'check';
+    steps.push({
+      stepId: 'check',
+      type: 'condition',
+      condition: 'fullname = Earlier',
+      nextStepId: 'matched',
+      conditionDefaultNextStepId: 'unmatched',
+      metadata:
+        source === 'named step'
+          ? { adx_entitysourcetype: 100000003, adx_entitysourcestep: 'first' }
+          : source === 'query string'
+            ? { adx_entitysourcetype: 100000001, adx_primarykeyquerystringparametername: 'checkRow' }
+            : {},
+    });
+    steps.push(
+      { ...contact, stepId: 'matched', mode: 100000000 },
+      { ...contact, stepId: 'unmatched', mode: 100000000 },
+    );
+    const earlier = await submitPortalForm('webform', 'wizard', { values: { fullname: 'Earlier' } }, options);
+    const current = await submitPortalForm(
+      'webform',
+      'wizard',
+      { values: { fullname: 'Current' }, query: { checkRow: earlier.recordId } },
+      options,
+    );
+    assert.notEqual(current.recordId, earlier.recordId);
+    assert.equal(
+      new URL(current.outcome.url, 'http://localhost').searchParams.get('stepid'),
+      source === 'default' ? 'unmatched' : 'matched',
+    );
+  }
+});
+
+// @test-kind contract: a superseded multistep save leaves both the record and persisted progress unchanged
+test('concurrent submissions of one persisted step commit only the first save', async () => {
+  const options = await setupUnits();
+  options.sessions = createWebFormSessions({ store: options.store });
+  const started = await submitPortalForm('webform', 'wizard', { values: { fullname: 'Before edits' } }, options);
+  const ready = Promise.withResolvers();
+  let count = 0;
+  const writeProvider = {
+    async transaction(work) {
+      if (++count === 2) ready.resolve();
+      await ready.promise;
+      return options.store.transact(() => work(portalRecordWrites(options.store)));
+    },
+  };
+  const results = await Promise.allSettled(
+    ['First edit', 'Second edit'].map((fullname) =>
+      submitPortalForm(
+        'webform',
+        'wizard',
+        { stepId: 'second', recordId: started.recordId, values: { fullname } },
+        { ...options, writeProvider },
+      ),
+    ),
+  );
+  assert.equal(results[0].status, 'fulfilled');
+  assert.equal(results[1].status, 'rejected');
+  assert.equal(results[1].reason.code, 'FormSessionChanged');
+  const [session] = options.sessions.list('wizard', webFormSessionOwner(options.identity));
+  assert.ok(session.completed);
+  assert.equal(session.history.length, 2);
+  assert.equal((await options.store.get('contact', started.recordId, options.identity)).fullname, 'First edit');
+});
+
+// @test-kind contract: a one-record form rejects a competing first submit that completes before it enters the write unit
+test('concurrent first submissions to a single-record form cannot both create records', async () => {
+  const options = await setupUnits();
+  options.portal.advancedForms[0].metadata = { adx_multiplerecordsperuserpermitted: false };
+  options.schemas.wizard.steps[0].nextStepId = null;
+  options.sessions = createWebFormSessions({ store: options.store });
+  const ready = Promise.withResolvers();
+  let count = 0;
+  const writeProvider = {
+    async transaction(work) {
+      if (++count === 2) ready.resolve();
+      await ready.promise;
+      return options.store.transact(() => work(portalRecordWrites(options.store)));
+    },
+  };
+  const responses = await Promise.allSettled(
+    ['First save', 'Second save'].map((fullname) =>
+      submitPortalForm('webform', 'wizard', { values: { fullname } }, { ...options, writeProvider }),
+    ),
+  );
+  assert.deepEqual(
+    responses.map((result) => result.status),
+    ['fulfilled', 'rejected'],
+  );
+  assert.equal(responses[1].reason.code, 'FormSessionChanged');
+  assert.deepEqual(
+    options.store.snapshot().tables.contact.map((record) => record.fullname),
+    ['First save'],
+  );
+  const [session, ...other] = options.sessions.list('wizard', webFormSessionOwner(options.identity));
+  assert.ok(session.completed);
+  assert.deepEqual(other, []);
 });
 
 test('Authentication Required refuses an anonymous submission before any write', async () => {

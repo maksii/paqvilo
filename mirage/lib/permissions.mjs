@@ -2,6 +2,13 @@ import { requiredArgument } from './required-argument.mjs';
 import { portalField } from './importer.mjs';
 import { accountWebRoleIds } from './platform-changes.mjs';
 import { guidKey } from './dataverse-values.mjs';
+import { contactRoleAssignments } from './site-tables.mjs';
+import {
+  compileCustomTablePermission,
+  customTablePermissionDefinition,
+  customTablePermissionFilter,
+  CUSTOM_ACCESS_ENABLED_STATE,
+} from './custom-table-permission.mjs';
 
 const id = (value) =>
   guidKey(value?.id ?? value) ??
@@ -24,6 +31,7 @@ const scopes = {
   756150002: 'account',
   756150003: 'parent',
   756150004: 'self',
+  756150005: 'custom',
 };
 const clone = (value) => structuredClone(value);
 
@@ -69,7 +77,7 @@ function membershipModel(portal, state) {
   const memberships = [],
     diagnostics = [],
     seen = new Set();
-  for (const assignment of state.simulator?.contactRoles ?? []) {
+  for (const assignment of contactRoleAssignments(portal, state)) {
     const contactId = id(assignment.contactId),
       roleId = id(assignment.roleId),
       key = contactId + ':' + roleId;
@@ -199,6 +207,7 @@ function exportedPermissions(portal, { includeInactive = false } = {}) {
         entity: portalField(record, 'entitylogicalname'),
         scope,
         sourceScope: scopeValue,
+        ...(scope === 'custom' && { permissionFetchXml: portalField(record, 'permissionfetchxml') }),
         operations: operations.filter(([field]) => truth(portalField(record, field))).map(([, operation]) => operation),
         roles: roleIds.map((roleId) => byRole.get(roleId) ?? roleId),
         roleIds,
@@ -385,6 +394,12 @@ export function buildPermissionModel(
         compile(parent);
         if (parent.enabled === false)
           disable(rule, 'PERMISSION_PARENT_DISABLED', 'The parent permission is disabled or unresolved.');
+        else if (parent.scope === 'custom')
+          disable(
+            rule,
+            'PERMISSION_CUSTOM_ACCESS_CHILD_UNSUPPORTED',
+            'A child permission rooted in Custom Access requires separate qualification.',
+          );
         if (!rule.roles?.length) {
           rule.roles = clone(parent.roles ?? []);
           rule.inheritedRoles = true;
@@ -411,6 +426,29 @@ export function buildPermissionModel(
             ? `The exported scope '${rule.sourceScope ?? 'missing'}' is not supported by the local permission evaluator. Version-specific Custom Access and other unknown scopes require qualification.`
             : 'The source permission has no supported table.',
         );
+      if (rule.scope === 'custom') {
+        const original = sourceDefinitions.get(id(rule.id));
+        if (Number(scalar(portalField(portal.website ?? {}, 'enhancedauthorization'))) !== CUSTOM_ACCESS_ENABLED_STATE)
+          disable(
+            rule,
+            'PERMISSION_CUSTOM_ACCESS_REQUIRES_ENABLED_AUTHORIZATION',
+            'Custom Access requires enabled enhanced authorization.',
+          );
+        else if (original?.scope !== 'custom')
+          disable(rule, 'PERMISSION_CUSTOM_ACCESS_SOURCE_UNRESOLVED', 'Custom Access requires an exported permission.');
+        else {
+          rule.permissionFetchXml = original.permissionFetchXml;
+          try {
+            const filter = customTablePermissionFilter(rule.permissionFetchXml, rule.entity);
+            compileCustomTablePermission(filter, {
+              table: rule.entity,
+              definition: (attribute) => customTablePermissionDefinition(state.mappings?.[rule.entity], attribute),
+            });
+          } catch (error) {
+            disable(rule, 'PERMISSION_CUSTOM_ACCESS_FILTER_UNSUPPORTED', error.message);
+          }
+        }
+      }
       // Web-role associations are alternative grants. An unavailable role
       // cannot authorize anyone, but must not revoke another exact source ID.
       const assignedRoles = rule.roles ?? [],
@@ -474,6 +512,12 @@ export function buildPermissionModel(
           compile(parent);
           if (parent.enabled === false)
             disable(rule, 'PERMISSION_PARENT_DISABLED', 'The source parent permission is disabled or unresolved.');
+          else if (parent.scope === 'custom')
+            disable(
+              rule,
+              'PERMISSION_CUSTOM_ACCESS_CHILD_UNSUPPORTED',
+              'A child permission rooted in Custom Access requires separate qualification.',
+            );
           else {
             // Configured states keep the source links in ownRoleIds across recompiles.
             const own = [...new Set((rule.ownRoleIds ?? rule.roleIds ?? []).map(id))].filter((role) =>

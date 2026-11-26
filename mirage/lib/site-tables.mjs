@@ -9,6 +9,7 @@
 // learn.microsoft.com/power-apps/developer/data-platform/reference/entities/powerpagecomponent
 // and .../contact#BKMK_powerpagecomponent_mspp_webrole_contact.
 import { createHash } from 'node:crypto';
+import { readRecordValues } from './record-tables.mjs';
 
 const chooseLazily = (condition, yes, no) => {
   if (condition()) return yes();
@@ -67,6 +68,70 @@ const WEBROLE_FIELDS = {
   },
 };
 
+export function contactRoleIntersection(portal) {
+  return portal.format === 'enhanced'
+    ? { table: 'powerpagecomponent_mspp_webrole_contact', roleColumn: 'powerpagecomponentid' }
+    : { table: 'adx_webrole_contact', roleColumn: 'adx_webroleid' };
+}
+
+/** A stored intersection stays authoritative after its last membership is removed. */
+export function contactRoleAssignments(portal, state) {
+  const { table, roleColumn } = contactRoleIntersection(portal);
+  const rows = state.tables?.[table];
+  return rows === undefined
+    ? (state.simulator?.contactRoles ?? [])
+    : Array.from(readRecordValues(rows), (row) => ({ contactId: row.contactid, roleId: row[roleColumn] }));
+}
+
+const assignmentKey = ({ contactId, roleId }) => `${normalizedId(contactId)}:${normalizedId(roleId)}`;
+
+function writeStoredContactRoles(portal, state, assignments, removed = new Set()) {
+  const { table, roleColumn } = contactRoleIntersection(portal);
+  const rows = state.tables?.[table];
+  if (rows === undefined) return;
+  const next = [];
+  const stored = new Set();
+  for (const row of readRecordValues(rows)) {
+    const key = assignmentKey({ contactId: row.contactid, roleId: row[roleColumn] });
+    if (removed.has(key)) continue;
+    next.push(row);
+    stored.add(key);
+  }
+  const idColumn = state.mappings?.[table]?.idColumn ?? `${table}id`;
+  for (const assignment of assignments) {
+    const key = assignmentKey(assignment);
+    if (stored.has(key)) continue;
+    next.push({
+      [idColumn]: guidFrom(`${table}:${key}`),
+      contactid: normalizedId(assignment.contactId),
+      [roleColumn]: normalizedId(assignment.roleId),
+    });
+    stored.add(key);
+  }
+  state.tables[table] = next;
+}
+
+/** Apply an explicit persona configuration change without replacing unrelated stored associations. */
+export function configureContactRoles(portal, state, assignments) {
+  const simulator = (state.simulator ??= {});
+  const assigned = new Set(assignments.map(assignmentKey));
+  const removed = new Set((simulator.contactRoles ?? []).map(assignmentKey).filter((key) => !assigned.has(key)));
+  writeStoredContactRoles(portal, state, assignments, removed);
+  simulator.contactRoles = assignments;
+}
+
+/** Add only the named grants. This leaves previously revoked legacy assignments unchanged. */
+export function grantContactRoles(portal, state, assignments) {
+  const simulator = (state.simulator ??= {});
+  writeStoredContactRoles(portal, state, assignments);
+  const configured = new Map((simulator.contactRoles ?? []).map((entry) => [assignmentKey(entry), entry]));
+  for (const assignment of assignments) {
+    const key = assignmentKey(assignment);
+    if (!configured.has(key)) configured.set(key, assignment);
+  }
+  simulator.contactRoles = [...configured.values()];
+}
+
 /** Contact web role memberships: assigned memberships plus the configured persona's role names. */
 function memberships(portal, state) {
   const roles = (portal.records ?? []).filter((record) => record.kind === 'webrole');
@@ -84,7 +149,7 @@ function memberships(portal, state) {
       role = normalizedId(roleId);
     if (contact && role) out.set(`${contact}:${role}`, { contactId: contact, roleId: role });
   };
-  for (const assignment of state.simulator?.contactRoles ?? []) add(assignment.contactId, assignment.roleId);
+  for (const assignment of contactRoleAssignments(portal, state)) add(assignment.contactId, assignment.roleId);
   const identity = state.simulator?.identity ?? {};
   const contactId = identity.contactId ?? identity.id;
   if (contactId)
@@ -185,7 +250,7 @@ export function buildSiteTables(portal, state) {
       },
       rows,
     };
-  if (!own(intersect))
+  if (!Object.hasOwn(state.tables ?? {}, intersect))
     tables[intersect] = {
       mapping: {
         logicalName: intersect,

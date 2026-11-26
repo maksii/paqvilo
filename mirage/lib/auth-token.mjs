@@ -116,6 +116,8 @@ function refuseInput(res, params) {
   if (!params) return tokenError(res, 413, 'PortalSTS0003', 'The request body is too large.');
   if (params.state && !STATE_CHARACTERS.test(params.state))
     return tokenError(res, 400, 'PortalSTS0002', 'The state parameter is not valid.');
+  if (params.response_type !== undefined && params.response_type !== 'token')
+    return tokenError(res, 400, 'PortalSTS0004', 'The response_type parameter must be token.');
   return false;
 }
 

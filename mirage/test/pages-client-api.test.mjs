@@ -231,6 +231,54 @@ test('unsupported members throw PagesClientApiUnsupported with the member name a
   assert.equal($pages.currentPage.forms.getFormByName('x'), undefined);
 });
 
+// @test-kind contract: the local Copilot callback adapter is explicitly same-origin and reports a missing endpoint
+test('$pages.agent.SendActivity delivers explicit local mock responses and errors through callbacks', async () => {
+  const { window, requests } = browser();
+  const activities = [
+    { type: 'message', text: 'A fixture reply' },
+    { type: 'event', Id: 'one' },
+  ];
+  window.fetch = async (url, init) => {
+    requests.push({ url, init });
+    if (String(url).endsWith('/_layout/tokenhtml')) return new Response('<input value="tok">');
+    if (String(url).endsWith('/Available/activities')) return new Response(JSON.stringify(activities));
+    return new Response('{}', { status: 404 });
+  };
+  const { agent } = await window.Microsoft.PowerPages.onPagesClientApiReady();
+  const received = [];
+  await new Promise((resolve, reject) => {
+    assert.equal(
+      agent.SendActivity(
+        'Available',
+        { text: 'Hello' },
+        (item) => {
+          received.push(item);
+          if (received.length === 2) resolve();
+        },
+        reject,
+      ),
+      undefined,
+    );
+  });
+  assert.deepEqual(received, activities);
+  assert.equal(requests[1].url, `${window.location.origin}/_api/agents/Available/activities`);
+  assert.deepEqual(
+    [requests[1].init.method, requests[1].init.mode, requests[1].init.redirect],
+    ['POST', 'same-origin', 'error'],
+  );
+  assert.equal(requests[1].init.headers['x-paqvilo-local-only'], 'true');
+  assert.equal(requests[1].init.headers.__RequestVerificationToken, 'tok');
+  assert.deepEqual(JSON.parse(requests[1].init.body), { text: 'Hello' });
+
+  const missing = await new Promise((resolve, reject) =>
+    agent.SendActivity('Missing', { text: 'Hello' }, reject, resolve),
+  );
+  assert.equal(missing.code, 'PAGES_CLIENT_API_MEMBER_UNSUPPORTED');
+  const invalid = await new Promise((resolve, reject) => agent.SendActivity('../Elsewhere', {}, reject, resolve));
+  assert.equal(invalid.name, 'TypeError');
+  assert.equal(requests.length, 3, 'a bad schema never starts a request');
+});
+
 test('languages.setActive switches the language like the language picker: /<code> before the path', async () => {
   const { window } = browser();
   const $pages = await window.Microsoft.PowerPages.onPagesClientApiReady();
@@ -284,6 +332,40 @@ test('webAPI file-column methods call the portal Web API file routes', async () 
     (error) => error.name === 'AjaxError' && error.status === 403,
   );
   await assert.rejects($pages.webAPI.uploadFileToColumn('x_items', SITE, 'x_file', 'not a file'), TypeError);
+});
+
+// @test-kind contract: the documented client download combines ordered 4 MiB partial responses into a typed Blob
+test('webAPI downloads a large file in 4 MiB ranges and carries the file validator', async () => {
+  const { window, requests } = browser();
+  const chunk = new Uint8Array(4 * 1024 * 1024).fill(10);
+  const tag = '"fixture-file-version"';
+  window.Blob = Blob;
+  window.fetch = async (url, init) => {
+    requests.push({ url, init });
+    const headers = { mimetype: 'application/pdf', etag: tag };
+    if (requests.length === 1)
+      return new Response(chunk, {
+        status: 206,
+        headers: { ...headers, 'content-range': `bytes 0-${chunk.length - 1}/${chunk.length + 1}` },
+      });
+    return new Response(new Uint8Array([42]), {
+      status: 206,
+      headers: { ...headers, 'content-range': `bytes ${chunk.length}-${chunk.length}/${chunk.length + 1}` },
+    });
+  };
+  const $pages = await window.Microsoft.PowerPages.onPagesClientApiReady();
+  const blob = await $pages.webAPI.downloadFileFromColumn('x_items', SITE, 'x_file');
+  assert.deepEqual(
+    requests.map(({ init }) => [init.headers.Range, init.headers['If-Match']]),
+    [
+      [`bytes=0-${chunk.length - 1}`, undefined],
+      [`bytes=${chunk.length}-${2 * chunk.length - 1}`, tag],
+    ],
+  );
+  assert.deepEqual([blob.size, blob.type], [chunk.length + 1, 'application/pdf']);
+  const content = new Uint8Array(await blob.arrayBuffer());
+  assert.deepEqual(content.subarray(0, chunk.length), chunk);
+  assert.equal(content.at(-1), 42);
 });
 
 test('lists, languages, user, ajax and webAPI work over the local services', async () => {

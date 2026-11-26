@@ -15,8 +15,7 @@ import { bootstrapReport, resolveReportInputs } from '../bootstrap-report.mjs';
 import { bootstrapProject } from '../lib/project-config.mjs';
 
 // A source the importer cannot read must fail loudly, naming its layout, instead of importing
-// as an empty portal. The short-key layout itself is imported (short-key-import.test.mjs);
-// mspp_ YAML is refused.
+// as an empty portal. The short-key and enhanced YAML layouts still require an identifiable page.
 
 const execFileAsync = promisify(execFile);
 const CLI = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'cli.mjs');
@@ -54,7 +53,7 @@ const SHORT_KEY_SITE = {
 };
 
 const MSPP_MESSAGE =
-  /No portal pages were recognized in .*mspp\. Detected layout: PAC YAML with mspp_ keys\. The Mirage does not import this layout yet; use a PAC YAML export with adx_ keys, a \.powerpages-site export or the site's unpacked Solution \(powerpagecomponents\/\)\./;
+  /No portal pages were recognized in .*mspp\. Detected layout: PAC YAML with mspp_ keys\. It has 1 web page record, but none could be identified as a page\./;
 const MSPP_SITE = {
   'mspp/website.yml': 'mspp_name: Site\nmspp_websiteid: 6a0f0c2e-0000-4000-8000-000000000099\n',
   'mspp/web-pages/home/Home.webpage.yml': 'mspp_name: Home\nmspp_partialurl: /\n',
@@ -80,7 +79,7 @@ test('source layouts are named: short-key, code-site project, mspp_ YAML, Soluti
   assert.deepEqual([dialect('').dialect, dialect('').imported], ['code-site-project', true]);
   assert.equal(portalSourceDir(root), path.join(root, '.powerpages-site'));
   assert.equal(portalSourceDir(path.join(root, 'standard')), path.join(root, 'standard'));
-  assert.deepEqual([dialect('mspp').dialect, dialect('mspp').imported], ['enhanced-yaml', false]);
+  assert.deepEqual([dialect('mspp').dialect, dialect('mspp').imported], ['enhanced-yaml', true]);
   assert.equal(dialect('solution').dialect, 'solution-without-site');
   assert.deepEqual([dialect('standard').dialect, dialect('standard').imported], ['standard-yaml', true]);
   assert.deepEqual([dialect('enhanced').dialect, dialect('enhanced').imported], ['enhanced-solution', true]);
@@ -100,13 +99,14 @@ test('source layouts are named: short-key, code-site project, mspp_ YAML, Soluti
   }
 });
 
-test('an mspp_ YAML source is refused by import, serve, inspect, bootstrap-report and project bootstrap, naming its layout', async (t) => {
+test('an mspp_ YAML source whose only page has no identity is refused across portal entry points', async (t) => {
   const root = await tree(t, MSPP_SITE);
   const site = path.join(root, 'mspp');
   // The importer records the layout and flags zero recognised pages (it still returns, for tools).
   const portal = await importPortal(site);
   assert.equal(portal.pages.length, 0);
   assert.equal(portal.source.dialect, 'enhanced-yaml');
+  assert.equal(portal.dataModel, 'enhanced');
   const flagged = portal.diagnostics.find((item) => item.code === 'PORTAL_SOURCE_EMPTY');
   assert.equal(flagged.dialect, 'enhanced-yaml');
   assert.match(flagged.message, MSPP_MESSAGE);

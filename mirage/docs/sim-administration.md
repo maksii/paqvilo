@@ -24,6 +24,13 @@ sign-out issues, still wins. It creates no session. Use it only for offline tool
 Administration requests always use the configured identity. These are local simulation settings, not Power Pages
 authentication settings.
 
+An exported positive `Authentication/ApplicationCookie/ExpireTimeSpan` in whole-second TimeSpan format
+(`hh:mm:ss` or `d.hh:mm:ss`) gives new application sessions a server-side deadline when
+`Authentication/ApplicationCookie/SlidingExpiration` is explicitly `false`. The deadline uses the runtime clock,
+survives a web-role override and applies to browser and programmatic sign-in. The session cookie still lasts at most as
+long as the browser session. This behavior has local coverage. Sliding renewal, remember-me and Power Pages defaults
+remain unqualified.
+
 Programmatic sign-in: `simulator.signIn(contactId)` returns a cookie header; Playwright tests use `signInContext`, and
 HTTP tools `createPortalSession`, `connectRuntime().createSession` and `runSessionMatrix` from `paqvilo/mirage/testing`.
 `connectRuntime().signIn(null, { configuredPersona: true })` needs a configured contact (`identity.contactId`, or legacy
@@ -38,6 +45,21 @@ handling. It never copies live credentials or mints environment tokens; live-ref
 signed-in browser. Permission enforcement can be set to enforced or permissive for local experiments, and evidence
 records the choice. Live create, update and delete need both `--allow-live-writes` and the `/_sim/` live writes switch;
 neither authorizes a business operation.
+
+For a private-site fixture, set `observed.siteVisibility` to `private` with evidence and set
+`identityProvider.privateSiteContactIds` to the approved local contact IDs. Browser navigation redirects through the
+local Microsoft Entra provider. The admission session grants access to portal routes, where portal contact sign-in and
+web roles still apply independently. An empty list refuses all fixture identities. A private visibility observation
+without the fixture list renders the private banner and reports `PRIVATE_SITE_ADMISSION_UNCONFIGURED`.
+
+A stored contact web-role intersection supplies effective memberships in its corresponding standard or enhanced data
+model, including an explicitly empty table. Other portal fixtures use the configured simulator memberships.
+
+Set `identityProvider.localAccounts` to `true` to exercise local credential registration, sign-in, email confirmation,
+lockout, password recovery and change, and email two-factor enrollment and sign-in. Persona sign-in remains available.
+The account form uses synthetic credentials. The fixture mailbox is `GET /_sim/api/local-accounts/messages` on the
+administration origin with the `x-sim-csrf` token. Credentials, challenges and messages stay in memory and clear on data
+reset or restart. Contact rows created by registration follow the runtime's data persistence settings.
 
 ### Verification witness
 

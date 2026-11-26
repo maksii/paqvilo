@@ -9,6 +9,9 @@ choice and lookup values, paging, counts, expansion and error envelopes. Unsuppo
 fail with diagnostics instead of querying unrelated tables. In FetchXML, `count` is the page length, capped at the
 page-size limit of 5,000 by default. `returntotalrecordcount="true"` reports the matching total independently of the
 page, capped at 5,000 with `total_record_count_limit_exceeded` true beyond it.
+FetchXML queries that cannot produce a paging cookie, such as the local linked-column sort path, page over at most
+50,000 rows, following the [Dataverse simple-paging limit](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/fetchxml/page-results#simple-paging).
+Mirage ends the series at that boundary. The total count and cookie-capable query paths retain their own limits.
 
 Power Pages Liquid `{% fetchxml %}` accepts `count="0"` and uses the default page size. The executed XML retains the
 authored zero. Other FetchXML endpoints use their own count validation. The default local Liquid profile supplies a
@@ -377,7 +380,9 @@ The portal `/_api` serves file and image columns:
   `Content-Disposition: attachment` with the file name (RFC 5987), `X-Content-Type-Options: nosniff`, and the stored
   type, name and size in the `mimetype`, `x-ms-file-name` (percent-encoded) and `x-ms-file-size` headers. A stored file
   is never served as its own type on the portal origin; `/api/data` keeps its documented headers. Image bytes default to
-  the thumbnail; `size=full` requests the full image when its column stores one, else answers 204.
+  the thumbnail; `size=full` requests the full image when its column stores one, else answers 204. Mirage also allows
+  a single `Range: bytes=start-end` download with status 206 and `Content-Range`. Clients can pass the returned ETag
+  in `If-Match` when requesting another range to avoid combining bytes from two file versions.
 - `DELETE /_api/<set>(<id>)/<column>` clears the column and answers 204.
 
 The column must be listed in `Webapi/<table>/fields` (403 `90040101` otherwise; its column permission applies), and the
@@ -386,14 +391,21 @@ nothing stored). The bytes then go through the organization's file column entry,
 `MaxSizeInKB` (from the project mapping, a metadata POST or PUT, or the Solution export; an image without one is
 limited to 10,240 KB), image checks, storage routing, 404 for an empty file column and 204 for an empty image. A file
 over the limit, bytes that are not an image, and an 11 MB PNG on an image column without a limit each answer 400
-`9004010D`. One request carries the whole file: `Range` and chunked transfer are not served, and a request is bounded at
-128 MB.
+`9004010D`. Upload transfers carry the whole file in one request and are bounded at 128 MiB. Portal upload
+continuations require separate hosted evidence.
 
 Image values in entity, collection, FetchXML, navigation and expanded JSON responses resolve to stored base64 data,
 including write representations. Hydration preserves the portal reader's field-security mask; binary downloads cannot
 bypass a masked storage identifier. The raw route's default thumbnail contract follows [Power Pages image
 columns](https://learn.microsoft.com/en-us/power-pages/configure/image-column) and [Dataverse image
 data](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/image-column-data).
+
+For a valid PNG uploaded to a portal image-column route, Mirage removes the `eXIf` metadata chunk while preserving the
+rest of the full image bytes. Portal PNG thumbnails use centered square cropping, with a 144 pixel edge for larger
+images and the shorter side for smaller images. Projection and range downloads use the same thumbnail. The local codec
+returns the original bytes for interlaced images, unsupported formats, and inputs beyond its pixel or dimension limits.
+Portal JPEG uploads remove Exif APP1 before the first scan and preserve the other encoded bytes. Hosted encoder
+behavior, orientation normalization, and non-PNG thumbnails need separate evidence.
 
 ## Input and rendering contracts
 
@@ -436,6 +448,13 @@ answer 413 `0x8004418a` "Request message length is too large.".
 
 The portal Web API runs `$apply` (`groupby`, `aggregate` and `filter` transformations). `savedQuery` and `userQuery` are
 not portal Web API options: either one answers 400 `9004010A`, whatever its id.
+
+For tables exported as custom activities, a nonempty list of solely inherited `activitypointer` columns is refused
+as a wildcard by default. This applies after combining the explicit site setting and the imported system view and to
+an OData `$select`. Include a column defined directly on the custom activity table. The existing evidence-backed
+wildcard exemption represents a site observation. Set `observed.webApiWildcardExpiresAt` to the observed ISO UTC
+expiration instant to enforce the response change on the Mirage clock. Exemptions without a timestamp retain the
+legacy site observation.
 
 Portal-specific error text, anti-forgery behaviour and reference errors require evidence-backed `observed` settings
 (default first):

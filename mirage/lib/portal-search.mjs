@@ -9,14 +9,14 @@
 //   table permissions filter results per visitor.
 // - Result URLs come from the site marker `<logicalname>_SearchResultPage` (`Case` for incident, `Knowledge Article`
 //   for knowledgearticle) with the record id in the `id` query parameter; without a marker the url is null.
-// ponytail: matching is the dataverse-search.mjs token match (any query term, `term*` prefixes; score = matched terms), not
-// Dataverse's relevance index: Lucene operators, fuzzy and proximity are ignored, and the Search/Query weights of the
-// default search page stay contract (PORTAL_SEARCH_QUERY_WEIGHTS_IGNORED). `filter` supports `+column:value` and
+// Matching uses the portal query subset in portal-search-query.mjs over readable rows. The local score reflects matched
+// terms and explicit term boosts. It has no hosted index or Search/Query setting weights. `filter` supports `+column:value` and
 // `-column:value` clauses only; anything else is refused (PORTAL_SEARCH_FILTER_UNSUPPORTED).
 import { executeGridQuery } from './native-services.mjs';
-import { searchTokens } from './dataverse-search.mjs';
 import { organizationRecord } from './organization-context.mjs';
 import { siteSetting } from './redirects.mjs';
+import { resxCulture } from './liquid-resx.mjs';
+import { compilePortalSearchQuery } from './portal-search-query.mjs';
 
 const DEFAULT_SEARCH_TABLES = Object.freeze([
   'knowledgearticle',
@@ -54,18 +54,6 @@ const text = (value) => {
   return String(value);
 };
 const searchError = (message, code) => Object.assign(new Error(message), { status: 501, code });
-
-/** Query terms: plain tokens, with a trailing `*` kept as a prefix marker; operators and Lucene syntax are dropped. */
-function queryTerms(query) {
-  return String(query ?? '')
-    .split(/\s+/)
-    .flatMap((word) => {
-      if (/^(?:AND|OR|NOT|&&|\|\|)$/.test(word)) return [];
-      const prefix = word.endsWith('*');
-      const parts = searchTokens(word.replace(/^[+\-!]/, ''));
-      return parts.map((part, index) => ({ term: part, prefix: prefix && index === parts.length - 1 }));
-    });
-}
 
 /** `filter`: required (+) and prohibited (-) column equality clauses. */
 function filterClauses(filter) {
@@ -111,41 +99,34 @@ function resultUrl(portal, logicalName, id) {
   return `${page.url}${page.url.includes('?') ? '&' : '?'}id=${encodeURIComponent(id)}`;
 }
 
-function fragmentOf(values, terms) {
+function fragmentOf(values, search) {
   const hit = values.find((value) =>
-    terms.some(({ term, prefix }) =>
-      searchTokens(value).some((token) => (prefix ? token.startsWith(term) : token === term)),
-    ),
+    value
+      .toLowerCase()
+      .match(/[\p{L}\p{N}]+/gu)
+      ?.some(search.highlight),
   );
   if (!hit) return null;
-  const words = new Set(terms.map(({ term }) => term));
   // Matches are found in the raw text and each segment is escaped on its own, so an entity is never split.
   return hit
     .slice(0, 200)
     .split(/([\p{L}\p{N}]+)/u)
     .map((segment, index) =>
-      index % 2 &&
-      (words.has(segment.toLowerCase()) ||
-        terms.some(({ term, prefix }) => prefix && segment.toLowerCase().startsWith(term)))
-        ? `<em>${html(segment)}</em>`
-        : html(segment),
+      index % 2 && search.highlight(segment.toLowerCase()) ? `<em>${html(segment)}</em>` : html(segment),
     )
     .join('');
 }
 
-function searchRowHit(row, logicalName, mapping, columns, clauses, terms, portal) {
+function searchRowHit(row, logicalName, mapping, columns, clauses, search, portal) {
   if (!clauses.every(({ required, column, value }) => (text(row[column]).toLowerCase() === value) === required))
     return null;
   const values = columns.map((column) => text(row[column])).filter(Boolean);
-  const tokens = new Set(values.flatMap(searchTokens));
-  const score = terms.filter(({ term, prefix }) =>
-    prefix ? [...tokens].some((token) => token.startsWith(term)) : tokens.has(term),
-  ).length;
-  if (terms.length && !score) return null;
+  const score = search.score(values);
+  if (score === null) return null;
   const id = canonical(row[mapping.idColumn]);
   return {
     entity: { ...row, logical_name: logicalName },
-    fragment: terms.length ? fragmentOf(values, terms) : null,
+    fragment: score ? fragmentOf(values, search) : null,
     id,
     logical_name: logicalName,
     score,
@@ -177,10 +158,10 @@ function searchViewModel(logicalName, view, mapping) {
   };
 }
 
-function appendSearchViewHits(hits, rows, result, logicalName, mapping, clauses, { terms, portal }) {
+function appendSearchViewHits(hits, rows, result, logicalName, mapping, clauses, { search, portal }) {
   const columns = result.layout.Columns.filter((column) => column.Type === 0).map((column) => column.LogicalName);
   for (const row of rows) {
-    const hit = searchRowHit(row, logicalName, mapping, columns, clauses, terms, portal);
+    const hit = searchRowHit(row, logicalName, mapping, columns, clauses, search, portal);
     if (hit) hits.push(hit);
   }
 }
@@ -218,6 +199,36 @@ function noIndexedSearchTables(portal, empty, diagnostic) {
   return { ...empty, unavailable: 'no-indexed-tables' };
 }
 
+function recordTypeFacets(portal, hits) {
+  const groups = new Map();
+  for (const entry of String(setting(portal, 'Search/RecordTypeFacetsEntities') ?? '').split(';')) {
+    const [label, list] = entry.split(':');
+    if (!label?.trim() || !list) continue;
+    const names = [
+      ...new Set(
+        list
+          .toLowerCase()
+          .split(',')
+          .map((name) => name.trim())
+          .filter(Boolean),
+      ),
+    ];
+    const facet = { label: label.trim(), visibleNames: new Set(), count: 0 };
+    for (const name of names) if (!groups.has(name)) groups.set(name, facet);
+  }
+  const available = new Set();
+  for (const { logical_name: name } of hits) {
+    if (!groups.has(name)) groups.set(name, { label: name, visibleNames: new Set(), count: 0 });
+    const facet = groups.get(name);
+    facet.count++;
+    facet.visibleNames.add(name);
+    available.add(facet);
+  }
+  return [...available]
+    .map(({ label, visibleNames, count }) => ({ label, names: [...visibleNames].sort(), count }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+}
+
 /**
  * Runs a portal search for `identity`: { approximate_total_hits, page, page_size, results }. Each result carries entity, fragment,
  * id, logical_name, number, score, title and url (the searchindex object). Unavailable search answers no results and a diagnostic.
@@ -230,10 +241,12 @@ function noIndexedSearchTables(portal, empty, diagnostic) {
   config,
   identity,
   query = '',
+  recoverQuerySyntax = false,
   filter = null,
   logicalNames = null,
   page = 1,
   pageSize = 10,
+  includeRecordTypes = false,
   diagnostic = () => {},
 }) {
   page = Math.max(1, Math.floor(Number(page)) || 1);
@@ -252,11 +265,11 @@ function noIndexedSearchTables(portal, empty, diagnostic) {
             .filter(Boolean),
         );
   if (!tables.size) return noIndexedSearchTables(portal, empty, diagnostic);
-  const terms = queryTerms(query);
+  const search = compilePortalSearchQuery(query, { recoverSyntax: recoverQuerySyntax });
   const clauses = filterClauses(filter);
   const hits = [];
   for (const [logicalName, view] of tables) {
-    if (wanted && !wanted.has(logicalName)) continue;
+    if (wanted && !wanted.has(logicalName) && !includeRecordTypes) continue;
     const mapping = store.resolveMapping(logicalName);
     // The record id is read with the view's columns (a view's fetch need not select it). Knowledge articles are searchable only
     // when Published and not Internal, whatever the view selects (Learn power-pages search overview, "can't be modified"): the
@@ -276,20 +289,64 @@ function noIndexedSearchTables(portal, empty, diagnostic) {
       if (!result.moreRecords || !result.rows?.length) break;
     }
     if (result.accessDenied) continue;
-    appendSearchViewHits(hits, rows, result, logicalName, mapping, clauses, { terms, portal });
+    appendSearchViewHits(hits, rows, result, logicalName, mapping, clauses, { search, portal });
   }
-  hits.sort((a, b) => b.score - a.score || a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
-  const results = hits
+  const visible = includeRecordTypes && wanted ? hits.filter((hit) => wanted.has(hit.logical_name)) : hits;
+  visible.sort((a, b) => b.score - a.score || a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
+  const results = visible
     .slice((page - 1) * pageSize, page * pageSize)
     .map((hit, index) => ({ ...hit, number: (page - 1) * pageSize + index + 1 }));
-  return { approximate_total_hits: hits.length, page, page_size: pageSize, results };
+  return {
+    approximate_total_hits: visible.length,
+    page,
+    page_size: pageSize,
+    results,
+    ...(includeRecordTypes ? { record_types: recordTypeFacets(portal, hits) } : {}),
+  };
+}
+
+function searchHref(action, query, logicalNames, page) {
+  const params = new URLSearchParams({ q: query });
+  if (page != null) params.set('page', page);
+  if (logicalNames) params.set('logicalNames', logicalNames);
+  return html(`${action}?${params}`);
+}
+
+function searchPagination({ found, query, logicalNames, action, culture }) {
+  const pages = Math.ceil(found.approximate_total_hits / found.page_size);
+  if (pages <= 1) return '';
+  const link = (rel, page, label) =>
+    `<a rel="${rel}" href="${searchHref(action, query, logicalNames, page)}">${html(label)}</a>`;
+  const previous =
+    found.page > 1
+      ? link('prev', Math.min(found.page - 1, pages), culture?.Pagination_Previous_Page ?? 'Previous page')
+      : '';
+  const next = found.page < pages ? link('next', found.page + 1, culture?.Pagination_Next_Page ?? 'Next page') : '';
+  return `<nav aria-label="${html(culture?.Search_DefaultText ?? 'Search results')}">${previous}${next}</nav>`;
+}
+
+function searchFacetNavigation({ found, query, logicalNames, action, culture }) {
+  if (!found.record_types?.length) return '';
+  const link = (title, names) =>
+    `<li><a href="${searchHref(action, query, names)}"${names === logicalNames ? ' aria-current="true"' : ''}>${html(title)}</a></li>`;
+  const items = found.record_types
+    .map((facet) => link(`${facet.label} (${facet.count})`, facet.names.join(',')))
+    .join('');
+  return `<nav aria-label="${html(culture?.Facet_RecordType ?? 'Record Type')}"><ul>${link(culture?.Facet_All ?? 'All', null)}${items}</ul></nav>`;
 }
 
 /**
  * The default search page (`/search/?q=`) when the export has no page of its own at that path: local, labelled markup over
  * portalSearch. Search/Query weights apply only to this page natively and stay contract.
  */
-export async function renderPortalSearchPage({ portal, params, diagnostic = () => {}, ...context }) {
+export async function renderPortalSearchPage({
+  portal,
+  params,
+  languageCode = 'en',
+  action = '/search/',
+  diagnostic = () => {},
+  ...context
+}) {
   if (setting(portal, 'Search/Query'))
     diagnostic({
       code: 'PORTAL_SEARCH_QUERY_WEIGHTS_IGNORED',
@@ -299,14 +356,16 @@ export async function renderPortalSearchPage({ portal, params, diagnostic = () =
         'Search/Query adds Lucene weights and filters to the default search page; the local search ignores them.',
     });
   const query = String(params.get('q') ?? params.get('query') ?? '');
+  const logicalNames = params.get('logicalNames') || null;
   const found = await portalSearch({
     ...context,
     portal,
     diagnostic,
     query,
-    logicalNames: params.get('logicalNames') || null,
+    logicalNames,
     page: params.get('page') ?? 1,
     pageSize: 10,
+    includeRecordTypes: flag(setting(portal, 'Search/FacetedView'), true),
   });
   const items = found.results
     .map((result) => {
@@ -320,5 +379,10 @@ export async function renderPortalSearchPage({ portal, params, diagnostic = () =
     found.unavailable === 'disabled'
       ? 'Search is not enabled for this site.'
       : `${found.approximate_total_hits} result(s)`;
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Search</title></head><body><main data-mirage-component="portal-search"><form method="get" action="/search/"><input type="search" name="q" value="${html(query)}" aria-label="Search"><button type="submit">Search</button></form><p role="status">${html(status)}</p><ol>${items}</ol></main></body></html>`;
+  const culture = resxCulture(languageCode);
+  const label = html(culture?.Search_DefaultText ?? 'Search');
+  const pagination = searchPagination({ found, query, logicalNames, action, culture });
+  const facets = searchFacetNavigation({ found, query, logicalNames, action, culture });
+  const type = logicalNames ? `<input type="hidden" name="logicalNames" value="${html(logicalNames)}">` : '';
+  return `<!doctype html><html lang="${html(languageCode)}"><head><meta charset="utf-8"><title>${label}</title></head><body><main data-mirage-component="portal-search"><form method="get" action="${html(action)}"><input type="search" name="q" value="${html(query)}" aria-label="${label}">${type}<button type="submit">${label}</button></form>${facets}<p role="status">${html(status)}</p><ol>${items}</ol>${pagination}</main></body></html>`;
 }

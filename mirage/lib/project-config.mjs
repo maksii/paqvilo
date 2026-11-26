@@ -543,6 +543,19 @@ function applyObservedChoices(value, label, observed) {
   }
 }
 
+function applyObservedWildcardExpiry(value, label, observed) {
+  if (!Object.hasOwn(value, 'webApiWildcardExpiresAt')) return;
+  const expires = value.webApiWildcardExpiresAt;
+  const instant = typeof expires === 'string' ? Date.parse(expires) : NaN;
+  if (
+    observed.webApiWildcard !== 'exempt' ||
+    !Number.isFinite(instant) ||
+    new Date(instant).toISOString() !== expires.replace(/(:\d\d)Z$/, '$1.000Z')
+  )
+    throw new Error(`${label}.webApiWildcardExpiresAt requires an exempt wildcard and an ISO UTC timestamp`);
+  observed.webApiWildcardExpiresAt = expires;
+}
+
 /**
  * Observed platform behaviour that the export cannot express, recorded per site with the
  * evidence for it: `{ loginPath?, headers?, webApiInnerError?, anonymousDataAccess?, bootstrapStylesheet?, evidence }`.
@@ -572,6 +585,7 @@ export function observedConfig(value, label = 'observed') {
         'formSubmissionErrorMessage',
         'fetchPreOperationSerialization',
         'webApiGlobalMetadataVersion',
+        'webApiWildcardExpiresAt',
         'tablePermissionGrantOrder',
         'odataPermissionGrantOrder',
         'webApiTwoDigitYearMax',
@@ -609,6 +623,7 @@ export function observedConfig(value, label = 'observed') {
   applyObservedAuthority(value, label, observed);
   applyObservedSelfNnErrors(value, label, observed);
   applyObservedChoices(value, label, observed);
+  applyObservedWildcardExpiry(value, label, observed);
   if (!Object.keys(observed).length) return null;
   const evidence = typeof value.evidence === 'string' ? value.evidence.trim() : '';
   if (!evidence)

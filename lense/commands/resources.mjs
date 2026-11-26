@@ -1,7 +1,7 @@
 // Offline resource discovery for editors and agents. No source bodies, browser, or output files.
 import fs from 'node:fs';
 import path from 'node:path';
-import { PortalModel, inlineKindOf, isSourceFile, createSourceReader } from '../portal-model.mjs';
+import { PortalModel, isSourceFile, createSourceReader } from '../portal-model.mjs';
 import { GitBaseline } from '../git.mjs';
 import { Resolver } from '../resolver.mjs';
 import { pageKey } from '../html-rewriter.mjs';
@@ -73,15 +73,15 @@ function optionalInlineFields(source) {
       : {}),
     ...(source.componentId != null ? { componentId: source.componentId } : {}),
     ...(source.recordId ? { recordId: source.recordId, recordIdField: source.recordIdField } : {}),
+    ...(source.recordLanguageField
+      ? { recordLanguageId: source.recordLanguageId, recordLanguageField: source.recordLanguageField }
+      : {}),
     ...(source.lcid != null ? { lcid: source.lcid } : {}),
   };
 }
 
 function inlineMetadata(source, model, cfg) {
-  const def = inlineKindOf(source.file);
-  let metadata = null;
-  if (source.extract) metadata = source.file;
-  else if (def) metadata = source.file.slice(0, -def.suffix.length) + def.suffix.replace(/\.[^.]+\.[^.]+$/, '.yml');
+  const metadata = source.extract ? source.file : source.metadataFile;
   const metadataPaths =
     metadata && (source.extract || model.currentYaml.has(metadata)) && isSourceFile(cfg.sourceDir, metadata)
       ? [metadata]
@@ -136,6 +136,7 @@ function appendInlineResource(source, knownPages, context) {
     name:
       source.label ??
       model.currentYaml.get(metadata)?.adx_name ??
+      model.currentYaml.get(metadata)?.mspp_name ??
       (model.shortKey ? model.currentYaml.get(metadata)?.name : undefined) ??
       path.basename(source.file),
     exists,
@@ -301,9 +302,11 @@ function appendPageResource(page, context) {
 function indexPageMetadata(model, pageMetadata) {
   if (model.format !== 'classic') return;
   for (const [file, metadata] of model.currentYaml) {
-    // PAC YAML pages carry adx_webpageid; .powerpages-site pages keep their ID in id:.
+    // PAC YAML pages carry a prefixed ID; .powerpages-site pages keep their ID in id:.
     const pageId =
-      metadata.adx_webpageid ?? (model.shortKey && file.endsWith('.webpage.yml') ? metadata.id : undefined);
+      metadata.adx_webpageid ??
+      metadata.mspp_webpageid ??
+      (model.shortKey && /\.webpage\.ya?ml$/.test(file) ? metadata.id : undefined);
     if (!pageId) continue;
     const id = rootPageId(model, pageId);
     if (!pageMetadata.has(id)) pageMetadata.set(id, []);

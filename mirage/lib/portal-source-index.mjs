@@ -27,6 +27,7 @@ const renderedFields = [
   'name',
   'title',
   'description',
+  'meta_description',
   'label',
   'instructions',
   'question',
@@ -675,6 +676,16 @@ function matchesChangedSource(source, record) {
   return typeof value === 'string' && hash(value) === source.contentRevision;
 }
 
+function yamlAstField(row, document, field) {
+  // Match portalField's nullish alias precedence, independent of the export's key order.
+  for (const name of [`adx_${field}`, `mspp_${field}`, field]) {
+    const node = row.items.find((pair) => pair.key?.value === name)?.value;
+    const value = YAML.isAlias(node) ? node.resolve(document) : node;
+    if (value && (!YAML.isScalar(value) || value.value != null)) return node;
+  }
+  return null;
+}
+
 function yamlAstSourceTarget(source, snapshot, text, primary, externalProfile, file) {
   if (!snapshot.document) return null;
   snapshot.astRecords ??= new Map();
@@ -682,9 +693,7 @@ function yamlAstSourceTarget(source, snapshot, text, primary, externalProfile, f
   const matches = snapshot.astRecords.get(primary).get(source.recordId) ?? [];
   if (matches.length !== 1) return null;
   const field = source.fieldPath.at(-1);
-  const node = source.semanticConfiguration
-    ? matches[0]
-    : matches[0].items.find((pair) => [field, 'adx_' + field, 'mspp_' + field].includes(pair.key?.value))?.value;
+  const node = source.semanticConfiguration ? matches[0] : yamlAstField(matches[0], snapshot.document, field);
   if (!node?.range) return null;
   const { line, last } = textPosition(snapshot, text, node.range[0]);
   return {

@@ -39,6 +39,18 @@ a diagnostic, not the first declaration. Bound parameters carry the available co
 length, numeric bounds and precision, format, date behaviour, targets, options and defaults; missing metadata is
 omitted. Date outputs keep the native form's seven fractional digits and date/time behaviour.
 
+## Native lists and subgrids
+
+When a portal list opts in to its table's desktop dataset control, Mirage mounts that standard control for a single
+exported view. A form subgrid opts in through its portal metadata and supplies an exported desktop FormXml dataset
+binding. The host keeps the subgrid filter for an exported one-to-many parent relationship. Both hosts read through
+the portal Web API with the site's table and column settings and the visitor's permissions. A list with an exported
+details page can open a currently loaded row through `openDatasetItem`.
+
+The ordinary grid remains available when a required source or API setting is missing or the binding is outside this
+subset. This includes multi-view, map, calendar, and built-in user-filtered lists, many-to-many subgrids, and ineligible
+manifests. The runtime reports `PCF_NATIVE_DATASET_UNSUPPORTED` when it uses the ordinary grid.
+
 ## Manifest feature declarations
 
 Import keeps each `uses-feature` declaration's attributes and order. Power Pages
@@ -76,8 +88,6 @@ omit functions. Validation finishes before values apply; a later component or in
 
 ## Limits
 
-- Native list and subgrid PCF hosting is not implemented: a list or subgrid configured with a dataset code component
-  renders the native grid and reports `PCF_NATIVE_DATASET_UNSUPPORTED`.
 - Virtual (React) controls and declared platform libraries are refused with `PCF_VIRTUAL_UNSUPPORTED`: the Power Pages
   host supplies no platform libraries.
 - Dataset aliases, aggregates, advanced operators and navigation without an exported portal binding are limited or

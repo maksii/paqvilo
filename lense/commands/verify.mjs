@@ -20,6 +20,8 @@ import { editSource } from '../source-edit.mjs';
 import { portalResourceUrl } from '../online.mjs';
 import { replaceDelimitedAlternatives } from '../../mirage/lib/text-scanning.mjs';
 import { shutdownSignalCounter } from '../signal-forwarding.mjs';
+import { startPath as validateStartPath } from '../config-schema.mjs';
+import { inspectionSources } from '../source-inspection.mjs';
 
 /** Waits `ms`; an interrupt clears the timer at once and ends the wait with the interrupt reason. */
 function sleep(ms, signal) {
@@ -37,6 +39,52 @@ function sleep(ms, signal) {
   });
 }
 const sha = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
+const FONT_PATH = /\.(?:woff2?|ttf|otf|eot)$/i;
+const FORM_SCRIPT_KINDS = ['basic-form-js', 'advanced-form-step-js', 'list-js'];
+const COPY_EXCLUSIONS = new Set(['.git', '.paqvilo', 'node_modules']);
+
+function copyVerificationSources(source, destination) {
+  fs.cpSync(fs.realpathSync.native(source), destination, {
+    recursive: true,
+    filter: (file) => !COPY_EXCLUSIONS.has(path.basename(file)) && !fs.lstatSync(file).isSymbolicLink(),
+  });
+}
+
+function commitVerificationBaseline(directory) {
+  git(directory, 'init', '-q');
+  git(directory, 'add', '-A');
+  git(
+    directory,
+    '-c',
+    'user.name=paqvilo',
+    '-c',
+    'user.email=paqvilo@localhost',
+    'commit',
+    '-q',
+    '--allow-empty',
+    '-m',
+    'baseline',
+  );
+}
+
+async function copyVerificationControls(cfg, work) {
+  const { roots } = await inspectionSources(cfg);
+  const copies = [];
+  for (const root of roots) {
+    const controls = path.join(root, 'Controls');
+    if (!fs.lstatSync(controls, { throwIfNoEntry: false })?.isDirectory()) continue;
+    const copy = path.join(work, 'solutions', String(copies.length));
+    copyVerificationSources(controls, path.join(copy, 'Controls'));
+    commitVerificationBaseline(copy);
+    // Inspection canonicalizes Solution roots before returning assets to the verifier.
+    copies.push(await fs.promises.realpath(copy));
+  }
+  return copies;
+}
+
+function stageVerificationMode(root, file) {
+  git(root, 'update-index', '--chmod=+x', '--', path.relative(root, file));
+}
 const DIAGNOSTIC_LIMITS = { entriesPerCategory: 200, textCharacters: 1000 };
 // Hang guard for the evidence screenshot, which waits for the page's web fonts; matches the 120 s navigation guard.
 const EVIDENCE_SCREENSHOT_GUARD_MS = 120_000;
@@ -122,7 +170,9 @@ export function assessVerification(checks, diagnostics, strict = false) {
   const exercised = checks.some(
     (check) =>
       check.ok &&
-      /^(?:web file|page custom|basic-form|advanced-form|list-js|web template|content snippet)/.test(check.name),
+      /^(?:web file|PCF resource|page custom|basic-form|advanced-form|list-js|web template|content snippet)/.test(
+        check.name,
+      ),
   );
   const comparison = diagnostics?.comparison;
   const diagnosticsComplete = Boolean(comparison) && Object.values(comparison).every((item) => !item.incomplete);
@@ -262,7 +312,36 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
 // the inline script, template and snippet edits are saved (the run waits for the promise it returns), 'edits-saved'
 // once every edit is saved, and 'after-edits-load' once every edit is applied and the run waits for the displayed
 // document to finish loading.
-/* NOSONAR */ export default async function verify(cfg, args, { source = process, onPhase = noop } = {}) {
+export default async function verify(cfg, args, options) {
+  if (!args['verify-path']) return verifyPage(cfg, args, options);
+
+  const paths = [...new Set(args['verify-path'])];
+  if (!paths.length) throw new Error('--verify-path requires at least one page');
+  for (const pagePath of paths) validateStartPath(pagePath, '--verify-path');
+  const reports = [];
+  for (const pagePath of paths) {
+    const report = await verifyPage(cfg, { ...args, path: pagePath }, { ...options, collectReport: true });
+    reports.push(report);
+    if (['VERIFY_INTERRUPTED', 'CLEANUP_FAILED'].includes(report.errorCode) || report.cleanup.errors.length) break;
+  }
+  const passed = paths.length === reports.length && reports.every((report) => report.passed);
+  if (args.json)
+    console.log(
+      JSON.stringify({
+        schemaVersion: 1,
+        site: cfg.siteName,
+        environment: cfg.envName,
+        passed,
+        paths: paths.map((path) => redactedPageUrl(cfg.origin + path)),
+        reports,
+        writesFiles: reports.flatMap((report) => report.writesFiles),
+      }),
+    );
+  else console.log(`Verified ${reports.filter((report) => report.passed).length}/${paths.length} requested pages.`);
+  return passed ? 0 : 1;
+}
+
+/* NOSONAR */ async function verifyPage(cfg, args, { source = process, onPhase = noop, collectReport = false } = {}) {
   const log = args.json ? (...values) => console.error(...values) : (...values) => console.log(...values);
   const signInTimeout = args['sign-in-timeout'] === undefined ? 900_000 : Number(args['sign-in-timeout']);
   if (!Number.isSafeInteger(signInTimeout) || signInTimeout < 1 || signInTimeout > 900_000)
@@ -316,15 +395,12 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
   const stopInterruptListeners = abortOnInterrupt(interrupt, { source });
 
   try {
-    log(`verifying ${cfg.siteName} @ ${cfg.envName}  ${cfg.origin}${startPath}`);
+    log(`verifying ${cfg.siteName} @ ${cfg.envName}  ${redactedPageUrl(cfg.origin + startPath)}`);
     log(`copying sources to ${tempSource} ...`);
     // The selected extract itself may be reached through a junction. Resolve that root once,
     // while still excluding nested links so verification never copies another directory's data.
-    fs.cpSync(fs.realpathSync.native(cfg.sourceDir), tempSource, {
-      recursive: true,
-      filter: (file) =>
-        !['.git', '.paqvilo', 'node_modules'].includes(path.basename(file)) && !fs.lstatSync(file).isSymbolicLink(),
-    });
+    copyVerificationSources(cfg.sourceDir, tempSource);
+    const solutionCopies = await scope.until(copyVerificationControls(cfg, work));
     // the copy is synchronous, so the interrupt is observed once it has returned
     interrupt.signal.throwIfAborted();
     // A current local block may already differ from the served page. Preserve the caller's
@@ -363,14 +439,15 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
         `inline baseline: ${inlineBaseline.requested} (${inlineBaseline.commit}); preserved ${inlineBaseline.seededSources.length} changed block sources`,
       );
     } else log(`inline baseline: using the copied working sources; ${inlineBaseline.fallbackReason}`);
-    git(tempSource, 'init', '-q');
-    git(tempSource, 'add', '-A');
-    git(tempSource, '-c', 'user.name=paqvilo', '-c', 'user.email=paqvilo@localhost', 'commit', '-q', '-m', 'baseline');
+    commitVerificationBaseline(tempSource);
 
     // scope 'changed': at first nothing is overridden, afterwards exactly the files edited below
     const vcfg = {
       ...cfg,
       sourceDir: tempSource,
+      ...(solutionCopies.length
+        ? { mirageSourceRoots: solutionCopies, mirageConfig: { ...cfg.mirageConfig, project: null } }
+        : {}),
       site: { ...cfg.site, routes: [], scope: 'changed', markup: { ...cfg.site.markup, baseline: 'HEAD' } },
     };
     const session = await scope.until(OverlaySession.create(vcfg));
@@ -661,10 +738,17 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
         used.find((w) => /\.css$/i.test(w.url));
       const jsFile = used.find((w) => /\.js$/i.test(w.url) && !/\.min\.js$/i.test(w.url));
       const imgFile = used.find((w) => /\.(?:png|jpe?g|gif|svg|ico)$/i.test(w.url));
+      const fontFile = used.find((w) => FONT_PATH.test(w.url));
+      const declaredPcf = session.pcfResourcesFor(page);
+      const pcfAssets = ['code', 'css'].flatMap((kind) => {
+        const resource = declaredPcf.find((item) => item.kind === kind && requested.has(item.url));
+        const asset = resource && session.solutionSourceForUrl(resource.url);
+        return asset && solutionCopies.includes(asset.solutionRoot) ? [asset] : [];
+      });
       // Exercise each rendered form/list category independently. A basic-form match must not hide
       // a broken list or advanced-step overlay on the same page, or imply those kinds were tested.
       const matchedForms = hits.findLast((h) => h.type === 'html' && h.navigation)?.matched ?? [];
-      const formScripts = ['basic-form-js', 'advanced-form-step-js', 'list-js'].flatMap((kind) => {
+      const formScripts = FORM_SCRIPT_KINDS.flatMap((kind) => {
         const match = matchedForms.find((entry) => entry.kind === kind);
         const source = editable.find((entry) => entry.rel === match?.rel);
         return source ? [source] : [];
@@ -676,7 +760,7 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
       const templateCandidates = findTemplateCandidates(templates, rawHtml);
       const template = await renderedTemplate(rawHtml, templateCandidates);
       const snippet = await visibleSnippet(rawHtml);
-      return { cssFile, jsFile, imgFile, formScripts, template, snippet };
+      return { cssFile, jsFile, imgFile, fontFile, declaredPcf, pcfAssets, formScripts, template, snippet };
     };
     // The edits are chosen from the HTML of the document on display and from that document in the page. Choices
     // made from a document the page has replaced are thrown away and its observed replacement is read; three reads
@@ -708,7 +792,7 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
         );
       started = await readDisplayedDocument();
     }
-    const { cssFile, jsFile, imgFile, formScripts, template, snippet } = choice;
+    const { cssFile, jsFile, imgFile, fontFile, declaredPcf, pcfAssets, formScripts, template, snippet } = choice;
     if (process.env.PAQVILO_DEBUG) fs.writeFileSync(path.join(work, 'last-page.html'), started.html);
     check(
       'page loads through the overlay',
@@ -738,6 +822,14 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
       // trailing bytes keep the image decodable while making the file differ from the online one
       fs.appendFileSync(imgFile.file, /\.svg$/i.test(imgFile.url) ? `\n<!-- ${token} -->\n` : Buffer.from(token));
     }
+    // Stage a mode change in the temporary Git repository so the changed-only overlay serves the
+    // font locally. Keeping the bytes intact avoids invalidating font checksums on reload.
+    if (fontFile) {
+      stageVerificationMode(tempSource, fontFile.file);
+      await scope.until(session.refreshChangeTracking([fontFile.file]));
+    }
+    for (const asset of pcfAssets) stageVerificationMode(asset.solutionRoot, asset.file);
+    if (pcfAssets.length) await scope.until(session.refreshAsync(pcfAssets.map((asset) => asset.file)));
     if (cssBlock)
       editSource(cssBlock, () => (workingText(cssBlock) ?? '') + `\nhtml{--paqvilo-verify-inline-css:"${token}"}\n`);
     await scope.until(Promise.resolve(onPhase('inline-script-edits')));
@@ -789,8 +881,8 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
       );
     } else skip('web file (JS)', 'the page loads no JS web file');
 
-    if (imgFile) {
-      const expected = sha(fs.readFileSync(imgFile.file));
+    const verifyAssetBytes = async (asset, label) => {
+      const expected = sha(fs.readFileSync(asset.file));
       const got = await until(
         async () => {
           const value = await page.evaluate(
@@ -802,7 +894,7 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
                 local: r.headers.get('x-paqvilo'),
               };
             },
-            portalResourceUrl(cfg.origin, imgFile.url),
+            portalResourceUrl(cfg.origin, asset.url),
           );
           return value.hash === expected && value.local ? value : null;
         },
@@ -810,11 +902,19 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
         interrupt.signal,
       );
       check(
-        `web file (image) ${imgFile.url}  <-  ${session.rel(imgFile.file)}`,
+        `${label} ${asset.url}  <-  ${session.rel(asset.file)}`,
         got?.hash === expected && got.local,
         'bytes in the browser equal the local file',
       );
-    } else skip('web file (image)', 'the page loads no image web file');
+    };
+    if (imgFile) await verifyAssetBytes(imgFile, 'web file (image)');
+    else skip('web file (image)', 'the page loads no image web file');
+    if (fontFile) await verifyAssetBytes(fontFile, 'web file (font)');
+    else if (model.webFiles.some((file) => FONT_PATH.test(file.url ?? '')))
+      skip('web file (font)', 'the page loads no mapped font from the export');
+    for (const asset of pcfAssets) await verifyAssetBytes(asset, `PCF resource (${asset.resourceKind})`);
+    if (declaredPcf.length && !pcfAssets.length)
+      skip('PCF resource', 'no requested declaration resolved to a code or CSS file in the copied Solution sources');
 
     if (cssBlock) {
       // looked up in the <style> text, not as a computed value: the existing CSS may not be well formed
@@ -871,6 +971,9 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
     }
     if (!formScripts.length)
       skip('form / list custom JS', 'this page renders no basic form, advanced form step or list with custom JS');
+    for (const kind of FORM_SCRIPT_KINDS)
+      if (editable.some((entry) => entry.kind === kind) && !formScripts.some((entry) => entry.kind === kind))
+        skip(kind, 'the export contains this script kind but it was not observed on this page');
 
     if (template) {
       const ok = await until(
@@ -974,7 +1077,7 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
       schemaVersion: 1,
       site: cfg.siteName,
       environment: cfg.envName,
-      url: cfg.origin + startPath,
+      url: redactedPageUrl(cfg.origin + startPath),
       token,
       checks,
       diagnostics,
@@ -1012,7 +1115,7 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
       schemaVersion: 1,
       site: cfg.siteName,
       environment: cfg.envName,
-      url: cfg.origin + startPath,
+      url: redactedPageUrl(cfg.origin + startPath),
       token,
       checks,
       diagnostics,
@@ -1079,6 +1182,7 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
     failure = new Error(report.error, { cause: err });
     report.writesFiles = report.writesFiles.filter((file) => fs.existsSync(file));
   }
+  if (collectReport) return report;
   if (args.json) console.log(JSON.stringify(report, null, 2));
   else if (failure) {
     const reportFile = path.join(outDir, `${stamp}.json`);

@@ -18,6 +18,7 @@ import {
   assertOperationRole,
   operationHandlers,
 } from '../lib/exported-operations.mjs';
+import { flowRunsOf } from '../lib/flow-runs.mjs';
 import { validatePack } from '../lib/preset-registry.mjs';
 import { createSimulator } from '../server.mjs';
 import { calledFrom } from './support/timer-origin.mjs';
@@ -683,7 +684,7 @@ test('registered HTTP operations enforce exported roles and CSRF and server logi
     'Main.webtemplate.source.html': '<h1>Synthetic</h1>',
     'Runner.webrole.yml': `adx_webroleid: ${role}\nadx_name: Runner`,
     'sample.serverlogic.yml': `adx_serverlogicid: logic\nadx_name: sample\nadx_serverlogic_adx_webrole:\n- ${role}`,
-    'sample.js': `function post(){return JSON.stringify({seen:JSON.parse(Server.Context.Body).value});}function get(){return 'ok';}`,
+    'sample.js': `function post(){const c=Server.Context;return JSON.stringify({seen:JSON.parse(c.Body).value,url:c.Url,mode:c.QueryParameters.mode,fixture:c.Headers['x-fixture'],auth:c.Headers.authorization,cookie:c.Headers.cookie,token:c.Headers.__requestverificationtoken});}function get(){return 'ok';}`,
     'Request.cloudflowconsumer.yml': `adx_cloudflowconsumerid: consumer\nadx_name: Sample request\nadx_processid: ${flow}\nadx_flowapiurl: /_api/cloudflow/v1.0/trigger/${flow}\nadx_cloudflowconsumer_adx_webrole:\n- ${role}`,
     'pack.mjs': `export default{id:'synthetic-operations',name:'Synthetic',description:'Invented fixture',matches:()=>true,presets:()=>({}),serverLogics:{sample:({runExportedServerLogic})=>runExportedServerLogic()},cloudFlows:{'Sample request':({input})=>({status:200,body:input})}};`,
   };
@@ -729,14 +730,27 @@ test('registered HTTP operations enforce exported roles and CSRF and server logi
       headers: { 'content-type': 'application/json', ...headers },
       body: JSON.stringify({ value: 7 }),
     });
-  const logic = '/_api/serverlogics/sample',
+  const logic = '/_api/serverlogics/sample?mode=fixture',
     cloud = '/_api/cloudflow/v1.0/trigger/' + flow;
   assert.equal((await post(logic)).status, 403);
   assert.equal((await post(cloud)).status, 403);
   const authorized = { __RequestVerificationToken: token };
-  const result = await post(logic, authorized);
+  const result = await post(logic, {
+    ...authorized,
+    'x-fixture': 'test-header',
+    authorization: 'Bearer invented-placeholder',
+    cookie: 'fixture=invented-placeholder',
+  });
   assert.equal(result.status, 200);
-  assert.equal(JSON.parse((await result.json()).data).seen, 7);
+  assert.deepEqual(JSON.parse((await result.json()).data), {
+    seen: 7,
+    url: app.url + logic,
+    mode: 'fixture',
+    fixture: 'test-header',
+    auth: '[redacted]',
+    cookie: '[redacted]',
+    token: '[redacted]',
+  });
   const flowResponse = await post(cloud, authorized);
   assert.equal(flowResponse.status, 200);
   assert.deepEqual(await flowResponse.json(), { value: 7 });
@@ -753,6 +767,68 @@ test('registered HTTP operations enforce exported roles and CSRF and server logi
   assert.equal((await configure({ mode: 'live', live: { origin: 'https://invalid.example' } })).status, 200);
   assert.equal((await fetch(app.url + logic)).status, 501);
   assert.deepEqual(calls, []);
+});
+
+// @test-kind contract: a source Power Pages flow without a Response completes its actions and returns an empty 202
+test('an imported Power Pages flow with no Response completes and returns an empty 202', async (t) => {
+  const { dir } = await source(t, '');
+  const flow = 'd0000000-0000-4000-8000-000000000004';
+  const route = '/_api/cloudflow/v1.0/trigger/' + flow;
+  const files = {
+    'website.yml': 'adx_websiteid: site\nadx_name: Invented Response-less flow',
+    'Runner.webrole.yml': `adx_webroleid: ${role}\nadx_name: Runner`,
+    'Request.cloudflowconsumer.yml': `adx_cloudflowconsumerid: consumer\nadx_name: Response-less request\nadx_processid: ${flow}\nadx_flowapiurl: ${route}\nadx_cloudflowconsumer_adx_webrole:\n- ${role}`,
+    'Workflows/flow.json.data.xml': `<Workflow WorkflowId="${flow}" Name="Response-less flow"/>`,
+    'Workflows/flow.json': JSON.stringify({
+      properties: {
+        definition: {
+          triggers: { request: { type: 'Request', kind: 'powerpages' } },
+          actions: { done: { type: 'Compose', inputs: 'Executed' } },
+        },
+      },
+    }),
+  };
+  await fs.mkdir(path.join(dir, 'Workflows'));
+  for (const [file, value] of Object.entries(files)) await fs.writeFile(path.join(dir, file), value);
+
+  const workflows = await importOperationWorkflows([{ dir }]);
+  assert.deepEqual(runExportedCloudFlow({ record: { processId: flow }, workflows, input: {} }), {
+    status: 202,
+    body: undefined,
+  });
+
+  const app = await createSimulator({
+    sourceDir: dir,
+    solutionRoots: [dir],
+    stateFile: path.join(dir, '.paqvilo/state.json'),
+    port: 0,
+    watch: false,
+    initial: {
+      version: 1,
+      tables: {},
+      mappings: {},
+      permissions: [],
+      simulator: {
+        mode: 'local',
+        pageMode: 'local',
+        identityScope: 'configured',
+        identity: { id: 'caller', roles: ['Runner'], roleSource: 'override' },
+      },
+    },
+  });
+  ownedFixture(t).add(() => app.close());
+  const response = await fetch(app.url + route, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', __RequestVerificationToken: app.csrf },
+    body: '{}',
+  });
+  assert.deepEqual([response.status, await response.text()], [202, '']);
+  assert.deepEqual(
+    flowRunsOf(app.store)
+      .list({ processId: flow })
+      .map((run) => run.status),
+    ['Succeeded'],
+  );
 });
 
 test('Imported flow HTTP failure retains completed connector commits and Response headers', async (t) => {
