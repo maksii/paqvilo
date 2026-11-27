@@ -27,6 +27,11 @@
 //       holds the run suspends until a later change of the record makes one hold (each later write re-evaluates them)
 //     Postpone with BlockExecution True and PostponeUntil [variable] (a DateTime): the run suspends until that time;
 //       BlockExecution False does not suspend
+//     The process designer's Timeout wait branch (summary-F6 DATA-04c2): RetrieveLastExecutionTime, the due column, an
+//       optional XrmTimeSpan offset added to it (Add with a DateTime target type), Assign IIf(IsNothing(d), DateTime.MaxValue,
+//       d), Assign UtcNow >= DirectCast(d, DateTime).ToUniversalTime(), and a non-blocking Postpone to the due time as the
+//       branch's Else; a wait that suspends with such a branch wakes at its earliest due time, or earlier on a write of a
+//       column its branches read
 //   A suspended run answers { status: 'waiting', wait, snapshot }; runClassicWorkflow(program, host, { resume: snapshot })
 //   continues it at the step that suspended, which is evaluated again (a wait reads the record as it is then).
 // Bounds: XAML_LIMITS (text length, element count, activity nesting depth, parameters per expression). The step model has no
@@ -48,6 +53,14 @@ const COLUMN = /^[a-z_][a-z0-9_]{0,127}$/;
 const GUID = /^\{?([0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12})\}?$/i;
 const ENTITY_REF = /^\[(InputEntities|CreatedEntities)\("([^"]{1,200})"\)(\.Id)?\]$/;
 const NEW_ENTITY = /^\[New Entity\("([a-z_][a-z0-9_]{0,127})"\)\]$/i;
+// The designer's Timeout wait (summary-F6 DATA-04c2): an unset due time becomes DateTime.MaxValue, then the condition is
+// "the current UTC time is at or past the due time".
+const OR_MAX =
+  /^\[Microsoft\.VisualBasic\.IIf\(Microsoft\.VisualBasic\.IsNothing\(([A-Za-z_]\w{0,127})\), DateTime\.MaxValue, ([A-Za-z_]\w{0,127})\)\]$/;
+const PAST_DUE = /^\[DateTime\.UtcNow >= DirectCast\(([A-Za-z_]\w{0,127}), System\.DateTime\)\.ToUniversalTime\(\)\]$/;
+const DATE_MIN_VALUE = '0001-01-01T00:00:00.000Z';
+const DATE_MAX_VALUE = '9999-12-31T23:59:59.999Z';
+const TIME_SPAN_PARTS = ['Years', 'Months', 'Days', 'Hours', 'Minutes'];
 const OBJECT_LIST = /^\[New Object\(\) \{(.*)\}\]$/s;
 const TERMINATE =
   /^\[New Microsoft\.Xrm\.Sdk\.InvalidPluginExecutionException\(Microsoft\.Xrm\.Sdk\.OperationStatus\.(\w+), ([A-Za-z_]\w{0,127})\)\]$/;
@@ -244,9 +257,10 @@ const LITERALS = new Map([
   [
     'Boolean',
     (texts, where) => {
-      const text = String(texts[0]).toLowerCase();
-      if (text !== 'true' && text !== 'false') unsupported(`${where}: '${texts[0]}' is not a Boolean literal.`);
-      return text === 'true';
+      // The condition dialog writes a Yes/No value as "1" or "0" (summary-F6 DATA-04c2).
+      const value = { true: true, false: false, 1: true, 0: false }[String(texts[0]).toLowerCase()];
+      if (value === undefined) unsupported(`${where}: '${texts[0]}' is not a Boolean literal.`);
+      return value;
     },
   ],
   ['String', (texts) => texts[0]],
@@ -363,8 +377,33 @@ function defaultOf(item, name) {
     return fallback === 'True';
   }
   if (['x:Int32', 'x:Int64', 'x:Decimal', 'x:Double'].includes(type)) return numberOf(fallback, `Variable ${name}`);
+  // The designer's Timeout wait starts its last-execution variable at DateTime.MinValue (summary-F6 DATA-04c2).
+  if (fallback === '[System.DateTime.MinValue]') return DATE_MIN_VALUE;
   if (/^\[.*\]$/s.test(fallback)) unsupported(`The default of workflow variable ${name} is an expression.`);
   return fallback;
+}
+
+// An XrmTimeSpan literal default (the designer's offset of a Timeout wait, "{2 Minutes After Due}"): its parts.
+function timeSpanDefaultOf(item, name) {
+  const holder = item.children.find((child) => localName(child.name) === 'Variable.Default');
+  const literal = holder?.children[0];
+  const span = literal?.children[0];
+  if (
+    item.children.length !== 1 ||
+    localName(literal?.name ?? '') !== 'Literal' ||
+    localName(span?.name ?? '') !== 'XrmTimeSpan' ||
+    (literal?.children.length ?? 0) !== 1
+  )
+    unsupported(`The default of workflow variable ${name} is not an XrmTimeSpan literal.`);
+  checkAttributes(span, TIME_SPAN_PARTS);
+  return {
+    timeSpan: Object.fromEntries(
+      TIME_SPAN_PARTS.map((part) => [
+        part.toLowerCase(),
+        integerOf(String(attrOf(span, part) ?? '0'), `Variable ${name} ${part}`),
+      ]),
+    ),
+  };
 }
 
 function variablesOf(collection) {
@@ -373,7 +412,8 @@ function variablesOf(collection) {
     if (localName(item.name) !== 'Variable') unsupported(`${tag(item)} is not a workflow variable.`);
     const name = attrOf(item, 'Name');
     if (!IDENTIFIER.test(name ?? '') || KEYWORDS.has(name)) unsupported('A workflow variable has no valid name.');
-    variables.push({ name, value: defaultOf(item, name) });
+    const timeSpan = String(attrOf(item, 'TypeArguments') ?? '').endsWith(':XrmTimeSpan');
+    variables.push({ name, value: timeSpan ? timeSpanDefaultOf(item, name) : defaultOf(item, name) });
   }
   return variables;
 }
@@ -395,6 +435,14 @@ function compileComposite(parts, depth) {
 function compileBranchBody(node, depth) {
   if (!node || localName(node.name) === 'Null') return null;
   const step = compileActivity(node, depth + 1);
+  // The designer's Timeout wait branch has a non-blocking Postpone to its due time as its Else (summary-F6 DATA-04c2):
+  // it names the time the wait wakes; the branch's own condition decides.
+  // The Web API accepts and activates this designer form (DATA-04c2 probe), unlike the Postpone forms F6 authored by hand.
+  if (step.kind === 'postpone' && !step.block) {
+    const index = context?.webApi.lastIndexOf('Postpone') ?? -1;
+    if (index >= 0) context.webApi.splice(index, 1);
+    return { kind: 'sequence', variables: [], steps: [step], composite: true };
+  }
   if (step.kind !== 'sequence' || step.composite !== true)
     unsupported('A ConditionBranch Then or Else is not a Composite activity.');
   return step;
@@ -488,6 +536,58 @@ const REFERENCES = new Map([
   ],
 ]);
 
+// Workflow variable names of an expression's parameters; anything else (a literal, a keyword) is outside the subset.
+const variableItems = (items) =>
+  items.every((item) => IDENTIFIER.test(item.name ?? '') && !KEYWORDS.has(item.name))
+    ? items.map((item) => item.name)
+    : null;
+
+// The expression operators beyond CreateCrmType, each answering its compiled step.
+const EXPRESSIONS = new Map([
+  // RetrieveLastExecutionTime (the designer's Timeout wait): the time the run last executed; Mirage reads its own clock.
+  [
+    'RetrieveLastExecutionTime',
+    ({ items, label, result }) => {
+      if (items.length !== 1 || !variableItems(items))
+        unsupported(`${label}: RetrieveLastExecutionTime takes one workflow variable.`);
+      return { kind: 'now', result };
+    },
+  ],
+  // Add with a DateTime target type is a date plus the designer's XrmTimeSpan offset (summary-F6 DATA-04c2); otherwise
+  // it joins its operands as text (the designer's dynamic text values; summary-F6 OPS-01d).
+  [
+    'Add',
+    ({ items, label, result, parts }) => {
+      const names = variableItems(items);
+      if (targetTypeOf(parts.args.get('TargetType')) === 'datetime') {
+        if (items.length !== 2 || !names) unsupported(`${label}: a date Add takes a date and a time span variable.`);
+        return { kind: 'dateAdd', date: names[0], span: names[1], result };
+      }
+      if (!items.length || !names) unsupported(`${label}: Add takes workflow variables.`);
+      return { kind: 'add', sources: names, result };
+    },
+  ],
+  // RetrieveCurrentTime: the run's current time. The Web API accepts it only with xml:space="preserve" on its empty
+  // Parameters, as the designer writes it (summary-F6 OPS-01d).
+  [
+    'RetrieveCurrentTime',
+    ({ items, label, result, parameters }) => {
+      if (items.length) unsupported(`${label}: RetrieveCurrentTime takes no parameters.`);
+      if (attrOf(parameters, 'space') !== 'preserve')
+        context?.webApi.push('RetrieveCurrentTime parameters without xml:space="preserve"');
+      return { kind: 'now', result };
+    },
+  ],
+  [
+    'SelectFirstNonNull',
+    ({ items, label, result }) => {
+      const names = variableItems(items);
+      if (!items.length || !names) unsupported(`${label}: SelectFirstNonNull takes workflow variables.`);
+      return { kind: 'first', sources: names, result };
+    },
+  ],
+]);
+
 function compileExpression(node, label) {
   const parts = referenceParts(node, label, ['ExpressionOperator', 'Parameters', 'TargetType', 'Result'], []);
   const operator = argumentText(parts.args.get('ExpressionOperator'));
@@ -500,26 +600,9 @@ function compileExpression(node, label) {
       context?.guids.set(result, literal.literal);
     return { kind: 'expression', ...literal, result };
   }
-  // Add joins its operands as text (the designer's dynamic text values; summary-F6 OPS-01d).
-  if (operator === 'Add') {
-    if (!items.length || items.some((item) => !IDENTIFIER.test(item.name ?? '') || KEYWORDS.has(item.name)))
-      unsupported(`${label}: Add takes workflow variables.`);
-    return { kind: 'add', sources: items.map((item) => item.name), result };
-  }
-  // RetrieveCurrentTime: the run's current time. The Web API accepts it only with xml:space="preserve" on its empty
-  // Parameters, as the designer writes it (summary-F6 OPS-01d).
-  if (operator === 'RetrieveCurrentTime') {
-    if (items.length) unsupported(`${label}: RetrieveCurrentTime takes no parameters.`);
-    if (attrOf(parameters, 'space') !== 'preserve')
-      context?.webApi.push('RetrieveCurrentTime parameters without xml:space="preserve"');
-    return { kind: 'now', result };
-  }
-  if (operator === 'SelectFirstNonNull') {
-    if (!items.length || items.some((item) => !IDENTIFIER.test(item.name ?? '') || KEYWORDS.has(item.name)))
-      unsupported(`${label}: SelectFirstNonNull takes workflow variables.`);
-    return { kind: 'first', sources: items.map((item) => item.name), result };
-  }
-  return unsupported(`${label}: expression operator ${operator} is outside the supported subset.`);
+  const compile = EXPRESSIONS.get(operator);
+  if (!compile) unsupported(`${label}: expression operator ${operator} is outside the supported subset.`);
+  return compile({ items, label, result, parts, parameters });
 }
 
 // ---- Activities
@@ -574,10 +657,15 @@ function compileSet(node) {
 }
 
 function compileAssign(node) {
-  checkAttributes(node, ['To', 'Value']);
+  checkAttributes(node, ['To', 'Value', 'TypeArguments']);
   checkChildren(node, []);
   const to = String(attrOf(node, 'To') ?? '').trim();
   const value = String(attrOf(node, 'Value') ?? '').trim();
+  const target = /^\[([A-Za-z_]\w{0,127})\]$/.exec(to)?.[1];
+  const orMax = OR_MAX.exec(value);
+  if (orMax && target && orMax[1] === target && orMax[2] === target) return { kind: 'orMax', variable: target };
+  const pastDue = PAST_DUE.exec(value);
+  if (pastDue && target) return { kind: 'pastDue', due: pastDue[1], result: target };
   const created = NEW_ENTITY.exec(value);
   if (created) return { kind: 'new', to: entityRefOf(to, 'Assign To'), table: created[1].toLowerCase() };
   if (to.endsWith('.Id]'))
@@ -667,10 +755,14 @@ function compilePostpone(node) {
   if (until === undefined || until === null) unsupported('Postpone has no PostponeUntil.');
   // Every Postpone form tried was refused at Web API create (summary-F6 OPS-01d); Solution sources may still carry one.
   context?.webApi.push('Postpone');
+  // The designer's Timeout wait writes the due time as [DirectCast(<variable>, System.DateTime)] (summary-F6 DATA-04c2).
+  const cast = /^\[DirectCast\(([A-Za-z_]\w{0,127}), System\.DateTime\)\]$/.exec(String(until).trim());
   return {
     kind: 'postpone',
     block: block.replace(/[[\]]/g, '') === 'True',
-    until: operandOf(until, 'Postpone PostponeUntil'),
+    until: cast
+      ? { variable: variableName(`[${cast[1]}]`, 'Postpone PostponeUntil') }
+      : operandOf(until, 'Postpone PostponeUntil'),
   };
 }
 
@@ -1116,6 +1208,7 @@ async function runWait(state, step) {
     state,
     step,
     async () => {
+      state.waitDue = null;
       for (const variable of step.variables) state.vars.set(variable.name, variable.value);
       for (let index = 0; index < step.steps.length; index++) {
         if (halted(state)) return;
@@ -1129,8 +1222,20 @@ async function runWait(state, step) {
           return;
         }
       }
-      state.suspended = { kind: 'condition', until: null, columns: step.columns ?? [], path: [...state.path] };
-      state.host.trace('Wait: no wait condition holds; the run waits for a change of the columns its conditions read.');
+      // A Timeout branch makes the run wake at its due time too (the earliest one); a write of a column the conditions read
+      // still wakes it.
+      const until = state.waitDue ?? null;
+      state.suspended = {
+        kind: until === null ? 'condition' : 'timeout',
+        until,
+        columns: step.columns ?? [],
+        path: [...state.path],
+      };
+      state.host.trace(
+        until === null
+          ? 'Wait: no wait condition holds; the run waits for a change of the columns its conditions read.'
+          : `Wait: no wait condition holds; the run waits until ${new Date(until).toISOString()} or a change of the columns its conditions read.`,
+      );
     },
     { log: !again },
   );
@@ -1186,6 +1291,27 @@ const STEPS = new Map([
       ),
   ],
   ['now', (state, step) => state.vars.set(step.result, new Date(state.host.now()).toISOString())],
+  // The designer's Timeout wait: an unset due time never comes; the condition holds once the clock reaches the due time,
+  // which also becomes the time the waiting run is woken (the earliest due time of the wait's branches).
+  ['orMax', (state, step) => empty(state.vars.get(step.variable)) && state.vars.set(step.variable, DATE_MAX_VALUE)],
+  [
+    'pastDue',
+    (state, step) => {
+      const due = Date.parse(String(state.vars.get(step.due) ?? ''));
+      if (!Number.isFinite(due)) fail('The Timeout wait compares with a value that is not a date and time.');
+      state.vars.set(step.result, state.host.now() >= due);
+      if (due < Date.parse(DATE_MAX_VALUE)) state.waitDue = Math.min(state.waitDue ?? Infinity, due);
+    },
+  ],
+  [
+    'dateAdd',
+    (state, step) => {
+      const date = state.vars.get(step.date);
+      const span = state.vars.get(step.span)?.timeSpan;
+      if (!span) fail('A date Add has no time span.');
+      state.vars.set(step.result, empty(date) ? null : shiftedDate(date, span));
+    },
+  ],
   [
     'first',
     (state, step) =>
@@ -1223,6 +1349,21 @@ const STEPS = new Map([
     },
   ],
 ]);
+
+// A date moved by an XrmTimeSpan: years and months by the calendar (the day clamped to the month's last day), then days,
+// hours and minutes.
+function shiftedDate(value, span) {
+  const date = new Date(Date.parse(String(value)));
+  if (!Number.isFinite(date.getTime())) fail('A date Add reads a value that is not a date and time.');
+  const months = span.years * 12 + span.months;
+  if (months) {
+    const day = date.getUTCDate();
+    date.setUTCDate(1);
+    date.setUTCMonth(date.getUTCMonth() + months);
+    date.setUTCDate(Math.min(day, new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate()));
+  }
+  return new Date(date.getTime() + ((span.days * 24 + span.hours) * 60 + span.minutes) * 60_000).toISOString();
+}
 
 // A text value of an Add operand: a lookup's name or id, a Boolean as True/False, else the value as text.
 const textOf = (value) => {

@@ -1331,6 +1331,10 @@ export function createMetadataService({
   }
 
   function recordFieldsOf(src) {
+    // A table whose mapping lists every column the platform reports (mapping.metadataAttributes "declared": the captured
+    // sharepointdocument definition, sharepoint-document-table.mjs) gets no system or generated companion columns.
+    if (src.m?.metadataAttributes === 'declared')
+      return { [src.idColumn]: { dataverseType: 'primarykey' }, ...src.fields };
     const defaults = src.isVirtual ? {} : { ...SYSTEM_COLUMNS, ...(src.ownership === 'user' ? OWNER_COLUMNS : {}) };
     const targets = new Map();
     return implicitAttributes(

@@ -1,0 +1,51 @@
+{
+  "schema": "paqvilo.parity-cases/1",
+  "surface": "portal-webapi",
+  "suite": "hosted-f1-chunked-upload",
+  "oracle": {
+    "kind": "native",
+    "name": "Power Pages portal Web API (/_api)",
+    "version": "hosted Power Pages site, 2026-11-26",
+    "scope": "The chunked-upload handshake (x-ms-transfer-mode: chunked) on a file column of the portal Web API (hosted session F1, API-04c). Projection as the odata-shapes suite. Runs a and b."
+  },
+  "captures": [
+    {
+      "id": "hosted-f1-a-hosted-f1-chunked-upload",
+      "sha256": "702138ebb84ae7b495524a93bb10f8d811712709b5d53d76f334d5184790dd53",
+      "capturedAt": "2026-11-26"
+    },
+    {
+      "id": "hosted-f1-b-hosted-f1-chunked-upload",
+      "sha256": "140732b63ef6273c0a1d1feefa526fc6b29ccf5699bb13d8018a06fc772b18c9",
+      "capturedAt": "2026-11-26"
+    }
+  ],
+  "cases": [
+    {
+      "id": "chunked-start",
+      "input": {
+        "method": "PATCH",
+        "settings": {},
+        "headers": {
+          "x-ms-transfer-mode": "chunked",
+          "x-ms-file-name": "pqf1-chunked.txt"
+        },
+        "path": "/_api/pqf1_items(f1f1f1f1-0000-4000-8000-000000001007)/pqf1_file"
+      },
+      "output": {
+        "status": 500,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=500"
+        },
+        "error": {
+          "code": "9004010A",
+          "message": "An unexpected error occurred while processing the request"
+        }
+      },
+      "volatile": []
+    }
+  ],
+  "history": []
+}

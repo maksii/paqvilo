@@ -43,6 +43,7 @@ function mappingsOf(schema) {
     for (const [column, length] of Object.entries(spec.text ?? {}))
       fields[column] = { dataverseType: 'nvarchar', maxLength: length };
     for (const column of spec.whole ?? []) fields[column] = { dataverseType: 'int' };
+    for (const column of spec.boolean ?? []) fields[column] = { dataverseType: 'bit' };
     for (const column of spec.datetime ?? []) fields[column] = { dataverseType: 'datetime' };
     for (const [column, target] of Object.entries(spec.lookup ?? {}))
       fields[column] = { dataverseType: 'lookup', targets: [target] };
@@ -185,6 +186,8 @@ async function scenario(runtime, input) {
   });
 
   const { scenario: recorded } = input;
+  // The workflows whose waiting jobs a read lists (a scenario may name its own; the hosted-f6 recording's by default).
+  const waiting = new Set(recorded.waiting ?? WAITING);
   const created = await onBehalf('POST', '/pqf6_wfitems', bodyOf(recorded.create), { prefer: 'return=representation' });
   const output = {
     create: {
@@ -204,12 +207,12 @@ async function scenario(runtime, input) {
     if (action.read)
       output[action.read] = Object.fromEntries(
         Object.entries(jobsByName())
-          .filter(([name]) => WAITING.has(name))
+          .filter(([name]) => waiting.has(name))
           .map(([name, job]) => [name, stateOf(job)]),
       );
     if (action.patch) {
       const waitingBefore = Object.entries(jobsByName()).filter(
-        ([name, job]) => WAITING.has(name) && Number(job.statecode) === 1,
+        ([name, job]) => waiting.has(name) && Number(job.statecode) === 1,
       );
       const patched = await onBehalf('PATCH', `/pqf6_wfitems(${itemId})`, bodyOf(action.patch));
       if (patched.status !== 204)

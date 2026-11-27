@@ -9,7 +9,7 @@ import { operationSimulator } from './operation-fixture.mjs';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { createScheduler, fixedClock, sequentialIds } from '../lib/runtime-clock.mjs';
 import { createHostFlowRuns } from '../lib/flow-runs.mjs';
-import { awaitPortalFlowResponse, runExportedCloudFlow } from '../lib/exported-operations.mjs';
+import { awaitPortalFlowResponse, powerPagesFlowAnswer, runExportedCloudFlow } from '../lib/exported-operations.mjs';
 import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 const ROLE = 'c1000000-0000-4000-8000-000000000001';
@@ -81,68 +81,88 @@ async function site(t) {
     files[`portal/${name}.cloudflowconsumer.yml`] =
       `adx_cloudflowconsumerid: ${name.toLowerCase()}\nadx_name: ${name}\nadx_processid: ${id}\nadx_flowapiurl: /_api/cloudflow/v1.0/trigger/${id}\nadx_cloudflowconsumer_adx_webrole:\n- ${ROLE}`;
     files[`solution/Workflows/${name}.json`] = JSON.stringify({ properties: { definition } });
-    files[`solution/Workflows/${name}.json.data.xml`] = `<Workflow WorkflowId="{${id}}" Name="${name}"/>`;
+    files[`solution/Workflows/${name}.json.data.xml`] =
+      `<Workflow WorkflowId="{${id}}" Name="${name}"><StateCode>1</StateCode></Workflow>`;
   }
   for (const [name, body] of Object.entries(files)) {
     await fs.mkdir(path.dirname(path.join(dir, name)), { recursive: true });
     await fs.writeFile(path.join(dir, name), body);
   }
   const app = await operationSimulator(t, dir);
-  const post = (id, body, { token = app.csrf, type = 'application/json' } = {}) =>
+  // shell.ajaxSafePost sends the token header and jQuery's X-Requested-With.
+  const post = (id, body, { token = app.csrf, type = 'application/json', ajax = true } = {}) =>
     fetch(`${app.url}/_api/cloudflow/v1.0/trigger/${id}`, {
       method: 'POST',
-      headers: { 'content-type': type, ...(token ? { __RequestVerificationToken: token } : {}) },
+      headers: {
+        'content-type': type,
+        ...(token ? { __RequestVerificationToken: token } : {}),
+        ...(ajax ? { 'x-requested-with': 'XMLHttpRequest' } : {}),
+      },
       body,
     });
-  return { app, post };
+  const runs = (id) => app.store.tableRows('flowrun').filter((row) => String(row.workflowid).toLowerCase() === id);
+  return { app, post, runs };
 }
+const event = (values) => JSON.stringify({ eventData: JSON.stringify(values) });
 
-test('a flow with a Response answers 200 with its body; one without answers an empty 202', async (t) => {
+// @test-kind observation: hosted session F8 envelope and outcomes groups (paqvilo-developer hosted-f8 summary-F8.md, two runs): a 200 Response body is sent as text/html JSON text, a flow without a Response answers 202 {"ErrorCode":"0000000B","Message":"Default"}
+test('a flow with a Response answers 200 with its body; one without answers 202 Default', async (t) => {
   const { post } = await site(t);
-  const replied = await post(ECHO, JSON.stringify({ Location: 'Invented town', Count: 3, Urgent: true }));
-  assert.equal(replied.status, 200);
-  assert.match(replied.headers.get('content-type'), /^application\/json/);
-  assert.deepEqual(await replied.json(), { location: 'Invented town', count: 3, urgent: true });
-  const silent = await post(SILENT, '{}');
+  const replied = await post(ECHO, event({ Location: 'Invented town', Count: 3, Urgent: true }));
+  assert.equal(replied.status, 200, await replied.clone().text());
+  assert.equal(replied.headers.get('content-type'), 'text/html; charset=utf-8');
+  assert.deepEqual(JSON.parse(await replied.text()), { location: 'Invented town', count: 3, urgent: true });
+  const silent = await post(SILENT, event({}));
   assert.equal(silent.status, 202);
-  assert.equal(await silent.text(), '');
+  assert.deepEqual(await silent.json(), { ErrorCode: '0000000B', Message: 'Default' });
 });
 
-test('parameters arrive by name, directly, as the eventData JSON string, and form-encoded as shell.ajaxSafePost sends them', async (t) => {
+// @test-kind observation: hosted session F8 envelope group (paqvilo-developer hosted-f8 summary-F8.md, two runs): the eventData string, JSON or form-encoded as shell.ajaxSafePost sends it, carries the parameters; raw JSON without eventData runs the flow, which fails at its Response (400 upstream message)
+test('parameters arrive as the eventData JSON string, JSON or form-encoded as shell.ajaxSafePost sends them', async (t) => {
   const { post } = await site(t);
   const expected = { location: 'Invented town', count: 2, urgent: false };
   const values = { Location: 'Invented town', Count: 2, Urgent: false };
   for (const [body, type] of [
-    [JSON.stringify(values), 'application/json'],
-    [JSON.stringify({ eventData: JSON.stringify(values) }), 'application/json'],
+    [event(values), 'application/json'],
     [new URLSearchParams({ eventData: JSON.stringify(values) }).toString(), 'application/x-www-form-urlencoded'],
   ]) {
     const response = await post(ECHO, body, { type });
     assert.equal(response.status, 200, type);
-    assert.deepEqual(await response.json(), expected, body);
+    assert.deepEqual(JSON.parse(await response.text()), expected, body);
   }
-  // "If no input parameter is defined in the trigger, pass an empty payload in the request."
+  const direct = await post(ECHO, JSON.stringify(values));
+  assert.equal(direct.status, 400);
+  assert.match((await direct.json()).Message, /^The server did not receive a response from an upstream server\./);
+  // A flow without a Response answers whatever the body is.
   assert.equal((await post(SILENT, '')).status, 202);
 });
 
-// @test-kind security: the flow API requires the page's CSRF token and a web role the flow is added to
-test('a request without the CSRF token, or from an identity without the flow role, does not run the flow', async (t) => {
-  const { app, post } = await site(t);
-  const missing = await post(ECHO, '{}', { token: null });
-  assert.ok([400, 401, 403].includes(missing.status), String(missing.status));
-  const forged = await post(ECHO, '{}', { token: 'invented-token' });
-  assert.ok([400, 401, 403].includes(forged.status), String(forged.status));
+// @test-kind security: the flow API requires the page's CSRF token, X-Requested-With and a web role the flow is added to; a refused request starts no run (refusal shapes: hosted session F8 envelope and roles groups)
+test('a request without the CSRF token or X-Requested-With, or from an identity without the flow role, does not run the flow', async (t) => {
+  const { app, post, runs } = await site(t);
+  const body = event({ Location: 'Invented town' });
+  for (const [label, response] of [
+    ['missing token', await post(ECHO, body, { token: null })],
+    ['forged token', await post(ECHO, body, { token: 'invented-token' })],
+    ['no X-Requested-With', await post(ECHO, body, { ajax: false })],
+  ]) {
+    assert.equal(response.status, 500, label);
+    assert.equal(response.headers.get('content-type'), 'text/html; charset=utf-8', label);
+  }
   const changed = await fetch(`${app.url}/__sim/api/config`, {
     method: 'PATCH',
     headers: { 'content-type': 'application/json', 'x-sim-csrf': app.csrf },
     body: JSON.stringify({ identity: { id: 'person', roles: [], roleSource: 'override' } }),
   });
   assert.equal(changed.status, 200, await changed.text());
-  assert.equal((await post(ECHO, '{}')).status, 403);
+  const refused = await post(ECHO, body);
+  assert.equal(refused.status, 403);
+  assert.deepEqual(await refused.json(), { ErrorCode: '00000003', Message: 'MissingPermissions' });
+  assert.equal(runs(ECHO).length, 0, 'no refused request started a run');
 });
 
 // A run store on a manual scheduler, and one request to the Waiting flow through runExportedCloudFlow.
-async function heldRun(t, minutes = 1) {
+async function heldRun(t, minutes = 1, { diagnostic } = {}) {
   const clock = fixedClock();
   const store = await new DataStore({ state: emptyState(), clock, ids: sequentialIds() }).init();
   const scheduler = createScheduler({ clock, manual: true });
@@ -154,6 +174,7 @@ async function heldRun(t, minutes = 1) {
     clock,
     scheduler,
     flowOf: (id) => (id === WAITING ? { definition, mode: 'exported' } : null),
+    ...(diagnostic ? { diagnostic } : {}),
   });
   runs.attach({});
   ownedFixture(t).add(() => runs.close());
@@ -167,7 +188,7 @@ async function heldRun(t, minutes = 1) {
   return { store, scheduler, runs, answer };
 }
 
-// @test-kind unproven: a Power Pages request whose run waits before its Response is held for that Response within Power Automate's 120 s inbound request limit (https://learn.microsoft.com/power-automate/limits-and-config#timeout); the hosted Power Pages answer of a held request is not captured
+// @test-kind observation: hosted session F8 delay group (paqvilo-developer hosted-f8 summary-F8.md, two runs): a flow that waits 5, 60, 100 or 110 s before its Response answers the held request with that Response
 test('a request whose run waits before its Response is answered with that Response when the run resumes', async (t) => {
   const { store, scheduler, runs, answer } = await heldRun(t);
   assert.equal(answer.status, 202);
@@ -183,8 +204,8 @@ test('a request whose run waits before its Response is answered with that Respon
   assert.equal(runs.get(answer.held).status, 'Succeeded');
 });
 
-// @test-kind unproven: past the 120 s inbound request limit the request answers 504 ResponseTimeout (the code of the documented Power Apps flow timeout, https://learn.microsoft.com/troubleshoot/power-platform/power-apps/connections/best-practices-when-updating-a-flow) and the run continues; the hosted Power Pages status and body are not captured
-test('a run that does not answer within 120 seconds times the request out and keeps running', async (t) => {
+// @test-kind observation: hosted session F8 delay group and its flow-run rows (paqvilo-developer hosted-f8 summary-F8.md, two runs): 120 s after the request arrived the caller gets 400 {"ErrorCode":"IncorrectPayload","Message":"BadGateway"}; the run continues, its Response action then fails and the run ends Failed
+test('a run that does not answer within 120 seconds of the request times it out; its later Response fails the run', async (t) => {
   const { store, scheduler, runs, answer } = await heldRun(t, 5);
   let failure = null;
   const held = awaitPortalFlowResponse(store, answer).catch((error) => (failure = error));
@@ -192,11 +213,96 @@ test('a run that does not answer within 120 seconds times the request out and ke
   assert.equal(failure, null, 'still held inside the limit');
   await scheduler.advance(1);
   await held;
-  assert.equal(failure.status, 504);
-  assert.equal(failure.code, 'ResponseTimeout');
+  assert.deepEqual([failure.status, failure.code], [504, 'ResponseTimeout']);
+  assert.deepEqual(powerPagesFlowAnswer({ error: failure, runId: answer.held }), {
+    status: 400,
+    error: { ErrorCode: 'IncorrectPayload', Message: 'BadGateway' },
+  });
   assert.equal(runs.get(answer.held).status, 'Waiting', 'the run continues after the request timed out');
   await scheduler.advance(180_000);
-  assert.equal(runs.get(answer.held).status, 'Succeeded');
+  const run = runs.get(answer.held);
+  assert.equal(run.status, 'Failed', 'the Response after the limit fails the run');
+  assert.deepEqual(
+    [run.errorCode, run.errorMessage],
+    ['ActionFailed', 'An action failed. No dependent actions succeeded.'],
+  );
+});
+
+// @test-kind observation: hosted session F8 delay group and its flow-run rows (paqvilo-developer hosted-f8 summary-F8.md, two runs): a Response after the 120 s fails the run with ActionFailed; the caller's timeout is kept with the run, so a resume after a restart (a new run store over the saved state, its timers re-armed) fails it too
+test('a run whose request timed out still fails its Response when it resumes after a restart', async (t) => {
+  const { store, scheduler, runs, answer } = await heldRun(t, 5);
+  const held = awaitPortalFlowResponse(store, answer).catch((error) => error);
+  await scheduler.advance(120_000);
+  assert.equal((await held).code, 'ResponseTimeout');
+  runs.close();
+  scheduler.close();
+  // The restart: the saved state in a new store, a new scheduler on the same clock, a new host run store.
+  const restarted = await new DataStore({
+    state: structuredClone(store.state),
+    clock: store.clock,
+    ids: sequentialIds(),
+  }).init();
+  const nextScheduler = createScheduler({ clock: store.clock, manual: true });
+  ownedFixture(t).add(() => nextScheduler.close());
+  const definition = structuredClone(FLOWS[WAITING].definition);
+  definition.actions.pause.inputs.interval.count = 5;
+  const nextRuns = createHostFlowRuns({
+    store: restarted,
+    clock: store.clock,
+    scheduler: nextScheduler,
+    flowOf: (id) => (id === WAITING ? { definition, mode: 'exported' } : null),
+  });
+  nextRuns.attach({});
+  ownedFixture(t).add(() => nextRuns.close());
+  assert.equal(nextRuns.get(answer.held).status, 'Waiting');
+  await nextScheduler.advance(180_000);
+  const run = nextRuns.get(answer.held);
+  assert.deepEqual([run.status, run.errorCode], ['Failed', 'ActionFailed']);
+});
+
+// @test-kind observation: hosted session F8 delay group (paqvilo-developer hosted-f8 summary-F8.md): the 120 s are measured from the request's arrival (run a's 115 s wait timed out at 120.1 s when its flow started about 5 s late)
+test('the 120 seconds count from the request arrival, not from the run start', async (t) => {
+  const { store, scheduler, answer } = await heldRun(t);
+  let failure = null;
+  const requestedAt = +store.clock.now() - 75_000;
+  const held = awaitPortalFlowResponse(store, answer, { requestedAt }).catch((error) => (failure = error));
+  await scheduler.advance(44_999);
+  assert.equal(failure, null);
+  await scheduler.advance(1);
+  await held;
+  assert.equal(failure?.code, 'ResponseTimeout', 'the wait of 60 s outlasts the 45 s left');
+});
+
+// @test-kind contract: the timed-out request's close mark is written outside the request: a failed write is reported as FLOW_RUN_RESPONSE_CLOSE_FAILED and the request still times out, and a failure of that report fails the held request instead of leaving it unanswered
+test('a failed close of a timed-out Response is reported, and a failing report fails the held request', async (t) => {
+  const failCloseWrite = (store) => {
+    const transact = store.transact;
+    store.transact = function () {
+      store.transact = transact;
+      return Promise.reject(Object.assign(new Error('invented write failure'), { code: 'InventedWriteFailure' }));
+    };
+  };
+  const reported = [];
+  const first = await heldRun(t, 5, { diagnostic: (entry) => reported.push(entry) });
+  const timedOut = awaitPortalFlowResponse(first.store, first.answer).catch((error) => error);
+  failCloseWrite(first.store);
+  await first.scheduler.advance(120_000);
+  assert.equal((await timedOut).code, 'ResponseTimeout');
+  assert.deepEqual(
+    reported.map(({ code, runId, error }) => [code, runId, error.code, error.message]),
+    [['FLOW_RUN_RESPONSE_CLOSE_FAILED', first.answer.held, 'InventedWriteFailure', 'invented write failure']],
+  );
+
+  const reportFailure = new Error('invented diagnostic failure');
+  const second = await heldRun(t, 5, {
+    diagnostic: () => {
+      throw reportFailure;
+    },
+  });
+  const failed = awaitPortalFlowResponse(second.store, second.answer).catch((error) => error);
+  failCloseWrite(second.store);
+  await second.scheduler.advance(120_000);
+  assert.equal(await failed, reportFailure);
 });
 
 // @test-kind unproven: a held request of a run that is cancelled answers the cancellation (local 409 FlowRunCancelled, as an unanswered cancelled run does)

@@ -3,7 +3,7 @@
  * queryContext() and get(), the portal Web API column policy and write context, server logic's InvokeCustomApi principal).
  *
  * enhancedauthorization (powerpagesite table): 0 Disabled, 1 Migration in progress, 2 Migration Failed, 3 Enabled.
- * - standard model (0): table and record permissions are evaluated after retrieval from Dataverse, as the Power Pages
+ * - standard model (0, 1 and 2; see portalAuthorizationModel): table and record permissions are evaluated after retrieval from Dataverse, as the Power Pages
  *   application user. The store evaluates table permissions and the Web API column permissions.
  * - enhanced model: each contact maps to a system user per site and each web role to a security role holding the web
  *   role's permissions; Dataverse operations impersonate the site user, and Dataverse column security profiles replace the
@@ -11,8 +11,10 @@
  *   Column security applies to every Power Pages component and API, anonymous visitors included.
  *
  * Enhanced evaluation here: prepare() derives one security role per web role from the table permissions (privilege per
- * operation and table at the depth below) and one system user per contact and site (plus one anonymous user per site) holding
- * the security roles of the visitor's web roles. A table permission then grants only when the mapped user holds, through the
+ * operation and table at depth 16, record filter, each with the recordfilter row a hosted site generates for its scopes:
+ * portal-record-filters.mjs) and one system user per contact and site (plus one anonymous user per site) holding the
+ * security roles of the visitor's web roles, with the visitor's powerpagesusermapping row (contact, systemuser,
+ * parentcustomerid) the record filters join through. A table permission then grants only when the mapped user holds, through the
  * security role of one of the permission's web roles, the Dataverse privilege for the operation: an administrator who removes
  * the privilege from that role in Dataverse revokes the grant. Rows read are masked by the field security profiles of the
  * mapped user (dataverse-fls.mjs rowMask), and portal writes run as the mapped user, called by the site's application user
@@ -31,8 +33,17 @@ import {
 } from './dataverse-security.mjs';
 import { portalWebRoles } from './permissions.mjs';
 import { SYSTEM_ADMINISTRATOR_STAND_IN } from './dataverse-fls.mjs';
-import { ENHANCED_AUTHORIZATION_STATES } from './platform-changes.mjs';
+import { ENHANCED_AUTHORIZATION_ENABLED, ENHANCED_AUTHORIZATION_STATES } from './platform-changes.mjs';
 import { CUSTOM_ACCESS_ENABLED_STATE } from './custom-table-permission.mjs';
+import { RECORD_FILTER_DEPTH } from './record-filter.mjs';
+import { standardTableDef } from './dataverse-standard.mjs';
+import {
+  IMPLICIT_GLOBAL_PRIVILEGES,
+  IMPLICIT_ROLE_GRANTS,
+  recordFilterFetchXml,
+  recordFilterRoot,
+  scopeBranch,
+} from './portal-record-filters.mjs';
 
 const key = (value) =>
   String(value?.id ?? value ?? '')
@@ -47,38 +58,63 @@ const RIGHT = {
   append: 'Append',
   appendTo: 'AppendTo',
 };
-// The depth each scope gets is a guess (Learn says only that table permissions are "reflected" in the mapped security role):
-// Global -> Global (organization), Account -> Local (business unit), Contact and Self -> Basic (user), Parent -> the
-// depth of the permission it hangs from. The records a grant reaches stay those its scope selects in data.mjs allowed(): the
-// closest documented statement is that Dataverse "returns only the records the user is allowed to access".
-const SCOPE_DEPTH = { global: DEPTH.Global, account: DEPTH.Local, contact: DEPTH.Basic, self: DEPTH.Basic };
+// Every table permission scope maps to depth 16 (record filter) with the record filter of its scope, as a hosted site
+// generates them (session F1, summary-F1.md AUTH-02d; portal-record-filters.mjs). The records a portal grant reaches stay
+// those its scope selects in data.mjs allowed(); the record filters decide what the mapped user reaches through Dataverse
+// itself (a Canvas app or a workflow run as that user).
 const COLUMN_PERMISSION_KINDS = new Set(['columnpermissionprofile', 'columnpermission']);
 
-function permissionDepth(rule, byRule, seen = new Set()) {
-  if (rule.scope !== 'parent') return SCOPE_DEPTH[rule.scope ?? 'global'] ?? DEPTH.Basic;
-  const parent = byRule.get(key(rule.parentPermissionId ?? rule.parentId));
-  return parent && !seen.has(parent) ? permissionDepth(parent, byRule, seen.add(rule)) : DEPTH.Basic;
+/** One privilege of a derived role: its record filter collects the branches of every permission granting it. */
+function addGrant(
+  grants,
+  name,
+  { logical, root, wildcard = false, implicit = false, mask = RECORD_FILTER_DEPTH, branch },
+) {
+  const grant = grants.get(name) ?? {
+    logical,
+    root,
+    mask,
+    wildcard,
+    implicit,
+    global: false,
+    branches: new Set(),
+  };
+  grant.wildcard &&= wildcard;
+  grant.implicit &&= implicit;
+  if (mask === RECORD_FILTER_DEPTH) {
+    if (branch?.global) grant.global = true;
+    else if (branch?.branch != null) grant.branches.add(branch.branch);
+  }
+  grants.set(name, grant);
 }
 
-function addDerivedOperations(context, logical, grants, depth) {
-  const { rule, noun } = context;
+function addDerivedOperations(context, logical, grants) {
+  const { rule, noun, activity } = context;
+  const branch = scopeBranch(rule, logical, context);
   for (const operation of rule.operations ?? ['read']) {
     if (!RIGHT[operation]) continue;
-    const name = privilegeName(RIGHT[operation], noun(logical));
-    grants.set(name, {
+    addGrant(grants, privilegeName(RIGHT[operation], noun(logical)), {
       logical,
-      wildcard: rule.entity === '*' && grants.get(name)?.wildcard !== false,
-      mask: Math.max(grants.get(name)?.mask ?? 0, depth),
+      root: recordFilterRoot(logical, activity(logical)),
+      wildcard: rule.entity === '*',
+      branch,
     });
   }
 }
 
 function addDerivedRoleRule(context, roleId) {
-  const { out, securityRoleId, rule, everyTable, byRule } = context;
-  const grants = out.get(securityRoleId(roleId)).grants,
-    depth = permissionDepth(rule, byRule);
+  const { out, securityRoleId, rule, everyTable } = context;
+  const grants = out.get(securityRoleId(roleId)).grants;
   for (const logical of rule.entity === '*' ? everyTable() : [rule.entity])
-    addDerivedOperations(context, logical, grants, depth);
+    addDerivedOperations(context, logical, grants);
+}
+
+// The grants every generated role holds besides its table permissions (portal-record-filters.mjs).
+function addImplicitGrants(grants) {
+  for (const [name, logical, branch] of IMPLICIT_ROLE_GRANTS)
+    addGrant(grants, name, { logical, root: logical, implicit: true, branch: { branch } });
+  for (const name of IMPLICIT_GLOBAL_PRIVILEGES)
+    if (!grants.has(name)) grants.set(name, { logical: null, mask: DEPTH.Global, implicit: true, branches: new Set() });
 }
 
 function addDerivedRule(context) {
@@ -91,7 +127,7 @@ function addDerivedRule(context) {
 
 function ensureKnownPrivilege(context, id, logical) {
   const { known, store, organizationId } = context;
-  if (known.has(id)) return;
+  if (known.has(id) || !logical) return;
   try {
     for (const added of grantTablePrivileges(store, organizationId, logical))
       known.add(privilegeId(organizationId, added));
@@ -138,12 +174,25 @@ function syncDerivedRole(context) {
       role: role.name,
       message: `The security role mapped to web role '${role.name}' was changed in Dataverse; the table permissions changed and rewrote it, which replaced that change.`,
     });
-  const grants = [];
-  for (const [name, { logical, mask, wildcard }] of role.grants) {
+  const grants = [],
+    filters = [];
+  for (const [name, grant] of role.grants) {
     const id = privilegeId(organizationId, name);
-    ensureKnownPrivilege({ known, store, organizationId }, id, logical);
-    if (known.has(id)) grants.push({ privilegeid: id, mask });
-    else if (!wildcard)
+    if (!grant.implicit) ensureKnownPrivilege({ known, store, organizationId }, id, grant.logical);
+    if (known.has(id)) {
+      if (grant.mask !== RECORD_FILTER_DEPTH) {
+        grants.push({ privilegeid: id, mask: grant.mask });
+        continue;
+      }
+      const filter = recordFilterRow(roleId, name, grant);
+      filters.push(filter);
+      grants.push({
+        privilegeid: id,
+        mask: grant.mask,
+        recordFilterId: filter.recordfilterid,
+        recordFilterName: filter.uniquename,
+      });
+    } else if (!grant.wildcard && !grant.implicit)
       diagnostic({
         code: 'PORTAL_AUTHORIZATION_PRIVILEGE_UNKNOWN',
         severity: 'warning',
@@ -152,8 +201,66 @@ function syncDerivedRole(context) {
         message: `Web role '${role.name}' grants ${name}, which the organization does not define; the grant is not mapped.`,
       });
   }
+  replaceRecordFilters(tables, mark?.filters ?? [], filters);
   applyRoleGrants(store, roleId, grants);
-  marks[roleId] = { derived: signature, applied: storedGrants(roleId) };
+  marks[roleId] = {
+    derived: signature,
+    applied: storedGrants(roleId),
+    filters: filters.map((filter) => filter.recordfilterid),
+  };
+}
+
+// The recordfilter row of one derived privilege (hosted unique names read Pages_<guid>).
+function recordFilterRow(roleId, name, grant) {
+  const id = uuidV5(roleId, `recordfilter:${name}`);
+  return {
+    recordfilterid: id,
+    uniquename: `Pages_${id}`,
+    displayname: `Pages_${name}`,
+    fetchxml: recordFilterFetchXml(grant.root, grant),
+    filterlinkedrecords: false,
+    isrolebusinessunitquery: false,
+  };
+}
+
+function replaceRecordFilters(tables, previous, filters) {
+  const rows = (tables.recordfilter ??= []);
+  const drop = new Set([...previous, ...filters.map((filter) => filter.recordfilterid)].map(key));
+  for (let index = rows.length - 1; index >= 0; index--)
+    if (drop.has(key(rows[index].recordfilterid))) rows.splice(index, 1);
+  rows.push(...filters);
+}
+
+// The visitor's powerpagesusermapping row: its contact, mapped user and parent account (the columns the generated record
+// filters join on). Anonymous visitors have none, so a filtered grant reaches nothing for them.
+function syncUserMapping({ tables, identity, userId, contactOf, ref, name }) {
+  const rows = (tables.powerpagesusermapping ??= []);
+  const id = uuidV5(userId, 'powerpagesusermapping');
+  const index = rows.findIndex((row) => key(row.powerpagesusermappingid) === id);
+  const contact = contactOf(identity);
+  if (!contact) {
+    if (index >= 0) rows.splice(index, 1);
+    return;
+  }
+  const row = {
+    powerpagesusermappingid: id,
+    contact: ref('contact', contact, name),
+    systemuser: ref('systemuser', userId, name),
+    parentcustomerid: identity.accountId ? ref('account', key(identity.accountId)) : null,
+  };
+  if (index >= 0) rows[index] = row;
+  else rows.push(row);
+}
+
+/** Whether the visitor's stored user mapping row is current (see syncUserMapping). */
+function userMappingCurrent(store, identity, userId, contactOf) {
+  const id = uuidV5(userId, 'powerpagesusermapping');
+  const row = store
+    .tableRows('powerpagesusermapping')
+    .find((candidate) => key(candidate.powerpagesusermappingid) === id);
+  const contact = contactOf(identity);
+  if (!contact) return !row;
+  return Boolean(row) && key(row.contact) === contact && key(row.parentcustomerid) === key(identity.accountId);
 }
 
 function syncMappedUser(context) {
@@ -162,6 +269,7 @@ function syncMappedUser(context) {
   const name = String(
     identity.fullname || identity.name || (contactOf(identity) ? contactOf(identity) : 'Anonymous users'),
   );
+  syncUserMapping({ tables, identity, userId, contactOf, ref, name });
   const user = users.find((row) => key(row.systemuserid) === userId);
   if (user) user.fullname = name;
   else
@@ -193,23 +301,25 @@ function syncMappedUser(context) {
 
 /**
  * The model a site record selects: { state, label, model: 'standard' | 'enhanced' }.
- * Learn lists the labels of states 1 (Migration in progress) and 2 (Migration Failed) without saying which model
- * serves the site meanwhile; every non-zero documented state runs the enhanced model here, as the ENHANCED_AUTHORIZATION finding
- * treats them. An undocumented value runs the standard model.
+ * Only 3 (Enabled) runs the enhanced model. Hosted evidence (session F1, 2026-11-26, two runs per state): in states 1
+ * (Migration in progress) and 2 (Migration Failed) the portal still queries as its application user with the standard
+ * permission FetchXML and ignores Custom Access, so both keep the standard model. An undocumented value runs the standard
+ * model too.
  */
 export function portalAuthorizationModel(website) {
   const state = Number(field(website, 'enhancedauthorization') ?? 0) || 0;
-  const enhanced = Object.hasOwn(ENHANCED_AUTHORIZATION_STATES, state);
+  const documented = Object.hasOwn(ENHANCED_AUTHORIZATION_STATES, state);
+  const enhanced = state === ENHANCED_AUTHORIZATION_ENABLED;
   // An undocumented value reads as the standard model; the host records PORTAL_AUTHORIZATION_STATE_UNKNOWN for it.
   let label;
-  if (enhanced) label = ENHANCED_AUTHORIZATION_STATES[state];
+  if (documented) label = ENHANCED_AUTHORIZATION_STATES[state];
   else if (state === 0) label = 'Disabled';
   else label = `Unknown (${state})`;
   return {
     state,
     label,
     model: enhanced ? 'enhanced' : 'standard',
-    ...(enhanced || state === 0 ? {} : { unknown: true }),
+    ...(documented || state === 0 ? {} : { unknown: true }),
   };
 }
 
@@ -261,7 +371,21 @@ export function createPortalAuthorization({
     for (const role of roles) if (contactOf(identity) ? role.authenticated : role.anonymous) ids.add(role.id);
     return [...ids];
   };
-  const noun = (logical) => principals.privilegeNoun(logical);
+  // Activity tables share the activity privileges (prvReadActivity, ...), custom activity tables included: a hosted site
+  // granted a custom activity's permissions through them (session F1). Standard activity tables already resolve so.
+  const activity = (logical) => {
+    if (logical === 'activitypointer') return false;
+    if (standardTableDef(logical)?.isActivity === true) return true;
+    return store.state.mappings?.[logical]?.idColumn === 'activityid';
+  };
+  const noun = (logical) => principals.privilegeNoun(activity(logical) ? 'activitypointer' : logical);
+  const mappingOf = (logical) => {
+    try {
+      return store.resolveMapping(logical);
+    } catch {
+      return null;
+    }
+  };
 
   // Security role id -> { name, grants: Map(privilege name -> { logical, mask, wildcard }) }, from the enabled table permissions.
   // A wildcard (*) permission expands to every mapped table that has privileges in the organization.
@@ -277,12 +401,29 @@ export function createPortalAuthorization({
     const out = new Map();
     for (const role of roles) out.set(securityRoleId(role.id), { name: role.name, grants: new Map() });
     for (const rule of permissions)
-      addDerivedRule({ out, roles, byId, rule, everyTable, byRule, ruleRoles, securityRoleId, noun });
+      addDerivedRule({
+        out,
+        roles,
+        byId,
+        rule,
+        everyTable,
+        byRule,
+        ruleRoles,
+        securityRoleId,
+        noun,
+        activity,
+        mappingOf,
+      });
+    for (const role of out.values()) addImplicitGrants(role.grants);
     return out;
   }
   const signatureOf = (grants) =>
     [...grants]
-      .map(([name, grant]) => `${name}:${grant.mask}`)
+      .map(([name, grant]) =>
+        grant.mask === RECORD_FILTER_DEPTH
+          ? `${name}:${grant.mask}:${recordFilterFetchXml(grant.root, grant)}`
+          : `${name}:${grant.mask}`,
+      )
       .sort(/* NOSONAR: preserve default string coercion */)
       .join('|');
   // The role's grants as stored in Dataverse, to see whether an administrator changed them since the last rewrite.
@@ -324,6 +465,7 @@ export function createPortalAuthorization({
             !store.tableRows('role').some((row) => key(row.roleid) === roleId),
         ) ||
         !store.tableRows('systemuser').some((row) => key(row.systemuserid) === userId) ||
+        !userMappingCurrent(store, identity, userId, contactOf) ||
         [...derived.keys()].some((roleId) => linked.has(roleId) !== wanted.has(roleId)) ||
         Object.keys(marks).some((roleId) => !derived.has(roleId));
       if (stale) await store.transact(() => sync(derived, identity, userId, wanted));
@@ -356,6 +498,7 @@ export function createPortalAuthorization({
     for (const roleId of Object.keys(marks))
       if (!derived.has(roleId)) {
         removeRoleGrants(store, roleId);
+        replaceRecordFilters(tables, markOf(marks[roleId])?.filters ?? [], []);
         delete marks[roleId];
       }
     for (const [roleId, role] of derived)
@@ -448,6 +591,8 @@ export function createPortalAuthorization({
       const roles = webRoles(),
         holds = preview ? preview.roles : new Set(principals.roles(user).map((role) => key(role.roleid)));
       const privilege = privilegeId(organizationId, privilegeName(RIGHT[operation], noun(entity)));
+      // ponytail: Dataverse-level checks (records.mjs) still name a custom activity's own privilege; only the portal
+      // mapping uses the shared activity privileges.
       return granted.filter((rule) =>
         ruleRoles(rule, roles).some((roleId) => {
           const securityRole = securityRoleId(roleId);
@@ -550,6 +695,14 @@ export function createPortalAuthorization({
           'PermissionDenied',
         );
       return { user, caller: (applicationUserId && principals.byId(applicationUserId)) || user };
+    },
+    /** The systemuser row a portal read runs as (reader above); a read never creates the application user. */
+    readerUser(identity = {}) {
+      return reader(identity);
+    },
+    /** The site's host application user id when it exists (either model), else null; never creates it. */
+    applicationUserId() {
+      return applicationUserId ?? existingApplicationUser() ?? null;
     },
     /** The systemuser id server logic's InvokeCustomApi runs as in the enhanced model (impersonation), else null. */
     principalId(identity = {}) {

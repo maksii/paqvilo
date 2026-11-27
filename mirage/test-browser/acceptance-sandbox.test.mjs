@@ -112,6 +112,11 @@ test('acceptance edits, saves and reopens two real compatibility editors twice w
     'web-templates/main/Main.webtemplate.source.html': '{% entityform name: "Narrative" %}',
     'basic-forms/Narrative.basicform.yml':
       'adx_entityformid: form\nadx_name: Narrative\nadx_entityname: example\nadx_mode: 100000001',
+    // The editors render with code component metadata only (formRichTextField).
+    'basic-forms/Narrative.narrative.basicformmetadata.yml':
+      'adx_entityformmetadataid: narrative-editor\nadx_entityform: form\nadx_type: 100000000\nadx_attributelogicalname: narrative\nadx_controlstyle: 756150001',
+    'basic-forms/Narrative.details.basicformmetadata.yml':
+      'adx_entityformmetadataid: details-editor\nadx_entityform: form\nadx_type: 100000000\nadx_attributelogicalname: details\nadx_controlstyle: 756150001',
     'basic-forms/Narrative.basicform.custom_javascript.js': `document.addEventListener('DOMContentLoaded',()=>{const button=document.createElement('button');button.id='format';button.type='button';button.textContent='Format';button.onclick=()=>{const editor=window.CKEDITOR.instances.details_editor;const first='<p title="quoted">First <strong>HTML</strong> &amp; "text"</p>';const second='<p title="quoted">Second <strong>HTML</strong> &amp; "text"</p>';editor.setData(editor.getData().includes('First') ? second : first);editor.updateElement();};document.body.append(button);});`,
     'web-files/favicon.ico.webfile.yml': 'adx_webfileid: icon\nadx_name: favicon.ico\nadx_partialurl: favicon.ico',
     'web-files/favicon.ico': '',

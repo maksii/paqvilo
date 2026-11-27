@@ -1,0 +1,508 @@
+{
+  "schema": "paqvilo.parity-cases/1",
+  "surface": "portal-form-postback",
+  "suite": "hosted-f2-basic-form-20261127",
+  "oracle": {
+    "kind": "native",
+    "name": "Power Pages basic form postback",
+    "version": "2026-11-27",
+    "scope": "Two signed-in browser runs (a, b) of hosted session F2 on an Enhanced, Bootstrap 5 site with enhanced authorization enabled (enhancedauthorization 3) (Site/EnableCustomPluginError absent), one form postback per scenario of the invented pqf2 schema: the HTTP status, the form's message panel kind and text, and the validation summary entries after range, format and length refusals, choices posts (valid, outside the options, malformed, empty), request validation of a script block, current-contact activity party inserts on ten party list columns, a wrong CAPTCHA answer and a geolocation form insert. It does not establish stored values, plug-in messages or the rendered page around the panel. The exact hosted build is unrecorded."
+  },
+  "captures": [
+    {
+      "id": "hosted-f2-portal-form-postback-a",
+      "sha256": "574b583b2d180f5e639c744f0354ae33fc2cf25b805774b2610c8dfc53377bea",
+      "capturedAt": "2026-11-26"
+    },
+    {
+      "id": "hosted-f2-portal-form-postback-b",
+      "sha256": "a3c5c4c1459be35fc1f9253d0a482b40d19d7468c3b2d53f87108acf48366ba9",
+      "capturedAt": "2026-11-26"
+    }
+  ],
+  "cases": [
+    {
+      "id": "reject-v2:reject:amount-above-max",
+      "input": {
+        "page": "/pqf2-reject/",
+        "query": {},
+        "fields": {
+          "pqf2_name": "R above <run>",
+          "pqf2_amount": "999999999"
+        },
+        "action": "InsertButton"
+      },
+      "output": {
+        "status": 200,
+        "redirect": null,
+        "message": null,
+        "validation": ["Amount must have a value between -100000 and 100000."]
+      },
+      "volatile": []
+    },
+    {
+      "id": "reject-v2:reject:amount-malformed",
+      "input": {
+        "page": "/pqf2-reject/",
+        "query": {},
+        "fields": {
+          "pqf2_name": "R malformed <run>",
+          "pqf2_amount": "12x5"
+        },
+        "action": "InsertButton"
+      },
+      "output": {
+        "status": 200,
+        "redirect": null,
+        "message": null,
+        "validation": ["Amount must be a valid integer value.", "Amount must have a value between -100000 and 100000."]
+      },
+      "volatile": []
+    },
+    {
+      "id": "reject-v2:reject:amount-decimal",
+      "input": {
+        "page": "/pqf2-reject/",
+        "query": {},
+        "fields": {
+          "pqf2_name": "R decimal <run>",
+          "pqf2_amount": "12.5"
+        },
+        "action": "InsertButton"
+      },
+      "output": {
+        "status": 200,
+        "redirect": null,
+        "message": null,
+        "validation": ["Amount must be a valid integer value.", "Amount must have a value between -100000 and 100000."]
+      },
+      "volatile": []
+    },
+    {
+      "id": "reject-v2:reject:name-too-long",
+      "input": {
+        "page": "/pqf2-reject/",
+        "query": {},
+        "fields": {
+          "pqf2_name": "R xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "pqf2_amount": "5"
+        },
+        "action": "InsertButton"
+      },
+      "output": {
+        "status": 200,
+        "redirect": null,
+        "message": null,
+        "validation": ["Name exceeds the maximum length of 200 characters."]
+      },
+      "volatile": []
+    },
+    {
+      "id": "choices:choices:post-valid-red-blue",
+      "input": {
+        "page": "/pqf2-edit/",
+        "query": {
+          "id": {
+            "fixture": "run-row-20"
+          }
+        },
+        "fields": {
+          "pqf2_name": "C choices <run>",
+          "pqf2_colours": "[{\"Value\":619020000},{\"Value\":619020002}]",
+          "pqf2_amount": "20",
+          "pqf2_rich": "",
+          "pqf2_rich2": "",
+          "pqf2_wfresult": ""
+        },
+        "action": "UpdateButton"
+      },
+      "output": {
+        "status": 200,
+        "redirect": null,
+        "message": {
+          "kind": "success",
+          "text": "pqf2 Case Edit saved"
+        },
+        "validation": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "choices:choices:post-invalid-option",
+      "input": {
+        "page": "/pqf2-edit/",
+        "query": {
+          "id": {
+            "fixture": "run-row-20"
+          }
+        },
+        "fields": {
+          "pqf2_name": "C choices <run>",
+          "pqf2_colours": "[{\"Value\":619020000},{\"Value\":999}]",
+          "pqf2_amount": "20",
+          "pqf2_rich": "",
+          "pqf2_rich2": "",
+          "pqf2_wfresult": ""
+        },
+        "action": "UpdateButton"
+      },
+      "output": {
+        "status": 200,
+        "redirect": null,
+        "message": {
+          "kind": "danger",
+          "text": "A validation error occurred. The value 999 of 'pqf2_colours' on record of type 'pqf2_case' is outside the valid range. Accepted Values: 619020000,619020001,619020002"
+        },
+        "validation": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "choices:choices:post-malformed",
+      "input": {
+        "page": "/pqf2-edit/",
+        "query": {
+          "id": {
+            "fixture": "run-row-20"
+          }
+        },
+        "fields": {
+          "pqf2_name": "C choices <run>",
+          "pqf2_colours": "not-json",
+          "pqf2_amount": "20",
+          "pqf2_rich": "",
+          "pqf2_rich2": "",
+          "pqf2_wfresult": ""
+        },
+        "action": "UpdateButton"
+      },
+      "output": {
+        "status": 500,
+        "redirect": null,
+        "message": null,
+        "validation": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "choices:choices:post-empty-array",
+      "input": {
+        "page": "/pqf2-edit/",
+        "query": {
+          "id": {
+            "fixture": "run-row-20"
+          }
+        },
+        "fields": {
+          "pqf2_name": "C choices <run>",
+          "pqf2_colours": "[]",
+          "pqf2_amount": "20",
+          "pqf2_rich": "",
+          "pqf2_rich2": "",
+          "pqf2_wfresult": ""
+        },
+        "action": "UpdateButton"
+      },
+      "output": {
+        "status": 200,
+        "redirect": null,
+        "message": {
+          "kind": "success",
+          "text": "pqf2 Case Edit saved"
+        },
+        "validation": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "choices:rich:post",
+      "input": {
+        "page": "/pqf2-edit/",
+        "query": {
+          "id": {
+            "fixture": "run-row-20"
+          }
+        },
+        "fields": {
+          "pqf2_name": "C choices <run>",
+          "pqf2_colours": "",
+          "pqf2_amount": "20",
+          "pqf2_rich": "<p>pqf2 <em>posted</em> rich <run></p><script>alert(1)</script><img src=\"x\" onerror=\"alert(2)\">",
+          "pqf2_rich2": "<p>pqf2 <em>posted</em> rich <run></p><script>alert(1)</script><img src=\"x\" onerror=\"alert(2)\">",
+          "pqf2_wfresult": ""
+        },
+        "action": "UpdateButton"
+      },
+      "output": {
+        "status": 200,
+        "redirect": null,
+        "message": {
+          "kind": "danger",
+          "text": "Request validation has detected potentially dangerous input value(s) such as HTML, or script. Please review the input value(s) and try again."
+        },
+        "validation": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "visit:visit:from",
+      "input": {
+        "page": "/pqf2-visit-from/",
+        "query": {},
+        "fields": {
+          "subject": "V from <run>"
+        },
+        "action": "InsertButton"
+      },
+      "output": {
+        "status": 200,
+        "redirect": null,
+        "message": {
+          "kind": "success",
+          "text": "pqf2 Visit from saved"
+        },
+        "validation": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "visit:visit:to",
+      "input": {
+        "page": "/pqf2-visit-to/",
+        "query": {},
+        "fields": {
+          "subject": "V to <run>"
+        },
+        "action": "InsertButton"
+      },
+      "output": {
+        "status": 200,
+        "redirect": null,
+        "message": {
+          "kind": "success",
+          "text": "pqf2 Visit to saved"
+        },
+        "validation": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "visit:visit:cc",
+      "input": {
+        "page": "/pqf2-visit-cc/",
+        "query": {},
+        "fields": {
+          "subject": "V cc <run>"
+        },
+        "action": "InsertButton"
+      },
+      "output": {
+        "status": 200,
+        "redirect": null,
+        "message": {
+          "kind": "success",
+          "text": "pqf2 Visit cc saved"
+        },
+        "validation": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "visit:visit:bcc",
+      "input": {
+        "page": "/pqf2-visit-bcc/",
+        "query": {},
+        "fields": {
+          "subject": "V bcc <run>"
+        },
+        "action": "InsertButton"
+      },
+      "output": {
+        "status": 200,
+        "redirect": null,
+        "message": {
+          "kind": "success",
+          "text": "pqf2 Visit bcc saved"
+        },
+        "validation": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "visit:visit:requiredattendees",
+      "input": {
+        "page": "/pqf2-visit-requiredattendees/",
+        "query": {},
+        "fields": {
+          "subject": "V requiredattendees <run>"
+        },
+        "action": "InsertButton"
+      },
+      "output": {
+        "status": 200,
+        "redirect": null,
+        "message": {
+          "kind": "success",
+          "text": "pqf2 Visit requiredattendees saved"
+        },
+        "validation": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "visit:visit:optionalattendees",
+      "input": {
+        "page": "/pqf2-visit-optionalattendees/",
+        "query": {},
+        "fields": {
+          "subject": "V optionalattendees <run>"
+        },
+        "action": "InsertButton"
+      },
+      "output": {
+        "status": 200,
+        "redirect": null,
+        "message": {
+          "kind": "success",
+          "text": "pqf2 Visit optionalattendees saved"
+        },
+        "validation": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "visit:visit:organizer",
+      "input": {
+        "page": "/pqf2-visit-organizer/",
+        "query": {},
+        "fields": {
+          "subject": "V organizer <run>"
+        },
+        "action": "InsertButton"
+      },
+      "output": {
+        "status": 200,
+        "redirect": null,
+        "message": {
+          "kind": "success",
+          "text": "pqf2 Visit organizer saved"
+        },
+        "validation": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "visit:visit:customers",
+      "input": {
+        "page": "/pqf2-visit-customers/",
+        "query": {},
+        "fields": {
+          "subject": "V customers <run>"
+        },
+        "action": "InsertButton"
+      },
+      "output": {
+        "status": 200,
+        "redirect": null,
+        "message": {
+          "kind": "success",
+          "text": "pqf2 Visit customers saved"
+        },
+        "validation": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "visit:visit:partners",
+      "input": {
+        "page": "/pqf2-visit-partners/",
+        "query": {},
+        "fields": {
+          "subject": "V partners <run>"
+        },
+        "action": "InsertButton"
+      },
+      "output": {
+        "status": 200,
+        "redirect": null,
+        "message": {
+          "kind": "success",
+          "text": "pqf2 Visit partners saved"
+        },
+        "validation": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "visit:visit:resources",
+      "input": {
+        "page": "/pqf2-visit-resources/",
+        "query": {},
+        "fields": {
+          "subject": "V resources <run>"
+        },
+        "action": "InsertButton"
+      },
+      "output": {
+        "status": 200,
+        "redirect": null,
+        "message": {
+          "kind": "success",
+          "text": "pqf2 Visit resources saved"
+        },
+        "validation": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "captcha:captcha:wrong",
+      "input": {
+        "page": "/pqf2-captcha/",
+        "query": {},
+        "fields": {
+          "pqf2_name": "K wrong <run>",
+          "pqf2_amount": ""
+        },
+        "action": "InsertButton"
+      },
+      "output": {
+        "status": 200,
+        "redirect": null,
+        "message": null,
+        "validation": ["Captcha is incorrect, please re-enter captcha."]
+      },
+      "volatile": []
+    },
+    {
+      "id": "geo:geo:post",
+      "input": {
+        "page": "/pqf2-geo/",
+        "query": {},
+        "fields": {
+          "pqf2_name": "G geo <run>",
+          "pqf2_street": "1 Khreshchatyk St",
+          "pqf2_city": "Kyiv",
+          "pqf2_county": "",
+          "pqf2_region": "",
+          "pqf2_postal": "",
+          "pqf2_country": "Ukraine",
+          "pqf2_formatted": "",
+          "pqf2_latitude": "",
+          "pqf2_longitude": ""
+        },
+        "action": "InsertButton"
+      },
+      "output": {
+        "status": 200,
+        "redirect": null,
+        "message": {
+          "kind": "success",
+          "text": "pqf2 Case Geo saved"
+        },
+        "validation": []
+      },
+      "volatile": []
+    }
+  ],
+  "history": []
+}

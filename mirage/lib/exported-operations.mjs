@@ -18,6 +18,7 @@ import { tracedFetch } from './trace-hosts.mjs';
 import { organizationPrincipalContext } from './dataverse-principal-context.mjs';
 import { siteSetting } from './redirects.mjs';
 import { portalRecordWrites } from './form-service.mjs';
+import { stripTrailingCharacter } from './text-scanning.mjs';
 // URL rewrites (longest prefix wins), applied before the loopback check: the connector runtime's one rule.
 import { rewrite as rewritten } from './connector-runtime.mjs';
 
@@ -49,6 +50,100 @@ export function assertOperationRole(record, identity) {
   const held = new Set((identity?.roleIds ?? []).map(canonical));
   if (!allowed.length || !allowed.some((id) => held.has(id)))
     throw failure('The current web roles cannot execute this operation.', 403, 'Forbidden');
+}
+
+const plainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+/**
+ * The trigger body of a Power Pages flow request (the HTTP route and CloudFlow.TriggerAsync): siteId, siteUrl and userId,
+ * then the event data. siteId is the site's Portal.id, the value Mirage gives Microsoft.Dynamic365.Portal.id: `portalId` (the
+ * site's observed.portalId) or else the exported website id, lower case (portal-client-object.mjs); siteUrl is the host's site
+ * origin without a trailing slash; userId the caller's contact id (null for an anonymous caller: not captured).
+ * The injected values win over same-named event data. Hosted session F8 (request and envelope groups, two runs).
+ */
+export function powerPagesFlowPayload(eventData, { portal, portalId = null, siteUrl, identity } = {}) {
+  const injected = {
+    siteId: String(portalId ?? portal?.website?.id ?? '').toLowerCase() || null,
+    ...(siteUrl ? { siteUrl: stripTrailingCharacter(String(siteUrl), '/') } : {}),
+    userId: identity?.contactId ?? identity?.id ?? null,
+  };
+  return { ...injected, ...(plainObject(eventData) ? eventData : {}), ...injected };
+}
+
+// Whether a flow definition answers with a Response action anywhere (scopes, branches and loops included).
+const answersWithResponse = (actions) =>
+  Object.values(actions ?? {}).some(
+    (action) =>
+      action?.type === 'Response' ||
+      answersWithResponse(action?.actions) ||
+      answersWithResponse(action?.else?.actions) ||
+      answersWithResponse(action?.default?.actions) ||
+      Object.values(action?.cases ?? {}).some((branch) => answersWithResponse(branch?.actions)),
+  );
+/** Whether an imported workflow (importOperationWorkflows entry) has a Response action; false without a definition. */
+export function workflowAnswers(workflow) {
+  const definition = workflow?.definition?.properties?.definition ?? workflow?.definition?.definition;
+  return answersWithResponse(definition?.actions);
+}
+
+// The Power Pages flow API's own error bodies (hosted session F8): { ErrorCode, Message } as application/json.
+const POWER_PAGES_FLOW_REFUSALS = Object.freeze({
+  IncorrectFlowId: { status: 404, ErrorCode: '00000005' },
+  MissingPermissions: { status: 403, ErrorCode: '00000003' },
+  FlowDisabled: { status: 400, ErrorCode: '00000002' },
+  FlowNotFound: { status: 404, ErrorCode: '00000008' },
+});
+const flowApiError = (status, ErrorCode, Message) => ({ status, error: { ErrorCode, Message } });
+const upstreamFailure = (runId) =>
+  flowApiError(
+    400,
+    'IncorrectPayload',
+    `The server did not receive a response from an upstream server. Request tracking id '${runId ?? ''}'.`,
+  );
+const badGateway = () => flowApiError(400, 'IncorrectPayload', 'BadGateway');
+
+/**
+ * The Power Pages answer of POST /_api/cloudflow/<version>/trigger/<id> (hosted session F8, two runs), from the portal flow
+ * pipeline's answer or error: `{ status, text }` (a 200 flow Response: its body, a string raw, anything else as JSON text),
+ * `{ status, error: { ErrorCode, Message } }` or `{ status }` (no body).
+ * - A refusal of the pipeline (answer.refusal) is its own code: IncorrectFlowId, MissingPermissions, FlowDisabled, FlowNotFound.
+ * - A flow Response: 200 passes its body through (its headers are dropped); 204 answers empty; 201 and 202 answer their status
+ *   with 0000000B Default; 404 answers 00000008 FlowNotFound; 400 and 409 their status with 00000006 IncorrectPayload; 500 and
+ *   503 answer 400 BadGateway. Inferred, not captured: other statuses follow their class (other 2xx Default, other 4xx
+ *   IncorrectPayload, other 5xx BadGateway); a status outside 2xx, 4xx and 5xx is a Response that cannot answer (as a 302).
+ * - A flow without a Response action answers 202 Default however its run ends (`responds` false).
+ * - A run that ended without answering its Response (a failed action or Response, Terminate with any status, a cancelled run)
+ *   answers 400 with the upstream message and the run id; a Response not answered within 120 s (ResponseTimeout, or a data
+ *   pack's cloud-flow handler that did not answer within its 120 s, PackHandlerTimeout) answers 400 BadGateway. Errors
+ *   without a started run, and local capability errors (501), are not flow answers: they are thrown.
+ */
+export function powerPagesFlowAnswer({ answer, error, runId = null, responds = true }) {
+  if (error) return flowErrorAnswer(error, runId, responds);
+  const refusal = POWER_PAGES_FLOW_REFUSALS[answer?.refusal];
+  if (answer?.unanswered) return responds ? upstreamFailure(runId) : flowApiError(202, '0000000B', 'Default');
+  if (refusal) return flowApiError(refusal.status, refusal.ErrorCode, answer.refusal);
+  if (!responds) return flowApiError(202, '0000000B', 'Default');
+  const status = Number(answer?.status ?? 200),
+    body = answer && Object.hasOwn(answer, 'body') ? answer.body : answer;
+  return flowResponseAnswer(status, body, runId);
+}
+
+// The answer of a pipeline error (powerPagesFlowAnswer): a Response timeout is BadGateway, a run that ended without
+// answering the upstream failure (202 Default for a flow without a Response); an error without a run is thrown.
+function flowErrorAnswer(error, runId, responds) {
+  if (error.code === 'ResponseTimeout' || error.code === 'PackHandlerTimeout') return badGateway();
+  if (error.status === 501 || runId == null) throw error;
+  return responds ? upstreamFailure(runId) : flowApiError(202, '0000000B', 'Default');
+}
+
+// The answer of a flow Response's status and body (powerPagesFlowAnswer).
+function flowResponseAnswer(status, body, runId) {
+  if (status === 200) return { status, text: envelopeBody(body) };
+  if (status === 204) return { status };
+  if (status >= 200 && status < 300) return flowApiError(status, '0000000B', 'Default');
+  if (status === 404) return flowApiError(404, '00000008', 'FlowNotFound');
+  if (status >= 400 && status < 500) return flowApiError(status, '00000006', 'IncorrectPayload');
+  if (status >= 500 && status < 600) return badGateway();
+  return upstreamFailure(runId);
 }
 
 // Reason phrases of the server-object response envelope.
@@ -179,7 +274,7 @@ export function assertServerLogicTimeout(value, name = 'timeout') {
  * `services` carries the host bridges of one RPC channel (exported-operation-worker.mjs), each optional:
  * - invokeCustomApi({ method, url, payload, identity }) -> { status, body, headers }: Dataverse.InvokeCustomApi (organizationCustomApi below);
  * - triggerFlow({ flowId, payload, identity }) -> { status, body }: CloudFlow.TriggerAsync through the portal cloud-flow pipeline
- *   (web-role check included); the payload carries siteId, the host's siteUrl and userId;
+ *   (web-role check included); the payload carries siteId (`portalId`, else the website id), the host's siteUrl and userId;
  * - httpRewrites: { 'https://cloud.example.test/': 'http://127.0.0.1:7071/' } for HttpClient (contract: loopback only);
  * - log(entry) and diagnostic(entry): Logger lines and bridge diagnostics, each with the operation id (Server.Context.ActivityId).
  * A bridge without its service answers the envelope with ServerError true, never a success.
@@ -197,6 +292,7 @@ export function assertServerLogicTimeout(value, name = 'timeout') {
   requestUrl,
   requestHeaders = {},
   siteUrl,
+  portalId = null,
   timeout,
   environmentVariables,
   services = {},
@@ -291,12 +387,7 @@ export function assertServerLogicTimeout(value, name = 'timeout') {
     },
     async flow(message) {
       if (!services.triggerFlow) return unavailable('CloudFlow.TriggerAsync', 'SERVER_LOGIC_FLOW_UNAVAILABLE');
-      const payload = {
-        ...parsePayload(message.payload),
-        siteId: portal.website?.id ?? null,
-        ...(siteUrl ? { siteUrl } : {}),
-        userId: identity?.contactId ?? identity?.id ?? null,
-      };
+      const payload = powerPagesFlowPayload(parsePayload(message.payload), { portal, portalId, siteUrl, identity });
       const answer = await services.triggerFlow({ flowId: canonical(message.flowId), payload, identity });
       // A flow without a Response action answers 202 Accepted with an empty Body, reported as success.
       return envelope(answer.status ?? 200, answer.status === 202 ? '' : (answer.body ?? ''), answer.headers);
@@ -762,7 +853,11 @@ export async function importOperationWorkflows(layers = []) {
  * `serviceProfile` (pack flowIdentities[processId]) overrides a connection principal; `connectors` routes connector actions.
  * Synchronous while every provider answers synchronously, otherwise a Promise: always await it.
  * With the organization's run store (flow-runs.mjs flowRunsOf) the request is a tracked flowrun; a run that waits before its
- * Response answers 202 { runId, status: 'Waiting' }, and resumes through /_sim/api/flow-waits or its wait timer. */
+ * Response answers 202 { runId, status: 'Waiting' }, and resumes through /_sim/api/flow-waits or its wait timer.
+ * `onRun(runId)` receives a tracked run's id once it starts. With `responseClosed` the caller does not wait for the Response
+ * (a Power Pages request without an eventData string, hosted session F8): the run runs and its Response action fails.
+ * `observed` (the site's observations): powerPagesFlowTriggerSchema "not-enforced" runs a Power Pages trigger with input its
+ * declared schema refuses, as hosted session F8 recorded; the default "enforced" refuses it (flow-runtime validateTriggerInput). */
 export function runExportedCloudFlow({
   record,
   workflows,
@@ -773,10 +868,18 @@ export function runExportedCloudFlow({
   diagnostic,
   connectors,
   context,
+  observed = null,
+  onRun = null,
+  responseClosed = false,
 }) {
   const workflow = workflows.get(canonical(record.processId));
   if (!workflow) throw failure('This cloud flow has no JSON definition in the selected solution sources.');
   const definition = workflow.definition.properties?.definition ?? workflow.definition.definition;
+  const runs = flowRunsOf(store);
+  const started = {
+    ...context,
+    powerPagesTriggerSchema: observed?.powerPagesFlowTriggerSchema === 'not-enforced' ? 'not-enforced' : 'enforced',
+  };
   const args = {
     definition,
     input,
@@ -786,13 +889,14 @@ export function runExportedCloudFlow({
     diagnostic,
     connectors,
     connectionReferences: workflow.definition.properties?.connectionReferences,
-    context,
+    context: responseClosed && !runs ? { ...started, responseClosed: () => true } : started,
   };
-  const runs = flowRunsOf(store);
   const portalAnswer = (answer) => {
     if (answer?.status === 'Skipped') return { status: 202, body: { status: 'Skipped', reason: answer.reason } };
-    // An explicitly undefined body renders zero bytes through the portal JSON helper.
-    if (answer?.status === 'Succeeded') return { status: 202, body: undefined };
+    // An explicitly undefined body renders zero bytes through the portal JSON helper. A run that ended Succeeded without
+    // answering the Response it has (Terminate) is marked unanswered.
+    if (answer?.status === 'Succeeded')
+      return { status: 202, body: undefined, ...(answer.unanswered ? { unanswered: true } : {}) };
     if (answer?.status === 'Cancelled')
       throw failure('The flow run was cancelled before it answered with a Response.', 409, 'FlowRunCancelled');
     return answer;
@@ -814,6 +918,10 @@ export function runExportedCloudFlow({
     name: record.name ?? workflow.name ?? null,
     trigger: 'PowerPages',
     ...args,
+    onRun: (runId) => {
+      if (responseClosed) runs.closeResponse?.(runId);
+      onRun?.(runId);
+    },
   }).then((answer) =>
     answer?.status === 'Waiting'
       ? (answer.response ?? { status: 202, body: { runId: answer.runId, status: 'Waiting' }, held: answer.runId })
@@ -827,15 +935,18 @@ const FLOW_RESPONSE_TIMEOUT_MS = 120_000;
 
 /**
  * The answer of a Power Pages flow request whose run waited before its Response (runExportedCloudFlow marks it held): the
- * request waits, on the runtime clock, for the resumed run's Response or end, up to FLOW_RESPONSE_TIMEOUT_MS. Call it outside
- * the store transaction, since the resume writes. A run still waiting then answers 504 ResponseTimeout and keeps running
- * (Learn: actions after the limit continue). Without the host's run store, the 202 Waiting answer stands.
+ * request waits, on the runtime clock, for the resumed run's Response or end, up to FLOW_RESPONSE_TIMEOUT_MS after
+ * `requestedAt` (the request's arrival on the store clock; default now). Call it outside the store transaction, since the
+ * resume writes. A run still waiting then answers 504 ResponseTimeout (the Power Pages route answers 400 BadGateway) and keeps
+ * running, and its Response action then fails (hosted session F8, delay group: the run ends Failed). Without the host's run
+ * store, the 202 Waiting answer stands.
  */
-export async function awaitPortalFlowResponse(store, answer) {
+export async function awaitPortalFlowResponse(store, answer, { requestedAt = null } = {}) {
   const runs = flowRunsOf(store);
   if (!answer?.held || typeof runs?.awaitResponse !== 'function') return answer;
   const { held, ...waiting } = answer;
-  const later = await runs.awaitResponse(held, FLOW_RESPONSE_TIMEOUT_MS);
+  const elapsed = requestedAt == null ? 0 : Math.max(0, +store.clock.now() - requestedAt);
+  const later = await runs.awaitResponse(held, Math.max(0, FLOW_RESPONSE_TIMEOUT_MS - elapsed));
   if (later?.status === 'TimedOut')
     throw failure(
       'The flow did not answer its Response within 120 seconds; the run continues.',
@@ -848,6 +959,7 @@ export async function awaitPortalFlowResponse(store, answer) {
   if (later?.status === 'Cancelled')
     throw failure('The flow run was cancelled before it answered with a Response.', 409, 'FlowRunCancelled');
   if (later?.status === 'Skipped') return { status: 202, body: { status: 'Skipped', reason: later.reason } };
-  if (later?.status === 'Succeeded') return { status: 202, body: undefined };
+  if (later?.status === 'Succeeded')
+    return { status: 202, body: undefined, ...(later.unanswered ? { unanswered: true } : {}) };
   return later;
 }

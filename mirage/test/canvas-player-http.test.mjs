@@ -37,7 +37,7 @@ async function pcfSimulator(t) {
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'portal/website.yml':
-      'adx_websiteid: 77777777-7777-4777-8777-777777777777\nadx_name: Invented\nadx_enhancedauthorization: 1\n',
+      'adx_websiteid: 77777777-7777-4777-8777-777777777777\nadx_name: Invented\nadx_enhancedauthorization: 3\n',
     'portal/Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\n',
     'solution/Other/Solution.xml':
       '<ImportExportXml><SolutionManifest><UniqueName>InventedCanvasPcf</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',

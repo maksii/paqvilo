@@ -72,11 +72,12 @@ test('portal API applies 5000/default and Prefer paging, follows signed cursors,
   const top = await read('/_api/items?$select=itemid&$top=1', 'odata.maxpagesize=2');
   assert.equal(top.body.value.length, 1);
   assert.equal(top.body['@odata.nextLink'], undefined);
-  // The portal honours odata.maxpagesize only with $top: without it every row of a bounded result arrives at once.
-  const ignored = await read("/_api/items?$select=itemid&$filter=itemid lt '00009'", 'odata.maxpagesize=2');
-  assert.equal(ignored.status, 200);
-  assert.equal(ignored.body.value.length, 9);
-  assert.equal(ignored.body['@odata.nextLink'], undefined);
+  // A Contact-scope read is paged by odata.maxpagesize without $top too (hosted session F1 summary-F1 API-02c, two runs);
+  // only a Global-scope read without $top ignores it (webapi-hosted-f1-observation.test.mjs).
+  const scoped = await read("/_api/items?$select=itemid&$filter=itemid lt '00009'", 'odata.maxpagesize=2');
+  assert.equal(scoped.status, 200);
+  assert.equal(scoped.body.value.length, 2);
+  assert.ok(scoped.body['@odata.nextLink']);
   // $top larger than the row count keeps later pages, whose signed cursor the refusals below follow.
   const small = await read('/_api/items?$select=itemid&$top=6000', 'odata.maxpagesize=2');
   assert.equal(small.body.value.length, 2);

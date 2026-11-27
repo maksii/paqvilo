@@ -7,6 +7,7 @@ import test from 'node:test';
 import { createSimulator } from '../api.mjs';
 import { signInHeaders } from '../testing.mjs';
 import { makeTemporaryDirectory, ownedFixture } from '../testing/owned-fixture.mjs';
+import { browserToken } from './support/browser-request-token.mjs';
 
 const id = (n) => `c957bf70-827e-4218-9aa6-70658d9d${String(n).padStart(4, '0')}`;
 const owner = id(1);
@@ -154,23 +155,26 @@ async function setup(
       : [],
   });
   ownedFixture(t).add(() => sim.close());
-  const tokenHtml = await (await fetch(`${sim.url}/_layout/tokenhtml`)).text();
-  const token = /value="([^"]+)"/.exec(tokenHtml)[1];
   const ownerHeaders = signInHeaders(sim, owner, { roles: ['Reader'] });
-  function request({
+  const { token } = await browserToken(sim, ownerHeaders);
+  async function request({
     target = route + query,
     body = JSON.stringify({ InstructionIdentifier: promptIdentifier }),
     headers = ownerHeaders,
     method = 'POST',
   } = {}) {
+    const browser = await browserToken(sim, headers);
     return fetch(sim.url + target, {
       method,
       body: method === 'POST' ? body : undefined,
       headers: {
         origin: sim.url,
         'content-type': 'application/json; charset=utf-8',
-        __requestverificationtoken: token,
+        // The hosted client sends X-Requested-With; without it the API refuses (hosted session F3, API-05d).
+        'x-requested-with': 'XMLHttpRequest',
+        __requestverificationtoken: browser.token,
         ...headers,
+        cookie: browser.cookie,
       },
     });
   }
@@ -181,7 +185,7 @@ test('data summary passes a projected record and permission-filtered one-level e
   const { request, calls } = await setup(t);
   const response = await request();
   assert.equal(response.status, 200, await response.clone().text());
-  assert.equal(response.headers.get('odata-version'), '4.0');
+  assert.equal(response.headers.get('odata-version'), null, 'captured: no OData-Version header');
   assert.deepEqual(await response.json(), { Summary: 'Synthetic notebook', Recommendations: [] });
   assert.deepEqual(calls, [
     {
@@ -216,8 +220,8 @@ test('the summary validates the POST transport and refuses malformed or disallow
     [{ headers: { ...ownerHeaders, __requestverificationtoken: 'bad' } }, 403],
     [{ headers: { ...ownerHeaders, 'content-type': 'application/x-www-form-urlencoded' } }, 400],
     [{ body: '{' }, 400],
-    [{ body: '{}' }, 400],
-    [{ body: '{"InstructionIdentifier":"Summarization/prompt/missing"}' }, 400],
+    // A body without InstructionIdentifier, or naming a setting the site lacks, is summarized (hosted session F3,
+    // API-05d); see the observation test below.
     [{ body: '{"RecommendationConfig":"opaque"}' }, 400],
     [{ body: '{"RecommendationConfig":5}' }, 400],
     [{ body: `{"InstructionIdentifier":"${promptIdentifier}","RecommendationConfig":"opaque"}` }, 400],
@@ -502,4 +506,62 @@ test('observed generative AI governance refuses every summary with 90041001 befo
     observed: { siteUserGenerativeAi: 'enabled', evidence: 'Invented governance fixture' },
   });
   assert.equal((await enabled.request()).status, 200);
+});
+
+// @test-kind observation: hosted session F3 (paqvilo-developer hosted-f3 summary-F3.md API-05d, ai-xrw and ai-datasum captures of runs a and b, anonymous and signed-in, 2026-11-27): disabled 400 90041003 with the captured text; enabled, a record and a collection answer 200 { Summary, Recommendations }, InstructionIdentifier is optional and an unknown one is accepted, a missing row answers 404 9004010D; without X-Requested-With an anonymous request answers the 500 error page and a signed-in one 401, and without a token 401
+test('data summarization answers the captured texts, gates and optional instruction', async (t) => {
+  const disabled = await setup(t, { enabled: false });
+  const refused = await disabled.request({ body: '{}' });
+  assert.equal(refused.status, 400);
+  assert.deepEqual((await refused.json()).error, {
+    code: '90041003',
+    message: 'Data summarization disabled for this site. Please enable using site setting.',
+  });
+  const { request, calls, ownerHeaders } = await setup(t);
+  for (const body of ['{}', '{"InstructionIdentifier":"Summarization/prompt/missing"}']) {
+    const response = await request({ body });
+    assert.equal(response.status, 200, await response.clone().text());
+    assert.match(response.headers.get('content-type'), /^application\/json; charset=utf-8/);
+    assert.deepEqual(Object.keys(await response.json()), ['Summary', 'Recommendations']);
+  }
+  assert.deepEqual(
+    calls.map(({ instructionIdentifier, prompt: given }) => [instructionIdentifier, given]),
+    [
+      [null, null],
+      ['Summarization/prompt/missing', null],
+    ],
+  );
+  const collected = await request({ target: collection + '?$select=x_title&$top=2' });
+  assert.equal(collected.status, 200, await collected.clone().text());
+  assert.deepEqual(Object.keys(await collected.json()), ['Summary', 'Recommendations']);
+  const missing = await request({ target: `/_api/summarization/data/v1.0/x_notebooks(${id(999)})?$select=x_title` });
+  assert.equal(missing.status, 404, await missing.clone().text());
+  assert.deepEqual((await missing.json()).error, { code: '9004010D', message: 'Common Data Service error occurred.' });
+  const before = calls.length;
+  const withoutAjax = (headers) => ({ ...headers, 'x-requested-with': '' });
+  const anonymous = await request({ headers: withoutAjax({}) });
+  assert.equal(anonymous.status, 500);
+  assert.match(anonymous.headers.get('content-type'), /^text\/html/);
+  assert.match(await anonymous.text(), /<title>We&#39;re sorry, but something went wrong \(500\)<\/title>/);
+  const signedIn = await request({ headers: withoutAjax(ownerHeaders) });
+  assert.equal(signedIn.status, 401);
+  assert.equal(await signedIn.text(), '');
+  const tokenless = await request({ headers: { ...ownerHeaders, __requestverificationtoken: '' } });
+  assert.equal(tokenless.status, 401);
+  assert.equal(calls.length, before, 'a refused request never reaches the pack');
+});
+
+// @test-kind observation: hosted session F3 (paqvilo-developer hosted-f3 summary-F3.md API-05d, ai-xrw-anon, ai-xrw-signed, ai-datasum-anon and ai-datasum-signed captures of runs a and b, 2026-11-27): an anonymous visitor's data summary answers, the 400 90041003 refusal included, send Cache-Control private; a signed-in visitor's, the 404 9004010D included, and every 401 send no-cache, no-store, must-revalidate with Expires -1
+test('data summary answers carry the captured caching headers per visitor', async (t) => {
+  const caching = (res) => [res.status, res.headers.get('cache-control'), res.headers.get('expires')];
+  const noStore = 'no-cache, no-store, must-revalidate';
+  const disabled = await setup(t, { enabled: false });
+  assert.deepEqual(caching(await disabled.request({ headers: {} })), [400, 'private', null]);
+  assert.deepEqual(caching(await disabled.request()), [400, noStore, '-1']);
+  const { request, ownerHeaders } = await setup(t);
+  assert.deepEqual(caching(await request()), [200, noStore, '-1']);
+  const missing = `/_api/summarization/data/v1.0/x_notebooks(${id(999)})?$select=x_title`;
+  assert.deepEqual(caching(await request({ target: missing })), [404, noStore, '-1']);
+  const tokenless = await request({ headers: { ...ownerHeaders, __requestverificationtoken: '' } });
+  assert.deepEqual(caching(tokenless), [401, noStore, '-1']);
 });

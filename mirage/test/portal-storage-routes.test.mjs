@@ -351,7 +351,10 @@ test('the portal Web API reads a stored note body back for documentbody', async 
   const body = await entity.json();
   assert.equal(entity.status, 200, JSON.stringify(body));
   assert.equal(Buffer.from(body.documentbody, 'base64').toString(), 'evidence');
+  // /<column> is refused before any read (hosted session F1 summary-F1 API-02c); /$value answers the stored body.
   const property = await fetch(`${sim.url}/_api/annotations(${NOTE})/documentbody`, { headers });
-  assert.equal(property.status, 200);
-  assert.equal(Buffer.from((await property.json()).value, 'base64').toString(), 'evidence');
+  assert.equal(property.status, 403);
+  const value = await fetch(`${sim.url}/_api/annotations(${NOTE})/documentbody/$value`, { headers });
+  assert.equal(value.status, 200);
+  assert.equal(Buffer.from(await value.text(), 'base64').toString(), 'evidence');
 });

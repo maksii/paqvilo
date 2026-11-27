@@ -417,8 +417,8 @@ test('web link and set publishing states apply before optional link target valid
   assert.match(html, /\[name:Draft set title\]\[draft-id:Draft set title\]\[published-id:Published duplicate title\]/);
 });
 
-// @test-kind security: rendering editable navigation metadata requires the specific website access right.
-test('editable navigation requires Manage Web Link Sets and emits inert source metadata', async (t) => {
+// @test-kind security+observation: the editable flag requires the specific website access right; hosted session F3 (two runs) captured that {% editable <web link set> %} writes no metadata, also for an administrator.
+test('editable navigation requires Manage Web Link Sets and writes no editor metadata', async (t) => {
   const { app, get } = await fixture(t);
   const permitted = signInHeaders(app, CONTACT, { roles: ['Navigation editor'] });
   const previewOnly = signInHeaders(app, CONTACT, { roles: ['Editor'] });
@@ -436,10 +436,7 @@ test('editable navigation requires Manage Web Link Sets and emits inert source m
     true,
     'the authored editable flag enables the editor DOM branch',
   );
-  assert.match(
-    body,
-    /<span hidden aria-hidden="true" data-mirage-editable="weblinkset" data-logicalname="adx_weblinkset" data-id="preview-links" data-label="Fixture &quot;links&quot; &lt;sample&gt;"><\/span>/,
-  );
+  assert.doesNotMatch(body, /data-mirage-editable|data-logicalname="adx_weblinkset"/);
   assert.doesNotMatch(body, /\/_services\/portal\/|Draft set title/);
 });
 
@@ -494,15 +491,18 @@ test('authored description metadata in Head/Bottom takes precedence', async (t) 
   ]);
 });
 
+// @test-kind unproven: the snippet replaces the heading inside the dialog hosted session F3 captured without a snippet; the snippet's own placement on a current site is not captured.
 test('the selected generic error uses the exported Text or HTML snippet without evaluating Liquid', async (t) => {
   const { get } = await fixture(t, { customErrors: true });
   const plain = await get('/visible/?q=%3Cem%3E');
   assert.equal(plain.status, 500);
   const plainHtml = await plain.text();
-  assert.match(plainHtml, /<p>Text fixture &lt;b&gt;&lt;\/b&gt;<\/p>/);
-  assert.match(plainHtml, /Error ID: \[[0-9a-f-]{36}\]/);
-  assert.match(plainHtml, /Date and time: [0-9T:.-]+Z/);
-  assert.match(plainHtml, /Portal ID: site/);
+  assert.match(
+    plainHtml,
+    /<div class='dialog' role='main'><p>Text fixture &lt;b&gt;&lt;\/b&gt;<\/p><h1>Error ID # \[[0-9a-f-]{36}\]<\/h1><p><small>\d+\/\d+\/\d{4} \d+:\d\d:\d\d [AP]M&nbsp;UTC<\/small><\/p><\/div>/,
+  );
+  assert.match(plainHtml, /updateDevToolRuntime/);
+  assert.doesNotMatch(plainHtml, /We&#39;re sorry, but something went wrong\. Please try again/);
   const localized = await get('/fr-FR/visible/?q=%3Cem%3E');
   assert.equal(localized.status, 500);
   const localizedHtml = await localized.text();

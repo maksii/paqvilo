@@ -424,7 +424,11 @@ test('a deleted parent keeps no mark, and the mass recalculation still reaches e
     await request('PATCH', `/x_children(${CHILD_ACTIVE})`, { x_amount: 11 }, { prefer: 'return=minimal' }),
     204,
   );
-  assert.ok((await api.rollups.recalculateStale()) >= 3);
+  // An amount write marks the Sums that read it, not the Count (summary-F6 DATA-04c2: the hourly job recalculated only the
+  // rollups over the changed column).
+  assert.equal(api.rollups.isStale('x_parent', PARENT, 'x_countall'), false);
+  assert.equal(api.rollups.isStale('x_parent', PARENT, 'x_sumall'), true);
+  assert.ok((await api.rollups.recalculateStale()) >= 2);
   assert.equal(rowOf(store, 'x_parent', PARENT).x_sumall, 116);
   assert.deepEqual(
     ['x_countall', 'x_sumall', 'x_sumactive'].map((column) => api.rollups.isStale('x_parent', OTHER, column)),

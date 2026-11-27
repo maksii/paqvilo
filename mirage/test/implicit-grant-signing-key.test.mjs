@@ -208,7 +208,7 @@ test('a missing, invalid, encrypted, short or in-source key file is refused when
   assert.ok(!JSON.stringify(accepted).includes(pemBody(good.privatePem).slice(0, 40)), 'the project holds paths only');
 });
 
-// @test-kind security: the private key never appears in a response, the runtime status, diagnostics or the log stream, and a key file lost at run time is reported without its path in the response.
+// @test-kind security+observation: the private key never appears in a response, the runtime status, diagnostics or the log stream, and a key file lost at run time is reported without its path in the response; the refusal is the missing-certificate error hosted session F4 answered (paqvilo-developer hosted-f4 implicit runs a and b).
 test('a runtime signs with the configured key and never exposes the private key', async (t) => {
   const { site, keys } = await workspace(t);
   const pair = pemPair();
@@ -244,8 +244,8 @@ test('a runtime signs with the configured key and never exposes the private key'
 
   await fs.rm(keyFile);
   const lost = await read(await fetch(`${app.url}/_services/auth/token`, { method: 'POST', headers: session }));
-  assert.equal(lost.status, 500);
-  assert.equal(JSON.parse(lost.text).ErrorId, 'PortalSTS0006');
+  assert.equal(lost.status, 400);
+  assert.equal(JSON.parse(lost.text).ErrorId, 'PortalSTS0018');
   assert.ok(!lost.text.includes(keys), 'the response does not name the key file');
   const diagnostics = await read(await fetch(`${app.url}/__sim/api/diagnostics`));
   assert.ok(

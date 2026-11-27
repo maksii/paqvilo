@@ -336,6 +336,32 @@ function value(node, ...names) {
   }
   return undefined;
 }
+// A chart's table, description and data and presentation XML (the chart data service, portal-chart-builder.mjs). The
+// XML is an element child in an unpacked Solution and escaped text elsewhere.
+function chartXml(node, name) {
+  const element = node.children?.find((item) => item.name.toLowerCase() === name);
+  if (!element) return null;
+  const nested = element.children?.[0];
+  return nested ? serializeXml(nested) : element.text.trim() || null;
+}
+function chartDefinition(node) {
+  const entity = value(node, 'primaryentitytypecode')?.toLowerCase();
+  const dataDescription = chartXml(node, 'datadescription');
+  if (!entity || !dataDescription) return {};
+  return {
+    chart: {
+      entity,
+      description:
+        value(node, 'description') ??
+        node.children
+          ?.find((item) => item.name.toLowerCase() === 'descriptions')
+          ?.children?.find((item) => item.attrs?.description)?.attrs.description ??
+        null,
+      dataDescription,
+      presentationDescription: chartXml(node, 'presentationdescription'),
+    },
+  };
+}
 const labelOf = (node) => {
   const stack = [...(node.children ?? [])];
   while (stack.length) {
@@ -448,6 +474,7 @@ const ELEMENTS = {
         dependencies: value(node, 'primaryentitytypecode')
           ? [{ component: 'table', name: value(node, 'primaryentitytypecode').toLowerCase() }]
           : [],
+        ...chartDefinition(node),
       }),
   },
   webresource: {

@@ -9,6 +9,7 @@ import { cascadeAction } from './relationship-cascade.mjs';
 import { guidKey } from './dataverse-values.mjs';
 import { isDeepStrictEqual } from 'node:util';
 import { uuidV5 } from './uuid-v5.mjs';
+import { RECORD_FILTER_DEPTH, recordFilterAdmits } from './record-filter.mjs';
 
 export { uuidV5 };
 
@@ -688,7 +689,10 @@ const depthMaskOf = (depth) =>
 const grantSignature = (store, roleId) =>
   rowsOf(store, 'roleprivileges')
     .filter((g) => sameId(refId(g.roleid), roleId))
-    .map((g) => `${key(refId(g.privilegeid))}:${g.privilegedepthmask}`)
+    .map(
+      (g) =>
+        `${key(refId(g.privilegeid))}:${g.privilegedepthmask}${refId(g.recordfilterid) ? ':' + key(refId(g.recordfilterid)) : ''}`,
+    )
     .sort()
     .join('|');
 
@@ -707,6 +711,15 @@ export function applyRoleGrants(store, roleid, grants) {
       roleid: lookupRow(store, 'role', roleid),
       privilegeid: lookupRow(store, 'privilege', grant.privilegeid),
       privilegedepthmask: grant.mask,
+      ...(grant.recordFilterId
+        ? {
+            recordfilterid: {
+              id: grant.recordFilterId,
+              logical_name: 'recordfilter',
+              name: grant.recordFilterName ?? '',
+            },
+          }
+        : {}),
     });
   }
   seedRows.delete(rowsOf(store, 'roleprivileges')); // the seed index no longer matches the rewritten rows
@@ -1283,6 +1296,8 @@ function cascadedChildren(store, target, action) {
 function cascadedChildMatches(child, reference, mapping, linked, behaviour, parent) {
   const link = child[reference.column];
   if (link && typeof link === 'object' && link.logical_name && link.logical_name !== mapping.logicalName) return false;
+  // A multi-table lookup names its table: a bare id references none.
+  if (reference.polymorphic && !link?.logical_name) return false;
   if (refId(link) == null || !sameId(refId(link), linked)) return false;
   if (behaviour === 'Active' && Number(child.statecode?.value ?? child.statecode ?? 0) !== 0) return false;
   if (behaviour === 'UserOwned' && !sameId(refId(child.ownerid), refId(parent.ownerid))) return false;
@@ -1458,6 +1473,8 @@ function buildIndex(store) {
     grantSets: new Map(),
     chains: new Map(),
     shares: new Map(),
+    // Record filters are read from the store when a record-filter grant admits a row (record-filter.mjs).
+    store,
   };
   const add = (map, k, v) => {
     if (!map.has(k)) map.set(k, []);
@@ -1501,6 +1518,7 @@ function indexPrivilegesAndGrants(store, idx, add) {
     add(idx.grants, key(refId(g.roleid)), {
       privilegeId: key(refId(g.privilegeid)),
       mask: Number(g.privilegedepthmask),
+      recordFilterId: key(refId(g.recordfilterid)) || null,
     });
 }
 function indexDirectRolesAndMemberships(store, idx, add) {
@@ -1577,7 +1595,7 @@ function teamGrants(idx, teamId, into) {
       const name = idx.privNames.get(g.privilegeId);
       if (!name) continue;
       if (!into.has(name)) into.set(name, []);
-      into.get(name).push({ id: teamId, bu, depth: g.mask, teamOnly });
+      into.get(name).push({ id: teamId, bu, depth: g.mask, teamOnly, recordFilterId: g.recordFilterId });
     }
   }
   return into;
@@ -1590,31 +1608,63 @@ function teamGrants(idx, teamId, into) {
 function grantsOf(idx, uid) {
   if (!idx.grantSets.has(uid)) {
     const direct = new Map(),
-      team = new Map();
-    for (const role of idx.direct.get(uid) ?? []) {
-      for (const g of idx.grants.get(role) ?? []) {
-        const name = idx.privNames.get(g.privilegeId);
-        if (name) direct.set(name, Math.max(direct.get(name) ?? 0, g.mask));
-      }
-    }
+      team = new Map(),
+      filtered = new Map();
+    for (const role of idx.direct.get(uid) ?? []) addDirectGrants(idx, role, direct, filtered);
     for (const teamId of teamsOf(idx, uid)) teamGrants(idx, teamId, team);
-    idx.grantSets.set(uid, { direct, team });
+    idx.grantSets.set(uid, { direct, team, filtered });
   }
   return idx.grantSets.get(uid);
 }
 
+// One direct role's grants: depth grants keep the highest depth per privilege; record-filter grants (16) collect their
+// filters apart, since 16 is not a deeper depth than Global.
+function addDirectGrants(idx, role, direct, filtered) {
+  for (const g of idx.grants.get(role) ?? []) {
+    const name = idx.privNames.get(g.privilegeId);
+    if (!name) continue;
+    if (g.mask !== RECORD_FILTER_DEPTH) direct.set(name, Math.max(direct.get(name) ?? 0, g.mask));
+    else if (filtered.has(name)) filtered.get(name).add(g.recordFilterId);
+    else filtered.set(name, new Set([g.recordFilterId]));
+  }
+}
+
+// A record-filter grant admits the rows one of its filters selects for the user; a grant without a stored filter admits
+// none (record-filter.mjs). activitypointer roots the filters of every activity table.
+function recordFilterGrantAdmits(idx, user, filterIds, logical, row) {
+  if (!logical) return false;
+  const filters = idx.store.tableRows('recordfilter') ?? [];
+  const activity = logical !== 'activitypointer' && isActivityMapping(idx.store, logical);
+  return [...filterIds].some((filterId) => {
+    const filter = filterId && filters.find((candidate) => sameId(candidate.recordfilterid, filterId));
+    return Boolean(
+      filter &&
+      recordFilterAdmits(filter.fetchxml, { store: idx.store, userId: user?.systemuserid, logical, activity }, row),
+    );
+  });
+}
+const isActivityMapping = (store, logical) => {
+  if (isActivityTable(logical)) return true;
+  try {
+    return store.resolveMapping(logical)?.idColumn === 'activityid';
+  } catch {
+    return false;
+  }
+};
+
 /** Privilege name -> depth as RetrieveUserPrivileges reports it: the direct depth, or Basic for team-only grants. */
 function privilegeMapOf(idx, uid) {
-  const { direct, team } = grantsOf(idx, uid);
+  const { direct, team, filtered } = grantsOf(idx, uid);
   const map = new Map(direct);
   for (const name of team.keys()) map.set(name, Math.max(map.get(name) ?? 0, DEPTH.Basic));
+  for (const name of filtered.keys()) if (!map.has(name)) map.set(name, RECORD_FILTER_DEPTH);
   return new PrivilegeDepths(map);
 }
 
 function privilegeCountOf(idx, uid) {
-  const { direct, team } = grantsOf(idx, uid);
+  const { direct, team, filtered } = grantsOf(idx, uid);
   let count = direct.size;
-  for (const name of team.keys()) if (!direct.has(name)) count++;
+  for (const name of new Set([...team.keys(), ...filtered.keys()])) if (!direct.has(name)) count++;
   return count;
 }
 
@@ -1661,9 +1711,11 @@ function directAdmits(idx, user, depth, row) {
 
 // A team grant admits a row: Basic = rows owned by the team; Local/Deep/Global = by geometry, whoever owns the row
 // (inherited team privileges are evaluated as if the team were the caller, so a member's own row passes too).
-function teamAdmits(idx, team, row) {
+function teamAdmits(idx, team, row, logical) {
   const owner = key(refId(row.ownerid));
   if (team.teamOnly) return owner === team.id;
+  if (team.depth === RECORD_FILTER_DEPTH)
+    return recordFilterGrantAdmits(idx, null, [team.recordFilterId], logical, row);
   if (team.depth >= DEPTH.Global) return true;
   if (team.depth < DEPTH.Local) return owner === team.id;
   return buAdmits(idx, team.depth, rowBusinessUnit(idx, row), team.bu);
@@ -1674,23 +1726,25 @@ function teamAdmits(idx, team, row) {
  * the lower depth, admitting only rows that both the impersonated user and the caller admit.
  */
 // `hierarchy` adds the manager-hierarchy grants; callers set it only when a row (or a row filter) is in play.
-function grantsNamed(idx, user, name, { hierarchy = false } = {}) {
-  const own = ownGrantsNamed(idx, user, name, hierarchy);
+function grantsNamed(idx, user, name, { hierarchy = false, logical = null } = {}) {
+  const own = ownGrantsNamed(idx, user, name, hierarchy, logical);
   if (!user.impersonator) return own;
-  const caller = ownGrantsNamed(idx, user.impersonator, name, hierarchy);
+  const caller = ownGrantsNamed(idx, user.impersonator, name, hierarchy, logical);
   if (!own.length || !caller.length) return [];
   return [
     {
       depth: Math.min(deepest(own), deepest(caller)),
       direct: own.some((g) => g.direct) && caller.some((g) => g.direct),
+      // Either side reaching rows only through record filters keeps the row test on every table.
+      recordFilter: filterOnly(own) || filterOnly(caller),
       admits: (row) => own.some((g) => g.admits(row)) && caller.some((g) => g.admits(row)),
     },
   ];
 }
 
-function ownGrantsNamed(idx, user, name, hierarchy = false) {
+function ownGrantsNamed(idx, user, name, hierarchy = false, logical = null) {
   const uid = key(user.systemuserid),
-    { direct, team } = grantsOf(idx, uid),
+    { direct, team, filtered } = grantsOf(idx, uid),
     spellings = spellingsOf(idx, name),
     out = [];
   const depths = spellings.filter((s) => direct.has(s)).map((s) => direct.get(s));
@@ -1698,8 +1752,22 @@ function ownGrantsNamed(idx, user, name, hierarchy = false) {
     const depth = Math.max(...depths);
     out.push({ depth, direct: true, admits: (row) => directAdmits(idx, user, depth, row) });
   }
+  // A record-filter grant reaches the rows its filters select: depth 0 here, so no caller reads it as a Global grant.
+  const filterIds = new Set(spellings.flatMap((s) => [...(filtered.get(s) ?? [])]));
+  if (filterIds.size)
+    out.push({
+      depth: 0,
+      direct: true,
+      recordFilter: true,
+      admits: (row) => recordFilterGrantAdmits(idx, user, filterIds, logical, row),
+    });
   for (const grant of spellings.flatMap((s) => team.get(s) ?? [])) {
-    out.push({ depth: grant.depth, direct: false, admits: (row) => teamAdmits(idx, grant, row) });
+    out.push({
+      depth: grant.depth === RECORD_FILTER_DEPTH ? 0 : grant.depth,
+      direct: false,
+      recordFilter: grant.depth === RECORD_FILTER_DEPTH,
+      admits: (row) => teamAdmits(idx, grant, row, logical),
+    });
   }
   const manager = hierarchy ? managerGrant(idx, user, name) : null;
   if (manager) out.push(manager);
@@ -1816,8 +1884,11 @@ export function setHierarchySecurity(store, organizationId, { enabled, depth = D
 }
 
 const deepest = (grants) => grants.reduce((max, g) => Math.max(max, g.depth), 0);
+// Grants that reach rows only through record filters: those apply on organization-owned tables too.
+const filterOnly = (grants) => grants.length > 0 && grants.every((g) => g.recordFilter);
 
-const depthName = (mask) => DEPTH_NAMES.find((name) => mask & DEPTH[name]) ?? 'Basic';
+const depthName = (mask) =>
+  mask === RECORD_FILTER_DEPTH ? 'RecordFilter' : (DEPTH_NAMES.find((name) => mask & DEPTH[name]) ?? 'Basic');
 
 /** The PrivilegeDenied (0x80040220) error for a user without a privilege on an entity. Counts default to 0. */
 export function privilegeDeniedError(
@@ -2055,7 +2126,9 @@ export function createPrincipals(store, settings = {}) {
     const names = nouns.map((noun) => privilegeName(operation, noun)),
       name = names[0];
     const owned = ownershipOf(logical, schema, m) === 'user';
-    const grants = names.flatMap((n) => grantsNamed(index, user, n, { hierarchy: (Boolean(row) || filter) && owned }));
+    const grants = names.flatMap((n) =>
+      grantsNamed(index, user, n, { hierarchy: (Boolean(row) || filter) && owned, logical }),
+    );
     if (!grants.length) {
       // A privilege native checks before the table's own; it is named only when the request is refused anyway.
       const [first, table] = CHECKED_FIRST[`${operation}:${logical}`] ?? [];
@@ -2063,7 +2136,7 @@ export function createPrincipals(store, settings = {}) {
       throw privilegeDenied(index, settings, user, logical, name, schema);
     }
     const business = businessOwned(logical);
-    if (!row || (ownershipOf(logical, schema, m) === 'org' && !business))
+    if (!row || (ownershipOf(logical, schema, m) === 'org' && !business && !filterOnly(grants)))
       return { m, grants, depth: deepest(grants), privilege: name };
     const idColumn = m.idColumn ?? `${logical}id`;
     const admitting = grants.filter((g) => g.admits(admissionRow(logical, row)));
@@ -2190,7 +2263,8 @@ export function createPrincipals(store, settings = {}) {
           return parent ? canRead(parent) : grants.some((g) => g.direct && g.depth >= DEPTH.Global);
         };
       }
-      if (ownershipOf(m.logicalName, schema, m) === 'org' && !businessOwned(m.logicalName)) return null;
+      if (ownershipOf(m.logicalName, schema, m) === 'org' && !businessOwned(m.logicalName) && !filterOnly(grants))
+        return null;
       if (grants.some((g) => g.direct && g.depth >= DEPTH.Global)) return null;
       const index = idx(),
         uid = uidOf(user),
@@ -2257,7 +2331,7 @@ export function createPrincipals(store, settings = {}) {
           const name = index.privNames.get(g.privilegeId);
           if (!name) continue;
           const Depth = fromTeam ? 'Basic' : depthName(g.mask);
-          const dedupe = `${g.privilegeId}|${businessUnitId}|${Depth}`;
+          const dedupe = `${g.privilegeId}|${businessUnitId}|${Depth}|${g.recordFilterId ?? ''}`;
           if (seen.has(dedupe)) continue;
           seen.add(dedupe);
           out.push({
@@ -2265,8 +2339,12 @@ export function createPrincipals(store, settings = {}) {
             PrivilegeId: g.privilegeId,
             BusinessUnitId: businessUnitId,
             PrivilegeName: name,
-            RecordFilterId: null,
-            RecordFilterUniqueName: null,
+            RecordFilterId: g.recordFilterId ?? null,
+            RecordFilterUniqueName: g.recordFilterId
+              ? (index.store
+                  .tableRows('recordfilter')
+                  ?.find((filter) => sameId(filter.recordfilterid, g.recordFilterId))?.uniquename ?? null)
+              : null,
           });
         }
       };
@@ -2289,12 +2367,13 @@ export function createPrincipals(store, settings = {}) {
       for (const right of Object.keys(ACCESS_RIGHTS)) {
         const grants = grantsNamed(index, user, privilegeName(right, nounFor(m.logicalName, schema)), {
           hierarchy: Boolean(row) && owned,
+          logical: m.logicalName,
         });
         if (!grants.length) continue;
         if (
           right === 'Create' ||
           !row ||
-          !scoped ||
+          (!scoped && !filterOnly(grants)) ||
           grants.some((g) => g.admits(admissionRow(m.logicalName, row))) ||
           sharedWith(index, uid, row, idColumn, right)
         )
@@ -2321,8 +2400,8 @@ export function createPrincipals(store, settings = {}) {
         if (
           right === 'Create' ||
           !row ||
-          !scoped ||
-          list.some((g) => teamAdmits(index, g, admissionRow(m.logicalName, row))) ||
+          (!scoped && !list.every((g) => g.depth === RECORD_FILTER_DEPTH)) ||
+          list.some((g) => teamAdmits(index, g, admissionRow(m.logicalName, row), m.logicalName)) ||
           sharedWith(index, teamId, row, idColumn, right)
         )
           flags.push(`${right}Access`);

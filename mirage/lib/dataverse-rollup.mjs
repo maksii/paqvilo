@@ -9,21 +9,20 @@ import { decimalParts, decimalText, exactNumeric, isExactNumeric, roundNumeric, 
 // Rollup columns (SourceType 2) in the Dataverse API: the state and date columns are maintained, the value is recalculated on demand.
 //
 // A column is a rollup when its metadata says SourceType 2 (exported column facts sit under columnMetadata). Its FormulaDefinition
-// is either designer-exported XAML for the simple child Count or an aggregate FetchXML model: one <entity> (the child table),
-// one aggregate <attribute>, and a <filter> whose condition with value="{id}" names the child's parent lookup. Behaviour:
-//   1. create: a new parent row is stamped <column>_state = 0 (NotCalculated) and <column>_date = null when the payload omits
-//      them. An explicit write to <column> itself is refused with 400 (create, update and upsert).
-//   2. child write (create, update, upsert, delete): every parent linked through a rollup column gets <column>_state = 0 (stale),
-//      in the write's own transaction, so the mass recalculation picks it up. A reparent or delete marks the parent the row
-//      pointed at before the write too. The flag is a journaled row mutation (store.mutateRow): the parent's versionnumber,
-//      modifiedon and ETag stay, and no Update step, flow, audit or committed event runs for the parent.
-//      The native platform keeps no per-row stale flag (its system job recalculates rollups incrementally); the _state = 0
-//      marking only tells Mirage's own mass recalculation which rows to visit.
-//   3. recalculate(api, table, id, column): the value is computed over the local child rows and stored with <column>_state = 1
+// is either the rollup designer's XAML (below) or an aggregate FetchXML model: one <entity> (the child table), one aggregate
+// <attribute>, and a <filter> whose condition with value="{id}" names the child's parent lookup. Behaviour:
+//   1. create: a new parent row is stamped <column>_state = 1 (Calculated), <column>_date = its createdon and the value of no
+//      children (0 for Count, Sum and a designer Average, null otherwise), as hosted runs show (summary-F6 DATA-04c). A write
+//      to <column> itself is accepted and ignored (create, update and upsert), as hosted writes answer 204.
+//   2. child write (create, update, upsert, delete): the parent row is not touched (hosted runs: neither value, _state nor _date
+//      changes); Mirage keeps a stale mark outside the rows for every parent linked through a rollup column (and, for a
+//      hierarchical rollup, its ancestors), so its mass recalculation visits them. A reparent or delete marks the parent the
+//      row pointed at before the write too. See Stale marks below.
+//   3. recalculate(api, table, id, column): the value is computed over the local rows and stored with <column>_state = 1
 //      (Calculated) and <column>_date = now. A trusted pack's rollups['<table>.<column>'](row, ctx) wins and supplies the value.
 //      A definition outside the subset reports ROLLUP_UNSUPPORTED once per column and stores null with <column>_state = 2.
 //
-// Supported FormulaDefinition subset (element local names, case-insensitive, prefixes ignored):
+// Supported FetchXML subset (element local names, case-insensitive, prefixes ignored):
 //   <fetch aggregate="true"><entity name="child">
 //     <attribute name="column" aggregate="count|sum|min|max|avg" alias="..."/>
 //     <filter type="and">
@@ -34,7 +33,15 @@ import { decimalParts, decimalText, exactNumeric, isExactNumeric, roundNumeric, 
 // count counts the non-null values of the attribute; sum, min, max and avg read numbers and ignore nulls. A row without a
 // statecode value counts as active. Anything else (link-entity, or-filters, other conditions, several attributes) is outside
 // the subset.
-// The designer's unfiltered, non-hierarchical one-to-many Count is parsed into the same model. Other XAML is unsupported.
+// Designer XAML (RollupRuleStep1: Source, Target, Aggregate), as the classic rollup designer saves it (summary-F6 DATA-04c2):
+//   Source: HierarchicalRelationshipName ([Nothing] or a self-referencing relationship) and, with a hierarchy, an optional
+//     source filter over the source table's own columns;
+//   Target: the related one-to-many relationship and an optional filter over the related rows, or nothing for a hierarchical
+//     rollup of the source table's own column;
+//   Aggregate: Count, Sum, Average, Minimum or Maximum of one column (Minimum and Maximum also over dates).
+//   Filters: Equal and NotEqual (several checked options of a choice), Null, NotNull, GreaterThan, GreaterEqual, LessThan and
+//     LessEqual against option set, Boolean ("1"/"0" or "True"/"False"), number and UTC date literals, joined by And.
+// Inactive related rows count. Any other designer form is unsupported.
 // Aggregation follows SQL (SUM over no rows is 0, MIN, MAX and AVG over none are null, COUNT counts non-null values).
 // State 2 (OverflowError) for a definition outside the subset is this module's choice: the nearest documented error state, as
 // OtherError (3) describes an internal failure.
@@ -217,17 +224,34 @@ function designerSteps(node, names) {
 }
 
 // Source: HierarchicalRelationshipName is [Nothing] for a direct rollup, else the self-referencing relationship whose
-// descendants also contribute (the parent row and every row below it).
+// descendants also contribute (the parent row and every row below it). With a hierarchy the designer also offers source
+// filters: a filter program over the source table's own columns, after the variables, whose result is the first Boolean.
 function checkDesignerSource(source, rule) {
-  const [variables] = designerSteps(source, ['sequence.variables']);
-  const [hierarchy] = designerSteps(variables, ['variable']);
-  const name = attr(hierarchy, 'Default');
-  if (attr(hierarchy, 'Name') !== 'HierarchicalRelationshipName' || !name)
+  const nodes = elements(source);
+  if (localName(nodes[0]?.name ?? '') !== 'sequence.variables')
+    unsupported('The designer rollup has activities outside the supported layout.');
+  const [variables, ...program] = nodes;
+  const [hierarchy, ...declared] = elements(variables);
+  const name = attr(hierarchy ?? {}, 'Default');
+  if (
+    localName(hierarchy?.name ?? '') !== 'variable' ||
+    attr(hierarchy, 'Name') !== 'HierarchicalRelationshipName' ||
+    !name
+  )
     unsupported('The designer rollup source declares no HierarchicalRelationshipName.');
-  if (name === '[Nothing]') return;
-  if (!/^[a-z][\da-z_]*$/i.test(name))
-    unsupported('The designer rollup names an unreadable hierarchical relationship.');
-  rule.hierarchy = name.toLowerCase();
+  if (name !== '[Nothing]') {
+    if (!/^[a-z][\da-z_]*$/i.test(name))
+      unsupported('The designer rollup names an unreadable hierarchical relationship.');
+    rule.hierarchy = name.toLowerCase();
+  }
+  if (!program.length) {
+    if (declared.length) unsupported('The designer rollup has activities outside the supported layout.');
+    return;
+  }
+  if (!rule.hierarchy) unsupported('The designer rollup filters its source without a hierarchy.');
+  const read = { table: null };
+  rule.sourceFilter = readFilterProgram(program, declared, read);
+  rule.sourceTable = read.table;
 }
 
 function readDesignerLink(link, rule) {
@@ -261,55 +285,97 @@ function activityArguments(reference) {
 }
 const argumentText = (args, key) => (args.get(key) ? args.get(key).text.trim() : null);
 
-// A literal of the filter (EvaluateExpression CreateCrmType): the option set, Boolean and decimal forms the designer writes.
+// A literal of a filter (EvaluateExpression CreateCrmType) as { type, value }. The rollup designer writes a Boolean as "1"
+// or "0" and a date as UTC ISO text (hosted designer saves, summary-F6 DATA-04c2); "True" and "False" are the form the F6
+// definitions were authored in. Option sets and numbers compare as numbers.
 const LITERAL =
   /^\[New Object\(\) \{ Microsoft\.Xrm\.Sdk\.Workflow\.WorkflowPropertyType\.(\w+), "([^"]*)"(?:, "[^"]*")? \}\]$/;
+const BOOLEAN_TEXT = new Map([
+  ['True', true],
+  ['False', false],
+  ['1', true],
+  ['0', false],
+]);
+const NUMBER_TYPES = new Set(['OptionSetValue', 'Decimal', 'Integer', 'Double', 'Money']);
+const ISO_DATE_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
 function filterLiteral(args) {
   if (argumentText(args, 'ExpressionOperator') !== 'CreateCrmType')
     unsupported('The designer filter computes an expression other than a literal.');
   const literal = LITERAL.exec(argumentText(args, 'Parameters') ?? '');
   if (!literal) unsupported('The designer filter literal is not readable.');
   const [, type, text] = literal;
-  if (type === 'Boolean' && (text === 'True' || text === 'False')) return text === 'True';
-  if (['OptionSetValue', 'Decimal', 'Integer', 'Double', 'Money'].includes(type) && Number.isFinite(Number(text)))
-    return Number(text);
+  if (type === 'Boolean' && BOOLEAN_TEXT.has(text)) return { type: 'boolean', value: BOOLEAN_TEXT.get(text) };
+  if (NUMBER_TYPES.has(type) && text.trim() !== '' && Number.isFinite(Number(text)))
+    return { type: 'number', value: Number(text) };
+  if (type === 'DateTime' && ISO_DATE_TIME.test(text) && Number.isFinite(Date.parse(text)))
+    return { type: 'date', value: Date.parse(text) };
   return unsupported(`The designer filter literal type ${type} is not supported.`);
 }
 
-// The observed filter conditions; another operator leaves the rule unsupported.
-const CONDITIONS = new Set(['Equal', 'GreaterThan', 'NotNull']);
+// The designer's condition operators (Equals, Does not equal, Contains data, Does not contain data, Is greater than, Is
+// greater than or equal to, Is less than, Is less than or equal to); another operator leaves the rule unsupported.
+const CONDITIONS = new Set([
+  'Equal',
+  'NotEqual',
+  'NotNull',
+  'Null',
+  'GreaterThan',
+  'GreaterEqual',
+  'LessThan',
+  'LessEqual',
+]);
+const UNARY = new Set(['NotNull', 'Null']);
+// Equal and NotEqual take one literal per checked option of a choice or Yes/No column.
+const LISTED = new Set(['Equal', 'NotEqual']);
+const PARAMETERS = /^\[New Object\(\) \{ ([a-z][\da-z_]*(?:, [a-z][\da-z_]*)*) \}\]$/i;
 
 function filterCondition(args, values) {
   const operator = argumentText(args, 'ConditionOperator');
   if (!CONDITIONS.has(operator)) unsupported(`The designer filter operator ${operator} is not supported.`);
   const operand = values.get(variableOf(argumentText(args, 'Operand')));
-  if (operand?.kind !== 'column') unsupported('The designer filter condition does not read a child column.');
+  if (operand?.kind !== 'column') unsupported('The designer filter condition does not read a column.');
   const parameters = argumentText(args, 'Parameters');
-  if (operator === 'NotNull') {
-    if (parameters !== null) unsupported('The NotNull filter condition takes no parameter.');
+  if (UNARY.has(operator)) {
+    if (parameters !== null) unsupported(`The ${operator} filter condition takes no parameter.`);
     return { kind: 'condition', operator, column: operand.column };
   }
-  const parameter = values.get(/^\[New Object\(\) \{ ([a-z][\da-z_]*) \}\]$/i.exec(parameters ?? '')?.[1]);
-  if (parameter?.kind !== 'literal') unsupported('The designer filter condition compares with no literal.');
-  return { kind: 'condition', operator, column: operand.column, value: parameter.value };
+  const literals = (PARAMETERS.exec(parameters ?? '')?.[1].split(', ') ?? []).map((name) => values.get(name));
+  if (!literals.length || literals.some((item) => item?.kind !== 'literal'))
+    unsupported('The designer filter condition compares with no literal.');
+  if (literals.length > 1 && !LISTED.has(operator))
+    unsupported(`The ${operator} filter condition compares with more than one literal.`);
+  const types = new Set(literals.map((item) => item.literal.type));
+  if (types.size > 1) unsupported('The designer filter condition mixes literal types.');
+  const [type] = types;
+  return {
+    kind: 'condition',
+    operator,
+    column: operand.column,
+    type,
+    values: literals.map((item) => item.literal.value),
+  };
 }
 
-function filterStep(step, rule, values) {
+// One step of a filter program over `read.table` (the first GetEntityProperty names it; every later one must match).
+function filterStep(step, read, values) {
   if (localName(step.name) === 'getentityproperty') {
     const column = attr(step, 'Attribute');
+    const table = attr(step, 'EntityName')?.toLowerCase();
     if (
       !/^[a-z][\da-z_]*$/i.test(column ?? '') ||
       attr(step, 'Entity') !== '[InputEntities("primaryEntity")]' ||
-      attr(step, 'EntityName')?.toLowerCase() !== rule.child
+      !table ||
+      (read.table ?? table) !== table
     )
-      unsupported('The designer filter does not read a child column.');
+      unsupported(`The designer filter does not read a column of ${read.table ?? 'one table'}.`);
+    read.table = table;
     return [variableOf(attr(step, 'Value')), { kind: 'column', column: column.toLowerCase() }];
   }
   if (localName(step.name) !== 'activityreference') unsupported('The designer filter has an unknown activity.');
   const kind = attr(step, 'AssemblyQualifiedName')?.split(',')[0];
   const args = activityArguments(step);
   const result = variableOf(argumentText(args, 'Result'));
-  if (kind === `${ACTIVITY}EvaluateExpression`) return [result, { kind: 'literal', value: filterLiteral(args) }];
+  if (kind === `${ACTIVITY}EvaluateExpression`) return [result, { kind: 'literal', literal: filterLiteral(args) }];
   if (kind === `${ACTIVITY}EvaluateCondition`) return [result, filterCondition(args, values)];
   if (kind === `${ACTIVITY}EvaluateLogicalCondition`) {
     if (argumentText(args, 'LogicalOperator') !== 'And')
@@ -322,22 +388,34 @@ function filterStep(step, rule, values) {
   return unsupported('The designer filter has an unknown activity.');
 }
 
-// Target: the child relationship, then an optional filter program whose result is the first Boolean variable.
-function readDesignerTarget(target, rule) {
-  const nodes = elements(target);
-  const declared = localName(nodes[0]?.name ?? '') === 'sequence.variables' ? nodes.shift() : null;
-  readDesignerLink(nodes.shift(), rule);
-  if (!nodes.length) return;
+// A filter program (column reads, literals, conditions, And) whose result is the first declared Boolean variable.
+function readFilterProgram(nodes, declared, read) {
   const values = new Map();
   for (const step of nodes) {
-    const [name, value] = filterStep(step, rule, values);
+    const [name, value] = filterStep(step, read, values);
     if (!name) unsupported('The designer filter step stores no result.');
     values.set(name, value);
   }
-  const result = elements(declared).find((item) => attr(item, 'TypeArguments') === 'x:Boolean');
+  const result = declared.find((item) => attr(item, 'TypeArguments') === 'x:Boolean');
   const filter = values.get(attr(result ?? {}, 'Name'));
   if (!['condition', 'and'].includes(filter?.kind)) unsupported('The designer filter has no condition result.');
-  rule.filter = filter;
+  return filter;
+}
+
+// Target: the child relationship, then an optional filter program over the child. A hierarchical rollup may name no
+// related table (an empty Target): it aggregates a column of the source table over the row and its descendants.
+function readDesignerTarget(target, rule) {
+  const nodes = elements(target);
+  if (!nodes.length) {
+    if (!rule.hierarchy) unsupported('The designer rollup names no related table and no hierarchy.');
+    rule.self = true;
+    return;
+  }
+  const declared = localName(nodes[0]?.name ?? '') === 'sequence.variables' ? elements(nodes.shift()) : [];
+  readDesignerLink(nodes.shift(), rule);
+  if (!nodes.length) return;
+  const read = { table: rule.child };
+  rule.filter = readFilterProgram(nodes, declared, read);
 }
 
 // The designer aggregate operators; Min and Max are refused at definition (0x80060417, assertRollupDefinition).
@@ -350,15 +428,17 @@ function readDesignerAggregate(aggregate, rule) {
     'activityreference',
   ]);
   const column = attr(property, 'Attribute');
+  // A rollup without a related table reads the source table's own column (the source filter names that table too).
+  const table = rule.self ? (rule.sourceTable ?? attr(property, 'EntityName')?.toLowerCase()) : rule.child;
   const variable = variableOf(attr(property, 'Value'));
   if (
     !/^[a-z][\da-z_]*$/i.test(column ?? '') ||
     !variable ||
     attr(property, 'Entity') !== '[InputEntities("primaryEntity")]' ||
-    attr(property, 'EntityName')?.toLowerCase() !== rule.child ||
+    attr(property, 'EntityName')?.toLowerCase() !== table ||
     attr(expression, 'AssemblyQualifiedName')?.split(',')[0] !== `${ACTIVITY}EvaluateExpression`
   )
-    unsupported('The designer aggregate does not read a child column.');
+    unsupported('The designer aggregate does not read a column of the aggregated table.');
   const [args] = designerSteps(expression, ['activityreference.arguments']);
   const [operator, parameters, type, result] = designerSteps(args, [
     'inargument',
@@ -379,6 +459,7 @@ function readDesignerAggregate(aggregate, rule) {
   rule.aggregate = DESIGNER_AGGREGATES[aggregateName];
   rule.attribute = column.toLowerCase();
   rule.active = false;
+  if (rule.self) rule.table = table;
 }
 
 function readDesignerRollup(root, rule) {
@@ -640,8 +721,23 @@ function hierarchyLinkOf(store, table, hierarchy) {
   return link ? bare(link.from) : null;
 }
 
-// The parent and, for a hierarchical rollup, every row below it through the self-referencing relationship.
+// The parent and, for a hierarchical rollup, every row below it through the self-referencing relationship. A source filter
+// then keeps the rows it admits: a row it refuses contributes nothing, its own descendants still do (summary-F6 DATA-04c2).
 function rollupParents(store, rule, source, parentId) {
+  const ids = hierarchyIds(store, rule, source, parentId);
+  if (!rule.sourceFilter) return ids;
+  const kept = hierarchyRows(store, source.table, ids).filter((row) => filterMatches(rule.sourceFilter, row));
+  const idColumn = store.resolveMapping(source.table).idColumn;
+  return new Set(kept.map((row) => bare(row[idColumn])));
+}
+
+// The rows of `table` whose ids are in `ids`.
+function hierarchyRows(store, table, ids) {
+  const mapping = store.resolveMapping(table);
+  return store.tableRows(mapping.logicalName).filter((row) => ids.has(bare(row[mapping.idColumn])));
+}
+
+function hierarchyIds(store, rule, source, parentId) {
   if (!rule.hierarchy) return new Set([bare(parentId)]);
   const link = hierarchyLinkOf(store, source.table, rule.hierarchy);
   if (!link)
@@ -668,15 +764,37 @@ const scalarOf = (value) =>
   value !== null && typeof value === 'object' ? (value.Value ?? value.value ?? value) : value;
 const isBlank = (value) => value === null || value === undefined || value === '';
 
-// The designer filter on one child row: Equal (option set, Boolean, number), GreaterThan (number) and NotNull, joined by And.
+// A row value in a literal's terms: a number, a Boolean, or a date as epoch milliseconds; undefined when it is none of them.
+function comparableOf(value, type) {
+  if (type === 'boolean') return typeof value === 'boolean' ? value : { 1: true, 0: false }[value];
+  const number = type === 'date' ? Date.parse(value) : Number(value);
+  return typeof value !== 'boolean' && Number.isFinite(number) ? number : undefined;
+}
+
+const COMPARE = {
+  GreaterThan: (actual, limit) => actual > limit,
+  GreaterEqual: (actual, limit) => actual >= limit,
+  LessThan: (actual, limit) => actual < limit,
+  LessEqual: (actual, limit) => actual <= limit,
+};
+
+// A designer filter on one row, joined by And. Equal matches one of the checked options and NotEqual none of them. Hosted
+// runs (summary-F6 DATA-04c2) show a row without a value matching Null and NotEqual only, and a Yes/No condition with both
+// boxes checked (literals "1" and "0") admitting only Yes rows, so a Boolean list compares with its first literal.
 function filterMatches(filter, row) {
   if (filter.kind === 'and') return filterMatches(filter.left, row) && filterMatches(filter.right, row);
   const value = scalarOf(row[filter.column]);
   if (filter.operator === 'NotNull') return !isBlank(value);
-  if (isBlank(value)) return false;
-  if (filter.operator === 'Equal')
-    return typeof filter.value === 'boolean' ? value === filter.value : Number(value) === filter.value;
-  return Number(value) > filter.value;
+  if (filter.operator === 'Null') return isBlank(value);
+  if (isBlank(value)) return filter.operator === 'NotEqual';
+  // A stored value that does not read as the literal's type (text "true" against a Yes/No literal) matches no condition:
+  // a filter never fails a child write or a recalculation.
+  const actual = comparableOf(value, filter.type);
+  if (actual === undefined) return false;
+  const values = filter.type === 'boolean' ? filter.values.slice(0, 1) : filter.values;
+  if (filter.operator === 'Equal') return values.includes(actual);
+  if (filter.operator === 'NotEqual') return !values.includes(actual);
+  return COMPARE[filter.operator](actual, values[0]);
 }
 
 // A date or date and time value as the Web API writes it; Date.parse then reads it.
@@ -699,9 +817,12 @@ function extremeOf(values, aggregate) {
  * MIN and MAX ignore nulls (null over none). AVG follows the form: a designer Average divides the sum by every linked row
  * (a null counts as 0, and over none it is 0, as hosted runs show), a FetchXML avg follows SQL (nulls ignored, null over none).
  */
-function aggregateOf(store, rule, source, rows, parentId, typed = null) {
+// The rows the aggregate reads: the related rows linked to the parent (and its descendants), active ones only when the
+// FetchXML rule says so, admitted by a designer filter; for a rollup of the table's own column, the hierarchy rows.
+function linkedRows(store, rule, source, rows, parentId) {
   const parents = rollupParents(store, rule, source, parentId);
-  const linked = rows.filter((row) => {
+  if (rule.self) return hierarchyRows(store, source.table, parents);
+  return rows.filter((row) => {
     const parent = bare(row[source.link]);
     return (
       parents.has(parent) &&
@@ -710,6 +831,10 @@ function aggregateOf(store, rule, source, rows, parentId, typed = null) {
       (!rule.filter || filterMatches(rule.filter, row))
     );
   });
+}
+
+function aggregateOf(store, rule, source, rows, parentId, typed = null) {
+  const linked = linkedRows(store, rule, source, rows, parentId);
   const values = linked.map((row) => scalarOf(row[rule.attribute])).filter((value) => !isBlank(value));
   if (rule.aggregate === 'count') return values.length;
   if (rule.aggregate === 'min' || rule.aggregate === 'max')
@@ -720,6 +845,28 @@ function aggregateOf(store, rule, source, rows, parentId, typed = null) {
   const count = rule.form === 'designer' ? linked.length : values.length;
   if (!count) return rule.form === 'designer' ? 0 : null;
   return storedNumber(dividedNumeric(sum, count, typed?.places), typed);
+}
+
+// ---- New-row state (observed.rollupCreateState, summary-F6 DATA-04c2)
+//
+// A column created with its definition through the Web API stamps a new row Calculated with its createdon (the default,
+// summary-F6 DATA-04c). A column saved by the classic rollup designer (created empty, then given its definition) stamps it
+// NotCalculated: state 0, the value 0 for a Count, Sum or Average over a related table and null otherwise, and _date the time
+// of the column's last mass calculation (null before one ran). The creation path is not in an export, so a site selects the
+// designer behaviour with observed.rollupCreateState "not-calculated".
+const notCalculatedMode = (api) => api.store.observed?.rollupCreateState === 'not-calculated';
+
+function notCalculatedValue(rule) {
+  if (rule.unsupported || rule.self) return null;
+  return ['count', 'sum', 'avg'].includes(rule.aggregate) ? 0 : null;
+}
+
+function stampNotCalculated(state, table, rollups, data) {
+  for (const [column, formula] of Object.entries(rollups)) {
+    data[column] = notCalculatedValue(parsedOf(state, formula));
+    if (!hasKey(data, `${column}_state`)) data[`${column}_state`] = STATE.notCalculated;
+    if (!hasKey(data, `${column}_date`)) data[`${column}_date`] = state.massRuns.get(`${table}.${column}`) ?? null;
+  }
 }
 
 // The value a parent holds before any child counts: COUNT, SUM and a designer Average are 0, MIN, MAX and a FetchXML avg null.
@@ -763,6 +910,8 @@ function stateOf(api) {
       parsed: new Map(),
       memo: null,
       stale: new Set(),
+      // The time of each column's last mass calculation (massCalculate), '<table>.<column>' -> ISO text.
+      massRuns: new Map(),
       pendingMarks: new WeakMap(),
     });
   return states.get(api);
@@ -805,8 +954,20 @@ function addRollupSource(index, name, source) {
   index.get(name).push(source);
 }
 
+// A self-hierarchy rollup is a source of its own table: a write to one of its rows changes the row and its ancestors.
+function selfDetail(store, table, column, rule) {
+  const hierarchyLink = hierarchyLinkOf(store, table, rule.hierarchy);
+  if (rule.table !== table || !hierarchyLink) return null;
+  const detail = { table, column, child: table, self: true, attribute: rule.attribute, aggregate: rule.aggregate };
+  return {
+    detail: { ...detail, filter: null, sourceFilter: rule.sourceFilter ?? null, hierarchyLink },
+    counted: false,
+  };
+}
+
 function rollupDetail(store, state, table, column, formula) {
   const rule = parsedOf(state, formula);
+  if (rule.self && !rule.unsupported) return selfDetail(store, table, column, rule);
   if (!rule.child || !rule.link) return null;
   const overridden = Object.hasOwn(state.overrides, `${table}.${column}`);
   const source = rollupSource(store, table, rule, overridden);
@@ -818,6 +979,7 @@ function rollupDetail(store, state, table, column, formula) {
     column,
     aggregate: rule.aggregate,
     filter: rule.filter ?? null,
+    sourceFilter: rule.sourceFilter ?? null,
     hierarchyLink: rule.hierarchy ? hierarchyLinkOf(store, table, rule.hierarchy) : null,
   };
   // A designer rollup tracks bare membership for every aggregate; a FetchXML rule only for the unfiltered count.
@@ -834,7 +996,8 @@ function indexRollupSource(store, state, memo, table, column, formula) {
   if (!entry) return;
   addRollupSource(memo.sources, entry.detail.child, entry.detail);
   // A write that moves a row of a hierarchical parent table changes the rollups of its old and new ancestors.
-  if (entry.detail.hierarchyLink) addRollupSource(memo.sources, table, { ...entry.detail, hierarchyOnly: true });
+  if (entry.detail.hierarchyLink && !entry.detail.self)
+    addRollupSource(memo.sources, table, { ...entry.detail, hierarchyOnly: true });
 }
 
 // The tables that are one of several targets of a child's many-to-one lookup column, read from the mappings alone
@@ -1180,6 +1343,9 @@ function checkReplacedTargets(api, state, { isolated = false } = {}) {
 function* staleColumns(api) {
   const visited = new Set();
   yield* markedColumns(api, visited);
+  // Designer-saved columns (observed.rollupCreateState "not-calculated"): the hosted hourly job recalculated only the rows a
+  // write changed and left a NotCalculated row without related rows as it was (summary-F6 DATA-04c2).
+  if (notCalculatedMode(api)) return;
   for (const logical of Object.keys(api.store.state.mappings)) yield* notCalculatedColumns(api, logical, visited);
 }
 
@@ -1272,6 +1438,15 @@ function scheduleMass(api, state) {
 const parentsOf = (store, sources, row) =>
   sources.flatMap((source) => {
     if (!row) return [];
+    // A self-hierarchy rollup, or a source filter on the row's own columns, changes the row itself and its ancestors.
+    if (source.self || (source.hierarchyOnly && source.sourceFilter)) {
+      const own = bare(row[store.resolveMapping(source.table).idColumn]);
+      return [own, ...ancestorsOf(store, source, own)].map((id) => ({
+        table: source.table,
+        column: source.column,
+        id,
+      }));
+    }
     const id = source.hierarchyOnly ? bare(row[source.hierarchyLink]) : rollupParentId(store, source, row);
     if (id === '') return [];
     const ids = source.hierarchyLink ? [id, ...ancestorsOf(store, source, id)] : [id];
@@ -1372,6 +1547,12 @@ function dropRowMarks(api, state, table, id) {
  * Returns { table, id, column, value, state, date }. Rejects with 400 when the column is not a rollup and 404 for an unknown row.
  */
 export async function recalculate(api, table, id, column) {
+  return recalculateAt(api, table, id, column, null);
+}
+
+// One row's recalculation at `at` (an ISO time; null reads the clock). With { onlyLinked: true } a row that no related row
+// reaches keeps its value and state and only takes the date (a designer column's mass calculation, massCalculate).
+async function recalculateAt(api, table, id, column, at, { onlyLinked = false } = {}) {
   const state = stateOf(api);
   const mapping = api.store.resolveMapping(table);
   const logical = mapping.logicalName;
@@ -1385,12 +1566,15 @@ export async function recalculate(api, table, id, column) {
   return api.change(() =>
     api.store.transact(
       async () => {
-        const now = new Date(api.clock ? api.clock() : Date.now()).toISOString();
-        const { value, stateValue } = calculateRollup(api, state, logical, name, formula, row, mapping);
+        const now = at ?? new Date(api.clock ? api.clock() : Date.now()).toISOString();
+        const kept = onlyLinked && !reachesRelatedRow(api, state, logical, formula, row, mapping);
+        const { value, stateValue } = kept
+          ? { value: row[name] ?? null, stateValue: row[`${name}_state`] ?? null }
+          : calculateRollup(api, state, logical, name, formula, row, mapping);
         await api.store.updateRecordAsync(
           logical,
           row[mapping.idColumn],
-          { [name]: value, [`${name}_state`]: stateValue, [`${name}_date`]: now },
+          kept ? { [`${name}_date`]: now } : { [name]: value, [`${name}_state`]: stateValue, [`${name}_date`]: now },
           PLATFORM,
           {
             systemColumns: { modifiedon: row.modifiedon },
@@ -1402,6 +1586,38 @@ export async function recalculate(api, table, id, column) {
       { incremental: true },
     ),
   );
+}
+
+/**
+ * massCalculate(api, table, column): the column's "Mass calculate <table>.<column> rollup field" job (the platform schedules
+ * it about 12 hours after a designer save; an administrator can move it). Every row of the table is recalculated at one
+ * time, which also becomes the _date of rows created later under observed.rollupCreateState "not-calculated". Hosted runs
+ * (summary-F6 DATA-04c2): for a designer-saved column a row that no related row reaches keeps its NotCalculated state and
+ * value for Count, Sum, Minimum and Maximum and only takes the date; Average and a rollup of the table's own column are
+ * calculated. Returns the number of rows.
+ */
+async function massCalculate(api, table, column) {
+  const state = stateOf(api);
+  const mapping = api.store.resolveMapping(table);
+  const logical = mapping.logicalName;
+  const name = String(column).toLowerCase();
+  if (rollupColumnsOf(api, logical)[name] === undefined) throw invalid(`The ${name} column has no rollup definition.`);
+  const at = new Date(api.clock ? api.clock() : Date.now()).toISOString();
+  const onlyLinked = notCalculatedMode(api);
+  const ids = api.store.tableRows(logical).map((row) => row[mapping.idColumn]);
+  for (const id of ids) await recalculateAt(api, logical, id, name, at, { onlyLinked });
+  state.massRuns.set(`${logical}.${name}`, at);
+  return ids.length;
+}
+
+// Whether a related row reaches the row, for a designer-saved column's mass calculation: Average and a rollup of the table's
+// own column always calculate; Count, Sum, Minimum and Maximum only for a row with a linked related row.
+function reachesRelatedRow(api, state, logical, formula, row, mapping) {
+  const rule = parsedOf(state, formula);
+  if (rule.unsupported || rule.self || rule.aggregate === 'avg') return true;
+  const source = rollupSource(api.store, logical, rule);
+  if (!source) return true;
+  return linkedRows(api.store, rule, source, api.store.tableRows(rule.child), row[mapping.idColumn]).length > 0;
 }
 
 function calculateRollup(api, state, logical, name, formula, row, mapping) {
@@ -1430,6 +1646,9 @@ function calculateFormulaRollup(api, state, logical, name, formula, row, mapping
   const rule = parsedOf(state, formula);
   try {
     if (rule.unsupported) unsupported(rule.unsupported);
+    if (rule.sourceTable && rule.sourceTable !== logical)
+      unsupported(`The designer rollup filters ${rule.sourceTable} rows, not ${logical} rows.`);
+    if (rule.self) return calculateSelfRollup(api, rule, logical, name, row, mapping);
     const refused = refusedTableReason(api.store, logical, rule.child);
     if (refused) unsupported(refused);
     const source = rollupSource(api.store, logical, rule);
@@ -1465,6 +1684,24 @@ function calculateFormulaRollup(api, state, logical, name, formula, row, mapping
   }
 }
 
+// A hierarchical rollup without a related table: the source table's own column over the row and its descendants.
+function calculateSelfRollup(api, rule, logical, name, row, mapping) {
+  if (rule.table !== logical) unsupported(`The designer rollup aggregates ${rule.table}, not ${logical}.`);
+  const refused = refusedTableReason(api.store, logical, logical);
+  if (refused) unsupported(refused);
+  return {
+    value: aggregateOf(
+      api.store,
+      rule,
+      { table: logical },
+      null,
+      row[mapping.idColumn],
+      rollupPlaces(api, logical, name),
+    ),
+    stateValue: STATE.calculated,
+  };
+}
+
 /**
  * install(api, { rollups, diagnostic }): rollups is the pack export (validateRollups), diagnostic receives each diagnostic once.
  * Exposes api.rollups = { diagnostics(), recalculate(table, id, column), recalculateStale() }; the CalculateRollupField message
@@ -1478,6 +1715,7 @@ function install(api, options = {}) {
     diagnostics: () => [...state.reporter.diagnostics],
     recalculate: (table, id, column) => recalculate(api, table, id, column),
     recalculateStale: () => recalculateStale(api),
+    massCalculate: (table, column) => massCalculate(api, table, column),
     isStale: (table, id, column) => isStale(api, table, id, column),
   };
   state.closed = false;
@@ -1499,6 +1737,10 @@ function install(api, options = {}) {
         // A new parent is Calculated at its creation time with the value of no children (0, or null for MIN and MAX).
         const now = new Date(api.clock ? api.clock() : Date.now()).toISOString();
         const stamped = [];
+        if (notCalculatedMode(api)) {
+          stampNotCalculated(state, table, rollups, data);
+          return;
+        }
         for (const [column, formula] of Object.entries(rollups)) {
           data[column] = emptyValue(parsedOf(state, formula));
           if (!hasKey(data, `${column}_state`)) data[`${column}_state`] = STATE.calculated;
@@ -1511,10 +1753,15 @@ function install(api, options = {}) {
       }
     }
     const sources = rollupsSourcedFrom(api, state, table);
-    const before = existing ? parentsOf(api.store, sources, existing) : [];
-    if (!before.length) return;
+    // An update marks only the rollups that read a column it writes (hosted runs, summary-F6 DATA-04c2: the hourly rollup
+    // job recalculated a Sum, Average and Minimum over a changed amount, not the Count or a Maximum of another column).
+    const changed =
+      existing && operation !== 'delete' && data ? Object.keys(data).map((key) => key.toLowerCase()) : null;
+    const relevant = changed ? sources.filter((source) => readsAnyColumn(source, changed)) : sources;
+    const before = existing ? parentsOf(api.store, relevant, existing) : [];
+    if (!before.length && !changed) return;
     const list = pending.get(c) ?? [];
-    list.push({ table, operation, parents: before });
+    list.push({ table, operation, parents: before, changed });
     pending.set(c, list);
   });
   api.recordHooks.add('afterWrite', (c, mapping, { operation, id }) => {
@@ -1531,12 +1778,43 @@ function install(api, options = {}) {
         ? null
         : (api.store.tableRows(table).find((row) => sameId(row[mapping.idColumn], id)) ?? null);
     const seen = new Set();
-    for (const parent of [...(entry?.parents ?? []), ...parentsOf(api.store, sources, current)]) {
+    const relevant = entry?.changed ? sources.filter((source) => readsAnyColumn(source, entry.changed)) : sources;
+    for (const parent of [...(entry?.parents ?? []), ...parentsOf(api.store, relevant, current)]) {
       const key = `${parent.table}\u0000${parent.column}\u0000${parent.id}`;
       if (seen.has(key)) continue;
       seen.add(key);
       markStale(api, parent);
     }
+  });
+}
+
+// The columns of a filter (designer conditions joined by And).
+function filterColumns(filter) {
+  if (!filter) return [];
+  if (filter.kind === 'and') return [...filterColumns(filter.left), ...filterColumns(filter.right)];
+  return [filter.column];
+}
+
+// Whether a write of these columns can change a rollup that reads through `source`: its link (and the link's companion
+// columns), the aggregated column, the filter and source-filter columns, the hierarchy lookup and the state.
+function readsAnyColumn(source, changed) {
+  const link = source.hierarchyOnly ? null : source.link;
+  const read = new Set(
+    [
+      source.attribute,
+      source.hierarchyLink,
+      'statecode',
+      ...filterColumns(source.filter),
+      ...filterColumns(source.sourceFilter),
+    ]
+      .filter(Boolean)
+      .map((column) => String(column).toLowerCase()),
+  );
+  if (source.hierarchyOnly) read.delete(source.attribute);
+  // A lookup is written as its column or a navigation bind (<column>@odata.bind); its companions start with its name.
+  return changed.some((key) => {
+    const column = key.split('@')[0];
+    return read.has(column) || (link && column.startsWith(String(link).toLowerCase()));
   });
 }
 

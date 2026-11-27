@@ -26,6 +26,31 @@ async function designerCountFormula() {
     .replaceAll('pqvd_baselineitem', 'test_child');
 }
 
+// The designer's filter "Flag equals Yes" (summary-F6 DATA-04c2: a Yes/No literal saved as "1") on the Target.
+const ACTIVITY = (kind) =>
+  `AssemblyQualifiedName="Microsoft.Crm.Workflow.Activities.${kind}, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35" DisplayName="${kind}"`;
+const withFlagFilter = (formula) =>
+  formula.replace(
+    /(<Sequence DisplayName="Target">)([\s\S]*?<mcwc:SetAttributeValue [^>]*\/>)/,
+    (_, open, link) =>
+      open +
+      '<Sequence.Variables><Variable x:TypeArguments="x:Boolean" Default="False" Name="RollupRuleStep1_1" />' +
+      '<Variable x:TypeArguments="x:Object" Name="RollupRuleStep1_2" /><Variable x:TypeArguments="x:Object" Name="RollupRuleStep1_3" /></Sequence.Variables>' +
+      link +
+      '<mxswa:GetEntityProperty Attribute="x_flag" Entity="[InputEntities(&quot;primaryEntity&quot;)]" EntityName="test_child" Value="[RollupRuleStep1_2]" />' +
+      `<mxswa:ActivityReference ${ACTIVITY('EvaluateExpression')}><mxswa:ActivityReference.Arguments>` +
+      '<InArgument x:TypeArguments="x:String" x:Key="ExpressionOperator">CreateCrmType</InArgument>' +
+      '<InArgument x:TypeArguments="s:Object[]" x:Key="Parameters">[New Object() { Microsoft.Xrm.Sdk.Workflow.WorkflowPropertyType.Boolean, "1" }]</InArgument>' +
+      '<OutArgument x:TypeArguments="x:Object" x:Key="Result">[RollupRuleStep1_3]</OutArgument>' +
+      '</mxswa:ActivityReference.Arguments></mxswa:ActivityReference>' +
+      `<mxswa:ActivityReference ${ACTIVITY('EvaluateCondition')}><mxswa:ActivityReference.Arguments>` +
+      '<InArgument x:TypeArguments="mxsq:ConditionOperator" x:Key="ConditionOperator">Equal</InArgument>' +
+      '<InArgument x:TypeArguments="s:Object[]" x:Key="Parameters">[New Object() { RollupRuleStep1_3 }]</InArgument>' +
+      '<InArgument x:TypeArguments="x:Object" x:Key="Operand">[RollupRuleStep1_2]</InArgument>' +
+      '<OutArgument x:TypeArguments="x:Boolean" x:Key="Result">[RollupRuleStep1_1]</OutArgument>' +
+      '</mxswa:ActivityReference.Arguments></mxswa:ActivityReference>',
+  );
+
 // A table kind outside regular local storage: an elastic (Cosmos DB) table or a virtual (provider) table.
 // A mapping that declares its own fields keeps them; the elastic system columns serve the competing target.
 const KINDS = {
@@ -38,9 +63,9 @@ const KINDS = {
 
 async function fixture(
   t,
-  { collision = false, typed = false, padding = 0, file, selfTarget = false, kinds = {}, partition } = {},
+  { collision = false, typed = false, padding = 0, file, selfTarget = false, kinds = {}, partition, flag } = {},
 ) {
-  const formula = await designerCountFormula();
+  const formula = flag === undefined ? await designerCountFormula() : withFlagFilter(await designerCountFormula());
   const kind = (table) => {
     const declared = KINDS[kinds[table]] ?? {};
     return declared.tableType === 'Elastic' ? { ...declared, alternateKeys: [builtInKey(`${table}id`)] } : declared;
@@ -73,6 +98,7 @@ async function fixture(
         idColumn: 'test_childid',
         ...kind('test_child'),
         fields: {
+          x_flag: { dataverseType: 'bit' },
           test_parentid: {
             dataverseType: 'lookup',
             targets: ['test_parent', selfTarget ? CHILD_TABLE : 'test_alternate', 'test_third'],
@@ -117,6 +143,7 @@ async function fixture(
         {
           test_childid: CHILD,
           test_parentid: typed ? { id: PARENT, logical_name: 'test_parent' } : PARENT,
+          ...(flag === undefined ? {} : { x_flag: flag }),
           ...(partition === undefined ? {} : { test_parentidpid: partition }),
         },
       ],
@@ -532,4 +559,15 @@ test('the commit check copies no untouched target table into a tracked rollback 
     { tracked: true },
   );
   assert.equal(parent.stale(), true, 'a replacement in a tracked transaction is still found');
+});
+
+// @test-kind contract: a stored value that does not read as a designer filter literal's type (text "true" against the Yes/No literal "1") is a non-match; it never fails a child-side write that checks the parent's membership, a recalculation or a mass calculation
+test('a filter value of another type is a non-match, never a failed write or recalculation', async (t) => {
+  const { api, parent, recalculate, addAlternate } = await fixture(t, { flag: 'true' });
+  assert.equal((await recalculate()).child_count, 0);
+  await addAlternate(PARENT);
+  assert.equal(parent.stale(), false);
+  assert.equal(await api.rollups.massCalculate('test_parent', 'child_count'), 1);
+  assert.equal(parent().child_count, 0);
+  assert.equal(parent().child_count_state, 1);
 });

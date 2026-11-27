@@ -34,6 +34,14 @@ const incidentFields = {
 };
 const opportunityFields = {
   name: { type: 'text' },
+  stepname: { type: 'text' },
+  salesstage: {
+    dataverseType: 'picklist',
+    options: [
+      { value: 0, label: 'Qualify' },
+      { value: 1, label: 'Develop' },
+    ],
+  },
   statecode: state([
     [0, 1],
     [1, 3],
@@ -45,6 +53,24 @@ const opportunityFields = {
     [3, 1],
     [4, 2],
     [5, 2],
+  ]),
+};
+// Quote states (Learn quote reference): Draft 0 (In Progress 1), Active 1 (In Progress 2), Won 2, Closed 3.
+const QUOTE = '00000000-0000-4000-8000-0000000000f1';
+const quoteFields = {
+  name: { type: 'text' },
+  statecode: state([
+    [0, 1],
+    [1, 2],
+    [2, 4],
+    [3, 5],
+  ]),
+  statuscode: status([
+    [1, 0],
+    [2, 1],
+    [3, 1],
+    [4, 2],
+    [5, 3],
   ]),
 };
 const label = (value) => [{ LCID: 1033, Value: value }];
@@ -76,7 +102,13 @@ const task = (activityid, regarding, statecode, statuscode) => ({
   statuscode,
 });
 
-async function fixture({ caseActions = [], dealActions = [], operations = ['read', 'update'] } = {}) {
+async function fixture({
+  caseActions = [],
+  dealActions = [],
+  quoteActions = [],
+  operations = ['read', 'update'],
+  dealStatuses = opportunityFields.statuscode,
+} = {}) {
   const store = await new DataStore({
     state: {
       mappings: {
@@ -90,11 +122,13 @@ async function fixture({ caseActions = [], dealActions = [], operations = ['read
           entitySet: 'opportunities',
           idColumn: 'opportunityid',
           nameColumn: 'name',
-          fieldMetadata: opportunityFields,
+          fieldMetadata: { ...opportunityFields, statuscode: dealStatuses },
         },
+        quote: { entitySet: 'quotes', idColumn: 'quoteid', nameColumn: 'name', fieldMetadata: quoteFields },
         incidentresolution: { entitySet: 'incidentresolutions', idColumn: 'activityid', nameColumn: 'subject' },
         task: { entitySet: 'tasks', idColumn: 'activityid', nameColumn: 'subject', fieldMetadata: taskFields },
         opportunityclose: { entitySet: 'opportunitycloses', idColumn: 'activityid', nameColumn: 'subject' },
+        annotation: { entitySet: 'annotations', idColumn: 'annotationid', nameColumn: 'subject' },
       },
       tables: {
         incident: [{ incidentid: CASE, title: 'Invented case', statecode: 0, statuscode: 1 }],
@@ -102,10 +136,13 @@ async function fixture({ caseActions = [], dealActions = [], operations = ['read
         incidentresolution: [],
         task: [task(TASK.open, CASE, 0, 2), task(TASK.done, CASE, 1, 5), task(TASK.elsewhere, DEAL, 0, 2)],
         opportunityclose: [],
+        annotation: [],
+        quote: [{ quoteid: QUOTE, name: 'Invented quote', statecode: 0, statuscode: 1 }],
       },
       permissions: [
         { entity: 'incident', scope: 'global', roles: ['Editor'], operations },
         { entity: 'opportunity', scope: 'global', roles: ['Editor'], operations },
+        { entity: 'quote', scope: 'global', roles: ['Editor'], operations },
         { entity: 'incident', scope: 'global', roles: ['Reader'], operations: ['read'] },
       ],
       settings: { permissionMode: 'enforce' },
@@ -123,10 +160,18 @@ async function fixture({ caseActions = [], dealActions = [], operations = ['read
   });
   return {
     store,
-    portal: { forms: [form('case-form', 'Case', caseActions), form('deal-form', 'Deal', dealActions)], pages: [] },
+    portal: {
+      forms: [
+        form('case-form', 'Case', caseActions),
+        form('deal-form', 'Deal', dealActions),
+        form('quote-form', 'Quote', quoteActions),
+      ],
+      pages: [],
+    },
     schemas: {
       'case-form': { entity: 'incident', fields: [{ name: 'title', label: 'Title', type: 'text' }] },
       'deal-form': { entity: 'opportunity', fields: [{ name: 'name', label: 'Name', type: 'text' }] },
+      'quote-form': { entity: 'quote', fields: [{ name: 'name', label: 'Name', type: 'text' }] },
     },
     identity: { id: 'editor', roles: ['Editor'] },
     now: () => new Date(2026, 10, 26, 9, 5, 7),
@@ -220,6 +265,58 @@ test('opportunity actions win, lose and hold with a close activity in the same w
   assert.equal(options.store.tableRows('opportunityclose').length, 2);
 });
 
+test('Activate Quote activates a draft quote and Reopen Opportunity reopens a closed one with its legacy status', async () => {
+  // The opportunity table of a partner portal carries the Accepted (100000003) status reason of the Open state.
+  const options = await fixture({
+    quoteActions: [{ Type: 'ActivateQuoteAction' }],
+    dealActions: [{ Type: 'ReopenOpportunityAction' }],
+    dealStatuses: status([
+      [1, 0],
+      [2, 0],
+      [100000003, 0],
+      [3, 1],
+      [4, 2],
+    ]),
+  });
+  assert.match(
+    await render(options, 'Quote', QUOTE),
+    /<button class="activate-quote-link [^"]*"[^>]*data-pp-form-action="activate-quote"[^>]*>Activate Quote<\/button>/,
+  );
+  const activated = await submit(options, 'quote-form', QUOTE, 'activate-quote');
+  assert.equal(activated.outcome.message, 'The quote has been activated.');
+  assert.deepEqual([row(options, 'quote', QUOTE).statecode, row(options, 'quote', QUOTE).statuscode], [1, 2]);
+  await assert.rejects(
+    submit(options, 'quote-form', QUOTE, 'activate-quote'),
+    (error) => error.status === 400 && error.code === 'InvalidStateTransition',
+  );
+  // An open opportunity is not reopened; a won one opens with Accepted, a partner-created one with In Progress.
+  await assert.rejects(
+    submit(options, 'deal-form', DEAL, 'reopen-opportunity'),
+    (error) => error.status === 400 && error.code === 'InvalidStateTransition',
+  );
+  for (const [partner, expected] of [
+    [false, [0, 100000003]],
+    [true, [0, 1]],
+  ]) {
+    Object.assign(row(options, 'opportunity', DEAL), { statecode: 1, statuscode: 3, adx_partnercreated: partner });
+    assert.match(await render(options, 'Deal', DEAL), /data-pp-form-action="reopen-opportunity"[^>]*>Reopen<\/button>/);
+    const reopened = await submit(options, 'deal-form', DEAL, 'reopen-opportunity');
+    assert.equal(reopened.outcome.message, 'The opportunity has been reopened.');
+    const current = row(options, 'opportunity', DEAL);
+    assert.deepEqual([current.statecode, current.statuscode], expected, String(partner));
+  }
+});
+
+test('Reopen Opportunity is refused on a table without the Accepted status reason', async () => {
+  const options = await fixture({ dealActions: [{ Type: 'ReopenOpportunityAction' }] });
+  Object.assign(row(options, 'opportunity', DEAL), { statecode: 1, statuscode: 3 });
+  await assert.rejects(
+    submit(options, 'deal-form', DEAL, 'reopen-opportunity'),
+    (error) => error.code === 'FormActionStateUnresolved',
+  );
+  assert.deepEqual([row(options, 'opportunity', DEAL).statecode, row(options, 'opportunity', DEAL).statuscode], [1, 3]);
+});
+
 // @test-kind security: a table-specific action runs only as the exported action, on its own table, for a visitor with update rights, and a refused action writes nothing
 test('table actions re-resolve the exported action, its table and the update privilege', async () => {
   const options = await fixture({
@@ -255,15 +352,15 @@ test('table actions re-resolve the exported action, its table and the update pri
   assert.equal(options.store.tableRows('incidentresolution').length, 0);
 });
 
-test('the Resolve Case button asks for the resolution in its dialog and posts it with the bound action', async () => {
-  const options = await fixture({ caseActions: [{ Type: 'ResolveCaseAction' }] });
-  const html = await render(options, 'Case', CASE);
-  const button = /<button[^>]*data-pp-form-action="resolve-case"[^>]*>/.exec(html)[0];
+// Clicks a rendered bound action button with the production click handler (entity-grid-compat.js formActionClick) against
+// a fixed DOM whose dialog `modalClass` holds `inputs`, and posts through submitPortalForm.
+async function clickDialogAction({ options, html, action, form, entity, recordId, modalClass, inputs }) {
+  const button = new RegExp(`<button[^>]*data-pp-form-action="${action}"[^>]*>`).exec(html)[0];
   const script = await readFile(new URL('../lib/entity-grid-compat.js', import.meta.url), 'utf8');
   const begin = script.indexOf('  function confirmFormWorkflow(');
   const end = script.indexOf("  document.addEventListener('click'", begin);
   const posts = [];
-  let shown = false;
+  const state = { shown: false };
   const formActionClick = new Function(
     'location',
     'post',
@@ -272,24 +369,23 @@ test('the Resolve Case button asks for the resolution in its dialog and posts it
     'notify',
     script.slice(begin, end) + '\nreturn formActionClick;',
   )(
-    { search: `?row=${CASE}`, pathname: '/case', reload() {} },
+    { search: `?row=${recordId}`, pathname: `/${entity}`, reload() {} },
     async (url, body) => {
       posts.push([url, body]);
-      return submit(options, 'case-form', body.recordId, body.action, body);
+      return submit(options, form, body.recordId, body.action, body);
     },
-    () => (shown = true),
-    () => (shown = false),
+    () => (state.shown = true),
+    () => (state.shown = false),
     (_row, message) => assert.fail(message),
   );
   const primary = { disabled: false };
-  const inputs = { '.resolution-input': { value: 'Fixed' }, '.resolution-description-input': { value: 'Replaced' } };
   const modal = { querySelector: (selector) => (selector.includes('primary') ? primary : inputs[selector]) };
   const control = {
-    querySelector: (selector) => ({ value: selector.includes('EntityName') ? 'incident' : CASE }),
+    querySelector: (selector) => ({ value: selector.includes('EntityName') ? entity : recordId }),
   };
   const actionRow = {
     closest: () => control,
-    querySelector: (selector) => (selector === '.modal-resolvecase[data-pp-action-index="0"]' ? modal : null),
+    querySelector: (selector) => (selector === `.${modalClass}[data-pp-action-index="0"]` ? modal : null),
   };
   const attr = (name) => button.match(new RegExp(`data-${name}="([^"]+)"`))?.[1];
   const rendered = {
@@ -299,14 +395,60 @@ test('the Resolve Case button asks for the resolution in its dialog and posts it
     dataset: { url: attr('url'), ppFormAction: attr('pp-form-action'), ppActionIndex: attr('pp-action-index') },
   };
   formActionClick({ target: { closest: () => rendered }, preventDefault() {} });
-  assert.equal(shown, true);
+  return { posts, primary, state };
+}
+
+test('the Resolve Case button asks for the resolution in its dialog and posts it with the bound action', async () => {
+  const options = await fixture({ caseActions: [{ Type: 'ResolveCaseAction' }] });
+  const { posts, primary, state } = await clickDialogAction({
+    options,
+    html: await render(options, 'Case', CASE),
+    action: 'resolve-case',
+    form: 'case-form',
+    entity: 'incident',
+    recordId: CASE,
+    modalClass: 'modal-resolvecase',
+    inputs: { '.resolution-input': { value: 'Fixed' }, '.resolution-description-input': { value: 'Replaced' } },
+  });
+  assert.equal(state.shown, true);
   assert.equal(posts.length, 0, 'nothing is posted before the dialog is confirmed');
   await primary.onclick();
-  assert.equal(shown, false);
+  assert.equal(state.shown, false);
   assert.deepEqual(posts[0][0], '/__sim/forms/entityform/case-form/submit');
   assert.deepEqual(posts[0][1].resolution, { subject: 'Fixed', description: 'Replaced' });
   const current = row(options, 'incident', CASE);
   assert.deepEqual([current.statecode, current.statuscode], [1, 5]);
+});
+
+test('the Update Pipeline Phase button asks for the phase and description in its dialog and posts them', async () => {
+  const options = await fixture({
+    dealActions: [{ Type: 'UpdatePipelinePhaseAction', StepNameLabel: label('Stage') }],
+  });
+  const html = await render(options, 'Deal', DEAL);
+  assert.match(html, /<label class="required" for="pp-pipeline-0-phase">Stage<\/label>/);
+  const { posts, primary, state } = await clickDialogAction({
+    options,
+    html,
+    action: 'update-pipeline-phase',
+    form: 'deal-form',
+    entity: 'opportunity',
+    recordId: DEAL,
+    modalClass: 'modal-updatepipelinephase',
+    inputs: {
+      '.pipelinephase-input': { value: '1', selectedOptions: [{ textContent: 'Develop' }] },
+      '.resolution-description-input': { value: 'Met the buyer' },
+    },
+  });
+  assert.equal(state.shown, true);
+  assert.equal(posts.length, 0, 'nothing is posted before the dialog is confirmed');
+  await primary.onclick();
+  assert.deepEqual(posts[0][1].pipeline, { salesStage: '1', stepName: 'Develop', description: 'Met the buyer' });
+  const current = row(options, 'opportunity', DEAL);
+  assert.deepEqual([current.salesstage, current.stepname], [1, 'Develop']);
+  assert.deepEqual(
+    options.store.tableRows('annotation').map((note) => [note.subject, note.notetext]),
+    [['Updated Pipeline Phase: Develop', 'Met the buyer']],
+  );
 });
 
 test("Cancel Case cancels the case's open activities with their Canceled default status in the same write", async () => {

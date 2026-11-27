@@ -271,15 +271,24 @@ test('Power Pages: the default /search/ page answers and the portal document con
   const search = await fetch(sim.url + '/search/?q=invented');
   assert.equal(search.status, 200);
   assert.equal(search.headers.get('x-sim-route'), 'portal-search-local');
-  const documents = await fetch(`${sim.url}/_apps/portal-documents/x_case/${CASE}`, {
-    headers: signInHeaders(sim, 'alex', { roles: ['Member'] }),
+  const member = signInHeaders(sim, 'alex', { roles: ['Member'] });
+  const documents = await fetch(`${sim.url}/_services/sharepoint-data.json/${CASE}`, {
+    method: 'POST',
+    body: JSON.stringify({ regarding: { Id: CASE, LogicalName: 'x_case' }, page: 1, pageSize: 10, folderPath: '' }),
+    headers: {
+      ...member,
+      'content-type': 'application/json',
+      'x-requested-with': 'XMLHttpRequest',
+      __RequestVerificationToken: sim.csrf,
+    },
   });
-  assert.deepEqual([documents.status, (await documents.json()).documents], [200, []]);
+  const listed = await documents.json();
+  assert.deepEqual([documents.status, listed.SharePointItems, listed.AccessDenied], [200, [], false]);
 });
 
 test('Power Pages: the portal document control answers 503 while its document storage is not ready', async (t) => {
-  // sharepointDocuments routed to an Azurite store whose connection string is unset: the route answers 503 Unavailable with
-  // the reason (PROVIDER_SECRET_MISSING); 501 SharePointStorageNotConfigured is an organization without any storage
+  // sharepointDocuments routed to an Azurite store whose connection string is unset: Add files answers 503 Unavailable with
+  // the reason (PROVIDER_SECRET_MISSING); an organization without any storage answers 500 "not enabled"
   // (sharepoint-portal-documents.test.mjs), which a host never composes.
   const initial = portalInitial();
   initial.permissions = [
@@ -293,18 +302,20 @@ test('Power Pages: the portal document control answers 503 while its document st
       routes: { sharepointDocuments: 'emulator' },
     },
   });
-  const upload = await fetch(`${sim.url}/_apps/portal-documents/x_case/${CASE}?name=note.txt`, {
+  const form = new FormData();
+  form.append('regardingEntityLogicalName', 'x_case');
+  form.append('regardingEntityId', CASE);
+  form.append('files', new Blob(['invented'], { type: 'text/plain' }), 'note.txt');
+  form.append('overwrite', 'true');
+  form.append('__RequestVerificationToken', sim.csrf);
+  const upload = await fetch(`${sim.url}/_services/sharepoint-addfiles/${CASE}`, {
     method: 'POST',
-    body: 'invented',
-    headers: {
-      ...signInHeaders(sim, 'alex', { roles: ['Member'] }),
-      'content-type': 'text/plain',
-      __RequestVerificationToken: sim.csrf,
-    },
+    body: form,
+    headers: { ...signInHeaders(sim, 'alex', { roles: ['Member'] }), 'x-requested-with': 'XMLHttpRequest' },
   });
   const answer = await upload.text();
   assert.equal(upload.status, 503, answer);
-  assert.match(JSON.parse(answer).error.message, /FX_UNSET_AZURITE is not set/);
+  assert.match(JSON.parse(answer).Message, /FX_UNSET_AZURITE is not set/);
 });
 
 // Every prefix in status.routes is a dispatcher entry that answers (not 404) with its accepted method and capability, and
@@ -420,7 +431,7 @@ for (const [name, start] of [
   });
 }
 
-// @test-kind contract+security: diagnostics describe unsupported exported HTTP policies without changing the local origin boundary.
+// @test-kind contract+security+observation: diagnostics describe unsupported exported HTTP policies without changing the local origin boundary; admitted responses carry the CORS settings verbatim, as hosted session F5 sent them on every response (captures cors-private-a and cors-private-b)
 test('Power Pages: unsupported exported HTTP policies appear as local diagnostics', async (t) => {
   const siteOrigin = 'https://identity.example.test';
   const declared = [
@@ -445,12 +456,9 @@ test('Power Pages: unsupported exported HTTP policies appear as local diagnostic
   const page = await fetch(sim.url + '/');
   assert.equal(page.status, 200);
   assert.equal(page.headers.get('referrer-policy'), 'same-origin');
-  for (const name of [
-    'access-control-allow-origin',
-    'strict-transport-security',
-    'content-security-policy',
-    'content-security-policy-report-only',
-  ])
+  assert.equal(page.headers.get('access-control-allow-origin'), siteOrigin);
+  assert.equal(page.headers.get('access-control-allow-methods'), 'GET, OPTIONS');
+  for (const name of ['strict-transport-security', 'content-security-policy', 'content-security-policy-report-only'])
     assert.equal(page.headers.get(name), null);
   const preflight = await fetch(sim.url + '/', {
     method: 'OPTIONS',
@@ -464,7 +472,7 @@ test('Power Pages: unsupported exported HTTP policies appear as local diagnostic
   assert.deepEqual(
     unsupported.map((entry) => [entry.code, entry.settings]),
     [
-      ['PORTAL_HTTP_CORS_UNSUPPORTED', ['http/access-control-allow-methods', 'http/access-control-allow-origin']],
+      ['PORTAL_HTTP_CORS_LOOPBACK_BOUNDARY', ['http/access-control-allow-methods', 'http/access-control-allow-origin']],
       ['PORTAL_HTTP_HSTS_UNSUPPORTED', ['http/strict-transport-security']],
       [
         'PORTAL_HTTP_CSP_NONCE_UNSUPPORTED',

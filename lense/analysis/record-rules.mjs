@@ -4,6 +4,7 @@ const settingsReference = 'https://learn.microsoft.com/en-us/power-pages/configu
 const environmentReference =
   'https://learn.microsoft.com/en-us/power-pages/configure/environment-variables-for-site-settings';
 const cacheReference = 'https://learn.microsoft.com/en-us/power-pages/admin/site-checker-performance';
+const permissionReference = 'https://learn.microsoft.com/en-us/power-pages/security/table-permissions';
 
 export const recordRules = [
   {
@@ -85,6 +86,20 @@ export const recordRules = [
     references: [environmentReference],
   },
   {
+    // Hosted session F1 (2026-11-26): with this setting on, /_api/mspp_webroles returned the web roles of every site in the
+    // environment and columns outside the fields list.
+    id: 'PP-SEC-004',
+    title: 'Web role table enabled for the Web API',
+    severity: 'warning',
+    category: 'security',
+    confidence: 'high',
+    message:
+      'The Web API is enabled for mspp_webrole; hosted Power Pages answers it with the web roles of every site in the environment and with columns outside the configured fields list.',
+    remediation:
+      'Disable Webapi/mspp_webrole unless disclosing every site’s web role names and audit columns to the permitted web roles is intended; read the visitor’s own roles through Liquid user.roles instead.',
+    references: [webApiReference],
+  },
+  {
     id: 'PP-PERF-001',
     title: 'Shared output cache explicitly disabled',
     severity: 'warning',
@@ -115,6 +130,20 @@ export const recordRules = [
     remediation:
       'Keep one intended default authenticated web role and review permissions granted to every signed-in user.',
     references: [roleReference],
+  },
+  {
+    // Hosted session F1 (2026-11-26, a disposable site and a partially migrated one): the security role generated for a
+    // Custom Access permission keeps the root filter only; a permission filtered only through joins grants every row.
+    id: 'PP-PERM-001',
+    title: 'Custom Access join dropped by hosted Power Pages',
+    severity: 'warning',
+    category: 'security',
+    confidence: 'high',
+    message:
+      'A Custom Access table permission filters through link-entity joins; with enhanced authorization enabled, hosted Power Pages drops the joins and keeps only the root filter, so it grants more rows than its FetchXML states (every row when it has no root predicate).',
+    remediation:
+      'Express the Custom Access predicate on columns of the permission table itself, or use a parent or contact scope; Mirage refuses the permission locally rather than widening it.',
+    references: [permissionReference],
   },
   {
     id: 'PP-CONFIG-001',
@@ -229,6 +258,7 @@ function analyzeLiteralSetting(name, record, emit) {
     else if (value.split(',').some((token) => token.trim() === '*')) emit('PP-API-004', record, 'value');
   }
   if (name === 'webapi/error/innererror' && flag === true) emit('PP-SEC-001', record, 'value');
+  if (name === 'webapi/mspp_webrole/enabled' && flag === true) emit('PP-SEC-004', record, 'value');
   if (name === 'site/enabledefaulthtmlencoding' && flag === false) emit('PP-SEC-002', record, 'value');
   if (/^(header|footer)\/outputcache\/enabled$/.test(name) && flag === false) emit('PP-PERF-001', record, 'value');
   if (/(?:^|\/)(?:clientsecret|appsecret|consumersecret)$/.test(name) && value) emit('PP-SEC-003', record, 'value');
@@ -291,6 +321,19 @@ function analyzeRoles(records, emit) {
   }
 }
 
+const CUSTOM_ACCESS_SCOPE = '756150005';
+
+function analyzePermissions(records, emit) {
+  for (const record of records) {
+    const scope = record.fields.scope;
+    const value = textValue(
+      typeof scope === 'object' && scope !== null ? String(scope.value ?? '') : String(scope ?? ''),
+    );
+    if (value === CUSTOM_ACCESS_SCOPE && /<\s*link-entity\b/i.test(textValue(record.fields.permissionfetchxml)))
+      emit('PP-PERM-001', record, 'permissionfetchxml');
+  }
+}
+
 export function analyzeRecords(records, emit) {
   const active = records.filter(isActive);
   analyzeSettings(
@@ -299,6 +342,10 @@ export function analyzeRecords(records, emit) {
   );
   analyzeRoles(
     active.filter((record) => record.kind === 'webrole'),
+    emit,
+  );
+  analyzePermissions(
+    active.filter((record) => record.kind === 'tablepermission'),
     emit,
   );
 }

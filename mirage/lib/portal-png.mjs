@@ -1,3 +1,4 @@
+import { crc32 } from 'node:zlib';
 import { PNG } from 'pngjs';
 
 const SIGNATURE = Buffer.from('89504e470d0a1a0a', 'hex');
@@ -23,20 +24,30 @@ function walkChunks(bytes, visit) {
   return false;
 }
 
-/** Drops a PNG's eXIf chunk while keeping the encoded image and other chunks byte-for-byte. */
-export function stripPngExif(bytes) {
-  const kept = [];
-  let last = 0;
-  const valid = walkChunks(bytes, (type, offset, end) => {
-    if (type === 'eXIf') {
-      kept.push(bytes.subarray(last, offset));
-      last = end;
-    }
-  });
-  return valid && last ? Buffer.concat([...kept, bytes.subarray(last)]) : bytes;
-}
+// The ancillary chunks of a hosted thumbnail (session F2, thumbs runs a and b): sRGB perceptual, gAMA 1/2.2 (45455) and
+// pHYs 3779 x 3779 pixels per meter (96 dpi; the captured chunk CRC fixes the value), between IHDR and IDAT.
+const chunk = (type, data) => {
+  const body = Buffer.concat([Buffer.from(type, 'latin1'), data]);
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(data.length);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(body));
+  return Buffer.concat([length, body, crc]);
+};
+const PHYS = Buffer.alloc(9);
+PHYS.writeUInt32BE(3779, 0);
+PHYS.writeUInt32BE(3779, 4);
+PHYS[8] = 1;
+const GAMA = Buffer.alloc(4);
+GAMA.writeUInt32BE(45455);
+const ANCILLARY = Buffer.concat([chunk('sRGB', Buffer.from([0])), chunk('gAMA', GAMA), chunk('pHYs', PHYS)]);
+const IHDR_END = SIGNATURE.length + 25;
 
-/** Center-crops PNG pixels for portal reads. Legacy malformed or unusually large images retain their original bytes. */
+/**
+ * Center-crops PNG pixels for portal reads to a square of the shorter side, at most 144 px (hosted session F2: 300x428
+ * -> 144x144, 91x130 -> 91x91; session F1: 300x100 -> 100x100), encoded as 8-bit RGBA with the hosted ancillary chunks.
+ * Legacy malformed or unusually large images retain their original bytes.
+ */
 export function pngThumbnail(bytes) {
   if (bytes.length < 33 || !isPng(bytes) || bytes.toString('ascii', 12, 16) !== 'IHDR') return bytes;
   const width = bytes.readUInt32BE(16);
@@ -51,8 +62,9 @@ export function pngThumbnail(bytes) {
   )
     return bytes;
   const side = Math.min(width, height);
-  const edge = Math.max(width, height) > THUMBNAIL_EDGE ? THUMBNAIL_EDGE : side;
-  if ((width === edge && height === edge) || !walkChunks(bytes)) return bytes;
+  const edge = Math.min(THUMBNAIL_EDGE, side);
+  // A PNG that already is its thumbnail is re-encoded too, so no thumbnail carries eXIf or other ancillary metadata.
+  if (!walkChunks(bytes)) return bytes;
 
   try {
     const source = PNG.sync.read(bytes);
@@ -67,7 +79,8 @@ export function pngThumbnail(bytes) {
         source.data.copy(target.data, (y * edge + x) * 4, start, start + 4);
       }
     }
-    return PNG.sync.write(target);
+    const encoded = PNG.sync.write(target, { colorType: 6 });
+    return Buffer.concat([encoded.subarray(0, IHDR_END), ANCILLARY, encoded.subarray(IHDR_END)]);
   } catch {
     return bytes;
   }

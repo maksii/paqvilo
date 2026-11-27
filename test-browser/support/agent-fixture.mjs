@@ -47,7 +47,8 @@ export function agentBrowserFixture(
   return {
     work,
     serve,
-    async launch(origin) {
+    // `args`: extra browser switches of one test (a forced process model, for example).
+    async launch(origin, { args = [] } = {}) {
       const channel = process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium');
       browser = await launchBrowser({
         channel: channel === 'chromium' ? undefined : channel,
@@ -58,6 +59,7 @@ export function agentBrowserFixture(
           '--disable-component-update',
           '--disable-sync',
           '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost',
+          ...args,
         ],
       });
       const context = await browser.newContext({ serviceWorkers: 'block' });

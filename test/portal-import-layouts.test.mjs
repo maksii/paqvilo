@@ -63,8 +63,9 @@ test('both loaders index standard .yaml records and Lense binds their actual sid
   assert.equal(instructions.recordId, id(3));
   assert.equal(isPortalMetadata(path.relative(site.root, page)), true);
   const title = auditResources(lense, SITE).resources.find((record) => record.field === 'adx_title');
-  assert.equal(title.status, 'deployment');
-  assert.match(title.reason, /renders the configured page title as text/);
+  // An HTML-shaped title is previewed where the shell writes it (test/page-title-preview.test.mjs).
+  assert.equal(title.status, 'mapped');
+  assert.equal(title.pageUrl, '/');
 });
 
 test('enhanced mspp_ YAML keeps page, language and permission identities and edits the original field', async (t) => {

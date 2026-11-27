@@ -19,6 +19,7 @@ import { DataError } from './data-error.mjs';
 import { invokeTrustedHandler } from './trusted-handler-invocation.mjs';
 import { descendants, parseSolutionXml } from './solution-xml.mjs';
 import { FAILED_STEP_CODE, parseClassicWorkflow, runClassicWorkflow } from './classic-workflow-xaml.mjs';
+import { portalCallerUserId } from './plugin-portal-caller.mjs';
 import { organizationPrincipalContext } from './dataverse-principal-context.mjs';
 import { solutionLayerFiles } from './solution-content-fingerprint.mjs';
 import { contextUrl, dataverseError } from './dataverse-odata.mjs';
@@ -27,6 +28,7 @@ import { committedJobs, encodeEvent, liveJob, stageCommittedJobs, traceJob } fro
 import v8 from 'node:v8';
 import { runTrackedFlow, inspectFlowTrigger } from './flow-runtime.mjs';
 import { pluginStepBypassed, pluginBypassOwnership } from './plugin-bypass.mjs';
+import { invitationProcessHandlers, withInvitationProcesses } from './power-pages-invitation-processes.mjs';
 
 // A stored date, held across a small backward step of the wall clock (runtime-clock.mjs stampMs).
 const stampOf = (api) => new Date(stampMs(api.store, api.clock)).toISOString();
@@ -401,14 +403,19 @@ function workflowWriteRule(c, mapping, { operation, data, existing }, store) {
   }
   if (operation === 'create') {
     assertDesignerXaml(data);
-    if (Number(data.statecode) === STATE_ACTIVATED) assertLookupLiterals(store, data);
+    if (Number(data.statecode) === STATE_ACTIVATED) {
+      assertTriggerableTable(store, data);
+      assertLookupLiterals(store, data);
+    }
     return;
   }
   if (operation === 'update') {
     workflowUpdateRule(existing, data);
     if ('xaml' in data) assertDesignerXaml({ ...existing, ...data });
-    if (Number(data.statecode) === STATE_ACTIVATED && Number(existing.statecode) !== STATE_ACTIVATED)
+    if (Number(data.statecode) === STATE_ACTIVATED && Number(existing.statecode) !== STATE_ACTIVATED) {
+      assertTriggerableTable(store, { ...existing, ...data });
       assertLookupLiterals(store, { ...existing, ...data });
+    }
   }
 }
 
@@ -695,6 +702,10 @@ function interpretXaml(api, run, program, trace) {
   const { store } = api;
   const context = runAsContext(api, run);
   const write = () => ({ ...context });
+  // A real-time run inside a portal call: its writes keep that call's IsPortalsClientCall and PortalsContactId at their
+  // depth (hosted F2 state 0, s0a/s0b workflow.json execute:realtime); a background run's job does not (false, zero GUID).
+  const portalWrite =
+    run.realtime && run.portalCall ? { writeOptions: { inheritedPortalCall: run.portalCall } } : undefined;
   const primary = store.resolveMapping(run.target.logicalName);
   const known = (table) => {
     try {
@@ -731,8 +742,8 @@ function interpretXaml(api, run, program, trace) {
           });
         return row;
       },
-      create: (table, data) => api.records.createInternal(write(), table, data),
-      update: (table, id, data) => api.records.updateInternal(write(), table, id, data),
+      create: (table, data) => api.records.createInternal(write(), table, data, portalWrite),
+      update: (table, id, data) => api.records.updateInternal(write(), table, id, data, portalWrite),
       trace,
     },
     { resume: run.resume ?? null, suspendOnFailure: !run.realtime },
@@ -818,7 +829,9 @@ function wakeWaitingRuns(store, events) {
   // A Suspended row names its wait's columns; a Locked one (a run in progress) may be about to wait on any wait of its
   // definition: wake() keeps it pending.
   const columnsOf = (row, payload) => {
-    if (row.statecode === 1) return payload.wait === 'condition' ? (payload.columns ?? []) : [];
+    // A designer Timeout wait also names the columns its branches read: a write of one (the parallel branch's condition, or
+    // the due date itself) wakes it before its time (summary-F6 DATA-04c2, OPS-01d). A Postpone names none.
+    if (row.statecode === 1) return ['condition', 'timeout'].includes(payload.wait) ? (payload.columns ?? []) : [];
     const program = xamlOf(workflowRow(store, payload.definitionId) ?? {}).program;
     return program?.waitColumns ?? [];
   };
@@ -1010,6 +1023,7 @@ function executionWorkflow(api, c, workflowId) {
   const name = row.name;
   if (category === CATEGORY_WORKFLOW) {
     if (Number(row.statecode) !== STATE_ACTIVATED) throw native('0x80045047', 'Workflow must be in Published state.');
+    assertTriggerableTable(store, row);
     if (!row.ondemand && !row.subprocess)
       throw native('0x80045046', 'Workflow must be marked as on-demand or child workflow.');
   } else if (category === CATEGORY_MODERN_FLOW) {
@@ -1038,13 +1052,28 @@ async function portalListRun(api, config, { workflowId, entity, recordId, author
   // The selected row, workflow definition and caller are resolved in the same transaction as the handler.
   const c = await principal(await authorize());
   const { row, realtime } = executionWorkflow(api, c, workflowId);
-  if (!realtime || !row.ondemand || bare(row.primaryentity) !== entity || classicChoice(config, row).mode !== 'handler')
+  // A workflow of another table looks the record up in its own table: the platform answers 500 with the Dataverse
+  // message (captured, paqvilo-developer hosted-f2 summary-F2 OPS-01f); nothing runs.
+  if (bare(row.primaryentity) !== entity)
+    throw new DataError(
+      `Entity '${bare(row.primaryentity)}' With Id = ${recordId} Does Not Exist`,
+      500,
+      'WorkflowRecordNotFound',
+    );
+  if (!realtime || !row.ondemand || classicChoice(config, row).mode !== 'handler')
     throw new DataError(
       'A portal list requires an on-demand real-time classic workflow with a trusted local handler for its table.',
       501,
       'WorkflowUnsupported',
     );
   return portalWorkflowExecution(api, c, row, recordId);
+}
+
+// The portal call a real-time run runs inside: the visitor's contact and the site's host application user as caller, or
+// null outside a portal call.
+function workflowPortalCall(store, c) {
+  const contactId = c.portal === true ? (c.identity?.contactId ?? null) : null;
+  return contactId ? { contactId: bare(contactId), callerUserId: portalCallerUserId(store, c.identity) } : null;
 }
 
 function portalWorkflowExecution(api, c, row, recordId) {
@@ -1100,7 +1129,7 @@ function portalInvitationWorkflow(store, config, workflowId) {
     Number(row.type) !== TYPE.definition ||
     Number(row.category) !== CATEGORY_WORKFLOW ||
     Number(row.statecode) !== STATE_ACTIVATED ||
-    Number(row.mode) !== 1 ||
+    ![0, 1].includes(Number(row.mode)) ||
     !row.ondemand ||
     bare(row.primaryentity) !== 'contact' ||
     !handler ||
@@ -1110,24 +1139,27 @@ function portalInvitationWorkflow(store, config, workflowId) {
   return row;
 }
 
-/** Execute a qualifying contact workflow inside a local invitation redemption transaction. */
+/**
+ * Start a qualifying contact workflow for a committed invitation redemption, as the platform's redemption does after it
+ * has saved (hosted session F4 AUTH-05d): a background workflow becomes a system job owned by the caller, a real-time one
+ * runs in its own transaction. A failure ends that run (a failed job, or a rejected real-time run with its log) and never
+ * the redemption. False when the workflow does not qualify.
+ */
 async function executePortalInvitationWorkflow(api, config, { workflowId, contactId, principal }) {
   const { store } = api;
   const row = portalInvitationWorkflow(store, config, workflowId);
   if (!row) return false;
-  if (!store.inTransaction()) throw new TypeError('Invitation workflow execution requires its redemption transaction.');
+  if (store.inTransaction()) throw new TypeError('An invitation workflow starts after its redemption has committed.');
   const c = await principal();
   const { target, regarding } = executionTarget(api, c, row, contactId);
-  const run = {
+  await startClassicRun(api, config, {
     row,
     target: { ...regarding, row: target },
     caller: c.caller,
     inputs: {},
     regarding,
-    realtime: true,
-    jobId: null,
-  };
-  await tracedRun(api, run, () => runClassic(api, config, run));
+    realtime: Number(row.mode) === 1,
+  });
   return true;
 }
 
@@ -1151,7 +1183,6 @@ function validateModernWorkflow(config, row, name, inputs) {
 
 /** ExecuteWorkflow: validates in the documented order, then starts the run. Returns the Web API body for the asyncoperation id. */
 async function executeWorkflow(api, config, c, workflowId, body = {}) {
-  const { store } = api;
   const { row, category, realtime, name } = executionWorkflow(api, c, workflowId);
   const entityId = body?.EntityId;
   const { target, regarding } = executionTarget(api, c, row, entityId);
@@ -1182,39 +1213,49 @@ async function executeWorkflow(api, config, c, workflowId, body = {}) {
       body: { '@odata.context': contextUrl(c.origin, c.version, 'asyncoperations/$entity'), asyncoperationid: jobId },
     };
   }
-  const run = {
+  const jobId = await startClassicRun(api, config, {
     row,
     target: { logicalName: regarding.logicalName, id: regarding.id, row: target },
     caller,
     inputs,
     regarding,
     realtime,
+  });
+  return {
+    status: 200,
+    body: {
+      '@odata.context': contextUrl(c.origin, c.version, 'asyncoperations/$entity'),
+      // the id of a real-time run is a guess
+      asyncoperationid: jobId ?? ZERO_GUID,
+    },
   };
-  const activation = activationOf(store, row.workflowid);
-  if (realtime) {
+}
+
+// An on-demand classic run: a real-time run completes now (null); a background run becomes a system job owned by the caller
+// whose work runs on a later tick, after the job id is assigned (its id).
+async function startClassicRun(api, config, run) {
+  const { store } = api;
+  if (run.realtime) {
     await attempt(api, config, { ...run, jobId: null });
-    return {
-      status: 200,
-      body: {
-        '@odata.context': contextUrl(c.origin, c.version, 'asyncoperations/$entity'),
-        asyncoperationid: ZERO_GUID,
-      },
-    }; // the id of a real-time run is a guess
+    return null;
   }
-  // The work runs on a later tick, after the job id is assigned.
+  const activation = activationOf(store, run.row.workflowid);
+  const systemUser = idOf(store.tableRows('systemuser').find((row) => row.fullname === 'SYSTEM')?.systemuserid);
   let jobId = null;
   jobId = await api.systemJob(
     {
-      name,
+      name: run.row.name,
       operationtype: JOB_TYPE,
-      callerId: caller.systemuserid,
+      callerId: run.caller.systemuserid,
       columns: {
-        regardingobjectid: lookup(regarding.logicalName, regarding.id),
-        primaryentitytype: regarding.logicalName,
+        regardingobjectid: lookup(run.regarding.logicalName, run.regarding.id),
+        primaryentitytype: run.regarding.logicalName,
         workflowactivationid: activation ? lookup('workflow', activation.workflowid) : null,
+        // An ExecuteWorkflow job is owned by its caller and created by SYSTEM (hosted session F4, invitation-send-*).
+        ...(systemUser ? { createdby: lookup('systemuser', systemUser) } : {}),
       },
     },
-    inRunContext(store, currentRequest()?.correlationId, caller, async () => {
+    inRunContext(store, currentRequest()?.correlationId, run.caller, async () => {
       const started = { ...run, jobId };
       const message = await attempt(api, config, started);
       if (started.waiting || started.failed)
@@ -1222,10 +1263,7 @@ async function executeWorkflow(api, config, c, workflowId, body = {}) {
       return message;
     }),
   );
-  return {
-    status: 200,
-    body: { '@odata.context': contextUrl(c.origin, c.version, 'asyncoperations/$entity'), asyncoperationid: jobId },
-  };
+  return jobId;
 }
 
 // An on-demand run (an ExecuteWorkflow system job, dataverse-async.mjs) that suspended: its row takes the committed-job
@@ -1327,9 +1365,10 @@ const lowerNames = (text) =>
 const definitionOwnerId = (store, definition) =>
   idOf(definition.owninguser) || idOf(store.tableRows('systemuser')[0]?.systemuserid);
 
-// The activated classic definitions of a table, whatever their trigger (category 0, type 1, statecode 1).
-function classicDefinitions(store, entity) {
-  return store
+// The activated classic definitions of a table, whatever their trigger (category 0, type 1, statecode 1). A virtual table's
+// definitions never run (virtualTableTarget): each is reported once through `report` and none is returned.
+function classicDefinitions(store, entity, report = null) {
+  const definitions = store
     .tableRows('workflow')
     .filter(
       (row) =>
@@ -1338,6 +1377,52 @@ function classicDefinitions(store, entity) {
         Number(row.statecode) === STATE_ACTIVATED &&
         String(row.primaryentity ?? '').toLowerCase() === String(entity).toLowerCase(),
     );
+  if (!definitions.length || !virtualTableTarget(store, entity)) return definitions;
+  for (const definition of definitions) reportVirtualTarget(store, report, definition);
+  return [];
+}
+
+// Dataverse never triggers a workflow on a virtual table: EntityMetadata.CanTriggerWorkflow is always false for one
+// (Microsoft Learn, "API considerations for virtual tables",
+// https://learn.microsoft.com/power-apps/developer/data-platform/virtual-entities/api-considerations-ve). No hosted session
+// captured such a definition (F1 captured virtual-table reads only), so Mirage fails closed: a write to the table starts
+// no classic run (WORKFLOW_VIRTUAL_TABLE_UNSUPPORTED, once per definition), and publishing or executing a classic definition
+// of the table answers 400 WorkflowVirtualTableUnsupported (the native code and wording are a guess).
+function virtualTableTarget(store, entity) {
+  if (!entity || String(entity).toLowerCase() === 'none') return false;
+  const providers = store.recordPipeline?.virtualProviders;
+  if (!providers) return false;
+  try {
+    return Boolean(providers.status(store.resolveMapping(String(entity)).logicalName)?.virtual);
+  } catch {
+    return false;
+  }
+}
+const virtualTargetReports = new WeakMap();
+function reportVirtualTarget(store, report, definition) {
+  if (!report) return;
+  if (!virtualTargetReports.has(store)) virtualTargetReports.set(store, new Set());
+  const seen = virtualTargetReports.get(store);
+  const id = bare(definition.workflowid);
+  if (seen.has(id)) return;
+  seen.add(id);
+  report({
+    code: 'WORKFLOW_VIRTUAL_TABLE_UNSUPPORTED',
+    severity: 'warning',
+    workflowId: id,
+    table: String(definition.primaryentity).toLowerCase(),
+    message: `Classic workflow '${definition.name ?? id}' targets virtual table '${String(definition.primaryentity).toLowerCase()}'; Dataverse does not trigger workflows on virtual tables (CanTriggerWorkflow is false), so it never runs.`,
+  });
+}
+function assertTriggerableTable(store, row) {
+  if (Number(row?.category ?? CATEGORY_WORKFLOW) !== CATEGORY_WORKFLOW) return;
+  if (!virtualTableTarget(store, row?.primaryentity)) return;
+  throw new DataError(
+    `Workflows cannot be triggered on virtual table '${String(row.primaryentity).toLowerCase()}'.`,
+    400,
+    'WorkflowVirtualTableUnsupported',
+    { innerCode: '0x80040203' },
+  );
 }
 
 // create, delete, or an update that submitted one of the trigger's attributes (changed: lower-case names).
@@ -1424,7 +1509,7 @@ function stageBackgroundRuns(api, config, events) {
   for (const event of events) {
     if (event.messageEvent) continue;
     const changed = (event.submittedAttributes ?? []).map((name) => String(name).toLowerCase());
-    for (const definition of classicDefinitions(store, event.entity)) {
+    for (const definition of classicDefinitions(store, event.entity, config.diagnostic)) {
       if (!startsBackgroundRun(store, config, definition, event, changed)) continue;
       const mapping = store.resolveMapping(event.entity),
         logical = mapping.logicalName,
@@ -1569,6 +1654,7 @@ function realtimeRunForDefinition({ config, c, store, definition, operation, cha
     user: c.user ?? null,
     // A standard-model portal write (under enhanced authorization c.user is the visitor's mapped user).
     portal: c.portal === true && !store.portalAuthorization?.principalId?.(c.identity),
+    portalCall: workflowPortalCall(store, c),
     inputs: {},
     regarding: { logicalName: logical, id: rowId },
     realtime: true,
@@ -1587,8 +1673,8 @@ function takePendingWrite(c, logical, operation) {
   return list.splice(index, 1)[0];
 }
 
-function realtimeDefinitions(store, logical) {
-  return classicDefinitions(store, logical).filter((definition) => Number(definition.mode) === 1);
+function realtimeDefinitions(store, logical, report) {
+  return classicDefinitions(store, logical, report).filter((definition) => Number(definition.mode) === 1);
 }
 
 function realtimeRecord(store, mapping, operation, logical, rowId, entry) {
@@ -1607,7 +1693,7 @@ async function afterWriteTriggers(api, config, c, mapping, { operation, id }) {
   const { store } = api;
   const logical = mapping.logicalName;
   const rowId = bare(id);
-  const definitions = realtimeDefinitions(store, logical);
+  const definitions = realtimeDefinitions(store, logical, config.diagnostic);
   if (!definitions.length) return;
   // Through the primary-key index: a search of the table would cost every write a full pass.
   const record = realtimeRecord(store, mapping, operation, logical, rowId, entry);
@@ -1692,15 +1778,21 @@ const subscriptions = new WeakMap();
  */
 export function workflowExtension(config = {}) {
   const settings = { handlers: new Map(), overrides: {}, cloudFlow: null, diagnostic: null, ...config };
+  // The Power Pages invitation processes run as built-in handlers; a pack handler of the same id wins.
+  settings.handlers = new Map([
+    ...invitationProcessHandlers({ origin: () => config.portalOrigin?.() ?? null }),
+    ...settings.handlers,
+  ]);
   // facts: the Solution workflow facts, or a getter over the current sources (source-organization-extensions.mjs refresh).
-  const factsOf = () => (typeof settings.facts === 'function' ? settings.facts() : settings.facts) ?? [];
+  const solutionFacts = () => (typeof settings.facts === 'function' ? settings.facts() : settings.facts) ?? [];
   const indexBypass = (api, facts) => {
     workflowBypassFacts.set(api.store, new Map(facts.map((fact) => [bare(fact.id), fact])));
     return facts;
   };
+  const factsOf = (store, facts = solutionFacts()) => withInvitationProcesses(store, facts);
   const seed = (api) =>
     api.store.transact(() => {
-      seedWorkflows(api.store, indexBypass(api, factsOf()));
+      seedWorkflows(api.store, indexBypass(api, factsOf(api.store)));
     });
   return {
     name: 'dataverse-workflows',
@@ -1723,8 +1815,8 @@ export function workflowExtension(config = {}) {
       };
     },
     /** Reseeds definitions and activations from facts inside the caller's transaction; returns { workflow: { added, changed, removed } }. */
-    sync(api, facts = factsOf()) {
-      return { workflow: seedWorkflows(api.store, indexBypass(api, facts)) };
+    sync(api, facts = solutionFacts()) {
+      return { workflow: seedWorkflows(api.store, indexBypass(api, factsOf(api.store, facts))) };
     },
     install(api) {
       api.executePortalListWorkflow = (input) =>

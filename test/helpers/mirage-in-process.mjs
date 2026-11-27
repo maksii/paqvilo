@@ -67,6 +67,10 @@ export function runtimeHost(t) {
   // The loopback ports reservePair holds for a start, by port: a runtime double adopts its server (runtimeDouble).
   const reserved = new Map();
   let refusal = null;
+  // Set when the test's fixtures are released. A start still running then (a sibling of a failed Promise.all) must
+  // not leave a reserved pair or a runtime listening after the cleanup, or the test process never exits.
+  let released = false;
+  const afterRelease = () => new Error('The test ended before this start finished');
   const host = {
     launches: [],
     kills: [],
@@ -76,7 +80,14 @@ export function runtimeHost(t) {
     /** The runtime double with this PID. */
     runtime: (pid) => runtimes.get(pid),
     /** Holds a free consecutive loopback pair for one start and returns its base port (reservePair). */
-    reservePair: () => reservePair(reserved),
+    reservePair: async () => {
+      const base = await reservePair(reserved);
+      if (!released) return base;
+      for (const port of [base, base + 1]) reserved.get(port)?.close();
+      reserved.delete(base);
+      reserved.delete(base + 1);
+      throw afterRelease();
+    },
     /** A reserved port is free for the start that holds it; any other port is asked of the operating system. */
     portAvailable: async (port) => reserved.has(port) || portAvailable(port),
     alive: (pid) => Boolean(runtimes.get(pid)?.running),
@@ -93,6 +104,7 @@ export function runtimeHost(t) {
       return true;
     },
     spawnRuntime(command, argv, options) {
+      if (released) throw afterRelease();
       const pid = ++lastPid;
       const child = Object.assign(new EventEmitter(), {
         pid,
@@ -124,6 +136,7 @@ export function runtimeHost(t) {
     },
   };
   ownedFixture(t).add(async () => {
+    released = true;
     for (const runtime of runtimes.values()) await runtime.close();
     // Ports reserved for a start that no runtime adopted.
     for (const server of reserved.values()) server.close();
@@ -217,7 +230,14 @@ function runtimeDouble({ pid, child, argv, options, reserved }) {
           });
         });
       const url = await listen();
-      if (!runtime.running) return void (await runtime.close());
+      // Ended while it was binding: end() found it already stopped, so the listener just bound is closed here.
+      if (!runtime.running) {
+        for (const server of servers.splice(0)) {
+          server.close();
+          server.closeIdleConnections();
+        }
+        return;
+      }
       const stateFile = path.resolve(values.state);
       const origins = { url, adminUrl: `${url}/_sim/`, appsUrl: `${url}/_apps/` };
       // Each record has the fields a real runtime of that kind publishes (mirage/cli.mjs), which

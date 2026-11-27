@@ -1437,3 +1437,48 @@ test('a failing background step suspends the job with its error; a Resume retrie
   assert.deepEqual(rows().at(-1), ['CreateStep2_step', 3, -2147204303], 'the retry is logged');
   assert.equal(rows().length, 3, 'the step before the failure does not run again');
 });
+
+// @test-kind observation: hosted F2 state-0 runs s0a and s0b (paqvilo-developer hosted-f2 workflow.json, execute:realtime and execute:background; attach.json for a form save): a real-time workflow's operations inside a portal call run at depth 2 with IsPortalsClientCall true and PortalsContactId the contact; a background workflow job's operations report false and the zero GUID
+test("a real-time workflow's writes inside a portal call keep the call's contact; a background job's do not", async (t) => {
+  const contact = '0c000000-0000-4000-8000-000000000001';
+  const note = workflowXaml(createRow('x_note', { x_name: { type: 'String', value: 'by workflow' } }));
+  const { store, settle } = await fixture(t, [
+    fact(WF(31), note, { mode: 1, runas: 1, triggeronupdateattributelist: 'x_count' }),
+    fact(WF(32), note, { mode: 0, triggeronupdateattributelist: 'x_count' }),
+  ]);
+  // The visitor's write is authorized by its form; the test asserts only the portal facts its runs carry.
+  store.state.settings = { ...store.state.settings, permissionMode: 'permissive' };
+  const seen = [];
+  const pipeline = store.pluginPipeline;
+  const recorder = (context) => {
+    if (context.entity === 'x_note' && context.operation === 'create' && context.stage === 10)
+      seen.push({ inherited: context.inheritedPortalCall ?? null, asynchronous: context.asyncExecution === true });
+    return pipeline?.(context);
+  };
+  if (pipeline) Object.assign(recorder, { steps: pipeline.steps, diagnostic: pipeline.diagnostic });
+  store.setPluginPipeline(recorder);
+  // The form's write commits in its own transaction, which starts the background run.
+  await store.transact(
+    () =>
+      store.recordPipeline.updateInternal(
+        {
+          identity: { id: contact, contactId: contact, roles: [] },
+          portal: true,
+          caller: null,
+          method: 'POST',
+          headers: {},
+        },
+        'x_widget',
+        WIDGET,
+        { x_count: 7 },
+        { authorized: true, writeOptions: { dataverseWebApi: false } },
+      ),
+    { incremental: true },
+  );
+  await settle();
+  const realtime = seen.filter((entry) => entry.inherited);
+  assert.equal(realtime.length, 1, JSON.stringify(seen));
+  assert.equal(realtime[0].inherited.contactId, contact);
+  // The background job's write carries no portal call.
+  assert.equal(seen.filter((entry) => !entry.inherited).length, 1, JSON.stringify(seen));
+});

@@ -1,3 +1,4 @@
+// @test-kind contract+security: the example project runs end to end in Mirage (pages, forms, server logic, the cloud flow API with shell.ajaxSafePost headers) and refuses anonymous and reader writes by web role; Paqvilo design over invented data
 import { ownedFixture } from 'paqvilo/mirage/testing/owned-fixture.mjs';
 import { sdkMessages } from '../pack/dataverse-plugins.mjs';
 import test from 'node:test';
@@ -76,6 +77,7 @@ test('account demo renders source metadata, enforces sign-in and supports relate
     headers: {
       ...signed,
       'Content-Type': 'application/x-www-form-urlencoded',
+      'X-Requested-With': 'XMLHttpRequest',
       __RequestVerificationToken: sim.state().csrf,
     },
     body: new URLSearchParams({ eventData: JSON.stringify({ Location: 'Amsterdam' }) }),

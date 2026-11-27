@@ -1,5 +1,6 @@
 import { searchTokens } from './dataverse-search.mjs';
 import { partialWordScore, phraseScore, proximityBonus, wordScore } from './portal-search-rank.mjs';
+import { searchStem } from './search-stemmer.mjs';
 
 export const MAX_QUERY_LENGTH = 1024;
 const MAX_GROUP_DEPTH = 16;
@@ -147,8 +148,17 @@ function fuzzyMatcher(word, spec) {
   };
 }
 
-function termMatcher(term, fuzzy) {
-  if (!/[*?]/.test(term)) return fuzzy ? fuzzyMatcher(term, fuzzy) : (token) => token === term;
+/**
+ * A plain word matches a token with the same search stem in Dataverse search mode (`stemming`; search-stemmer.mjs) and the
+ * exact token otherwise. Fuzzy, wildcard and prefix words match unstemmed tokens.
+ */
+function termMatcher(term, fuzzy, stemming = false) {
+  if (!/[*?]/.test(term)) {
+    if (fuzzy) return fuzzyMatcher(term, fuzzy);
+    if (!stemming) return (token) => token === term;
+    const stem = searchStem(term);
+    return (token) => token === term || searchStem(token) === stem;
+  }
   if (term.endsWith('*') && !/[*?]/.test(term.slice(0, -1))) {
     const prefix = term.slice(0, -1);
     return (token) => token.startsWith(prefix);
@@ -235,14 +245,19 @@ function termFuzzy(term, { slopMark, slopValue, laterSlopMark, laterSlopValue },
   return fuzzySpec(laterSlopMark ? laterSlopValue : slopValue, legacyLucene);
 }
 
-function phraseScorer(words, slopMark, slopValue, weight, field) {
-  const exactSlop = (column) => (exactPhrase(column, words) ? 0 : null);
+/** A phrase compares search stems position by position in Dataverse search mode (`stemming`), tokens otherwise. */
+function phraseScorer(phraseWords, slopMark, slopValue, weight, field, stemming) {
+  const words = stemming ? phraseWords.map(searchStem) : phraseWords;
+  const view = stemming ? (column) => column.map(searchStem) : (column) => column;
+  const exactSlop = (column) => (exactPhrase(view(column), words) ? 0 : null);
   const slop = slopMark ? Math.min(Math.trunc(Number(slopValue ?? 0)), MAX_SLOP) : 0;
-  const matches = slop ? (column) => sloppyPhrase(column, words, slop) : (column) => exactPhrase(column, words);
+  const matches = slop
+    ? (column) => sloppyPhrase(view(column), words, slop)
+    : (column) => exactPhrase(view(column), words);
   return (row) => {
     const target = targetRow(row, field);
     if (!target.columns.some(matches)) return null;
-    return weight * phraseScore(target, words, slop ? (column) => slopNeeded(column, words, slop) : exactSlop);
+    return weight * phraseScore(target, words, slop ? (column) => slopNeeded(view(column), words, slop) : exactSlop);
   };
 }
 
@@ -261,10 +276,13 @@ function termOf(raw, highlights, visible = true, { legacyLucene = false, field =
   if (/^[*?]/.test(term))
     throw invalidQuery('A search wildcard must follow the first character of a term.', SYNTAX_ERROR);
   const fuzzy = phrase ? null : termFuzzy(term, { slopMark, slopValue, laterSlopMark, laterSlopValue }, legacyLucene);
-  const matchers = words.map((word) => termMatcher(word, fuzzy));
+  // Dataverse search stems plain words (hosted session F3, PAGE-04f); the legacy Lucene .NET search and the unanalyzed
+  // keyword field do not.
+  const stemming = !legacyLucene && !KEYWORD_FIELDS.has(field);
+  const matchers = words.map((word) => termMatcher(word, fuzzy, stemming));
   highlights.hasWildcard ||= words.some((word) => /[*?]/.test(word));
   if (visible) highlights.matchers.push(...matchers);
-  if (phrase) return phraseScorer(words, slopMark, slopValue, weight, field);
+  if (phrase) return phraseScorer(words, slopMark, slopValue, weight, field, stemming);
   // A wildcard or prefix word ignores term frequency (portal-search-rank.mjs); any other word scores frequency and length.
   const partial = words.map((word) => /[*?]/.test(word));
   return (row) => {
@@ -357,7 +375,10 @@ function parseQuery(query, recoverSyntax, legacyLucene) {
     if (!recoverSyntax || error.kind !== SYNTAX_ERROR) throw error;
     // Analyze the whole input as plain text. No Lucene operators survive, and the local bounds still apply.
     const highlights = { matchers: [], hasWildcard: false };
-    const clauses = searchTokens(query).map((word) => ({ mode: 'optional', score: termOf(word, highlights) }));
+    const clauses = searchTokens(query).map((word) => ({
+      mode: 'optional',
+      score: termOf(word, highlights, true, { legacyLucene }),
+    }));
     return { clauses, highlights };
   }
 }

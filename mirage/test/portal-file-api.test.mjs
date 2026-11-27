@@ -180,7 +180,6 @@ const DOCUMENTED = {
   FU00006: [400, null],
   FU00007: [400, 'Azure configurations are incorrect'],
   FU00008: [400, 'Header x-ms-file-name is missing in the request'],
-  FU00009: [501, "Azure webapi isn't enabled for use"],
   FU00010: [400, null],
   FU00012: [400, "File doesn't exist"],
   FU00013: [400, 'Chunk size is greater than 100mb'],
@@ -276,14 +275,23 @@ test('an overlapping, resized or mis-sized chunk is refused and the upload conti
   assert.equal(await (await owner.download(token)).text(), '0123456789');
 });
 
-test('the API answers FU00009 on every route while Site/FileManagement/EnableWebAPI is not true', async (t) => {
+// @test-kind observation: hosted session F2 fileapi runs a and b (azure-download-fetch, nav:azure-download) answer 501 {"ErrorCode":"FU0009","Message":"Azure webapi is not enabled for use"} with the page cache headers while the Azure file API is off; the other routes are assumed to share the check
+test('the API answers FU0009 on every route while Site/FileManagement/EnableWebAPI is not true', async (t) => {
   const { 'Site/FileManagement/EnableWebAPI': _enabled, ...rest } = SETTINGS; // NOSONAR: binding is excluded from the rest object
   const sim = await fileApiFixture(t, { settings: rest });
   const owner = browser(sim, OWNER);
-  await expectError(await owner.initialize(), 'FU00009');
-  await expectError(await owner.block(guid(40), 0, '012345'), 'FU00009');
-  await expectError(await owner.download(PLAIN_NOTE), 'FU00009');
-  await expectError(await owner.remove(PLAIN_NOTE), 'FU00009');
+  for (const response of [
+    await owner.initialize(),
+    await owner.block(guid(40), 0, '012345'),
+    await owner.download(PLAIN_NOTE),
+    await owner.remove(PLAIN_NOTE),
+  ]) {
+    assert.equal(response.status, 501);
+    assert.equal(await response.text(), '{"ErrorCode":"FU0009","Message":"Azure webapi is not enabled for use"}');
+    assert.equal(response.headers.get('content-type'), 'application/json; charset=utf-8');
+    assert.equal(response.headers.get('cache-control'), 'no-cache, no-store, must-revalidate');
+    assert.equal(response.headers.get('x-sim-error-code'), null);
+  }
   assert.ok(note(sim, PLAIN_NOTE));
   assert.equal(sim.store.tableRows('annotation').length, 1);
 });
@@ -375,7 +383,7 @@ test('download and delete answer FU00002, FU00010 and FU00012 for unusable notes
   await expectError(await owner.download(pending), 'FU00012');
 });
 
-// @test-kind security: the file routes enforce the portal Web API's verification token on writes
+// @test-kind security+observation: the file routes enforce the portal Web API's verification token on writes, refused with the portal Web API's 401 90040107 (hosted session F4, paqvilo-developer hosted-f4 swap runs a and b)
 test('writes without this session verification token answer the portal Web API token errors', async (t) => {
   const sim = await fileApiFixture(t);
   const owner = browser(sim, OWNER);
@@ -387,7 +395,7 @@ test('writes without this session verification token answer the portal Web API t
   assert.equal(missing.status, 401);
   assert.equal((await missing.json()).error.code, '90040107');
   const wrong = await owner.initialize({ extra: { __requestverificationtoken: 'not-this-session' } });
-  assert.equal(wrong.status, 403);
+  assert.equal(wrong.status, 401);
   assert.equal((await wrong.json()).error.code, '90040107');
   const token = await started(owner);
   const blockWithout = await fetch(

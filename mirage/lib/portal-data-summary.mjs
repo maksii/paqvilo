@@ -19,6 +19,8 @@ const MAX_RECOMMENDATIONS = 10;
 const MAX_RECOMMENDATION_LENGTH = 500;
 const CONTINUATION_VERSION = 1;
 const inputError = (message) => new DataError(message, 400, 'InvalidDataSummaryRequest');
+// The Web API's not-found codes of an entity read; a missing route segment keeps its own error.
+const RECORD_NOT_FOUND = new Set(['0x80040217', 'ObjectDoesNotExist', 'NotFound']);
 const continuationError = () =>
   new DataError('The recommendation configuration is not valid for this request.', 400, 'InvalidDataSummaryRequest');
 const invalidResult = () =>
@@ -39,9 +41,10 @@ export const registerDataSummaryProvider = (packs) =>
   collectPackExport(packs ?? [], 'portalDataSummary').get('provider')?.value;
 
 /**
- * The JSON request body. A first request names an authored prompt setting (InstructionIdentifier); a follow-up passes a
+ * The JSON request body. A first request may name a prompt setting (InstructionIdentifier); a follow-up passes a
  * returned recommendation's Config verbatim as RecommendationConfig, without InstructionIdentifier. An empty
- * RecommendationConfig is the documented placeholder of a first request.
+ * RecommendationConfig is the documented placeholder of a first request. Hosted session F3 (summary-F3.md API-05d)
+ * answered a request without InstructionIdentifier, and one naming a setting the site does not have, with a summary.
  */
 export async function dataSummaryBody(req) {
   if (req.headers['content-type']?.split(';')[0].trim().toLowerCase() !== 'application/json')
@@ -69,8 +72,9 @@ export async function dataSummaryBody(req) {
     return { config };
   }
   const identifier = body.InstructionIdentifier;
+  if (identifier === undefined || identifier === null) return { identifier: null };
   if (typeof identifier !== 'string' || !/^Summarization\/prompt\/[^\r\n]+$/i.test(identifier))
-    throw inputError('Supply an authored Summarization/prompt setting as InstructionIdentifier.');
+    throw inputError('InstructionIdentifier names a Summarization/prompt setting.');
   return { identifier };
 }
 
@@ -204,7 +208,7 @@ function readContinuation(token, scope) {
   } catch {
     throw continuationError();
   }
-  if (data?.v !== CONTINUATION_VERSION || typeof data.i !== 'string' || typeof data.t !== 'string')
+  if (data?.v !== CONTINUATION_VERSION || (typeof data.i !== 'string' && data.i !== null) || typeof data.t !== 'string')
     throw continuationError();
   return { identifier: data.i, recommendation: data.t };
 }
@@ -218,7 +222,11 @@ export async function dataSummarySource(url, request, deps) {
   if (deps.portal?.observed?.siteUserGenerativeAi === 'disabled')
     throw new DataError('Generative AI features are disabled', 400, '90041001');
   if (String(siteSetting(deps.portal, 'Summarization/Data/Enable')).trim().toLowerCase() !== 'true')
-    throw new DataError('Data summarization disabled for this site. Enable using the site setting.', 400, '90041003');
+    throw new DataError(
+      'Data summarization disabled for this site. Please enable using site setting.',
+      400,
+      '90041003',
+    );
   const scope = {
     key: continuationKey(deps.store),
     visitor: String(deps.visitor ?? ''),
@@ -227,9 +235,9 @@ export async function dataSummarySource(url, request, deps) {
   const { identifier, recommendation } = request.config
     ? readContinuation(request.config, scope)
     : { identifier: request.identifier };
-  const prompt = siteSetting(deps.portal, identifier);
-  if (typeof prompt !== 'string' || !prompt.trim())
-    throw inputError('The data summarization prompt setting is missing.');
+  // A request without a prompt setting, or naming one the site does not have, is summarized without a prompt.
+  const configured = identifier ? siteSetting(deps.portal, identifier) : null;
+  const prompt = typeof configured === 'string' && configured.trim() ? configured : null;
   const { shadow, tree } = summaryRead(url);
   const input = (table, content) => ({
     table,
@@ -240,11 +248,18 @@ export async function dataSummarySource(url, request, deps) {
   });
   if (parseWebApiRoute(shadow.pathname).kind === 'entity') {
     if (!tree) throw inputError('$apply aggregates an entity set, not a single record.');
-    return readWebApiSummaryEntity(shadow, deps, (body, mapping) => {
-      const record = recordValues(body, tree, mapping, deps);
-      assertDataSummaryLength(record, !Object.keys(record).length, deps.portal);
-      return { input: input(mapping.logicalName, { record }), scope };
-    });
+    try {
+      return await readWebApiSummaryEntity(shadow, deps, (body, mapping) => {
+        const record = recordValues(body, tree, mapping, deps);
+        assertDataSummaryLength(record, !Object.keys(record).length, deps.portal);
+        return { input: input(mapping.logicalName, { record }), scope };
+      });
+    } catch (error) {
+      // A missing row answers 404 9004010D (captured), not the Web API's own not-found error.
+      if (error?.status === 404 && RECORD_NOT_FOUND.has(String(error.code)))
+        throw new DataError('Common Data Service error occurred.', 404, '9004010D');
+      throw error;
+    }
   }
   return readWebApiSummaryCollection(
     shadow,

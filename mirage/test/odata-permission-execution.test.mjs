@@ -110,9 +110,18 @@ test('native scalar OData expanded execution budgets fail after admitted pre-ope
 });
 test('separate native OData profile does not silently qualify unsupported navigation and options', () => {
   const store = fixture();
+  // $expand runs the modeled pipeline, as the hosted portal serves it (hosted session F1 summary-F1 API-02b): an
+  // unknown navigation is that pipeline's refusal, not the native lane's 501. Navigation filters stay native-refused.
   assert.throws(
     () =>
       store.query('companies', { $select: 'companyid', $expand: 'grant' }, identity, undefined, {
+        portalRequest: true,
+      }),
+    (error) => error.code !== 'ODataPermissionQueryUnsupported',
+  );
+  assert.throws(
+    () =>
+      store.query('companies', { $select: 'companyid', $filter: "parent/name eq 'x'" }, identity, undefined, {
         portalRequest: true,
       }),
     (error) => error.code === 'ODataPermissionQueryUnsupported',
@@ -268,7 +277,7 @@ test('native scalar OData handles slashes in quoted filter values while refusing
   );
 });
 
-// @test-kind compatibility+contract: Microsoft Learn Power Pages OData reads document GUID-keyed data with $select and ETag, using the local Retrieve and projection path
+// @test-kind compatibility+observation: Microsoft Learn Power Pages OData reads document GUID-keyed data with $select and ETag; the select-less and $top keyed answers are hosted session F1 captures (paqvilo-developer hosted-f1 summary-F1 API-02b/c, two runs)
 test('native-classic GUID-keyed scalar GET returns the authorized entity, projection and ETag', async () => {
   const store = fixture();
   store.state.tables.company[0].notes = 'Invented private value';
@@ -296,8 +305,12 @@ test('native-classic GUID-keyed scalar GET returns the authorized entity, projec
   assert.equal((await read(id(10), { $select: 'notes' })).status, 403);
   assert.equal((await read(id(11))).status, 403);
   assert.equal((await read(id(99))).status, 404);
-  assert.equal((await read(id(10), {})).status, 501);
-  assert.equal((await read(id(10), { $select: 'name', $top: '1' })).status, 501);
+  // Hosted session F1 (summary-F1 API-02b/c, two runs): a select-less keyed read of a list that enables every listed
+  // column and a keyed read with $top are served, so the native lane hands them to the modeled pipeline; /<column> is
+  // refused before any read (runs/a and runs/b odata-shapes property).
+  assert.equal((await read(id(10), {})).status, 200);
+  assert.equal((await read(id(10), { $select: 'name', $top: '1' })).status, 200);
   const property = await companyRead(store, {}, { resource: `companies(${id(10)})/name`, fields: 'companyid,name' });
-  assert.equal(property.status, 501);
+  assert.equal(property.status, 403);
+  assert.equal(property.body.error.message, 'Attribute All Columns in table company is not enabled for Web Api.');
 });

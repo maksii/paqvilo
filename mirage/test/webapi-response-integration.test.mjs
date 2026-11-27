@@ -37,6 +37,7 @@ const json = (out, status, body, headers, { wireText, omitContentType } = {}) =>
   out.end(status === 204 ? undefined : (wireText ?? JSON.stringify(body)));
 };
 
+// @test-kind contract+security+observation: authentication precedence over malformed routes; a refused token is 401 as hosted session F4 answered it (paqvilo-developer hosted-f4 swap runs a and b).
 test('malformed percent escapes cannot replace authentication failures in either response mode', async () => {
   for (const observed of [
     {},
@@ -49,7 +50,7 @@ test('malformed percent escapes cannot replace authentication failures in either
     for (const route of ['%ZZ', '%E0%A4%A', 'probes(%ZZ)'])
       for (const [token, expected] of [
         [undefined, 401],
-        ['wrong', 403],
+        ['wrong', 401],
         ['valid', 400],
       ]) {
         const out = response();

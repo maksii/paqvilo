@@ -150,7 +150,9 @@ export function committedJobs(store) {
     // Suspended rows of registered kinds that turn Ready at their postponeuntil.
     waiting = new Set(),
     // Rows a wake() found Locked (a run in progress may be about to leave them Suspended): woken once they are Suspended.
-    pendingWake = new Set();
+    pendingWake = new Set(),
+    // Rows a wake() turned Ready before their postponeuntil: they run now (waitOf) and keep the time they waited for.
+    wokenEarly = new Set();
   // The ids the running tick has already tried: a row made Ready again for one of them runs after that tick (retry).
   let seenNow = null;
   let ticking = null,
@@ -163,6 +165,8 @@ export function committedJobs(store) {
   // A Ready row waits until its start time: the job's internal start latency (data startAfter, plugin-async.mjs; its
   // postponeuntil stays null as natively) or a postponeuntil; 0 when it is due.
   const waitOf = (row) => {
+    // A row a write woke before its wait-until (a timed classic workflow wait whose condition now holds) runs now.
+    if (row && wokenEarly.has(row.asyncoperationid)) return 0;
     const after = jobOf(row)?.startAfter;
     let until = Number.NaN;
     if (Number.isFinite(after)) until = after;
@@ -341,6 +345,7 @@ export function committedJobs(store) {
   };
   const execute = async ({ id, payload }) => {
     started.add(id);
+    wokenEarly.delete(id);
     let failure = null,
       outcome;
     try {
@@ -494,6 +499,7 @@ export function committedJobs(store) {
         ids.push(row.asyncoperationid);
       }
       if (!ids.length && !pending.length) return null;
+      for (const id of ids) wokenEarly.add(id);
       return () => {
         for (const id of ids) {
           waiting.delete(id);

@@ -1,6 +1,7 @@
 // Dynamics 365 application messages (Sales, Marketing and Service stubs): Recalculate (goal rollups), SyncBulkOperation,
 // SendBulkMail, ImmediateBook, CalculatePrice, ApplyRecordCreationAndUpdateRule and the sales conversions (WinQuote,
-// ConvertQuoteToSalesOrder, ConvertSalesOrderToInvoice, GenerateQuoteFromOpportunity, CalculateActualValueOpportunity). Every operation is registered through
+// ConvertQuoteToSalesOrder, ConvertSalesOrderToInvoice, GenerateQuoteFromOpportunity, CalculateActualValueOpportunity) and
+// QualifyLead. Every operation is registered through
 // registerAddon (dataverse-addon-common.mjs), so a trusted pack's dataverseMessages handler replaces it. Book,
 // InstantiateTemplate and SendEmail are reused through api.registry. Guesses: the bulk-mail failure text, the
 // SyncBulkOperation result and state mapping, the rollup column stem (goalattribute without "rollupfield"), and the answers
@@ -471,6 +472,142 @@ function operations(api) {
     return { Value: value };
   }
 
+  // ---- QualifyLead (Learn QualifyLeadRequest, https://learn.microsoft.com/dotnet/api/microsoft.crm.sdk.messages.qualifyleadrequest,
+  // and the Web API QualifyLead action bound to lead): an open lead becomes Qualified (LeadState 1) with the given status
+  // and, as asked, an account, a contact and an opportunity that name it (originatingleadid). With both an account and a
+  // contact, the account is the contact's parent customer and the contact the account's primary contact (Learn, "Notes for
+  // Callers"). The response is the created records' references (QualifyLeadResponse.CreatedEntities). Guesses: the copied
+  // columns (every column the new table also has; the account name from companyname and the opportunity name from subject,
+  // as the default lead mappings), no account for a lead without a company name, the opportunity customer
+  // (OpportunityCustomerId, else the new account, else the new contact), the refusal texts and no duplicate detection.
+  const QUALIFIED = 1;
+  const reference = (logical, id) => ({
+    '@odata.type': `#Microsoft.Dynamics.CRM.${logical}`,
+    [store.resolveMapping(logical).idColumn]: key(id),
+  });
+  // The values of a new or updated row that its table defines.
+  const known = (logical, values) => {
+    const fields = store.fieldDefinitions(logical);
+    return Object.fromEntries(
+      Object.entries(values).filter(([name, value]) => value != null && Object.hasOwn(fields, name)),
+    );
+  };
+  const optionalRef = (args, name) => (args[name] == null ? null : refOf(args, name));
+  const qualifiedStatus = (status) => {
+    // Status is an Edm.Int32: a missing one is -1 (the state's default status); anything but an integer is refused.
+    if (typeof status !== 'number' || !Number.isSafeInteger(status))
+      throw invalid('Status must be an integer status code.');
+    const statuscode = status === -1 ? defaultStatus('lead', QUALIFIED, 3) : status;
+    const statuses = store.fieldDefinitions('lead').statuscode?.statuses;
+    if (
+      Array.isArray(statuses) &&
+      !statuses.some((item) => Number(item.value) === statuscode && Number(item.state) === QUALIFIED)
+    )
+      throw invalid(`${statuscode} is not a valid status code for the Qualified state of lead.`);
+    return statuscode;
+  };
+  const createRow = async (c, logical, values) => {
+    const row = await api.records.createInternal(c, logical, values, { authorized: true });
+    return row[store.resolveMapping(logical).idColumn];
+  };
+  async function qualifiedOpportunity(c, lead, origin, { account, contact, customer, currency, campaign }) {
+    let buyer = null;
+    if (customer) buyer = lookupTo(customer.logical, customer.id);
+    else if (account) buyer = lookupTo('account', account);
+    else if (contact) buyer = lookupTo('contact', contact);
+    return createRow(
+      c,
+      'opportunity',
+      known('opportunity', {
+        ...carriedColumns('lead', 'opportunity', lead),
+        name: lead.subject,
+        originatingleadid: origin,
+        customerid: buyer,
+        parentaccountid: account ? lookupTo('account', account) : null,
+        parentcontactid: contact ? lookupTo('contact', contact) : null,
+        transactioncurrencyid: currency ? lookupTo('transactioncurrency', currency.id) : null,
+        campaignid: campaign ? lookupTo(campaign.logical, campaign.id) : null,
+      }),
+    );
+  }
+  async function qualifyLead(c) {
+    const args = argsOf(c);
+    const lead = c.target?.row;
+    const leadId = c.target?.id;
+    if (!lead) throw notFound('lead', leadId);
+    need(c, 'lead', 'write');
+    if (stateOf(lead) !== 0) throw invalid('The lead is already closed: only an open lead can be qualified.');
+    const statuscode = qualifiedStatus(args.Status ?? -1);
+    const wanted = {
+      account: args.CreateAccount === true && Boolean(String(lead.companyname ?? '').trim()),
+      contact: args.CreateContact === true,
+      opportunity: args.CreateOpportunity === true,
+    };
+    for (const [logical, create] of Object.entries(wanted))
+      if (create) {
+        tableOrNotFound(logical, null);
+        need(c, logical, 'create');
+      }
+    const refs = {
+      currency: optionalRef(args, 'OpportunityCurrencyId'),
+      customer: optionalRef(args, 'OpportunityCustomerId'),
+      campaign: optionalRef(args, 'SourceCampaignId'),
+    };
+    for (const ref of Object.values(refs)) if (ref) recordOrNotFound(ref.logical, ref.id);
+    const origin = lookupTo('lead', leadId);
+    return write(async () => {
+      const created = [];
+      const account = wanted.account
+        ? await createRow(
+            c,
+            'account',
+            known('account', {
+              ...carriedColumns('lead', 'account', lead),
+              name: lead.companyname,
+              originatingleadid: origin,
+            }),
+          )
+        : null;
+      if (account) created.push(reference('account', account));
+      const contact = wanted.contact
+        ? await createRow(
+            c,
+            'contact',
+            known('contact', {
+              ...carriedColumns('lead', 'contact', lead),
+              originatingleadid: origin,
+              parentcustomerid: account ? lookupTo('account', account) : null,
+            }),
+          )
+        : null;
+      if (contact) created.push(reference('contact', contact));
+      if (account && contact)
+        await api.records.updateInternal(
+          c,
+          'account',
+          account,
+          known('account', { primarycontactid: lookupTo('contact', contact) }),
+          { authorized: true },
+        );
+      const opportunity = wanted.opportunity
+        ? await qualifiedOpportunity(c, lead, origin, { account, contact, ...refs })
+        : null;
+      if (opportunity) created.push(reference('opportunity', opportunity));
+      await api.records.updateInternal(
+        c,
+        'lead',
+        leadId,
+        {
+          ...known('lead', { qualifyingopportunityid: opportunity ? lookupTo('opportunity', opportunity) : null }),
+          statecode: QUALIFIED,
+          statuscode,
+        },
+        { authorized: true },
+      );
+      return created;
+    });
+  }
+
   return [
     // Guesses: the percentage is 0 when the target is unset; rollup attribute names are read from goalattribute.
     {
@@ -604,6 +741,27 @@ function operations(api) {
       handle: generateQuoteFromOpportunity,
     },
     {
+      name: 'QualifyLead',
+      kind: 'action',
+      binding: 'entity',
+      entity: 'lead',
+      signature: {
+        params: [
+          ['CreateAccount', 'Edm.Boolean'],
+          ['CreateContact', 'Edm.Boolean'],
+          ['CreateOpportunity', 'Edm.Boolean'],
+          ['OpportunityCurrencyId', 'mscrm.transactioncurrency'],
+          ['OpportunityCustomerId', 'mscrm.crmbaseentity'],
+          ['SourceCampaignId', 'mscrm.crmbaseentity'],
+          ['Status', 'Edm.Int32'],
+          ['SuppressDuplicateDetection', 'Edm.Boolean'],
+          ['ProcessInstanceId', 'mscrm.crmbaseentity'],
+        ],
+        returns: 'Collection(mscrm.crmbaseentity)',
+      },
+      handle: qualifyLead,
+    },
+    {
       name: 'CalculateActualValueOpportunity',
       kind: 'function',
       binding: 'unbound',
@@ -613,8 +771,67 @@ function operations(api) {
   ];
 }
 
+// QualifyLead binds to mscrm.lead, a Dynamics 365 Sales table that the standard table reference (dataverse-standard)
+// does not hold. Without a lead table the bound action would name an undeclared EntityType in $metadata, so the module
+// seeds an insert-only stand-in, as dataverse-standard seeds the standard tables: the Learn lead table's names (entity set
+// leads, key leadid, primary name fullname) and the columns QualifyLead reads and writes, with the documented lead
+// states (Open 0, Qualified 1, Disqualified 2) and status reasons. A project's own lead table is never changed.
+const LEAD_STATUS = [
+  [1, 0, 'New'],
+  [2, 0, 'Contacted'],
+  [3, 1, 'Qualified'],
+  [4, 2, 'Lost'],
+  [5, 2, 'Cannot Contact'],
+  [6, 2, 'No Longer Interested'],
+  [7, 2, 'Canceled'],
+];
+const leadStandIn = () => ({
+  logicalName: 'lead',
+  entitySet: 'leads',
+  idColumn: 'leadid',
+  nameColumn: 'fullname',
+  userConfigured: true,
+  dataverseOnly: true,
+  tableType: 'Standard',
+  fields: {
+    leadid: { dataverseType: 'uniqueidentifier' },
+    fullname: { dataverseType: 'nvarchar' },
+    firstname: { dataverseType: 'nvarchar' },
+    lastname: { dataverseType: 'nvarchar' },
+    subject: { dataverseType: 'nvarchar' },
+    companyname: { dataverseType: 'nvarchar' },
+    emailaddress1: { dataverseType: 'nvarchar' },
+    statecode: {
+      dataverseType: 'state',
+      states: [
+        { value: 0, defaultStatus: 1, label: 'Open' },
+        { value: 1, defaultStatus: 3, label: 'Qualified' },
+        { value: 2, defaultStatus: 4, label: 'Disqualified' },
+      ],
+    },
+    statuscode: {
+      dataverseType: 'status',
+      statuses: LEAD_STATUS.map(([value, state, label]) => ({ value, state, label })),
+    },
+  },
+  relationships: {},
+});
+function seedLead(store) {
+  const { state } = store;
+  state.mappings ??= {};
+  state.tables ??= {};
+  if (state.mappings.lead) return;
+  state.mappings.lead = leadStandIn();
+  state.tables.lead ??= [];
+}
+
 function install(api) {
+  api.store.transact(() => seedLead(api.store), { cloneResult: !api.store.isInitializing?.() });
   for (const op of operations(api)) registerAddon(api, op);
+}
+
+function reset(api) {
+  return api.store.transact(() => seedLead(api.store));
 }
 
 /** Capability record for the capability registry; dataverse-extensions.mjs adds the operations install registered. */
@@ -633,4 +850,4 @@ function describe() {
   };
 }
 
-export const EXTENSION = { name: 'dataverse-addon-d365', install, describe };
+export const EXTENSION = { name: 'dataverse-addon-d365', install, reset, describe };

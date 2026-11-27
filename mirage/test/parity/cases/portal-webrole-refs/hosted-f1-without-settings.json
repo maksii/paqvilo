@@ -1,0 +1,172 @@
+{
+  "schema": "paqvilo.parity-cases/1",
+  "surface": "portal-webrole-refs",
+  "suite": "hosted-f1-without-settings",
+  "oracle": {
+    "kind": "native",
+    "name": "Power Pages portal Web API",
+    "version": "2026-11-26",
+    "scope": "Two signed-in browser runs on an enhanced data model site of $ref POST and DELETE on the web role membership navigations and a read of mspp_webroles, with no Web API settings for mspp_webrole or powerpagecomponent and no table permissions on them. Captures establish the status and the error code and message. Fixture names and ids are invented; the exact hosted build is unrecorded."
+  },
+  "captures": [
+    {
+      "id": "refs-a",
+      "sha256": "7395c26b5b2da9c2ec33b52a1e16397980f4e764f341235ef4844bee373045b6",
+      "capturedAt": "2026-11-26"
+    },
+    {
+      "id": "refs-b",
+      "sha256": "569455fbe72ce57f724b784d1463e42d03cbded816db4d02151e53e2be056c4e",
+      "capturedAt": "2026-11-26"
+    }
+  ],
+  "cases": [
+    {
+      "id": "contact-nav-powerpagecomponent",
+      "input": {
+        "configuration": "none",
+        "method": "POST",
+        "path": "/_api/contacts({contact})/powerpagecomponent_mspp_webrole_contact/$ref",
+        "body": {
+          "@odata.id": "{origin}/_api/powerpagecomponents({role})"
+        }
+      },
+      "output": {
+        "status": 403,
+        "error": {
+          "code": "90040106",
+          "message": "You don’t have permission to associate or disassociate table powerpagecomponent to contact"
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "contact-nav-mspp-webrole",
+      "input": {
+        "configuration": "none",
+        "method": "POST",
+        "path": "/_api/contacts({contact})/mspp_webrole_contact/$ref",
+        "body": {
+          "@odata.id": "{origin}/_api/mspp_webroles({role})"
+        }
+      },
+      "output": {
+        "status": 400,
+        "error": {
+          "code": "9004010A",
+          "message": "An unexpected error occurred while processing the request"
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "contact-nav-adx-webrole",
+      "input": {
+        "configuration": "none",
+        "method": "POST",
+        "path": "/_api/contacts({contact})/adx_webrole_contact/$ref",
+        "body": {
+          "@odata.id": "{origin}/_api/adx_webroles({role})"
+        }
+      },
+      "output": {
+        "status": 400,
+        "error": {
+          "code": "9004010A",
+          "message": "An unexpected error occurred while processing the request"
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "webrole-nav-contact",
+      "input": {
+        "configuration": "none",
+        "method": "POST",
+        "path": "/_api/mspp_webroles({role})/mspp_webrole_contact/$ref",
+        "body": {
+          "@odata.id": "{origin}/_api/contacts({contact})"
+        }
+      },
+      "output": {
+        "status": 400,
+        "error": {
+          "code": "9004010A",
+          "message": "An unexpected error occurred while processing the request"
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "powerpagecomponent-nav-contact",
+      "input": {
+        "configuration": "none",
+        "method": "POST",
+        "path": "/_api/powerpagecomponents({role})/powerpagecomponent_mspp_webrole_contact/$ref",
+        "body": {
+          "@odata.id": "{origin}/_api/contacts({contact})"
+        }
+      },
+      "output": {
+        "status": 404,
+        "error": {
+          "code": "9004010C",
+          "message": "Resource not found for the segment powerpagecomponent."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "read-mspp-webroles",
+      "input": {
+        "configuration": "none",
+        "method": "GET",
+        "path": "/_api/mspp_webroles?$select=mspp_name",
+        "body": null
+      },
+      "output": {
+        "status": 404,
+        "error": {
+          "code": "9004010C",
+          "message": "Resource not found for the segment mspp_webrole."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "contact-nav-delete-ref",
+      "input": {
+        "configuration": "none",
+        "method": "DELETE",
+        "path": "/_api/contacts({contact})/powerpagecomponent_mspp_webrole_contact({role})/$ref",
+        "body": null
+      },
+      "output": {
+        "status": 403,
+        "error": {
+          "code": "90040106",
+          "message": "You don’t have permission to associate or disassociate table powerpagecomponent to contact"
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "read-contact-roles-nav",
+      "input": {
+        "configuration": "none",
+        "method": "GET",
+        "path": "/_api/contacts({contact})/powerpagecomponent_mspp_webrole_contact?$select=name",
+        "body": null
+      },
+      "output": {
+        "status": 403,
+        "error": {
+          "code": "90040120",
+          "message": "You don't have permission to read the powerpagecomponent table."
+        }
+      },
+      "volatile": []
+    }
+  ],
+  "history": []
+}

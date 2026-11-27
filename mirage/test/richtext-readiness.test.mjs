@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo chooses between its compatibility rich text editor and a captured native editor from capture completeness and the readiness profile, and honours the style-only opt-out
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { nativeRichTextReady } from '../lib/richtext-readiness.mjs';
@@ -51,7 +52,19 @@ test('compatibility mode excludes an incomplete captured managed RTE definition'
     'form',
     {},
     {
-      portal: { forms: [{ id: 'form', metadata: {} }], records: [] },
+      // The editor renders with code component metadata only (formRichTextField).
+      portal: {
+        forms: [{ id: 'form', metadata: {} }],
+        records: [
+          {
+            kind: 'basicformmetadata',
+            adx_entityform: 'form',
+            adx_type: 100000000,
+            adx_attributelogicalname: 'text',
+            adx_controlstyle: 756150001,
+          },
+        ],
+      },
       store: { resolveMapping: () => ({ entitySet: 'samples', idColumn: 'sampleid', relationships: {} }) },
       schemas: {
         form: { entity: 'sample', fields: [{ name: 'text', type: 'textarea', richText: { name: control } }] },
@@ -74,6 +87,11 @@ test('a runtime renders compatibility for a cached core alone and native when it
   await fs.writeFile(
     path.join(root, 'Form.basicform.yml'),
     'adx_entityformid: form\nadx_name: form\nadx_entityname: sample\nadx_mode: 100000000',
+  );
+  // The editor renders with code component metadata only (formRichTextField).
+  await fs.writeFile(
+    path.join(root, 'Form.basicformmetadata.yml'),
+    'adx_entityformmetadataid: form-editor\nadx_entityform: form\nadx_type: 100000000\nadx_attributelogicalname: text\nadx_controlstyle: 756150001',
   );
   const stateFile = path.join(root, 'state.json'),
     cache = await new AssetCache({ directory: path.join(root, 'assets'), origin }).init();

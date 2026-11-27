@@ -1,3 +1,4 @@
+// @test-kind contract+security: Paqvilo hosts captured static PCF definitions with local binding contexts and captured load failures; a definition may name only local resources and never carries a copied record
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
@@ -26,7 +27,16 @@ test('captured static PCF definitions generate local native binding contexts wit
     {
       portal: {
         forms: [{ id: 'edit', name: 'Narrative', mode: 100000001 }],
-        records: [],
+        // The editor renders with code component metadata only (formRichTextField).
+        records: [
+          {
+            kind: 'basicformmetadata',
+            adx_entityform: 'edit',
+            adx_type: 100000000,
+            adx_attributelogicalname: 'narrative',
+            adx_controlstyle: 756150001,
+          },
+        ],
         webFiles: [],
       },
       store: {

@@ -892,6 +892,15 @@ const nextBindingId = (state) => {
 };
 
 function stampNode(node, location, state, id) {
+  state.nodeIds.set(node, id);
+  // Content of a closed shadow root carries no mark (only its component could read one): its binding names its place
+  // under its host instead (`sealed`), which Inspect reads through the DevTools protocol (lense/dom-pierce.mjs).
+  const sealed = state.sealedPaths.get(node);
+  if (sealed) {
+    const entry = state.entries.at(-1);
+    if (entry?.id === id) entry.sealed = sealed;
+    return;
+  }
   const existing = node.sourceCodeLocation.attrs?.[PROVENANCE_ATTRIBUTE];
   const at = attributeOffset(node, location, state.fragment.text);
   if (at < 0) return;
@@ -1277,8 +1286,13 @@ function bindServedNode(node, location, inertTemplateId, state) {
 function visitRenderNode(node, inertTemplateId, state, inert) {
   const location = node.sourceCodeLocation?.startTag,
     endTag = node.sourceCodeLocation?.endTag;
-  // A script inside a template element is not run when the document loads, bound template or not.
-  if (!processInlineScriptNode(node, location, endTag, inertTemplateId ?? (inert ? 'inert' : null), state)) return;
+  // A script inside a template element is not run when the document loads, bound template or not. A script of a closed
+  // shadow root gets no proof id: like a mark, only its component could read it.
+  if (
+    !state.sealedPaths.has(node) &&
+    !processInlineScriptNode(node, location, endTag, inertTemplateId ?? (inert ? 'inert' : null), state)
+  )
+    return;
   if (!location || !node.tagName) return;
   const contributing = overlappingIntervals(state.intervals, location.startOffset, location.endOffset);
   if (state.entries.length >= MAX_BINDINGS) {
@@ -1292,6 +1306,60 @@ function visitRenderNode(node, inertTemplateId, state, inert) {
   if (!bound) bound = bindServedNode(node, location, inertTemplateId, state);
   if (!bound) bound = bindDerivedNode(node, location, contributing, inertTemplateId, state);
   if (!bound) state.unbound++;
+}
+
+// Queues the element children of `parent` (a closed shadow root's content or one of its elements) with their place:
+// the host's binding id and the element index path from the root. A template inside it is left out.
+function sealedChildren(parent, place, state, pending) {
+  let index = 0;
+  for (const child of parent.childNodes ?? []) {
+    if (!child.tagName) continue;
+    const path = [...place.path, index++];
+    if (child.tagName === 'template' || path.length > 64) continue;
+    state.sealedPaths.set(child, { host: place.host, path: path.join('.') });
+    pending.push({ node: child, inertTemplateId: null, inert: false, sealed: { host: place.host, path } });
+  }
+}
+
+// Binds every element of the parsed document, depth first in document order: template contents and declared shadow
+// roots included.
+function bindRenderTree(tree, state) {
+  const pending = [{ node: tree, inertTemplateId: null, inert: false }],
+    entries = state.entries;
+  while (pending.length) {
+    const { node, inertTemplateId, inert, sealed } = pending.pop(),
+      previous = entries.length;
+    visitRenderNode(node, inertTemplateId, state, inert);
+    // An element of a closed shadow root: its children keep their place under the same host.
+    if (sealed) {
+      sealedChildren(node, sealed, state, pending);
+      continue;
+    }
+    for (let i = (node.childNodes?.length ?? 0) - 1; i >= 0; i--)
+      pending.push({ node: node.childNodes[i], inertTemplateId, inert });
+    if (node.content) queueTemplateContent(node, { inertTemplateId, inert, previous }, state, pending);
+  }
+}
+
+// The content of a template element: bound to the template element's own identity when it has one. A template element
+// without a binding (its tag came from a source the export does not hold) still has content to name. A template that
+// declares a shadow root is not held back: the parser attaches its content to the host as a shadow tree, where it is
+// live markup like any other (its scripts run).
+function queueTemplateContent(node, { inertTemplateId, inert, previous }, state, pending) {
+  const shadowMode = ((node.attrs ?? []).find((attr) => attr.name === 'shadowrootmode')?.value ?? '').toLowerCase();
+  if (shadowMode === 'open') pending.push({ node: node.content, inertTemplateId, inert });
+  // A closed shadow root is a boundary nothing outside its component reads: its content gets no marks, which only the
+  // component itself could see. Its elements are bound by their place under the host instead: the element index path
+  // from the shadow root (sealedChildren), the host's binding id naming the root.
+  else if (shadowMode === 'closed') {
+    const host = state.nodeIds.get(node.parentNode);
+    if (host && !state.sealedPaths.has(node)) sealedChildren(node.content, { host, path: [] }, state, pending);
+  } else
+    pending.push({
+      node: node.content,
+      inertTemplateId: state.entries.length > previous ? state.entries.at(-1).id : inertTemplateId,
+      inert: true,
+    });
 }
 
 /**
@@ -1332,38 +1400,20 @@ export function finalizePortalProvenance({
     tagBindings,
     ordinal: 0,
     lineStarts: new Map(),
+    // The binding id of each bound element, and the place of each element of a closed shadow root under its host.
+    nodeIds: new Map(),
+    sealedPaths: new Map(),
     // Elements left without a binding: none could be made (unbound) or the binding limit was reached (omitted).
     unbound: 0,
     omitted: 0,
     scriptProofsOmitted: 0,
     complete: fragment.complete !== false,
   };
-  const pending = [{ node: tree, inertTemplateId: null, inert: false }];
-  while (pending.length) {
-    const { node, inertTemplateId, inert } = pending.pop(),
-      previous = entries.length;
-    visitRenderNode(node, inertTemplateId, state, inert);
-    for (let i = (node.childNodes?.length ?? 0) - 1; i >= 0; i--)
-      pending.push({ node: node.childNodes[i], inertTemplateId, inert });
-    // The content of a template element: bound to the template element's own identity when it has one. A template
-    // element without a binding (its tag came from a source the export does not hold) still has content to name.
-    // A template that declares a shadow root is not held back: the parser attaches its content to the host as a
-    // shadow tree, where it is live markup like any other (its scripts run).
-    const shadowMode = node.content
-      ? ((node.attrs ?? []).find((attr) => attr.name === 'shadowrootmode')?.value ?? '').toLowerCase()
-      : '';
-    if (shadowMode === 'open') pending.push({ node: node.content, inertTemplateId, inert });
-    // A closed shadow root is a boundary nothing outside its component reads: its content gets no marks, which only
-    // the component itself could see.
-    else if (shadowMode === 'closed') continue;
-    else if (node.content)
-      pending.push({
-        node: node.content,
-        inertTemplateId: entries.length > previous ? entries.at(-1).id : inertTemplateId,
-        inert: true,
-      });
-  }
+  bindRenderTree(tree, state);
   const scriptPolicy = addScriptNonceEdits(tree, fragment, index, scriptNonce, edits);
+  // Nothing of the parse is kept in the proof but the bindings.
+  state.nodeIds.clear();
+  state.sealedPaths.clear();
   const html = applyTextEdits(fragment.text, edits);
   const result = {
     html,
@@ -1403,6 +1453,11 @@ export function finalizePortalProvenance({
 // another one. Authored external scripts get no nonce: their host must be in script-src, as Learn's troubleshooting says.
 // Everything else (data, unverified or partly interpolated script tags) is withheld and reported. The toolkit's own
 // scripts injected after rendering are found by `nonceInjectedScripts`.
+// Hosted sites (session F3, two runs) give the nonce to every script element of a rendered page, also one a record field,
+// a snippet or a built string writes, and an authored external one, and hash every inline handler, also one a record
+// writes. A site records that as observed.scriptNonceScope "every-script" (`everyScript`): every script element whose
+// start tag can carry the attribute then gets the nonce and every handler its hash. The default keeps the decisions
+// above (fail-closed).
 const UNPROVEN_PLATFORM_KINDS = new Set(['builtin-template', 'page-template']);
 const EVENT_HANDLER_ATTRIBUTE = /^on[a-z]+$/;
 const EXECUTABLE_SCRIPT_TYPE = /^(?:module|(?:text|application)\/(?:x-)?(?:java|ecma)script)?$/i;
@@ -1612,22 +1667,30 @@ const runs = (node) =>
  * Hashes the inline handlers that a proved start tag writes itself (up to MAX_HANDLER_HASHES); withholds the others,
  * merged ones included.
  */
-function decideHandlers({ location, handlers }, writer, hashes, withheld) {
+function decideHandlers({ location, handlers }, writer, hashes, withheld, everyScript = false) {
   for (const handler of handlers) {
-    if (writer && !handler.merged && hashes.size < MAX_HANDLER_HASHES) {
-      hashes.add(createHash('sha256').update(handler.value, 'utf8').digest('base64'));
+    const hashable = everyScript || (Boolean(writer) && !handler.merged);
+    if (hashable && hashes.size < MAX_HANDLER_HASHES) {
+      addHandlerHash(hashes, handler.value, writer);
       continue;
     }
-    let reason = null;
-    if (handler.merged) reason = 'merged';
-    else if (writer) reason = 'limit';
     withheld.push({
       kind: 'handler',
       attribute: handler.name,
       offset: location.startOffset,
-      ...(reason ? { reason } : {}),
+      ...handlerWithheldReason(hashable, handler),
     });
   }
+}
+/** Records a handler's hash in the group it first appears in: the platform's handlers, then the page's. */
+function addHandlerHash(hashes, value, writer) {
+  const hash = createHash('sha256').update(value, 'utf8').digest('base64');
+  if (!hashes.has(hash)) hashes.set(hash, writer === 'platform' ? 0 : 1);
+}
+/** Why a handler got no hash: the hash limit, a merged attribute, or (no reason) an unproved writer. */
+function handlerWithheldReason(hashable, handler) {
+  if (hashable) return { reason: 'limit' };
+  return handler.merged ? { reason: 'merged' } : {};
 }
 
 /**
@@ -1656,20 +1719,22 @@ function decideScript({ node, location }, decided, { nonce, pending, edits, poli
  * The script nonce and handler hash decisions for the elements of a parsed render fragment (parse5 tree with source
  * locations over `fragment.text`). `nonce` is the response's nonce; `pending` names the attribute that marks every
  * script left without it, so nonceInjectedScripts can tell them from scripts the toolkit adds later.
- * Returns { edits, scriptPolicy: { handlerHashes, nonced, withheld, external } }.
+ * Returns { edits, scriptPolicy: { handlerHashes, handlerHashGroups, nonced, withheld, external } }:
+ * `handlerHashGroups` holds the hashes of the platform's handlers, then those of the page's own (non-empty groups),
+ * as hosted pages list them (session F3).
  */
-function scriptNonceDecisions(tree, fragment, index, { nonce, pending }) {
+function scriptNonceDecisions(tree, fragment, index, { nonce, pending, everyScript = false }) {
   const state = { index, text: fragment.text };
   const elements = policyElements(tree);
   assignCoverage(elements, fragment.intervals ?? []);
   const edits = [],
-    hashes = new Set(),
-    policy = { handlerHashes: [], nonced: 0, withheld: [], external: 0 };
+    hashes = new Map(),
+    policy = { handlerHashes: [], handlerHashGroups: [], nonced: 0, withheld: [], external: 0 };
   for (const element of elements) {
     const writer = startTagWriter(element.start, element.location, element.node.tagName, state);
-    decideHandlers(element, writer, hashes, policy.withheld);
+    decideHandlers(element, writer, hashes, policy.withheld, everyScript);
     if (element.script)
-      decideScript(element, scriptDecision(element, writer, state), {
+      decideScript(element, everyScript ? { trusted: true } : scriptDecision(element, writer, state), {
         nonce,
         pending,
         edits,
@@ -1677,7 +1742,9 @@ function scriptNonceDecisions(tree, fragment, index, { nonce, pending }) {
         text: fragment.text,
       });
   }
-  policy.handlerHashes = [...hashes];
+  const groups = [0, 1].map((group) => [...hashes].filter(([, of]) => of === group).map(([hash]) => hash));
+  policy.handlerHashGroups = groups.filter((group) => group.length);
+  policy.handlerHashes = policy.handlerHashGroups.flat();
   return { edits, scriptPolicy: policy };
 }
 
@@ -1705,37 +1772,11 @@ export const scriptNonceInjectedAttribute = () => `data-paqvilo-nonce-injected-$
  * publish no provenance proof. `edits` ({ start, end, text, intervals? }) are host edits applied first
  * (applyRenderEdits). Returns { html, scriptPolicy }.
  */
-export function applyScriptNonces({ fragment, index, nonce, pending, edits = [] }) {
+export function applyScriptNonces({ fragment, index, nonce, pending, everyScript = false, edits = [] }) {
   const edited = edits.length ? applyRenderEdits(fragment, edits) : fragment;
   const tree = parse(edited.text, { sourceCodeLocationInfo: true });
-  const decided = scriptNonceDecisions(tree, edited, index, { nonce, pending });
+  const decided = scriptNonceDecisions(tree, edited, index, { nonce, pending, everyScript });
   return { html: applyTextEdits(edited.text, decided.edits), scriptPolicy: decided.scriptPolicy };
-}
-
-/**
- * applyScriptNonces for a document that is exported source byte for byte (a code site's compiled entry document): every
- * character is that source's literal text.
- */
-export function staticDocumentScriptNonces(html, { nonce, pending }) {
-  const text = String(html);
-  const source = { id: 'static-document', text };
-  return applyScriptNonces({
-    fragment: {
-      text,
-      intervals: [
-        {
-          start: 0,
-          end: text.length,
-          mapping: 'literal',
-          sourceRefId: source.id,
-          sourceSpan: { start: 0, end: text.length },
-        },
-      ],
-    },
-    index: { sources: new Map([[source.id, source]]) },
-    nonce,
-    pending,
-  });
 }
 
 /** The edits of one script of a final response body (nonceInjectedScripts): its markers removed, maybe its nonce. */

@@ -12,8 +12,8 @@
 // - user.signIn/signOut, languages: behaviour over the local sign-in routes, page languages and language-prefixed paths.
 // - currentPage.forms: behaviour over the rendered basic and multistep forms (formOf below).
 // - Opaque form controls and the legacy `agents` namespace report unsupported members.
-// - `agent.SendActivity` dispatches through a project-configured local endpoint.
-// It also hydrates the local SharePoint document grid ([data-pp-documents], platform.mjs) over /_apps/portal-documents/.
+// - `agent.SendActivity` follows the hosted route sequence (BotConfiguration, portal user token, Direct Line token) on
+//   the page's own origin; a project-configured local endpoint stands in for Copilot Studio.
 (function () {
   'use strict';
   if (globalThis.__paqviloPages) return;
@@ -37,6 +37,16 @@
     return result + text.slice(cursor);
   }
   const warned = new Set();
+  // A header sort of a modern list: the chosen column leads and the earlier order follows ("x_text DESC,x_name ASC",
+  // hosted-f2 summary-F2 LIST-01f); an earlier clause on the same column is dropped.
+  function leadingSort(expression, column, descending) {
+    const clauses = [`${column} ${descending ? 'DESC' : 'ASC'}`];
+    for (const part of String(expression ?? '').split(',')) {
+      const clause = part.trim();
+      if (clause && clause.split(/\s+/)[0] !== column) clauses.push(clause);
+    }
+    return clauses.join(',');
+  }
   class PagesClientApiUnsupported extends Error {
     constructor(member) {
       super(`PagesClientApiUnsupported: $pages.${member} is not available in the local runtime.`);
@@ -77,6 +87,18 @@
     } catch {
       return null;
     }
+  }
+
+  // A portal route named by a response (a list configuration): a site-relative path below `prefix` on this origin, or
+  // null. Protocol-relative and absolute URLs are refused before parsing; the prefix is checked after the path is
+  // normalised, so ".." cannot leave it.
+  function portalRoute(value, prefix) {
+    if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//') || value.includes('\\'))
+      return null;
+    const target = portalNavigationUrl(value);
+    if (!target) return null;
+    const url = new URL(target);
+    return url.pathname.startsWith(prefix) ? url.pathname + url.search : null;
   }
 
   // ---- Ajax: CSRF token, credentials and x-requested-with on every request (Learn, client-api/ajax).
@@ -354,8 +376,6 @@
 
   // ---- Lists (Learn, client-api/lists).
   const lists = new WeakMap();
-  const base64Json = (value) =>
-    JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(value || 'W10='), (char) => char.codePointAt(0))));
   // The grid service sends a DateTime as its wire form, "/Date(ms)/" with an optional +hhmm or -hhmm offset.
   const WIRE_DATE = /^\/Date\((-?\d+)(?:[+-]\d{4})?\)\/$/;
   const wireDate = (value) => {
@@ -400,13 +420,17 @@
     };
   }
   function modernList(element) {
-    // Views, search, metadata filter, sorting and actions reuse the classic grid engine: the same layouts (with the
-    // list's action links), request body and grid, delete, download and modal form routes (platform.mjs renderModernList).
-    const layouts = base64Json(element.getAttribute('data-view-layouts') ?? null); // NOSONAR: actual attributes exclude inherited dataset values
-    let layout = layouts.find((item) => item.Id === (element.getAttribute('data-selected-view') ?? null)) ?? // NOSONAR: actual attributes exclude inherited dataset values
-      layouts[0] ?? { Columns: [] };
-    const pageSize = Number(element.getAttribute('data-page-size')) || layout.Configuration?.PageSize || 10; // NOSONAR: actual attributes exclude inherited dataset values
-    const website = encodeURIComponent(element.getAttribute('data-website-id') ?? ''); // NOSONAR: actual attributes exclude inherited dataset values
+    // The list's configuration comes from GET /_services/portal/GetListViewConfiguration/<list>, its rows from the
+    // configuration's data URL, as the hosted data_grid control reads them (platform.mjs renderModernList). Views,
+    // search, metadata filter, sorting and actions reuse the classic grid engine: the same layouts (with the list's
+    // action links) and grid, delete, download and modal form routes.
+    let layouts = [],
+      layout = { Columns: [] },
+      pageSize = 10,
+      website = '',
+      dataUrl = '',
+      formTemplateUrl = '',
+      configured = null;
     const table = element.querySelector('table');
     const head = table.querySelector('thead tr');
     const body = table.querySelector('tbody');
@@ -446,8 +470,8 @@
         if (id) url.searchParams.set(link.QueryStringIdParameterName || 'id', id);
         return url.href;
       }
-      if (!link.EntityForm?.Id) return null;
-      const url = new URL(`/_portal/modal-form-template-path/${website}`, location.href);
+      if (!link.EntityForm?.Id || !formTemplateUrl) return null;
+      const url = new URL(formTemplateUrl, location.href);
       url.searchParams.set('entityformid', link.EntityForm.Id);
       if (id) url.searchParams.set('id', id);
       return portalNavigationUrl(url.href);
@@ -558,7 +582,7 @@
             th.setAttribute('aria-sort', /desc/i.test(direction ?? '') ? 'descending' : 'ascending');
           button.addEventListener('click', () => {
             const descending = th.getAttribute('aria-sort') === 'ascending';
-            sortExpression = `${definition.LogicalName} ${descending ? 'DESC' : 'ASC'}`;
+            sortExpression = leadingSort(sortExpression, definition.LogicalName, descending);
             renderHead();
             void restart();
           });
@@ -683,9 +707,20 @@
       element.setAttribute('aria-busy', 'true');
       const current = generation;
       loading = (async () => {
-        const response = await fetch(/* NOSONAR */ element.getAttribute('data-get-url') ?? null, {
-          // NOSONAR: read actual attributes, not inherited dataset properties
-          // NOSONAR: actual attributes exclude inherited dataset values
+        // The first page waits for the list's configuration.
+        // A failed configuration is not kept: the next restart (search, view, sort) asks again.
+        configured ??= configure().then(
+          (ok) => {
+            if (!ok) configured = null;
+            return ok;
+          },
+          (error) => {
+            configured = null;
+            throw error;
+          },
+        );
+        if (!(await configured) || current !== generation) return;
+        const response = await fetch(dataUrl, {
           method: 'POST',
           credentials: 'same-origin',
           headers: {
@@ -693,19 +728,20 @@
             'x-requested-with': 'XMLHttpRequest',
             __RequestVerificationToken: await token(),
           },
-          // The classic grid client's request body: one secured query, continued page by page.
+          // The hosted modern list's request body: one secured query, continued page by page (captured,
+          // paqvilo-developer hosted-f2 summary-F2 LIST-01d).
           body: JSON.stringify({
             base64SecureConfiguration: layout.Base64SecureConfiguration,
             sortExpression,
-            search: search || null,
+            search,
             page: page + 1,
             pageSize,
-            pagingCookie: '',
             filter: null,
-            metaFilter: metaFilter || null,
-            nlSearchFilter: null,
+            metaFilter,
             timezoneOffset: new Date().getTimezoneOffset(),
             customParameters: [],
+            odataFilterQuery: '',
+            nlSearchFilter: '',
           }),
         });
         // A view, search, filter or sort change restarted the list while this page was in flight: drop it.
@@ -770,6 +806,52 @@
       body.replaceChildren();
       element.removeAttribute('aria-busy');
       return load();
+    }
+    // The configuration names the views, the default one, the data URL and the modal form route.
+    async function configure() {
+      const list = encodeURIComponent(element.getAttribute('data-list-id') ?? ''); // NOSONAR: actual attributes exclude inherited dataset values
+      const response = await fetch(`/_services/portal/GetListViewConfiguration/${list}`, {
+        credentials: 'same-origin',
+        headers: { 'x-requested-with': 'XMLHttpRequest' },
+      });
+      if (response.status === 403) {
+        more = false;
+        show('.view-access-denied');
+        return false;
+      }
+      const data = response.ok ? await response.json() : null;
+      // The data URL receives the anti-forgery token: only a grid service of this portal is used.
+      const service = portalRoute(data?.getDataUrl, '/_services/');
+      if (!Array.isArray(data?.layouts) || !data.layouts.length || !service) {
+        more = false;
+        show('.view-error');
+        return false;
+      }
+      layouts = data.layouts;
+      layout = layouts.find((item) => item.Id === data.defaultViewId) ?? layouts[0];
+      pageSize = Number(layout.Configuration?.PageSize) || 10;
+      dataUrl = service;
+      // A form action opens only the portal's modal form route; another URL opens nothing.
+      formTemplateUrl = portalRoute(data.modalFormTemplateUrl, '/_portal/modal-form-template-path/') ?? '';
+      website = encodeURIComponent(dataUrl.split('/').pop() ?? '');
+      sortExpression = layout.SortExpression ?? '';
+      const picker = element.querySelector('[data-pp-modern-list-view]');
+      if (picker && layouts.length > 1) {
+        picker.replaceChildren(
+          ...layouts.map((item) => {
+            const option = document.createElement('option');
+            option.value = String(item.Id);
+            option.textContent = String(item.Configuration?.ViewDisplayName || item.ViewName || item.Id);
+            option.selected = item === layout;
+            return option;
+          }),
+        );
+        picker.hidden = false;
+      }
+      renderHead();
+      renderToolbar();
+      columns = definitions.map(columnOf);
+      return true;
     }
     element.querySelector('[data-pp-modern-list-view]')?.addEventListener('change', (event) => {
       layout = layouts.find((item) => item.Id === event.target.value) ?? layout;
@@ -1483,8 +1565,52 @@
     const path = CODE.test(active) && first.toLowerCase() === active.toLowerCase() ? rest : location.pathname;
     location.assign(`/${code}${path || '/'}${location.search}`);
   }
+  // Hosted session F3 (summary-F3.md API-05b): SendActivity reads /_services/agent/BotConfiguration, which lists only the
+  // agents whose Bot Consumer grants one of the visitor's web roles; without one it fails with invalidAgent. With one it
+  // posts /_services/auth/portalusertoken and requests a Direct Line token at
+  // https://<environment>.environment.api.powerplatform.com/powervirtualagents/botsbyschema/<schema>/directline/token;
+  // a failed Direct Line connection fails with directLineFailed. Locally the token request and the activity go to the
+  // page's own origin, where a simulator endpoint mock or a trusted pack endpoint stands in for Copilot Studio: the token
+  // route answers { token, conversationId } and POST /v3/directline/conversations/<conversationId>/activities answers
+  // the reply activity or activities.
+  const invalidAgent = 'Invalid bot schema name or access denied. Please check the bot schema name and try again';
+  const directLineFailed = 'Something went wrong while creating direct line connection: Please try again';
+  const CONVERSATION_ID = /^[A-Za-z0-9_-][\w.-]{0,255}$/;
+  async function agentConversation(schema) {
+    const configuration = await request({ url: '/_services/agent/BotConfiguration', method: 'GET' }, true).then(
+      ({ data }) => data,
+      () => null,
+    );
+    const agent = Array.isArray(configuration)
+      ? configuration.find((item) => item?.botSchemaName === schema)
+      : undefined;
+    if (!agent) throw new Error(invalidAgent);
+    try {
+      await request({ url: '/_services/auth/portalusertoken', method: 'POST' }, true);
+      const path = portalRoute(
+        `/powervirtualagents/botsbyschema/${encodeURIComponent(schema)}/directline/token`,
+        '/powervirtualagents/botsbyschema/',
+      );
+      if (!path) throw new Error(directLineFailed);
+      const { data } = await request({ url: path, method: 'GET' }, true);
+      // The conversation id names a same-origin route segment: a token answer cannot point the activity elsewhere.
+      if (
+        typeof data?.token !== 'string' ||
+        typeof data?.conversationId !== 'string' ||
+        !CONVERSATION_ID.test(data.conversationId)
+      )
+        throw new Error(directLineFailed);
+      const conversation = portalRoute(
+        `/v3/directline/conversations/${encodeURIComponent(data.conversationId)}/activities`,
+        '/v3/directline/conversations/',
+      );
+      if (!conversation) throw new Error(directLineFailed);
+      return conversation;
+    } catch {
+      throw new Error(directLineFailed);
+    }
+  }
   function sendActivity(schema, activity, onResponse, onError) {
-    const invalidAgent = 'Invalid bot schema name or access denied. Check the bot schema name and try again.';
     const report = (error) => {
       if (typeof onError === 'function') onError(error);
       else console.error(error.message);
@@ -1497,20 +1623,15 @@
       queueMicrotask(() => report(new TypeError('$pages.agent.SendActivity needs an activity object.')));
       return;
     }
-    request(
-      { url: `/_api/agents/${encodeURIComponent(schema)}/activities`, method: 'POST', body: activity },
-      true,
-    ).then(
-      ({ data }) => {
-        if (typeof onResponse !== 'function' || data == null) return;
-        for (const item of Array.isArray(data) ? data : [data]) onResponse(item);
-      },
-      (error) => {
-        if (error.status === 404) report(new PagesClientApiUnsupported(`agent.SendActivity (${schema})`));
-        else if (error.status === 401 || error.status === 403) report(new Error(invalidAgent));
-        else report(error);
-      },
-    );
+    agentConversation(schema)
+      .then((conversation) => request({ url: conversation, method: 'POST', body: activity }, true))
+      .then(
+        ({ data }) => {
+          if (typeof onResponse !== 'function' || data == null) return;
+          for (const item of Array.isArray(data) ? data : [data]) onResponse(item);
+        },
+        (error) => report(error),
+      );
   }
   const $pages = {
     currentPage: {
@@ -1578,199 +1699,7 @@
     legacy.isClientApiEnabled = 'True';
   globalThis.__paqviloPages = $pages;
 
-  // ---- The local SharePoint document grid (platform.mjs, sharepoint-documents.mjs createPortalDocumentService).
-  function documentGrid(element) {
-    const body = element.querySelector('tbody'),
-      status = element.querySelector('.message');
-    const say = (text) => {
-      status.hidden = !text;
-      status.textContent = text || '';
-    };
-    const requestFailed = 'Error completing request.';
-    const url = portalNavigationUrl(element.getAttribute('data-documents-url') ?? null); // NOSONAR: actual attributes exclude inherited dataset values
-    if (!url) {
-      element.removeAttribute('aria-busy');
-      say('The document service URL must stay within this portal.');
-      return;
-    }
-    const failureText = async (response) => {
-      try {
-        return (await response.json())?.error?.message ?? `HTTP ${response.status}`;
-      } catch {
-        return `HTTP ${response.status}`;
-      }
-    };
-    const write = async (method, target, init = {}) =>
-      fetch(target, {
-        method,
-        credentials: 'same-origin',
-        ...init,
-        headers: {
-          'x-requested-with': 'XMLHttpRequest',
-          __RequestVerificationToken: await token(),
-          ...init.headers,
-        },
-      });
-    // The open subfolder (names from the record folder down) and the route for it: ?folder=a/b.
-    let path = [];
-    let generation = 0;
-    const at = (suffix = '', params = {}, folder = path) => {
-      const query = new URLSearchParams(params);
-      if (folder.length) query.set('folder', folder.join('/'));
-      return `${url}${suffix}${query.size ? '?' + query : ''}`;
-    };
-    const button = (text, onClick) => {
-      const control = document.createElement('button');
-      control.type = 'button';
-      control.className = 'btn btn-default btn-sm';
-      control.textContent = text;
-      control.addEventListener('click', onClick);
-      return control;
-    };
-    const act = async (method, target, init) => {
-      try {
-        const answer = await write(method, target, init);
-        if (!answer.ok) say(await failureText(answer));
-        else void load();
-      } catch {
-        say(requestFailed);
-      }
-    };
-    const open = (next) => {
-      path = next;
-      void load();
-    };
-    function row(first, size, modified, actions) {
-      const tr = document.createElement('tr');
-      for (const value of [first, size, modified]) {
-        const td = document.createElement('td');
-        td.append(value);
-        tr.append(td);
-      }
-      const td = document.createElement('td');
-      td.append(...actions);
-      tr.append(td);
-      body.append(tr);
-    }
-    function renderBreadcrumb() {
-      const crumbs = document.createElement('nav');
-      crumbs.dataset.ppDocumentsPath = '';
-      crumbs.setAttribute('aria-label', 'Folder');
-      for (const [index, name] of ['Documents', ...path].entries()) {
-        if (index) crumbs.append(' / ');
-        if (index === path.length) {
-          const current = document.createElement('span');
-          current.setAttribute('aria-current', 'location');
-          current.textContent = name;
-          crumbs.append(current);
-        } else {
-          const link = button(name, () => open(path.slice(0, index)));
-          link.className = 'btn btn-link btn-sm';
-          crumbs.append(link);
-        }
-      }
-      element.prepend(crumbs);
-    }
-    function renderFolders(data) {
-      for (const folder of data.folders ?? []) {
-        const link = button(folder.name, () => open([...path, folder.name]));
-        link.className = 'btn btn-link';
-        link.dataset.ppDocumentsFolder = String(folder.name);
-        const actions = data.canDelete
-          ? [button('Delete', () => act('DELETE', at('', {}, [...path, folder.name])))]
-          : [];
-        row(link, 'Folder', folder.lastModified ? new Date(folder.lastModified).toLocaleString() : '', actions);
-      }
-    }
-    function renderDocuments(data) {
-      for (const file of data.documents) {
-        const link = document.createElement('a');
-        link.href = at(`/${encodeURIComponent(file.name)}`);
-        link.textContent = file.name;
-        row(
-          link,
-          `${Math.max(1, Math.round(file.size / 1024))} KB`,
-          file.lastModified ? new Date(file.lastModified).toLocaleString() : '',
-          data.canDelete ? [button('Delete', () => act('DELETE', link.href))] : [],
-        );
-      }
-    }
-    function renderActions(data) {
-      say(data.documents.length || data.folders?.length ? '' : 'There are no documents.');
-      if (data.canCreateFolder) {
-        const create = button('New folder', () => {
-          const name = prompt('Folder name');
-          if (name) void act('POST', at('', { newFolder: name }));
-        });
-        create.dataset.ppDocumentsNewFolder = '';
-        element.append(create);
-      }
-      if (data.canUpload) {
-        const input = document.createElement('input');
-        input.type = 'file';
-        input.dataset.ppDocumentsUpload = '';
-        input.setAttribute('aria-label', 'Add files');
-        input.addEventListener('change', async () => {
-          input.disabled = true;
-          try {
-            for (const file of input.files) {
-              const answer = await write('POST', at('', { name: file.name }), {
-                body: file,
-                headers: { 'content-type': file.type || 'application/octet-stream' },
-              });
-              if (!answer.ok) {
-                say(await failureText(answer));
-                return;
-              }
-            }
-            void load();
-          } catch {
-            say(requestFailed);
-          } finally {
-            input.disabled = false;
-          }
-        });
-        element.append(input);
-      }
-    }
-    // Each load takes a generation; one that is no longer the latest never touches the DOM, its status or aria-busy.
-    // A failed load reports in the status line rather than as a rejection.
-    async function load() {
-      const current = ++generation;
-      element.setAttribute('aria-busy', 'true');
-      try {
-        const response = await fetch(at(), {
-          credentials: 'same-origin',
-          headers: { 'x-requested-with': 'XMLHttpRequest' },
-        });
-        if (current !== generation) return;
-        element.removeAttribute('aria-busy');
-        if (!response.ok) {
-          const message = await failureText(response);
-          if (current === generation) say(message);
-          return;
-        }
-        const data = await response.json();
-        if (current !== generation) return;
-        body.replaceChildren();
-        for (const control of element.querySelectorAll(
-          '[data-pp-documents-upload], [data-pp-documents-new-folder], [data-pp-documents-path]',
-        ))
-          control.remove();
-        renderBreadcrumb();
-        renderFolders(data);
-        renderDocuments(data);
-        renderActions(data);
-      } catch {
-        if (current === generation) say(requestFailed);
-      } finally {
-        if (current === generation) element.removeAttribute('aria-busy');
-      }
-    }
-    return load();
-  }
   whenParsed(() => {
     for (const element of document.querySelectorAll('[data-pp-modern-list]')) listFor(element).__start();
-    for (const element of document.querySelectorAll('[data-pp-documents]')) void documentGrid(element);
   });
 })();

@@ -32,9 +32,11 @@ const MAX_INCLUDE_DEPTH = 16;
 const NAME_CHARACTER = String.raw`\p{L}\p{Nd}_\-`;
 // Objects the substitution tag documentation names (request, page, language and date, that is `now`), and `params`,
 // documented as a shortcut for request.params. `user` is not listed: the documented cached header keeps its user branch.
-// The first group is the root name, which a variable the template declares shadows.
+// The first group is the root name, which a variable the template declares shadows. The third group is a website
+// attribute built from the request: the sign-in and sign-out URLs carry the request path and query as their returnUrl,
+// and the selected language's URL is the request path (their *_substitution forms are the documented cached-safe ones).
 const REQUEST_OBJECT = new RegExp(
-  String.raw`(?<![${NAME_CHARACTER}.])(request|params|page|now)(?![${NAME_CHARACTER}])(?!\s*:)|(?<![${NAME_CHARACTER}.])([\p{L}_][${NAME_CHARACTER}]*)\.url(?![${NAME_CHARACTER}])`,
+  String.raw`(?<![${NAME_CHARACTER}.])(request|params|page|now)(?![${NAME_CHARACTER}])(?!\s*:)|(?<![${NAME_CHARACTER}.])([\p{L}_][${NAME_CHARACTER}]*)\.url(?![${NAME_CHARACTER}])|(?<![${NAME_CHARACTER}.])(website)\.(?:sign_in_url|sign_out_url|selected_language\.url)(?![${NAME_CHARACTER}])`,
   'gu',
 );
 const VARIABLE = new RegExp(String.raw`^\s*([\p{L}_][${NAME_CHARACTER}]*)`, 'u');
@@ -151,6 +153,7 @@ function requestObject(token, declared, languageVariable) {
   for (const match of expressionText(token).matchAll(REQUEST_OBJECT)) {
     if (match[1] && !declared(match[1])) return match;
     if (match[2] && (languageVariable(match[2]) || (match[2] === 'language' && !declared('language')))) return match;
+    if (match[3] && !declared(match[3])) return match;
   }
   return null;
 }
@@ -244,6 +247,31 @@ function scanTemplate(
     if (substitution === 0) scanToken(token, state, context);
   }
   chain.delete(template);
+}
+
+/**
+ * The request-dependent reads of a cached header or footer outside {% substitution %}, in its source and the templates
+ * it includes by name (`templates`: `{ name, source }`), as PP-CACHE-001 finds them: `[{ template, offset, text }]`
+ * with the template name, the offset in its source and the expression read. Mirage reports them when it serves a
+ * cached copy (mirage/lib/liquid.mjs renderOutputCached).
+ */
+export function cachedRequestReads(name, source, templates = []) {
+  const unitOf = (templateName, text) => ({
+    name: templateName,
+    unit: { file: templateName, text: String(text ?? '') },
+  });
+  const list = templates.map((item) => unitOf(item.name, item.source));
+  const reads = [];
+  scanTemplate(
+    unitOf(name, source),
+    list,
+    (_rule, unit, _line, offset) => {
+      const expression = /^[^\s|}%,)]+/.exec(unit.text.slice(offset))?.[0] ?? '';
+      reads.push({ template: unit.file, offset, text: expression });
+    },
+    new Set(),
+  );
+  return reads;
 }
 
 /** Reports request-dependent Liquid that an enabled header or footer output cache would share across requests. */

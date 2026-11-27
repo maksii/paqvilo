@@ -45,7 +45,8 @@ function mounts(html) {
 
 /**
  * The data set binding of the named host: the list's, or the named subgrid's. Subgrid hosts are rendered in the order
- * of their FormXml cells, so the subgrid is found by the position of its control among the form's subgrid controls.
+ * of their FormXml cells, so the subgrid is found by the position of its control among the subgrid controls of the
+ * one recorded form that holds it (a recorded Solution may carry the forms of several pages).
  */
 function bindingOf(html, host, solution) {
   const datasets = mounts(html).flatMap((mount) => mount.datasets ?? []);
@@ -54,9 +55,13 @@ function bindingOf(html, host, solution) {
     assert.equal(lists.length, 1, 'one list data set is bound');
     return lists[0];
   }
-  const forms = Object.entries(solution).filter(([name]) => /\/FormXml\//.test(name));
-  assert.equal(forms.length, 1, 'the recorded Solution holds one form');
-  const order = [...forms[0][1].matchAll(/<control id="([^"]+)"[^>]*\bindicationOfSubgrid="true"/g)].map((m) => m[1]);
+  const subgridsOf = (xml) =>
+    [...xml.matchAll(/<control id="([^"]+)"[^>]*\bindicationOfSubgrid="true"/g)].map((m) => m[1]);
+  const forms = Object.entries(solution).filter(
+    ([name, xml]) => /\/FormXml\//.test(name) && subgridsOf(xml).includes(host.subgrid),
+  );
+  assert.equal(forms.length, 1, 'one recorded form holds the named subgrid');
+  const order = subgridsOf(forms[0][1]);
   const subgrids = datasets.filter((dataset) => /entity-subgrid-data\.json/.test(dataset.service ?? ''));
   assert.equal(subgrids.length, order.length, 'every subgrid cell of the form is bound');
   return subgrids[order.indexOf(host.subgrid)];

@@ -348,6 +348,7 @@ test('layout pages carry the native chrome around the header, content and footer
   assert.doesNotMatch(form, /<input name="__RequestVerificationToken"/);
 });
 
+// @test-kind unproven+observation: the endpoints' markup is a local model; the anti-forgery cookie is a SameSite=Lax session cookie as hosted session F4 set it (paqvilo-developer hosted-f4 swap runs a and b).
 test('anti-forgery endpoints return the native self-closing input with the cookie token', async (t) => {
   const { app, get } = await shellFixture(t);
   for (const pathname of ['/_layout/tokenhtml?_=1', `/_portal/${SITE}/Layout/GetAntiForgeryToken?_=2`]) {
@@ -360,7 +361,7 @@ test('anti-forgery endpoints return the native self-closing input with the cooki
     );
     assert.match(
       response.headers.get('set-cookie'),
-      /^__RequestVerificationToken=[\w-]+; path=\/; secure; HttpOnly; SameSite=None$/,
+      /^__RequestVerificationToken=[\w-]+; path=\/; secure; HttpOnly; SameSite=Lax$/,
     );
   }
   assert.equal((await get(`/_portal/00000000-0000-4000-8000-000000000000/Layout/GetAntiForgeryToken`)).status, 404);
@@ -1109,6 +1110,29 @@ test('a map list with credentials renders the legacy map control and loads the m
   assert.equal(moved.status, 200);
   assert.equal(moved.headers.get('content-type'), 'image/gif');
   assert.ok(moved.headers.get('etag'));
+});
+
+// @test-kind observation: hosted session F2 LIST-02b, paqvilo-developer hosted-f2 summary-F2 and runs/a/map.json and runs/b/map.json (map:search-direct): a direct POST to the map list's data-search-url answers the platform's 500 error page
+test("a direct post to the map list search URL answers the platform's 500 error page", async (t) => {
+  const { app } = await shellFixture(t);
+  const session = signInHeaders(app, CONTACT, { roles: ['Member'] });
+  const response = await fetch(`${app.url}/EntityList/Map/Search/`, {
+    method: 'POST',
+    headers: { ...session, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      entityListId: '1c000000-0000-4000-8000-000000000001',
+      viewId: '',
+      latitude: 1.5,
+      longitude: 2.5,
+      distance: 10,
+      units: 'km',
+    }),
+  });
+  assert.equal(response.status, 500);
+  assert.equal(response.headers.get('content-type'), 'text/html; charset=utf-8');
+  assert.equal(response.headers.get('cache-control'), 'no-cache, no-store, must-revalidate');
+  assert.equal(response.headers.get('x-sim-route'), 'entitylist-map-search-local');
+  assert.match(await response.text(), /<title>We&#39;re sorry, but something went wrong \(500\)<\/title>/);
 });
 
 test("the captcha challenge image and audio answer as the platform's resource handler does", async (t) => {

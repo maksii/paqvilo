@@ -632,6 +632,36 @@ test('a trusted local CAPTCHA fixture accepts one solved challenge through eithe
   }
 });
 
+// @test-kind security: a refused JSON-transport answer spends its challenge and carries the next one for the same visitor, which then saves; a postback refusal re-renders its own (the HEAD test counts one challenge per refusal)
+test('a refused JSON CAPTCHA answer carries the next challenge of the same visitor', async (t) => {
+  const { app, route } = await fixture(t, { captcha: 'anonymous', captchaFixture: true, transport: 'json' });
+  const page = await fetch(app.url + route);
+  const cookie = page.headers.get('set-cookie').split(';')[0];
+  const first = (await page.text()).match(/data-pp-captcha-challenge[^>]*value="([a-f0-9-]+)"/)[1];
+  const submit = (title, challengeId, answer) =>
+    fetch(app.url + '/__sim/forms/entityform/second/submit', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', __RequestVerificationToken: app.csrf, cookie },
+      body: JSON.stringify({
+        recordId: 'second-row',
+        values: { title },
+        captchaProofToken: { challengeId, answer },
+        pageUrl: route,
+      }),
+    });
+  const refused = await submit('Wrong', first, '4');
+  assert.equal(refused.status, 400);
+  const [error] = (await refused.json()).error.validationErrors;
+  assert.deepEqual([error.field, error.code, error.challenge.prompt], ['captcha', 'CaptchaInvalid', 'What is 2 + 3?']);
+  assert.notEqual(error.challenge.id, first);
+  assert.equal(Object.hasOwn(error.challenge, 'answer'), false);
+  assert.equal((await submit('Spent', first, '5')).status, 400);
+  const saved = await submit('Renewed', error.challenge.id, '5');
+  assert.equal(saved.status, 200);
+  await saved.arrayBuffer();
+  assert.equal(app.store.state.tables.sample[1].title, 'Renewed');
+});
+
 // @test-kind security: committed admin resets invalidate outstanding form and registration fixture challenges without discarding them on rollback.
 test('CAPTCHA challenges survive a failed reset and expire after a committed reset on both surfaces', async (t) => {
   const { app, route, controls } = await fixture(t, {
@@ -655,10 +685,10 @@ test('CAPTCHA challenges survive a failed reset and expire after a committed res
     assert.match(CaptchaChallengeToken, /^[a-f0-9-]{36}$/);
     return CaptchaChallengeToken;
   };
-  const submitJson = (title, challengeId) =>
+  const submitJson = async (title, challengeId) =>
     browser.request('/__sim/forms/entityform/second/submit', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', __RequestVerificationToken: app.portalToken },
+      headers: { 'content-type': 'application/json', __RequestVerificationToken: await browser.token() },
       body: JSON.stringify({
         recordId: 'second-row',
         values: { title },
@@ -666,28 +696,29 @@ test('CAPTCHA challenges survive a failed reset and expire after a committed res
         pageUrl: route,
       }),
     });
-  const submitNative = (title, challengeId) =>
+  const submitNative = async (title, challengeId) =>
     browser.request(
       route,
       formBody({
         __EVENTTARGET: controls.buttons + 'UpdateButton',
         __EVENTARGUMENT: '',
-        __RequestVerificationToken: app.portalToken,
+        __RequestVerificationToken: await browser.token(),
         [controls.names + 'title']: title,
         [controls.names + 'captcha$FixtureChallengeToken']: challengeId,
         [controls.names + 'captcha$FixtureAnswerToken']: '5',
       }),
     );
-  const register = (username, challengeId) =>
+  // The registration page's WebForms controls (hosted session F4 AUTH-04g).
+  const control = 'ctl00$ctl00$ContentContainer$MainContent$MainContent$';
+  const register = async (username, challengeId) =>
     browser.request(
       registration,
       formBody({
-        __RequestVerificationToken: app.portalToken,
-        UserName: username,
-        LastName: 'Fixture Account',
-        Email: `${username}@example.test`,
-        Password: 'Fixture-reset-14',
-        ConfirmPassword: 'Fixture-reset-14',
+        __RequestVerificationToken: await browser.token(),
+        [control + 'UserNameTextBox']: username,
+        [control + 'EmailTextBox']: `${username}@example.test`,
+        [control + 'PasswordTextBox']: 'Fixture-reset-14',
+        [control + 'ConfirmPasswordTextBox']: 'Fixture-reset-14',
         CaptchaChallengeToken: challengeId,
         CaptchaAnswerToken: '5',
       }),
@@ -730,7 +761,8 @@ test('CAPTCHA challenges survive a failed reset and expire after a committed res
     rejectedNative.text(),
     rejectedRegistration.text(),
   ]);
-  assert.deepEqual([rejectedJson.status, rejectedNative.status, rejectedRegistration.status], [400, 200, 403]);
+  // The registration page re-renders its CAPTCHA refusal with 200, as it does the platform's messages.
+  assert.deepEqual([rejectedJson.status, rejectedNative.status, rejectedRegistration.status], [400, 200, 200]);
   assert.equal(json.error.code, 'CaptchaInvalid');
   assert.match(native, /Captcha is incorrect, please re-enter captcha/);
   assert.match(registrationPage, /CAPTCHA answer is incorrect or expired/);
@@ -768,13 +800,13 @@ test('CAPTCHA HEAD requests issue no challenge and native validation still renew
   }
   assert.deepEqual(issued, ['entityform', 'registration']);
 
-  const submit = (challenge, answer) =>
+  const submit = async (challenge, answer) =>
     browser.request(
       route,
       formBody({
         __EVENTTARGET: controls.buttons + 'UpdateButton',
         __EVENTARGUMENT: '',
-        __RequestVerificationToken: app.portalToken,
+        __RequestVerificationToken: await browser.token(),
         [controls.names + 'title']: 'Solved with the renewed challenge',
         [controls.names + 'captcha$FixtureChallengeToken']: challenge,
         [controls.names + 'captcha$FixtureAnswerToken']: answer,

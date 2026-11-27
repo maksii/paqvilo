@@ -1,12 +1,16 @@
 // A bounded baseline JPEG codec (ITU-T T.81 with the JFIF colour model) for portal image thumbnails, in plain
-// JavaScript so the runtime needs no image dependency. decodeJpeg reads sequential Huffman frames (SOF0, SOF1) with
+// JavaScript so the runtime needs no image dependency. decodeJpeg reads sequential (SOF0, SOF1) and progressive (SOF2,
+// Annex G spectral selection and successive approximation, at most MAX_PROGRESSIVE_SCANS scans) Huffman frames with
 // 8-bit samples and one (grayscale) or three (YCbCr, or RGB per Adobe APP14) components, any integral sampling factors
-// and restart intervals. Every other process (progressive, lossless, arithmetic, 12-bit, CMYK) and every malformed
-// stream answers null, so callers keep the original bytes. encodeJpeg writes baseline JFIF with the Annex K tables.
+// and restart intervals. Every other process (lossless, arithmetic, 12-bit, CMYK) and every malformed stream answers
+// null, so callers keep the original bytes. encodeJpeg writes baseline JFIF with the Annex K tables.
 
 const DEFAULT_LIMITS = Object.freeze({ maxPixels: 8 * 1024 * 1024, maxDimension: 8192 });
 const FAST_BITS = 9;
 const MAX_BLOCKS_PER_MCU = 10;
+// Each progressive scan walks every block of its components, so the scan count bounds the decode work (the libjpeg
+// progressive scripts use about ten scans).
+const MAX_PROGRESSIVE_SCANS = 64;
 
 /** Natural (row-major) index of each zigzag position. */
 const ZIGZAG = (() => {
@@ -200,8 +204,8 @@ function readComponents(bytes, start, count) {
 
 function readFrame(state, { marker, start, end }) {
   const { bytes, limits } = state;
-  // SOF0 baseline and SOF1 extended sequential Huffman; progressive, lossless and arithmetic processes are refused.
-  check(!state.frame && (marker === 0xc0 || marker === 0xc1) && end - start >= 6);
+  // SOF0 baseline, SOF1 extended sequential and SOF2 progressive Huffman; lossless and arithmetic processes are refused.
+  check(!state.frame && (marker === 0xc0 || marker === 0xc1 || marker === 0xc2) && end - start >= 6);
   const height = u16(bytes, start + 1);
   const width = u16(bytes, start + 3);
   const count = bytes[start + 5];
@@ -220,7 +224,7 @@ function readFrame(state, { marker, start, end }) {
     c.blocksY = Math.ceil(Math.ceil((height * c.v) / vMax) / 8);
     c.rows = mcusY * c.v * 8;
   }
-  state.frame = { width, height, components, hMax, vMax, mcusX, mcusY };
+  state.frame = { width, height, components, hMax, vMax, mcusX, mcusY, progressive: marker === 0xc2 };
 }
 
 function readAdobe(state, { start, end }) {
@@ -274,6 +278,14 @@ class BitReader {
   /** True once a decoded symbol used padding bits, i.e. the entropy-coded segment ended early. */
   overrun() {
     return this.padding > this.count;
+  }
+
+  /** size raw bits, unsigned. */
+  bits(size) {
+    this.fill();
+    const value = this.peek(size);
+    this.skip(size);
+    return value;
   }
 
   receive(size) {
@@ -398,8 +410,200 @@ function skipRestartMarker(reader) {
   reader.reset(at + 2);
 }
 
+// ---- Progressive scans (Annex G.1.2): coefficients collect per block, in zigzag order, across the scans; the inverse
+// transform runs once the last scan is read.
+
+function readProgressiveScan(state, { start, end }) {
+  const { bytes, frame } = state;
+  const count = bytes[start];
+  check(count >= 1 && count <= frame.components.length && end - start === 4 + 2 * count);
+  const spectral = start + 1 + 2 * count;
+  const ss = bytes[spectral];
+  const se = bytes[spectral + 1];
+  const ah = bytes[spectral + 2] >> 4;
+  const al = bytes[spectral + 2] & 15;
+  // DC scans may interleave components; AC scans hold one component (G.1.1.1.1). A refinement's Ah is the previous Al.
+  check(ss <= se && se <= 63 && (ss === 0 ? se === 0 : count === 1) && al <= 13 && (ah === 0 || ah === al + 1));
+  const components = [];
+  for (let i = 0; i < count; i++) {
+    const tables = bytes[start + 2 + 2 * i];
+    const component = frame.components.find((c) => c.id === bytes[start + 1 + 2 * i]);
+    check(component && !components.includes(component));
+    // A DC refinement reads raw bits only; the other scans name the table they decode with.
+    if (ss === 0 && ah === 0) {
+      component.dc = state.dc[tables >> 4];
+      check(component.dc);
+    }
+    if (ss > 0) {
+      component.ac = state.ac[tables & 15];
+      check(component.ac);
+    }
+    components.push(component);
+  }
+  check(count === 1 || components.reduce((sum, c) => sum + c.h * c.v, 0) <= MAX_BLOCKS_PER_MCU);
+  return { components, ss, se, ah, al };
+}
+
+function decodeDcFirst(reader, component, block, scan) {
+  const category = reader.decode(component.dc);
+  check(category <= 11);
+  component.prediction += reader.receive(category);
+  block[0] = component.prediction * (1 << scan.al);
+}
+
+function decodeDcRefine(reader, _component, block, scan) {
+  if (reader.bits(1)) block[0] |= 1 << scan.al;
+}
+
+function decodeAcFirst(reader, component, block, scan) {
+  if (component.eobrun > 0) {
+    component.eobrun--;
+    return;
+  }
+  for (let k = scan.ss; k <= scan.se; k++) {
+    const symbol = reader.decode(component.ac);
+    const size = symbol & 15;
+    const run = symbol >> 4;
+    if (size) {
+      k += run;
+      check(k <= scan.se && size <= 10);
+      block[k] = reader.receive(size) * (1 << scan.al);
+    } else if (run === 15) k += 15;
+    else {
+      component.eobrun = (1 << run) - 1 + (run ? reader.bits(run) : 0);
+      break;
+    }
+  }
+}
+
+/** One correction bit for a coefficient that is already nonzero. */
+function refineNonzero(reader, block, k, p1) {
+  if (reader.bits(1) && (block[k] & p1) === 0) block[k] += block[k] >= 0 ? p1 : -p1;
+}
+
+/**
+ * Passes `run` zero coefficients from `start`, refining the nonzero ones on the way, and answers the index of the zero
+ * coefficient that follows them (past `se` when the band ends first).
+ */
+function passZeroRun(reader, block, start, run, p1, se) {
+  let left = run;
+  let k = start;
+  for (; k <= se; k++) {
+    if (block[k] !== 0) refineNonzero(reader, block, k, p1);
+    else if (--left < 0) break;
+  }
+  return k;
+}
+
+/**
+ * Decodes one AC refinement symbol for the coefficients from `k`: answers the index after the coefficient it places, or
+ * -1 for an end-of-band run (then component.eobrun holds the run).
+ */
+function decodeRefineSymbol(reader, component, block, k, scan, p1) {
+  const symbol = reader.decode(component.ac);
+  const run = symbol >> 4;
+  let value = 0;
+  if (symbol & 15) {
+    check((symbol & 15) === 1);
+    value = reader.bits(1) ? p1 : -p1;
+  } else if (run !== 15) {
+    component.eobrun = (1 << run) + (run ? reader.bits(run) : 0);
+    return -1;
+  }
+  const at = passZeroRun(reader, block, k, run, p1, scan.se);
+  if (value) {
+    check(at <= scan.se);
+    block[at] = value;
+  }
+  return at + 1;
+}
+
+function decodeAcRefine(reader, component, block, scan) {
+  const p1 = 1 << scan.al;
+  let k = scan.ss;
+  while (component.eobrun === 0 && k <= scan.se) {
+    const next = decodeRefineSymbol(reader, component, block, k, scan, p1);
+    if (next < 0) break;
+    k = next;
+  }
+  if (component.eobrun > 0) {
+    for (; k <= scan.se; k++) if (block[k] !== 0) refineNonzero(reader, block, k, p1);
+    component.eobrun--;
+  }
+}
+
+function progressiveDecoder(scan) {
+  if (scan.ss === 0) return scan.ah ? decodeDcRefine : decodeDcFirst;
+  return scan.ah ? decodeAcRefine : decodeAcFirst;
+}
+
+function decodeProgressiveUnit(state, scan, unit, decodeCoefficientsOf) {
+  const at = (component, column, row) => {
+    const offset = (row * (component.stride >> 3) + column) * 64;
+    decodeCoefficientsOf(state.reader, component, component.coefficients.subarray(offset, offset + 64), scan);
+  };
+  if (scan.components.length === 1) {
+    const [component] = scan.components;
+    at(component, unit % component.blocksX, Math.floor(unit / component.blocksX));
+    return;
+  }
+  const mcuX = unit % state.frame.mcusX;
+  const mcuY = Math.floor(unit / state.frame.mcusX);
+  for (const component of scan.components)
+    for (let y = 0; y < component.v; y++)
+      for (let x = 0; x < component.h; x++) at(component, mcuX * component.h + x, mcuY * component.v + y);
+}
+
+/** Decodes one progressive scan into the coefficient buffers and answers the offset of the marker that follows it. */
+function decodeProgressiveScan(state, segment) {
+  state.scans++;
+  check(state.scans <= MAX_PROGRESSIVE_SCANS);
+  const scan = readProgressiveScan(state, segment);
+  const { frame } = state;
+  for (const c of frame.components) c.coefficients ??= new Int16Array((c.stride >> 3) * (c.rows >> 3) * 64);
+  const decodeCoefficientsOf = progressiveDecoder(scan);
+  const [first] = scan.components;
+  const total = scan.components.length === 1 ? first.blocksX * first.blocksY : frame.mcusX * frame.mcusY;
+  const interval = state.restart || total;
+  const reader = new BitReader(state.bytes, segment.end);
+  state.reader = reader;
+  for (let begin = 0; begin < total; begin += interval) {
+    if (begin) skipRestartMarker(reader);
+    for (const c of scan.components) {
+      c.prediction = 0;
+      c.eobrun = 0;
+    }
+    const stop = Math.min(total, begin + interval);
+    for (let unit = begin; unit < stop; unit++) decodeProgressiveUnit(state, scan, unit, decodeCoefficientsOf);
+    check(!reader.overrun());
+  }
+  for (const c of scan.components) state.scanned.add(c);
+  return reader.marker ? reader.offset : nextMarker(state.bytes, reader.offset);
+}
+
+/** The inverse transform of every collected block of a progressive frame, with the quantization tables at its end. */
+function finishProgressive(state) {
+  for (const c of state.frame.components) {
+    const quant = state.quant[c.tq];
+    check(quant && c.coefficients);
+    c.quantTable = quant;
+    c.plane = new Uint8ClampedArray(c.stride * c.rows);
+    const blocksPerLine = c.stride >> 3;
+    for (let index = 0; index < c.coefficients.length / 64; index++) {
+      const coefficients = c.coefficients.subarray(index * 64, index * 64 + 64);
+      state.block.fill(0);
+      for (let k = 0; k < 64; k++) if (coefficients[k]) state.block[ZIGZAG[k]] = coefficients[k] * quant[k];
+      const row = Math.floor(index / blocksPerLine);
+      const column = index % blocksPerLine;
+      inverseTransform(state.block, state.work, c.plane, c.stride, row * 8 * c.stride + column * 8);
+    }
+  }
+}
+
 /** Decodes one scan and answers the offset of the marker that follows it. */
 function decodeScan(state, segment) {
+  check(state.frame);
+  if (state.frame.progressive) return decodeProgressiveScan(state, segment);
   const scan = readScan(state, segment);
   const { frame } = state;
   for (const c of frame.components) c.plane ??= new Uint8ClampedArray(c.stride * c.rows);
@@ -444,6 +648,7 @@ function parse(bytes, limits, frameOnly) {
     restart: 0,
     adobe: null,
     scanned: new Set(),
+    scans: 0,
     block: new Float64Array(64),
     work: new Float64Array(64),
   };
@@ -460,6 +665,7 @@ function parse(bytes, limits, frameOnly) {
     }
   }
   check(state.scanned.size === state.frame?.components.length);
+  if (state.frame.progressive) finishProgressive(state);
   return state;
 }
 
@@ -691,9 +897,11 @@ function encodeBlock(writer, coefficients, component) {
   if (run) writer.put(ac.code[0], ac.size[0]);
 }
 
-function writeHeaders(writer, { width, height, components, quants, restartInterval }) {
+function writeHeaders(writer, { width, height, components, quants, restartInterval, dpi }) {
   writer.write([0xff, 0xd8]);
-  writer.segment(0xe0, [0x4a, 0x46, 0x49, 0x46, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0]);
+  // JFIF 1.01 with no density unit and a 1:1 aspect, or JFIF 1.1 at dpi dots per inch.
+  if (dpi) writer.segment(0xe0, [0x4a, 0x46, 0x49, 0x46, 0, 1, 1, 1, dpi >> 8, dpi & 0xff, dpi >> 8, dpi & 0xff, 0, 0]);
+  else writer.segment(0xe0, [0x4a, 0x46, 0x49, 0x46, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0]);
   quants.forEach((table, id) => writer.segment(0xdb, [id, ...table]));
   writer.segment(0xc0, [
     8,
@@ -739,19 +947,25 @@ function encodeUnit({ writer, components, quants, work, coefficients }, mcuX, mc
       }
 }
 
-/**
- * Encodes 8-bit samples ({ width, height, channels 1 or 3, data }) as a baseline JFIF JPEG. Options: quality (IJG scale,
- * default 90), sampling ({ h, v } luma factors 1 or 2 for colour; default 2x2, i.e. 4:2:0), quantTables ([luma, chroma]
- * in zigzag order, 8-bit values; replaces quality) and restartInterval (MCUs between RST markers).
- */
-export function encodeJpeg(
-  image,
-  { quality = 90, sampling = { h: 2, v: 2 }, quantTables = null, restartInterval = 0 } = {},
-) {
-  const { width, height, channels } = image;
+/** The encoder's input limits: 1 or 3 channels, sampling factors of 1 or 2 and a size of 1 to 65535 pixels a side. */
+function assertEncodable({ width, height, channels }, sampling) {
   if (!(channels === 1 || channels === 3) || ![sampling.h, sampling.v].every((f) => f === 1 || f === 2))
     throw new RangeError('encodeJpeg needs 1 or 3 channels and sampling factors of 1 or 2.');
   if (!(width >= 1 && height >= 1 && width <= 0xffff && height <= 0xffff)) throw new RangeError('Invalid JPEG size.');
+}
+
+/**
+ * Encodes 8-bit samples ({ width, height, channels 1 or 3, data }) as a baseline JFIF JPEG. Options: quality (IJG scale,
+ * default 90), sampling ({ h, v } luma factors 1 or 2 for colour; default 2x2, i.e. 4:2:0), quantTables ([luma, chroma]
+ * in zigzag order, 8-bit values; replaces quality), restartInterval (MCUs between RST markers) and dpi (a JFIF density
+ * in dots per inch; without it the density has no unit).
+ */
+export function encodeJpeg(
+  image,
+  { quality = 90, sampling = { h: 2, v: 2 }, quantTables = null, restartInterval = 0, dpi = 0 } = {},
+) {
+  assertEncodable(image, sampling);
+  const { width, height, channels } = image;
   const quants = [LUMA_QUANT, CHROMA_QUANT]
     .slice(0, channels === 1 ? 1 : 2)
     .map((base, i) => (usableQuant(quantTables?.[i]) ? Uint16Array.from(quantTables[i]) : scaledQuant(base, quality)));
@@ -761,7 +975,8 @@ export function encodeJpeg(
   const components = encoderComponents(channels, sampling, planes);
   const restart = Math.max(0, Math.min(0xffff, Math.floor(restartInterval)));
   const writer = new ByteWriter();
-  writeHeaders(writer, { width, height, components, quants, restartInterval: restart });
+  const density = Number.isInteger(dpi) && dpi > 0 && dpi <= 0xffff ? dpi : 0;
+  writeHeaders(writer, { width, height, components, quants, restartInterval: restart, dpi: density });
   const scan = { writer, components, quants, work: new Float64Array(64), coefficients: new Int32Array(64) };
   const mcusX = Math.ceil(width / (8 * hMax));
   const mcuCount = mcusX * Math.ceil(height / (8 * vMax));

@@ -17,6 +17,17 @@ import { signInHeaders } from '../../../testing/session.mjs';
 import { makeTemporaryDirectory, removeFixtureDirectory } from '../../../testing/owned-fixture.mjs';
 import { TESTER_CONTACT } from '../../../../examples/project/baseline/data.mjs';
 import { baselineFixtureOptions, writeBaselineFixtureSite } from '../baseline-fixture-site.mjs';
+import { F1_CONTACT, F1_ROLE, writeHostedF1Site } from '../hosted-f1-fixture-site.mjs';
+import { writeHostedF1NavSite } from '../hosted-f1-nav-fixture-site.mjs';
+import {
+  F7_CONTACT,
+  F7_RECORD,
+  F7_RECORD_LOCATION,
+  F7_RECORD_NAME,
+  F7_ROLE,
+  writeHostedF7Site,
+} from '../hosted-f7-fixture-site.mjs';
+import { hostedOutput } from '../capture-portal-webapi.mjs';
 
 const SETS = { account: 'accounts', contact: 'contacts', annotation: 'annotations' };
 const KEYS = { account: 'accountid', contact: 'contactid', annotation: 'annotationid' };
@@ -46,7 +57,154 @@ const filled = (value, ids) => {
   return fill(value, ids);
 };
 
-export async function open() {
+// The hosted-f1-* suites ran on hosted session F1's site (hosted-f1-fixture-site.mjs) as its contact with the F1 role.
+// A case names the phase settings it ran with; each distinct set gets its own simulator. A case that followed an earlier
+// result's @odata.nextLink (`follow`) makes that request first and follows Mirage's own link. Projection: the converter's
+// (hostedOutput: status, wire headers, the error object or the body's context, counts, nextLink presence and rows), with
+// the invented contact's id and name as the recorded placeholders.
+async function openHostedF1() {
+  const sessions = new Map();
+  // A follow-up case (site "nav") runs on the follow-up site with its provider healthy or throwing.
+  const session = ({ settings = {}, site, provider }) => {
+    const key = JSON.stringify([settings, site ?? null, provider ?? null]);
+    if (!sessions.has(key))
+      sessions.set(
+        key,
+        (async () => {
+          const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-replay-hosted-f1-'));
+          try {
+            const options =
+              site === 'nav'
+                ? await writeHostedF1NavSite(directory, { provider })
+                : await writeHostedF1Site(directory, settings);
+            const app = await createSimulator(options);
+            return { app, directory, cookie: signInHeaders(app, F1_CONTACT, { roles: [F1_ROLE] }).cookie };
+          } catch (error) {
+            await removeFixtureDirectory(directory);
+            throw error;
+          }
+        })(),
+      );
+    return sessions.get(key);
+  };
+  const send = async ({ app, cookie }, method, address, headers = {}) => {
+    const response = await fetch(new URL(address, app.url), {
+      method,
+      headers: {
+        accept: 'application/json',
+        cookie,
+        ...(method === 'GET' ? {} : { __RequestVerificationToken: app.portalToken }),
+        ...headers,
+      },
+    });
+    const text = await response.text();
+    const json = /json/i.test(response.headers.get('content-type') ?? '');
+    let body;
+    if (json && text)
+      try {
+        body = JSON.parse(text);
+      } catch {
+        body = undefined;
+      }
+    return {
+      status: response.status,
+      headers: Object.fromEntries(response.headers),
+      ...(body === undefined ? { text } : { body }),
+    };
+  };
+  return {
+    async run(input) {
+      const current = await session(input);
+      let address = input.path;
+      if (input.follow) {
+        const first = await send(current, 'GET', input.follow.path, input.follow.headers);
+        const link = first.body?.['@odata.nextLink'];
+        if (!link) return { followed: null, status: first.status };
+        address = new URL(link).pathname + new URL(link).search;
+      }
+      const answer = await send(current, input.method, address, input.headers);
+      const text = JSON.stringify(hostedOutput(answer))
+        .replaceAll(F1_CONTACT, '{contact}')
+        .replaceAll('"Invented Reader"', '"{contactName}"');
+      return JSON.parse(text);
+    },
+    async close() {
+      for (const pending of sessions.values()) {
+        const opened = await pending.catch(() => null);
+        if (!opened) continue;
+        await opened.app.close();
+        await removeFixtureDirectory(opened.directory);
+      }
+    },
+  };
+}
+
+// The hosted-f7-* suites ran on hosted session F7's site (hosted-f7-fixture-site.mjs), one simulator per recorded phase, as
+// its invented contact. Projection: the converter's (hostedOutput); a read naming the record names it, its name, its folder
+// id and its location by the recorded placeholders.
+async function openHostedF7() {
+  const sessions = new Map();
+  const session = (phase) => {
+    if (!sessions.has(phase))
+      sessions.set(
+        phase,
+        (async () => {
+          const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-replay-hosted-f7-'));
+          try {
+            const app = await createSimulator(await writeHostedF7Site(directory, phase));
+            return { app, directory, cookie: signInHeaders(app, F7_CONTACT, { roles: [F7_ROLE] }).cookie };
+          } catch (error) {
+            await removeFixtureDirectory(directory);
+            throw error;
+          }
+        })(),
+      );
+    return sessions.get(phase);
+  };
+  return {
+    async run(input) {
+      const { app, cookie } = await session(input.phase);
+      const response = await fetch(new URL(input.path.replaceAll('{record}', F7_RECORD), app.url), {
+        method: input.method,
+        headers: { accept: 'application/json', cookie, ...input.headers },
+      });
+      const text = await response.text();
+      let body;
+      if (/json/i.test(response.headers.get('content-type') ?? '') && text)
+        try {
+          body = JSON.parse(text);
+        } catch {
+          body = undefined;
+        }
+      let projected = JSON.stringify(
+        hostedOutput({
+          status: response.status,
+          headers: Object.fromEntries(response.headers),
+          ...(body === undefined ? { text } : { body }),
+        }),
+      );
+      if (input.path.includes('{record}'))
+        projected = projected
+          .replaceAll(F7_RECORD, '{record}')
+          .replaceAll(F7_RECORD.replaceAll('-', '').toUpperCase(), '{RECORD}')
+          .replaceAll(F7_RECORD_NAME, '{recordName}')
+          .replaceAll(F7_RECORD_LOCATION, '{location}');
+      return JSON.parse(projected);
+    },
+    async close() {
+      for (const pending of sessions.values()) {
+        const opened = await pending.catch(() => null);
+        if (!opened) continue;
+        await opened.app.close();
+        await removeFixtureDirectory(opened.directory);
+      }
+    },
+  };
+}
+
+export async function open(context) {
+  if (context?.suite?.startsWith('hosted-f1-')) return openHostedF1();
+  if (context?.suite?.startsWith('hosted-f7-')) return openHostedF7();
   const sourceDir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-replay-portal-webapi-'));
   let app;
   try {

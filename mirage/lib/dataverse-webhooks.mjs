@@ -513,7 +513,8 @@ function asyncRecordContext(store, facts, initiating) {
       ? frame.preValidationContext
       : null;
   const org = organizationRecord(store) ?? {};
-  const initiating = identity?.systemUserId ?? identity?.id ?? null;
+  // A portal request runs as the site's host application user (plugin-portal-caller.mjs).
+  const initiating = facts.portalCaller ?? identity?.systemUserId ?? identity?.id ?? null;
   if (asyncExecution && facts.initialFrame && !facts.customApi && ['create', 'update', 'delete'].includes(operation))
     return asyncRecordContext(store, facts, initiating);
   const user = store.tableRows('systemuser').find((row) => same(row.systemuserid, initiating));

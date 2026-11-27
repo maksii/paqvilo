@@ -109,7 +109,7 @@ test('a rollup definition with Min or Max is refused at column create; Minimum a
   }
 });
 
-// @test-kind contract: Mirage reads only the designer filter forms the hosted runs exercised (Equal, GreaterThan, NotNull with an option set, Boolean or decimal literal, joined by And); any other form reads state 2 with ROLLUP_UNSUPPORTED instead of a guessed value
+// @test-kind contract: Mirage reads only the designer filter forms the hosted runs exercised (summary-F6 DATA-04c and DATA-04c2: the designer's eight condition operators over option set, Boolean, number and date literals, joined by And); any other form reads state 2 with ROLLUP_UNSUPPORTED instead of a guessed value
 test('the designer filter subset is the observed one; other operators and Or are unsupported', async () => {
   const parse = async (options) =>
     parseRollupFormula(
@@ -119,10 +119,12 @@ test('the designer filter subset is the observed one; other operators and Or are
     kind: 'condition',
     operator: 'GreaterThan',
     column: 'x_amount',
-    value: 10,
+    type: 'number',
+    values: [10],
   });
   assert.equal((await parse({ logical: 'And' })).filter.kind, 'and');
-  assert.match((await parse({ operator: 'LessThan' })).unsupported, /operator LessThan/);
+  assert.equal((await parse({ operator: 'LessThan' })).filter.operator, 'LessThan');
+  assert.match((await parse({ operator: 'Like' })).unsupported, /operator Like/);
   assert.match((await parse({ logical: 'Or' })).unsupported, /Or/);
   assert.match((await parse({ literal: '"2026-01-01", "DateTime"' })).unsupported, /literal/);
   assert.match(parseRollupFormula(await designer({ aggregate: 'Median' })).unsupported, /Count, Sum, Average/);

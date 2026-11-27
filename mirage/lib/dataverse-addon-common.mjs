@@ -174,6 +174,15 @@ export function registerAddon(api, spec) {
       } else if (own) result = await own(c);
       else throw fallback();
       if (result === undefined || result === null) return undefined;
+      // A Collection(mscrm.crmbaseentity) return type answers its entities as an OData collection.
+      if (Array.isArray(result))
+        return {
+          status: 200,
+          body: {
+            '@odata.context': contextUrl(c.origin, c.version, 'Collection(Microsoft.Dynamics.CRM.crmbaseentity)'),
+            value: result,
+          },
+        };
       return respond(c, name, result);
     },
   });

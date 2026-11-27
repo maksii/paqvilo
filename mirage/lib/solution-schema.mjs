@@ -1841,20 +1841,44 @@ function compileSolutionSchema(scan, { lcid }) {
     sourceField: 'relatedNotesFile',
     marker: 'relatedNotes',
   });
-  // Document management: enabling it on a table (IsDocumentManagementEnabled) creates the
-  // one-to-many relationship <table>_SharePointDocumentLocations from the table to
-  // sharepointdocumentlocation.regardingobjectid (navigation regardingobjectid_<table>), as
-  // the Learn table references show for knowledgearticle, mspp_website and
-  // adx_portalcomment. Tables that already have such a relationship keep theirs.
-  const documentLocationCount = addInferredTableRelationships(tables, relationships, {
+  // Document management: enabling it on a table (IsDocumentManagementEnabled) creates two system
+  // one-to-many relationships from the table: <table>_SharePointDocumentLocations to
+  // sharepointdocumentlocation.regardingobjectid, as the Learn table references show for knowledgearticle,
+  // mspp_website and adx_portalcomment, and <table>_SharePointDocuments to sharepointdocument.regardingobjectid.
+  // Both navigate as regardingobjectid_<table> and cascade Assign, Delete, Merge, Reparent, Share and Unshare, not
+  // Archive or RollupView (hosted session F7, 2026-11-27, relationships-1795734331127.json: IsCustomRelationship false,
+  // RelationshipBehavior 0). Tables that already have such a relationship keep theirs.
+  const documentCascade = {
+    assign: 'Cascade',
+    delete: 'Cascade',
+    archive: 'NoCascade',
+    merge: 'Cascade',
+    reparent: 'Cascade',
+    share: 'Cascade',
+    unshare: 'Cascade',
+    rollupView: 'NoCascade',
+  };
+  const documentRelationship = (suffix, referencingEntity) => ({
     enabled: 'documentManagement',
-    suffix: '_SharePointDocumentLocations',
-    referencingEntity: 'sharepointdocumentlocation',
+    suffix,
+    referencingEntity,
     referencingAttribute: 'regardingobjectid',
     navigationPrefix: 'regardingobjectid_',
     sourceField: 'documentManagementFile',
     marker: 'documentManagement',
+    // The regarding column is a multi-table lookup: a value names its table, and a bare id names no record of this one.
+    facts: { cascade: documentCascade, isCustomRelationship: false, polymorphic: true },
   });
+  const documentLocationCount = addInferredTableRelationships(
+    tables,
+    relationships,
+    documentRelationship('_SharePointDocumentLocations', 'sharepointdocumentlocation'),
+  );
+  const documentCount = addInferredTableRelationships(
+    tables,
+    relationships,
+    documentRelationship('_SharePointDocuments', 'sharepointdocument'),
+  );
   registerRelationshipTables(relationships, ensureTable);
   resolveTableIdentities(tables);
   resolveRelationshipDefaults(relationships, tables, diagnostics);
@@ -1893,6 +1917,7 @@ function compileSolutionSchema(scan, { lcid }) {
     diagnostics,
     standardRelationships: standardCount,
     documentLocationRelationships: documentLocationCount,
+    documentRelationships: documentCount,
     annotationRelationships: annotationCount,
     fingerprint: fingerprint.digest('hex'),
     // Set by buildSolutionSchema, which is the only caller: a fingerprint computed here would be overwritten there.
@@ -1966,6 +1991,7 @@ function addInferredTableRelationships(tables, relationships, config) {
       source: table[config.sourceField],
       sources: [table[config.sourceField]],
       [config.marker]: true,
+      ...(config.facts ? structuredClone(config.facts) : {}),
     };
     count++;
   }
@@ -2309,7 +2335,7 @@ export function fieldDefinition(
   const globalSet = attribute.optionSetName
     ? (schema.optionSets[norm(attribute.optionSetName)] ?? standardOptionSet(attribute.optionSetName))
     : null;
-  appendGlobalOptions(options, globalSet, labelText);
+  appendGlobalOptions(options, globalSet, labelText, attribute);
   if (attribute.optionSetName && !options.length && !globalSet?.dynamic)
     diagnostics?.push({
       code: 'SOLUTION_OPTIONSET_UNRESOLVED',
@@ -2380,6 +2406,11 @@ function fieldProvenanceFacts(tableName, attribute, globalSet) {
   };
 }
 
+// A choices (multi-select) option's labels in every exported language when it has more than one: the choices control's
+// option metadata lists each of them (hosted F2: LocalizedLabels carry the 1033 and 1031 labels).
+const languageLabels = (attribute, labels) =>
+  /^multiselect/i.test(attribute.type ?? '') && Object.keys(labels ?? {}).length > 1 ? { labels: { ...labels } } : {};
+
 function fieldOptions(attribute, labelText) {
   const states = (attribute.optionSet?.states ?? []).map((o) => ({
     value: o.value,
@@ -2393,15 +2424,23 @@ function fieldOptions(attribute, labelText) {
     state: o.state,
   }));
   const options = (attribute.optionSet?.options ?? [])
-    .map((o) => ({ value: o.value, label: labelText(o.labels, String(o.value)) }))
+    .map((o) => ({
+      value: o.value,
+      label: labelText(o.labels, String(o.value)),
+      ...languageLabels(attribute, o.labels),
+    }))
     .concat(states, statuses);
   return { states, statuses, options };
 }
 
-function appendGlobalOptions(options, globalSet, labelText) {
+function appendGlobalOptions(options, globalSet, labelText, attribute) {
   if (!options.length && globalSet)
     options.push(
-      ...(globalSet.options ?? []).map((o) => ({ value: o.value, label: labelText(o.labels, String(o.value)) })),
+      ...(globalSet.options ?? []).map((o) => ({
+        value: o.value,
+        label: labelText(o.labels, String(o.value)),
+        ...languageLabels(attribute, o.labels),
+      })),
     );
 }
 

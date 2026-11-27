@@ -63,13 +63,16 @@ the non-resolving Solution XML reader and runs it on read; nothing is evaluated 
 | `GetEntityProperty` of the row, or of `related_<lookup>#<table>`                                                                                                                      | A column of the row, or of the row one N:1 lookup away                                                               |
 | `CreateCrmType` literals, `SelectFirstNonNull`                                                                                                                                        | Typed literals (Boolean, whole number, decimal, float, money, choice, text, date, GUID) and the first non-null value |
 | `Add`, `Subtract`, `Multiply`, `Divide`, `Concat`                                                                                                                                     | Exact decimal arithmetic (a null operand gives null, dividing by zero gives null) and text (null reads as empty)     |
-| `AddDays`, `AddHours`, `AddWeeks`, `AddMonths`, `AddYears` and their `Subtract` forms (amount, date); `DiffInDays` to `DiffInYears` (from, to); `Now`                                 | Date arithmetic in UTC; `DiffInDays` counts UTC calendar days and answers to minus from                              |
+| `AddDays`, `AddHours`, `AddWeeks`, `AddMonths`, `AddYears` and their `Subtract` forms (amount, date); `DiffInDays` to `DiffInYears` (from, to); `Now`                                 | Date arithmetic in UTC; every `DiffIn` function counts the UTC unit boundaries between the two times, to minus from  |
+| `TrimLeft`, `TrimRight` (text, count)                                                                                                                                                 | The text without that many characters at that end; a null text reads as empty text                                   |
 
 Hosted runs (2026-11-26) replay as the `dataverse-calculated` parity cases: every captured value of eleven designer
-columns, a direct write ignored with 204, and `$filter` and `$orderby` on a calculated column. `DiffInHours`,
-`DiffInMinutes`, `DiffInWeeks`, `DiffInMonths`, `DiffInYears`, the `Subtract` date forms, `Now` and the text
-conditions are uncaptured: hours, minutes and weeks truncate the elapsed time, and months and years count calendar
-boundaries.
+columns, a direct write ignored with 204, and `$filter` and `$orderby` on a calculated column. Columns saved by the
+classic calculated-field designer itself (2026-11-27, suite `designer-dc2`) add every `Add`/`Subtract` and `DiffIn`
+function, `TrimLeft`, `TrimRight`, `Concat` with a null, a Yes/No column (the designer writes its value as `"1"`/`"0"`),
+And/Or, column-to-column and text conditions and ELSE IF chains: a `DiffIn` function counts unit boundaries (23:30 to
+00:29 is one hour, one day and one year; weeks start on Sunday), and a text condition on a null column does not hold.
+`Now` stays uncaptured.
 
 **Definition.** Creating a calculated column through `EntityDefinitions(...)/Attributes` refuses designer XAML in which
 an arithmetic, date or text function reads a `CreateCrmType` literal directly, with 400 `0x80060424` "The \<column\>
@@ -118,7 +121,7 @@ In each case the column reads as null. Mirage never guesses a value.
 pack defines a function for a column, it replaces the evaluator for that column. `validateCalculatedColumns(map)` checks
 the export: each key must have the form `table.column` and each value must be a synchronous function.
 
-**Limits.** Designer XAML outside the forms above (for example `TrimLeft`, a VB expression, or an activity the designer
+**Limits.** Designer XAML outside the forms above (for example a VB expression, or an activity the designer
 does not write) reports `CALCULATED_UNSUPPORTED` with the first form it could not read, until a pack supplies a
 function for the column. The XAML text length, element count and nesting are bounded.
 
@@ -370,20 +373,29 @@ scheduler it is listed under `contractOperations`.
 **Behaviour.** A rollup column is a column whose metadata says SourceType 2. Its FormulaDefinition is the designer's
 exported XAML or an aggregate FetchXML (one child `<entity>`, one aggregate `<attribute>`, and a `<filter>` whose
 condition with `value="{id}"` names the child column that holds the parent id). The behaviour below follows two hosted
-runs of thirteen designer rollups (replay cases `dataverse-rollup/designer-f6`):
+runs of thirteen designer rollups (replay cases `dataverse-rollup/designer-f6`) and two runs of rollups saved by the
+classic rollup designer itself (`dataverse-rollup/designer-dc2`):
 
 - **Definition.** Creating a rollup column through the metadata API whose designer Aggregate names an operator other
   than `Count`, `Sum`, `Average`, `Minimum` or `Maximum` (the platform refuses `Min` and `Max`) answers 400
   `0x80060417` "FormulaDefinition is not valid Xaml". Any other definition is stored as received.
 - **Create.** A new parent row is Calculated: `<column>_state = 1`, `<column>_date` equal to the row's `createdon`, and
-  the value of no children (0 for Count, Sum and a designer Average; null for Minimum and Maximum). A write to
+  the value of no children (0 for Count, Sum and a designer Average; null for Minimum and Maximum), as a column created
+  with its definition through the Web API stamps it. A column created empty and then saved by the classic rollup
+  designer (the Maker panel's path) stamps NotCalculated instead: `_state = 0`, the value 0 for a Count, Sum or Average
+  over a related table and null otherwise, and `_date` the time of the column's last mass calculation (null before
+  one). An export does not say which path made a column, so a site selects the designer stamp with the observed setting
+  `rollupCreateState: not-calculated` (replay suites `create-state-designer` and `create-state-webapi`). A write to
   `<column>` itself is accepted and ignored on create, update and upsert, as the platform answers 204 and keeps the
   stored value.
 - **Child write.** A create, update, upsert or delete of a child row changes neither the parent's value nor its
-  `_state` or `_date`. Mirage marks each parent linked through a rollup for its mass recalculation (and, for a
+  `_state` or `_date`. Mirage marks each parent linked through a rollup for its mass recalculation (an update only for
+  the rollups that read a column it writes: the aggregated column, a filter column, the link, the state; and, for a
   hierarchical rollup, every ancestor); a reparent or delete also marks the parent the row pointed at before the write,
   and moving a row of a hierarchical parent table marks its old and new ancestors. A mark made in a transaction is kept
-  only when the transaction commits. `api.rollups.isStale(table, id, column)` reads it. No Update step, flow, audit
+  only when the transaction commits. A write to a row of the source table marks a rollup of its own column over the
+  hierarchy, and a source-filtered hierarchical rollup, of that row and every ancestor. `api.rollups.isStale(table, id,
+column)` reads it. No Update step, flow, audit
   entry or committed event runs for the parent.
 - **Recalculate.** `recalculate(api, table, id, column)` (exported, and `api.rollups.recalculate(table, id, column)`)
   computes the value over the local child rows and stores `<column>`, `<column>_state = 1` (Calculated) and
@@ -396,7 +408,12 @@ runs of thirteen designer rollups (replay cases `dataverse-rollup/designer-f6`):
   the module the message runs the column's FetchXML aggregate itself.
 - **Mass recalculation.** When the runtime has a scheduler (`api.scheduler`), install schedules a recurring "Mass
   Calculate Rollup Fields" task every hour that recalculates every marked rollup column and every NotCalculated
-  (`_state = 0`) one, for example of a seeded row (`api.rollups.recalculateStale()`). Marks live with the running
+  (`_state = 0`) one, for example of a seeded row (`api.rollups.recalculateStale()`). Under `rollupCreateState:
+not-calculated` it visits the marked ones only, as the hosted hourly job left a NotCalculated row without related rows
+  as it was. `api.rollups.massCalculate(table, column)` is a column's own "Mass calculate" job (the platform runs it
+  about 12 hours after a designer save): every row is recalculated at one time, which becomes the `_date` of rows
+  created later under `not-calculated`; there a row no related row reaches keeps its NotCalculated Count, Sum, Minimum
+  or Maximum and only takes the date. Marks live with the running
   module: after a restart only NotCalculated columns are visited. A failed run reports `ROLLUP_MASS_RECALCULATION_FAILED` and the next run still
   comes. Closing the module cancels the task.
 
@@ -412,11 +429,18 @@ runs of thirteen designer rollups (replay cases `dataverse-rollup/designer-f6`):
 The rollup columns per table and the child-to-parent links are memoised per `store.tablesRevision([])` and cleared on
 reset.
 
-**Supported subset.** The designer export is read from its XAML: the Source (`HierarchicalRelationshipName`
-`[Nothing]`, or a self-referencing relationship whose descendant rows also contribute), the Target (the one-to-many
-relationship, then an optional filter) and the Aggregate (`Count`, `Sum`, `Average`, `Minimum` or `Maximum` of one
-child column). A filter reads child columns, builds option set, Boolean or decimal literals and compares them with
-`Equal`, `GreaterThan` or `NotNull`, joined by `And`; another operator, `Or` or another literal type is outside the
+**Supported subset.** The designer export is read from its XAML, in the form the classic rollup designer saves it
+(opened from the Maker column panel; replay cases `dataverse-rollup/designer-dc2`): the Source
+(`HierarchicalRelationshipName` `[Nothing]`, or a self-referencing relationship whose descendant rows also contribute,
+with an optional source filter on the source table's own columns), the Target (the one-to-many relationship, then an
+optional filter on the related rows; empty for a hierarchical rollup of the source table's own column over the row and
+its descendants) and the Aggregate (`Count`, `Sum`, `Average`, `Minimum` or `Maximum` of one column). A filter reads
+columns, builds option set, Boolean (`"1"`/`"0"`, or `"True"`/`"False"`), number or UTC date literals and compares them
+with `Equal`, `NotEqual`, `Null`, `NotNull`, `GreaterThan`, `GreaterEqual`, `LessThan` or `LessEqual`, joined by `And`.
+`Equal` with several checked options of a choice matches any of them and `NotEqual` none of them; a Yes/No condition
+with both boxes checked admits only Yes rows, as hosted runs show. A row without a value matches `Null` and `NotEqual`. A source
+filter drops the rows it refuses (the root row too, so a refused root reads the value of no rows) while their
+descendants still count. Another operator, `Or` or another literal type is outside the
 subset. Inactive children count, as the designer adds no state condition. Count counts non-null values; Sum skips nulls
 (0 over none); Average divides the sum by every linked child, a null counting as 0 (0 over none); Minimum and Maximum
 ignore nulls and compare numbers or date and time values (null over none). The FetchXML form supports these parts:
@@ -602,8 +626,23 @@ provider has no `retrieveMultiple`; a virtual table with neither a provider nor 
 authored FetchXML links and explicit OData navigation or expand targets that the visitor has a table grant to read.
 The same snapshot supplies the provider-backed tables of applicable table permission paths: Parent ancestors, the
 intersect table of a many-to-many Parent relationship, and an identity relationship's table and intersect.
-Collection and FetchXML reads ask `retrieveMultiple` for the complete source so the portal applies row and column
-permissions, filters, joins and pagination locally. Where available, `retrieve` answers direct primary-key reads.
+Tables a read only joins, expands or checks permissions through are read whole (`retrieveMultiple` with `select`,
+`filter`, `orderby` and `top` all `null`), so their predicates see every row. A collection read of the virtual table
+itself (Liquid `{% fetchxml %}`, the portal Web API's `fetchXml` and OData collection reads) instead
+passes the portal's translated query, as a hosted site passes it to a data provider plug-in (hosted session F1,
+recorded as the `portal-dataverse-query/hosted-f1-virtual` replay cases): `retrieveMultiple({ select, filter, orderby,
+top, query }, ctx)` with the OData text as before and `query`, the QueryExpression (Mirage's SDK JSON shape: the
+authored columns followed by the primary key, one authored filter as the criteria and several as nested filters, the
+authored orders, no `topCount` and a `pageInfo` of page 1 with the authored `count`, `$top` or 5,000), or `null` when
+the read has no QueryExpression form here. `ctx.userId` and `ctx.initiatingUserId` are the site's application user
+(observed `portalApplicationUserId`, else the local one once it exists). The provider's rows then stand as it
+returned them: no local filter, order, `top`, paging or `$select` projection, a total record count of 0 (`$count`
+answers `@odata.count` 0) and no more records. Table permissions, links, the Web API column settings and column
+security still apply to those rows. With a scoped table permission the translated query also carries the permission's
+predicate, as the portal adds it to its queries of ordinary tables; the recording's virtual table had a Global
+permission, so that part is not captured, and Mirage removes rows outside the grant itself, so a provider that
+ignores the predicate never widens it. Where available, `retrieve` answers direct primary-key reads, with the same
+user, and its row is not projected by `$select` either.
 A portal Web API read also loads the current rows of every table that its `$filter` reaches through navigation paths
 (including the collection of an `any` or `all` lambda), that a `$filter` nested in `$expand` reaches, that an `$apply`
 filter, `groupby` property or aggregate reaches, and of the counted table of a `/$count` route, when the visitor may read each table on the path. Column and table refusals are

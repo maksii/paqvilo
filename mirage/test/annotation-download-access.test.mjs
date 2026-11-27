@@ -146,10 +146,10 @@ test('native annotation download keeps a coherent authorized filename and inline
   const { sim, read, signedIn } = await annotationFixture(t, 0);
   const old = await replaceAfterAttachmentRead(t, sim, () => read(nativeLink(inline), signedIn), inline);
   assert.equal(old.status, 200);
-  assert.match(old.headers.get('content-disposition'), /filename="fixture\.txt"/);
+  assert.match(old.headers.get('content-disposition'), /filename\*=UTF-8''fixture\.txt$/);
   assert.equal(await old.text(), content);
   const current = await read(nativeLink(inline), signedIn);
-  assert.match(current.headers.get('content-disposition'), /filename="replacement\.txt"/);
+  assert.match(current.headers.get('content-disposition'), /filename\*=UTF-8''replacement\.txt$/);
   assert.equal(await current.text(), 'replacement bytes');
 });
 

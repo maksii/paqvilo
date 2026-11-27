@@ -950,11 +950,14 @@ describe('dataverse workflows: a portal write is unchanged by a background trigg
         // Every job the write started has finished once the simulator's committed work is settled.
         await app.settle();
         const started = app.store.tableRows('asyncoperation').some((job) => job.operationtype === 10);
-        // Per-run values only: the Date, the audit and trace ids and this run's origin (the port differs between the two runs).
+        // Per-run values only: the Date, the audit, trace and request ids and this run's origin (the port differs between
+        // the two runs).
         return {
           status: response.status,
           headers: [...response.headers]
-            .filter(([key]) => !['date', 'x-sim-trace-id', 'x-sim-span-id', 'x-trace-id'].includes(key))
+            .filter(
+              ([key]) => !['date', 'x-sim-trace-id', 'x-sim-span-id', 'x-trace-id', 'x-ms-request-id'].includes(key),
+            )
             .map(([key, value]) => [key, value.replaceAll(app.url, '<origin>')])
             .sort(),
           body: bytes.toString('base64'),
@@ -984,12 +987,14 @@ describe('dataverse workflows: a portal write is unchanged by a background trigg
   });
 });
 
-async function portalListWorkflowFixture(t, { settings = null } = {}) {
+async function portalListWorkflowFixture(t, { settings = null, observed = null } = {}) {
   const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-workflow-list-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const id = WF(61);
   const unlisted = WF(62);
   const withoutHandler = WF(63);
+  // An on-demand workflow of another table (contact).
+  const otherTable = WF(64);
   const selected = 'aaaaaaaa-0000-4000-8000-000000000091';
   const filtered = 'aaaaaaaa-0000-4000-8000-000000000092';
   const site = 'aaaaaaaa-0000-4000-8000-000000000093';
@@ -1014,7 +1019,7 @@ async function portalListWorkflowFixture(t, { settings = null } = {}) {
       'adx_name: Widgets',
       'adx_entityname: contoso_widget',
       'adx_settings: |-',
-      `  ${JSON.stringify(settings?.({ action, withoutHandler, id, unlisted }) ?? { ItemActions: [action, { ...action, WorkflowId: undefined, Workflow: { Id: withoutHandler } }] })}`,
+      `  ${JSON.stringify(settings?.({ action, withoutHandler, id, unlisted, otherTable }) ?? { ItemActions: [action, { ...action, WorkflowId: undefined, Workflow: { Id: withoutHandler } }] })}`,
     ].join('\n'),
     'pack.mjs': `
       export default {
@@ -1026,6 +1031,7 @@ async function portalListWorkflowFixture(t, { settings = null } = {}) {
             return { message: 'Portal list handler ran' };
           },
           '${unlisted}': () => { throw new Error('The unavailable action ran.'); },
+          '${otherTable}': () => { throw new Error('The other table workflow ran.'); },
         },
       };
     `,
@@ -1042,7 +1048,14 @@ async function portalListWorkflowFixture(t, { settings = null } = {}) {
     { contoso_widgetid: selected, name: 'alpha', status: 1 },
     { contoso_widgetid: filtered, name: 'beta', status: 1 },
   ];
-  const app = await startListWorkflowSimulator({ dir, state, workflowIds: [id, unlisted, withoutHandler], pack });
+  const app = await startListWorkflowSimulator({
+    dir,
+    state,
+    workflowIds: [id, unlisted, withoutHandler],
+    otherTable: [otherTable],
+    pack,
+    observed,
+  });
   t.after(() => app.close());
   const editor = signInHeaders(app, contact, { roles: ['Editor'] });
   const reader = signInHeaders(app, contact, { roles: ['Reader'] });
@@ -1055,14 +1068,19 @@ async function portalListWorkflowFixture(t, { settings = null } = {}) {
     recordId = selected,
     secure = layout.Base64SecureConfiguration,
     session = editor,
+    token = app.csrf,
   } = {}) =>
     fetch(`${app.url}/_services/execute-workflow/${site}`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', __RequestVerificationToken: app.csrf, ...session },
+      headers: {
+        'content-type': 'application/json',
+        ...(token === null ? {} : { __RequestVerificationToken: token }),
+        ...session,
+      },
       body: JSON.stringify({
         workflow: { Id: workflowId, LogicalName: 'workflow' },
         entity: { Id: recordId, LogicalName: 'contoso_widget' },
-        base64SecureConfiguration: secure,
+        ...(secure === null ? {} : { base64SecureConfiguration: secure }),
       }),
     });
   const listFile = 'Widgets.list.yml';
@@ -1074,6 +1092,8 @@ async function portalListWorkflowFixture(t, { settings = null } = {}) {
     id,
     unlisted,
     withoutHandler,
+    otherTable,
+    site,
     selected,
     filtered,
     reader,
@@ -1112,12 +1132,21 @@ it('runs a trusted real-time workflow only for its authorized native list action
     app.store.tableRows('contoso_widget').find((row) => row.contoso_widgetid === selected).status = 7;
   });
   assert.equal(answer.status, 204, await answer.text());
-  assert.deepEqual(layout.Configuration.ItemActionLinks[0].Workflow, { Id: id, LogicalName: 'workflow' });
+  // The workflow action draws no item action link (hosted-f2 summary-F2 LIST-01d); execution stays bound to it.
+  assert.equal(
+    layout.Configuration.ItemActionLinks.some((link) => link.Type === 7 || link.Workflow),
+    false,
+  );
   assert.equal((await post({ session: reader })).status, 403);
   assert.equal((await post({ session: {} })).status, 403);
   assert.equal((await post({ workflowId: unlisted })).status, 403);
   assert.equal((await post({ recordId: filtered })).status, 403);
   assert.equal((await post({ secure: 'tampered' })).status, 403);
+  // Without a signed list configuration the default access refuses the run; without a token nothing runs and the
+  // service answers 200 with an empty body (hosted-f2 summary-F2 OPS-01f).
+  assert.equal((await post({ secure: null })).status, 501);
+  const tokenless = await post({ token: null });
+  assert.deepEqual([tokenless.status, await tokenless.text()], [200, '']);
   assert.equal((await post({ workflowId: withoutHandler })).status, 501);
   assert.equal(app.store.tableRows('contoso_widget')[0].status, 17);
   const deactivated = await transactBetweenAdmissionAndRun(() => {
@@ -1169,10 +1198,10 @@ it('rolls back a classic list workflow if the list source changes during its han
   );
 });
 
-// @test-kind unproven: local model of the legacy list source (Adxstudio ViewConfiguration.GetActions merges ItemActions and ExtendedItemActions by ActionIndex; WorkflowActionLink takes the grid WorkflowDialog and the action's dialog texts); no hosted capture of a configured workflow action
-it('runs an ExtendedItemActions workflow in ActionIndex order with its own dialog texts', async (t) => {
+// @test-kind observation: paqvilo-developer hosted-f2 summary-F2 LIST-01d (lists.json and lists-bs3.json, runs a and b, 2026-11-26): a workflow action in ItemActions or ExtendedItemActions, with or without its own dialog texts and a grid WorkflowDialog, draws no item action link, and the list always draws the default modal-run-workflow dialog with its body HTML-escaped and the WorkflowDialog ignored (Bootstrap 3 markup: close button before the title)
+it('a list workflow action draws no item link and the list draws the default workflow dialog', async (t) => {
   const label = (value) => [{ LCID: 1033, Value: value }];
-  const { app, html, layout, post, id, unlisted, selected } = await portalListWorkflowFixture(t, {
+  const { app, html, layout, post, id, selected } = await portalListWorkflowFixture(t, {
     settings: ({ action, unlisted: other }) => ({
       ItemActions: [
         { Type: 'CrmEntityFormView-DeleteAction', ActionIndex: 2 },
@@ -1200,42 +1229,241 @@ it('runs an ExtendedItemActions workflow in ActionIndex order with its own dialo
       },
     }),
   });
-  const links = layout.Configuration.ItemActionLinks;
-  // Equal indexes keep ItemActions before ExtendedItemActions; the delete action (index 2) follows.
   assert.deepEqual(
-    links.map((link) => [link.Type, link.Label]),
-    [
-      [7, 'Second'],
-      [7, 'Extended run'],
-      [4, "<span class='fa fa-trash-o' aria-hidden='true'></span> Delete"],
-    ],
+    layout.Configuration.ItemActionLinks.map((link) => [link.Type, link.Label]),
+    [[4, "<span class='fa fa-trash-o' aria-hidden='true'></span> Delete"]],
   );
-  assert.deepEqual(
-    links
-      .slice(0, 2)
-      .map((link) => [
-        link.Workflow.Id,
-        link.CustomizeModal,
-        link.Modal.Title,
-        link.Modal.PrimaryButtonText,
-        link.Modal.CloseButtonText,
-        link.Modal.Size,
-        link.Modal.CssClass,
-      ]),
-    [
-      [unlisted, false, 'Grid run', 'Go', 'Back', 2, 'grid-run'],
-      [id, true, 'Confirm the extended run', 'Start', 'Back', 2, 'grid-run'],
-    ],
+  const modal =
+    /<div aria-hidden="true" class="modal fade modal-run-workflow [^"]*"[\s\S]*?<\/div><\/div><\/div><\/div>/.exec(
+      html,
+    )?.[0];
+  assert.equal(
+    modal,
+    '<div aria-hidden="true" class="modal fade modal-run-workflow " role="dialog" tabindex="-1"><div class="modal-dialog "><div class="modal-content"><div class="modal-header"><button class="close" data-dismiss="modal" type="button"><span aria-hidden="true">&times;</span><span class="sr-only">Close</span></button><h4 class="modal-title "> Run workflow</h4></div><div class="modal-body">&lt;p&gt;Are you sure you want to run this workflow?&lt;/p&gt;</div><div class="modal-footer"><button class="primary btn btn-primary " type="button">Run workflow</button><button class="cancel btn btn-default " data-dismiss="modal" type="button">Cancel</button></div></div></div></div>',
   );
-  // The Bootstrap 3 list's one workflow dialog carries the grid WorkflowDialog.
-  const modal = /<section[^>]*modal-run-workflow[^>]*>[\s\S]*?<\/section>/.exec(html)?.[0] ?? '';
-  assert.match(modal, /class="modal fade modal-run-workflow grid-run"/);
-  assert.match(modal, /<div class="modal-sm modal-dialog">/);
-  assert.match(modal, /<h1 class="modal-title" title="Grid run">Grid run<\/h1>/);
-  assert.match(modal, /<button class="primary btn btn-primary" type="button">Go<\/button>/);
-  assert.match(modal, /<button class="cancel btn btn-default" data-dismiss="modal" type="button">Back<\/button>/);
-  // The extended action is the list's own action: it runs on its authorized row.
+  assert.doesNotMatch(html, /Grid run|Confirm the extended run|grid-run/);
+  // The extended action is still the list's own action: it runs on its authorized row.
   const answer = await post({ workflowId: id, recordId: selected });
   assert.equal(answer.status, 204, await answer.text());
   assert.equal(app.store.tableRows('contoso_widget').find((row) => row.contoso_widgetid === selected).status, 11);
+});
+
+// @test-kind observation: paqvilo-developer hosted-f2 summary-F2 LIST-01d and OPS-01f (runs a and b, 2026-11-26): a PAC export names the maker's workflow action "WorkflowAction" (its dialog "WorkflowModal", its texts "LanguageResources") and the list keeps it as its own action; a workflow of another table answers 500 with the Dataverse message and runs nothing
+it('a PAC-exported WorkflowAction is the list action, and a workflow of another table answers the Dataverse message', async (t) => {
+  const text = (value) => [{ Type: 'LanguageResources', LCID: 1033, Value: value }];
+  const { app, layout, post, id, otherTable, selected } = await portalListWorkflowFixture(t, {
+    settings: ({ id: own, otherTable: other }) => ({
+      Type: 'CrmEntityFormView-GridMetadata',
+      ItemActions: [],
+      ExtendedItemActions: [
+        { Type: 'WorkflowAction', Workflow: { Id: own, LogicalName: 'workflow' }, ButtonLabel: text('Run it') },
+        { Type: 'WorkflowAction', Workflow: { Id: other, LogicalName: 'workflow' }, ButtonLabel: text('Other') },
+      ],
+      WorkflowDialog: { Type: 'WorkflowModal', Title: text('Ignored') },
+    }),
+  });
+  assert.deepEqual(layout.Configuration.ItemActionLinks, []);
+  const answer = await post({ workflowId: id, recordId: selected });
+  assert.equal(answer.status, 204, await answer.text());
+  const status = () => app.store.tableRows('contoso_widget').find((row) => row.contoso_widgetid === selected).status;
+  assert.equal(status(), 11);
+  const other = await post({ workflowId: otherTable, recordId: selected });
+  assert.equal(other.status, 500);
+  assert.equal(other.headers.get('content-type'), 'application/json; charset=utf-8');
+  assert.equal(
+    await other.text(),
+    `{"InternalServerError":500,"Message":"Entity \\u0027contact\\u0027 With Id = ${selected} Does Not Exist"}`,
+  );
+  assert.equal(status(), 11);
+  // The default access names the hosted behaviour it does not reproduce.
+  const diagnostics = await (
+    await fetch(`${app.url}/__sim/api/diagnostics`, { headers: { 'x-sim-csrf': app.csrf } })
+  ).json();
+  const entries = Array.isArray(diagnostics) ? diagnostics : (diagnostics.diagnostics ?? []);
+  assert.ok(entries.some((entry) => entry.code === 'EXECUTE_WORKFLOW_HOSTED_ACCESS' && entry.severity === 'warning'));
+});
+
+// @test-kind observation: paqvilo-developer hosted-f2 summary-F2 OPS-01f (workflow-v2.json, runs a and b, 2026-11-26): with a token the hosted service runs any on-demand workflow on the posted record as the site's application user, with no list action, signed configuration or table permission (204); without a token it runs nothing and answers 200 with an empty body; a workflow of another table answers 500 with the Dataverse message. Mirage does this only with observed.executeWorkflowAccess any-on-demand
+it('observed any-on-demand access runs the posted workflow as the hosted service does', async (t) => {
+  const { app, post, unlisted, otherTable, selected, filtered, reader } = await portalListWorkflowFixture(t, {
+    observed: { executeWorkflowAccess: 'any-on-demand', evidence: 'Invented loopback observation' },
+  });
+  const status = (row) => app.store.tableRows('contoso_widget').find((item) => item.contoso_widgetid === row).status;
+  // The list does not configure this workflow, the visitor may only read and the row is outside the action's filter.
+  const tokenless = await post({
+    workflowId: unlisted,
+    recordId: filtered,
+    secure: null,
+    session: reader,
+    token: null,
+  });
+  assert.deepEqual([tokenless.status, await tokenless.text()], [200, '']);
+  assert.equal(status(filtered), 1);
+  const run = await post({ recordId: filtered, secure: null, session: reader });
+  assert.equal(run.status, 204, await run.text());
+  assert.equal(status(filtered), 11);
+  const other = await post({ workflowId: otherTable, recordId: selected, secure: null, session: reader });
+  assert.equal(other.status, 500);
+  assert.equal(
+    await other.text(),
+    `{"InternalServerError":500,"Message":"Entity \\u0027contact\\u0027 With Id = ${selected} Does Not Exist"}`,
+  );
+  assert.equal(status(selected), 1);
+});
+
+const VIRTUAL_APP_ID = '88888888-8888-4888-8888-888888888888';
+const VIRTUAL_SECRET_VAR = 'PAQVILO_WORKFLOW_VIRTUAL_SECRET';
+const VROW = 'aaaaaaaa-0000-4000-8000-000000000071';
+// Classic definitions of the invented provider-backed table contoso_vrow: create and update triggers (background and
+// real-time) that would each run a handler, an on-demand one, and a draft to publish.
+const VIRTUAL_FACTS = [
+  fact(WF(71), { primaryentity: 'contoso_vrow', triggeroncreate: true, ondemand: false }),
+  fact(WF(72), { primaryentity: 'contoso_vrow', triggeronupdateattributelist: 'name', mode: 1, ondemand: false }),
+  fact(WF(73), { primaryentity: 'contoso_vrow' }),
+  fact(WF(74), { primaryentity: 'contoso_vrow', state: 0, statuscode: 1, triggeroncreate: true, ondemand: false }),
+];
+
+// @test-kind unproven: Microsoft Learn "API considerations for virtual tables" documents CanTriggerWorkflow as always false for a virtual table; the native answers to publishing or executing such a definition are not captured, so Mirage fails closed
+describe('dataverse workflows: a classic workflow whose table is provider-backed (virtual)', () => {
+  let api;
+  let store;
+  let origin;
+  let token;
+  const ran = [];
+  const diagnostics = [];
+  const providerRows = new Map();
+
+  before(async () => {
+    process.env[VIRTUAL_SECRET_VAR] = 'virtual-secret';
+    const state = emptyState();
+    state.mappings.contoso_vrow = {
+      logicalName: 'contoso_vrow',
+      entitySet: 'contoso_vrows',
+      idColumn: 'contoso_vrowid',
+      nameColumn: 'name',
+      userConfigured: true,
+      isVirtual: true,
+      fields: { name: { dataverseType: 'nvarchar' } },
+      relationships: {},
+    };
+    state.tables.contoso_vrow = [];
+    store = await new DataStore({ state }).init();
+    const provider = {
+      async create(row) {
+        const created = { ...row, contoso_vrowid: row.contoso_vrowid ?? VROW };
+        providerRows.set(created.contoso_vrowid, created);
+        return created;
+      },
+      async update(id, patch) {
+        const updated = { ...providerRows.get(id), ...patch };
+        providerRows.set(id, updated);
+        return updated;
+      },
+      async retrieve(id) {
+        return providerRows.get(id) ?? null;
+      },
+      async retrieveMultiple() {
+        return [...providerRows.values()];
+      },
+    };
+    const extensions = EXTENSIONS.map((extension) =>
+      extension.name === 'dataverse-virtual-providers'
+        ? {
+            ...extension,
+            install: (target) => extension.install(target, { virtualTableProviders: { contoso_vrow: provider } }),
+          }
+        : extension,
+    );
+    const handler = (id) => async () => {
+      ran.push(id);
+    };
+    api = await startDataverseApi({
+      store,
+      settings: dataverseSettings({
+        enabled: true,
+        applications: [
+          {
+            appId: VIRTUAL_APP_ID,
+            displayName: 'Virtual workflows app',
+            secretEnvironmentVariable: VIRTUAL_SECRET_VAR,
+            roles: ['System Administrator'],
+          },
+        ],
+      }),
+      log: () => {},
+      extensions: [
+        ...extensions,
+        workflowExtension({
+          facts: VIRTUAL_FACTS,
+          handlers: workflowHandlers([
+            {
+              id: 'invented-virtual-pack',
+              workflows: Object.fromEntries([71, 72, 73, 74].map((n) => [WF(n), handler(WF(n))])),
+            },
+          ]),
+          diagnostic: (entry) => diagnostics.push(entry),
+        }),
+      ],
+    });
+    origin = api.origin;
+    const response = await fetch(`${origin}/${api.tenantId}/oauth2/v2.0/token`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'client_credentials',
+        client_id: VIRTUAL_APP_ID,
+        client_secret: process.env[VIRTUAL_SECRET_VAR],
+        scope: `${origin}/.default`,
+      }),
+    });
+    token = (await response.json()).access_token;
+  });
+
+  after(async () => {
+    delete process.env[VIRTUAL_SECRET_VAR];
+    await api?.close();
+  });
+
+  const call = (suffix, { method = 'GET', body } = {}) =>
+    fetch(`${origin}/api/data/v9.2/${suffix}`, {
+      method,
+      headers: {
+        authorization: `Bearer ${token}`,
+        ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
+      },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+
+  it('starts no background or real-time run on a write to the table and reports each definition once', async () => {
+    const created = await call('contoso_vrows', { method: 'POST', body: { contoso_vrowid: VROW, name: 'first' } });
+    assert.equal(created.status, 204, await created.clone().text());
+    const updated = await call(`contoso_vrows(${VROW})`, { method: 'PATCH', body: { name: 'second' } });
+    assert.equal(updated.status, 204, await updated.clone().text());
+    assert.equal((await call(`contoso_vrows(${VROW})`, { method: 'PATCH', body: { name: 'third' } })).status, 204);
+    await settleCommittedWork(store, []);
+    assert.equal(providerRows.get(VROW)?.name, 'third', 'the writes reached the provider');
+    assert.deepEqual(ran, []);
+    assert.deepEqual(
+      store.tableRows('asyncoperation').filter((job) => job.operationtype === 10),
+      [],
+    );
+    const reported = diagnostics.filter((entry) => entry.code === 'WORKFLOW_VIRTUAL_TABLE_UNSUPPORTED');
+    // Every activated definition of the table, the on-demand one included; the draft is not activated.
+    assert.deepEqual(reported.map((entry) => entry.workflowId).sort(), [WF(71), WF(72), WF(73)]);
+    assert.ok(reported.every((entry) => entry.table === 'contoso_vrow'));
+  });
+
+  it('refuses to execute or publish a classic workflow of the table', async () => {
+    const executed = await call(`workflows(${WF(73)})/Microsoft.Dynamics.CRM.ExecuteWorkflow`, {
+      method: 'POST',
+      body: { EntityId: VROW },
+    });
+    assert.equal(executed.status, 400, await executed.clone().text());
+    assert.match((await executed.json()).error.message, /virtual table 'contoso_vrow'/);
+    const published = await call(`workflows(${WF(74)})`, { method: 'PATCH', body: { statecode: 1 } });
+    assert.equal(published.status, 400, await published.clone().text());
+    assert.match((await published.json()).error.message, /cannot be triggered on virtual table 'contoso_vrow'/);
+    assert.equal(store.tableRows('workflow').find((row) => row.workflowid === WF(74)).statecode, 0);
+    assert.deepEqual(ran, []);
+  });
 });

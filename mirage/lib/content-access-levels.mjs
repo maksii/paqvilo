@@ -6,7 +6,15 @@
 // - The table is the standard adx_contentaccesslevel. Its N:N relationships (intersect table and columns) are read from
 //   the Solution metadata the store holds, never from a name.
 // - Only active rows grant: an inactive level, contact or account, or an inactive web role, adds no level.
-// Local model, not documented: an article is visible when it shares at least one level with the visitor, so an article
+// Enhanced data model (hosted session F3, summary-F3.md AUTH-07c, Customer Self-Service site, runs a and b): with the
+// setting on, knowledge.articles and fetchxml over knowledgearticle return no article for every persona, entities[] still
+// returns every article, and the Knowledge Article page answers 500 (RTDV01: the standard-model intersect table
+// adx_webrolecontentaccesslevel is not in the MetadataCache). The hosted feature reads a table the enhanced model does
+// not have, so which levels would grant is not observable there; knowledgeArticleAccess admits no article and reports
+// KNOWLEDGE_CONTENT_ACCESS_ENHANCED; entities[] keeps the same filter unless observed.knowledgeEntitiesContentAccess is
+// unfiltered (liquid.mjs EntityTableDrop). Creating an article attaches no level, and the template's Default level is linked
+// to no web role: Mirage reads links from data only and never adds one.
+// Standard data model, a local model, not documented: an article is visible when it shares at least one level with the visitor, so an article
 // with no level is hidden. The level links are read from local data. With live data (mode live) the same rule runs over
 // the rows the live read path returns (the contact, its parent, the visitor's levels and the articles of those levels);
 // when that read fails, every knowledge article is hidden and KNOWLEDGE_CONTENT_ACCESS_LIVE_HIDDEN is reported once (an
@@ -49,6 +57,24 @@ function activeIds(store, table) {
 function contentAccessLevelsEnabled(portal) {
   return /^(?:true|1)$/i.test(String(siteSetting(portal ?? {}, CONTENT_ACCESS_LEVEL_SETTING) ?? '').trim());
 }
+
+/** Whether the setting is on for an enhanced data model site, whose hosted feature fails (F3 AUTH-07c). */
+export function enhancedContentAccessLevels(portal) {
+  return (portal?.format ?? portal?.dataModel) === 'enhanced' && contentAccessLevelsEnabled(portal);
+}
+
+/** The Knowledge Article page error of such a site: the hosted RTDV01 message, as a Dataverse error (500). */
+export function enhancedArticlePageError() {
+  const error = new Error(
+    "The entity with a name = 'adx_webrolecontentaccesslevel' with namemapping = 'Logical' was not found in the MetadataCache.",
+  );
+  error.code = 'KNOWLEDGE_CONTENT_ACCESS_TABLE_MISSING';
+  error.status = 500;
+  error.dataverse = true;
+  return error;
+}
+
+const ENHANCED_MESSAGE = `${CONTENT_ACCESS_LEVEL_SETTING} is true on an enhanced data model site. A hosted site then returns no knowledge article through knowledge.articles or fetchxml (Mirage: also search), the setting has no effect through entities, which still returns every article, and the Knowledge Article page fails with 500.`;
 
 /** The level table's N:N relationships from the Solution metadata: { table, intersect, levelColumn, otherColumn }. */
 function levelRelationships(store) {
@@ -282,6 +308,15 @@ export function knowledgeArticleAccess({
   diagnostic = () => {},
 }) {
   if (!contentAccessLevelsEnabled(portal)) return null;
+  if (enhancedContentAccessLevels(portal)) {
+    diagnostic({
+      code: 'KNOWLEDGE_CONTENT_ACCESS_ENHANCED',
+      severity: 'warning',
+      component: 'knowledge',
+      message: ENHANCED_MESSAGE,
+    });
+    return { levels: [], visible: () => false, enhanced: true };
+  }
   if (config?.mode === 'live') {
     if (typeof readProvider?.fetchXml !== 'function' || typeof readProvider?.get !== 'function')
       return liveHidden(store, diagnostic, 'no live read path');

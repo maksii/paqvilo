@@ -1,0 +1,36 @@
+{
+  "schema": "paqvilo.parity-cases/1",
+  "surface": "liquid-render",
+  "suite": "power-pages-hosted-f3-editable",
+  "oracle": {
+    "kind": "native",
+    "name": "Power Pages Liquid renderer",
+    "version": "2026-11-27",
+    "scope": "Two independent native Power Pages page loads (hosted session F3, anonymous visitor, private site) of the same published editable snippet tag on 2026-11-27; establishes the rendered wrapper for a missing snippet with a default on this site only."
+  },
+  "captures": [
+    {
+      "id": "hosted-f3-liquid-render-a",
+      "sha256": "86a1670cfbe7ca3c815d4d8139e234d86202f28b4f656c8fbdec8dbbd1e09b03",
+      "capturedAt": "2026-11-27"
+    },
+    {
+      "id": "hosted-f3-liquid-render-b",
+      "sha256": "296dcad39221bd9bf628e7ddbd53841cc2defb12e1494b3088f03a08b115574f",
+      "capturedAt": "2026-11-27"
+    }
+  ],
+  "cases": [
+    {
+      "id": "editable-missing-snippet-default",
+      "input": {
+        "source": "{% editable snippets 'pqf3/missing' default: 'pqf3 fallback' %}"
+      },
+      "output": {
+        "output": "<div class=\"xrm-editable-html&#32;xrm-attribute\"><div class=\"xrm-attribute-value\">pqf3 fallback</div></div>"
+      },
+      "volatile": []
+    }
+  ],
+  "history": []
+}

@@ -155,6 +155,8 @@ export async function sourceOrganizationExtensions({
   // clr or placeholder: whether a custom API main operation on uploaded assembly bytes runs them (organization-host).
   uploadedAssemblies = 'clr',
   base = EXTENSIONS,
+  // The portal's own origin once it listens, or null: the Send Invitation email links to it.
+  portalOrigin = () => null,
 } = {}) {
   const layersOf = () => (typeof layers === 'function' ? layers() : layers) ?? [];
   const pluginsOf = () => (typeof plugins === 'function' ? plugins() : plugins);
@@ -270,6 +272,7 @@ export async function sourceOrganizationExtensions({
     overrides: workflowOverrides,
     cloudFlow,
     diagnostic,
+    portalOrigin,
   });
   const list = [...base, customApiExtension, plugin, workflow, addonHandlerExtension(addonHandlers)];
   Object.defineProperty(list, 'refresh', {

@@ -1,5 +1,5 @@
 // Portal JPEG image thumbnails: the bounded baseline codec (portal-jpeg-codec.mjs), the documented thumbnail crop
-// (portal-jpeg.mjs jpegThumbnail), Exif orientation at portal upload and the portal image route end to end.
+// (portal-jpeg.mjs jpegThumbnail), the Exif orientation model and the portal image route end to end.
 // Fixtures are invented pixels encoded by the codec under test; the Chromium oracle check lives in
 // mirage/test-browser/portal-jpeg-decode.test.mjs.
 import test from 'node:test';
@@ -9,8 +9,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { PNG } from 'pngjs';
 import { decodeJpeg, encodeJpeg, jpegFrame } from '../lib/portal-jpeg-codec.mjs';
-import { jpegThumbnail, orientJpeg, stripJpegExif } from '../lib/portal-jpeg.mjs';
+import { jpegThumbnail } from '../lib/portal-jpeg.mjs';
 import { pngThumbnail } from '../lib/portal-png.mjs';
+import { PROGRESSIVE_PAIRS } from './fixtures/progressive-jpeg.mjs';
 import { createSimulator } from '../server.mjs';
 import { signInHeaders } from '../testing/session.mjs';
 import { ownedFixture, ownedClose, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
@@ -137,12 +138,13 @@ const ADOBE_RGB = app(0xee, Buffer.from([0x41, 0x64, 0x6f, 0x62, 0x65, 0, 100, 0
 const xmp = app(0xe1, Buffer.from('http://ns.adobe.com/xap/1.0/\0invented-fixture', 'utf8'));
 const comment = app(0xfe, Buffer.from('invented comment', 'utf8'));
 
-// @test-kind compatibility: Microsoft Learn "Use image column data", section "Resize rules for thumbnail-sized images" (a side over 144 px crops on center to 144x144; otherwise square to the smaller side; examples 300x428 -> 144x144 and 91x130 -> 91x91)
-test('JPEG thumbnails follow the documented crop and resize rule', () => {
+// @test-kind observation: hosted sessions F2 thumbs (runs a and b: 400x200 and 400x300 JPEG -> 144x144, 300x428 PNG -> 144x144, 91x130 PNG -> 91x91, 200x120 GIF -> 120x120, 160x100 BMP -> 100x100) and F1 files (runs a and b: 300x100 PNG -> 100x100): a square of the shorter side, at most 144 px
+test('JPEG thumbnails are a centered square of the shorter side, at most 144 px', () => {
   for (const [width, height, edge] of [
     [300, 428, 144],
     [91, 130, 91],
-    [100, 300, 144],
+    [100, 300, 100],
+    [200, 120, 120],
     [143, 40, 40],
   ]) {
     const bytes = encodeJpeg(banded(width, height));
@@ -157,8 +159,16 @@ test('JPEG thumbnails follow the documented crop and resize rule', () => {
     ])
       near(pixel(thumbnail, x, y), BLUE, 24, `${width}x${height} at ${x},${y}`);
   }
+  // A 144x144 image is re-encoded too, so an Exif segment (GPS position, camera) never reaches its thumbnail.
   const square = encodeJpeg(smooth(144, 144));
-  assert.equal(jpegThumbnail(square), square, 'a 144x144 image keeps its bytes');
+  const exif = Buffer.from('45786966000049492a0008000000000000000000', 'hex');
+  const app1 = Buffer.concat([Buffer.from([0xff, 0xe1, 0, exif.length + 2]), exif]);
+  const tagged = Buffer.concat([square.subarray(0, 2), app1, square.subarray(2)]);
+  const squareThumbnail = jpegThumbnail(tagged);
+  assert.notDeepEqual(squareThumbnail, tagged, 'a 144x144 image is re-encoded');
+  assert.ok(!squareThumbnail.includes(Buffer.from('Exif')), 'the thumbnail carries no Exif');
+  const decoded = decodeJpeg(squareThumbnail);
+  assert.deepEqual([decoded.width, decoded.height], [144, 144]);
 });
 
 // @test-kind compatibility: Microsoft Learn "Use image column data", resize rules for thumbnail-sized images; PNG and JPEG thumbnails must sample the same source pixels
@@ -181,16 +191,25 @@ test('PNG and JPEG thumbnails of the same pixels sample the same centered square
   }
 });
 
-// @test-kind unproven: the hosted thumbnail bytes are not captured; baseline JFIF, quality 90, 4:2:0 colour and one-component grayscale are a local choice (Learn's maker page says uploaded images are converted to .jpg)
-test('JPEG thumbnails are baseline JFIF at quality 90, 4:2:0 for colour and one component for grayscale', () => {
+// @test-kind observation: the hosted JPEG thumbnail headers (session F1 files runs a and b, image:thumbnail, compared byte for byte; session F2 thumbs runs a and b list the same markers) are JFIF 1.1 at 96 dpi, the IJG quality 75 tables, SOF0 4:2:0 and four DHT segments; the grayscale thumbnail is a local choice without a capture
+test('JPEG thumbnails carry the hosted JFIF header, quality 75 tables, 4:2:0 baseline frame and Huffman tables', () => {
   const color = jpegThumbnail(encodeJpeg(smooth(300, 200)));
-  assert.equal(color.toString('latin1', 6, 11), 'JFIF\0');
-  const frame = segments(color).find((s) => s.marker === 0xc0);
-  assert.ok(frame, 'baseline SOF0');
-  assert.deepEqual([...color.subarray(frame.offset + 9, frame.offset + 19)], [3, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1]);
-  const quant = segments(color).find((s) => s.marker === 0xdb);
-  // IJG quality 90 scales the Annex K luminance DC entry 16 to 3.
-  assert.deepEqual([...color.subarray(quant.offset + 4, quant.offset + 6)], [0, 3]);
+  const all = segments(color);
+  const bytesOf = (s) => color.subarray(s.offset, s.end).toString('hex');
+  assert.deepEqual(
+    all.map((s) => s.marker),
+    [0xe0, 0xdb, 0xdb, 0xc0, 0xc4, 0xc4, 0xc4, 0xc4, 0xda],
+  );
+  assert.equal(bytesOf(all[8]), 'ffda000c03010002110311003f00');
+  assert.equal(bytesOf(all[0]), 'ffe000104a46494600010101006000600000');
+  // IJG quality 75: the Annex K luminance entries 16, 11, 12, 14 become 8, 6, 6, 7; chrominance 17, 18 become 9, 9.
+  assert.equal(bytesOf(all[1]).slice(0, 18), 'ffdb00430008060607');
+  assert.equal(bytesOf(all[2]).slice(0, 18), 'ffdb0043010909090c');
+  assert.equal(bytesOf(all[3]), 'ffc00011080090009003012200021101031101');
+  assert.deepEqual(
+    all.slice(4, 8).map((s) => bytesOf(s).slice(0, 12)),
+    ['ffc4001f0000', 'ffc400b51000', 'ffc4001f0100', 'ffc400b51100'],
+  );
 
   const gray = jpegThumbnail(encodeJpeg(smooth(200, 300, 1)));
   const grayFrame = decodeJpeg(gray);
@@ -244,6 +263,102 @@ test('restart markers, shared table segments and 16-bit quantization tables deco
   for (let at = missing.indexOf(Buffer.from([0xff, 0xd3])); at !== -1; at = missing.indexOf(Buffer.from([0xff, 0xd3])))
     missing[at + 1] = 0x00;
   assert.equal(decodeJpeg(missing), null, 'a missing restart marker is a malformed stream');
+});
+
+// @test-kind compatibility: ITU-T T.81 Annex G progressive Huffman decoding (DC and AC spectral selection, successive approximation refinement, end-of-band runs, restart intervals): a progressive stream carries the same quantized coefficients as its baseline twin, so both decode to the same samples
+test('progressive JPEGs decode to the same samples as their baseline twins', () => {
+  for (const [name, pair] of Object.entries(PROGRESSIVE_PAIRS)) {
+    const progressive = Buffer.from(pair.progressive, 'base64');
+    assert.ok(
+      segments(progressive).some((s) => s.marker === 0xc2),
+      `${name} is progressive`,
+    );
+    const decoded = decodeJpeg(progressive);
+    assert.ok(decoded, name);
+    assert.deepEqual(decoded.data, decodeJpeg(Buffer.from(pair.baseline, 'base64')).data, name);
+    assert.deepEqual(jpegFrame(progressive), {
+      width: decoded.width,
+      height: decoded.height,
+      channels: decoded.channels,
+    });
+  }
+});
+
+// @test-kind observation: hosted session F2 thumbs runs a and b (jpeg-progressive-400x300.jpg): a progressive JPEG's thumbnail is a baseline SOF0 JPEG; size=full keeps the progressive upload
+test('a progressive JPEG gives a baseline thumbnail of its pixels', () => {
+  const { progressive, baseline } = PROGRESSIVE_PAIRS.color;
+  const thumbnail = jpegThumbnail(Buffer.from(progressive, 'base64'));
+  assert.deepEqual(
+    segments(thumbnail).map((s) => s.marker),
+    [0xe0, 0xdb, 0xdb, 0xc0, 0xc4, 0xc4, 0xc4, 0xc4, 0xda],
+  );
+  const decoded = decodeJpeg(thumbnail);
+  assert.deepEqual([decoded.width, decoded.height], [24, 24]);
+  assert.deepEqual(thumbnail, jpegThumbnail(Buffer.from(baseline, 'base64')));
+});
+
+// @test-kind security: untrusted progressive streams never throw, never run more than 64 scans and keep their original bytes when malformed or truncated
+test('malformed, truncated and over-long progressive JPEGs keep their bytes without throwing', () => {
+  const valid = Buffer.from(PROGRESSIVE_PAIRS.restart.progressive, 'base64');
+  // Every scan header with the offset where its entropy-coded data ends (the next marker other than a stuffed zero or RSTn).
+  const scans = [];
+  for (let at = valid.indexOf(Buffer.from([0xff, 0xda])); at !== -1;) {
+    const end = at + 2 + valid.readUInt16BE(at + 2);
+    let next = end;
+    while (!(valid[next] === 0xff && valid[next + 1] !== 0 && (valid[next + 1] < 0xd0 || valid[next + 1] > 0xd7)))
+      next++;
+    scans.push({ offset: at, end, dataEnd: next });
+    const following = valid.indexOf(Buffer.from([0xff, 0xda]), next);
+    at = following;
+  }
+  assert.ok(scans.length > 2 && scans.length < 64, `${scans.length} scans`);
+  const lastScan = scans.at(-1).offset;
+  // The first DC scan repeated before the last scan until the stream holds `total` scans.
+  const withScans = (total) =>
+    Buffer.concat([
+      valid.subarray(0, lastScan),
+      ...Array.from({ length: total - scans.length }, () => valid.subarray(scans[0].offset, scans[0].dataEnd)),
+      valid.subarray(lastScan),
+    ]);
+  assert.ok(decodeJpeg(withScans(64)), '64 scans decode');
+  const repeated = withScans(65);
+  const spectralOf = (offset) => offset + 4 + 1 + 2 * valid[offset + 4];
+  const withByte = (at, value) => {
+    const copy = Buffer.from(valid);
+    copy[at] = value;
+    return copy;
+  };
+  const acScan = scans.find((s) => valid[spectralOf(s.offset)] > 0).offset;
+  const cases = {
+    tooManyScans: repeated,
+    spectralPastEnd: withByte(spectralOf(acScan) + 1, 64),
+    interleavedAcScan: withByte(spectralOf(scans[0].offset), 1),
+    approximationGap: withByte(spectralOf(acScan) + 2, 0x31),
+  };
+  for (const [name, bytes] of Object.entries(cases)) {
+    assert.equal(decodeJpeg(bytes), null, name);
+    assert.equal(jpegThumbnail(bytes), bytes, name);
+  }
+  for (let cut = 200; cut < valid.length - 2; cut += 37) {
+    const truncated = valid.subarray(0, cut);
+    assert.equal(decodeJpeg(truncated), null, `truncated at ${cut}`);
+    assert.equal(jpegThumbnail(truncated), truncated);
+  }
+  let seed = 0x1b873593;
+  const random = () => {
+    seed ^= seed << 13;
+    seed ^= seed >>> 17;
+    seed ^= seed << 5;
+    return (seed >>> 0) / 0x100000000;
+  };
+  for (let round = 0; round < 300; round++) {
+    const mutated = Buffer.from(valid);
+    for (let n = 1 + Math.floor(random() * 4); n > 0; n--)
+      mutated[Math.floor(random() * mutated.length)] = Math.floor(random() * 256);
+    const decoded = decodeJpeg(mutated);
+    if (decoded) assert.equal(decoded.data.length, decoded.width * decoded.height * decoded.channels);
+    assert.ok(Buffer.isBuffer(jpegThumbnail(mutated)));
+  }
 });
 
 // @test-kind compatibility: Adobe APP14 transform flag (0 = RGB samples, 1 = YCbCr) as libjpeg interprets it for three components
@@ -324,16 +439,17 @@ test('unsupported, malformed, truncated and oversized JPEGs keep their bytes wit
     if (decoded) assert.equal(decoded.data.length, decoded.width * decoded.height * decoded.channels);
     assert.ok(Buffer.isBuffer(jpegThumbnail(mutated)));
     assert.ok(
-      Buffer.isBuffer(orientJpeg(Buffer.concat([mutated.subarray(0, 2), exifOrientation(6), mutated.subarray(2)]))),
+      Buffer.isBuffer(jpegThumbnail(Buffer.concat([mutated.subarray(0, 2), exifOrientation(6), mutated.subarray(2)]))),
     );
   }
 });
 
-// @test-kind unproven: hosted handling of Exif orientation is not captured; the local model re-encodes upright pixels before Exif removal so the visible orientation survives, keeping other APPn and comment segments
-test('orientJpeg makes Exif-oriented JPEGs upright and keeps other bytes alone', () => {
-  const quadrants = image(40, 24, 3, (x, y) => {
-    if (y < 12) return x < 20 ? [230, 20, 20] : [20, 200, 20];
-    return x < 20 ? [20, 20, 230] : [230, 230, 30];
+// @test-kind unproven: the thumbnail shows the Exif orientation (1..8, either byte order, read past other APP1 and comment segments) upright, as a browser shows the upload, and carries none of the source's segments; hosted uploads keep their Exif (session F2 thumbs), the hosted thumbnail of every orientation was not captured
+test('a JPEG thumbnail is the upright crop for every Exif orientation', () => {
+  // Quadrants larger than the thumbnail's 16x16 chroma blocks, so no corner shares a block with another color.
+  const quadrants = image(80, 48, 3, (x, y) => {
+    if (y < 24) return x < 40 ? [230, 20, 20] : [20, 200, 20];
+    return x < 40 ? [20, 20, 230] : [230, 230, 30];
   });
   const [topLeft, topRight, bottomLeft, bottomRight] = [
     [230, 20, 20],
@@ -342,7 +458,8 @@ test('orientJpeg makes Exif-oriented JPEGs upright and keeps other bytes alone',
     [230, 230, 30],
   ];
   const plain = encodeJpeg(quadrants, { sampling: { h: 1, v: 1 } });
-  // Expected corners after display: top-left, top-right, bottom-left, bottom-right of the upright image.
+  // Expected corners after display: top-left, top-right, bottom-left, bottom-right of the upright image; the centered
+  // 48x48 crop keeps a corner in each quadrant.
   const corners = {
     1: [topLeft, topRight, bottomLeft, bottomRight],
     2: [topRight, topLeft, bottomRight, bottomLeft],
@@ -360,17 +477,11 @@ test('orientJpeg makes Exif-oriented JPEGs upright and keeps other bytes alone',
       xmp,
       comment,
     );
-    const oriented = orientJpeg(tagged);
-    if (orientation === '1') {
-      assert.equal(oriented, tagged, 'orientation 1 keeps the bytes');
-      continue;
-    }
-    assert.ok(!oriented.includes(Buffer.from('Exif\0\0', 'binary')), 'the oriented image carries no Exif');
-    assert.ok(oriented.includes(xmp) && oriented.includes(comment), 'XMP and comments are kept');
-    assert.equal(stripJpegExif(oriented), oriented);
-    const decoded = decodeJpeg(oriented);
-    const swap = Number(orientation) >= 5;
-    assert.deepEqual([decoded.width, decoded.height], swap ? [24, 40] : [40, 24]);
+    const thumbnail = jpegThumbnail(tagged);
+    assert.ok(!thumbnail.includes(Buffer.from('Exif\0\0', 'binary')), 'the thumbnail carries no Exif');
+    assert.ok(!thumbnail.includes(xmp) && !thumbnail.includes(comment), 'the thumbnail carries no XMP or comment');
+    const decoded = decodeJpeg(thumbnail);
+    assert.deepEqual([decoded.width, decoded.height], [48, 48]);
     const [w, h] = [decoded.width - 2, decoded.height - 2];
     [
       [1, 1],
@@ -379,7 +490,6 @@ test('orientJpeg makes Exif-oriented JPEGs upright and keeps other bytes alone',
       [w, h],
     ].forEach(([x, y], i) => near(pixel(decoded, x, y), expected[i], 30, `orientation ${orientation} corner ${i}`));
   }
-  assert.equal(orientJpeg(plain), plain, 'no Exif keeps the bytes');
   const upright = decodeJpeg(jpegThumbnail(insertAfterSoi(encodeJpeg(banded(300, 428)), exifOrientation(6))));
   assert.deepEqual([upright.width, upright.height], [144, 144]);
 });
@@ -458,8 +568,8 @@ async function simulator(t) {
   return { app, call };
 }
 
-// @test-kind compatibility+unproven: geometry follows Microsoft Learn "Use image column data" resize rules for thumbnail-sized images; the JPEG thumbnail encoding and the Exif orientation model are local choices without a hosted capture
-test('the portal JPEG image route serves documented thumbnails while full and organization reads keep the stored bytes', async (t) => {
+// @test-kind observation: hosted sessions F2 thumbs and F1 files (runs a and b): size=full answers the upload byte for byte with its Exif, a thumbnail read ignores Range, the thumbnail and record projection are the upright Exif-free 144x144 crop (91x91 for 91x130)
+test('the portal JPEG image route serves whole upright thumbnails while full and organization reads keep the stored bytes', async (t) => {
   const { app, call } = await simulator(t);
   const route = `x_items(${ITEM})/x_image`;
   const name = { 'content-type': 'application/octet-stream', 'x-ms-file-name': 'fixture.jpg' };
@@ -467,16 +577,17 @@ test('the portal JPEG image route serves documented thumbnails while full and or
   assert.equal((await call('PATCH', route, original, name)).status, 204);
 
   const full = await call('GET', `${route}/$value?size=full`);
-  assert.deepEqual([full.status, full.headers.get('mimetype')], [200, 'image/jpeg']);
+  // The portal sends no mimetype header (hosted sessions F1 files and F2 thumbs, runs a and b).
+  assert.deepEqual(
+    [full.status, full.headers.get('mimetype'), full.headers.get('content-disposition')],
+    [200, null, 'inline; filename=fixture.jpg'],
+  );
   assert.deepEqual(Buffer.from(await full.arrayBuffer()), original, 'an upright JPEG is stored unchanged');
 
-  const result = await call('GET', `${route}/$value`, undefined, { Range: 'bytes=0-4095' });
-  assert.equal(result.status, 206);
+  const result = await call('GET', `${route}/$value`, undefined, { Range: 'bytes=0-15' });
+  assert.equal(result.status, 200, 'a thumbnail read ignores Range');
+  assert.equal(result.headers.get('content-range'), null);
   const thumbnailBytes = Buffer.from(await result.arrayBuffer());
-  assert.match(
-    result.headers.get('content-range'),
-    new RegExp(`^bytes 0-${thumbnailBytes.length - 1}/${thumbnailBytes.length}$`),
-  );
   const whole = await call('GET', `${route}/$value`);
   assert.deepEqual(Buffer.from(await whole.arrayBuffer()), thumbnailBytes, 'ranged and whole reads agree');
   const thumbnail = decodeJpeg(thumbnailBytes);
@@ -504,10 +615,12 @@ test('the portal JPEG image route serves documented thumbnails while full and or
   const small = decodeJpeg(Buffer.from(await (await call('GET', `${route}/$value`)).arrayBuffer()));
   assert.deepEqual([small.width, small.height], [91, 91]);
 
-  const rotated = insertAfterSoi(encodeJpeg(smooth(60, 30)), exifOrientation(6));
+  // Orientation 6 on a 400x200 frame shows 200x400: the thumbnail is the upright crop without Exif, size=full the upload.
+  const rotated = insertAfterSoi(encodeJpeg(banded(400, 200)), exifOrientation(6));
   assert.equal((await call('PATCH', route, rotated, name)).status, 204);
   const stored = Buffer.from(await (await call('GET', `${route}/$value?size=full`)).arrayBuffer());
-  assert.ok(!stored.includes(Buffer.from('Exif\0\0', 'binary')));
-  const upright = decodeJpeg(stored);
-  assert.deepEqual([upright.width, upright.height], [30, 60]);
+  assert.deepEqual(stored, rotated, 'size=full keeps the Exif upload');
+  const rotatedThumbnail = Buffer.from(await (await call('GET', `${route}/$value`)).arrayBuffer());
+  assert.ok(!rotatedThumbnail.includes(Buffer.from('Exif\0\0', 'binary')), 'the thumbnail carries no Exif');
+  assert.deepEqual(rotatedThumbnail, jpegThumbnail(rotated));
 });

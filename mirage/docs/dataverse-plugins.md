@@ -320,7 +320,16 @@ dictionaries and `OrganizationRequest`/`Response` keep their SDK types; unknown 
 `LocalPluginStateMutationUnsupported`.
 
 **Portal context.** An explicit trusted portal transport supplies `IsPortalsClientCall` and `PortalsContactId` from the
-active local Contact; nested SDK operations clear both. Evidence-qualified `context.interfaceVersion: 7` supplies
+active local Contact; nested SDK operations clear both. A portal call (basic and multistep form writes, multistep
+session rows, Web API) reports `IsPortalsClientCall` true and `PortalsContactId` the signed-in contact, and its `UserId`
+and `InitiatingUserId` are the site's host application user when one exists, in its synchronous steps, its
+asynchronous jobs and its web hook contexts, with enhanced authorization enabled (state 3) or not (state 0), as both
+hosted captures show: the caller is the application user, not the visitor's mapped user. A real-time classic workflow
+that runs inside a portal call (an interpreted designer workflow triggered by the call's write) keeps
+`IsPortalsClientCall` true and `PortalsContactId` the contact on its writes at depth 2, while a plug-in's own SDK
+calls clear both; a background workflow job's operations report false and the empty GUID. The workflow's reads of
+its records do not reach the plug-in pipeline, and a trusted pack handler's writes are its own API calls, so neither
+carries the portal facts. Evidence-qualified `context.interfaceVersion: 7` supplies
 environment id, tenant id, application-user status and user-agent presence.
 
 ## SDK calls from plug-ins

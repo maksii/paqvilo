@@ -919,6 +919,18 @@ const storedRowById = (store, mapping, id, partitionId) => {
     const type = String(field.dataverseType ?? field.type ?? '').toLowerCase();
     if (value && typeof value === 'object' && value.id && value.logical_name)
       attributes[key] = reference(value.logical_name, value.id, value.name, value.partitionid ?? row[`${key}pid`], key);
+    else if (
+      Array.isArray(value) &&
+      (type === 'partylist' || (type === '' && value.length > 0 && value.every((item) => item?.partyid)))
+    )
+      // A party list in a Target is an Entity[] of activityparty entities (hosted F2 basic form Create Target).
+      attributes[key] = {
+        $type: 'SdkArray',
+        elementType: 'Entity',
+        values: value.map((party) =>
+          recordToSdkEntity(store, 'activityparty', party, { allColumns: true, target: true }),
+        ),
+      };
     else if (['lookup', 'customer', 'owner'].includes(type) && typeof value === 'string') {
       // A thin mapping field ({ dataverseType } only, a standard table's stand-in) takes its targets from the
       // organization's attribute metadata (account masterid: account, native mergeAccount read-back).
@@ -2956,14 +2968,15 @@ export function deleteExecutionUser(store, operation, stage) {
         },
       }
     : {};
-  const portalRequest = frame.portalRequest === true && !parent,
+  // A nested context clears the portal facts, except a real-time workflow's operation, which keeps its portal call's.
+  const portalRequest = frame.portalRequest === true && (!parent || frame.portalInherited === true),
     portalContactId =
       portalRequest && uuid.test(frame.portalContactId ?? '')
         ? frame.portalContactId
         : '00000000-0000-0000-0000-000000000000';
   // Identities as the platform reports them. UserId is the executing principal: an impersonating step, a nested
-  // SDK service's user, else the Dataverse caller (the descriptor's identity stands in for portal and replay
-  // callers). The initiating/authenticated values belong to the original caller and pass down nested contexts.
+  // SDK service's user, else the Dataverse caller (a portal request's is the site's host application user when it
+  // exists; the descriptor's identity stands in for replay callers and a portal without one). The initiating/authenticated values belong to the original caller and pass down nested contexts.
   const caller = frame.callerIdentity?.dataverse ? frame.callerIdentity : null,
     user = (id) =>
       id
@@ -2979,6 +2992,8 @@ export function deleteExecutionUser(store, operation, stage) {
       store.pluginPlatformUserId ??
       store.pluginExecutionUserId ??
       caller?.systemUserId ??
+      // A portal request: the site's host application user (plugin-portal-caller.mjs, hosted F2).
+      frame.portalCallerUserId ??
       context.executionUserId ??
       descriptor.serviceProfile.userId,
     executionUserId = step.impersonatingUserId ?? callerUserId,
@@ -2988,12 +3003,15 @@ export function deleteExecutionUser(store, operation, stage) {
       store.pluginExecutionUserId ??
       guidOf(inherited('InitiatingUserId')) ??
       caller?.systemUserId ??
+      frame.portalCallerUserId ??
       context.initiatingUserId ??
       executionUserId,
     authenticatedUserId = guidOf(inherited('AuthenticatedUserId')) ?? caller?.dataverse?.callerId ?? initiatingUserId,
     businessUnitId =
       guidOf(inherited('BusinessUnitId')) ??
-      (caller ? guidOf(user(initiatingUserId)?.businessunitid?.id ?? user(initiatingUserId)?.businessunitid) : null) ??
+      (caller || frame.portalCallerUserId
+        ? guidOf(user(initiatingUserId)?.businessunitid?.id ?? user(initiatingUserId)?.businessunitid)
+        : null) ??
       context.businessUnitId,
     objectId = (id) => user(id)?.azureactivedirectoryobjectid ?? empty,
     sameUser = (a, b) => a != null && b != null && String(a).toLowerCase() === String(b).toLowerCase();

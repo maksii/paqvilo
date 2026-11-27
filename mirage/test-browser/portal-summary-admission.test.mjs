@@ -16,6 +16,9 @@ const related = '80000000-0000-4000-8000-000000000003';
 const site = '80000000-0000-4000-8000-000000000004';
 const view = '80000000-0000-4000-8000-000000000005';
 const hidden = '80000000-0000-4000-8000-000000000006';
+const relatedArticle = '80000000-0000-4000-8000-000000000007';
+const hiddenArticle = '80000000-0000-4000-8000-000000000008';
+const articleView = '80000000-0000-4000-8000-000000000009';
 const dataEndpoint = '/_api/summarization/data/v1.0/sample_records(' + record + ')?$select=title';
 const searchEndpoint = '/_api/search/v1.0/summary';
 const prompt = 'Summarization/prompt/sample';
@@ -30,7 +33,33 @@ test('both local summary routes use the paired token of a real browser and recei
     'portal/Main.pagetemplate.yml': 'adx_pagetemplateid: basic\nadx_webtemplateid: main',
     'portal/Main.webtemplate.yml': 'adx_webtemplateid: main\nadx_name: Main',
     'portal/Main.webtemplate.source.html': '<main>Invented browser summary fixture</main>',
-    'portal/webrole.yml': '- adx_webroleid: reader\n  adx_name: Reader',
+    // Search summary sources are the web pages and knowledge articles the visitor's search finds. Pages: one the reader
+    // may read and one restricted to a role neither visitor holds (web page access control rules govern them). Articles:
+    // one owned by the reader and one by another contact (a contact-scoped table permission governs them).
+    'portal/Lanternhelp.webpage.yml':
+      'adx_webpageid: ' +
+      related +
+      '\nadx_name: Lantern help\nadx_partialurl: help\nadx_parentpageid: home\nadx_pagetemplateid: basic\nadx_copy: One admitted page.',
+    'portal/Lanterninventory.webpage.yml':
+      'adx_webpageid: ' +
+      hidden +
+      '\nadx_name: Lantern inventory\nadx_partialurl: inventory\nadx_parentpageid: home\nadx_pagetemplateid: basic\nadx_copy: Another restricted page.',
+    'portal/webrole.yml':
+      '- adx_webroleid: reader\n  adx_name: Reader\n- adx_webroleid: editor\n  adx_name: Editor\n- adx_webroleid: anonymous\n  adx_name: Anonymous Users\n  adx_anonymoususersrole: true',
+    'portal/webpageaccesscontrolrule.yml': [
+      [related, 'reader'],
+      [hidden, 'editor'],
+    ]
+      .map(
+        ([id, role]) =>
+          '- adx_webpageaccesscontrolruleid: rule-' +
+          role +
+          '\n  adx_webpageid: ' +
+          id +
+          '\n  adx_right: 2\n  adx_scope: 1\n  adx_webpageaccesscontrolrule_webrole:\n  - ' +
+          role,
+      )
+      .join('\n'),
     'portal/sitemarker.yml': '- adx_sitemarkerid: lookup\n  adx_name: Knowledge Article\n  adx_pageid: home',
     'portal/sitesetting.yml': [
       'Webapi/sample_record/enabled: true',
@@ -45,11 +74,17 @@ test('both local summary routes use the paired token of a real browser and recei
       .join('\n'),
     'solution/Other/Solution.xml':
       '<ImportExportXml><SolutionManifest><UniqueName>InventedSummary</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
+    'solution/Entities/adx_webpage/Entity.xml':
+      '<Entity><Name>adx_webpage</Name><EntityInfo><entity Name="adx_webpage"><EntitySetName>adx_webpages</EntitySetName><PrimaryIdAttribute>adx_webpageid</PrimaryIdAttribute><PrimaryNameAttribute>adx_name</PrimaryNameAttribute><attributes><attribute PhysicalName="adx_name"><Name>adx_name</Name><Type>nvarchar</Type></attribute><attribute PhysicalName="adx_copy"><Name>adx_copy</Name><Type>ntext</Type></attribute></attributes></entity></EntityInfo></Entity>',
+    'solution/Entities/adx_webpage/SavedQueries/search.xml':
+      '<savedquery><savedqueryid>{' +
+      view +
+      '}</savedqueryid><querytype>0</querytype><LocalizedNames><LocalizedName description="Portal Search" languagecode="1033"/></LocalizedNames><fetchxml><fetch><entity name="adx_webpage"><attribute name="adx_name"/><attribute name="adx_copy"/></entity></fetch></fetchxml><layoutxml><grid><row><cell name="adx_name" width="100"/><cell name="adx_copy" width="100"/></row></grid></layoutxml></savedquery>',
     'solution/Entities/knowledgearticle/Entity.xml':
       '<Entity><Name>knowledgearticle</Name><EntityInfo><entity Name="knowledgearticle"><EntitySetName>knowledgearticles</EntitySetName><PrimaryIdAttribute>knowledgearticleid</PrimaryIdAttribute><PrimaryNameAttribute>title</PrimaryNameAttribute><attributes><attribute PhysicalName="title"><Name>title</Name><Type>nvarchar</Type></attribute><attribute PhysicalName="content"><Name>content</Name><Type>ntext</Type></attribute></attributes></entity></EntityInfo></Entity>',
     'solution/Entities/knowledgearticle/SavedQueries/search.xml':
       '<savedquery><savedqueryid>{' +
-      view +
+      articleView +
       '}</savedqueryid><querytype>0</querytype><LocalizedNames><LocalizedName description="Portal Search" languagecode="1033"/></LocalizedNames><fetchxml><fetch><entity name="knowledgearticle"><attribute name="title"/><attribute name="content"/></entity></fetch></fetchxml><layoutxml><grid><row><cell name="title" width="100"/><cell name="content" width="100"/></row></grid></layoutxml></savedquery>',
   };
   for (const [name, body] of Object.entries(files)) {
@@ -78,15 +113,15 @@ test('both local summary routes use the paired token of a real browser and recei
         sample_record: [{ sample_recordid: record, title: 'Admitted example', x_owner: actor }],
         knowledgearticle: [
           {
-            knowledgearticleid: related,
-            title: 'Lantern help',
+            knowledgearticleid: relatedArticle,
+            title: 'Lantern article',
             content: 'One admitted article.',
             statecode: 3,
             x_owner: actor,
           },
           {
-            knowledgearticleid: hidden,
-            title: 'Lantern inventory',
+            knowledgearticleid: hiddenArticle,
+            title: 'Lantern stock article',
             content: 'Another contact article.',
             statecode: 3,
             x_owner: hidden,
@@ -132,7 +167,13 @@ test('both local summary routes use the paired token of a real browser and recei
         const send = async (route, contentType, body, supplied = token) => {
           const response = await fetch(route, {
             method: 'POST',
-            headers: { 'content-type': contentType, __RequestVerificationToken: supplied },
+            // The portal's own client sends X-Requested-With; the summary API refuses a request without it
+            // (hosted session F3, API-05d, runs a and b).
+            headers: {
+              'content-type': contentType,
+              'X-Requested-With': 'XMLHttpRequest',
+              __RequestVerificationToken: supplied,
+            },
             body,
           });
           return [response.status, await response.json()];
@@ -157,17 +198,20 @@ test('both local summary routes use the paired token of a real browser and recei
   assert.equal(signed.data[0], 200, JSON.stringify(signed.data[1]));
   assert.equal(signed.search[0], 200, JSON.stringify(signed.search[1]));
   assert.deepEqual(calls.data, [{ title: 'Admitted example' }]);
-  assert.deepEqual(
-    calls.search[0].map(({ id }) => id),
-    [related],
-  );
+  assert.deepEqual(calls.search[0].map(({ id }) => id).sort(), [related, relatedArticle].sort());
 
   const guest = await browser.page(t);
   await guest.goto(sim.url);
   const denied = await run(guest, signed.token);
   assert.ok(denied.token && denied.token !== signed.token, 'the two contexts must own different browser tokens');
   assert.equal(denied.data[0], 403, JSON.stringify(denied.data[1]));
-  assert.deepEqual(denied.search, [200, { Summary: '', Citations: {} }]);
+  // The guest holds neither page's role nor an article permission: no source, the hosted empty answer, and the
+  // provider is not called.
+  assert.equal(denied.search[0], 200);
+  assert.deepEqual(
+    [denied.search[1].Summary, denied.search[1].Citations, denied.search[1].ResponseStatus],
+    [null, null, { Code: 200, Message: 'No relevant chunks found in dataverse.' }],
+  );
   assert.deepEqual(denied.foreign, [403, 403]);
   assert.equal(calls.data.length, 1);
   assert.equal(calls.search.length, 1);

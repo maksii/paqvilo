@@ -3277,7 +3277,7 @@ function panelBrowserImpl(data) {
       }
       let selectionMarkup = '';
       if (S.selectedElement)
-        selectionMarkup = `<details class="selection-summary" data-selected-identity data-disclosure="selected-summary"${ui.tab === 'runtime' ? ' open' : ''}><summary class="gh" data-focus-key="selected-summary">${icon('right')}<span class="sr">Selected:</span><span class="sel-head"><span class="eyebrow">${esc(S.selectedIdentity?.kind || 'Selected element')}</span><span class="sel-name">${esc(S.selectedIdentity?.title || S.selectedElement.tag || 'element')}</span></span>${renderInspectionEvidence(S.selectedIdentity?.evidence, { part: 'headline', context: 'panel' })}</summary><button class="ib selection-clear" data-act="selection-clear" data-focus-key="selection-clear" aria-label="Clear selection" title="Deselect the element and remove its highlight on the page">${icon('close')}</button>${renderInspectionEvidence(S.selectedIdentity?.evidence, { context: 'panel' })}</details>`;
+        selectionMarkup = `<details class="selection-summary" data-selected-identity data-disclosure="selected-summary"${ui.tab === 'runtime' ? ' open' : ''}><summary class="gh" data-focus-key="selected-summary">${icon('right')}<span class="sr">Selected:</span><span class="sel-head"><span class="eyebrow">${esc(S.selectedIdentity?.kind || 'Selected element')}</span><span class="sel-name">${esc(S.selectedIdentity?.title || S.selectedElement.tag || 'element')}</span></span>${renderInspectionEvidence(S.selectedIdentity?.evidence, { part: 'headline', context: 'panel' })}</summary><button class="ib selection-clear" data-act="selection-clear" data-focus-key="selection-clear" aria-label="Clear selection" title="Deselect the element and remove its highlight on the page">${icon('close')}</button>${renderInspectionEvidence(S.selectedIdentity?.evidence, { context: 'panel' })}${document.getElementById('paqvilo-xray')?.__px?.piercedMarkup?.() ?? ''}</details>`;
       else if (S.selectionReason === 'anchor-detached')
         selectionMarkup =
           '<div class="selection-summary" role="status">The page replaced this element. Select it again.</div>';
@@ -4323,6 +4323,13 @@ function panelBrowserImpl(data) {
               ...(detail.region ? { sourceRegion: JSON.stringify(detail.region) } : {}),
             },
             closest: () => null,
+          });
+        } else if (detail.action === 'pierce') {
+          // Inspect below the selection where page code cannot reach; X-ray drops an answer for an older selection.
+          const generation = detail.selectionGeneration;
+          void api('pierce', { x: detail.x, y: detail.y }).then((result) => {
+            document.getElementById('paqvilo-xray')?.__px?.setPierced?.(generation, result);
+            if (generation === S.selectionGeneration) render();
           });
         } else if (detail.action === 'refresh') {
           void act('inspect-refresh', { dataset: {}, closest: () => null });

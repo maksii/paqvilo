@@ -253,7 +253,10 @@ test('$pages forms bind to the rendered basic form: tabs, sections, values, visi
     const blob = await $pages.webAPI.downloadFileFromColumn('x_items', id, 'x_doc');
     return [await blob.text(), blob.type];
   }, ROW);
-  assert.deepEqual(file, ['file body', 'text/plain']);
+  // The portal file read (GET /_api/<set>(id)/<column>/$value, ranged and size=full) answers application/octet-stream
+  // without a mimetype header (hosted session F1 files runs a and b, file-get:range-0-15 and file-get:size-full), so the
+  // downloaded blob carries that type.
+  assert.deepEqual(file, ['file body', 'application/octet-stream']);
   assert.deepEqual(errors, []);
 });
 
@@ -300,6 +303,14 @@ async function renderedContactForm() {
             kind: 'basicformmetadata',
             adx_entityform: 'contact',
             adx_attributelogicalname: 'x_code',
+            adx_type: 100000000,
+            adx_controlstyle: 756150001,
+          },
+          // The rich text editor renders with code component metadata only (formRichTextField).
+          {
+            kind: 'basicformmetadata',
+            adx_entityform: 'contact',
+            adx_attributelogicalname: 'x_body',
             adx_type: 100000000,
             adx_controlstyle: 756150001,
           },

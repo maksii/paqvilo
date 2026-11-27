@@ -16,6 +16,7 @@ import { startDevSessions } from '../lense/dev-sessions.mjs';
 import { mirageTarget } from '../lense/commands/mirage.mjs';
 import { createFixture } from '../test/fixture.mjs';
 import { createSimulator } from '../mirage/server.mjs';
+import { isPortalBindingCookie } from '../mirage/lib/portal-request-tokens.mjs';
 import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
 
 const ENHANCED = fs.realpathSync.native(fileURLToPath(new URL('./fixtures/enhanced/', import.meta.url)));
@@ -350,12 +351,18 @@ test('local Mirage portals and live targets share one browser: the selector swit
     .map((cookie) => cookie.name)
     .filter((name) => name.startsWith('paqvilo-mirage-auth'))
     .sort();
+  const sessions = [
+    `paqvilo-mirage-auth-${new URL(classicApp.url).port}`,
+    `paqvilo-mirage-auth-${new URL(enhancedApp.url).port}`,
+  ].sort();
   assert.deepEqual(
-    names,
-    [
-      `paqvilo-mirage-auth-${new URL(classicApp.url).port}`,
-      `paqvilo-mirage-auth-${new URL(enhancedApp.url).port}`,
-    ].sort(),
+    names.filter((name) => !isPortalBindingCookie(name)),
+    sessions,
+  );
+  // Each runtime binds its request tokens to this browser with its own cookie (hosted session F4, AUTH-06f).
+  assert.deepEqual(
+    [...new Set(names.filter(isPortalBindingCookie).map((name) => name.split('-request-binding')[0]))].sort(),
+    sessions,
   );
   await choose(1, enhancedApp.url);
   await page.locator('#who').getByText('Alex Local', { exact: true }).waitFor();

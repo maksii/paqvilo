@@ -202,8 +202,9 @@ individual outcomes, and evidence paths. Configured form script kinds that the p
   `test/deployment-diagnostics.test.mjs` checks both commands against this list.
 - `analyze` reports `PP-CACHE-001` (warning) when `Header/OutputCache/Enabled` or `Footer/OutputCache/Enabled` is
   literally true and the website's Header or Footer web template, or a template it includes by name outside a
-  substitution block, reads `request`, `params`, `page`, `now` or `language.url` outside
-  `{% substitution %}...{% endsubstitution %}`: the cached output is reused for other requests
+  substitution block, reads `request`, `params`, `page`, `now`, `language.url` or the request-built
+  `website.sign_in_url`, `website.sign_out_url` and `website.selected_language.url` (their returnUrl or path is the
+  request's) outside `{% substitution %}...{% endsubstitution %}`: the cached output is reused for other requests
   ([output caching](https://learn.microsoft.com/power-pages/configure/enable-header-footer-output-caching)). `user`, the
   `*_substitution` attributes and names the template declares in scope (`assign`, `capture`, `for`/`tablerow`
   variables, include parameters) are not reported; `.url` of a `website.languages` loop variable is. An absent,
@@ -276,12 +277,14 @@ the local build over the live site, as `pac pages upload-code-site` would deploy
 - A file of the build (`compiledPath`) answers its own address ahead of the exported web file at that address; a web
   file the build does not hold is still answered from the export. The landing page's own address (`/index.html`)
   answers the local file.
-- An application route (an address without a file extension, outside the portal's own paths) is asked from the
-  portal, which answers it with the site's root page
-  ([Learn](https://learn.microsoft.com/en-us/power-pages/configure/create-code-sites#differences-from-existing-power-pages-sites)).
+- An application route (an address whose extension is not a static file type, outside the portal's own paths) is
+  asked from the portal. Hosted sites answer it with the Page Not Found page and the landing page in place of its
+  content (hosted session F5;
+  [Learn](https://learn.microsoft.com/en-us/power-pages/configure/create-code-sites#differences-from-existing-power-pages-sites)).
   Lense lays the local landing page over the deployed one by lines: what the portal added to the deployed landing
   page (its client context, `Microsoft.Dynamic365.Portal` with `isSpaSite`, the anti-forgery holder) stays, and the
-  build's changes replace the lines they change.
+  build's changes replace the lines they change. When the landing page is nested in a large portal page, the merge
+  runs on the lines that hold it, and the page around them stays as served.
 - The deployed landing page is the exported web file at its address, so download the site
   (`pac pages download-code-site`) before you change the build. The page then names why the local landing page was not
   laid over: the export has no deployed landing page, the portal answered the route with another document, or the
@@ -290,7 +293,7 @@ the local build over the live site, as `pac pages upload-code-site` would deploy
 The source watcher also watches `powerpages.config.json` and the build folder it names, also before the first build
 creates it: a rebuild reloads the open tabs with the new build. A configuration Lense cannot use (a `compiledPath`
 outside the project, a missing landing page) is reported once as a session fault and the export alone is overlaid.
-How the hosted platform composes the root page has not been captured yet; the line merge follows the documented model.
+Build file paths match ignoring case, as on hosted sites.
 
 ### A checkout ahead of the portal, or behind it
 
@@ -493,10 +496,31 @@ Rules that decide attribution:
 - **Frames**: accessible same-origin frames (nested, inserted or navigated later) and modal iframes are inspected with
   their own form and table context. Native quick-view iframes join a verified parent form and that control's QuickForms
   target. Rich-text editor frames inherit a field binding from attribute-scoped hosts (`<logical_column>_ControlView`,
-  `<logical_column>_Container`) joined to a verified form, up to 16 frame levels or 256 ancestors. Cross-origin and
-  sandboxed frames and closed shadow roots are boundaries; URL parameters are context, never proof. Selecting such a
-  frame says it is outside Inspect, and **Not everything was read** counts the frames the page read could not enter.
-  A closed shadow root cannot be detected from the page, so it is not counted.
+  `<logical_column>_Container`) joined to a verified form, up to 16 frame levels or 256 ancestors. URL parameters are
+  context, never proof. Page code cannot enter a closed shadow root or a cross-origin frame, so the picker selects its
+  host or its frame; Lense then reads the element under the pointer below the selection through the browser's DevTools
+  protocol, read-only, in the frame's own process when it runs out of process, and the selection summary (and the X-ray
+  card) shows it: **Inside a closed shadow root** or **Inside a cross-origin frame** with the frame's origin, the
+  element's tag, text and attributes and the path from the selection. A closed declarative shadow root that the export
+  writes (`<template shadowrootmode="closed">` in a web template, page copy or snippet) is mapped like any other markup:
+  its elements carry no mark, which only their component could read, but the page's provenance names each by its place
+  under its host, and **Written by the exported source** names the file and line. The same holds in a same-origin portal
+  frame (another page of the site in an iframe): its closed roots go to that frame's own provenance, so their elements
+  map to the frame page's sources, also when it stands in a cross-origin frame that runs in the page's process, and when
+  it runs out of process (under a cross-site frame, with site isolation): Lense serves such a frame like the tab (see
+  **Out-of-process frames** below). Content a script created in a closed shadow root takes the host's identification. A
+  cross-origin frame has no exported source: its content, closed roots included, is shown as **Not portal source**,
+  never matched to files. The same rules as [`agent snapshot --pierce`](#agent-snapshot) apply: field values, editable
+  text and the dev panel are never read, link queries are redacted, and a sandboxed frame of the portal's own origin
+  stays a boundary. **Not everything was read** counts the frames the page read could not enter; a closed shadow root
+  cannot be detected from the page, so it is not counted.
+- **Out-of-process frames**: a frame that runs in another renderer process than its parent (with site isolation, a
+  cross-site frame and a portal page nested in one) is a DevTools target of its own. Lense attaches to each such target
+  as the browser creates it and holds it until it is set up: the portal origin's requests the frame makes are
+  intercepted (a portal page nested in it is served with your local changes), and a portal page in it gets the same
+  provenance registry as the tab. Only a document of the portal origin runs the registry, and a frame of another origin
+  is otherwise neither read nor changed. A frame that reloads or navigates in its target keeps this setup; one that
+  moves to another process is set up again as a new target.
 - **Code components** link FormXml properties and bound columns to manifests and portal settings, distinguish the
   desktop control from other form factors, and report portal enablement separately. Constructor and mount details appear
   only when observed.
@@ -564,8 +588,9 @@ requests. Contributors can measure X-ray latency on synthetic exports with
 ## Edge controls of the live site
 
 The hosted edge applies site visibility, the web application firewall (WAF) and IP restrictions before a request
-reaches the site. They are not in the export, and a local Mirage runtime does not apply them
-([HTTP transport and CORS](../mirage/docs/http-headers.md#edge-controls-that-mirage-does-not-emulate)). A project script
+reaches the site. They are not in the export; a local Mirage runtime applies the IP restriction and the custom rules
+recorded as observations, and not the managed rule set
+([HTTP transport and CORS](../mirage/docs/http-headers.md#edge-controls)). A project script
 reads them for one site with `readPowerPagesEdge` from `paqvilo/dataverse`:
 
 ```js
@@ -582,16 +607,24 @@ management readers ([project extensions](project-extensions.md)). It changes not
 sign-in, so no token passes through the report. The report holds:
 
 - `siteVisibility`, and `local.siteVisibility` with the `observed.siteVisibility` value that models it in Mirage.
-- `firewall.status`, `firewall.customRules.rules` (name, priority, state, action, rule type, rate limit and match
-  conditions) and `firewall.managedRules.ruleSets` (rule set type, version and action, with counts of overrides and
-  exclusions).
-- `ipRestrictions`: the allow-list entries in CIDR notation. `restricted: false` means that every address may connect.
-- `local`: what Mirage emulates of each control. IP restrictions and WAF rules are not emulated.
+- `firewall.status` (PAC 2.13.1 reports `None`, `Creating`, `Created`, `CreationFailed` or `Deleting`),
+  `firewall.customRules.rules` (name, priority, state, action, rule type, rate limit and match conditions) and
+  `firewall.managedRules.ruleSets` (rule set type, version and action, with counts of overrides and exclusions, and
+  `ruleGroups` and `rules`, the counts of the rule set's default groups and rules).
+- `ipRestrictions`: the allow-list entries in CIDR notation, and `withheld`, the rows that are not a bounded address.
+  `restricted: false` means that the list has no row and every address may connect; a list of withheld rows only is
+  still restricted.
+- `local`: what Mirage emulates of each control, with the observation (`setting`) and the `value` that models it:
+  `observed.ipRestrictions` for the allow list (`{ allowed, withheld }`) and `observed.firewall` for the custom rules.
+  The managed rule set is not emulated.
 
 Match values are reported only for client addresses, request methods, request URIs and country codes. For headers,
-cookies, query strings and bodies only the count is reported, because such values can be shared secrets. A read that
-the service refuses, such as WAF on a trial site (HTTP 400), appears as `{ available: false, reason, status }`. PAC's
-error text is withheld.
+cookies, query strings and bodies only the count is reported, because such values can be shared secrets. Rules,
+conditions and values are never cut: a condition with more than 600 values, a value longer than 256 characters or a
+transform list Mirage cannot hold is reported with `values: null`, which Mirage treats as undecided. A read that
+the service refuses appears as `{ available: false, reason, status }`. `reason` is `trial-site` for WAF on a trial site
+(HTTP 400), `firewall-not-created` for a rule read answered with HTTP 500 while the WAF status is not `Created`,
+`operation-in-progress` for HTTP 409, else `refused`. PAC's error text is withheld.
 
 ## Agent API reference
 
@@ -647,6 +680,20 @@ catalogue, native context and runtime instead of the `overlay` and `limits` obje
 `--selector` (CSS, at most 1,000 characters), `--limit` (1–200, default 100), `--styles` (comma list, at most 20
 computed properties). Returns sanitized URL, title, total, truncated and elements with tag, bounded attributes/text,
 visibility, rect and style. Field values are never copied. An invalid selector returns `invalid_selector` (400).
+
+`--pierce` reads the page through the browser's DevTools protocol instead of page code, so it also matches elements
+inside closed shadow roots and inside cross-origin frames, which page code cannot enter: `DOM.getDocument` with
+`pierce: true` returns every open and closed shadow root and the documents of frames that run in the page's process,
+and each out-of-process (cross-site) frame is read through its own frame session. Only reading commands are sent.
+Each element then names its `scope`: `shadowRoot` (`open`, `closed` or `null`) and `frame` (`null` for the page, else
+the frame's sanitized URL, its origin, `crossOrigin` and `outOfProcess`). Whether a cross-origin frame runs in the
+page's process depends on the browser's site isolation, not on its origin; both kinds are read. A frame's content is
+not portal source: it is reported, never matched to files. `boundaries` counts the open and closed shadow roots, the
+frames, the cross-origin frames, the out-of-process frames, the frames whose document could not be read
+(`unreadFrames`) and the frames that went away while they were read (`detachedFrames`); such a frame never fails the
+snapshot. Every `rect` is in CSS pixels of the top viewport, frame content included, and `title` is the document's
+HTML title, as `document.title` reads it. The browser's own shadow roots (the editor inside a field) are never read;
+field values, editable text and the dev panel stay out as without `--pierce`.
 
 ### agent screenshot
 

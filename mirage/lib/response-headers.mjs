@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { siteSetting } from './redirects.mjs';
+import path from 'node:path';
 import { corsPageDiagnostics } from './page-cors.mjs';
 
 const lower = (value) =>
@@ -33,18 +34,22 @@ export function sitePolicy(portal) {
   return { policy: value, reason: 'site-setting' };
 }
 /**
- * The policy Learn ("Manage your site's Content Security Policy", Default CSP policy) documents for sites created after
- * November 10, 2025, which have CSP enabled by default. The export does not show it: a site observed sending it records
- * observed.defaultContentSecurityPolicy "platform". Learn prints the two directives on two lines; the exact header text
- * is not documented, so they are joined with one space.
+ * The default policy of sites created after November 10, 2025 (Learn "Manage your site's Content Security Policy"), as
+ * hosted sites without an HTTP/Content-Security-Policy setting send it (hosted sessions F5 and F3, two runs each),
+ * before its 'nonce' placeholder is expanded (substituteScriptNonce). The export does not show it: a site observed
+ * sending it records observed.defaultContentSecurityPolicy "platform".
  */
 const PLATFORM_DEFAULT_POLICY =
-  "script-src 'self' content.powerapps.com content.powerapps.us content.appsplatform.us content.powerapps.cn 'nonce'; style-src 'unsafe-inline' https:;";
+  "script-src 'self' test.content.powerapps.com content.powerapps.com content.powerapps.us content.appsplatform.us content.powerapps.cn 'nonce'; style-src 'unsafe-inline' https:;";
+// The fixed hash the platform adds after the nonce (hosted sessions F5 and F3).
+const PLATFORM_SCRIPT_HASH = "'sha256-YpBM7xPJQJfSSthwTVGpeXpUbzvd1XmAqvdlDUvm/QM='";
 /** HTTP/* settings handled separately or not sent by the loopback runtime. */
 const SEPARATE = new Set(['content-security-policy', 'content-security-policy-report-only', 'x-frame-options']);
-// Access-Control-* answer cross-origin requests and are not echoed on loopback (lib/page-cors.mjs answers the observed
-// CORS pages); Strict-Transport-Security belongs to the HTTPS hosting front end (observed.strictTransportSecurity).
-const NOT_ECHOED = /^(?:access-control-.*|strict-transport-security)$/;
+// Strict-Transport-Security belongs to the HTTPS hosting front end (observed.strictTransportSecurity).
+const NOT_ECHOED = /^strict-transport-security$/;
+// The HTTP/Access-Control-* settings: hosted sites send each value verbatim as a fixed header on every response,
+// whatever the Origin, method, route or status, without Vary: Origin (hosted session F5, two runs).
+const CORS_SETTING = /^http\/(access-control-[a-z0-9][a-z0-9-]*)$/i;
 const REPORT_ONLY_SETTING = 'HTTP/Content-Security-Policy-Report-Only';
 // The documented placeholder source expression, as one whole token of a directive.
 const NONCE_PLACEHOLDER = /(^|[\s;])'nonce'(?=[\s;]|$)/gi;
@@ -64,8 +69,8 @@ const reportOnlyPolicy = (portal) => {
   return value && nonceKind(value) !== 'unsupported' ? value : null;
 };
 
-/** A fresh per-response nonce: 128 random bits, base64 (a CSP base64-value). */
-export const cspNonce = () => randomBytes(16).toString('base64');
+/** A fresh per-response nonce: 256 random bits, base64 (a CSP base64-value), as long as hosted nonces (session F5). */
+export const cspNonce = () => randomBytes(32).toString('base64');
 
 /**
  * True when a page response of the site sends a policy with the nonce placeholder
@@ -79,17 +84,43 @@ export function siteUsesScriptNonce(portal) {
 // Directives that govern inline event handlers (script-src-attr, then script-src, then default-src).
 const HANDLER_DIRECTIVE = /^\s*(?:script-src|script-src-attr|default-src)(?:\s|$)/i;
 /**
- * The policy with each placeholder 'nonce' replaced by 'nonce-<nonce>'. In a directive that governs inline event
- * handlers, the first placeholder is followed by 'unsafe-hashes' and one 'sha256-<hash>' per hash in
- * `handlerHashes` (base64 SHA-256 of handler attribute values): Learn says the platform "secures inline event handlers
- * separately through automatic hash generation"; the exact hosted header text of those hashes is not documented.
+ * The policy with each placeholder 'nonce' replaced by 'nonce-<nonce>'. In the enforced policy (`hosted`), the first
+ * placeholder of a directive that governs scripts expands as hosted sites expand it, the platform default and a site's
+ * own policy alike (hosted session F3; F5 for the default): " 'unsafe-eval' 'nonce-<nonce>' <the platform's fixed hash>
+ * 'unsafe-hashes' 'inject-hashes'", where a rendered page's inline-handler hashes (`handlerHashes`, base64 SHA-256 of
+ * handler attribute values) take the place of 'inject-hashes', each followed by a space, with one more space after
+ * them; every other response keeps the literal 'inject-hashes'. In the report-only policy, whose hosted text is not
+ * observed, the first placeholder of such a directive is followed by 'unsafe-hashes' and one 'sha256-<hash>' per hash.
  */
-function substituteScriptNonce(policy, nonce, handlerHashes = []) {
+function substituteScriptNonce(policy, nonce, handlerHashes = null, { hosted = true } = {}) {
   const source = `'nonce-${nonce}'`;
-  const hashes = [...new Set(handlerHashes)].map((hash) => `'sha256-${hash}'`);
+  // `handlerHashes`: a rendered page's hashes, or their groups (render-provenance handlerHashGroups: the platform's,
+  // then the page's); null for a response that is not a rendered page.
+  const rendered = Array.isArray(handlerHashes);
+  const list = rendered ? handlerHashes : [];
+  const groups = (list.some(Array.isArray) ? list : [list])
+    .map((group) => [...new Set(group)].map((hash) => `'sha256-${hash}'`))
+    .filter((group) => group.length);
+  const hashes = groups.flat();
+  // Hosted sessions F5 and F3: on a rendered page the placeholder gives way to the page's hashes, each followed by a
+  // space and each group by one more; every other response keeps the literal 'inject-hashes'. A rendered page without
+  // handlers (no capture has one: hosted pages always carry the shell's) gets none, so no browser reads the placeholder
+  // as an invalid source on a page.
+  const injected = rendered
+    ? groups.map((group) => group.map((hash) => hash + ' ').join('') + ' ').join('')
+    : "'inject-hashes'";
+  const expansion = ` 'unsafe-eval' ${source} ${PLATFORM_SCRIPT_HASH} 'unsafe-hashes' ${injected}`;
   return String(policy)
     .split(';')
     .map((directive) => {
+      if (hosted) {
+        let first = HANDLER_DIRECTIVE.test(directive);
+        return directive.replace(NONCE_PLACEHOLDER, (_match, lead) => {
+          const text = first ? expansion : source;
+          first = false;
+          return lead + text;
+        });
+      }
       let first = HANDLER_DIRECTIVE.test(directive) && hashes.length > 0;
       return directive.replace(NONCE_PLACEHOLDER, (_match, lead) => {
         const text = first ? [source, "'unsafe-hashes'", ...hashes].join(' ') : source;
@@ -126,20 +157,55 @@ function adaptLoopbackTransport(policy) {
     .join(';');
 }
 
+/**
+ * True when a header value can be sent: tab, printable ASCII and Latin-1 octets only (the characters Node accepts in a
+ * header value). A setting with any other character (a line break, a control character, "€") is not sent and is
+ * reported (PORTAL_HTTP_HEADER_INVALID).
+ */
+const headerValueValid = (value) => /^[\t\x20-\x7e\x80-\xff]*$/.test(String(value));
+
 /** Report source-declared policies whose hosted handling is outside local HTTP header simulation. */
 export function siteHttpPolicyDiagnostics(portal) {
   const diagnostics = [];
+  const invalid = Object.entries(portal.settings ?? {})
+    .filter(([name]) => /^http\/[a-z0-9][a-z0-9-]*$/i.test(name))
+    .filter(([name]) => configuredValue(portal, name) && !headerValueValid(configuredValue(portal, name)))
+    .map(([name]) => name.toLowerCase())
+    .sort(/* NOSONAR: preserve default string coercion */);
+  if (invalid.length)
+    diagnostics.push({
+      code: 'PORTAL_HTTP_HEADER_INVALID',
+      severity: 'warning',
+      settings: [...new Set(invalid)],
+      message:
+        'These HTTP/* settings hold characters a header value cannot carry (line breaks, control characters or characters outside Latin-1): the local portal does not send them.',
+    });
   const cors = Object.keys(portal.settings ?? {})
     .filter((name) => /^http\/access-control-[a-z0-9-]+$/i.test(name) && configuredValue(portal, name))
     .map((name) => name.toLowerCase())
     .sort(/* NOSONAR: preserve default string coercion */);
   if (cors.length && !portal.observed?.corsPages?.length)
     diagnostics.push({
-      code: 'PORTAL_HTTP_CORS_UNSUPPORTED',
+      code: 'PORTAL_HTTP_CORS_LOOPBACK_BOUNDARY',
       severity: 'warning',
       settings: [...new Set(cors)],
-      message: 'The local portal does not apply the exported CORS settings to cross-origin admission.',
+      message:
+        'The local portal sends the exported CORS settings as fixed response headers, as the platform does, but refuses every cross-origin request at its loopback origin boundary; observed.corsPages admits the authored pages a public site was observed sharing.',
     });
+  const sent = Object.fromEntries(
+    Object.keys(portal.settings ?? {})
+      .filter((name) => CORS_SETTING.test(name))
+      .map((name) => [CORS_SETTING.exec(name)[1].toLowerCase(), configuredValue(portal, name)]),
+  );
+  if (wildcardWithCredentials(sent))
+    diagnostics.push({
+      code: 'PORTAL_HTTP_CORS_WILDCARD_CREDENTIALS',
+      severity: 'warning',
+      settings: ['http/access-control-allow-credentials', 'http/access-control-allow-origin'],
+      message:
+        'HTTP/Access-Control-Allow-Origin "*" with HTTP/Access-Control-Allow-Credentials "true" is a combination the Fetch standard refuses: the local portal sends the origin without the credentials header.',
+    });
+  diagnostics.push(...corsPageDiagnostics(portal));
   if (configuredValue(portal, 'HTTP/Strict-Transport-Security'))
     diagnostics.push({
       code: 'PORTAL_HTTP_HSTS_UNSUPPORTED',
@@ -148,14 +214,13 @@ export function siteHttpPolicyDiagnostics(portal) {
       message:
         'The local HTTP listener does not send the configured HSTS setting: the hosted HTTPS front end sets that header. Record the header a site sends as observed.strictTransportSecurity.',
     });
-  diagnostics.push(...corsPageDiagnostics(portal));
   if (sitePolicy(portal).reason === 'nonce' && siteSetting(portal, 'HTTP/Content-Security-Policy') === undefined)
     diagnostics.push({
       code: 'PORTAL_HTTP_CSP_PLATFORM_DEFAULT',
       severity: 'info',
       settings: ['http/content-security-policy'],
       message:
-        'The site sets no HTTP/Content-Security-Policy and was observed with the platform default policy of sites created after November 10, 2025: the local portal sends that documented policy.',
+        'The site sets no HTTP/Content-Security-Policy and was observed with the platform default policy of sites created after November 10, 2025: the local portal sends that policy as hosted sites send it.',
     });
   const nonce = [];
   if (sitePolicy(portal).reason === 'nonce-unsupported') nonce.push('http/content-security-policy');
@@ -192,8 +257,8 @@ export function siteHttpPolicyDiagnostics(portal) {
  * (default SAMEORIGIN), the site's Content-Security-Policy (sitePolicy) and
  * Content-Security-Policy-Report-Only. Nothing else: no CSP and no X-Content-Type-Options
  * unless the site defines them. Settings with a deeper name (HTTP/Content-Security-Policy/
- * Enabled, HTTP/SameSite/Default) are options, not headers; Access-Control-* (lib/page-cors.mjs) and the
- * HTTP/Strict-Transport-Security setting are not sent. observed.strictTransportSecurity is sent on the http loopback
+ * Enabled, HTTP/SameSite/Default) are options, not headers. HTTP/Access-Control-* settings are sent verbatim
+ * (corsSettingHeaders); the HTTP/Strict-Transport-Security setting is not sent. observed.strictTransportSecurity is sent on the http loopback
  * listener only; observed.defaultContentSecurityPolicy "platform" supplies the documented default policy
  * (sitePolicy). `confinement` (config.confinePortalPages) adds
  * the loopback confinement policy as a separate Content-Security-Policy header. `kind`
@@ -203,17 +268,21 @@ export function siteHttpPolicyDiagnostics(portal) {
  * is sent only with `nonce`, the nonce the response gave its scripts, and `handlerHashes`
  * (substituteScriptNonce). A response that did not nonce its scripts (data, files, documents
  * the runtime composes outside the page layout) omits such a policy, as before nonces were
- * issued: a policy whose nonce no script carries would block every inline script locally.
+ * issued: a policy whose nonce no script carries would block every inline script locally. `freshNonce` marks a
+ * response that runs none of the runtime's own composed scripts (a redirect, a file, a data or plain error response):
+ * the platform default policy is then sent with a fresh nonce and its literal 'inject-hashes', as hosted sites send
+ * it on every response.
  * `loopback` (default true: the runtime's listener is http loopback) adapts the site's policies to that transport
  * (adaptLoopbackTransport); the confinement policy is the runtime's own and is not adapted.
  */
 export function siteHeaders(
   portal,
-  { confinement = null, kind = null, nonce = null, handlerHashes = [], loopback = true } = {},
+  { confinement = null, kind = null, nonce = null, handlerHashes = null, loopback = true, freshNonce = false } = {},
 ) {
   const headers = {};
   appendConfiguredHeaders(headers, portal);
-  appendPolicyHeaders(headers, portal, confinement, { nonce, handlerHashes, loopback });
+  Object.assign(headers, corsSettingHeaders(portal));
+  appendPolicyHeaders(headers, portal, confinement, { nonce, handlerHashes, loopback, freshNonce });
   // The observed HSTS header, only on the plain-http loopback listener: RFC 6797 section 8.1 makes a browser ignore the
   // header on a response that did not arrive over a secure transport, so it never pins localhost (HSTS is keyed by host,
   // not port, and would force every other local server of that host to HTTPS).
@@ -228,22 +297,49 @@ function appendConfiguredHeaders(headers, portal) {
     const match = /^http\/([a-z0-9][a-z0-9-]*)$/i.exec(key);
     if (!match) continue;
     const name = match[1].toLowerCase();
-    if (SEPARATE.has(name) || NOT_ECHOED.test(name) || Object.hasOwn(headers, name)) continue;
+    // HTTP/Access-Control-* settings are added by corsSettingHeaders, with its wildcard-with-credentials guard.
+    if (SEPARATE.has(name) || NOT_ECHOED.test(name) || /^access-control-/.test(name) || Object.hasOwn(headers, name))
+      continue;
     const value = String((raw && typeof raw === 'object' ? raw.value : raw) ?? '').trim();
-    if (value && !/[\r\n]/.test(value)) headers[name] = value;
+    if (value && headerValueValid(value)) headers[name] = value;
   }
 }
 
-function appendPolicyHeaders(headers, portal, confinement, { nonce, handlerHashes, loopback }) {
+/**
+ * The HTTP/Access-Control-* settings as response headers, each value verbatim (trimmed, without line breaks): hosted
+ * sites send them as fixed headers on every response, with no Origin check and no Vary: Origin (session F5).
+ */
+function corsSettingHeaders(portal) {
+  const headers = {};
+  for (const [key, raw] of Object.entries(portal?.settings ?? {})) {
+    const name = CORS_SETTING.exec(key)?.[1]?.toLowerCase();
+    if (!name || Object.hasOwn(headers, name)) continue;
+    const value = String((raw && typeof raw === 'object' ? raw.value : raw) ?? '').trim();
+    if (value && headerValueValid(value)) headers[name] = value;
+  }
+  // A wildcard origin is never sent with credentials (PORTAL_HTTP_CORS_WILDCARD_CREDENTIALS): the Fetch standard refuses
+  // the pair and Learn's best practices say not to combine them. Hosted sites were not captured with it.
+  if (wildcardWithCredentials(headers)) delete headers['access-control-allow-credentials'];
+  return headers;
+}
+const wildcardWithCredentials = (headers) =>
+  String(headers['access-control-allow-origin'] ?? '')
+    .split(/[\s,]+/)
+    .includes('*') && lower(headers['access-control-allow-credentials']) === 'true';
+
+function appendPolicyHeaders(headers, portal, confinement, { nonce, handlerHashes, loopback, freshNonce }) {
   headers['x-frame-options'] = String(siteSetting(portal, 'HTTP/X-Frame-Options') ?? '').trim() || 'SAMEORIGIN';
   const transported = (policy) => (policy && loopback ? adaptLoopbackTransport(policy) : policy);
-  const substituted = (policy) => {
+  const substituted = (policy, hosted) => {
     if (!policy || nonceKind(policy) !== 'placeholder') return transported(policy);
-    return nonce ? transported(substituteScriptNonce(policy, nonce, handlerHashes)) : null;
+    if (nonce) return transported(substituteScriptNonce(policy, nonce, handlerHashes, { hosted }));
+    // A response that runs no composed script gets the enforced nonce policy with a fresh nonce, as hosted sites send it
+    // on every response (sessions F5 and F3); otherwise the policy is omitted, as described above.
+    return freshNonce && hosted ? transported(substituteScriptNonce(policy, cspNonce())) : null;
   };
-  const policies = [substituted(sitePolicy(portal).policy), confinement].filter(Boolean);
+  const policies = [substituted(sitePolicy(portal).policy, true), confinement].filter(Boolean);
   if (policies.length) headers['content-security-policy'] = policies.length === 1 ? policies[0] : policies;
-  const reportOnly = substituted(reportOnlyPolicy(portal));
+  const reportOnly = substituted(reportOnlyPolicy(portal), false);
   if (reportOnly) headers['content-security-policy-report-only'] = reportOnly;
 }
 
@@ -254,10 +350,11 @@ function appendObservedHeaders(headers, portal, kind) {
 
 /**
  * The anti-forgery token fragment (/_layout/tokenhtml) uses page caching and
- * the page's configured site headers (siteHeaders kind "page").
+ * the page's configured site headers (siteHeaders kind "page"). It runs no script: the platform default policy comes
+ * with a fresh nonce, as hosted sites send it there (session F5).
  */
 export function tokenHtmlHeaders(portal, { confinement = null } = {}) {
-  return { ...PAGE_HEADERS, ...siteHeaders(portal, { confinement, kind: 'page' }) };
+  return { ...PAGE_HEADERS, ...siteHeaders(portal, { confinement, kind: 'page', freshNonce: true }) };
 }
 
 /** HTML page responses: the platform sends no-cache, no-store, must-revalidate. */
@@ -388,6 +485,58 @@ export function webFileHeaders({
   return headers;
 }
 
+// The headers of a code site's build files as hosted sites serve them after pac pages upload-code-site (session F5,
+// four runs): the type by extension (wasm and webmanifest as application/octet-stream), and public caching with an
+// ETag or private caching without one.
+const CODE_SITE_FILE_TYPES = {
+  '.js': { type: 'application/javascript; charset=utf-8', cache: 'public', compress: true },
+  '.css': { type: 'text/css; charset=utf-8', cache: 'public', compress: true },
+  '.svg': { type: 'image/svg+xml', cache: 'public' },
+  '.png': { type: 'image/png', cache: 'public' },
+  '.ico': { type: 'image/x-icon', cache: 'public' },
+  '.woff2': { type: 'application/font-woff2', cache: 'public' },
+  '.json': { type: 'application/json', cache: 'private', compress: true },
+  '.map': { type: 'text/plain', cache: 'private', compress: true },
+  '.txt': { type: 'text/plain', cache: 'private', compress: true },
+  '.wasm': { type: 'application/octet-stream', cache: 'private' },
+  '.webmanifest': { type: 'application/octet-stream', cache: 'private' },
+  '.html': { type: 'text/html; charset=utf-8', cache: 'document', compress: true },
+};
+
+/**
+ * The response headers of a code site's build file, and whether its body is gzip-compressed for a client that accepts
+ * it: { headers, compress }. Every file is inline with its RFC 5987 file name. An HTML file is a raw document with the
+ * page caching headers; a request that spells the path in another case gets private caching without an ETag. A type
+ * outside the captured table keeps the headers of other web files (webFileHeaders with `fallbackType`).
+ * `caching: 'revalidate'` (settings.webFileCaching) is the explicit opt-in to no-cache with an ETag, as for other web
+ * files.
+ */
+export function codeSiteFileHeaders({ body, fileName, caseVariant = false, caching = 'platform', fallbackType }) {
+  const known = CODE_SITE_FILE_TYPES[path.extname(fileName).toLowerCase()];
+  if (!known)
+    return { headers: webFileHeaders({ body, contentType: fallbackType, fileName, caching }), compress: false };
+  const headers = {
+    'content-type': known.type,
+    'content-disposition': `inline;filename*=UTF-8''${rfc5987(fileName)}`,
+  };
+  const etag = () => createHash('sha256').update(body).digest('base64');
+  if (known.cache === 'document')
+    Object.assign(headers, {
+      'cache-control': 'no-cache, no-store, must-revalidate',
+      pragma: 'no-cache',
+      expires: '-1',
+    });
+  else if (caching === 'revalidate') Object.assign(headers, { 'cache-control': 'no-cache', etag: etag() });
+  else {
+    const shared = known.cache === 'public' && !caseVariant;
+    headers['cache-control'] = `${shared ? 'public' : 'private'}, max-age=3600`;
+    headers.expires = new Date(Date.now() + 3600 * 1000).toUTCString();
+    if (shared) headers.etag = etag();
+  }
+  if (known.compress) headers.vary = 'Accept-Encoding';
+  return { headers, compress: Boolean(known.compress) };
+}
+
 /**
  * Conditional GET: If-None-Match (quoted or unquoted ETag, or *) decides when present;
  * otherwise If-Modified-Since at or after Last-Modified.
@@ -401,4 +550,24 @@ export function notModified(requestHeaders, headers) {
       .some((tag) => tag === '*' || tag === headers.etag || tag === `"${headers.etag}"`);
   const since = Date.parse(requestHeaders['if-modified-since'] ?? '');
   return Number.isFinite(since) && Date.parse(headers['last-modified']) <= since;
+}
+
+/**
+ * The headers hosted sites send on every response (session F5: redirects, errors, the token fragment, the about page,
+ * web files and pages) that a response of the local portal listener gets when it does not set them itself: the
+ * HTTP/Access-Control-* settings verbatim (corsSettingHeaders), the observed HSTS header (http loopback only, as in
+ * siteHeaders) and, on a redirect or a response that is not an HTML document, the platform default policy with a fresh
+ * nonce and its literal 'inject-hashes'. An HTML document without a policy is one the runtime composed without deciding
+ * its scripts' nonces: it keeps the omission that siteHeaders documents.
+ */
+export function everyResponseHeaders(portal, { status = 200, contentType = '', loopback = true } = {}) {
+  const headers = corsSettingHeaders(portal);
+  const hsts = portal.observed?.strictTransportSecurity;
+  if (hsts && loopback) headers['strict-transport-security'] = hsts;
+  const redirect = status >= 300 && status < 400;
+  if ((redirect || !/^\s*text\/html\b/i.test(contentType)) && sitePolicy(portal).reason === 'nonce') {
+    const policy = siteHeaders(portal, { freshNonce: true, loopback })['content-security-policy'];
+    if (policy) headers['content-security-policy'] = policy;
+  }
+  return headers;
 }

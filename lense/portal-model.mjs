@@ -247,7 +247,9 @@ const INLINE_KINDS = [
 
 // Rendered literal fields; localized JSON values are extracted individually, preserving LCIDs
 // and other configuration. Structural, localization and association edits still need deployment.
+// A page title is text, written HTML-encoded into <title> as Mirage's document shell does (encoding 'html-text').
 const YAML_MARKUP_KINDS = [
+  { dir: 'web-pages', suffix: '.webpage.yml', fields: ['adx_title'], encoding: 'html-text' },
   { dir: 'content-snippets', suffix: '.contentsnippet.yml', fields: ['adx_value'] },
   { dir: 'advanced-form-steps', suffix: '.advancedformstep.yml', fields: ['adx_title'] },
   { file: 'shortcut.yml', fields: ['adx_description'] },
@@ -271,6 +273,7 @@ const YAML_MARKUP_KINDS = [
 ];
 // The same fields in a .powerpages-site (short-key) export: unprefixed keys, one web link per file.
 const SHORT_KEY_MARKUP_KINDS = [
+  { dir: 'web-pages', suffix: '.webpage.yml', fields: ['title'], encoding: 'html-text' },
   { dir: 'content-snippets', suffix: '.contentsnippet.yml', fields: ['value'] },
   { dir: 'advanced-form-steps', suffix: '.advancedformstep.yml', fields: ['title'] },
   { file: 'shortcut.yml', fields: ['description'] },
@@ -456,7 +459,8 @@ export function portalSourceDir(dir) {
 
 /**
  * The key style of a YAML export, from website.yml (or a few records when it is missing):
- * 'adx' (PAC YAML), 'mspp', 'short' (.powerpages-site: unprefixed keys and id:) or null.
+ * 'adx' (PAC YAML; PAC 2.13.1 writes adx_ keys for both data models), 'mspp' (mspp_ keys, a
+ * layout PAC 2.13.1 does not write), 'short' (.powerpages-site: unprefixed keys and id:) or null.
  */
 export function yamlKeyStyle(dir) {
   if (!dir) return null;
@@ -520,8 +524,9 @@ export function yamlKeyStyle(dir) {
 
 /**
  * A source layout the toolkit cannot treat as a portal: { dialect, label }, else null. PAC YAML
- * with adx_ or mspp_ keys, .powerpages-site short-key YAML and unpacked Solutions are portals; the
- * Mirage names the same layouts (mirage/lib/source-dialect.mjs).
+ * with adx_ keys, YAML with mspp_ keys (not written by PAC 2.13.1), .powerpages-site short-key
+ * YAML and unpacked Solutions are portals; the Mirage names the same layouts
+ * (mirage/lib/source-dialect.mjs).
  */
 export function unsupportedSourceLayout(dir) {
   if (!dir) return null;
@@ -932,7 +937,10 @@ function enhancedMarkupField(xml, source, field) {
   if (text == null) return '';
   return typeof text === 'string' ? text : null;
 }
+/** A source of one page: its URL decides where it is laid over, and an unresolved URL blocks its preview. */
+export const isPageSource = (source) => source.kind.startsWith('page-') || source.pageField === true;
 const COMPONENT_MARKUP_FIELDS = new Map([
+  [COMPONENT.WEB_PAGE, ['title']],
   [COMPONENT.WEB_FILE, ['summary']],
   [COMPONENT.SHORTCUT, ['description']],
   [COMPONENT.WEB_LINK_SET, ['copy']],
@@ -1452,6 +1460,13 @@ export class PortalModel {
   }
 
   #addEnhancedMarkupSources(c, formId) {
+    const page = c.type === COMPONENT.WEB_PAGE;
+    // A language copy whose root page is inactive is not rendered; #indexEnhancedSource reports it.
+    if (page && isInactiveLanguagePage(c, this.inactivePages)) return;
+    // A page title is text, written HTML-encoded into the <title> element of its own page (as Mirage's shell does).
+    const placement = page
+      ? { encoding: 'html-text', pageField: true, pageUrl: this.pagePath(c.id), usedOn: [] }
+      : { pageUrl: null, usedOn: this.pagesShowing(c.type === COMPONENT.BASIC_FORM ? c.id : formId) };
     for (const field of COMPONENT_MARKUP_FIELDS.get(c.type) ?? []) {
       for (const value of markupValues(c.content[field])) {
         const source = {
@@ -1466,8 +1481,8 @@ export class PortalModel {
           fieldPath: [field],
           componentId: c.id,
           ...value,
-          pageUrl: null,
-          usedOn: this.pagesShowing(c.type === COMPONENT.BASIC_FORM ? c.id : formId),
+          ...placement,
+          usedOn: [...placement.usedOn],
         };
         source.extract = (xml) => enhancedMarkupField(xml, source, field);
         this.inlineSources.push(source);
@@ -1850,7 +1865,10 @@ export class PortalModel {
     if (!record || typeof record !== 'object' || Number(yamlValue(record, 'statecode')) === 1) return;
     const stepId = String(yamlValue(record, 'webformstep') ?? '').toLowerCase();
     const formId = yamlValue(record, 'entityform') ?? yamlValue(record, 'webform') ?? this.stepForms.get(stepId);
-    if (this.inactiveSteps.has(stepId) || this.inactiveForms.has(String(formId ?? '').toLowerCase())) {
+    // A language copy whose root page is inactive is not rendered online either.
+    const inactiveRoot =
+      def.dir === 'web-pages' && this.inactivePages.has(String(yamlValue(record, 'rootwebpageid') ?? '').toLowerCase());
+    if (inactiveRoot || this.inactiveSteps.has(stepId) || this.inactiveForms.has(String(formId ?? '').toLowerCase())) {
       this.inactiveSources.push({ file, rel });
       return;
     }
@@ -1865,6 +1883,7 @@ export class PortalModel {
       'shortcutid',
       'webfileid',
       'contentsnippetid',
+      'webpageid',
       'id',
     ]
       .map((name) => yamlFieldKey(record, name))
@@ -1879,6 +1898,7 @@ export class PortalModel {
       if (!field) continue;
       for (const value of markupValues(record[field])) {
         this.#addYamlMarkupSource({
+          def,
           file,
           rel,
           index,
@@ -1893,8 +1913,11 @@ export class PortalModel {
     }
   }
 
-  #addYamlMarkupSource({ file, rel, index, record, formId, field, value, recordIdField, recordLanguageField }) {
+  #addYamlMarkupSource({ def, file, rel, index, record, formId, field, value, recordIdField, recordLanguageField }) {
     const fieldPath = index === null ? [field] : [index, field];
+    // A page field belongs to the page of its root record (a language copy points at its root).
+    const pageUrl =
+      def.dir === 'web-pages' ? this.pagePath(yamlValue(record, 'rootwebpageid') ?? yamlId(record, 'webpage')) : null;
     const source = {
       kind: 'metadata-markup',
       mode: 'markup',
@@ -1910,8 +1933,9 @@ export class PortalModel {
       recordId: recordIdField ? record[recordIdField] : undefined,
       recordIdField,
       ...(recordLanguageField ? { recordLanguageField, recordLanguageId: record[recordLanguageField] } : {}),
-      pageUrl: null,
-      usedOn: this.pagesShowing(formId),
+      ...(def.dir === 'web-pages' ? { encoding: def.encoding, pageField: true } : {}),
+      pageUrl,
+      usedOn: def.dir === 'web-pages' ? [] : this.pagesShowing(formId),
     };
     source.extract = yamlField(source);
     this.inlineSources.push(source);

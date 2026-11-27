@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { readRawBody } from './http-body.mjs';
 import { isPortalEntityDefinitionsPath, portalEntityDefinition } from './portal-entity-definitions.mjs';
 import { rejectedGatewayProperty } from './webapi-gateway-fields.mjs';
@@ -22,8 +22,16 @@ import {
   xmlEscapeAttribute,
 } from './fetchxml-engine.mjs';
 import { compilePermissionFetchXml } from './permission-query.mjs';
+import { permissionGrantColumn } from './odata-permission-query.mjs';
 import { prepareODataPage } from './odata-paging.mjs';
-import { parseApply, parseExpand, parseODataExpression, parseSelect } from './odata-query.mjs';
+import {
+  applyPaths,
+  expressionPaths,
+  parseApply,
+  parseExpand,
+  parseODataExpression,
+  parseSelect,
+} from './odata-query.mjs';
 import { createWebApiFormatter } from './webapi-format.mjs';
 import { POWER_PAGES_TABLES, WEBAPI_UNSUPPORTED_TABLES, webApiFetchPolicy, webApiPolicy } from './webapi-policy.mjs';
 import { fieldKind, GUID_PATTERN, own } from './dataverse-values.mjs';
@@ -56,6 +64,9 @@ const ROUTE = new RegExp(
   String.raw`^([A-Za-z_]\w*)(?:\(${KEY}\))?(?:/([A-Za-z_]\w*|\$count)(?:\(${KEY}\))?)?(?:/(\$ref|\$value|\$count))?$`,
 );
 const WRITE_METHODS = new Set(['POST', 'PATCH', 'PUT', 'DELETE']);
+const UNSUPPORTED_OPTIONS = new Set(['$skip', '$search', '$compute', 'savedQuery', 'userQuery']);
+const unsupportedRoute = (segment) =>
+  new DataError(`The portal Web API does not serve GET ${segment}.`, 400, 'UnsupportedQuery', { segment });
 // The local /_api response contract omits
 // OData-Version or Preference-Applied header; cache-control no-cache with Pragma and
 // Expires (ASP.NET's no-cache pair); the site's HTTP/* headers as portal pages carry
@@ -67,6 +78,19 @@ const CACHE_HEADERS = Object.freeze({
   pragma: 'no-cache',
   expires: '-1',
 });
+// Every hosted /_api response carries x-ms-request-id. A JSON answer to a GET, success or error of any status (200, 204,
+// 400, 403, 404 and 500), also names it as the correlation id of its Server-Timing header; an answer to a write (POST,
+// PUT, PATCH, DELETE; 204 or error, the chunked-upload 500 included) carries the response code alone; a text or binary
+// answer has none (hosted session F1, runs a, b, a2 and b2: odata-shapes, predefined, refs, files, nav-followup).
+const correlationHeaders = (status, { json = true, method = 'GET' } = {}) => {
+  const id = randomUUID();
+  if (!json) return { 'x-ms-request-id': id };
+  const timing =
+    method === 'GET' || method === 'HEAD'
+      ? `response-code; desc=${status}, correlationId; desc=${id}`
+      : `response-code; desc=${status}`;
+  return { 'x-ms-request-id': id, 'server-timing': timing };
+};
 const apiHeaders = (portal) => ({
   'x-content-type-options': 'nosniff',
   ...siteHeaders(portal ?? {}),
@@ -225,7 +249,6 @@ const POLICY_CODES = new Set([
   'WebApiColumnPermissionDenied',
   'WebApiFieldsNotConfigured',
   'WebApiColumnsViewUnresolved',
-  'WebApiWildcardDeprecated',
 ]);
 const DEFAULT_INNER_CODES = {
   UnsupportedQuery: '0x0',
@@ -248,8 +271,12 @@ const DEFAULT_INNER_CODES = {
 // (web-api-http-requests-handle-errors: the error code table and the 405 error types).
 const ERROR_TYPES = Object.freeze({
   '9004010A': 'UnexpectedError',
+  // Hosted session F1 (2026-11-26) with Webapi/error/innererror: $skip, $search, $compute, savedQuery and userQuery.
+  '9004010B': 'QueryParamNotSupported',
   '9004010E': 'ConfigurationResourceNotSupported',
   90040120: 'EntityPermissionReadIsMissing',
+  // Hosted session F7 (2026-11-27): the wildcard column list refusal.
+  90040122: 'WebApiUnAuthorizedAccess',
   '900400FF': 'NoAttributesForTableCreate',
   90040100: 'InvalidAttribute',
   90040101: 'AttributePermissionIsMissing',
@@ -284,9 +311,13 @@ export function webApiErrorResponse(
   {
     innerError = false,
     innerErrorScope = 'dataverse-errors',
-    cdsErrorMessage = 'CDS error occurred.',
-    cdsErrorCode = 'innererror',
-    antiForgery = 'cookie-mismatch-403',
+    // The text of every hosted capture since 2026-11-08 (the demo site, hosted session F1); hosted session F1 also sent
+    // error.cdscode on a Dataverse failure without the inner error setting (400 0x80060888 for a bad $filter literal).
+    cdsErrorMessage = 'Common Data Service error occurred.',
+    cdsErrorCode = 'cdscode',
+    // Hosted session F4 (paqvilo-developer hosted-f4 swap runs a and b): every refused token answers 401 "Request validation
+    // failed : " with its own reason; "cookie-mismatch-403" keeps the former local answer.
+    antiForgery = 'decryption-401',
     invalidDate = 'invalid-format',
     errorDetails = 'diagnostic',
     errorStacks = 'diagnostic',
@@ -315,6 +346,7 @@ export function webApiErrorResponse(
     return { status: httpStatus, body, headers };
   };
   return (
+    providerErrorResponse({ internal, status, details, respond, cdsErrorMessage, cdsErrorCode }) ??
     transportErrorResponse({ internal, status, error, details, respond, cdsErrorMessage, cdsErrorCode }) ??
     requestErrorResponse({ internal, status, error, details, respond }) ??
     permissionErrorResponse({ internal, details, respond, selfNnPermissionErrors, mutationPermissionText }) ??
@@ -337,39 +369,76 @@ export function webApiErrorResponse(
   );
 }
 
-function transportErrorResponse({ internal, status, error, details, respond, cdsErrorMessage, cdsErrorCode }) {
-  if (internal === 'PortalFetchTransportFailure' && details.phase === 'native-api-transport') {
-    const response = respond(status, '9004010D', cdsErrorMessage, {
-      code: details.innerCode,
-      message: details.innerMessage,
-    });
-    if (response.body.error.innererror) response.body.error.innererror.type = 'CDSError';
-    if (cdsErrorCode === 'cdscode') response.body.error.cdscode = details.innerCode;
-    return response;
-  }
+// A filter join into a virtual table (500) and a failing provider behind a collection read or a collection $expand
+// (400): 9004010D with the platform code, never the provider's own message (hosted session F1 follow-up 2026-11-27).
+function providerErrorResponse({ internal, status, details, respond, cdsErrorMessage, cdsErrorCode }) {
   if (
-    internal === 'ODataPermissionNavigationFailure' &&
+    internal !== 'VirtualTableJoinUnsupported' &&
+    !(internal === 'VirtualProviderFailed' && details.portalProviderRead === 'query')
+  )
+    return null;
+  const response = respond(status, '9004010D', cdsErrorMessage, undefined);
+  if (cdsErrorCode === 'cdscode') response.body.error.cdscode = details.innerCode;
+  return response;
+}
+
+// The 9004010D CDS envelope with its inner error; the cdscode shape also names the inner code on the error itself.
+function cdsErrorEnvelope({ status, details, respond, cdsErrorMessage, cdsErrorCode }, innererror, innerType = null) {
+  const response = respond(status, '9004010D', cdsErrorMessage, innererror);
+  if (innerType && response.body.error.innererror) response.body.error.innererror.type = innerType;
+  if (cdsErrorCode === 'cdscode') response.body.error.cdscode = details.innerCode;
+  return response;
+}
+
+// Whether a failure answers with the CDS envelope carrying the error's own message as its inner message.
+const cdsInnerFailure = (internal, status, details) =>
+  // A plug-in that rebound a portal query to a virtual table fails in the backend's SQL execution (data.mjs
+  // reboundPluginQuery; hosted F1 DATA-01e): 500 with the CDS envelope and its inner code.
+  (internal === 'PluginQueryBackendFailure' && status === 500) ||
+  // GET /_api/<set>(id)/<image>/$value?size=thumbnail (hosted session F1 files, runs a and b): 400 with the CDS envelope.
+  (internal === 'PortalImageSizeUnsupported' && status === 400) ||
+  (internal === 'ODataPermissionNavigationFailure' &&
     details.phase === 'native-odata-conversion' &&
-    [400, 501].includes(status)
-  ) {
-    const response = respond(status, '9004010D', cdsErrorMessage, { code: details.innerCode, message: error.message });
-    if (cdsErrorCode === 'cdscode') response.body.error.cdscode = details.innerCode;
-    return response;
-  }
+    [400, 501].includes(status));
+
+function transportErrorResponse(context) {
+  const { internal, status, error, details } = context;
+  if (internal === 'PortalFetchTransportFailure' && details.phase === 'native-api-transport')
+    return cdsErrorEnvelope(context, { code: details.innerCode, message: details.innerMessage }, 'CDSError');
+  if (cdsInnerFailure(internal, status, details))
+    return cdsErrorEnvelope(context, { code: details.innerCode, message: error.message });
   return null;
+}
+
+// The 500 9004010A answers without a trailing period: an invalid reference, the chunked-upload handshake, a reversed
+// file download range (hosted session F1 API-04g) and a provider that fails a keyed read of its own table (hosted session
+// F1 follow-up 2026-11-27).
+const UNEXPECTED_FAILURES = new Set([
+  'WebApiInvalidReference',
+  'WebApiChunkedUploadUnsupported',
+  'WebApiFileRangeReversed',
+]);
+const unexpectedFailure = (internal, details) =>
+  UNEXPECTED_FAILURES.has(internal) ||
+  (internal === 'VirtualProviderFailed' && details.portalProviderRead === 'retrieve');
+
+// The status of a failure that answers 9004010A "An unexpected error occurred while processing the request", or 0.
+function unexpectedRequestStatus(internal, details) {
+  if (internal === 'PortalQueryAdmissionFailure' && details.phase === 'native-api-admission') return 500;
+  if (details.phase === 'query' && QUERY_CODES.has(internal)) return 400;
+  // A write payload the OData reader can't map (an @odata.bind name that isn't a navigation property).
+  if (details.phase === 'payload' && internal === 'UndeclaredNavigationProperty') return 400;
+  if (unexpectedFailure(internal, details)) return 500;
+  return 0;
 }
 
 function requestErrorResponse({ internal, error, details, respond }) {
   const plain = undefined;
-  if (internal === 'PortalQueryAdmissionFailure' && details.phase === 'native-api-admission')
-    return respond(500, '9004010A', 'An unexpected error occurred while processing the request', plain);
-  if (details.phase === 'query' && QUERY_CODES.has(internal))
-    return respond(400, '9004010A', 'An unexpected error occurred while processing the request', plain);
-  // A write payload the OData reader can't map (an @odata.bind name that isn't a navigation property).
-  if (details.phase === 'payload' && internal === 'UndeclaredNavigationProperty')
-    return respond(400, '9004010A', 'An unexpected error occurred while processing the request', plain);
-  if (internal === 'WebApiInvalidReference')
-    return respond(500, '9004010A', 'An unexpected error occurred while processing the request', plain);
+  const unexpected = unexpectedRequestStatus(internal, details);
+  if (unexpected)
+    return respond(unexpected, '9004010A', 'An unexpected error occurred while processing the request', plain);
+  if (internal === 'WebApiQueryOptionNotSupported')
+    return respond(400, '9004010B', `The ${details.option} query parameter is not supported`, plain);
   if (internal === 'WebApiConfigurationTable')
     return respond(404, '9004010E', `Configuration table ${details.table} is not supported.`, plain);
   if (['ResourceNotFound', 'WebApiTableNotEnabled', 'UnknownEntity'].includes(internal))
@@ -386,6 +455,12 @@ function requestErrorResponse({ internal, error, details, respond }) {
       `Attribute ${details.attribute} cannot be found for table ${details.table}.`,
       plain,
     );
+  // Webapi/<table>/fields = * refuses every request for the table, before its columns or rows are read, as 403 90040122
+  // naming no attribute (hosted session F1, summary-F.md section 1 and summary-A2.md, its probe tables; hosted session F7,
+  // api-s0 and api-s1-loc, sharepointdocument and sharepointdocumentlocation, with innererror type
+  // WebApiUnAuthorizedAccess). The local cause stays in X-Sim-Error-Code.
+  if (internal === 'WebApiWildcardDeprecated')
+    return respond(403, '90040122', 'You are unauthorized to process this request.', plain);
   if (POLICY_CODES.has(internal))
     return respond(
       403,
@@ -475,6 +550,34 @@ function permissionErrorResponse({ internal, details, respond, selfNnPermissionE
   return respond(403, '90040120', `You don't have permission to read the ${table} table.`, plain);
 }
 
+// The anti-forgery validation texts of a refused token by its refusal (the token refusals of portal-request-tokens.mjs), as
+// hosted session F4 answered them after "Request validation failed : " (paqvilo-developer hosted-f4 swap runs a and b).
+const ANTI_FORGERY_TEXTS = Object.freeze({
+  undecryptable:
+    'The anti-forgery token could not be decrypted. If this application is hosted by a Web Farm or cluster, ensure that all machines are running the same version of ASP.NET Web Pages and that the <machineKey> configuration specifies explicit encryption and validation keys. AutoGenerate cannot be used in a cluster.',
+  mismatch: 'The anti-forgery cookie token and form field token do not match.',
+  user: 'The provided anti-forgery token was meant for a different claims-based user than the current user.',
+});
+
+/**
+ * Refuse a write whose __RequestVerificationToken header is not `expected`: none is 401 MissingPortalRequestVerificationToken,
+ * any other token 90040107 HttpAntiForgeryException carrying why it was refused (`refusal()`, portal-request-tokens.mjs),
+ * which chooses its text (webApiErrorResponse).
+ */
+export function assertAntiForgeryToken(supplied, expected, refusal) {
+  if (supplied == null || supplied === '')
+    throw new DataError(
+      'The required anti-forgery form field "__RequestVerificationToken" is not present.',
+      401,
+      'MissingPortalRequestVerificationToken',
+    );
+  if (supplied === expected) return;
+  const reason = refusal?.() ?? 'undecryptable';
+  throw new DataError(ANTI_FORGERY_TEXTS.mismatch, 403, 'HttpAntiForgeryException', {
+    antiForgery: reason === 'mismatch' || reason === 'user' ? reason : 'undecryptable',
+  });
+}
+
 function authenticationErrorResponse({ internal, error, respond, antiForgery }) {
   const plain = undefined;
   // Learn lists 401 for missing request-verification tokens and 90040107 for anti-forgery failures.
@@ -490,7 +593,8 @@ function authenticationErrorResponse({ internal, error, respond, antiForgery }) 
       antiForgery === 'decryption-401' ? 401 : 403,
       '90040107',
       antiForgery === 'decryption-401'
-        ? 'Request validation failed : The anti-forgery token could not be decrypted. If this application is hosted by a Web Farm or cluster, ensure that all machines are running the same version of ASP.NET Web Pages and that the <machineKey> configuration specifies explicit encryption and validation keys. AutoGenerate cannot be used in a cluster.'
+        ? 'Request validation failed : ' +
+            (ANTI_FORGERY_TEXTS[error.details?.antiForgery] ?? ANTI_FORGERY_TEXTS.undecryptable)
         : error.message,
       plain,
     );
@@ -567,8 +671,16 @@ function observedDataverseMessage(error, errorDetails, errorStacks, errorTemplat
  * origin, origins, metadata, json, jsonBody, change, onError }.
  */
 export async function handleWebApi(req, res, url, deps) {
+  const cache = readCache(req, url, deps);
+  if (cache?.hit) {
+    const { status, body, headers } = cache.hit;
+    return deps.json(res, status, structuredClone(body), {
+      ...headers,
+      ...correlationHeaders(status, { method: req.method }),
+    });
+  }
   try {
-    await route(req, res, url, deps);
+    await route(req, res, url, cache ? { ...deps, json: cache.capture(deps.json) } : deps);
   } catch (cause) {
     if (res.headersSent) throw cause;
     const response = webApiErrorResponse(cause, {
@@ -587,9 +699,77 @@ export async function handleWebApi(req, res, url, deps) {
       selfNnPermissionErrors: deps.portal?.observed?.webApiSelfNnPermissionErrors,
     });
     deps.onError?.(cause, response);
-    deps.json(res, response.status, response.body, { ...apiHeaders(deps.portal), ...response.headers });
+    // An observed file download refusal is sent with its length, as hosted session F1 captured it (API-04g).
+    const wireText = cause?.details?.exactLength ? stringifyExactJson(response.body) : undefined;
+    deps.json(
+      res,
+      response.status,
+      response.body,
+      {
+        ...apiHeaders(deps.portal),
+        ...correlationHeaders(response.status, { method: req.method }),
+        ...response.headers,
+        ...(wireText === undefined ? {} : { 'content-length': String(Buffer.byteLength(wireText)) }),
+      },
+      ...(wireText === undefined ? [] : [{ wireText }]),
+    );
   }
 }
+
+// observed.webApiReadCache { seconds }: a site observed serving repeated identical successful GETs from a cache without
+// calling a provider (hosted session F1 follow-up 2026-11-27, runs a and b: for at least 3 min 15 s and under 6 min 55 s;
+// errors were not cached; a changed query was read afresh). The evidence does not establish the key, so Mirage keys it
+// conservatively: the visitor (identity, roles, web role ids), the exact request (path, query, Prefer and Accept) and the
+// local data revision, so a local write, a permission change or another visitor reads afresh. Only 200 JSON answers are
+// kept; a conditional request is never answered from it. Off unless observed.
+const readCaches = new WeakMap();
+const READ_CACHE_LIMIT = 500;
+function readCache(req, url, deps) {
+  const seconds = deps.portal?.observed?.webApiReadCache?.seconds;
+  const store = deps.store;
+  // The observed window, also for an observation that did not come through lib/project-config.mjs.
+  const lifetime = Number.isInteger(seconds) && seconds >= 195 && seconds <= 414;
+  if (!lifetime || req.method !== 'GET' || req.headers['if-none-match'] || typeof store?.dataRevision !== 'function')
+    return null;
+  const identity = deps.identity ?? {};
+  const sorted = (values) => [...(values ?? [])].map(String).sort(compareText);
+  const key = JSON.stringify({
+    visitor: [identity.id ?? null, identity.contactId ?? null, Boolean(identity.admin)],
+    roles: sorted(identity.roles),
+    roleIds: sorted(identity.roleIds),
+    path: url.pathname,
+    query: url.search,
+    prefer: req.headers.prefer ?? null,
+    accept: req.headers.accept ?? null,
+    revision: String(store.dataRevision()),
+  });
+  const now = Number(store.clock?.now?.() ?? Date.now());
+  let entries = readCaches.get(store);
+  if (!entries) {
+    entries = new Map();
+    readCaches.set(store, entries);
+  }
+  const found = entries.get(key);
+  if (found && found.expires > now) return { hit: found };
+  entries.delete(key);
+  return {
+    capture:
+      (json) =>
+      (out, status, body, headers = {}, options) => {
+        if (status === 200 && body && typeof body === 'object' && !options) {
+          const kept = Object.fromEntries(
+            Object.entries(headers).filter(
+              ([name]) => !['x-ms-request-id', 'server-timing'].includes(name.toLowerCase()),
+            ),
+          );
+          if (entries.size >= READ_CACHE_LIMIT) entries.delete(entries.keys().next().value);
+          entries.set(key, { status, body: structuredClone(body), headers: kept, expires: now + seconds * 1000 });
+        }
+        return json(out, status, body, headers, options);
+      },
+  };
+}
+const compareText = (left, right) => (left < right ? -1 : Number(left > right));
 
 function diagnosticEntitySet(pathname) {
   try {
@@ -620,22 +800,7 @@ function diagnosticEntitySet(pathname) {
     seen.add(key);
   }
   if (WRITE_METHODS.has(method)) {
-    // Token failures: no token is Learn's 401 MissingPortalRequestVerificationToken. The runtime holds one anti-forgery token for
-    // its whole process, whatever the session; a token that differs from it is 90040107 with 403, the status Microsoft's Power
-    // Pages clients refresh the token on.
-    const supplied = req.headers.__requestverificationtoken;
-    if (supplied == null || supplied === '')
-      throw new DataError(
-        'The required anti-forgery form field "__RequestVerificationToken" is not present.',
-        401,
-        'MissingPortalRequestVerificationToken',
-      );
-    if (supplied !== deps.csrf)
-      throw new DataError(
-        'The anti-forgery cookie token and form field token do not match.',
-        403,
-        'HttpAntiForgeryException',
-      );
+    assertAntiForgeryToken(req.headers.__requestverificationtoken, deps.csrf, deps.tokenRefusal);
   } else if (method !== 'GET') throw methodNotAllowed(method, 'the portals Web API');
   // The code component EntityDefinitions read (portal-entity-definitions.mjs); other metadata paths are refused there.
   if (isPortalEntityDefinitionsPath(url.pathname)) {
@@ -651,6 +816,7 @@ function diagnosticEntitySet(pathname) {
     return deps.json(res, answer.status, answer.body, apiHeaders(deps.portal));
   }
   const target = parseWebApiRoute(url.pathname);
+  assertWebRoleNavigation(deps, target);
   if (target.kind === 'cloudflow')
     throw new DataError(
       `Cloud flow triggers are not run locally; configure a simulator endpoint for ${url.pathname} to answer this request.`,
@@ -723,14 +889,23 @@ function webApiOperation(method, target) {
 }
 
 async function routeTarget(t, method, target, url) {
-  // The portal has no predefined-query contract. Refuse these options before any route projects or discards them.
-  for (const option of ['savedQuery', 'userQuery'])
-    if (url.searchParams.has(option))
-      throw queryPhase(
-        new DataError(`The ${option} query option is not supported by the portal Web API.`, 400, 'UnsupportedQuery', {
-          option,
-        }),
-      );
+  // Options the portal refuses before any route projects or discards them: 400 9004010B "The <option> query parameter
+  // is not supported" on every route shape (hosted session F1, API-02c and API-03b, two runs: $skip, $search, $compute,
+  // savedQuery with a real, a random and a malformed id, on a keyed read and on /$count, and userQuery). The first such
+  // option in the URL is named.
+  const unsupported = [...url.searchParams.keys()].find((key) => UNSUPPORTED_OPTIONS.has(key));
+  if (unsupported)
+    throw new DataError(`The ${unsupported} query parameter is not supported`, 400, 'WebApiQueryOptionNotSupported', {
+      option: unsupported,
+    });
+  // Reading a navigation's references (GET .../<navigation>/$ref) is malformed for the portal: 400 9004010A (hosted
+  // session F1, API-02c, two runs). Associations through $ref stay POST and DELETE.
+  if (method === 'GET' && target.kind === 'ref') throw queryPhase(unsupportedRoute('$ref'));
+  // A navigation's $count answers 400 9004010A in every shape: collection-valued and single-valued, to an ordinary and to
+  // a provider-backed table, on Contact- and Global-scope tables (hosted session F1 follow-up 2026-11-27, runs a and b).
+  // A constant answer tells nothing about the related rows.
+  if (method === 'GET' && target.kind === 'navcount' && ownRelationship(t.mapping, target.segment))
+    throw queryPhase(unsupportedRoute('/$count of a navigation'));
   // A read observer can issue independently committed SDK writes. Finish the
   // serialized read unit before sending a successful response, including text
   // properties and conditional 304s, so persistence failures remain errors.
@@ -789,21 +964,78 @@ function preparePortalRead(t, execute) {
   )
     return execute();
   const query = assertPortalReadQuery(t);
-  // The native-classic adapter refuses navigation, lambdas, $expand and $apply itself.
+  // The native-classic adapter refuses navigation and lambda filters itself; $expand and $apply run the modeled pipeline
+  // (data.mjs nativeScalarODataRead).
   const local =
     query && (t.deps.identity?.admin || t.store.observed?.odataPermissionQueryPipeline !== 'native-classic');
   const key = t.target.key;
-  return t.store.withPortalReadSources(
-    t.deps.identity,
-    {
-      table: t.mapping.logicalName,
-      id: key != null && !String(key).includes('=') ? locate(t, t.mapping, key).id : null,
-      expand: params.get('$expand'),
-      navigation: t.mapping.relationships?.[t.target.segment] ? t.target.segment : null,
-      queryPaths: local ? portalQueryPaths(t.store, query.mapping, query.params) : null,
-    },
-    execute,
+  return portalProviderFailure(
+    t,
+    t.store.withPortalReadSources(
+      t.deps.identity,
+      {
+        table: t.mapping.logicalName,
+        id: key != null && !String(key).includes('=') ? locate(t, t.mapping, key).id : null,
+        expand: params.get('$expand'),
+        navigation: t.mapping.relationships?.[t.target.segment] ? t.target.segment : null,
+        queryPaths: local ? portalQueryPaths(t.store, query.mapping, query.params) : null,
+        params: kind === 'collection' ? params : null,
+        onProviderRows: (logical, rows) => reportExposedProviderColumns(t, logical, rows),
+      },
+      execute,
+    ),
   );
+}
+
+/**
+ * A provider that fails a portal read: a keyed read answers 500 9004010A, a collection read or a collection $expand 400
+ * 9004010D with cdscode 0x80040265, the provider's message hidden (hosted session F1 follow-up 2026-11-27, runs a and b,
+ * throwing provider).
+ */
+async function portalProviderFailure(t, read) {
+  try {
+    return await read;
+  } catch (error) {
+    if (error?.code !== 'VirtualProviderFailed') throw error;
+    // The keyed read of a provider-backed table itself; an expansion behind a keyed read of another table fails as a query.
+    const retrieve =
+      t.target.kind === 'entity' &&
+      Boolean(t.store.recordPipeline?.virtualProviders?.status(t.mapping.logicalName).virtual);
+    error.status = error.statusCode = retrieve ? 500 : 400;
+    error.details = { ...error.details, portalProviderRead: retrieve ? 'retrieve' : 'query', innerCode: '0x80040265' };
+    throw error;
+  }
+}
+
+/**
+ * A hosted site returns every column a provider answers, outside Webapi/<table>/fields and $select too (hosted session F1
+ * follow-up 2026-11-27, runs a and b; the test provider ignored the ColumnSet). Mirage keeps the column list on provider
+ * rows (security decision) and reports the columns the live site would expose.
+ */
+function reportExposedProviderColumns(t, logical, rows) {
+  const providers = t.store.recordPipeline?.virtualProviders;
+  if (typeof providers?.report !== 'function' || !rows?.length) return;
+  let policy;
+  try {
+    policy = webApiPolicy(policyPortal(t.store, t.deps), t.store, logical);
+  } catch {
+    // A table the Web API does not enable shows nothing to a visitor.
+    return;
+  }
+  const exposed = new Set();
+  for (const row of rows)
+    for (const name of Object.keys(row))
+      if (!name.startsWith('@') && !/^__sim/i.test(name) && !policy.allowed(name)) exposed.add(name);
+  if (!exposed.size) return;
+  const columns = [...exposed].sort((left, right) => (left < right ? -1 : Number(left > right)));
+  providers.report({
+    code: 'WEBAPI_PROVIDER_COLUMNS_HOSTED_EXPOSED',
+    severity: 'warning',
+    table: logical,
+    operation: 'portal-read',
+    columns,
+    message: `The provider of virtual table '${logical}' returned ${columns.join(', ')} outside Webapi/${logical}/fields. A hosted Power Pages site returns every column the provider answers, whatever the column list and $select, so the live site exposes them; Mirage keeps the column list. Return only listed columns from the provider (honour the ColumnSet) or list them.`,
+  });
 }
 
 /**
@@ -818,41 +1050,118 @@ function assertPortalReadQuery(t) {
     assertCollectionQuery(t, t.mapping, t.policy, params);
     return { mapping: t.mapping, params };
   }
-  if (kind === 'entity') {
-    t.policy.assertQuery(params);
-    const read = pick(params, ['$select', '$expand']);
-    assertExpandReadable(t, t.mapping, read.get('$expand'));
-    return { mapping: t.mapping, params: read };
-  }
-  if (kind === 'count') {
-    const counted = pick(params, ['$filter']);
-    t.policy.assertQuery(counted);
-    return { mapping: t.mapping, params: counted };
-  }
-  const rel = kind === 'member' || kind === 'navcount' ? ownRelationship(t.mapping, segment) : null;
+  if (kind === 'entity' || kind === 'count') return assertOwnTableRead(t, kind, params);
+  if (kind === 'member') assertMemberRead(t);
+  const rel = kind === 'member' ? ownRelationship(t.mapping, segment) : null;
   if (!rel) return null;
-  t.policy.assertPath([segment]);
+  if (kind === 'member' && rel.many !== false) assertCollectionNavigation(t);
+  else t.policy.assertPath([segment]);
   const mapping = t.store.resolveMapping(rel.entity);
   const policy = webApiPolicy(policyPortal(t.store, t.deps), t.store, mapping.logicalName);
-  if (kind === 'navcount') {
-    assertExpandReadable(t, t.mapping, null, [{ navigation: segment, expand: [] }]);
-    if (rel.many === false) return null;
-    const counted = pick(params, ['$filter']);
-    policy.assertQuery(counted);
-    return { mapping, params: counted };
-  }
   if (rel.many !== false) {
     assertCollectionQuery(t, mapping, policy, params);
     return { mapping, params };
   }
   const read = pick(params, ['$select', '$expand']);
   policy.assertQuery(read);
+  if (!read.has('$select') && !policy.fields.includes('*')) policy.assertSelectLess();
   assertExpandReadable(t, t.mapping, null, [{ navigation: segment, expand: parseExpand(read.get('$expand')) }]);
   return { mapping, params: read };
 }
 
+// A keyed read or /$count of the request's own table: its options, its select-less read and its expansions.
+function assertOwnTableRead(t, kind, params) {
+  const read = pick(params, kind === 'entity' ? ['$select', '$expand'] : ['$filter']);
+  t.policy.assertQuery(kind === 'entity' ? params : read);
+  if (kind === 'count') assertTableReadable(t, t.mapping);
+  if (!read.has('$select')) t.policy.assertSelectLess();
+  if (kind === 'entity') assertExpandReadable(t, t.mapping, read.get('$expand'));
+  if (kind === 'count') assertNoProviderJoin(t, t.mapping, read);
+  return { mapping: t.mapping, params: read };
+}
+
+/**
+ * A $filter path that continues into a provider-backed (virtual) table, `<lookup>/<column>` or an any/all lambda body,
+ * answers 500 9004010D "Common Data Service error occurred." with cdscode 0x80044150 and the provider is never called: the
+ * platform cannot join a virtual table in the query it builds (hosted session F1 follow-up 2026-11-27, runs a and b,
+ * healthy and throwing provider). A path that ends at the navigation (`<lookup> eq null`, a body-less any) was not
+ * captured and keeps the earlier model. Checked after the column, table-permission and select-less refusals, before any
+ * provider read.
+ * The paths of an $apply answer the same: a filter() path into the virtual table, a lookup path or an any lambda, with
+ * or without a following aggregate (hosted session F1 follow-up (2) 2026-11-27, runs a and b, nav-followup-nested:
+ * apply-lookup-filter-count, apply-collection-any, apply-collection-any-count; the provider was never called). A groupby
+ * or aggregate path into the virtual table was not captured; it needs the same join and is refused alike (fail closed).
+ */
+function assertNoProviderJoin(t, mapping, params) {
+  const providers = t.store.recordPipeline?.virtualProviders;
+  const filter = params.get('$filter');
+  const apply = params.get('$apply');
+  if (!providers || (!filter && !apply)) return;
+  const aliases = Object.fromEntries([...params].filter(([key]) => key.startsWith('@')));
+  const paths = [
+    ...(filter ? expressionPaths(parseODataExpression(filter, { dialect: 'dataverse', aliases })) : []),
+    ...(apply ? applyPaths(parseApply(apply, { dialect: 'dataverse', aliases })) : []),
+  ];
+  for (const segments of paths) {
+    let current = mapping;
+    for (const [index, segment] of segments.entries()) {
+      const rel = ownRelationship(current, segment);
+      if (!rel) break;
+      current = t.store.resolveMapping(rel.entity);
+      if (index < segments.length - 1 && providers.status(current.logicalName).virtual)
+        throw new DataError(
+          `A query path into virtual table ${current.logicalName} needs a join the platform cannot build.`,
+          500,
+          'VirtualTableJoinUnsupported',
+          { innerCode: '0x80044150', table: current.logicalName },
+        );
+    }
+  }
+}
+
 const ownRelationship = (mapping, name) =>
   name != null && own(mapping.relationships ?? {}, name) ? mapping.relationships[name] : null;
+
+const allColumnsDenied = (table) =>
+  new DataError(`Attribute All Columns in table ${table} is not enabled for Web Api.`, 403, 'WebApiFieldNotEnabled', {
+    attribute: 'All Columns',
+    table,
+  });
+
+/**
+ * The member routes a GET may read (hosted session F1, API-02c, two runs, each with the segment's column listed): a
+ * single-valued navigation to a row of the same table is served; a column (/<column>; its /$value is served), a
+ * single-valued navigation to another table and a collection-valued navigation to another table answer 403 90040101
+ * "Attribute All Columns in table <table> is not enabled for Web Api."; a collection-valued navigation to the same table
+ * names itself ("Attribute <navigation> in table <table> ..."). Each refusal came before any backend query in both runs,
+ * so it does not depend on the permission scope. `observed.webApiMemberReads: served` keeps the former local model.
+ */
+function assertMemberRead(t) {
+  if (t.deps.portal?.observed?.webApiMemberReads === 'served') return;
+  const { mapping, target } = t;
+  const rel = ownRelationship(mapping, target.segment);
+  const related = rel ? t.store.resolveMapping(rel.entity) : null;
+  const sameTable = related?.logicalName === mapping.logicalName;
+  // A related table the caller cannot read is refused first, 403 90040120 naming it (hosted session F1 AUTH-03c, replayed
+  // by portal-webrole-refs/hosted-f1-without-settings#read-contact-roles-nav; with the read granted the same request
+  // answered 403 All Columns).
+  if (
+    related &&
+    !t.deps.identity?.admin &&
+    t.store.state.settings?.permissionMode !== 'permissive' &&
+    !t.store.rules(related.logicalName, 'read', t.deps.identity).length
+  )
+    throw readDenied(t.store, related.logicalName);
+  if (rel?.many === false && sameTable) return;
+  if (rel && rel.many !== false && sameTable)
+    throw new DataError(
+      `Attribute ${target.segment} in table ${mapping.logicalName} is not enabled for Web Api.`,
+      403,
+      'WebApiFieldNotEnabled',
+      { attribute: target.segment, table: mapping.logicalName },
+    );
+  throw allColumnsDenied(mapping.logicalName);
+}
 
 /**
  * Navigation paths, qualified from the queried table, that evaluating its $filter (any/all lambdas included), every
@@ -990,6 +1299,7 @@ function dispatchEntity(t, method) {
 }
 
 function dispatchMember(t, method, target) {
+  if (method === 'GET') assertMemberRead(t);
   if (t.mapping.relationships?.[target.segment]) {
     if (method === 'GET') return getNavigation(t);
     throw methodNotAllowed(method, 'a navigation property; use $ref or @odata.bind');
@@ -1157,6 +1467,7 @@ const send = async (t, status, body, headers = {}) => {
   else if (t.include) payload = stripAnnotations(body, t.include);
   return t.deps.json(t.res, status, payload, {
     ...apiHeaders(t.deps.portal),
+    ...correlationHeaders(status, { method: t.req.method }),
     ...headers,
   });
 };
@@ -1195,7 +1506,11 @@ const send = async (t, status, body, headers = {}) => {
 }
 
 const sendText = (t, value) => {
-  t.res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', ...apiHeaders(t.deps.portal) });
+  t.res.writeHead(200, {
+    'content-type': 'text/plain; charset=utf-8',
+    ...apiHeaders(t.deps.portal),
+    ...correlationHeaders(200, { json: false }),
+  });
   t.res.end(String(value));
 };
 
@@ -1258,7 +1573,27 @@ function fillDeclaredColumns(t, out, policy, mapping) {
 function shapeEntity(t, policy, mapping, projected, { fill = false, expand = null } = {}) {
   const formatted = t.formatter.formatEntity(projected, mapping, { etag: true, expand: parseExpand(expand) });
   if (fill) fillDeclaredColumns(t, formatted, policy, mapping);
+  nullProviderLookups(t, mapping, formatted, parseExpand(expand));
   return policy.project(formatted);
+}
+
+// A single-valued $expand into a provider-backed table reads null, with a healthy and with a throwing provider (hosted
+// session F1 follow-up 2026-11-27, runs a and b); the provider is not read for it (data.mjs
+// collectPortalNavigationReadSources), so no local mirror answers either.
+function nullProviderLookups(t, mapping, row, specs) {
+  const providers = t.store.recordPipeline?.virtualProviders;
+  if (!providers || !row || typeof row !== 'object') return;
+  for (const spec of specs) {
+    const rel = ownRelationship(mapping, spec.navigation);
+    if (!rel || !own(row, spec.navigation)) continue;
+    const target = t.store.resolveMapping(rel.entity);
+    if (rel.many === false && providers.status(target.logicalName).virtual) row[spec.navigation] = null;
+    else {
+      const value = row[spec.navigation];
+      for (const child of Array.isArray(value) ? value : [value])
+        nullProviderLookups(t, target, child, spec.expand ?? []);
+    }
+  }
 }
 
 /** Resolve a key segment (primary key or alternate key) to a stored primary key. */
@@ -1274,10 +1609,18 @@ function locate(t, mapping, key) {
   };
 }
 
+// A keyed read of a row that does not exist answers 404 9004010D "Common Data Service error occurred." with neither
+// cdscode nor innererror, also with Webapi/error/innererror on (hosted session F1, API-02c, two runs and the inner error
+// run). File and image column downloads keep their own answer.
+const readNotFound = (t, mapping, key) => {
+  const error = recordNotFound(mapping, key);
+  if (!fileKind(t)) error.details = { ...error.details, hideInner: true };
+  return error;
+};
 const readRecord = (t, mapping, id, key) => {
-  if (id == null) throw recordNotFound(mapping, key);
+  if (id == null) throw readNotFound(t, mapping, key);
   const row = t.store.get(mapping.logicalName, id, t.deps.identity, { portalRequest: true });
-  if (!row) throw recordNotFound(mapping, key);
+  if (!row) throw readNotFound(t, mapping, key);
   return row;
 };
 
@@ -1290,7 +1633,9 @@ function collectionBody(t, mapping, params, result, value, paging) {
   const count = result['@odata.count'];
   if (count !== undefined) body['@odata.count'] = count;
   const total = result.paging?.totalCount ?? count;
-  body['@Microsoft.Dynamics.CRM.totalrecordcount'] = count === undefined ? -1 : Math.min(total, WEBAPI_COUNT_LIMIT);
+  // A provider-answered virtual table read carries its own total (result.totalRecordCount; data.mjs providerAnswered).
+  body['@Microsoft.Dynamics.CRM.totalrecordcount'] =
+    result.totalRecordCount ?? (count === undefined ? -1 : Math.min(total, WEBAPI_COUNT_LIMIT));
   body['@Microsoft.Dynamics.CRM.totalrecordcountlimitexceeded'] = count !== undefined && total > WEBAPI_COUNT_LIMIT;
   body['@Microsoft.Dynamics.CRM.globalmetadataversion'] = globalMetadataVersion(t.store);
   body.value = value;
@@ -1307,12 +1652,15 @@ function propertyName(mapping, name, definition) {
   return lookup ? `_${name}_value` : name;
 }
 /**
- * The adapter answers a select-less collection read with 403 90040101 naming the
- * first column (in property-name order) outside Webapi/<table>/fields; only
- * a wildcard list returns every column.
+ * A select-less collection read reads the configured columns in list order and is refused at the first one the list
+ * does not enable (policy.assertSelectLess; hosted session F1). A custom activity is then served those columns (F1
+ * API-01c phases D and E). Any other table is also refused with 403 90040101 naming the first column (in property-name
+ * order) outside Webapi/<table>/fields; only a wildcard list returns every column.
  */
 function assertSelectLessRead(t, policy, mapping) {
   if (policy.fields.includes('*')) return;
+  policy.assertSelectLess();
+  if (policy.customActivity) return;
   const columns = selectLessReadColumns(t, mapping);
   const denied = [...columns]
     .sort(/* NOSONAR: preserve default string coercion */)
@@ -1368,35 +1716,94 @@ function assertExpandReadable(t, mapping, expand, specs = parseExpand(expand)) {
 }
 
 function assertCollectionQuery(t, mapping, policy, params) {
-  const { store, deps } = t;
   policy.assertQuery(params);
   const apply = params.has('$apply');
   // Table permission is checked before the select-less column rule.
+  assertTableReadable(t, mapping);
+  if (!apply) assertExpandReadable(t, mapping, params.get('$expand'));
+  if (!apply && !params.has('$select')) assertSelectLessRead(t, policy, mapping);
+  // An $apply query has no $select: the portal refuses it as a select-less read (hosted session F1, API-02c, two runs:
+  // groupby, aggregate and filter/aggregate named the first listed lookup's _x_value).
+  if (apply && !t.summary && !policy.fields.includes('*')) policy.assertSelectLess();
+  // Last: a visitor refused above never learns that the filter reaches a provider-backed table.
+  assertNoProviderJoin(t, mapping, params);
+}
+
+/** 403 90040120 when the caller holds no read grant on the table. */
+function assertTableReadable(t, mapping) {
+  const { store, deps } = t;
   if (
     !deps.identity?.admin &&
     store.state.settings?.permissionMode !== 'permissive' &&
     !store.rules(mapping.logicalName, 'read', deps.identity).length
   )
-    throw readDenied(t.store, mapping.logicalName);
-  if (!apply) assertExpandReadable(t, mapping, params.get('$expand'));
-  if (!apply && !params.has('$select')) assertSelectLessRead(t, policy, mapping);
+    throw readDenied(store, mapping.logicalName);
+}
+
+/**
+ * The request URL a collection read runs: a custom activity's select-less read selects its configured columns
+ * (selectLessColumns), as the hosted context URL names them (F1 API-01c phases D and E: #<set>(activityid,subject,...)).
+ */
+function selectedUrl(url, policy) {
+  if (
+    !policy.customActivity ||
+    url.searchParams.has('$select') ||
+    url.searchParams.has('$apply') ||
+    policy.fields.includes('*')
+  )
+    return url;
+  const columns = policy.selectLessColumns();
+  if (!columns.length) return url;
+  const selected = new URL(url);
+  selected.searchParams.set('$select', columns.join(','));
+  return selected;
 }
 
 function getCollection(t, options) {
   return send(t, 200, collectionPayload(t, options));
 }
 
+/**
+ * The wire columns of the caller's permission predicate on a table, or null when its read is not permission-filtered
+ * (an administrator, permissive mode, or a Global grant). Only the Contact and Account scopes, whose predicate is a
+ * column of the table itself, are modelled.
+ */
+function permissionPredicateColumns(t, mapping) {
+  const { store, deps } = t;
+  if (deps.identity?.admin || store.state.settings?.permissionMode === 'permissive') return null;
+  const grants = store.rules(mapping.logicalName, 'read', deps.identity);
+  if (!grants.length || grants.some((grant) => (grant.scope ?? 'global') === 'global')) return null;
+  const columns = [];
+  for (const grant of grants) {
+    if (!['contact', 'account'].includes(grant.scope)) continue;
+    const column = permissionGrantColumn(grant, mapping.idColumn);
+    const wire = propertyName(mapping, column, store.fieldDefinition(mapping.logicalName, column, deps.metadata));
+    if (!columns.includes(wire)) columns.push(wire);
+  }
+  return columns;
+}
+
 function collectionPayload(t, { mapping = t.mapping, policy = t.policy, ids } = {}) {
-  const { url, store, deps } = t;
-  assertCollectionQuery(t, mapping, policy, url.searchParams);
+  const { store, deps } = t;
+  assertCollectionQuery(t, mapping, policy, t.url.searchParams);
+  const url = selectedUrl(t.url, policy);
   const apply = url.searchParams.has('$apply');
+  const predicate = permissionPredicateColumns(t, mapping);
+  // The platform's @odata.nextLink of a permission-filtered read embeds the permission predicate as a $filter
+  // ("(_<lookup>_value eq <contact>)"), so following it is column-checked like any $filter: hosted session F1 (API-02c,
+  // two runs) answered 403 90040101 naming _pqf1_contact_value, with and without the Prefer header, while the list held
+  // only the logical lookup. Mirage's continuation stays a signed cursor; following it is checked the same way.
   const paging = prepareODataPage({
     url,
     prefer: t.req.headers.prefer ?? '',
     identity: deps.identity,
     revision: store.dataRevision(),
     secret: pagingKey(store),
+    pageWithoutTop: predicate !== null,
   });
+  // Checked once the cursor is valid: a forged token is the cursor's own 400.
+  if (predicate && !t.summary && url.searchParams.has('$skiptoken'))
+    for (const column of predicate) policy.assert(column);
   const result = store.query(
     mapping.logicalName,
     paging.params,
@@ -1406,8 +1813,51 @@ function collectionPayload(t, { mapping = t.mapping, policy = t.policy, ids } = 
   );
   const value = apply
     ? result.value.map((row) => t.formatter.formatEntity(row, mapping, { etag: false }))
-    : result.value.map((row) => shapeEntity(t, policy, mapping, row, { expand: url.searchParams.get('$expand') }));
+    : result.value.map((row) =>
+        linkExpandedCollections(
+          t,
+          mapping,
+          shapeEntity(t, policy, mapping, row, { expand: url.searchParams.get('$expand') }),
+          url.searchParams.get('$expand'),
+        ),
+      );
   return collectionBody(t, mapping, apply ? null : url.searchParams, result, value, apply ? null : paging);
+}
+
+/**
+ * A collection read's expanded collection-valued navigation, as Dataverse answers it: each child row carries the parent
+ * lookup with its formatted value, navigation and table annotations, and the expansion carries
+ * <navigation>@odata.nextLink to the navigation of that parent (hosted session F1, API-02b, two runs, with and without
+ * nested options; a keyed read's expansion carries neither). The lookup is the platform's, outside the column list.
+ */
+function linkExpandedCollections(t, mapping, row, expand) {
+  for (const spec of parseExpand(expand)) {
+    const rel = ownRelationship(mapping, spec.navigation);
+    const children = row[spec.navigation];
+    if (!rel || rel.many === false || rel.intersect || !rel.to || !Array.isArray(children)) continue;
+    const target = t.store.resolveMapping(rel.entity);
+    const parentId = row[mapping.idColumn];
+    const navigation =
+      Object.entries(target.relationships ?? {}).find(([, item]) => item.many === false && item.from === rel.to)?.[0] ??
+      rel.to;
+    const parent = mapping.nameColumn ? t.store.get(mapping.logicalName, parentId, { admin: true }) : null;
+    const lookup = `_${rel.to}_value`;
+    for (const child of children) {
+      if (!child || typeof child !== 'object') continue;
+      delete child[lookup];
+      child[`${lookup}@OData.Community.Display.V1.FormattedValue`] = parent?.[mapping.nameColumn] ?? null;
+      child[`${lookup}@Microsoft.Dynamics.CRM.associatednavigationproperty`] = navigation;
+      child[`${lookup}@Microsoft.Dynamics.CRM.lookuplogicalname`] = mapping.logicalName;
+      child[lookup] = parentId;
+    }
+    const options = ['select', 'filter', 'orderby', 'top']
+      .filter((key) => spec[key] != null && spec[key] !== '')
+      .map((key) => `$${key}=${encodeURIComponent(spec[key])}`);
+    const query = options.length ? `?${options.join('&')}` : '';
+    row[`${spec.navigation}@odata.nextLink`] =
+      `${t.deps.origin}/_api/${mapping.entitySet}(${parentId})/${spec.navigation}${query}`;
+  }
+  return row;
 }
 
 /**
@@ -1440,8 +1890,6 @@ function fetchContext(t, mapping, info, { empty = false } = {}) {
   const columns = info.columns.filter((column) => column.alias == null && !column.aliased && !column.aggregate);
   const parts = [],
     lookups = [];
-  if (!info.aggregate && !info.distinct && !columns.some((column) => column.attribute === mapping.idColumn))
-    parts.push(mapping.idColumn);
   for (const column of columns) {
     const definition = t.store.fieldDefinition(mapping.logicalName, column.attribute, t.deps.metadata);
     const name = propertyName(mapping, column.attribute, definition);
@@ -1450,6 +1898,11 @@ function fetchContext(t, mapping, info, { empty = false } = {}) {
       lookups.push(`${column.attribute}()`);
     } else parts.push(name);
   }
+  // The primary key a non-distinct query did not list follows the authored columns (hosted session F7,
+  // api-s1-loc-fields locations-fetch-regarding, runs a and b: name,relativeurl -> (name,relativeurl,<id>); hosted session
+  // F1 fetch-webapi-owner-columns kept an authored id where it was authored).
+  if (!info.aggregate && !info.distinct && !columns.some((column) => column.attribute === mapping.idColumn))
+    parts.push(mapping.idColumn);
   return `${t.deps.origin}/_api/$metadata#${mapping.entitySet}(${[...parts, ...lookups].join(',')})`;
 }
 
@@ -1458,7 +1911,10 @@ async function getFetch(t) {
   const authoredXml = url.searchParams.get('fetchXml');
   const xml = deps.identity?.admin
     ? authoredXml
-    : preparePortalFetchXml(authoredXml, { linkTypes: store.observed?.webApiFetchXmlLinkTypes });
+    : preparePortalFetchXml(authoredXml, {
+        linkTypes: store.observed?.webApiFetchXmlLinkTypes,
+        authoring: store.observed?.portalFetchXmlAuthoring,
+      });
   const nativePolicy = !deps.identity?.admin && store.observed?.tablePermissionQueryPipeline === 'native-classic';
   const project = prepareFetchProjection(t, deps, store, xml, mapping, nativePolicy);
   // Return 403 90040120 when any table the query reads (root or link-entity)
@@ -1478,7 +1934,7 @@ async function getFetch(t) {
       : execute();
   const info = fetched.columns;
   const body = { '@odata.context': fetchContext(t, mapping, info, { empty: fetched.entities.length === 0 }) };
-  if (counted || (nativePolicy && fetched.total_record_count >= 0))
+  if (counted || (nativePolicy && fetched.total_record_count >= 0 && !fetched.providerAnswered))
     body['@odata.count'] = Math.max(fetched.total_record_count, 0);
   body['@Microsoft.Dynamics.CRM.totalrecordcount'] = fetched.total_record_count;
   body['@Microsoft.Dynamics.CRM.totalrecordcountlimitexceeded'] = fetched.total_record_count_limit_exceeded;
@@ -1541,6 +1997,8 @@ function getCount(t, { mapping = t.mapping, policy = t.policy, ids } = {}) {
   const aliases = [...url.searchParams.keys()].filter((key) => key.startsWith('@'));
   const params = pick(url.searchParams, ['$filter', ...aliases]);
   policy.assertQuery(params);
+  // /$count is a select-less read (hosted session F1, API-02c, two runs: 403 naming the first listed lookup's _x_value).
+  if (!ids && !policy.fields.includes('*')) policy.assertSelectLess();
   params.set('$select', mapping.idColumn);
   const result = store.query(
     mapping.logicalName,
@@ -1561,7 +2019,7 @@ function entityResponse(t, mapping, policy, id, params, { portalPrimaryKeyProjec
     queryOptions(t, { id, portalPrimaryKeyProjection }),
   );
   const projected = result.value[0];
-  if (!projected) throw recordNotFound(mapping, id);
+  if (!projected) throw readNotFound(t, mapping, id);
   return {
     '@odata.context': contextUrl(t, mapping, params, { entity: true }),
     ...shapeEntity(t, policy, mapping, projected, { fill: !params.has('$select'), expand: params.get('$expand') }),
@@ -1573,6 +2031,9 @@ function entityProjection(t) {
   // Every supplied option is column-checked, even ones a single entity ignores.
   policy.assertQuery(url.searchParams);
   const params = pick(url.searchParams, ['$select', '$expand']);
+  // A select-less keyed read is refused like a select-less collection, before the row is read (hosted session F1,
+  // API-02c, two runs: no backend query). It then returns the listed columns (fillDeclaredColumns).
+  if (!params.has('$select') && !policy.fields.includes('*')) policy.assertSelectLess();
   const { id } = locate(t, mapping, target.key);
   readRecord(t, mapping, id, target.key);
   assertExpandReadable(t, mapping, params.get('$expand'));
@@ -1635,12 +2096,15 @@ function summaryReadContext(url, deps, target, prefer) {
   if (deps.identity?.admin || deps.store.state.settings.permissionMode === 'permissive')
     throw new DataError('Local data summarization requires enforced portal permissions.', 403, 'PermissionDenied');
   const headers = typeof prefer === 'string' && prefer ? { prefer } : {};
-  return requestContext({ method: 'GET', headers }, null, url, deps, target, 'GET');
+  // A summary keeps the read checks it had before hosted session F1: the F1 $apply and continuation checks were
+  // recorded on /_api, not on the summarization API.
+  return { ...requestContext({ method: 'GET', headers }, null, url, deps, target, 'GET'), summary: true };
 }
 
 function navigationTarget(t) {
   const rel = t.mapping.relationships[t.target.segment];
-  t.policy.assertPath([t.target.segment]);
+  if (rel.many === false) t.policy.assertPath([t.target.segment]);
+  else assertCollectionNavigation(t);
   const targetMapping = t.store.resolveMapping(rel.entity);
   const targetPolicy = webApiPolicy(policyPortal(t.store, t.deps), t.store, targetMapping.logicalName);
   const { id } = locate(t, t.mapping, t.target.key);
@@ -1652,11 +2116,32 @@ function navigationTarget(t) {
   return { rel, targetMapping, targetPolicy, related };
 }
 
+// A collection-valued navigation read (hosted session F1, AUTH-03c, two runs each way): the related table's read permission
+// is refused first (403 90040120, before the related table's Web API settings), then a navigation that is not a listed
+// field of the request's table is refused as an all-columns read of that table (403 90040101 "Attribute All Columns in
+// table <table> is not enabled for Web Api.").
+function assertCollectionNavigation(t) {
+  assertExpandReadable(t, t.mapping, null, [{ navigation: t.target.segment, expand: [] }]);
+  try {
+    t.policy.assertPath([t.target.segment]);
+  } catch (error) {
+    if (error?.code !== 'WebApiFieldNotEnabled' || error.details?.attribute !== t.target.segment) throw error;
+    throw new DataError(
+      `Attribute All Columns in table ${t.mapping.logicalName} is not enabled for Web Api.`,
+      403,
+      'WebApiFieldNotEnabled',
+      { attribute: 'All Columns', table: t.mapping.logicalName },
+    );
+  }
+}
+
 function getNavigation(t) {
   const { rel, targetMapping, targetPolicy, related } = navigationTarget(t);
   if (rel.many !== false) return getCollection(t, { mapping: targetMapping, policy: targetPolicy, ids: related });
   const params = pick(t.url.searchParams, ['$select', '$expand']);
   targetPolicy.assertQuery(params);
+  // Without $select the related row is a select-less read (hosted session F1, API-02c, two runs).
+  if (!params.has('$select') && !targetPolicy.fields.includes('*')) targetPolicy.assertSelectLess();
   // The related table needs read permission, as for $expand and collection navigations.
   assertExpandReadable(t, t.mapping, null, [
     { navigation: t.target.segment, expand: parseExpand(params.get('$expand')) },
@@ -1665,15 +2150,9 @@ function getNavigation(t) {
   return send(t, 200, entityResponse(t, targetMapping, targetPolicy, related[0], params));
 }
 
+// A navigation's $count is refused in routeTarget; a segment that names no navigation is not a resource.
 function getNavigationCount(t) {
-  if (!t.mapping.relationships?.[t.target.segment]) throw notFound(t.target.segment);
-  const { rel, targetMapping, targetPolicy, related } = navigationTarget(t);
-  // The count reads the related table: refused where the navigation read is refused, before the cardinality answers.
-  assertExpandReadable(t, t.mapping, null, [{ navigation: t.target.segment, expand: [] }]);
-  if (rel.many === false) throw notFound('$count');
-  if (t.url.searchParams.has('$filter'))
-    return getCount(t, { mapping: targetMapping, policy: targetPolicy, ids: related });
-  return sendText(t, Math.min(related.length, WEBAPI_COUNT_LIMIT));
+  throw notFound(t.target.segment);
 }
 
 async function getProperty(t, raw) {
@@ -2033,15 +2512,14 @@ async function putProperty(t) {
 
 // ---- file and image columns (Learn: power-pages/configure/file-column#web-api; the binary contract is Dataverse's,
 // power-apps/developer/data-platform/file-column-data): PUT or PATCH /_api/<set>(id)/<column> with the bytes as the body
-// and the name in x-ms-file-name (header or query), GET /_api/<set>(id)/<column>/$value (size=full|thumbnail for images),
+// and the name in x-ms-file-name (header or query), GET /_api/<set>(id)/<column>/$value (the thumbnail of an image, or size=full),
 // DELETE /_api/<set>(id)/<column>. The portal checks come first: the column enabled in Webapi/<table>/fields, its column
 // permission, and the table permission (Read to download, Write to upload or delete) on the row. The bytes then go through
 // the organization's file seam (store.recordPipeline.fileContentInternal, dataverse-files.mjs): column MaxSizeInKB, image
 // sniffing, storage routing, the 404 of an empty file column and the 204 of an empty image, as on /api/data.
 // The observed file-range profile is opt-in. Full downloads answer 200 and partial ones 206; upload or delete answer 204.
 // A download is never served as its stored type on the portal origin (an uploaded .html would run as the reader):
-// application/octet-stream, attachment disposition, nosniff, and the stored type in the mimetype header with the
-// x-ms-file-name and x-ms-file-size headers /api/data sends. An upload without a name keeps the stored file's name, else
+// application/octet-stream with nosniff (sendFileColumnResponse). An upload without a name keeps the stored file's name, else
 // <column>.bin (seam defaultName).
 const FILE_BODY_LIMIT = 128 * 1024 * 1024; // Learn: a single-request Web API upload is under 128 MB.
 const fileKind = (t) =>
@@ -2067,8 +2545,102 @@ function observedFileRange(t) {
 
 function fileDownloadRange(t, range) {
   if (typeof range !== 'string') return null;
+  if (!observedFileRange(t)) return range;
+  assertObservedFileRange(range);
   // The observed portal interprets bytes=-N as the inclusive range from 0 to N.
-  return observedFileRange(t) ? range.trim().replace(/^bytes=-(\d+)$/, 'bytes=0-$1') : range;
+  return range.trim().replace(/^bytes=-(\d+)$/, 'bytes=0-$1');
+}
+
+// The Range refusals of an observed portal file download (hosted session F1 API-04g, parity/portal-file-range-a.json and
+// -b.json, 13 cases identical across runs): a header the front end cannot parse answers its own 400 page
+// (sendFrontEndBadRange); more than one range answers the unsatisfiable-range 416 of a start past the end; a range whose
+// end precedes its start answers 500 9004010A. Each refusal comes before the bytes are read.
+const RANGE_SPEC = /^(\d*)-(\d*)$/;
+function assertObservedFileRange(range) {
+  const set = /^bytes=(.*)$/i.exec(range.trim());
+  const specs = set ? set[1].split(',').map((spec) => RANGE_SPEC.exec(spec.trim())) : [null];
+  if (specs.some((spec) => !spec || (spec[1] === '' && spec[2] === '')))
+    throw new DataError('The Range header cannot be parsed.', 400, 'FrontEndBadRange');
+  if (specs.length > 1)
+    throw new DataError('A portal file download answers one range.', 416, 'InvalidRange', {
+      innerCode: '0x80090000',
+      exactLength: true,
+    });
+  const [, first, last] = specs[0];
+  if (first !== '' && last !== '' && Number(last) < Number(first))
+    throw new DataError('The range ends before it starts.', 500, 'WebApiFileRangeReversed', { exactLength: true });
+}
+
+// The bytes of an observed portal file download: a range starting past the end answers the captured 416 with its length.
+async function observedRangeContent(t, read) {
+  try {
+    return await read();
+  } catch (error) {
+    if (observedFileRange(t) && error?.code === 'InvalidRange' && Number(error.status) === 416)
+      error.details = { ...error.details, exactLength: true };
+    throw error;
+  }
+}
+
+// The front end's own answer to an unparseable Range header (hosted session F1 API-04g, runs a and b: these 339 bytes,
+// no header but its type, length and date).
+const FRONT_END_BAD_HEADER =
+  '<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN""http://www.w3.org/TR/html4/strict.dtd">\r\n' +
+  '<HTML><HEAD><TITLE>Bad Request</TITLE>\r\n' +
+  '<META HTTP-EQUIV="Content-Type" Content="text/html; charset=us-ascii"></HEAD>\r\n' +
+  '<BODY><h2>Bad Request - Invalid Header</h2>\r\n' +
+  '<hr><p>HTTP Error 400. The request has an invalid header name.</p>\r\n' +
+  '</BODY></HTML>\r\n';
+function sendFrontEndBadRange(t) {
+  t.res.writeHead(400, {
+    'content-type': 'text/html; charset=us-ascii',
+    'content-length': String(Buffer.byteLength(FRONT_END_BAD_HEADER)),
+    'x-sim-error-code': 'FrontEndBadRange',
+  });
+  return t.res.end(FRONT_END_BAD_HEADER);
+}
+
+// The portal has no chunked upload: the handshake (x-ms-transfer-mode: chunked) answers 500 9004010A "An unexpected
+// error occurred while processing the request" (hosted session F1, API-04c, two runs); /api/data keeps its chunked
+// sessions (dataverse-files.mjs).
+function assertSingleRequestUpload(method, transferMode) {
+  if (['PUT', 'PATCH'].includes(method) && transferMode?.trim().toLowerCase() === 'chunked')
+    throw new DataError(
+      'The portal Web API does not support chunked file uploads; send the file in one request.',
+      500,
+      'WebApiChunkedUploadUnsupported',
+    );
+}
+
+// An image read names size=full or nothing (the thumbnail); size=thumbnail is refused (hosted session F1 files, runs a
+// and b: 400 9004010D, cdscode 0x80060888).
+function assertImageSizeSupported(t, download) {
+  if (download && fileKind(t) === 'image' && t.url.searchParams.get('size') === 'thumbnail')
+    throw new DataError('The size parameter value thumbnail is not supported.', 400, 'PortalImageSizeUnsupported', {
+      innerCode: '0x80060888',
+    });
+}
+
+// The entity tag of a ranged download: the stored file id's hash, as a replacement uses a new file id even when it keeps
+// the filename and byte count. An If-Match naming another tag refuses the download. Null without a range.
+function fileDownloadEtag(row, column, range, ifMatch) {
+  if (range === null) return null;
+  const etag = `"${createHash('sha256').update(String(row[column])).digest('hex')}"`;
+  const match = ifMatch();
+  if (match && match !== '*' && !match.split(',').some((value) => value.trim() === etag))
+    throw new DataError('The file changed during the download.', 412, 'PreconditionFailed');
+  return etag;
+}
+
+// The file transfer on the Web API span: the column, the operation and (once known) the file's name, size and type.
+function recordFileTransfer(t, download, answer, fileName) {
+  t.span?.set({
+    fileColumn: t.target.segment,
+    transfer: transferOf(download, t.method),
+    ...(answer.file
+      ? { fileName: answer.file.name, fileSize: answer.file.size, mimetype: answer.file.mimeType }
+      : { fileName: fileName ?? undefined }),
+  });
 }
 
 async function fileColumnRequest(t) {
@@ -2087,44 +2659,49 @@ async function fileColumnRequest(t) {
   // The table permission check above is the grant; the profile only carries it into the seam's own check.
   const principal = filePrincipal(t, mapping, operation);
   const header = (name) => (typeof req.headers?.[name] === 'string' ? req.headers[name] : null);
-  const range = download ? fileDownloadRange(t, header('range')) : null;
-  // A replacement uses a new file id even when it keeps the filename and byte count.
-  const etag = range === null ? null : `"${createHash('sha256').update(String(row[target.segment])).digest('hex')}"`;
-  const match = etag && header('if-match');
-  if (match && match !== '*' && !match.split(',').some((value) => value.trim() === etag))
-    throw new DataError('The file changed during the download.', 412, 'PreconditionFailed');
+  assertSingleRequestUpload(method, header('x-ms-transfer-mode'));
+  assertImageSizeSupported(t, download);
+  let range;
+  try {
+    range = download ? fileDownloadRange(t, header('range')) : null;
+  } catch (error) {
+    if (error?.code === 'FrontEndBadRange') return sendFrontEndBadRange(t);
+    throw error;
+  }
+  const etag = fileDownloadEtag(row, target.segment, range, () => header('if-match'));
   const fileName = header('x-ms-file-name') ?? url.searchParams.get('x-ms-file-name');
   // A file name is a name, never a path: separators, NUL and "."/".." are refused before anything is read or stored.
   // The platform's code and wording for such a name are a guess.
   assertFileName(fileName);
-  const answer = await store.recordPipeline.fileContentInternal({
-    principal,
-    entity: mapping.logicalName,
-    id: row[mapping.idColumn],
-    column: target.segment,
-    operation: transferOf(download, method),
-    size: download && url.searchParams.get('size') === 'full' ? 'full' : null,
-    range,
-    content: download || method === 'DELETE' ? null : await rawBody(req),
-    fileName,
-    contentType: header('content-type'),
-    defaultName: true,
-    portalImage: true,
-  });
-  // The file transfer on the Web API span: the column, the operation and (once known) the file's name, size and type.
-  t.span?.set({
-    fileColumn: target.segment,
-    transfer: transferOf(download, method),
-    ...(answer.file
-      ? { fileName: answer.file.name, fileSize: answer.file.size, mimetype: answer.file.mimeType }
-      : { fileName: fileName ?? undefined }),
-  });
-  return sendFileColumnResponse(t, answer, etag);
+  const content = download || method === 'DELETE' ? null : await rawBody(req);
+  const answer = await observedRangeContent(t, () =>
+    store.recordPipeline.fileContentInternal({
+      principal,
+      entity: mapping.logicalName,
+      id: row[mapping.idColumn],
+      column: target.segment,
+      operation: transferOf(download, method),
+      size: download && url.searchParams.get('size') === 'full' ? 'full' : null,
+      range,
+      content,
+      fileName,
+      contentType: header('content-type'),
+      defaultName: true,
+      portalImage: true,
+    }),
+  );
+  recordFileTransfer(t, download, answer, fileName);
+  const thumbnail = download && fileKind(t) === 'image' && url.searchParams.get('size') !== 'full';
+  return sendFileColumnResponse(t, answer, etag, { thumbnail });
 }
 
-function sendFileColumnResponse(t, answer, etag) {
+// The download headers of hosted session F1 (files runs a and b): application/octet-stream, inline with the stored name
+// (`inline; filename=<name>`) and x-ms-file-name; an image thumbnail carries neither. Neither the stored type
+// (mimetype) nor x-ms-file-size is sent. Mirage adds x-content-type-options: nosniff, which hosted does not send, so a
+// browser never sniffs an uploaded page out of the octet-stream body on the portal origin (mirage/docs/dataverse-parity.md).
+function sendFileColumnResponse(t, answer, etag, { thumbnail = false } = {}) {
   if (answer.statusCode === 204) return sendNoContent(t);
-  const { name, size, mimeType } = answer.file;
+  const { name } = answer.file;
   const body = Buffer.from(answer.body['$content'], 'base64');
   const partial = answer.statusCode === 206;
   const observed = observedFileRange(t);
@@ -2133,17 +2710,19 @@ function sendFileColumnResponse(t, answer, etag) {
     delete headers.etag;
     delete headers['accept-ranges'];
   }
-  const expose = ['mimetype', 'x-ms-file-name', 'x-ms-file-size'];
+  const expose = [];
   if (partial) expose.push('x-ms-chunk-size', 'content-range');
   if (partial && !observed) expose.push('etag');
   t.res.writeHead(answer.statusCode, {
     ...headers,
     'content-type': 'application/octet-stream',
-    'content-disposition': contentDisposition('attachment', name),
+    ...(thumbnail
+      ? {}
+      : {
+          'content-disposition': contentDisposition('inline', name, { tokenFilename: true }),
+          'x-ms-file-name': fileNameHeader(name),
+        }),
     'x-content-type-options': 'nosniff',
-    mimetype: mimeType,
-    'x-ms-file-name': fileNameHeader(name),
-    'x-ms-file-size': String(size),
     ...(observed ? { 'content-length': String(body.byteLength) } : { 'accept-ranges': 'bytes' }),
     ...(partial
       ? {
@@ -2152,7 +2731,7 @@ function sendFileColumnResponse(t, answer, etag) {
           ...(!observed ? { etag } : {}),
         }
       : {}),
-    'access-control-expose-headers': expose.join(', '),
+    ...(expose.length ? { 'access-control-expose-headers': expose.join(', ') } : {}),
   });
   return t.res.end(body);
 }
@@ -2183,16 +2762,50 @@ async function deleteProperty(t) {
   return sendNoContent(t);
 }
 
+// On the enhanced data model the web role memberships are the N:N powerpagecomponent_mspp_webrole_contact; a $ref through
+// mspp_webrole_contact or adx_webrole_contact (from a contact or a web role, whatever the Web API settings) answers
+// 400 9004010A on a hosted site (session F1, summary-F1.md AUTH-03c, two runs without and two with settings).
+const LEGACY_WEB_ROLE_NAVIGATIONS = new Set(['mspp_webrole_contact', 'adx_webrole_contact']);
+function assertWebRoleNavigation(deps, target) {
+  if (target.kind !== 'ref' || deps.portal?.format !== 'enhanced' || !LEGACY_WEB_ROLE_NAVIGATIONS.has(target.segment))
+    return;
+  throw new DataError(
+    `${target.segment} is not a navigation property of the enhanced data model.`,
+    400,
+    'UndeclaredNavigationProperty',
+    { phase: 'payload', navigation: target.segment },
+  );
+}
+// The web role membership intersect is export-derived (site-tables.mjs). A hosted site checks the association rights of a
+// DELETE $ref first and answers 204 without a backend call when the link is absent (session F1, AUTH-03c).
+const membershipIntersect = (store, rel) => Boolean(rel?.intersect && store.siteMembership?.(rel.intersect.entity));
+function membershipLinked(store, id, rel, targetId) {
+  const link = rel.intersect;
+  return store
+    .tableRows(link.entity)
+    .some(
+      (edge) =>
+        String(edge[link.from] ?? '').toLowerCase() === String(id).toLowerCase() &&
+        String(edge[link.to] ?? '').toLowerCase() === String(targetId).toLowerCase(),
+    );
+}
+
+// Native order for a collection-valued POST $ref (captured 2026-11-23): the association's table permissions and Write
+// on the request's row are refused before the navigation's Web API field check. A DELETE of a derived web role
+// membership checks its association rights first too (assertMembershipRemoval).
+function fieldCheckDeferred({ store, target, method }, rel) {
+  if (!rel) return false;
+  if (method === 'DELETE') return membershipIntersect(store, rel);
+  return rel.many !== false && target.targetKey == null && method === 'POST';
+}
+
 /** $ref: POST/DELETE on collection-valued, PUT/DELETE on single-valued navigation properties. */
 async function reference(t) {
   const { mapping, policy, store, target, method } = t;
   const navigation = target.segment;
   if (!['POST', 'PUT', 'DELETE'].includes(method)) throw methodNotAllowed(method, '$ref');
   const rel = mapping.relationships?.[navigation];
-  // Native order for a collection-valued POST $ref (captured 2026-11-23): the association's table permissions and Write
-  // on the request's row are refused before the navigation's Web API field check.
-  const collectionPost = rel && rel.many !== false && target.targetKey == null && method === 'POST';
-  if (!collectionPost) policy.assertWrite({ [`${navigation}@odata.bind`]: null }, 'update');
+  if (!fieldCheckDeferred(t, rel)) policy.assertWrite({ [`${navigation}@odata.bind`]: null }, 'update');
   if (!rel)
     throw new DataError(
       `Relationship ${navigation} is not mapped for ${mapping.logicalName}.`,
@@ -2248,6 +2861,20 @@ async function reference(t) {
     target.targetKey != null
       ? locate(t, targetMapping, target.targetKey).id
       : referenced(t.url.searchParams.get('$id') ?? undefined, '$id').id;
+  if (!assertMembershipRemoval(t, { mapping, id, rel, navigation, targetId })) return sendNoContent(t);
   await portalWrite(t, () => portalAssociation(t, mapping, id, navigation, targetId, false));
   return sendNoContent(t);
+}
+
+// A DELETE $ref of a derived web role membership: the association rights, then (when the link exists) the navigation field
+// check reference() deferred. False when there is nothing to remove.
+function assertMembershipRemoval(t, { mapping, id, rel, navigation, targetId }) {
+  if (!membershipIntersect(t.store, rel)) return true;
+  t.store.authorizedAssociation(mapping.logicalName, id, navigation, targetId, t.deps.identity, {
+    portalRequest: true,
+    associationOnly: true,
+  });
+  if (!membershipLinked(t.store, id, rel, targetId)) return false;
+  t.policy.assertWrite({ [`${navigation}@odata.bind`]: null }, 'update');
+  return true;
 }

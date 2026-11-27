@@ -5,6 +5,7 @@ import {
   AUTH_COOKIE,
   authCookieName,
   authRoute,
+  cookieRequestHeader,
   createAuthSessions,
   parseCookies,
   returnUrlParameter,
@@ -145,16 +146,31 @@ async function simulator(t, initial = initialState(), { clock, settings = [], id
       ...init,
       headers: { 'sec-fetch-site': 'same-origin', ...(cookie ? { cookie } : {}), ...headers },
     });
-  const signIn = async (contactId, returnUrl = '/') => {
+  // The browser's request token and the binding cookie it pairs with (tokens pair with the browser by default).
+  const signInPage = async (cookie) => {
+    const page = await browser('/_layout/tokenhtml', { cookie });
+    return { token: formToken(await page.text()), binding: bindingCookie(page) };
+  };
+  // `cookie`: the browser's earlier cookies, for a browser the configured identity would otherwise sign in.
+  const signIn = async (contactId, returnUrl = '/', cookie) => {
+    const { token, binding } = await signInPage(cookie);
     const response = await browser('/SignIn', {
       method: 'POST',
+      cookie: [cookie, binding].filter(Boolean).join('; '),
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ contactId, ReturnUrl: returnUrl }),
+      body: new URLSearchParams({ contactId, ReturnUrl: returnUrl, __RequestVerificationToken: token }),
     });
     return { response, cookie: response.headers.get('set-cookie')?.split(';')[0] ?? null };
   };
-  return { app, csrf: state.csrf, browser, signIn };
+  return { app, csrf: state.csrf, browser, signIn, signInPage };
 }
+
+const formToken = (html) => /name="__RequestVerificationToken" type="hidden" value="([^"]+)"/.exec(html)?.[1];
+const bindingCookie = (response) =>
+  response.headers
+    .getSetCookie()
+    .find((cookie) => cookie.includes('-request-binding-'))
+    ?.split(';')[0];
 
 const text = async (response) => response.text();
 const field = (html, id) => new RegExp(`id="${id}">([^<]*)<`).exec(html)?.[1] ?? null;
@@ -383,8 +399,9 @@ test('portal requests are anonymous without a session cookie, whoever the client
   );
 });
 
+// @test-kind contract+observation: the local sign-in page is designed runtime behaviour; an anonymous LogOff's sign-in redirect is hosted session F4 (paqvilo-developer hosted-f4 accounts lifecycle runs a and b).
 test('the sign-in page renders in the site shell; sign-in validates personas and return URLs; sign-out ends the session', async (t) => {
-  const { browser, signIn, csrf } = await simulator(t);
+  const { browser, signIn, signInPage, csrf } = await simulator(t);
   const hop = await browser('/en-US/signin?ReturnUrl=%2Fmembers%2F');
   assert.equal(hop.status, 302);
   assert.equal(hop.headers.get('location'), '/signin?ReturnUrl=%2Fmembers%2F');
@@ -415,8 +432,9 @@ test('the sign-in page renders in the site shell; sign-in validates personas and
   const button = /name="contactId" value="([^"]*)">Sign in<\/button><strong>Alex Local/.exec(html)[1];
   const submitted = await browser(action, {
     method: 'POST',
+    cookie: bindingCookie(page),
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ ReturnUrl: hidden, contactId: button }),
+    body: new URLSearchParams({ ReturnUrl: hidden, contactId: button, __RequestVerificationToken: formToken(html) }),
   });
   assert.equal(submitted.status, 302);
   assert.equal(submitted.headers.get('location'), '/members/');
@@ -469,10 +487,12 @@ test('the sign-in page renders in the site shell; sign-in validates personas and
     assert.match(await text(rejected.response), /Choose an active local persona to sign in\./);
   }
   // The rendered page's form posts contactId and ReturnUrl (URL-encoded); JSON works too.
+  const jsonForm = await signInPage();
   const posted = await browser('/SignIn', {
     method: 'POST',
+    cookie: jsonForm.binding,
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ contactId: 'blair', ReturnUrl: '/members/' }),
+    body: JSON.stringify({ contactId: 'blair', ReturnUrl: '/members/', __RequestVerificationToken: jsonForm.token }),
   });
   assert.equal(posted.status, 302);
   assert.equal(posted.headers.get('location'), '/members/');
@@ -502,7 +522,8 @@ test('the sign-in page renders in the site shell; sign-in validates personas and
   for (const cookieHeader of [undefined, signedOut]) {
     const anonymous = await browser('/Account/Login/LogOff?returnUrl=%2F', { cookie: cookieHeader });
     assert.equal(anonymous.status, 302);
-    assert.equal(anonymous.headers.get('location'), '/signin?ReturnUrl=%2FAccount%2FLogin%2FLogOff');
+    // Hosted session F4 (paqvilo-developer hosted-f4 accounts lifecycle runs a and b): the log-off path as it is.
+    assert.equal(anonymous.headers.get('location'), '/signin?ReturnUrl=/Account/Login/LogOff');
     assert.equal(anonymous.headers.get('set-cookie'), null);
   }
 });
@@ -640,7 +661,7 @@ test('configured fixed application session expiry survives a web-role change', a
   assert.equal((await browser('/members/', { cookie: updatedCookie })).status, 302);
   assert.equal(field(await text(await browser('/', { cookie: updatedCookie })), 'user'), 'anonymous');
   assert.equal((await browser('/members/')).status, 200, 'cookie-less tooling still uses its configured identity');
-  assert.equal((await browser('/members/', { cookie: (await signIn('alex')).cookie })).status, 200);
+  assert.equal((await browser('/members/', { cookie: (await signIn('alex', '/', cookie)).cookie })).status, 200);
 });
 
 // @test-kind security+contract: clock-bound browser renewal preserves the paired owner and never revives a rejected session.
@@ -811,4 +832,151 @@ test('simulator.signIn and the shared helper give tools a session; admin operati
   // /_sim/api administration requests use the configured persona.
   const status = await (await fetch(app.url + '/__sim/api/status')).json();
   assert.equal(status.identity.contactId, 'alex');
+});
+
+// A browser of the test runtime with a cookie jar: its binding, session and anti-forgery cookies follow its requests.
+function browserJar(browser) {
+  const jar = new Map();
+  const request = async (target, init = {}) => {
+    const response = await browser(target, {
+      ...init,
+      cookie: [...jar].map(([name, value]) => `${name}=${value}`).join('; ') || undefined,
+    });
+    for (const line of response.headers.getSetCookie()) {
+      const [pair] = line.split(';');
+      jar.set(pair.slice(0, pair.indexOf('=')), pair.slice(pair.indexOf('=') + 1));
+    }
+    return response;
+  };
+  const token = async () => formToken(await (await request('/_layout/tokenhtml')).text());
+  return { jar, request, token };
+}
+
+// @test-kind security+observation: hosted session F4 (paqvilo-developer hosted-f4 swap runs a and b): each browser's token is refused in another browser (both directions) and after LogOff, each with its own 401 90040107 text, a token is reusable, reads ignore it, and the anti-forgery cookie is a SameSite=Lax session cookie.
+test('request tokens pair with one browser and its sign-in by default', async (t) => {
+  const { browser } = await simulator(t);
+  const signedIn = async () => {
+    const visitor = browserJar(browser);
+    const signIn = await visitor.request('/SignIn', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        contactId: 'alex',
+        ReturnUrl: '/',
+        __RequestVerificationToken: await visitor.token(),
+      }),
+    });
+    assert.equal(signIn.status, 302);
+    return visitor;
+  };
+  const first = await signedIn();
+  const second = await signedIn();
+  const layout = await first.request('/_layout/tokenhtml');
+  const cookies = layout.headers.getSetCookie();
+  assert.ok(
+    cookies.some((cookie) =>
+      /^__RequestVerificationToken=[^;]+; path=\/; secure; HttpOnly; SameSite=Lax$/.test(cookie),
+    ),
+  );
+  const firstToken = formToken(await layout.text());
+  const secondToken = await second.token();
+  assert.notEqual(firstToken, secondToken);
+  const write = (visitor, token) =>
+    visitor.request('/_api/sample_items', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...(token ? { __requestverificationtoken: token } : {}) },
+      body: JSON.stringify({ sample_name: 'Invented' }),
+    });
+  const refusal = async (response) => {
+    assert.equal(response.status, 401);
+    const { error } = await response.json();
+    assert.equal(error.code, '90040107');
+    return error.message;
+  };
+  // An accepted token, also when reused, reaches the table permission check (Member may only read).
+  for (let attempt = 0; attempt < 2; attempt++) assert.equal((await write(first, firstToken)).status, 403);
+  assert.equal((await write(second, secondToken)).status, 403);
+  for (const [visitor, token] of [
+    [first, secondToken],
+    [second, firstToken],
+  ])
+    assert.equal(
+      await refusal(await write(visitor, token)),
+      'Request validation failed : The anti-forgery cookie token and form field token do not match.',
+    );
+  assert.equal(
+    await refusal(await write(first)),
+    'Request validation failed : The required anti-forgery form field "__RequestVerificationToken" is not present.',
+  );
+  assert.match(
+    await refusal(await write(first, firstToken.slice(0, 32))),
+    /^Request validation failed : The anti-forgery token could not be decrypted\./,
+  );
+  // A read ignores the token.
+  const read = await first.request('/_api/sample_items?$select=sample_name', {
+    headers: { __requestverificationtoken: secondToken },
+  });
+  assert.equal(read.status, 200);
+  await read.arrayBuffer();
+  const logOff = await first.request('/Account/Login/LogOff');
+  assert.equal(logOff.status, 302);
+  assert.equal(logOff.headers.get('location'), '/');
+  assert.equal(
+    await refusal(await write(first, firstToken)),
+    'Request validation failed : The provided anti-forgery token was meant for a different claims-based user than the current user.',
+  );
+  // The binding is a browser-session cookie.
+  const binding = [...first.jar.keys()].find((cookie) => cookie.includes('-request-binding-'));
+  assert.ok(binding);
+});
+
+// @test-kind observation: hosted session F4 (paqvilo-developer hosted-f4 accounts cookies and renewal runs a and b): without lifetime settings the application cookie is a browser-session cookie with a 24-hour sliding lifetime, and a portal Web API read alone renews it after half its lifetime, as a page load does.
+test('the default application cookie lifetime is 24 hours sliding and a portal Web API read renews it', async (t) => {
+  const clock = fixedClock();
+  const { browser, signIn } = await simulator(t, initialState(), { clock });
+  const { response, cookie } = await signIn('alex', '/members/');
+  assert.doesNotMatch(response.headers.get('set-cookie'), /Expires|Max-Age/i, 'persistent only with remember-me');
+  const name = cookie.split('=')[0];
+  const renewal = (answer) => answer.headers.getSetCookie().find((line) => line.startsWith(name + '='));
+  const day = 24 * 60 * 60 * 1000;
+  clock.advance(day / 2 - 1);
+  const early = await browser('/_api/sample_items?$select=sample_name', { cookie });
+  assert.equal(early.status, 200);
+  assert.equal(renewal(early), undefined, 'no renewal before half the lifetime');
+  await early.arrayBuffer();
+  clock.advance(2);
+  const read = await browser('/_api/sample_items?$select=sample_name', { cookie });
+  assert.equal(read.status, 200);
+  const renewed = renewal(read)?.split(';')[0];
+  assert.ok(renewed, 'the Web API read renews the application cookie');
+  await read.arrayBuffer();
+  clock.advance(day / 2);
+  assert.equal((await browser('/members/', { cookie })).status, 302, 'the original cookie ends after 24 hours');
+  const members = await browser('/members/', { cookie: renewed });
+  assert.equal(members.status, 200, 'the renewed cookie slides');
+  await members.arrayBuffer();
+});
+
+// @test-kind security+observation: Microsoft.Owin cookie chunking as hosted session F4 sent it (paqvilo-developer hosted-f4 accounts cookies runs a and b: name=chunks:2, C1 of 4021 characters, every part with the cookie's attributes); a missing or altered chunk is no session.
+test('an application cookie longer than a cookie is sent and read in chunks', () => {
+  const sessions = createAuthSessions({ secret: Buffer.from('fixed secret for chunking'), name: 'invented-auth' });
+  const roles = Array.from({ length: 150 }, (_, index) => `Invented role ${String(index).padStart(3, '0')} name`);
+  const headers = sessions.cookie({ contactId: 'alex', roles });
+  assert.ok(Array.isArray(headers));
+  const [main, ...chunks] = headers;
+  assert.equal(main, `invented-auth=chunks:${chunks.length}; Path=/; HttpOnly; SameSite=Lax`);
+  const size = 4050 - 'invented-auth='.length - 3;
+  chunks.forEach((line, index) => {
+    assert.ok(line.startsWith(`invented-authC${index + 1}=`));
+    assert.ok(line.endsWith('; Path=/; HttpOnly; SameSite=Lax'));
+    const value = line.split(';')[0].slice(line.indexOf('=') + 1);
+    if (index < chunks.length - 1) assert.equal(value.length, size);
+    else assert.ok(value.length <= size);
+  });
+  assert.deepEqual(sessions.read(cookieRequestHeader(headers)), { contactId: 'alex', roles });
+  assert.equal(sessions.read(cookieRequestHeader(headers.slice(0, -1))), null, 'a missing chunk');
+  const altered = [...headers];
+  altered[1] = altered[1].replace(/=(.)/, (_match, first) => '=' + (first === 'a' ? 'b' : 'a'));
+  assert.equal(sessions.read(cookieRequestHeader(altered)), null, 'an altered chunk');
+  assert.equal(typeof sessions.cookie({ contactId: 'alex', roles: roles.slice(0, 3) }), 'string');
 });

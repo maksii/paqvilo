@@ -1,0 +1,878 @@
+{
+  "schema": "paqvilo.parity-cases/1",
+  "surface": "portal-webapi",
+  "suite": "hosted-f1-nav-followup-throw",
+  "oracle": {
+    "kind": "native",
+    "name": "Power Pages portal Web API (/_api)",
+    "version": "hosted Power Pages trial site, 2026-11-27",
+    "scope": "The same reads as the hosted-f1-nav-followup suite with the custom provider throwing (the session's failure switch on). Runs a and b, made one after the other."
+  },
+  "captures": [
+    {
+      "id": "hosted-f1-a-hosted-f1-nav-followup-throw",
+      "sha256": "ee218ae88ecd2d308b7acf5455585f848526bf4fde729ccada8e34062121617e",
+      "capturedAt": "2026-11-27"
+    },
+    {
+      "id": "hosted-f1-b-hosted-f1-nav-followup-throw",
+      "sha256": "790e6cb0053e0425b5e0e415aa7f18e91e310c3c55a00b7498cf972b4b924486",
+      "capturedAt": "2026-11-27"
+    }
+  ],
+  "cases": [
+    {
+      "id": "nav1:baseline-roots",
+      "input": {
+        "method": "GET",
+        "site": "nav",
+        "provider": "throwing",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_roots?$select=pqf1_name&$orderby=pqf1_name"
+      },
+      "output": {
+        "status": 200,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=200, correlationId; desc=<id>"
+        },
+        "body": {
+          "context": "/_api/$metadata#pqf1_roots(pqf1_name)",
+          "total": -1,
+          "nextLink": false,
+          "rows": [
+            {
+              "pqf1_name": "R1",
+              "pqf1_rootid": "f1f1f1f1-0000-4000-8000-000000006001"
+            },
+            {
+              "pqf1_name": "R2",
+              "pqf1_rootid": "f1f1f1f1-0000-4000-8000-000000006002"
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "nav1:baseline-vrows",
+      "input": {
+        "method": "GET",
+        "site": "nav",
+        "provider": "throwing",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_vrows?$select=pqf1_name,pqf1_code,pqf1_query"
+      },
+      "output": {
+        "status": 400,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=400, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80040265"
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "nav1:lookup-filter",
+      "input": {
+        "method": "GET",
+        "site": "nav",
+        "provider": "throwing",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_roots?$select=pqf1_name&$filter=pqf1_vrow%2Fpqf1_code%20eq%20'x'"
+      },
+      "output": {
+        "status": 500,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=500, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80044150"
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "nav1:collection-any",
+      "input": {
+        "method": "GET",
+        "site": "nav",
+        "provider": "throwing",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_roots?$select=pqf1_name&$filter=pqf1_root_pqf1_root_pqf1_vrow%2Fany(e%3Ae%2Fpqf1_code%20eq%20'x')"
+      },
+      "output": {
+        "status": 500,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=500, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80044150"
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "nav1:collection-all",
+      "input": {
+        "method": "GET",
+        "site": "nav",
+        "provider": "throwing",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_roots?$select=pqf1_name&$filter=pqf1_root_pqf1_root_pqf1_vrow%2Fall(e%3Ae%2Fpqf1_code%20eq%20'x')"
+      },
+      "output": {
+        "status": 500,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=500, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80044150"
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "nav1:expand-lookup",
+      "input": {
+        "method": "GET",
+        "site": "nav",
+        "provider": "throwing",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_roots?$select=pqf1_name&$expand=pqf1_vrow($select=pqf1_code,pqf1_query)"
+      },
+      "output": {
+        "status": 200,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=200, correlationId; desc=<id>"
+        },
+        "body": {
+          "context": "/_api/$metadata#pqf1_roots(pqf1_name,pqf1_vrow(pqf1_code,pqf1_query))",
+          "total": -1,
+          "nextLink": false,
+          "rows": [
+            {
+              "pqf1_name": "R1",
+              "pqf1_rootid": "f1f1f1f1-0000-4000-8000-000000006001",
+              "pqf1_vrow": null
+            },
+            {
+              "pqf1_name": "R2",
+              "pqf1_rootid": "f1f1f1f1-0000-4000-8000-000000006002",
+              "pqf1_vrow": null
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "nav1:expand-collection",
+      "input": {
+        "method": "GET",
+        "site": "nav",
+        "provider": "throwing",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_roots?$select=pqf1_name&$expand=pqf1_root_pqf1_root_pqf1_vrow($select=pqf1_code,pqf1_query)"
+      },
+      "output": {
+        "status": 400,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=400, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80040265"
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "nav1:keyed-collection-nav",
+      "input": {
+        "method": "GET",
+        "site": "nav",
+        "provider": "throwing",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_roots(f1f1f1f1-0000-4000-8000-000000006001)/pqf1_root_pqf1_root_pqf1_vrow?$select=pqf1_code,pqf1_query"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute All Columns in table pqf1_root is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "glob:count-segment",
+      "input": {
+        "method": "GET",
+        "site": "nav",
+        "provider": "throwing",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_globs/$count"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute _pqf1_root_value in table pqf1_glob is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "glob:apply-groupby",
+      "input": {
+        "method": "GET",
+        "site": "nav",
+        "provider": "throwing",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_globs?$apply=groupby((pqf1_name))"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute _pqf1_root_value in table pqf1_glob is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "glob:apply-aggregate-count",
+      "input": {
+        "method": "GET",
+        "site": "nav",
+        "provider": "throwing",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_globs?$apply=aggregate(%24count%20as%20c)"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute _pqf1_root_value in table pqf1_glob is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "glob:property",
+      "input": {
+        "method": "GET",
+        "site": "nav",
+        "provider": "throwing",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_globs(f1f1f1f1-0000-4000-8000-000000006011)/pqf1_name"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute All Columns in table pqf1_glob is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "glob:property-value",
+      "input": {
+        "method": "GET",
+        "site": "nav",
+        "provider": "throwing",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_globs(f1f1f1f1-0000-4000-8000-000000006011)/pqf1_name/$value"
+      },
+      "output": {
+        "status": 200,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": null
+        },
+        "text": "G1"
+      },
+      "volatile": []
+    },
+    {
+      "id": "glob:select-less",
+      "input": {
+        "method": "GET",
+        "site": "nav",
+        "provider": "throwing",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_globs"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute _pqf1_root_value in table pqf1_glob is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "glob:keyed-select-less",
+      "input": {
+        "method": "GET",
+        "site": "nav",
+        "provider": "throwing",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_globs(f1f1f1f1-0000-4000-8000-000000006011)"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute _pqf1_root_value in table pqf1_glob is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "glob:select",
+      "input": {
+        "method": "GET",
+        "site": "nav",
+        "provider": "throwing",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_globs?$select=pqf1_name"
+      },
+      "output": {
+        "status": 200,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=200, correlationId; desc=<id>"
+        },
+        "body": {
+          "context": "/_api/$metadata#pqf1_globs(pqf1_name)",
+          "total": -1,
+          "nextLink": false,
+          "rows": [
+            {
+              "pqf1_globid": "f1f1f1f1-0000-4000-8000-000000006011",
+              "pqf1_name": "G1"
+            },
+            {
+              "pqf1_globid": "f1f1f1f1-0000-4000-8000-000000006012",
+              "pqf1_name": "G2"
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "glob:select-lookup-value",
+      "input": {
+        "method": "GET",
+        "site": "nav",
+        "provider": "throwing",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_globs?$select=pqf1_name,_pqf1_root_value"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute _pqf1_root_value in table pqf1_glob is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "root:count-segment",
+      "input": {
+        "method": "GET",
+        "site": "nav",
+        "provider": "throwing",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_roots/$count"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute _pqf1_contact_value in table pqf1_root is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "root:apply-aggregate-count",
+      "input": {
+        "method": "GET",
+        "site": "nav",
+        "provider": "throwing",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_roots?$apply=aggregate(%24count%20as%20c)"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute _pqf1_contact_value in table pqf1_root is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "root:property",
+      "input": {
+        "method": "GET",
+        "site": "nav",
+        "provider": "throwing",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_roots(f1f1f1f1-0000-4000-8000-000000006001)/pqf1_name"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute All Columns in table pqf1_root is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "root:property-value",
+      "input": {
+        "method": "GET",
+        "site": "nav",
+        "provider": "throwing",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_roots(f1f1f1f1-0000-4000-8000-000000006001)/pqf1_name/$value"
+      },
+      "output": {
+        "status": 200,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": null
+        },
+        "text": "R1"
+      },
+      "volatile": []
+    },
+    {
+      "id": "root:select-less",
+      "input": {
+        "method": "GET",
+        "site": "nav",
+        "provider": "throwing",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_roots"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute _pqf1_contact_value in table pqf1_root is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "root:keyed-select-less",
+      "input": {
+        "method": "GET",
+        "site": "nav",
+        "provider": "throwing",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_roots(f1f1f1f1-0000-4000-8000-000000006001)"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute _pqf1_contact_value in table pqf1_root is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "navcount:root-collection",
+      "input": {
+        "method": "GET",
+        "site": "nav",
+        "provider": "throwing",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_roots(f1f1f1f1-0000-4000-8000-000000006001)/pqf1_root_pqf1_root_pqf1_kid/$count"
+      },
+      "output": {
+        "status": 400,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=400, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "9004010A",
+          "message": "An unexpected error occurred while processing the request"
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "navcount:root-collection-virtual",
+      "input": {
+        "method": "GET",
+        "site": "nav",
+        "provider": "throwing",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_roots(f1f1f1f1-0000-4000-8000-000000006001)/pqf1_root_pqf1_root_pqf1_vrow/$count"
+      },
+      "output": {
+        "status": 400,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=400, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "9004010A",
+          "message": "An unexpected error occurred while processing the request"
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "navcount:root-lookup",
+      "input": {
+        "method": "GET",
+        "site": "nav",
+        "provider": "throwing",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_roots(f1f1f1f1-0000-4000-8000-000000006001)/pqf1_vrow/$count"
+      },
+      "output": {
+        "status": 400,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=400, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "9004010A",
+          "message": "An unexpected error occurred while processing the request"
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "navcount:root-lookup-contact",
+      "input": {
+        "method": "GET",
+        "site": "nav",
+        "provider": "throwing",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_roots(f1f1f1f1-0000-4000-8000-000000006001)/pqf1_contact/$count"
+      },
+      "output": {
+        "status": 400,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=400, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "9004010A",
+          "message": "An unexpected error occurred while processing the request"
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "navcount:glob-collection",
+      "input": {
+        "method": "GET",
+        "site": "nav",
+        "provider": "throwing",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_globs(f1f1f1f1-0000-4000-8000-000000006011)/pqf1_glob_pqf1_glob_pqf1_kid/$count"
+      },
+      "output": {
+        "status": 400,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=400, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "9004010A",
+          "message": "An unexpected error occurred while processing the request"
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "navcount:glob-lookup",
+      "input": {
+        "method": "GET",
+        "site": "nav",
+        "provider": "throwing",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_globs(f1f1f1f1-0000-4000-8000-000000006011)/pqf1_root/$count"
+      },
+      "output": {
+        "status": 400,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=400, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "9004010A",
+          "message": "An unexpected error occurred while processing the request"
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "navcount:root-collection-read",
+      "input": {
+        "method": "GET",
+        "site": "nav",
+        "provider": "throwing",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_roots(f1f1f1f1-0000-4000-8000-000000006001)/pqf1_root_pqf1_root_pqf1_kid?$select=pqf1_name"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute All Columns in table pqf1_root is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "navcount:glob-collection-read",
+      "input": {
+        "method": "GET",
+        "site": "nav",
+        "provider": "throwing",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_globs(f1f1f1f1-0000-4000-8000-000000006011)/pqf1_glob_pqf1_glob_pqf1_kid?$select=pqf1_name"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute All Columns in table pqf1_glob is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "nav1:vrows-phase-marked",
+      "input": {
+        "method": "GET",
+        "site": "nav",
+        "provider": "throwing",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_vrows?$select=pqf1_name,pqf1_code,pqf1_query&$filter=pqf1_name%20ne%20'mk-provider-throwing'"
+      },
+      "output": {
+        "status": 400,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=400, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80040265"
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "nav1:expand-collection-phase-marked",
+      "input": {
+        "method": "GET",
+        "site": "nav",
+        "provider": "throwing",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_roots?$select=pqf1_name&$expand=pqf1_root_pqf1_root_pqf1_vrow($select=pqf1_code,pqf1_query;$filter=pqf1_name%20ne%20'mk-provider-throwing')"
+      },
+      "output": {
+        "status": 400,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=400, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80040265"
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "nav1:keyed-vrow",
+      "input": {
+        "method": "GET",
+        "site": "nav",
+        "provider": "throwing",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_vrows(f1f1f1f1-0000-4000-8000-000000003001)?$select=pqf1_name,pqf1_code,pqf1_query"
+      },
+      "output": {
+        "status": 500,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=500, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "9004010A",
+          "message": "An unexpected error occurred while processing the request"
+        }
+      },
+      "volatile": []
+    }
+  ],
+  "history": []
+}

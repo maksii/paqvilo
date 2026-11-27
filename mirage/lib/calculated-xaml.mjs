@@ -15,7 +15,7 @@
 //       OptionSetValue, String, DateTime, Guid, or the type alone for null); SelectFirstNonNull; Add, Subtract, Multiply,
 //       Divide; Concat; AddDays, AddHours, AddWeeks, AddMonths, AddYears, SubtractDays, SubtractHours, SubtractWeeks,
 //       SubtractMonths, SubtractYears (amount first, then the date); DiffInDays, DiffInHours, DiffInMinutes, DiffInWeeks,
-//       DiffInMonths, DiffInYears (from, to: the result is to - from); Now
+//       DiffInMonths, DiffInYears (from, to: the result is to - from); TrimLeft, TrimRight (text, count); Now
 //     EvaluateCondition: Equal, NotEqual, GreaterThan, GreaterEqual, LessThan, LessEqual, Null, NotNull, BeginsWith,
 //       DoesNotBeginWith, EndsWith, DoesNotEndWith, Contains, DoesNotContain; EvaluateLogicalCondition And / Or
 //   GetEntityProperty of InputEntities("primaryEntity") or InputEntities("related_<lookup>#<table>") (one N:1 hop)
@@ -25,9 +25,12 @@
 // read runs each one at most once.
 // Native (hosted captures 2026-11-26, two runs; evidence summary DATA-04c): AddDays takes the amount first; DiffInDays(a, b)
 // is b - a in whole UTC calendar days; a null operand makes arithmetic, date functions and comparisons null or false;
-// divide by zero is null; an IF without ELSE is null when it does not hold. Assumed (no capture): DiffInHours/Minutes and
-// DiffInWeeks truncate the elapsed time; DiffInMonths/Years count calendar boundaries; Concat reads null as empty text;
-// NotEqual and the text conditions are false when an operand is null; Subtract<Unit> mirrors Add<Unit>.
+// divide by zero is null; an IF without ELSE is null when it does not hold. Native (designer saves 2026-11-27, two runs;
+// summary-F6 DATA-04c2, replay cases dataverse-calculated/designer-dc2): every DiffIn function counts the UTC unit
+// boundaries between the two times (Sunday-based weeks); Add/Subtract Months and Years keep the day, clamped to the month's
+// last day; TrimLeft/TrimRight drop that many characters and read null as empty text; Concat reads null as empty text; a
+// Yes/No value is the literal "1" or "0"; text conditions on a null column do not hold. Assumed (no capture): NotEqual is
+// false when an operand is null.
 import { parseSolutionXml } from './solution-xml.mjs';
 import { compareNumeric, isExactNumeric } from './exact-numeric.mjs';
 import { FxError, decimalArithmetic } from './power-fx.mjs';
@@ -53,6 +56,7 @@ const ARITHMETIC = new Map([
 ]);
 const DATE_ADD = new Set(['Days', 'Hours', 'Weeks', 'Months', 'Years']);
 const DIFF = new Set(['DiffInDays', 'DiffInHours', 'DiffInMinutes', 'DiffInWeeks', 'DiffInMonths', 'DiffInYears']);
+const TRIM = new Set(['TrimLeft', 'TrimRight']);
 const CONDITIONS = new Set([
   'Equal',
   'NotEqual',
@@ -133,9 +137,10 @@ const LITERALS = new Map([
   [
     'Boolean',
     (text, where) => {
-      const value = text.toLowerCase();
-      if (value !== 'true' && value !== 'false') unsupported(`${where}: '${text}' is not a Boolean literal.`);
-      return value === 'true';
+      // The designer writes "true"/"false" in its conditions and "1"/"0" for a Yes/No value (summary-F6 DATA-04c2).
+      const value = { true: true, false: false, 1: true, 0: false }[text.toLowerCase()];
+      if (value === undefined) unsupported(`${where}: '${text}' is not a Boolean literal.`);
+      return value;
     },
   ],
   ['String', (text) => text],
@@ -341,7 +346,7 @@ function compileExpression(program, args) {
   };
   if (operator === 'Now') arity(0);
   else if (operator === 'SelectFirstNonNull' || operator === 'Concat') arity(1, LIMITS.parameters);
-  else if (ARITHMETIC.has(operator) || DIFF.has(operator) || dateAdd(operator)) arity(2);
+  else if (ARITHMETIC.has(operator) || DIFF.has(operator) || dateAdd(operator) || TRIM.has(operator)) arity(2);
   else unsupported(`Expression operator ${operator} is outside the supported subset.`);
   if (operator === 'Now') program.usesNow = true;
   return { op: 'expression', operator, parameters, out };
@@ -559,14 +564,26 @@ function addMonths(date, months) {
   return result;
 }
 const utcDay = (date) => Math.floor(date.getTime() / DAY);
+// The Sunday-based week of a UTC day (1970-01-01 was a Thursday, day 4 of its week).
+const utcWeek = (date) => Math.floor((utcDay(date) + 4) / 7);
+// Every DiffIn function counts the unit boundaries between the two UTC times (summary-F6 DATA-04c2: 23:30 to 00:29 is one
+// hour, one day and one year; Saturday to the next day is one week).
 function difference(operator, from, to) {
   if (operator === 'DiffInDays') return utcDay(to) - utcDay(from);
-  const ms = to - from;
-  if (operator === 'DiffInHours') return Math.trunc(ms / 3_600_000);
-  if (operator === 'DiffInMinutes') return Math.trunc(ms / 60_000);
-  if (operator === 'DiffInWeeks') return Math.trunc(ms / (7 * DAY));
-  const months = (to.getUTCFullYear() - from.getUTCFullYear()) * 12 + to.getUTCMonth() - from.getUTCMonth();
-  return operator === 'DiffInMonths' ? months : Math.trunc(months / 12);
+  if (operator === 'DiffInHours') return Math.floor(to / 3_600_000) - Math.floor(from / 3_600_000);
+  if (operator === 'DiffInMinutes') return Math.floor(to / 60_000) - Math.floor(from / 60_000);
+  if (operator === 'DiffInWeeks') return utcWeek(to) - utcWeek(from);
+  if (operator === 'DiffInYears') return to.getUTCFullYear() - from.getUTCFullYear();
+  return (to.getUTCFullYear() - from.getUTCFullYear()) * 12 + to.getUTCMonth() - from.getUTCMonth();
+}
+
+// TrimLeft and TrimRight (text, count) drop count characters from that end; a null text reads as empty text, and a count
+// at least the length leaves empty text (summary-F6 DATA-04c2).
+function trimmed(operator, text, count) {
+  const value = empty(text) ? '' : String(text);
+  const n = Number(isExactNumeric(count) ? count.value : count);
+  if (!Number.isSafeInteger(n) || n < 0) return null;
+  return operator === 'TrimLeft' ? value.slice(n) : value.slice(0, Math.max(0, value.length - n));
 }
 // Dataverse date and time values lie in 1753-01-01 to 9999-12-31 (Learn "Date and time column behavior and format"); a
 // shifted date outside that range reads null (assumed: the platform's answer to an out-of-range result is uncaptured).
@@ -599,6 +616,7 @@ function expression(step, vars, ctx) {
         return String(isExactNumeric(value) ? value.value : value);
       })
       .join('');
+  if (TRIM.has(operator)) return trimmed(operator, values[0], values[1]);
   if (DIFF.has(operator)) {
     const [from, to] = values.map(asDate);
     return from === null || to === null ? null : difference(operator, from, to);

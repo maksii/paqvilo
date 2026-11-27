@@ -242,11 +242,14 @@ test('a designer Count resolves standard relationship metadata and only counts u
   assert.equal((await recalculate(OTHER)).test_contact_count, 1);
   assert.equal(api.rollups.isStale('account', PARENT, 'test_contact_count'), false);
   assert.equal(api.rollups.isStale('account', OTHER, 'test_contact_count'), false);
+  // A write of a column the Count reads (the state; a write of another column marks nothing, summary-F6 DATA-04c2).
   await json(await request('PATCH', `/contacts(${unique})`, { firstname: 'Updated bare account target' }), 200);
+  assert.equal(api.rollups.isStale('account', OTHER, 'test_contact_count'), false);
+  await json(await request('PATCH', `/contacts(${unique})`, { statecode: 0 }), 200);
   assert.equal(api.rollups.isStale('account', OTHER, 'test_contact_count'), true);
   assert.equal((await recalculate(OTHER)).test_contact_count, 1);
-  await json(await request('PATCH', `/contacts(${foreign})`, { firstname: 'Updated contact target' }), 200);
-  await json(await request('PATCH', `/contacts(${ambiguous})`, { firstname: 'Updated ambiguous target' }), 200);
+  await json(await request('PATCH', `/contacts(${foreign})`, { statecode: 0 }), 200);
+  await json(await request('PATCH', `/contacts(${ambiguous})`, { statecode: 0 }), 200);
   assert.equal(api.rollups.isStale('account', PARENT, 'test_contact_count'), false);
   await json(
     await request('PATCH', `/contacts(${CHILD})`, {

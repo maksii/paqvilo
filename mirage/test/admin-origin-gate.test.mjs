@@ -199,6 +199,17 @@ const PLAIN_PERSONA = 'person-1';
 const CONTEXT_PERSONA = 'person-2';
 const BROWSER_PAGE = { 'sec-fetch-site': 'same-origin', 'sec-fetch-mode': 'cors' };
 
+// A browser's own request token and the binding cookie it pairs with (browser request tokens are paired by default).
+async function browserToken(app) {
+  const response = await fetch(app.url + '/_layout/tokenhtml', { headers: BROWSER_PAGE });
+  const token = /value="([^"]+)"/.exec(await response.text())[1];
+  const cookie = response.headers
+    .getSetCookie()
+    .find((line) => line.includes('-request-binding-'))
+    .split(';')[0];
+  return { token, headers: { ...BROWSER_PAGE, cookie } };
+}
+
 // A form post with the exact headers a case names; fetch cannot send Origin or Sec-Fetch-* headers.
 function postForm(origin, target, headers, fields) {
   const url = new URL(origin);
@@ -238,14 +249,15 @@ const runtimesOf = async (call) => (await call('/personas')).value.runtimes.item
 test('a browser-shaped portal sign-in for a context persona is refused before a runtime opens or a preset applies', async (t) => {
   const { app, call } = await personaFixture(t);
   const before = await runtimesOf(call);
+  const browser = await browserToken(app);
   const response = await postForm(
     app.url,
     '/__sim/sign-in',
-    { origin: app.url, ...BROWSER_PAGE },
+    { origin: app.url, ...browser.headers },
     {
       personaKey: CONTEXT_PERSONA,
       ReturnUrl: '/',
-      __RequestVerificationToken: app.portalToken,
+      __RequestVerificationToken: browser.token,
     },
   );
   assert.equal(response.status, 403);
@@ -257,14 +269,15 @@ test('a browser-shaped portal sign-in for a context persona is refused before a 
 test('a browser-shaped portal sign-in form for a context persona is refused the same way', async (t) => {
   const { app, call } = await personaFixture(t);
   const before = await runtimesOf(call);
+  const browser = await browserToken(app);
   const response = await postForm(
     app.url,
     '/SignIn',
-    { origin: app.url, ...BROWSER_PAGE },
+    { origin: app.url, ...browser.headers },
     {
       personaKey: CONTEXT_PERSONA,
       ReturnUrl: '/',
-      __RequestVerificationToken: app.portalToken,
+      __RequestVerificationToken: browser.token,
     },
   );
   assert.equal(response.status, 403);
@@ -274,14 +287,15 @@ test('a browser-shaped portal sign-in form for a context persona is refused the 
 
 test('a browser-shaped portal sign-in for a plain persona still signs the browser in', async (t) => {
   const { app } = await personaFixture(t);
+  const browser = await browserToken(app);
   const response = await postForm(
     app.url,
     '/__sim/sign-in',
-    { origin: app.url, ...BROWSER_PAGE },
+    { origin: app.url, ...browser.headers },
     {
       personaKey: PLAIN_PERSONA,
       ReturnUrl: '/',
-      __RequestVerificationToken: app.portalToken,
+      __RequestVerificationToken: browser.token,
     },
   );
   assert.equal(response.status, 302);

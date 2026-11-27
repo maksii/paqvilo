@@ -91,35 +91,72 @@ async function admit(app, idp, browser) {
   assert.equal(admitted.headers.get('x-sim-route'), 'private-site-admission');
 }
 
-// @test-kind security: private-site admission ends at its deadline and the next navigation asks for admission again
+const diagnosticsOf = async ({ app, csrf }) =>
+  (await (await client(app).request('/_sim/api/diagnostics', { headers: { 'x-sim-csrf': csrf } })).json()).diagnostics;
+async function admissionEnds(t, settings, lifetime, siteObserved = observed) {
+  const clock = fixedClock(Date.parse('2026-04-01T08:00:00.000Z'));
+  const { app, idp, csrf } = await simulator(t, settings, initialState(), {
+    clock,
+    observed: siteObserved,
+    identityProvider: { privateSiteContactIds: ['alex'] },
+  });
+  const browser = client(app);
+  await admit(app, idp, browser);
+  clock.advance(lifetime - 1);
+  assert.equal((await browser.request('/')).status, 200);
+  clock.advance(1);
+  const expired = await browser.request('/');
+  assert.equal(expired.status, 401);
+  assert.equal((await expired.json()).error.code, 'PRIVATE_SITE_ACCESS_REQUIRED');
+  assert.equal((await browser.request('/', { headers: { accept: 'text/html' } })).status, 302);
+  return { app, csrf };
+}
+const SHORT_COOKIE = [
+  ...ENTRA,
+  ['Authentication/ApplicationCookie/ExpireTimeSpan', '00:00:10'],
+  ['Authentication/ApplicationCookie/SlidingExpiration', 'false'],
+];
+
+// @test-kind security: private-site admission ends at the application cookie lifetime, 24 hours by default, and the next navigation asks for admission again; a deadline shorter than a day reports the hosted lower bound as a warning
 test('private-site admission ends at the application cookie lifetime, 24 hours by default', async (t) => {
-  for (const [settings, lifetime] of [
-    [
-      [
-        ...ENTRA,
-        ['Authentication/ApplicationCookie/ExpireTimeSpan', '00:00:10'],
-        ['Authentication/ApplicationCookie/SlidingExpiration', 'false'],
-      ],
-      10_000,
-    ],
-    [ENTRA, 24 * 60 * 60 * 1000],
-  ]) {
-    const clock = fixedClock(Date.parse('2026-04-01T08:00:00.000Z'));
-    const { app, idp } = await simulator(t, settings, initialState(), {
-      clock,
-      observed,
-      identityProvider: { privateSiteContactIds: ['alex'] },
-    });
-    const browser = client(app);
-    await admit(app, idp, browser);
-    clock.advance(lifetime - 1);
-    assert.equal((await browser.request('/')).status, 200);
-    clock.advance(1);
-    const expired = await browser.request('/');
-    assert.equal(expired.status, 401);
-    assert.equal((await expired.json()).error.code, 'PRIVATE_SITE_ACCESS_REQUIRED');
-    assert.equal((await browser.request('/', { headers: { accept: 'text/html' } })).status, 302);
-  }
+  const short = await admissionEnds(t, SHORT_COOKIE, 10_000);
+  const warning = (await diagnosticsOf(short)).find((item) => item.code === 'PRIVATE_SITE_ADMISSION_HOSTED_LIFETIME');
+  assert.equal(warning?.severity, 'warning');
+  assert.match(warning.message, /observed.privateSiteAdmissionLifetime/);
+  const day = await admissionEnds(t, ENTRA, 24 * 60 * 60 * 1000);
+  assert.ok(!(await diagnosticsOf(day)).some((item) => item.code === 'PRIVATE_SITE_ADMISSION_HOSTED_LIFETIME'));
+});
+
+// @test-kind security+observation+unproven: hosted session F4 AUTH-06h (paqvilo-developer hosted-f4 admission-watch runs a and b) kept an admission at least 59 minutes with a 6-minute application cookie lifetime; observed.privateSiteAdmissionLifetime fixed-day keeps it 24 hours whatever ExpireTimeSpan says and reports no warning. The 24-hour deadline itself is inferred, not observed.
+test('observed fixed-day admission lasts 24 hours whatever the application cookie lifetime', async (t) => {
+  const site = await admissionEnds(t, SHORT_COOKIE, 24 * 60 * 60 * 1000, {
+    ...observed,
+    privateSiteAdmissionLifetime: 'fixed-day',
+  });
+  assert.ok(!(await diagnosticsOf(site)).some((item) => item.code === 'PRIVATE_SITE_ADMISSION_HOSTED_LIFETIME'));
+});
+
+// @test-kind security+observation: hosted session F4 (paqvilo-developer hosted-f4 admission-watch and accounts runs a and b): admission does not sign the browser in to the portal, a portal sign-in inside the admitted browser works, and LogOff keeps the admission; a browser without admission is still refused.
+test('private-site admission is independent of portal sign-in and survives LogOff', async (t) => {
+  const { app, idp } = await simulator(t, ENTRA, initialState(), {
+    observed,
+    identityProvider: { privateSiteContactIds: ['alex'] },
+  });
+  const browser = client(app);
+  await admit(app, idp, browser);
+  const admission = [...browser.jar.keys()].find((name) => name.endsWith('-site-access'));
+  assert.ok(admission);
+  assert.equal(await signedInAs(browser), null, 'admission is not a portal sign-in');
+  await personaSignIn(browser, 'alex');
+  assert.equal(await signedInAs(browser), 'alex');
+  const logOff = await browser.request('/Account/Login/LogOff');
+  assert.equal(logOff.status, 302);
+  assert.equal(await signedInAs(browser), null);
+  assert.ok(browser.jar.has(admission), 'LogOff keeps the admission cookie');
+  const home = await browser.request('/');
+  assert.equal(home.status, 200, 'the admitted browser still reaches the site');
+  assert.match(await home.text(), /id="user">anonymous</);
+  assert.equal((await client(app).request('/')).status, 401, 'another browser still needs admission');
 });
 
 const PERSONA = '00000000-0000-4000-8000-0000000000a1';

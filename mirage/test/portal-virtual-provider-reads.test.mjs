@@ -26,6 +26,7 @@ async function fixture(t, { parent = false, custom = false, intersect = null } =
   const providerPath = path.join(directory, 'provider.mjs');
   const dataPath = path.join(directory, 'external.json');
   const linkPath = path.join(directory, 'link.json');
+  const requestsPath = path.join(directory, 'requests.jsonl');
   await fs.mkdir(sourceDir);
   const files = {
     'website.yml': `adx_websiteid: ${SITE}\nadx_name: Test virtual provider\nadx_enhancedauthorization: ${custom ? 3 : 0}`,
@@ -56,7 +57,8 @@ async function fixture(t, { parent = false, custom = false, intersect = null } =
       '- adx_name: Webapi/test_external/enabled\n  adx_value: "true"\n' +
       '- adx_name: Webapi/test_external/fields\n  adx_value: "title"\n' +
       '- adx_name: Webapi/test_container/enabled\n  adx_value: "true"\n' +
-      '- adx_name: Webapi/test_container/fields\n  adx_value: "external,title,externals,children"\n',
+      // The lookup's _x_value is listed with it, as a hosted list needs (hosted session F1 summary-F1 API-02c).
+      '- adx_name: Webapi/test_container/fields\n  adx_value: "external,_external_value,title,externals,children,parentRow,_parent_value"\n',
   };
   await Promise.all(
     Object.entries(files).map(([name, contents]) => fs.writeFile(path.join(sourceDir, name), contents)),
@@ -73,7 +75,10 @@ const links = () => read(${JSON.stringify(linkPath)});
 export default { id: 'external-fixture', name: 'External fixture', description: 'Invented provider', matches: () => true,
   presets: () => ({}), virtualTableProviders: { test_external: {
     retrieve: async (id) => (await read()).find(row => row.test_externalid === id) ?? null,
-    retrieveMultiple: () => read(),
+    retrieveMultiple: async (request) => {
+      await fs.appendFile(${JSON.stringify(requestsPath)}, JSON.stringify(request ?? null) + '\\n');
+      return read();
+    },
   }, test_link: {
     retrieve: async (id) => (await links()).find(row => row.test_linkid === id) ?? null,
     retrieveMultiple: links,
@@ -81,7 +86,7 @@ export default { id: 'external-fixture', name: 'External fixture', description: 
 };
 `,
   );
-  const writeProviderRows = (title, person = CONTACT, visible = {}) =>
+  const writeProviderRows = (title, person = CONTACT, visible = {}, extra = []) =>
     fs.writeFile(
       dataPath,
       JSON.stringify(
@@ -90,6 +95,7 @@ export default { id: 'external-fixture', name: 'External fixture', description: 
           : [
               { test_externalid: VISIBLE, person, title, ...visible },
               { test_externalid: HIDDEN, person: OTHER, title: 'Outside scope' },
+              ...extra,
             ],
       ),
     );
@@ -151,6 +157,7 @@ export default { id: 'external-fixture', name: 'External fixture', description: 
             external: { entity: 'test_external', from: 'external', to: 'test_externalid', many: false },
             externals: { entity: 'test_external', from: 'test_containerid', to: 'container', many: true },
             children: { entity: 'test_container', from: 'test_containerid', to: 'parent', many: true },
+            parentRow: { entity: 'test_container', from: 'parent', to: 'test_containerid', many: false },
           },
         },
       },
@@ -213,7 +220,13 @@ export default { id: 'external-fixture', name: 'External fixture', description: 
   ownedFixture(t).add(() => app.close());
   const session = signInHeaders(app, CONTACT, custom ? {} : { roles: ['Reader'] });
   const get = (suffix, headers = session) => fetch(app.url + suffix, { headers });
-  return { app, session, get, writeProviderRows, writeLinkRows };
+  // The requests the provider's retrieveMultiple received, in order.
+  const providerRequests = async () =>
+    (await fs.readFile(requestsPath, 'utf8').catch(() => ''))
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+  return { app, session, get, writeProviderRows, writeLinkRows, providerRequests };
 }
 
 test('Liquid, lists and the portal Web API read current provider rows through the same portal restrictions', async (t) => {
@@ -259,9 +272,10 @@ test('Liquid, lists and the portal Web API read current provider rows through th
   assert.equal(single.status, 200, await single.clone().text());
   assert.equal((await single.json()).title, 'Provider updated');
   assert.equal((await get(`/_api/test_externals(${HIDDEN})?$select=title`)).status, 403);
+  // A lookup $expand into a provider-backed table reads null and reads no provider (hosted session F1 follow-up 2026-11-27, paqvilo-developer hosted-f1 summary-F1, runs/a and runs/b nav-followup and nav-followup-throw: expand-lookup).
   const linked = await get(`/_api/test_containers(${CONTAINER})?$expand=external($select=title)`);
   assert.equal(linked.status, 200, await linked.clone().text());
-  assert.equal((await linked.json()).external.title, 'Provider updated');
+  assert.equal((await linked.json()).external, null);
   assert.deepEqual(app.store.tableRows('test_external'), stale, 'direct portal reads leave the local mirror untouched');
 });
 
@@ -323,8 +337,8 @@ test('portal Custom Access predicates use fresh provider rows on Liquid and the 
   assert.deepEqual(app.store.tableRows('test_external'), stale);
 });
 
-// @test-kind security: provider navigation filters use fresh rows and respect related table, row and column access
-test('portal OData filters read provider rows reached only through a navigation path', async (t) => {
+// @test-kind security+observation: a $filter path into a provider-backed table is refused after the column check and before any provider or stale-mirror read: 500 9004010D cdscode 0x80044150 (hosted session F1 follow-up 2026-11-27, paqvilo-developer hosted-f1 summary-F1, runs/a and runs/b nav-followup and nav-followup-throw: lookup-filter)
+test('portal OData filters through a navigation into a provider-backed table are refused before any provider read', async (t) => {
   const { app, get, writeProviderRows } = await fixture(t);
   const blockedContainer = 'af000000-0000-4000-8000-000000000010';
   const mirror = [{ test_externalid: VISIBLE, person: CONTACT, title: 'Stale mirror row' }];
@@ -339,46 +353,60 @@ test('portal OData filters read provider rows reached only through a navigation 
   });
   const filtered = (predicate, aliases = {}) =>
     get(`/_api/test_containers?${new URLSearchParams({ $select: 'title', $filter: predicate, ...aliases })}`);
-  const titles = async (response) => {
-    assert.equal(response.status, 200, await response.clone().text());
-    return (await response.json()).value.map(({ title }) => title);
-  };
-
-  await writeProviderRows('Provider updated');
-  assert.deepEqual(await titles(await filtered('external/title eq @title', { '@title': "'Provider updated'" })), [
-    'Container',
-  ]);
-  assert.deepEqual(await titles(await filtered("external/title eq 'Stale mirror row'")), []);
-  assert.deepEqual(await titles(await filtered("external/title eq 'Outside scope'")), []);
-
-  await writeProviderRows('Provider updated', OTHER);
-  assert.deepEqual(await titles(await filtered("external/title eq 'Provider updated'")), []);
+  const predicates = [
+    ['external/title eq @title', { '@title': "'Provider updated'" }],
+    ["external/title eq 'Stale mirror row'", {}],
+    ["external/title eq 'Outside scope'", {}],
+  ];
+  // A throwing provider answers the same refusal: the provider is never called.
+  for (const rows of [['Provider updated'], ['Provider updated', OTHER], [null]])
+    for (const pipeline of ['modeled', 'native-classic']) {
+      await writeProviderRows(...rows);
+      await withObserved(app, { odataPermissionQueryPipeline: pipeline }, async () => {
+        for (const [predicate, aliases] of predicates)
+          await assertProviderJoinRefused(await filtered(predicate, aliases));
+        await assertRefused(
+          await filtered("external/private_title eq 'Provider updated'"),
+          403,
+          'WebApiFieldNotEnabled',
+        );
+      });
+    }
   assert.deepEqual(app.store.tableRows('test_external'), mirror);
-
-  await writeProviderRows(null);
-  const forbiddenColumn = await filtered("external/private_title eq 'Provider updated'");
-  assert.equal(forbiddenColumn.status, 403, await forbiddenColumn.clone().text());
-  assert.equal(forbiddenColumn.headers.get('x-sim-error-code'), 'WebApiFieldNotEnabled');
-
-  const allowed = await filtered("external/title eq 'Provider updated'");
-  assert.equal(allowed.status, 400, await allowed.clone().text());
-  assert.equal(allowed.headers.get('x-sim-error-code'), 'VirtualProviderFailed');
-
-  const observed = app.store.observed;
-  app.store.observed = { ...observed, odataPermissionQueryPipeline: 'native-classic' };
-  try {
-    const native = await filtered("external/title eq 'Provider updated'");
-    assert.equal(native.status, 501, await native.clone().text());
-    assert.equal(native.headers.get('x-sim-error-code'), 'ODataPermissionQueryUnsupported');
-  } finally {
-    app.store.observed = observed;
-  }
-
+  // A path that ends at the lookup (no column of the virtual table) is no join: it keeps the earlier model.
+  await writeProviderRows('Provider updated');
+  assert.equal((await filtered('external eq null')).status, 200);
   await app.store.transact(() => {
     app.store.state.permissions = app.store.state.permissions.filter(({ id }) => id !== 'mine');
   });
-  assert.deepEqual(await titles(await filtered("external/title eq 'Provider updated'")), []);
+  await assertProviderJoinRefused(await filtered("external/title eq 'Provider updated'"));
+  // A visitor without read on the queried table gets the table refusal, never the join answer that would reveal the
+  // virtual table behind the lookup: the collection read and its /$count alike.
+  await app.store.transact(() => {
+    app.store.state.permissions = app.store.state.permissions.filter(({ id }) => id !== 'container');
+  });
+  const query = new URLSearchParams({ $filter: "external/title eq 'x'" });
+  for (const response of [
+    await filtered("external/title eq 'x'"),
+    await get(`/_api/test_containers/$count?${query}`),
+  ]) {
+    assert.equal(response.status, 403, await response.clone().text());
+    assert.deepEqual((await response.json()).error, {
+      code: '90040120',
+      message: "You don't have permission to read the test_container table.",
+    });
+  }
 });
+
+const assertProviderJoinRefused = async (response) => {
+  assert.equal(response.status, 500, await response.clone().text());
+  assert.equal(response.headers.get('x-sim-error-code'), 'VirtualTableJoinUnsupported');
+  assert.deepEqual((await response.json()).error, {
+    code: '9004010D',
+    message: 'Common Data Service error occurred.',
+    cdscode: '0x80044150',
+  });
+};
 
 const titlesOf = async (response, pick = (body) => body.value) => {
   assert.equal(response.status, 200, await response.clone().text());
@@ -407,36 +435,29 @@ const staleProviderMirror = async (app, changes = () => {}) => {
   return mirror;
 };
 
-// @test-kind security: any/all lambda collections read fresh provider rows and keep related table, row and column access
-test('portal OData any and all lambdas read the current provider rows of their collection', async (t) => {
+// @test-kind security+observation: an any/all lambda over a provider-backed collection is refused after the column check and before any provider or stale-mirror read: 500 9004010D cdscode 0x80044150 (hosted session F1 follow-up 2026-11-27, paqvilo-developer hosted-f1 summary-F1, runs/a and runs/b nav-followup and nav-followup-throw: collection-any, collection-all)
+test('portal OData any and all lambdas over a provider-backed collection are refused before any provider read', async (t) => {
   const { app, get, writeProviderRows } = await fixture(t);
   const mirror = await staleProviderMirror(app);
   const filtered = (predicate) =>
     get(`/_api/test_containers?${new URLSearchParams({ $select: 'title', $filter: predicate })}`);
-
-  await writeProviderRows('Provider updated', CONTACT, { container: CONTAINER });
-  assert.deepEqual(await titlesOf(await filtered("externals/any(e: e/title eq 'Provider updated')")), ['Container']);
-  assert.deepEqual(await titlesOf(await filtered("externals/all(e: e/title eq 'Provider updated')")), ['Container']);
-  assert.deepEqual(await titlesOf(await filtered("externals/any(e: e/title eq 'Stale mirror row')")), []);
-
-  await writeProviderRows('Provider updated', OTHER, { container: CONTAINER });
-  assert.deepEqual(await titlesOf(await filtered("externals/any(e: e/title eq 'Provider updated')")), []);
+  for (const rows of [['Provider updated', CONTACT, { container: CONTAINER }], [null]])
+    for (const pipeline of ['modeled', 'native-classic']) {
+      await writeProviderRows(...rows);
+      await withObserved(app, { odataPermissionQueryPipeline: pipeline }, async () => {
+        for (const predicate of [
+          "externals/any(e: e/title eq 'Provider updated')",
+          "externals/all(e: e/title eq 'Provider updated')",
+          "externals/any(e: e/title eq 'Stale mirror row')",
+        ])
+          await assertProviderJoinRefused(await filtered(predicate));
+        await assertRefused(await filtered("externals/any(e: e/private_title eq 'x')"), 403, 'WebApiFieldNotEnabled');
+      });
+    }
   assert.deepEqual(app.store.tableRows('test_external'), mirror);
-
-  await writeProviderRows(null);
-  await assertRefused(await filtered("externals/any(e: e/private_title eq 'x')"), 403, 'WebApiFieldNotEnabled');
-  await assertRefused(await filtered("externals/any(e: e/title eq 'x')"), 400, 'VirtualProviderFailed');
-  await withObserved(app, { odataPermissionQueryPipeline: 'native-classic' }, async () =>
-    assertRefused(await filtered("externals/any(e: e/title eq 'x')"), 501, 'ODataPermissionQueryUnsupported'),
-  );
-
-  await app.store.transact(() => {
-    app.store.state.permissions = app.store.state.permissions.filter(({ id }) => id !== 'mine');
-  });
-  assert.deepEqual(await titlesOf(await filtered("externals/any(e: e/title eq 'x')")), []);
 });
 
-// @test-kind security: every count route counts fresh provider rows and refuses a disabled column before the provider read
+// @test-kind security+observation: a provider-backed table's own /$count counts fresh provider rows and refuses a disabled column before the provider read; a navigation /$count answers 400 9004010A and a filter path into the provider-backed table 500 9004010D, both before any provider read (hosted session F1 follow-up 2026-11-27, paqvilo-developer hosted-f1 summary-F1, runs/a and runs/b nav-followup and nav-followup-throw: navcount-*, lookup-filter)
 test('portal OData count routes count the current provider rows', async (t) => {
   const { app, get, writeProviderRows } = await fixture(t);
   await staleProviderMirror(app);
@@ -452,51 +473,47 @@ test('portal OData count routes count the current provider rows', async (t) => {
   for (const title of ['Provider updated', 'Stale mirror row']) {
     const expected = title === 'Provider updated' ? '1' : '0';
     assert.equal(await counted(`/_api/test_externals/$count?${query({ $filter: `title eq '${title}'` })}`), expected);
-    assert.equal(
-      await counted(`/_api/test_containers/$count?${query({ $filter: `external/title eq '${title}'` })}`),
-      expected,
-    );
-    assert.equal(
-      await counted(`/_api/test_containers/$count?${query({ $filter: `externals/any(e: e/title eq '${title}')` })}`),
-      expected,
-    );
-    assert.equal(await counted(`${nested}/$count?${query({ $filter: `title eq '${title}'` })}`), expected);
   }
-  const inline = await get(
-    `/_api/test_containers?${query({ $select: 'title', $count: 'true', $filter: "external/title eq 'Provider updated'" })}`,
-  );
-  assert.equal(inline.status, 200, await inline.clone().text());
-  const body = await inline.json();
-  assert.equal(body['@odata.count'], 1);
-  assert.deepEqual(
-    body.value.map(({ title }) => title),
-    ['Container'],
-  );
+  const navigationCount = async (suffix) => {
+    const response = await get(suffix);
+    assert.equal(response.status, 400, await response.clone().text());
+    assert.deepEqual((await response.json()).error, {
+      code: '9004010A',
+      message: 'An unexpected error occurred while processing the request',
+    });
+  };
+  // A collection navigation to another table is refused before any read, the provider's included (hosted session F1
+  // summary-F1 API-02c, runs/a and runs/b odata-shapes navigation-collection: 403 with no backend query in either run).
   const related = await get(`${nested}?${query({ $select: 'title', $count: 'true' })}`);
-  assert.equal(related.status, 200, await related.clone().text());
-  const relatedBody = await related.json();
-  assert.equal(relatedBody['@odata.count'], 1);
-  assert.deepEqual(
-    relatedBody.value.map(({ title }) => title),
-    ['Provider updated'],
-  );
+  assert.equal(related.status, 403, await related.clone().text());
+  assert.deepEqual((await related.json()).error, {
+    code: '90040101',
+    message: 'Attribute All Columns in table test_container is not enabled for Web Api.',
+  });
 
-  await writeProviderRows(null);
+  for (const rows of [['Provider updated', CONTACT, { container: CONTAINER }], [null]]) {
+    await writeProviderRows(...rows);
+    for (const filter of ["external/title eq 'x'", "externals/any(e: e/title eq 'x')"]) {
+      await assertProviderJoinRefused(await get(`/_api/test_containers/$count?${query({ $filter: filter })}`));
+      await assertProviderJoinRefused(
+        await get(`/_api/test_containers?${query({ $select: 'title', $count: 'true', $filter: filter })}`),
+      );
+    }
+    for (const suffix of [`${nested}/$count`, `${nested}/$count?${query({ $filter: "title eq 'x'" })}`])
+      await navigationCount(suffix);
+  }
   for (const suffix of [
     `/_api/test_externals/$count?${query({ $filter: "private_title eq 'x'" })}`,
     `/_api/test_containers/$count?${query({ $filter: "external/private_title eq 'x'" })}`,
-    `${nested}/$count?${query({ $filter: "private_title eq 'x'" })}`,
     `${nested}?${query({ $select: 'private_title', $count: 'true' })}`,
     `/_api/test_containers?${query({ $select: 'title', $count: 'true', $filter: "external/private_title eq 'x'" })}`,
   ])
     await assertRefused(await get(suffix), 403, 'WebApiFieldNotEnabled');
-  for (const suffix of [
-    `/_api/test_externals/$count?${query({ $filter: "title eq 'x'" })}`,
-    `/_api/test_containers/$count?${query({ $filter: "external/title eq 'x'" })}`,
-    `${nested}/$count?${query({ $filter: "title eq 'x'" })}`,
-    `/_api/test_containers?${query({ $select: 'title', $count: 'true', $filter: "external/title eq 'x'" })}`,
-  ])
-    await assertRefused(await get(suffix), 400, 'VirtualProviderFailed');
+  await assertRefused(
+    await get(`/_api/test_externals/$count?${query({ $filter: "title eq 'x'" })}`),
+    400,
+    'VirtualProviderFailed',
+  );
 });
 
 // @test-kind security: options nested in $expand read fresh provider rows and refuse a disabled column before the provider read
@@ -596,43 +613,105 @@ for (const [kind, label] of [
   });
 }
 
-// @test-kind security: $apply filters and groupings through a navigation read fresh provider rows and keep column access, refused before the provider read
-test('portal OData $apply navigation paths read the current provider rows', async (t) => {
-  const { app, get, writeProviderRows } = await fixture(t);
-  await staleProviderMirror(app);
+// @test-kind security+observation: an $apply path into a provider-backed table is refused after the column and table-permission checks and before any provider or stale-mirror read: 500 9004010D cdscode 0x80044150 with a healthy and a throwing provider (hosted session F1 follow-up (2) 2026-11-27, paqvilo-developer hosted-f1 summary-F1, runs/a and runs/b nav-followup-nested: apply-lookup-filter-count, apply-collection-any, apply-collection-any-count); a groupby path into it was not captured and is refused alike (fail closed)
+test('portal OData $apply paths into a provider-backed table are refused before any provider read', async (t) => {
+  const { app, get, writeProviderRows, providerRequests } = await fixture(t);
+  const mirror = await staleProviderMirror(app);
   const applied = (apply) => get(`/_api/test_containers?${new URLSearchParams({ $apply: apply })}`);
-  const rows = async (response) => {
-    assert.equal(response.status, 200, await response.clone().text());
-    return (await response.json()).value.map(({ '@odata.id': _id, ...row }) => row);
-  };
-
-  await writeProviderRows('Provider updated');
-  for (const title of ['Provider updated', 'Stale mirror row'])
-    assert.deepEqual(await rows(await applied(`filter(external/title eq '${title}')/aggregate($count as total)`)), [
-      { total: title === 'Provider updated' ? 1 : 0 },
-    ]);
-  // Only the grouped value is asserted: the property name of a navigation grouping is not what this test proves.
-  const groups = await rows(await applied('groupby((external/title))'));
-  assert.deepEqual(groups.map(Object.values), [['Provider updated']]);
-
-  await writeProviderRows(null);
-  await assertRefused(
-    await applied("filter(external/private_title eq 'x')/aggregate($count as total)"),
-    403,
-    'WebApiFieldNotEnabled',
-  );
-  await assertRefused(
-    await applied("filter(external/title eq 'x')/aggregate($count as total)"),
-    400,
-    'VirtualProviderFailed',
-  );
-  await assertRefused(await applied('groupby((external/title))'), 400, 'VirtualProviderFailed');
-
-  // Without read on the related table its provider is not read, and the path admits no row.
+  const joins = [
+    "filter(external/title eq 'Provider updated')/aggregate($count as total)",
+    "filter(external/title eq 'Stale mirror row')/aggregate($count as total)",
+    "filter(externals/any(e: e/title eq 'Provider updated'))",
+    "filter(externals/any(e: e/title eq 'Provider updated'))/aggregate($count as total)",
+    'groupby((external/title))',
+  ];
+  for (const rows of [['Provider updated', CONTACT, { container: CONTAINER }], [null]]) {
+    await writeProviderRows(...rows);
+    for (const apply of joins) await assertProviderJoinRefused(await applied(apply));
+    // The column check still comes first.
+    await assertRefused(
+      await applied("filter(external/private_title eq 'x')/aggregate($count as total)"),
+      403,
+      'WebApiFieldNotEnabled',
+    );
+  }
+  assert.deepEqual(await providerRequests(), [], 'no $apply read reached the provider');
+  assert.deepEqual(app.store.tableRows('test_external'), mirror);
+  // Without read on the related table the join is refused alike; without read on the queried table the visitor gets the
+  // table refusal and never learns that the path reaches a provider-backed table.
   await app.store.transact(() => {
     app.store.state.permissions = app.store.state.permissions.filter(({ id }) => id !== 'mine');
   });
-  assert.deepEqual(await rows(await applied("filter(external/title eq 'x')/aggregate($count as total)")), [
-    { total: 0 },
+  await assertProviderJoinRefused(await applied("filter(external/title eq 'x')/aggregate($count as total)"));
+  await app.store.transact(() => {
+    app.store.state.permissions = app.store.state.permissions.filter(({ id }) => id !== 'container');
+  });
+  const denied = await applied("filter(external/title eq 'x')/aggregate($count as total)");
+  assert.equal(denied.status, 403, await denied.clone().text());
+  assert.equal((await denied.json()).error.code, '90040120');
+});
+
+// @test-kind observation: hosted session F1 follow-up (2) 2026-11-27, paqvilo-developer hosted-f1 summary-F1, runs/a and runs/b nav-followup-nested (control:apply-lookup-filter-count, control:apply-collection-any-count): filter(<navigation path>)/aggregate($count as c) on standard tables answers one empty object per matching row
+test('portal OData $apply count after a navigation filter answers one empty object per matching row', async (t) => {
+  const { app, get } = await fixture(t);
+  await app.store.transact(() => {
+    app.store.state.tables.test_container.push(
+      { test_containerid: PARENT, title: 'Parent' },
+      { test_containerid: 'af000000-0000-4000-8000-000000000012', title: 'Second', parent: PARENT },
+    );
+    app.store.state.tables.test_container.find((row) => row.test_containerid === CONTAINER).parent = PARENT;
+  });
+  const applied = async (apply) => {
+    const response = await get(`/_api/test_containers?${new URLSearchParams({ $apply: apply })}`);
+    assert.equal(response.status, 200, await response.clone().text());
+    return (await response.json()).value.map(({ '@odata.id': _id, ...row }) => row);
+  };
+  // A collection lambda: only Parent has children.
+  assert.deepEqual(await applied("filter(children/any(e: e/title ne 'x'))/aggregate($count as total)"), [{}]);
+  // A lookup path: both children of Parent match.
+  assert.deepEqual(await applied("filter(parentRow/title eq 'Parent')/aggregate($count as total)"), [{}, {}]);
+  // Without a navigation path the count is the local aggregate.
+  assert.deepEqual(await applied("filter(title eq 'Parent')/aggregate($count as total)"), [{ total: 1 }]);
+});
+
+// @test-kind security+observation: a collection $expand into a provider-backed table hands the nested $select, $filter, $orderby and $top to the provider and applies none of them to its rows, which still pass the table permissions and the Web API column settings; a lookup $expand into it reads null on every row (hosted session F1 follow-up (2) 2026-11-27, paqvilo-developer hosted-f1 summary-F1, runs/a and runs/b nav-followup-nested: expand-collection-filter, expand-collection-filter-orderby-top, expand-lookup-select)
+test('portal OData options nested in a $expand into a provider-backed table go to the provider and are not applied', async (t) => {
+  const { app, get, writeProviderRows, providerRequests } = await fixture(t);
+  await staleProviderMirror(app);
+  const SECOND = 'af000000-0000-4000-8000-000000000013';
+  await writeProviderRows('Provider updated', CONTACT, { container: CONTAINER, private_title: 'secret' }, [
+    { test_externalid: SECOND, person: CONTACT, title: 'Another', container: CONTAINER },
+    { test_externalid: 'af000000-0000-4000-8000-000000000014', person: OTHER, title: 'Other', container: CONTAINER },
   ]);
+  const nested = "externals($select=title;$filter=title eq 'x';$orderby=title desc;$top=1)";
+  const response = await get(
+    `/_api/test_containers?${new URLSearchParams({ $select: 'title', $filter: "title eq 'Container'", $expand: nested })}`,
+  );
+  assert.equal(response.status, 200, await response.clone().text());
+  const [container] = (await response.json()).value;
+  // Every row the provider returned for the parent, in its order; the other contact's row stays out (table permission)
+  // and the column outside Webapi/test_external/fields stays out (column settings).
+  assert.deepEqual(
+    container.externals.map(({ title, private_title: hidden }) => [title, hidden]),
+    [
+      ['Provider updated', undefined],
+      ['Another', undefined],
+    ],
+  );
+  const requests = await providerRequests();
+  assert.equal(requests.length, 1);
+  assert.deepEqual(
+    [requests[0].select, requests[0].filter, requests[0].orderby, requests[0].top],
+    ['title', "title eq 'x'", 'title desc', 1],
+  );
+  // A lookup $expand into the provider-backed table reads null on every row of a collection read; no provider read.
+  const lookup = await get(
+    `/_api/test_containers?${new URLSearchParams({ $select: 'title', $expand: 'external($select=title)' })}`,
+  );
+  assert.equal(lookup.status, 200, await lookup.clone().text());
+  assert.deepEqual(
+    (await lookup.json()).value.map((row) => row.external),
+    [null],
+  );
+  assert.equal((await providerRequests()).length, 1);
 });

@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { decodeJpeg, encodeJpeg } from '../lib/portal-jpeg-codec.mjs';
-import { orientJpeg } from '../lib/portal-jpeg.mjs';
+import { jpegThumbnail } from '../lib/portal-jpeg.mjs';
 
 let browser, page;
 before(async () => {
@@ -118,7 +118,20 @@ test('the codec decodes Chromium canvas JPEGs like Chromium does', async () => {
   }
 });
 
-test('orientJpeg matches Chromium from-image orientation for every Exif orientation', async () => {
+// The centered square of Chromium's pixels, by the nearest-sample rule of the portal thumbnails, at the image's own size.
+function centerSquare({ width, height, rgb }) {
+  const side = Math.min(width, height);
+  const [insetX, insetY] = [(width - side) / 2, (height - side) / 2];
+  const square = [];
+  for (let y = 0; y < side; y++)
+    for (let x = 0; x < side; x++) {
+      const at = ((insetY + y) * width + insetX + x) * 3;
+      square.push(rgb[at], rgb[at + 1], rgb[at + 2]);
+    }
+  return { width: side, height: side, rgb: square };
+}
+
+test('the JPEG thumbnail matches Chromium from-image orientation for every Exif orientation', async () => {
   const plain = encodeJpeg(gradient(48, 30, 3), { sampling: { h: 1, v: 1 }, quality: 95 });
   for (let orientation = 2; orientation <= 8; orientation++) {
     const tiff = Buffer.from('49492a0008000000010012010300010000000000000000000000', 'hex');
@@ -126,7 +139,14 @@ test('orientJpeg matches Chromium from-image orientation for every Exif orientat
     const exif = Buffer.concat([Buffer.from([0xff, 0xe1, 0, 0]), Buffer.from('Exif\0\0', 'binary'), tiff]);
     exif.writeUInt16BE(exif.length - 2, 2);
     const tagged = Buffer.concat([plain.subarray(0, 2), exif, plain.subarray(2)]);
-    const upright = await chromiumPixels(tagged, 'from-image');
-    compare(decodeJpeg(orientJpeg(tagged)), upright, { max: 10, mean: 1.5 }, `orientation ${orientation}`);
+    const upright = centerSquare(await chromiumPixels(tagged, 'from-image'));
+    // The thumbnail is re-encoded at quality 75 with 4:2:0 chroma (max 11, mean 2.1 and 0.4% outliers on this host);
+    // a wrong orientation moves the gradient by tens of levels on average.
+    compare(
+      decodeJpeg(jpegThumbnail(tagged)),
+      upright,
+      { max: 16, mean: 3, outliers: 0.01 },
+      `orientation ${orientation}`,
+    );
   }
 });

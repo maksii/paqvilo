@@ -394,7 +394,7 @@ test('Liquid, a signed grid and native forms use an API-created global choice', 
     );
   });
 
-  // @test-kind unproven: local model of a native Basic Form choices (multi-select) field bound to a global choice: the control lists the published options in the page language and a posted value outside them is refused as Dataverse refuses it (PicklistValueOutOfRange); no hosted capture of a bound choices field
+  // @test-kind unproven+observation: local model of a native Basic Form choices (multi-select) field bound to a global choice (the control lists the published options in the page language; no hosted capture of a bound choices field); a posted value outside the options re-renders the form with HTTP 200 and the Dataverse message in the message panel, as hosted F2 runs a and b show for a column's own options (paqvilo-developer hosted-f2 choices:post-invalid-option)
   await t.test('native form multiselect uses the bound global choice and refuses unlisted values', async () => {
     const html = await (await fetch(formUrl('tags'))).text();
     // The control's option metadata (the PCF host manifest) lists the bound choice's options in the page language.
@@ -426,8 +426,11 @@ test('Liquid, a signed grid and native forms use an API-created global choice', 
     };
     const before = app.store.tableRows('locale_item').find((row) => row.locale_itemid === ITEM).new_status_tags;
     const refused = await postTags('100000002,100000099');
-    assert.notEqual(refused.status, 200);
-    assert.match(await refused.text(), /100000099|outside the valid range|PicklistValueOutOfRange/);
+    assert.equal(refused.status, 200);
+    assert.match(
+      await refused.text(),
+      /<div id="MessagePanel" class="message alert[^"]*alert-danger"[\s\S]*?A validation error occurred\. The value 100000099 of &#39;new_status_tags&#39; on record of type &#39;locale_item&#39; is outside the valid range\./,
+    );
     assert.equal(app.store.tableRows('locale_item').find((row) => row.locale_itemid === ITEM).new_status_tags, before);
     const saved = await postTags('100000002');
     assert.equal(saved.status, 200, await saved.text());

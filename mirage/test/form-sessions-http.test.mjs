@@ -244,3 +244,49 @@ test('a live submission whose note fails deletes the record it created', async (
   assert.equal(response.status, 403);
   assert.deepEqual(calls, ['POST /_api/contacts', 'POST /_api/annotations', 'DELETE /_api/contacts(online-contact)']);
 });
+
+// @test-kind contract: with live data the real portal answers the reads, so a basic form edit page sends no extra form reads (form-read-messages.mjs) to it
+test('a live edit page sends no hosted-form read messages to the live portal', async (t) => {
+  const calls = [];
+  const liveBridge = {
+    origin: 'https://portal.example.test',
+    configure() {},
+    status() {
+      return { connected: true };
+    },
+    async close() {},
+    async request(url, options) {
+      calls.push(`${options.method ?? 'GET'} ${url}`);
+      if (url.startsWith('/_api/contacts('))
+        return {
+          status: 200,
+          headers: {},
+          body: Buffer.from(JSON.stringify({ contactid: 'c0000000-0000-4000-8000-000000000001', fullname: 'Online' })),
+        };
+      return { status: 200, headers: {}, body: Buffer.from('{"value":[]}') };
+    },
+  };
+  const { app } = await fixture(t, {
+    mode: 'live',
+    liveBridge,
+    forms: {
+      'Main.webtemplate.source.html': '{% entityform name: "Edit contact" %}',
+      'Edit.basicform.yml':
+        'adx_entityformid: notes\nadx_name: Edit contact\nadx_entityname: contact\nadx_mode: 100000001\nadx_recordidquerystringparametername: id',
+    },
+  });
+  const page = await fetch(app.url + '/?id=c0000000-0000-4000-8000-000000000001', {
+    headers: signInHeaders(app, 'c0000000-0000-4000-8000-000000000001'),
+    redirect: 'manual',
+  });
+  assert.equal(page.status, 200);
+  assert.match(await page.text(), /id="fullname"/);
+  assert.ok(
+    calls.some((call) => call.startsWith('GET /_api/contacts(')),
+    calls.join('\n'),
+  );
+  assert.deepEqual(
+    calls.filter((call) => /fetchXml=/i.test(call)),
+    [],
+  );
+});

@@ -40,7 +40,7 @@ export async function operationFixture(t, { solutionComponents = false } = {}) {
     'sample.js': `function get(){return JSON.stringify({source:true});}`,
     'Request.cloudflowconsumer.yml': `adx_cloudflowconsumerid: request\nadx_name: Echo\nadx_processid: ${flow}\nadx_flowapiurl: /_api/cloudflow/v1.0/trigger/${flow}\nadx_cloudflowconsumer_adx_webrole:\n- ${role}`,
     'Workflows/echo.json': JSON.stringify(definition),
-    'Workflows/echo.json.data.xml': `<Workflow WorkflowId="{${flow}}" Name="Echo"/>`,
+    'Workflows/echo.json.data.xml': `<Workflow WorkflowId="{${flow}}" Name="Echo"><StateCode>1</StateCode></Workflow>`,
     'Workflows/standalone.json': JSON.stringify({
       properties: { definition: { actions: { connector: { type: 'OpenApiConnection' } } } },
     }),

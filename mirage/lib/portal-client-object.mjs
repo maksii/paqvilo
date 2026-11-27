@@ -5,8 +5,8 @@
 // there is no `version` key. Microsoft.PowerPages carries onPagesClientApiReady too. Local values:
 // - User.* come from the session persona's contact; an anonymous visitor has empty strings
 //   (contactId included) and userRoles is always an empty array, as on the platform;
-// - the site id is the exported website id; tenant and organisation ids are stable local
-//   GUIDs derived from it; correlationId is the request trace id;
+// - the site id is the site's observed portal id (observed.portalId, the admin-center id) or else the exported website id;
+//   tenant and organisation ids are stable local GUIDs derived from the website id; correlationId is the request trace id;
 // - type, geo and portalProductionOrTrialType remain unknown unless the page supplies them;
 //   activeLanguages is the page language; the SPA flag follows the imported site;
 // - isTelemetryEnabled is "False" (a local runtime sends no telemetry); isClientApiEnabled starts
@@ -48,12 +48,13 @@ function localGuid(seed) {
 
 /**
  * The object's JSON values for one page (every key but the onPagesClientApiReady function):
- * `identity` is the session persona, `site` the website id, page language, the site's active language codes and trace id.
+ * `identity` is the session persona, `site` the website id, the observed portal id, page language, the site's active language
+ * codes and trace id.
  * activeLanguages lists the site's active website languages when the host passes them, else the page language.
  */
 export function portalClientObject(
   identity = {},
-  { websiteId = '', language = '', languages = null, traceId = null, isSpaSite = false } = {},
+  { websiteId = '', portalId = null, language = '', languages = null, traceId = null, isSpaSite = false } = {},
 ) {
   identity ??= {};
   const site = String(websiteId ?? '').toLowerCase();
@@ -71,7 +72,7 @@ export function portalClientObject(
       userRoles: [],
     },
     type: '',
-    id: site,
+    id: portalId ? String(portalId).toLowerCase() : site,
     geo: '',
     tenant: localGuid(`tenant:${site}`),
     correlationId: GUID.test(String(traceId ?? '')) ? String(traceId) : randomUUID(),

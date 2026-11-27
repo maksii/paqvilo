@@ -32,3 +32,16 @@ node scripts/parity-cases.mjs build --surface portal-file-range --suite hosted-2
 
 The existing suite supplies the oracle description when regenerating its case file. Each capture names the original
 receipt by filename without its extension.
+
+## Hosted session F1 suite (`hosted-f1-20261126`)
+
+Hosted session F1 (API-04g) recorded thirteen GETs of one synthetic 100-byte file column in two signed-in runs: the
+full file, explicit, suffix, open-ended and past-the-end ranges, a multiple range, a reversed range and a malformed
+`Range` header. Both runs agree on every case. The captures are extracted from the session's raw runs into the replay
+shape of this surface; their hosted site name is replaced at build time with `--redact`, so the case file records only
+the `<redacted>` placeholder and the counts (`redaction`).
+
+```sh
+node scripts/parity-cases.mjs build --surface portal-file-range --suite hosted-f1-20261126 \
+  --capture F1_CAPTURE_A --capture F1_CAPTURE_B --redact SITE_NAME
+```

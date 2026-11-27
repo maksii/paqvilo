@@ -1,8 +1,7 @@
-// Invented GIF and BMP fixtures for the portal GIF/BMP thumbnail tests, and the expected thumbnail of known pixels.
+// Invented GIF and BMP fixtures for the portal GIF/BMP thumbnail tests, and the expected thumbnail pixels of known pixels.
 // The writers follow the W3C GIF89a specification (LZW with variable-length codes, interlaced rows) and the Win32
 // BITMAPINFOHEADER/BITMAPV4HEADER/BITMAPV5HEADER layouts; they never read real images.
 import { PNG } from 'pngjs';
-import { encodeJpeg } from '../../lib/portal-jpeg-codec.mjs';
 import { pngThumbnail } from '../../lib/portal-png.mjs';
 
 const le16 = (value) => [value & 255, (value >> 8) & 255];
@@ -161,21 +160,26 @@ export function rgbaImage(width, height, color) {
   return data;
 }
 
-/**
- * The expected portal thumbnail of known RGBA pixels: the PNG thumbnail's center crop of the same pixels, alpha
- * composited on white, encoded as baseline JFIF at quality 90.
- */
-export function expectedThumbnail(rgba, width, height) {
+/** The expected thumbnail pixels of known RGBA pixels: the PNG thumbnail's center crop of the same pixels. */
+export function expectedCrop(rgba, width, height) {
   const png = new PNG({ width, height });
   png.data.set(rgba);
   const crop = PNG.sync.read(pngThumbnail(PNG.sync.write(png)));
-  const rgb = new Uint8Array(crop.width * crop.height * 3);
-  for (let i = 0; i < crop.width * crop.height; i++) {
-    const alpha = crop.data[i * 4 + 3];
-    for (let c = 0; c < 3; c++)
-      rgb[i * 3 + c] = Math.round((crop.data[i * 4 + c] * alpha + 255 * (255 - alpha)) / 255);
+  return { width: crop.width, height: crop.height, rgba: Uint8Array.from(crop.data) };
+}
+
+/**
+ * The pixels a GIF thumbnail shows for a crop: each opaque pixel on the nearest color of the 6x7x6 halftone table
+ * (red and blue in steps of 51, green in sixths of 255), a pixel under half opacity transparent.
+ */
+export function halftonePixels({ width, height, rgba }) {
+  const out = new Uint8Array(rgba.length);
+  for (let at = 0; at < rgba.length; at += 4) {
+    if (rgba[at + 3] < 128) continue;
+    const level = (value, steps) => Math.round(Math.round((value * steps) / 255) * (255 / steps));
+    out.set([level(rgba[at], 5), level(rgba[at + 1], 6), level(rgba[at + 2], 5), 255], at);
   }
-  return encodeJpeg({ width: crop.width, height: crop.height, channels: 3, data: rgb }, { quality: 90 });
+  return { width, height, rgba: out };
 }
 
 export const opaque = (palette, index) => (index < palette.length ? [...palette[index], 255] : [0, 0, 0, 0]);

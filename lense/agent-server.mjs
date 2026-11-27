@@ -6,6 +6,7 @@ import crypto from 'node:crypto';
 import { refreshUrl } from './navigation.mjs';
 import { consoleLocation } from './console-location.mjs';
 import { discoveryOwner, sweepStaleDiscovery, writeOwnedDiscovery } from './agent-discovery.mjs';
+import { piercedSnapshot, SNAPSHOT_ATTRIBUTES, SNAPSHOT_PANEL_IDS, SNAPSHOT_TEXT_BLOCKED } from './dom-pierce.mjs';
 
 const MAX_EVENTS = 500;
 const MAX_BODY = 32 * 1024;
@@ -17,6 +18,13 @@ const DEFAULT_STYLES = ['display', 'visibility', 'position', 'color', 'backgroun
 const SUSPENDED_MESSAGE = 'The owned tab is outside the target origin; it resumes when the tab returns';
 // Hang guard for one page operation when the caller sends no timeoutMs: a page paused in the debugger never answers.
 const BROWSER_OPERATION_TIMEOUT_MS = 60_000;
+// The page snapshot's selectors, from the lists the pierced snapshot shares (lense/dom-pierce.mjs).
+const PANEL_SELECTOR = SNAPSHOT_PANEL_IDS.map((id) => `#${id}`).join(',');
+const TEXT_BLOCKED_SELECTOR = [
+  ...SNAPSHOT_TEXT_BLOCKED,
+  PANEL_SELECTOR,
+  '[contenteditable]:not([contenteditable="false"])',
+].join(',');
 
 export function redactUrl(value) {
   try {
@@ -34,6 +42,27 @@ export function redactUrl(value) {
   } catch {
     return '[invalid URL]';
   }
+}
+
+/**
+ * Redacts one snapshot element in place (agent snapshot, Inspect's pierced read): its text, attributes, styles and frame
+ * URL; links resolve against `pageBase` and keep no query values.
+ */
+export function redactSnapshotElement(element, pageBase) {
+  if (element.scope?.frame) element.scope.frame.url = redactUrl(element.scope.frame.url);
+  element.text = redactText(element.text);
+  for (const [name, value] of Object.entries(element.attributes)) {
+    if (!['href', 'src'].includes(name)) element.attributes[name] = redactText(value, 500);
+    else {
+      try {
+        element.attributes[name] = redactUrl(new URL(value, pageBase).href);
+      } catch {
+        element.attributes[name] = '[invalid URL]';
+      }
+    }
+  }
+  for (const [name, value] of Object.entries(element.style)) element.style[name] = redactText(value, 500);
+  return element;
 }
 
 /** Best-effort secret redaction; arbitrary application text can still contain business data. */
@@ -116,7 +145,7 @@ async function readBody(request) {
 }
 
 // Runs only this fixed inspection program. The client supplies CSS selectors and property names.
-function inspectDom({ origin, selector, limit, textLimit, styles }) {
+function inspectDom({ origin, selector, limit, textLimit, styles, names, blocked, panels }) {
   if (location.origin !== origin) return { denied: true };
   let nodes;
   try {
@@ -126,8 +155,6 @@ function inspectDom({ origin, selector, limit, textLimit, styles }) {
   }
   const elements = [];
   let total = 0;
-  const blocked =
-    'script,style,template,noscript,input,textarea,select,option,#paqvilo-panel,#paqvilo-xray,#paqvilo-model-inspector,[contenteditable]:not([contenteditable="false"])';
   const textOf = (node) => {
     if (node.matches(blocked)) return '';
     const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
@@ -142,27 +169,13 @@ function inspectDom({ origin, selector, limit, textLimit, styles }) {
   };
   for (let index = 0; index < nodes.length; index++) {
     const node = nodes[index];
-    if (node.closest('#paqvilo-panel,#paqvilo-xray,#paqvilo-model-inspector')) continue;
+    if (node.closest(panels)) continue;
     total++;
     if (elements.length >= limit) continue;
     const rect = node.getBoundingClientRect();
     const computed = getComputedStyle(node);
     const attributes = {};
-    for (const name of [
-      'id',
-      'class',
-      'style',
-      'role',
-      'aria-label',
-      'aria-hidden',
-      'title',
-      'type',
-      'name',
-      'href',
-      'src',
-      'disabled',
-      'checked',
-    ]) {
+    for (const name of names) {
       const value = node.getAttribute(name);
       if (value !== null) attributes[name] = value.slice(0, 500);
     }
@@ -882,7 +895,9 @@ export async function startAgentServer({
         return json(response, 200, { page: { id: pageId, url: redactUrl(page.url()) }, viewport });
       }
       if (action === 'dom') {
-        fields(body, ['selector', 'limit', 'textLimit', 'styles', 'timeoutMs']);
+        fields(body, ['selector', 'limit', 'textLimit', 'styles', 'pierce', 'timeoutMs']);
+        if (body.pierce !== undefined && typeof body.pierce !== 'boolean')
+          throw fault(400, 'invalid_argument', 'pierce must be true or false');
         const selector = body.selector ?? 'body *';
         if (typeof selector !== 'string' || selector.length > 1000 || !selector.trim())
           throw fault(400, 'invalid_argument', 'selector must be a non-empty CSS selector of at most 1000 characters');
@@ -894,34 +909,30 @@ export async function startAgentServer({
         )
           throw fault(400, 'invalid_argument', 'styles must contain at most 20 CSS property names');
         const timeout = integer(body.timeoutMs, BROWSER_OPERATION_TIMEOUT_MS, 120_000);
+        const read = {
+          origin: scope.origin,
+          selector,
+          limit: integer(body.limit, 100, MAX_ITEMS),
+          textLimit: integer(body.textLimit, 500, 2000, 0),
+          styles,
+        };
+        // pierce reads closed shadow roots and cross-origin frames through the DevTools protocol (lense/dom-pierce.mjs).
         const result = await withPage(page, timeout, () =>
-          page.evaluate(inspectDom, {
-            origin: scope.origin,
-            selector,
-            limit: integer(body.limit, 100, MAX_ITEMS),
-            textLimit: integer(body.textLimit, 500, 2000, 0),
-            styles,
-          }),
+          body.pierce
+            ? piercedSnapshot({ context, page, ...read })
+            : page.evaluate(inspectDom, {
+                ...read,
+                names: SNAPSHOT_ATTRIBUTES,
+                blocked: TEXT_BLOCKED_SELECTOR,
+                panels: PANEL_SELECTOR,
+              }),
         );
         if (result.invalidSelector) throw fault(400, 'invalid_selector', 'Invalid CSS selector');
         if (result.denied) throw fault(403, 'origin_changed', 'The page left the configured portal origin');
         const pageBase = result.url;
         result.url = redactUrl(result.url);
         result.title = redactText(result.title, 500);
-        for (const element of result.elements) {
-          element.text = redactText(element.text);
-          for (const [name, value] of Object.entries(element.attributes)) {
-            if (!['href', 'src'].includes(name)) element.attributes[name] = redactText(value, 500);
-            else {
-              try {
-                element.attributes[name] = redactUrl(new URL(value, pageBase).href);
-              } catch {
-                element.attributes[name] = '[invalid URL]';
-              }
-            }
-          }
-          for (const [name, value] of Object.entries(element.style)) element.style[name] = redactText(value, 500);
-        }
+        for (const element of result.elements) redactSnapshotElement(element, pageBase);
         return json(response, 200, result);
       }
       if (action === 'screenshot') {

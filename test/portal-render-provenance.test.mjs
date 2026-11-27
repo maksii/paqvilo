@@ -416,6 +416,47 @@ test('the content of a declared shadow root is live markup: bound without a temp
   assert.doesNotMatch(inside.slice(inside.indexOf('>') + 1), /data-paqvilo-/);
 });
 
+test('the elements of a closed declared shadow root are bound by their place under the host, without a mark', () => {
+  const source =
+    '<div id="host">\n<template shadowrootmode="closed">\n<p id="first">One</p>\n<section><b id="deep">Two</b></section>\n<script>window.inside = true;</script>\n</template>\n</div>';
+  const portal = fixture({ Main: source });
+  const index = buildPortalSourceIndex({ portal });
+  const ref = index.templates.get('main');
+  const result = finalizePortalProvenance({
+    fragment: {
+      text: source,
+      intervals: [
+        {
+          start: 0,
+          end: source.length,
+          sourceRefId: ref.id,
+          sourceSpan: { start: 0, end: source.length },
+          mapping: 'literal',
+        },
+      ],
+    },
+    index,
+  });
+  const host = result.provenance.bindings.find((binding) => binding.tag === 'div');
+  const sealed = result.provenance.bindings.filter((binding) => binding.sealed);
+  // Each element of the root names the host's binding and its element index path from the root, with its own line.
+  assert.deepEqual(
+    sealed
+      .map((binding) => [binding.tag, binding.sealed.host === host.id, binding.sealed.path, binding.region.line])
+      .sort((left, right) => (left[2] < right[2] ? -1 : 1)),
+    [
+      ['p', true, '0', 3],
+      ['section', true, '1', 4],
+      ['b', true, '1.0', 4],
+      ['script', true, '2', 5],
+    ],
+  );
+  // No mark and no script proof inside the root: only its component could read them.
+  const inside = result.html.slice(result.html.indexOf('<template'), result.html.indexOf('</template>'));
+  assert.doesNotMatch(inside.slice(inside.indexOf('>') + 1), /data-paqvilo-/);
+  assert.equal(result.provenance.scriptProofs.length, 0);
+});
+
 // @test-kind security: a binding id read off one element (a page script can read one while the parser inserts it) says nothing about any other element's id: 64 random bits each, unique in the document, never the proof's id or a counter
 test('binding ids are random per element: none derivable from another or from the proof', () => {
   const rows = 5000;

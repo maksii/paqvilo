@@ -1,0 +1,189 @@
+{
+  "schema": "paqvilo.parity-cases/1",
+  "surface": "portal-form-postback",
+  "suite": "hosted-f2-basic-form-attachments-20261127",
+  "oracle": {
+    "kind": "native",
+    "name": "Power Pages basic form postback",
+    "version": "2026-11-27",
+    "scope": "Two signed-in browser runs (k, l) of hosted session F2 on an Enhanced, Bootstrap 5 site with enhanced authorization enabled (enhancedauthorization 3), one edit-form postback per attach-file scenario of the invented pqf2 schema (annotation permission Create and Append without Read; records with an administrator's file note, a text-only note or none): the HTTP status, the message panel and the validation summary entries for posts with zero, one or two new files. It does not establish the stored notes or the rendered control. The exact hosted build is unrecorded."
+  },
+  "captures": [
+    {
+      "id": "hosted-f2-portal-form-postback-k",
+      "sha256": "f7b79f99ebd8def51f25ef5acc1cc76c5d70eddfa594fb5fabcec9713604932f",
+      "capturedAt": "2026-11-27"
+    },
+    {
+      "id": "hosted-f2-portal-form-postback-l",
+      "sha256": "f58224d2656ea1626746e90e9f6a6a52fd146aa95a506c33bf64e6ba4f8b8095",
+      "capturedAt": "2026-11-27"
+    }
+  ],
+  "cases": [
+    {
+      "id": "attach:max1-admin:zero-files-server",
+      "input": {
+        "page": "/pqf2-attach-max1/",
+        "query": {
+          "id": {
+            "fixture": "run-row-1"
+          }
+        },
+        "fields": {
+          "pqf2_name": "A max1 with admin note <run>",
+          "pqf2_amount": "1"
+        },
+        "action": "UpdateButton"
+      },
+      "output": {
+        "status": 200,
+        "redirect": null,
+        "message": null,
+        "validation": ["pqf2 attachment is a required field."]
+      },
+      "volatile": []
+    },
+    {
+      "id": "attach:single-admin:zero-files-server",
+      "input": {
+        "page": "/pqf2-attach-single/",
+        "query": {
+          "id": {
+            "fixture": "run-row-2"
+          }
+        },
+        "fields": {
+          "pqf2_name": "A single with admin note <run>",
+          "pqf2_amount": "2"
+        },
+        "action": "UpdateButton"
+      },
+      "output": {
+        "status": 200,
+        "redirect": null,
+        "message": null,
+        "validation": ["pqf2 attachment is a required field."]
+      },
+      "volatile": []
+    },
+    {
+      "id": "attach:max1-none:zero-files-server",
+      "input": {
+        "page": "/pqf2-attach-max1/",
+        "query": {
+          "id": {
+            "fixture": "run-row-3"
+          }
+        },
+        "fields": {
+          "pqf2_name": "A max1 without notes <run>",
+          "pqf2_amount": "3"
+        },
+        "action": "UpdateButton"
+      },
+      "output": {
+        "status": 200,
+        "redirect": null,
+        "message": null,
+        "validation": ["pqf2 attachment is a required field."]
+      },
+      "volatile": []
+    },
+    {
+      "id": "attach:max1-none:one-file",
+      "input": {
+        "page": "/pqf2-attach-max1/",
+        "query": {
+          "id": {
+            "fixture": "run-row-3"
+          }
+        },
+        "fields": {
+          "pqf2_name": "A max1 without notes <run>",
+          "pqf2_amount": "3"
+        },
+        "action": "UpdateButton",
+        "files": [
+          {
+            "name": "pqf2-<run>-1.txt",
+            "mimeType": "text/plain",
+            "base64": "cHFmMiBwb3J0YWwgYXR0YWNobWVudCA8cnVuPiAx"
+          }
+        ]
+      },
+      "output": {
+        "status": 200,
+        "redirect": null,
+        "message": {
+          "kind": "success",
+          "text": "pqf2 Attach Max1 saved"
+        },
+        "validation": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "attach:single-textnote:zero-files-server",
+      "input": {
+        "page": "/pqf2-attach-single/",
+        "query": {
+          "id": {
+            "fixture": "run-row-5"
+          }
+        },
+        "fields": {
+          "pqf2_name": "A single text-only admin note <run>",
+          "pqf2_amount": "5"
+        },
+        "action": "UpdateButton"
+      },
+      "output": {
+        "status": 200,
+        "redirect": null,
+        "message": null,
+        "validation": ["pqf2 attachment is a required field."]
+      },
+      "volatile": []
+    },
+    {
+      "id": "attach:max2-admin:two-files",
+      "input": {
+        "page": "/pqf2-attach-max2/",
+        "query": {
+          "id": {
+            "fixture": "run-row-4"
+          }
+        },
+        "fields": {
+          "pqf2_name": "A max2 with admin note <run>",
+          "pqf2_amount": "4"
+        },
+        "action": "UpdateButton",
+        "files": [
+          {
+            "name": "pqf2-<run>-1.txt",
+            "mimeType": "text/plain",
+            "base64": "cHFmMiBwb3J0YWwgYXR0YWNobWVudCA8cnVuPiAx"
+          },
+          {
+            "name": "pqf2-<run>-2.txt",
+            "mimeType": "text/plain",
+            "base64": "cHFmMiBwb3J0YWwgYXR0YWNobWVudCA8cnVuPiAy"
+          }
+        ]
+      },
+      "output": {
+        "status": 200,
+        "redirect": null,
+        "message": {
+          "kind": "success",
+          "text": "pqf2 Attach Max2 saved"
+        },
+        "validation": []
+      },
+      "volatile": []
+    }
+  ],
+  "history": []
+}

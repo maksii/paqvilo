@@ -1,0 +1,937 @@
+{
+  "schema": "paqvilo.parity-cases/1",
+  "surface": "dataverse-rollup",
+  "suite": "create-state-designer",
+  "oracle": {
+    "kind": "native",
+    "name": "Dataverse Web API (hosted environment)",
+    "version": "2026-11-27",
+    "scope": "Two hosted runs on 2026-11-27 (dc2ca, dc2cb) of six rollup columns per run created empty and saved by the classic rollup designer (Count, Sum, Average and Minimum over a related table, Maximum of a date, Sum of the table's own column over its hierarchy), recorded under observed rollupCreateState not-calculated: the stamp of new rows, each column's mass calculation (its pending job moved to now), child writes and new parents, and one run of the hourly rollup job. Each _date is recorded as its kind (null, created, mass, entity)."
+  },
+  "captures": [
+    {
+      "id": "run-dc2ca",
+      "sha256": "84a680f49716f97e26783bd41dbd019bae62b6b906d88f51a3e2daa17a87a93a",
+      "capturedAt": "2026-11-27"
+    },
+    {
+      "id": "run-dc2cb",
+      "sha256": "afd0cfa5b1c59f71ede641870dcb8b6e777c1a52b5ba6ae924d473931ac71357",
+      "capturedAt": "2026-11-27"
+    }
+  ],
+  "cases": [
+    {
+      "id": "designer-saved-columns",
+      "input": {
+        "operation": "create-state",
+        "observed": {
+          "rollupCreateState": "not-calculated"
+        },
+        "schema": {
+          "parent": {
+            "table": "pqd2_parent",
+            "entitySet": "pqd2_parents",
+            "idColumn": "pqd2_parentid",
+            "hierarchy": {
+              "schemaName": "pqd2_parent_parent",
+              "column": "pqd2_parentparentid"
+            },
+            "columns": {
+              "pqd2_own": "decimal"
+            }
+          },
+          "child": {
+            "table": "pqd2_child",
+            "entitySet": "pqd2_children",
+            "idColumn": "pqd2_childid",
+            "link": {
+              "schemaName": "pqd2_parent_child",
+              "column": "pqd2_parentid"
+            },
+            "columns": {
+              "pqd2_amount": "decimal",
+              "pqd2_duedate": "datetime"
+            },
+            "options": {}
+          }
+        },
+        "definitions": [
+          {
+            "column": "pqd2_r_kcount",
+            "type": "int",
+            "formula": "<Activity x:Class=\"XrmWorkflow00000000000000000000000000000000\" xmlns=\"http://schemas.microsoft.com/netfx/2009/xaml/activities\" xmlns:mcwc=\"clr-namespace:Microsoft.Crm.Workflow.ClientActivities;assembly=Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mva=\"clr-namespace:Microsoft.VisualBasic.Activities;assembly=System.Activities, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxs=\"clr-namespace:Microsoft.Xrm.Sdk;assembly=Microsoft.Xrm.Sdk, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxswa=\"clr-namespace:Microsoft.Xrm.Sdk.Workflow.Activities;assembly=Microsoft.Xrm.Sdk.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:s=\"clr-namespace:System;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:scg=\"clr-namespace:System.Collections.Generic;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:srs=\"clr-namespace:System.Runtime.Serialization;assembly=System.Runtime.Serialization, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:this=\"clr-namespace:\" xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\">\r\n  <x:Members>\r\n    <x:Property Name=\"InputEntities\" Type=\"InArgument(scg:IDictionary(x:String, mxs:Entity))\" />\r\n    <x:Property Name=\"CreatedEntities\" Type=\"InArgument(scg:IDictionary(x:String, mxs:Entity))\" />\r\n  </x:Members>\r\n  <this:XrmWorkflow00000000000000000000000000000000.InputEntities>\r\n    <InArgument x:TypeArguments=\"scg:IDictionary(x:String, mxs:Entity)\" />\r\n  </this:XrmWorkflow00000000000000000000000000000000.InputEntities>\r\n  <this:XrmWorkflow00000000000000000000000000000000.CreatedEntities>\r\n    <InArgument x:TypeArguments=\"scg:IDictionary(x:String, mxs:Entity)\" />\r\n  </this:XrmWorkflow00000000000000000000000000000000.CreatedEntities>\r\n  <mva:VisualBasic.Settings>Assembly references and imported namespaces for internal implementation</mva:VisualBasic.Settings>\r\n  <mxswa:Workflow>\r\n    <Sequence DisplayName=\"RollupRuleStep1\">\r\n      <Sequence DisplayName=\"Source\">\r\n        <Sequence.Variables>\r\n          <Variable x:TypeArguments=\"x:String\" Default=\"[Nothing]\" Name=\"HierarchicalRelationshipName\" />\r\n        </Sequence.Variables>\r\n      </Sequence>\r\n      <Sequence DisplayName=\"Target\">\r\n        <mcwc:SetAttributeValue DisplayName=\"pqd2_child.pqd2_parentid.pqd2_parent_child\" Entity=\"[CreatedEntities(&quot;relatedlinked_pqd2_parent_child#pqd2_parentid#pqd2_child#Temp&quot;)]\" EntityName=\"pqd2_child\" />\r\n      </Sequence>\r\n      <Sequence DisplayName=\"Aggregate\">\r\n        <Sequence.Variables>\r\n          <Variable x:TypeArguments=\"x:Object\" Name=\"RollupRuleStep1_1\" />\r\n          <Variable x:TypeArguments=\"x:Object\" Name=\"RollupRuleStep1_2\" />\r\n        </Sequence.Variables>\r\n        <mxswa:GetEntityProperty Attribute=\"pqd2_childid\" Entity=\"[InputEntities(&quot;primaryEntity&quot;)]\" EntityName=\"pqd2_child\" Value=\"[RollupRuleStep1_2]\">\r\n          <mxswa:GetEntityProperty.TargetType>\r\n            <InArgument x:TypeArguments=\"s:Type\">\r\n              <mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\">\r\n                <x:Null />\r\n              </mxswa:ReferenceLiteral>\r\n            </InArgument>\r\n          </mxswa:GetEntityProperty.TargetType>\r\n        </mxswa:GetEntityProperty>\r\n        <mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\">\r\n          <mxswa:ActivityReference.Arguments>\r\n            <InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">Count</InArgument>\r\n            <InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { RollupRuleStep1_2 }]</InArgument>\r\n            <InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\">\r\n              <mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\">\r\n                <x:Null />\r\n              </mxswa:ReferenceLiteral>\r\n            </InArgument>\r\n            <OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[RollupRuleStep1_1]</OutArgument>\r\n          </mxswa:ActivityReference.Arguments>\r\n        </mxswa:ActivityReference>\r\n      </Sequence>\r\n    </Sequence>\r\n  </mxswa:Workflow>\r\n</Activity>"
+          },
+          {
+            "column": "pqd2_r_ksum",
+            "type": "decimal",
+            "formula": "<Activity x:Class=\"XrmWorkflow00000000000000000000000000000000\" xmlns=\"http://schemas.microsoft.com/netfx/2009/xaml/activities\" xmlns:mcwc=\"clr-namespace:Microsoft.Crm.Workflow.ClientActivities;assembly=Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mva=\"clr-namespace:Microsoft.VisualBasic.Activities;assembly=System.Activities, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxs=\"clr-namespace:Microsoft.Xrm.Sdk;assembly=Microsoft.Xrm.Sdk, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxswa=\"clr-namespace:Microsoft.Xrm.Sdk.Workflow.Activities;assembly=Microsoft.Xrm.Sdk.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:s=\"clr-namespace:System;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:scg=\"clr-namespace:System.Collections.Generic;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:srs=\"clr-namespace:System.Runtime.Serialization;assembly=System.Runtime.Serialization, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:this=\"clr-namespace:\" xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\">\r\n  <x:Members>\r\n    <x:Property Name=\"InputEntities\" Type=\"InArgument(scg:IDictionary(x:String, mxs:Entity))\" />\r\n    <x:Property Name=\"CreatedEntities\" Type=\"InArgument(scg:IDictionary(x:String, mxs:Entity))\" />\r\n  </x:Members>\r\n  <this:XrmWorkflow00000000000000000000000000000000.InputEntities>\r\n    <InArgument x:TypeArguments=\"scg:IDictionary(x:String, mxs:Entity)\" />\r\n  </this:XrmWorkflow00000000000000000000000000000000.InputEntities>\r\n  <this:XrmWorkflow00000000000000000000000000000000.CreatedEntities>\r\n    <InArgument x:TypeArguments=\"scg:IDictionary(x:String, mxs:Entity)\" />\r\n  </this:XrmWorkflow00000000000000000000000000000000.CreatedEntities>\r\n  <mva:VisualBasic.Settings>Assembly references and imported namespaces for internal implementation</mva:VisualBasic.Settings>\r\n  <mxswa:Workflow>\r\n    <Sequence DisplayName=\"RollupRuleStep1\">\r\n      <Sequence DisplayName=\"Source\">\r\n        <Sequence.Variables>\r\n          <Variable x:TypeArguments=\"x:String\" Default=\"[Nothing]\" Name=\"HierarchicalRelationshipName\" />\r\n        </Sequence.Variables>\r\n      </Sequence>\r\n      <Sequence DisplayName=\"Target\">\r\n        <mcwc:SetAttributeValue DisplayName=\"pqd2_child.pqd2_parentid.pqd2_parent_child\" Entity=\"[CreatedEntities(&quot;relatedlinked_pqd2_parent_child#pqd2_parentid#pqd2_child#Temp&quot;)]\" EntityName=\"pqd2_child\" />\r\n      </Sequence>\r\n      <Sequence DisplayName=\"Aggregate\">\r\n        <Sequence.Variables>\r\n          <Variable x:TypeArguments=\"x:Object\" Name=\"RollupRuleStep1_1\" />\r\n          <Variable x:TypeArguments=\"x:Object\" Name=\"RollupRuleStep1_2\" />\r\n        </Sequence.Variables>\r\n        <mxswa:GetEntityProperty Attribute=\"pqd2_amount\" Entity=\"[InputEntities(&quot;primaryEntity&quot;)]\" EntityName=\"pqd2_child\" Value=\"[RollupRuleStep1_2]\">\r\n          <mxswa:GetEntityProperty.TargetType>\r\n            <InArgument x:TypeArguments=\"s:Type\">\r\n              <mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\">\r\n                <x:Null />\r\n              </mxswa:ReferenceLiteral>\r\n            </InArgument>\r\n          </mxswa:GetEntityProperty.TargetType>\r\n        </mxswa:GetEntityProperty>\r\n        <mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\">\r\n          <mxswa:ActivityReference.Arguments>\r\n            <InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">Sum</InArgument>\r\n            <InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { RollupRuleStep1_2 }]</InArgument>\r\n            <InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\">\r\n              <mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\">\r\n                <x:Null />\r\n              </mxswa:ReferenceLiteral>\r\n            </InArgument>\r\n            <OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[RollupRuleStep1_1]</OutArgument>\r\n          </mxswa:ActivityReference.Arguments>\r\n        </mxswa:ActivityReference>\r\n      </Sequence>\r\n    </Sequence>\r\n  </mxswa:Workflow>\r\n</Activity>"
+          },
+          {
+            "column": "pqd2_r_kavg",
+            "type": "decimal",
+            "formula": "<Activity x:Class=\"XrmWorkflow00000000000000000000000000000000\" xmlns=\"http://schemas.microsoft.com/netfx/2009/xaml/activities\" xmlns:mcwc=\"clr-namespace:Microsoft.Crm.Workflow.ClientActivities;assembly=Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mva=\"clr-namespace:Microsoft.VisualBasic.Activities;assembly=System.Activities, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxs=\"clr-namespace:Microsoft.Xrm.Sdk;assembly=Microsoft.Xrm.Sdk, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxswa=\"clr-namespace:Microsoft.Xrm.Sdk.Workflow.Activities;assembly=Microsoft.Xrm.Sdk.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:s=\"clr-namespace:System;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:scg=\"clr-namespace:System.Collections.Generic;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:srs=\"clr-namespace:System.Runtime.Serialization;assembly=System.Runtime.Serialization, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:this=\"clr-namespace:\" xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\">\r\n  <x:Members>\r\n    <x:Property Name=\"InputEntities\" Type=\"InArgument(scg:IDictionary(x:String, mxs:Entity))\" />\r\n    <x:Property Name=\"CreatedEntities\" Type=\"InArgument(scg:IDictionary(x:String, mxs:Entity))\" />\r\n  </x:Members>\r\n  <this:XrmWorkflow00000000000000000000000000000000.InputEntities>\r\n    <InArgument x:TypeArguments=\"scg:IDictionary(x:String, mxs:Entity)\" />\r\n  </this:XrmWorkflow00000000000000000000000000000000.InputEntities>\r\n  <this:XrmWorkflow00000000000000000000000000000000.CreatedEntities>\r\n    <InArgument x:TypeArguments=\"scg:IDictionary(x:String, mxs:Entity)\" />\r\n  </this:XrmWorkflow00000000000000000000000000000000.CreatedEntities>\r\n  <mva:VisualBasic.Settings>Assembly references and imported namespaces for internal implementation</mva:VisualBasic.Settings>\r\n  <mxswa:Workflow>\r\n    <Sequence DisplayName=\"RollupRuleStep1\">\r\n      <Sequence DisplayName=\"Source\">\r\n        <Sequence.Variables>\r\n          <Variable x:TypeArguments=\"x:String\" Default=\"[Nothing]\" Name=\"HierarchicalRelationshipName\" />\r\n        </Sequence.Variables>\r\n      </Sequence>\r\n      <Sequence DisplayName=\"Target\">\r\n        <mcwc:SetAttributeValue DisplayName=\"pqd2_child.pqd2_parentid.pqd2_parent_child\" Entity=\"[CreatedEntities(&quot;relatedlinked_pqd2_parent_child#pqd2_parentid#pqd2_child#Temp&quot;)]\" EntityName=\"pqd2_child\" />\r\n      </Sequence>\r\n      <Sequence DisplayName=\"Aggregate\">\r\n        <Sequence.Variables>\r\n          <Variable x:TypeArguments=\"x:Object\" Name=\"RollupRuleStep1_1\" />\r\n          <Variable x:TypeArguments=\"x:Object\" Name=\"RollupRuleStep1_2\" />\r\n        </Sequence.Variables>\r\n        <mxswa:GetEntityProperty Attribute=\"pqd2_amount\" Entity=\"[InputEntities(&quot;primaryEntity&quot;)]\" EntityName=\"pqd2_child\" Value=\"[RollupRuleStep1_2]\">\r\n          <mxswa:GetEntityProperty.TargetType>\r\n            <InArgument x:TypeArguments=\"s:Type\">\r\n              <mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\">\r\n                <x:Null />\r\n              </mxswa:ReferenceLiteral>\r\n            </InArgument>\r\n          </mxswa:GetEntityProperty.TargetType>\r\n        </mxswa:GetEntityProperty>\r\n        <mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\">\r\n          <mxswa:ActivityReference.Arguments>\r\n            <InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">Average</InArgument>\r\n            <InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { RollupRuleStep1_2 }]</InArgument>\r\n            <InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\">\r\n              <mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\">\r\n                <x:Null />\r\n              </mxswa:ReferenceLiteral>\r\n            </InArgument>\r\n            <OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[RollupRuleStep1_1]</OutArgument>\r\n          </mxswa:ActivityReference.Arguments>\r\n        </mxswa:ActivityReference>\r\n      </Sequence>\r\n    </Sequence>\r\n  </mxswa:Workflow>\r\n</Activity>"
+          },
+          {
+            "column": "pqd2_r_kmin",
+            "type": "decimal",
+            "formula": "<Activity x:Class=\"XrmWorkflow00000000000000000000000000000000\" xmlns=\"http://schemas.microsoft.com/netfx/2009/xaml/activities\" xmlns:mcwc=\"clr-namespace:Microsoft.Crm.Workflow.ClientActivities;assembly=Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mva=\"clr-namespace:Microsoft.VisualBasic.Activities;assembly=System.Activities, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxs=\"clr-namespace:Microsoft.Xrm.Sdk;assembly=Microsoft.Xrm.Sdk, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxswa=\"clr-namespace:Microsoft.Xrm.Sdk.Workflow.Activities;assembly=Microsoft.Xrm.Sdk.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:s=\"clr-namespace:System;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:scg=\"clr-namespace:System.Collections.Generic;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:srs=\"clr-namespace:System.Runtime.Serialization;assembly=System.Runtime.Serialization, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:this=\"clr-namespace:\" xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\">\r\n  <x:Members>\r\n    <x:Property Name=\"InputEntities\" Type=\"InArgument(scg:IDictionary(x:String, mxs:Entity))\" />\r\n    <x:Property Name=\"CreatedEntities\" Type=\"InArgument(scg:IDictionary(x:String, mxs:Entity))\" />\r\n  </x:Members>\r\n  <this:XrmWorkflow00000000000000000000000000000000.InputEntities>\r\n    <InArgument x:TypeArguments=\"scg:IDictionary(x:String, mxs:Entity)\" />\r\n  </this:XrmWorkflow00000000000000000000000000000000.InputEntities>\r\n  <this:XrmWorkflow00000000000000000000000000000000.CreatedEntities>\r\n    <InArgument x:TypeArguments=\"scg:IDictionary(x:String, mxs:Entity)\" />\r\n  </this:XrmWorkflow00000000000000000000000000000000.CreatedEntities>\r\n  <mva:VisualBasic.Settings>Assembly references and imported namespaces for internal implementation</mva:VisualBasic.Settings>\r\n  <mxswa:Workflow>\r\n    <Sequence DisplayName=\"RollupRuleStep1\">\r\n      <Sequence DisplayName=\"Source\">\r\n        <Sequence.Variables>\r\n          <Variable x:TypeArguments=\"x:String\" Default=\"[Nothing]\" Name=\"HierarchicalRelationshipName\" />\r\n        </Sequence.Variables>\r\n      </Sequence>\r\n      <Sequence DisplayName=\"Target\">\r\n        <mcwc:SetAttributeValue DisplayName=\"pqd2_child.pqd2_parentid.pqd2_parent_child\" Entity=\"[CreatedEntities(&quot;relatedlinked_pqd2_parent_child#pqd2_parentid#pqd2_child#Temp&quot;)]\" EntityName=\"pqd2_child\" />\r\n      </Sequence>\r\n      <Sequence DisplayName=\"Aggregate\">\r\n        <Sequence.Variables>\r\n          <Variable x:TypeArguments=\"x:Object\" Name=\"RollupRuleStep1_1\" />\r\n          <Variable x:TypeArguments=\"x:Object\" Name=\"RollupRuleStep1_2\" />\r\n        </Sequence.Variables>\r\n        <mxswa:GetEntityProperty Attribute=\"pqd2_amount\" Entity=\"[InputEntities(&quot;primaryEntity&quot;)]\" EntityName=\"pqd2_child\" Value=\"[RollupRuleStep1_2]\">\r\n          <mxswa:GetEntityProperty.TargetType>\r\n            <InArgument x:TypeArguments=\"s:Type\">\r\n              <mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\">\r\n                <x:Null />\r\n              </mxswa:ReferenceLiteral>\r\n            </InArgument>\r\n          </mxswa:GetEntityProperty.TargetType>\r\n        </mxswa:GetEntityProperty>\r\n        <mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\">\r\n          <mxswa:ActivityReference.Arguments>\r\n            <InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">Minimum</InArgument>\r\n            <InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { RollupRuleStep1_2 }]</InArgument>\r\n            <InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\">\r\n              <mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\">\r\n                <x:Null />\r\n              </mxswa:ReferenceLiteral>\r\n            </InArgument>\r\n            <OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[RollupRuleStep1_1]</OutArgument>\r\n          </mxswa:ActivityReference.Arguments>\r\n        </mxswa:ActivityReference>\r\n      </Sequence>\r\n    </Sequence>\r\n  </mxswa:Workflow>\r\n</Activity>"
+          },
+          {
+            "column": "pqd2_r_kmaxdate",
+            "type": "datetime",
+            "formula": "<Activity x:Class=\"XrmWorkflow00000000000000000000000000000000\" xmlns=\"http://schemas.microsoft.com/netfx/2009/xaml/activities\" xmlns:mcwc=\"clr-namespace:Microsoft.Crm.Workflow.ClientActivities;assembly=Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mva=\"clr-namespace:Microsoft.VisualBasic.Activities;assembly=System.Activities, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxs=\"clr-namespace:Microsoft.Xrm.Sdk;assembly=Microsoft.Xrm.Sdk, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxswa=\"clr-namespace:Microsoft.Xrm.Sdk.Workflow.Activities;assembly=Microsoft.Xrm.Sdk.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:s=\"clr-namespace:System;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:scg=\"clr-namespace:System.Collections.Generic;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:srs=\"clr-namespace:System.Runtime.Serialization;assembly=System.Runtime.Serialization, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:this=\"clr-namespace:\" xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\">\r\n  <x:Members>\r\n    <x:Property Name=\"InputEntities\" Type=\"InArgument(scg:IDictionary(x:String, mxs:Entity))\" />\r\n    <x:Property Name=\"CreatedEntities\" Type=\"InArgument(scg:IDictionary(x:String, mxs:Entity))\" />\r\n  </x:Members>\r\n  <this:XrmWorkflow00000000000000000000000000000000.InputEntities>\r\n    <InArgument x:TypeArguments=\"scg:IDictionary(x:String, mxs:Entity)\" />\r\n  </this:XrmWorkflow00000000000000000000000000000000.InputEntities>\r\n  <this:XrmWorkflow00000000000000000000000000000000.CreatedEntities>\r\n    <InArgument x:TypeArguments=\"scg:IDictionary(x:String, mxs:Entity)\" />\r\n  </this:XrmWorkflow00000000000000000000000000000000.CreatedEntities>\r\n  <mva:VisualBasic.Settings>Assembly references and imported namespaces for internal implementation</mva:VisualBasic.Settings>\r\n  <mxswa:Workflow>\r\n    <Sequence DisplayName=\"RollupRuleStep1\">\r\n      <Sequence DisplayName=\"Source\">\r\n        <Sequence.Variables>\r\n          <Variable x:TypeArguments=\"x:String\" Default=\"[Nothing]\" Name=\"HierarchicalRelationshipName\" />\r\n        </Sequence.Variables>\r\n      </Sequence>\r\n      <Sequence DisplayName=\"Target\">\r\n        <mcwc:SetAttributeValue DisplayName=\"pqd2_child.pqd2_parentid.pqd2_parent_child\" Entity=\"[CreatedEntities(&quot;relatedlinked_pqd2_parent_child#pqd2_parentid#pqd2_child#Temp&quot;)]\" EntityName=\"pqd2_child\" />\r\n      </Sequence>\r\n      <Sequence DisplayName=\"Aggregate\">\r\n        <Sequence.Variables>\r\n          <Variable x:TypeArguments=\"x:Object\" Name=\"RollupRuleStep1_1\" />\r\n          <Variable x:TypeArguments=\"x:Object\" Name=\"RollupRuleStep1_2\" />\r\n        </Sequence.Variables>\r\n        <mxswa:GetEntityProperty Attribute=\"pqd2_duedate\" Entity=\"[InputEntities(&quot;primaryEntity&quot;)]\" EntityName=\"pqd2_child\" Value=\"[RollupRuleStep1_2]\">\r\n          <mxswa:GetEntityProperty.TargetType>\r\n            <InArgument x:TypeArguments=\"s:Type\">\r\n              <mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\">\r\n                <x:Null />\r\n              </mxswa:ReferenceLiteral>\r\n            </InArgument>\r\n          </mxswa:GetEntityProperty.TargetType>\r\n        </mxswa:GetEntityProperty>\r\n        <mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\">\r\n          <mxswa:ActivityReference.Arguments>\r\n            <InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">Maximum</InArgument>\r\n            <InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { RollupRuleStep1_2 }]</InArgument>\r\n            <InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\">\r\n              <mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\">\r\n                <x:Null />\r\n              </mxswa:ReferenceLiteral>\r\n            </InArgument>\r\n            <OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[RollupRuleStep1_1]</OutArgument>\r\n          </mxswa:ActivityReference.Arguments>\r\n        </mxswa:ActivityReference>\r\n      </Sequence>\r\n    </Sequence>\r\n  </mxswa:Workflow>\r\n</Activity>"
+          },
+          {
+            "column": "pqd2_r_kself",
+            "type": "decimal",
+            "formula": "<Activity x:Class=\"XrmWorkflow00000000000000000000000000000000\" xmlns=\"http://schemas.microsoft.com/netfx/2009/xaml/activities\" xmlns:mva=\"clr-namespace:Microsoft.VisualBasic.Activities;assembly=System.Activities, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxs=\"clr-namespace:Microsoft.Xrm.Sdk;assembly=Microsoft.Xrm.Sdk, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxswa=\"clr-namespace:Microsoft.Xrm.Sdk.Workflow.Activities;assembly=Microsoft.Xrm.Sdk.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:s=\"clr-namespace:System;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:scg=\"clr-namespace:System.Collections.Generic;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:srs=\"clr-namespace:System.Runtime.Serialization;assembly=System.Runtime.Serialization, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:this=\"clr-namespace:\" xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\">\r\n  <x:Members>\r\n    <x:Property Name=\"InputEntities\" Type=\"InArgument(scg:IDictionary(x:String, mxs:Entity))\" />\r\n    <x:Property Name=\"CreatedEntities\" Type=\"InArgument(scg:IDictionary(x:String, mxs:Entity))\" />\r\n  </x:Members>\r\n  <this:XrmWorkflow00000000000000000000000000000000.InputEntities>\r\n    <InArgument x:TypeArguments=\"scg:IDictionary(x:String, mxs:Entity)\" />\r\n  </this:XrmWorkflow00000000000000000000000000000000.InputEntities>\r\n  <this:XrmWorkflow00000000000000000000000000000000.CreatedEntities>\r\n    <InArgument x:TypeArguments=\"scg:IDictionary(x:String, mxs:Entity)\" />\r\n  </this:XrmWorkflow00000000000000000000000000000000.CreatedEntities>\r\n  <mva:VisualBasic.Settings>Assembly references and imported namespaces for internal implementation</mva:VisualBasic.Settings>\r\n  <mxswa:Workflow>\r\n    <Sequence DisplayName=\"RollupRuleStep1\">\r\n      <Sequence DisplayName=\"Source\">\r\n        <Sequence.Variables>\r\n          <Variable x:TypeArguments=\"x:String\" Default=\"pqd2_parent_parent\" Name=\"HierarchicalRelationshipName\" />\r\n        </Sequence.Variables>\r\n      </Sequence>\r\n      <Sequence DisplayName=\"Target\" />\r\n      <Sequence DisplayName=\"Aggregate\">\r\n        <Sequence.Variables>\r\n          <Variable x:TypeArguments=\"x:Object\" Name=\"RollupRuleStep1_1\" />\r\n          <Variable x:TypeArguments=\"x:Object\" Name=\"RollupRuleStep1_2\" />\r\n        </Sequence.Variables>\r\n        <mxswa:GetEntityProperty Attribute=\"pqd2_own\" Entity=\"[InputEntities(&quot;primaryEntity&quot;)]\" EntityName=\"pqd2_parent\" Value=\"[RollupRuleStep1_2]\">\r\n          <mxswa:GetEntityProperty.TargetType>\r\n            <InArgument x:TypeArguments=\"s:Type\">\r\n              <mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\">\r\n                <x:Null />\r\n              </mxswa:ReferenceLiteral>\r\n            </InArgument>\r\n          </mxswa:GetEntityProperty.TargetType>\r\n        </mxswa:GetEntityProperty>\r\n        <mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\">\r\n          <mxswa:ActivityReference.Arguments>\r\n            <InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">Sum</InArgument>\r\n            <InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { RollupRuleStep1_2 }]</InArgument>\r\n            <InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\">\r\n              <mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\">\r\n                <x:Null />\r\n              </mxswa:ReferenceLiteral>\r\n            </InArgument>\r\n            <OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[RollupRuleStep1_1]</OutArgument>\r\n          </mxswa:ActivityReference.Arguments>\r\n        </mxswa:ActivityReference>\r\n      </Sequence>\r\n    </Sequence>\r\n  </mxswa:Workflow>\r\n</Activity>"
+          }
+        ],
+        "seed": {
+          "parents": [
+            {
+              "key": "P1",
+              "hierarchyParent": null,
+              "values": {
+                "pqd2_own": 10
+              }
+            },
+            {
+              "key": "P2",
+              "hierarchyParent": "P1",
+              "values": {
+                "pqd2_own": 20.5
+              }
+            },
+            {
+              "key": "P3",
+              "hierarchyParent": "P2",
+              "values": {
+                "pqd2_own": 5
+              }
+            },
+            {
+              "key": "P4",
+              "hierarchyParent": null,
+              "values": {}
+            }
+          ],
+          "children": [
+            {
+              "key": "c1",
+              "parent": "P1",
+              "values": {
+                "pqd2_amount": 5,
+                "pqd2_duedate": "2026-01-10T10:00:00Z"
+              }
+            },
+            {
+              "key": "c2",
+              "parent": "P1",
+              "values": {
+                "pqd2_amount": 20,
+                "pqd2_duedate": "2026-03-05T00:00:00Z"
+              }
+            },
+            {
+              "key": "c3",
+              "parent": "P1",
+              "values": {
+                "pqd2_amount": 150
+              }
+            },
+            {
+              "key": "c4",
+              "parent": "P2",
+              "values": {
+                "pqd2_amount": 40,
+                "pqd2_duedate": "2026-02-01T08:30:00Z"
+              }
+            },
+            {
+              "key": "c5",
+              "parent": "P3",
+              "values": {
+                "pqd2_amount": 100,
+                "pqd2_duedate": "2027-01-01T00:00:00Z"
+              }
+            }
+          ]
+        },
+        "steps": [
+          {
+            "kind": "seed"
+          },
+          {
+            "kind": "read",
+            "label": "seeded"
+          },
+          {
+            "kind": "mass",
+            "column": "pqd2_r_kcount"
+          },
+          {
+            "kind": "mass",
+            "column": "pqd2_r_ksum"
+          },
+          {
+            "kind": "mass",
+            "column": "pqd2_r_kavg"
+          },
+          {
+            "kind": "mass",
+            "column": "pqd2_r_kmin"
+          },
+          {
+            "kind": "mass",
+            "column": "pqd2_r_kmaxdate"
+          },
+          {
+            "kind": "mass",
+            "column": "pqd2_r_kself"
+          },
+          {
+            "kind": "read",
+            "label": "after-mass"
+          },
+          {
+            "kind": "write-child",
+            "key": "c1",
+            "values": {
+              "pqd2_amount": 7
+            }
+          },
+          {
+            "kind": "create-parent",
+            "key": "P8",
+            "hierarchyParent": null,
+            "values": {
+              "pqd2_own": 3
+            }
+          },
+          {
+            "kind": "create-child",
+            "key": "c9",
+            "parent": "P8",
+            "values": {
+              "pqd2_amount": 4,
+              "pqd2_duedate": "2026-07-01T00:00:00Z"
+            }
+          },
+          {
+            "kind": "read",
+            "label": "after-writes"
+          },
+          {
+            "kind": "write-child",
+            "key": "c2",
+            "values": {
+              "pqd2_amount": 25
+            }
+          },
+          {
+            "kind": "create-parent",
+            "key": "P9",
+            "hierarchyParent": null,
+            "values": {
+              "pqd2_own": 2
+            }
+          },
+          {
+            "kind": "create-child",
+            "key": "c10",
+            "parent": "P9",
+            "values": {
+              "pqd2_amount": 6,
+              "pqd2_duedate": "2026-08-01T00:00:00Z"
+            }
+          },
+          {
+            "kind": "write-child",
+            "key": "c3",
+            "values": {
+              "pqd2_amount": 160
+            }
+          },
+          {
+            "kind": "create-parent",
+            "key": "P10",
+            "hierarchyParent": null,
+            "values": {
+              "pqd2_own": 1
+            }
+          },
+          {
+            "kind": "create-child",
+            "key": "c12",
+            "parent": "P10",
+            "values": {
+              "pqd2_amount": 8,
+              "pqd2_duedate": "2026-09-01T00:00:00Z"
+            }
+          },
+          {
+            "kind": "entity-job"
+          },
+          {
+            "kind": "read",
+            "label": "after-hourly-job"
+          }
+        ]
+      },
+      "output": {
+        "seeded": {
+          "P1": {
+            "pqd2_r_kcount": {
+              "value": 0,
+              "state": 0,
+              "date": null
+            },
+            "pqd2_r_ksum": {
+              "value": 0,
+              "state": 0,
+              "date": null
+            },
+            "pqd2_r_kavg": {
+              "value": 0,
+              "state": 0,
+              "date": null
+            },
+            "pqd2_r_kmin": {
+              "value": null,
+              "state": 0,
+              "date": null
+            },
+            "pqd2_r_kmaxdate": {
+              "value": null,
+              "state": 0,
+              "date": null
+            },
+            "pqd2_r_kself": {
+              "value": null,
+              "state": 0,
+              "date": null
+            }
+          },
+          "P2": {
+            "pqd2_r_kcount": {
+              "value": 0,
+              "state": 0,
+              "date": null
+            },
+            "pqd2_r_ksum": {
+              "value": 0,
+              "state": 0,
+              "date": null
+            },
+            "pqd2_r_kavg": {
+              "value": 0,
+              "state": 0,
+              "date": null
+            },
+            "pqd2_r_kmin": {
+              "value": null,
+              "state": 0,
+              "date": null
+            },
+            "pqd2_r_kmaxdate": {
+              "value": null,
+              "state": 0,
+              "date": null
+            },
+            "pqd2_r_kself": {
+              "value": null,
+              "state": 0,
+              "date": null
+            }
+          },
+          "P3": {
+            "pqd2_r_kcount": {
+              "value": 0,
+              "state": 0,
+              "date": null
+            },
+            "pqd2_r_ksum": {
+              "value": 0,
+              "state": 0,
+              "date": null
+            },
+            "pqd2_r_kavg": {
+              "value": 0,
+              "state": 0,
+              "date": null
+            },
+            "pqd2_r_kmin": {
+              "value": null,
+              "state": 0,
+              "date": null
+            },
+            "pqd2_r_kmaxdate": {
+              "value": null,
+              "state": 0,
+              "date": null
+            },
+            "pqd2_r_kself": {
+              "value": null,
+              "state": 0,
+              "date": null
+            }
+          },
+          "P4": {
+            "pqd2_r_kcount": {
+              "value": 0,
+              "state": 0,
+              "date": null
+            },
+            "pqd2_r_ksum": {
+              "value": 0,
+              "state": 0,
+              "date": null
+            },
+            "pqd2_r_kavg": {
+              "value": 0,
+              "state": 0,
+              "date": null
+            },
+            "pqd2_r_kmin": {
+              "value": null,
+              "state": 0,
+              "date": null
+            },
+            "pqd2_r_kmaxdate": {
+              "value": null,
+              "state": 0,
+              "date": null
+            },
+            "pqd2_r_kself": {
+              "value": null,
+              "state": 0,
+              "date": null
+            }
+          }
+        },
+        "after-mass": {
+          "P1": {
+            "pqd2_r_kcount": {
+              "value": 3,
+              "state": 1,
+              "date": "mass"
+            },
+            "pqd2_r_ksum": {
+              "value": 175,
+              "state": 1,
+              "date": "mass"
+            },
+            "pqd2_r_kavg": {
+              "value": 58.33,
+              "state": 1,
+              "date": "mass"
+            },
+            "pqd2_r_kmin": {
+              "value": 5,
+              "state": 1,
+              "date": "mass"
+            },
+            "pqd2_r_kmaxdate": {
+              "value": "2026-03-05T00:00:00Z",
+              "state": 1,
+              "date": "mass"
+            },
+            "pqd2_r_kself": {
+              "value": 35.5,
+              "state": 1,
+              "date": "mass"
+            }
+          },
+          "P2": {
+            "pqd2_r_kcount": {
+              "value": 1,
+              "state": 1,
+              "date": "mass"
+            },
+            "pqd2_r_ksum": {
+              "value": 40,
+              "state": 1,
+              "date": "mass"
+            },
+            "pqd2_r_kavg": {
+              "value": 40,
+              "state": 1,
+              "date": "mass"
+            },
+            "pqd2_r_kmin": {
+              "value": 40,
+              "state": 1,
+              "date": "mass"
+            },
+            "pqd2_r_kmaxdate": {
+              "value": "2026-02-01T08:30:00Z",
+              "state": 1,
+              "date": "mass"
+            },
+            "pqd2_r_kself": {
+              "value": 25.5,
+              "state": 1,
+              "date": "mass"
+            }
+          },
+          "P3": {
+            "pqd2_r_kcount": {
+              "value": 1,
+              "state": 1,
+              "date": "mass"
+            },
+            "pqd2_r_ksum": {
+              "value": 100,
+              "state": 1,
+              "date": "mass"
+            },
+            "pqd2_r_kavg": {
+              "value": 100,
+              "state": 1,
+              "date": "mass"
+            },
+            "pqd2_r_kmin": {
+              "value": 100,
+              "state": 1,
+              "date": "mass"
+            },
+            "pqd2_r_kmaxdate": {
+              "value": "2027-01-01T00:00:00Z",
+              "state": 1,
+              "date": "mass"
+            },
+            "pqd2_r_kself": {
+              "value": 5,
+              "state": 1,
+              "date": "mass"
+            }
+          },
+          "P4": {
+            "pqd2_r_kcount": {
+              "value": 0,
+              "state": 0,
+              "date": "mass"
+            },
+            "pqd2_r_ksum": {
+              "value": 0,
+              "state": 0,
+              "date": "mass"
+            },
+            "pqd2_r_kavg": {
+              "value": 0,
+              "state": 1,
+              "date": "mass"
+            },
+            "pqd2_r_kmin": {
+              "value": null,
+              "state": 0,
+              "date": "mass"
+            },
+            "pqd2_r_kmaxdate": {
+              "value": null,
+              "state": 0,
+              "date": "mass"
+            },
+            "pqd2_r_kself": {
+              "value": 0,
+              "state": 1,
+              "date": "mass"
+            }
+          }
+        },
+        "after-writes": {
+          "P1": {
+            "pqd2_r_kcount": {
+              "value": 3,
+              "state": 1,
+              "date": "mass"
+            },
+            "pqd2_r_ksum": {
+              "value": 175,
+              "state": 1,
+              "date": "mass"
+            },
+            "pqd2_r_kavg": {
+              "value": 58.33,
+              "state": 1,
+              "date": "mass"
+            },
+            "pqd2_r_kmin": {
+              "value": 5,
+              "state": 1,
+              "date": "mass"
+            },
+            "pqd2_r_kmaxdate": {
+              "value": "2026-03-05T00:00:00Z",
+              "state": 1,
+              "date": "mass"
+            },
+            "pqd2_r_kself": {
+              "value": 35.5,
+              "state": 1,
+              "date": "mass"
+            }
+          },
+          "P2": {
+            "pqd2_r_kcount": {
+              "value": 1,
+              "state": 1,
+              "date": "mass"
+            },
+            "pqd2_r_ksum": {
+              "value": 40,
+              "state": 1,
+              "date": "mass"
+            },
+            "pqd2_r_kavg": {
+              "value": 40,
+              "state": 1,
+              "date": "mass"
+            },
+            "pqd2_r_kmin": {
+              "value": 40,
+              "state": 1,
+              "date": "mass"
+            },
+            "pqd2_r_kmaxdate": {
+              "value": "2026-02-01T08:30:00Z",
+              "state": 1,
+              "date": "mass"
+            },
+            "pqd2_r_kself": {
+              "value": 25.5,
+              "state": 1,
+              "date": "mass"
+            }
+          },
+          "P3": {
+            "pqd2_r_kcount": {
+              "value": 1,
+              "state": 1,
+              "date": "mass"
+            },
+            "pqd2_r_ksum": {
+              "value": 100,
+              "state": 1,
+              "date": "mass"
+            },
+            "pqd2_r_kavg": {
+              "value": 100,
+              "state": 1,
+              "date": "mass"
+            },
+            "pqd2_r_kmin": {
+              "value": 100,
+              "state": 1,
+              "date": "mass"
+            },
+            "pqd2_r_kmaxdate": {
+              "value": "2027-01-01T00:00:00Z",
+              "state": 1,
+              "date": "mass"
+            },
+            "pqd2_r_kself": {
+              "value": 5,
+              "state": 1,
+              "date": "mass"
+            }
+          },
+          "P4": {
+            "pqd2_r_kcount": {
+              "value": 0,
+              "state": 0,
+              "date": "mass"
+            },
+            "pqd2_r_ksum": {
+              "value": 0,
+              "state": 0,
+              "date": "mass"
+            },
+            "pqd2_r_kavg": {
+              "value": 0,
+              "state": 1,
+              "date": "mass"
+            },
+            "pqd2_r_kmin": {
+              "value": null,
+              "state": 0,
+              "date": "mass"
+            },
+            "pqd2_r_kmaxdate": {
+              "value": null,
+              "state": 0,
+              "date": "mass"
+            },
+            "pqd2_r_kself": {
+              "value": 0,
+              "state": 1,
+              "date": "mass"
+            }
+          },
+          "P8": {
+            "pqd2_r_kcount": {
+              "value": 0,
+              "state": 0,
+              "date": "mass"
+            },
+            "pqd2_r_ksum": {
+              "value": 0,
+              "state": 0,
+              "date": "mass"
+            },
+            "pqd2_r_kavg": {
+              "value": 0,
+              "state": 0,
+              "date": "mass"
+            },
+            "pqd2_r_kmin": {
+              "value": null,
+              "state": 0,
+              "date": "mass"
+            },
+            "pqd2_r_kmaxdate": {
+              "value": null,
+              "state": 0,
+              "date": "mass"
+            },
+            "pqd2_r_kself": {
+              "value": null,
+              "state": 0,
+              "date": "mass"
+            }
+          }
+        },
+        "after-hourly-job": {
+          "P1": {
+            "pqd2_r_kcount": {
+              "value": 3,
+              "state": 1,
+              "date": "mass"
+            },
+            "pqd2_r_ksum": {
+              "value": 192,
+              "state": 1,
+              "date": "entity"
+            },
+            "pqd2_r_kavg": {
+              "value": 64,
+              "state": 1,
+              "date": "entity"
+            },
+            "pqd2_r_kmin": {
+              "value": 7,
+              "state": 1,
+              "date": "entity"
+            },
+            "pqd2_r_kmaxdate": {
+              "value": "2026-03-05T00:00:00Z",
+              "state": 1,
+              "date": "mass"
+            },
+            "pqd2_r_kself": {
+              "value": 35.5,
+              "state": 1,
+              "date": "mass"
+            }
+          },
+          "P2": {
+            "pqd2_r_kcount": {
+              "value": 1,
+              "state": 1,
+              "date": "mass"
+            },
+            "pqd2_r_ksum": {
+              "value": 40,
+              "state": 1,
+              "date": "mass"
+            },
+            "pqd2_r_kavg": {
+              "value": 40,
+              "state": 1,
+              "date": "mass"
+            },
+            "pqd2_r_kmin": {
+              "value": 40,
+              "state": 1,
+              "date": "mass"
+            },
+            "pqd2_r_kmaxdate": {
+              "value": "2026-02-01T08:30:00Z",
+              "state": 1,
+              "date": "mass"
+            },
+            "pqd2_r_kself": {
+              "value": 25.5,
+              "state": 1,
+              "date": "mass"
+            }
+          },
+          "P3": {
+            "pqd2_r_kcount": {
+              "value": 1,
+              "state": 1,
+              "date": "mass"
+            },
+            "pqd2_r_ksum": {
+              "value": 100,
+              "state": 1,
+              "date": "mass"
+            },
+            "pqd2_r_kavg": {
+              "value": 100,
+              "state": 1,
+              "date": "mass"
+            },
+            "pqd2_r_kmin": {
+              "value": 100,
+              "state": 1,
+              "date": "mass"
+            },
+            "pqd2_r_kmaxdate": {
+              "value": "2027-01-01T00:00:00Z",
+              "state": 1,
+              "date": "mass"
+            },
+            "pqd2_r_kself": {
+              "value": 5,
+              "state": 1,
+              "date": "mass"
+            }
+          },
+          "P4": {
+            "pqd2_r_kcount": {
+              "value": 0,
+              "state": 0,
+              "date": "mass"
+            },
+            "pqd2_r_ksum": {
+              "value": 0,
+              "state": 0,
+              "date": "mass"
+            },
+            "pqd2_r_kavg": {
+              "value": 0,
+              "state": 1,
+              "date": "mass"
+            },
+            "pqd2_r_kmin": {
+              "value": null,
+              "state": 0,
+              "date": "mass"
+            },
+            "pqd2_r_kmaxdate": {
+              "value": null,
+              "state": 0,
+              "date": "mass"
+            },
+            "pqd2_r_kself": {
+              "value": 0,
+              "state": 1,
+              "date": "mass"
+            }
+          },
+          "P8": {
+            "pqd2_r_kcount": {
+              "value": 1,
+              "state": 1,
+              "date": "entity"
+            },
+            "pqd2_r_ksum": {
+              "value": 4,
+              "state": 1,
+              "date": "entity"
+            },
+            "pqd2_r_kavg": {
+              "value": 4,
+              "state": 1,
+              "date": "entity"
+            },
+            "pqd2_r_kmin": {
+              "value": 4,
+              "state": 1,
+              "date": "entity"
+            },
+            "pqd2_r_kmaxdate": {
+              "value": "2026-07-01T00:00:00Z",
+              "state": 1,
+              "date": "entity"
+            },
+            "pqd2_r_kself": {
+              "value": 3,
+              "state": 1,
+              "date": "entity"
+            }
+          },
+          "P9": {
+            "pqd2_r_kcount": {
+              "value": 1,
+              "state": 1,
+              "date": "entity"
+            },
+            "pqd2_r_ksum": {
+              "value": 6,
+              "state": 1,
+              "date": "entity"
+            },
+            "pqd2_r_kavg": {
+              "value": 6,
+              "state": 1,
+              "date": "entity"
+            },
+            "pqd2_r_kmin": {
+              "value": 6,
+              "state": 1,
+              "date": "entity"
+            },
+            "pqd2_r_kmaxdate": {
+              "value": "2026-08-01T00:00:00Z",
+              "state": 1,
+              "date": "entity"
+            },
+            "pqd2_r_kself": {
+              "value": 2,
+              "state": 1,
+              "date": "entity"
+            }
+          },
+          "P10": {
+            "pqd2_r_kcount": {
+              "value": 1,
+              "state": 1,
+              "date": "entity"
+            },
+            "pqd2_r_ksum": {
+              "value": 8,
+              "state": 1,
+              "date": "entity"
+            },
+            "pqd2_r_kavg": {
+              "value": 8,
+              "state": 1,
+              "date": "entity"
+            },
+            "pqd2_r_kmin": {
+              "value": 8,
+              "state": 1,
+              "date": "entity"
+            },
+            "pqd2_r_kmaxdate": {
+              "value": "2026-09-01T00:00:00Z",
+              "state": 1,
+              "date": "entity"
+            },
+            "pqd2_r_kself": {
+              "value": 1,
+              "state": 1,
+              "date": "entity"
+            }
+          }
+        }
+      },
+      "volatile": []
+    }
+  ],
+  "history": []
+}

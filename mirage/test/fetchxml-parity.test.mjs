@@ -1,3 +1,4 @@
+// @test-kind compatibility: FetchXML query semantics as Microsoft Learn documents them (learn.microsoft.com/power-apps/developer/data-platform/fetchxml/*)
 // FetchXML semantics against documented Dataverse behaviour
 // (learn.microsoft.com/power-apps/developer/data-platform/fetchxml/*).
 import test from 'node:test';
@@ -541,6 +542,7 @@ test('count/page paging cookies round-trip through Liquid and stay XML-attribute
   assert.deepEqual(seen, [`Q "1"`, 'R & 2', 'S <3>', 'T 4', 'U 5'], 'every row appears exactly once');
 });
 
+// @test-kind compatibility+observation: the documented paging cookie wrapper; the context column order (the primary key after the authored columns) is hosted session F7 api-s1-loc-fields locations-fetch-regarding, runs a and b
 test('Web API FetchXML publishes the documented paging cookie wrapper and continuation', async (t) => {
   const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-fetch-parity-'));
   ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
@@ -582,6 +584,6 @@ test('Web API FetchXML publishes the documented paging cookie wrapper and contin
   );
   assert.equal(Object.hasOwn(second, '@Microsoft.Dynamics.CRM.morerecords'), false);
   assert.equal(Object.hasOwn(second, '@Microsoft.Dynamics.CRM.fetchxmlpagingcookie'), false);
-  assert.ok(second['@odata.context'].endsWith('/_api/$metadata#tags(tagid,name)'), second['@odata.context']);
+  assert.ok(second['@odata.context'].endsWith('/_api/$metadata#tags(name,tagid)'), second['@odata.context']);
   assert.equal(second['@Microsoft.Dynamics.CRM.totalrecordcount'], -1);
 });

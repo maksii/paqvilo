@@ -68,6 +68,22 @@ test('another document on the route (a sign-in page) is never merged', () => {
   assert.deepEqual(merged, { html: served, outcome: 'not-entry' });
 });
 
+// @test-kind observation: hosted session F5 (captures code-site-serve-a..d) served the landing page nested in a whole portal page of several hundred lines: the Home page copy on the root, the place of the page content on an application route, its first line joined to the shell's text before it
+test('a landing page nested in a large portal page is laid over on its own lines; the page around it stays', () => {
+  const shell = Array.from({ length: 1500 }, (_, at) => `<script>window.invented${at} = ${at};</script>`);
+  const nested = DEPLOYED.replace('<!doctype html>\n', '');
+  const served = [...shell, `<div id="antiforgerytoken"></div><!doctype html>`, nested, ...shell].join('\n');
+  const local = DEPLOYED.replace('index-OLD.js', 'index-NEW.js');
+  const merged = mergeCompiledEntry({ deployed: DEPLOYED, served, local });
+  assert.equal(merged.outcome, 'applied');
+  assert.equal(merged.html, served.replace('index-OLD.js', 'index-NEW.js'));
+  // A local change on a line the portal page changed is still a conflict.
+  const platform = served.replace('<title>Invented app</title>', '<title>Invented app</title><meta name="platform">');
+  const conflict = mergeCompiledEntry({ deployed: DEPLOYED, served: platform, local: local.replace('Invented', 'X') });
+  assert.equal(conflict.outcome, 'conflict');
+  assert.equal(conflict.html, platform);
+});
+
 test('a line both sides changed is a conflict that names it, and the served document stays', () => {
   const served = DEPLOYED.replace('<title>Invented app</title>', '<title>Invented app</title><meta name="platform">');
   const local = DEPLOYED.replace('Invented app', 'Renamed app');

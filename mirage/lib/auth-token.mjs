@@ -113,48 +113,85 @@ function signIdToken(claims, privateKey) {
   return `${header}.${payload}.${signature}`;
 }
 
-function tokenError(res, status, errorId, message) {
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+// The cache headers of every answer of the token service (hosted session F4, paqvilo-developer hosted-f4 implicit runs a
+// and b).
+const NO_CACHE = Object.freeze({
+  'cache-control': 'no-cache, no-store, must-revalidate',
+  pragma: 'no-cache',
+  expires: '-1',
+});
+
+// .NET's DateTime.ToString() in en-US for a UTC time: 11/27/2026 5:59:29 AM.
+function dotNetTimestamp(milliseconds) {
+  const time = new Date(milliseconds);
+  const hours = time.getUTCHours();
+  const pad = (value) => String(value).padStart(2, '0');
+  return `${time.getUTCMonth() + 1}/${time.getUTCDate()}/${time.getUTCFullYear()} ${hours % 12 || 12}:${pad(time.getUTCMinutes())}:${pad(time.getUTCSeconds())} ${hours < 12 ? 'AM' : 'PM'}`;
+}
+
+function tokenError(res, status, errorId, message, clock = () => Date.now()) {
+  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', ...NO_CACHE });
   res.end(
     JSON.stringify({
       ErrorId: errorId,
       ErrorMessage: message,
-      Timestamp: new Date().toLocaleString('en-US', { timeZone: 'UTC' }),
+      Timestamp: dotNetTimestamp(clock()),
       CorrelationId: randomUUID(),
     }),
   );
   return true;
 }
 
+// The hosted answers (hosted session F4, paqvilo-developer hosted-f4 implicit runs a and b); the platform reached
+// PortalSTS0018 once every other check passed and no certificate was uploaded.
+const ERRORS = Object.freeze({
+  client: [
+    'PortalSTS0001',
+    'Client Id provided in the request is not a valid client Id registered for this portal. Please check the parameter and try again.',
+  ],
+  state: ['PortalSTS0005', 'Length of the state parameter exceeds the maximum allowed length of 20 characters'],
+  nonce: ['PortalSTS0006', 'Length of the nonce parameter exceeds the maximum allowed length of 20 characters.'],
+  responseType: [
+    'PortalSTS0007',
+    'Value provided for the response type parameter is not a supported value. Please check the value and try again.',
+  ],
+  clientLength: [
+    'PortalSTS0010',
+    'Client Id provided in the request is more than the maximum length for the Client Id parameter. Please use a client Id of length less than 36 characters.',
+  ],
+  certificate: [
+    'PortalSTS0018',
+    'The Implicit Grant certificate was not found. Please upload it from the Admin Centre. ',
+  ],
+});
+
+// Cookie authentication's answer to an anonymous AJAX call: 200 with X-Responded-JSON (status 401 and the sign-in
+// location, written as .NET's JavaScriptSerializer writes it, "/" as "\/") and no body; a navigation is redirected.
 function respondAnonymous(req, res, url, origin) {
   const location = `${origin}/SignIn?ReturnUrl=${encodeURIComponent(url.pathname + url.search)}`;
   if (/xmlhttprequest/i.test(req.headers['x-requested-with'] ?? '')) {
     res.writeHead(200, {
-      'content-type': 'text/plain; charset=utf-8',
-      'cache-control': 'no-store',
-      'x-responded-json': JSON.stringify({ status: 401, headers: { location } }),
+      ...NO_CACHE,
+      'content-length': '0',
+      'x-responded-json': JSON.stringify({ status: 401, headers: { location } }).replaceAll('/', String.raw`\/`),
     });
     res.end();
   } else {
-    res.writeHead(302, { location, 'cache-control': 'no-store' });
+    res.writeHead(302, { location, ...NO_CACHE });
     res.end();
   }
 }
 
-function validClient(res, portal, clientId) {
-  if (clientId == null || clientId === '') return true;
+// The client_id check: at most 36 characters (PortalSTS0010), then registered and of letters, digits and hyphens
+// (PortalSTS0001). A request without one passes.
+function clientRefusal(portal, clientId) {
+  if (clientId == null || clientId === '') return null;
+  if (clientId.length > 36) return ERRORS.clientLength;
   const registered = String(setting(portal, 'ImplicitGrantFlow/RegisteredClientId') ?? '')
     .split(';')
     .map((value) => value.trim())
     .filter(Boolean);
-  if (/^[A-Za-z0-9-]{1,36}$/.test(clientId) && registered.includes(clientId)) return true;
-  tokenError(
-    res,
-    400,
-    'PortalSTS0001',
-    'Client Id provided in the request is not a valid client Id registered for this portal. Please check the parameter and try again.',
-  );
-  return false;
+  return /^[A-Za-z0-9-]{1,36}$/.test(clientId) && registered.includes(clientId) ? null : ERRORS.client;
 }
 
 // A form body larger than this is refused with 413; the rest of it is read and discarded, never buffered.
@@ -186,37 +223,39 @@ async function parameters(req, url) {
   return values;
 }
 
-// Answers a request that cannot be served as given and returns true, or returns false. The error ids are Mirage's own, not Microsoft's.
-function refuseInput(res, params) {
-  if (!params) return tokenError(res, 413, 'PortalSTS0003', 'The request body is too large.');
-  if (params.state && !STATE_CHARACTERS.test(params.state))
-    return tokenError(res, 400, 'PortalSTS0002', 'The state parameter is not valid.');
-  if (params.state && params.state.length > MAX_STATE_LENGTH)
-    return tokenError(res, 400, 'PortalSTS0002', `The state parameter must be at most ${MAX_STATE_LENGTH} characters.`);
-  if (params.nonce && params.nonce.length > MAX_NONCE_LENGTH)
-    return tokenError(res, 400, 'PortalSTS0005', `The nonce parameter must be at most ${MAX_NONCE_LENGTH} characters.`);
-  if (params.response_type !== undefined && params.response_type !== 'token')
-    return tokenError(res, 400, 'PortalSTS0004', 'The response_type parameter must be token.');
-  return false;
+// Answers a request that cannot be served as given and returns true, or returns false, in the hosted order: state,
+// nonce, client_id, response_type (hosted session F4: a state and a nonce both too long answer the state's error). The
+// body limit is Mirage's own (413 PortalSTS0003).
+function refuseInput(res, portal, params, clock) {
+  if (!params) return tokenError(res, 413, 'PortalSTS0003', 'The request body is too large.', clock);
+  const refusal =
+    (params.state && params.state.length > MAX_STATE_LENGTH && ERRORS.state) ||
+    (params.nonce && params.nonce.length > MAX_NONCE_LENGTH && ERRORS.nonce) ||
+    clientRefusal(portal, params.client_id) ||
+    (params.response_type !== undefined && params.response_type !== 'token' && ERRORS.responseType) ||
+    // The state is echoed as a response header, so a control character cannot be issued: hosted session F4 answered
+    // such a state, which passed every check, with the certificate error, and so does Mirage.
+    (params.state && !STATE_CHARACTERS.test(params.state) && ERRORS.certificate);
+  return refusal ? tokenError(res, 400, ...refusal, clock) : false;
 }
 
-// The key that signs, or null after answering with Mirage's own error document. A configured key file that cannot be
-// used goes to onKeyError with its path and reason; the response names neither.
-function requestSigningKey(res, portal, signingKeys, onKeyError) {
+// The key that signs, or null after answering the certificate error (PortalSTS0018). A configured key file that cannot
+// be used goes to onKeyError with its path and reason; the response names neither.
+function requestSigningKey(res, portal, signingKeys, onKeyError, clock) {
   try {
     return signingKeyOf(portal, signingKeys);
   } catch (error) {
     if (error.code !== 'IMPLICIT_GRANT_SIGNING_KEY_INVALID') throw error;
     onKeyError?.({ code: error.code, file: error.file, message: error.message });
-    tokenError(res, 500, 'PortalSTS0006', 'The configured implicit grant signing key cannot be used.');
+    tokenError(res, 400, ...ERRORS.certificate, clock);
     return null;
   }
 }
 
 // The public key of the signing key for GET or HEAD /_services/auth/publickey; another method is not handled.
-function handlePublicKey(req, res, portal, signingKeys, onKeyError) {
+function handlePublicKey(req, res, portal, signingKeys, onKeyError, clock) {
   if (!['GET', 'HEAD'].includes(req.method)) return false;
-  const key = requestSigningKey(res, portal, signingKeys, onKeyError);
+  const key = requestSigningKey(res, portal, signingKeys, onKeyError, clock);
   if (!key) return true;
   res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' });
   res.end(req.method === 'HEAD' ? undefined : key.publicKeyPem);
@@ -243,8 +282,30 @@ function idTokenClaims({ contactId, contact, identity, params, clientId, now, li
 }
 
 /**
- * Handle /_services/auth/token and /_services/auth/publickey. `contact` is the signed-in
- * contact row (or null), `origin` the site origin used as the issuer, `signingKeys` the
+ * POST /_services/auth/portalusertoken: the site agent script's portal user token, 200 application/jwt for anonymous
+ * and signed-in visitors alike (hosted session F3, summary-F3.md API-05b; the hosted token body was not recorded). Mirage
+ * signs it with the implicit grant key; its claims (issuer, times and the signed-in contact as sub) are Mirage's own.
+ * It always answers: the token, or the signing key error that requestSigningKey wrote.
+ */
+function portalUserToken(res, { portal, identity, origin, signingKeys, onKeyError, clock }) {
+  const key = requestSigningKey(res, portal, signingKeys, onKeyError);
+  if (!key) return;
+  const now = Math.floor(clock() / 1000);
+  const contactId = identity?.contactId ?? identity?.id ?? null;
+  const claims = {
+    ...(contactId ? { sub: contactId } : {}),
+    iat: now,
+    nbf: now,
+    exp: now + tokenLifetime(portal),
+    iss: new URL(origin).host,
+  };
+  res.writeHead(200, { 'content-type': 'application/jwt; charset=utf-8', 'cache-control': 'no-store' });
+  res.end(signIdToken(claims, key.privateKey));
+}
+
+/**
+ * Handle /_services/auth/token, /_services/auth/publickey and /_services/auth/portalusertoken. `contact` is the
+ * signed-in contact row (or null), `origin` the site origin used as the issuer, `signingKeys` the
  * resolved implicitGrant.signingKeys (paths only) and `onKeyError` a diagnostic sink.
  */
 export async function handleImplicitGrant(
@@ -253,11 +314,21 @@ export async function handleImplicitGrant(
   url,
   { portal, identity, contact, origin, signingKeys, onKeyError, clock = () => Date.now() },
 ) {
-  const route = /^\/_services\/auth\/(token|publickey)\/?$/i.exec(url.pathname)?.[1]?.toLowerCase();
+  const route = /^\/_services\/auth\/(token|publickey|portalusertoken)\/?$/i.exec(url.pathname)?.[1]?.toLowerCase();
   if (!route) return false;
+  if (route === 'portalusertoken') {
+    if (req.method !== 'POST') return false;
+    portalUserToken(res, { portal, identity, origin, signingKeys, onKeyError, clock });
+    return true;
+  }
   if (!enabled(portal)) return false;
-  if (route === 'publickey') return handlePublicKey(req, res, portal, signingKeys, onKeyError);
-  if (req.method !== 'POST') return false;
+  if (route === 'publickey') return handlePublicKey(req, res, portal, signingKeys, onKeyError, clock);
+  if (req.method !== 'POST') {
+    // Hosted session F4 (paqvilo-developer hosted-f4 implicit runs a and b): GET answers 404 without a body.
+    res.writeHead(404, { ...NO_CACHE, 'content-length': '0' });
+    res.end();
+    return true;
+  }
   const contactId = identity?.contactId ?? identity?.id ?? null;
   if (!contactId) {
     // Cookie authentication answers an anonymous AJAX call with 200 and X-Responded-JSON
@@ -266,10 +337,9 @@ export async function handleImplicitGrant(
     return true;
   }
   const params = await parameters(req, url);
-  if (refuseInput(res, params)) return true;
+  if (refuseInput(res, portal, params, clock)) return true;
   const clientId = params.client_id;
-  if (!validClient(res, portal, clientId)) return true;
-  const key = requestSigningKey(res, portal, signingKeys, onKeyError);
+  const key = requestSigningKey(res, portal, signingKeys, onKeyError, clock);
   if (!key) return true;
   const now = Math.floor(clock() / 1000);
   const lifetime = tokenLifetime(portal);

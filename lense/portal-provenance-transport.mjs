@@ -234,14 +234,25 @@ export function createPortalProvenanceTransport(context, configs, { onDescriptor
   const releaseKey = randomBytes(32).toString('hex');
   const bootstrap = `if(${JSON.stringify([...targets.keys()])}.includes(location.origin))(${installPortalProvenanceRegistry.toString()})(${JSON.stringify({ slot, secret, domProvenanceSlot, releaseKey })});\n//# sourceURL=paqvilo-tool://portal-provenance`;
   const registries = registryAccess({ kind: 'page', slot, bootstrap, secret, releaseKey });
+  // The proofs waiting for their document, per tab, shared by the tab's session and the sessions of its out-of-process
+  // frames (lense/frame-targets.mjs): a portal page nested in such a frame is requested (and its proof acknowledged) in
+  // its parent frame's target and runs in its own.
+  const tabs = new WeakMap();
+  const tabState = (page) => {
+    if (!page) return { pending: new Map(), flushers: new Set() };
+    if (!tabs.has(page)) tabs.set(page, { pending: new Map(), flushers: new Set() });
+    return tabs.get(page);
+  };
   return {
     slot,
-    async onAttach({ cdp, configure, report, clock = globalThis }) {
+    // `frame`: the target info of an out-of-process frame's target (absent for the tab's own).
+    async onAttach({ page, cdp, configure, report, clock = globalThis, frame = null }) {
       const controller = new AbortController();
       setMaxListeners(0, controller.signal);
+      const tab = tabState(page);
       const contexts = new Map(),
         requests = new Map(),
-        pending = new Map();
+        pending = tab.pending;
       const initialLoaders = new Map(),
         // The loader of each frame whose context was cleared. Chromium clears and re-reports the contexts of an unchanged
         // document when it re-attaches the tab's DevTools session; the proofs still waiting for that document are kept
@@ -348,10 +359,15 @@ export function createPortalProvenanceTransport(context, configs, { onDescriptor
         const key = frameId + ':' + loaderId;
         if (pending.size >= 64 && !pending.has(key)) pending.delete(pending.keys().next().value);
         pending.set(key, [...(pending.get(key) ?? []), proof].slice(-16));
-        for (const record of contexts.values())
-          if (record.frameId === frameId && record.loaderId === loaderId) await flush(record);
+        // The document may run in this target or in another of the tab's targets.
+        for (const deliver of Array.from(tab.flushers)) await deliver(frameId, loaderId);
         return true;
       };
+      const deliverHere = async (frameId, loaderId) => {
+        for (const record of contexts.values())
+          if (record.frameId === frameId && record.loaderId === loaderId) await flush(record);
+      };
+      tab.flushers.add(deliverHere);
       const retire = (id, keepPending = false) => {
         const record = contexts.get(id);
         if (!record) return;
@@ -428,9 +444,11 @@ export function createPortalProvenanceTransport(context, configs, { onDescriptor
             if (targets.has(originOf(frame.url))) registry.reused(frame.id);
           }
       };
-      const detached = ({ frameId }) => {
+      const detached = ({ frameId, reason }) => {
         registry.forget(frameId);
         returning.delete(frameId);
+        // A frame swapped into another process goes on there (an out-of-process frame): its proof waits for it.
+        if (reason === 'swap') return;
         for (const key of pending.keys()) if (key.startsWith(frameId + ':')) pending.delete(key);
       };
       const requested = (event) => {
@@ -451,6 +469,39 @@ export function createPortalProvenanceTransport(context, configs, { onDescriptor
           urlKey: createHash('sha256').update(event.request.url).digest('hex'),
         });
         acknowledgements.requested(event.requestId, requests.get(event.requestId));
+      };
+      // Hands closed shadow roots (backend node ids, outermost first) of the tab's top document, or of its frame
+      // `frameId` (a same-origin portal frame runs a registry of its own), to that document's registry, which then names
+      // their elements (portal-element-provider.mjs admitSealed). Each root is resolved in the registry's own context,
+      // so a root of another document is refused there.
+      const admitSealed = async (roots, frameId = null) => {
+        // The tab's own document is never in a frame target.
+        if (frameId === null && frame) return false;
+        const tree = (await send('Page.getFrameTree'))?.frameTree;
+        const loaders = frames(tree);
+        const target = frameId ?? tree?.frame?.id;
+        const record = [...contexts.values()].find(
+          (item) => item.frameId === target && item.loaderId === loaders.get(target) && item.objectId && !item.closed,
+        );
+        if (!record || closed) return false;
+        let admitted = 0;
+        for (const backendNodeId of roots) {
+          const resolved = await send('DOM.resolveNode', { backendNodeId, executionContextId: record.id });
+          const objectId = resolved?.object?.objectId;
+          if (!objectId) continue;
+          try {
+            const answer = await send('Runtime.callFunctionOn', {
+              objectId: record.objectId,
+              functionDeclaration: 'function(root){return this.admitSealed(root)}',
+              arguments: [{ objectId }],
+              returnByValue: true,
+            });
+            if (answer?.result?.value === true) admitted++;
+          } finally {
+            await send('Runtime.releaseObject', { objectId });
+          }
+        }
+        return admitted === roots.length;
       };
       const acknowledgements = createResponseProofQueue({ requests, admit });
       const response = (event) => {
@@ -520,7 +571,8 @@ export function createPortalProvenanceTransport(context, configs, { onDescriptor
         contexts.clear();
         requests.clear();
         acknowledgements.clear();
-        pending.clear();
+        tab.flushers.delete(deliverHere);
+        if (!tab.flushers.size) pending.clear();
         returning.clear();
         // The bootstrap is removed first, while contexts are still tracked: a document that commits during disposal
         // announces its context before the removal is answered, so its registry is retired below as well.
@@ -554,6 +606,7 @@ export function createPortalProvenanceTransport(context, configs, { onDescriptor
       }
       return {
         dispose,
+        admitSealed,
         async publishProvenance(event, proof) {
           if (closed || event.resourceType !== 'Document' || proof?.channel !== 'lense-applied-response') return false;
           // The acknowledgement queue holds descriptors within the bound only: one over it is reported now and its

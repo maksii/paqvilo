@@ -249,7 +249,7 @@ const matchesCalendar = (ms, match) => {
     if (+match[2] < 1 || +match[2] > 12 || +match[3] < 1 || +match[3] > 31) return null;
     const ms = calendarUtc(+match[1], +match[2] - 1, +match[3]);
     if (!matchesCalendar(ms, match)) return null;
-    return { ms: ms - timeZoneOffsetMinutes * 60000, dateOnly: true };
+    return { ms: wallToUtc(ms, timeZoneOffsetMinutes), dateOnly: true };
   }
   match = ISO_DATETIME.exec(text);
   if (!match) return null;
@@ -299,7 +299,7 @@ export const looksLikeDate = (value) =>
 
 /** Dataverse Web API returns UTC instants with second precision. */
 export function isoUtc(ms, { dateOnly = false, timeZoneOffsetMinutes = 0 } = {}) {
-  const date = new Date(dateOnly ? ms + timeZoneOffsetMinutes * 60000 : ms);
+  const date = new Date(dateOnly ? ms + offsetAt(timeZoneOffsetMinutes, ms) * 60000 : ms);
   const iso = date.toISOString();
   return dateOnly ? iso.slice(0, 10) : iso.replace(/\.\d{3}Z$/, 'Z');
 }
@@ -782,12 +782,20 @@ function stepStarts(tokens, best, char) {
 }
 
 const DAY = 86400000;
+// A time zone offset is minutes east of UTC: a number, or a function of the UTC instant for a zone with daylight saving
+// time (lib/portal-query-time-zone.mjs zoneOffsetFunction).
+const offsetAt = (offset, ms) => (typeof offset === 'function' ? offset(ms) : offset);
+// The UTC instant of a local wall-clock time (ms of the wall clock read as UTC).
+export const wallToUtc = (wall, offset) => {
+  if (typeof offset !== 'function') return wall - offset * 60000;
+  return wall - offset(wall - offset(wall) * 60000) * 60000;
+};
 const startOfLocalDay = (ms, offset) => {
-  const local = ms + offset * 60000;
-  return local - (((local % DAY) + DAY) % DAY) - offset * 60000;
+  const local = ms + offsetAt(offset, ms) * 60000;
+  return wallToUtc(local - (((local % DAY) + DAY) % DAY), offset);
 };
 const localParts = (ms, offset) => {
-  const d = new Date(ms + offset * 60000);
+  const d = new Date(ms + offsetAt(offset, ms) * 60000);
   return {
     year: d.getUTCFullYear(),
     month: d.getUTCMonth(),
@@ -795,7 +803,7 @@ const localParts = (ms, offset) => {
     weekday: d.getUTCDay(),
   };
 };
-const localMidnight = (year, month, day, offset) => Date.UTC(year, month, day) - offset * 60000;
+const localMidnight = (year, month, day, offset) => wallToUtc(Date.UTC(year, month, day), offset);
 const addMonths = (ms, months, offset) => {
   const p = localParts(ms, offset);
   const time = ms - localMidnight(p.year, p.month, p.day, offset);
@@ -825,40 +833,42 @@ export function dateOperatorPredicate(
   if (FISCAL_OPERATORS.has(operator))
     return fiscalOperatorPredicate(operator, values, {
       now,
-      offset,
+      offset: offsetAt(offset, now),
       calendar: fiscalCalendar(fiscal ?? { fiscalPeriodsPerYear: fiscalPeriods }),
     });
-  const sod = startOfLocalDay(now, offset);
   const parts = localParts(now, offset);
+  // The start of the local day k days from today (a local day can be 23 or 25 hours long under daylight saving time).
+  const dayStart = (k) => localMidnight(parts.year, parts.month, parts.day + k, offset);
+  const sod = dayStart(0);
   const range = (start, end) => (ms) => ms >= start && ms < end;
   const upTo = (start, end) => (ms) => ms >= start && ms <= end;
   const n = () => positiveInteger(values[0], operator);
-  const weekStart = sod - parts.weekday * DAY;
+  const weekStart = dayStart(-parts.weekday);
   const monthStart = localMidnight(parts.year, parts.month, 1, offset);
   const yearStart = localMidnight(parts.year, 0, 1, offset);
   switch (operator) {
     case 'today':
-      return range(sod, sod + DAY);
+      return range(sod, dayStart(1));
     case 'yesterday':
-      return range(sod - DAY, sod);
+      return range(dayStart(-1), sod);
     case 'tomorrow':
-      return range(sod + DAY, sod + 2 * DAY);
+      return range(dayStart(1), dayStart(2));
     case 'last-seven-days':
-      return upTo(sod - 7 * DAY, now);
+      return upTo(dayStart(-7), now);
     case 'next-seven-days':
-      return upTo(now, sod + 8 * DAY - 1);
+      return upTo(now, dayStart(8) - 1);
     case 'last-x-hours':
       return upTo(now - n() * 3600000, now);
     case 'next-x-hours':
       return upTo(now, now + n() * 3600000);
     case 'last-x-days':
-      return upTo(sod - n() * DAY, now);
+      return upTo(dayStart(-n()), now);
     case 'next-x-days':
-      return upTo(now, sod + (n() + 1) * DAY - 1);
+      return upTo(now, dayStart(n() + 1) - 1);
     case 'last-x-weeks':
-      return upTo(sod - 7 * n() * DAY, now);
+      return upTo(dayStart(-7 * n()), now);
     case 'next-x-weeks':
-      return upTo(now, sod + (7 * n() + 1) * DAY - 1);
+      return upTo(now, dayStart(7 * n() + 1) - 1);
     case 'last-x-months':
       return upTo(addMonths(sod, -n(), offset), now);
     case 'next-x-months':
@@ -898,11 +908,11 @@ export function dateOperatorPredicate(
           ms < limit
       )(addMonths(now, -12 * n(), offset));
     case 'this-week':
-      return range(weekStart, weekStart + 7 * DAY);
+      return range(weekStart, dayStart(7 - parts.weekday));
     case 'last-week':
-      return range(weekStart - 7 * DAY, weekStart);
+      return range(dayStart(-7 - parts.weekday), weekStart);
     case 'next-week':
-      return range(weekStart + 7 * DAY, weekStart + 14 * DAY);
+      return range(dayStart(7 - parts.weekday), dayStart(14 - parts.weekday));
     case 'this-month':
       return range(monthStart, addMonths(monthStart, 1, offset));
     case 'last-month':

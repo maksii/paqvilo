@@ -61,6 +61,14 @@ function normalizeFilter(filter) {
   return { name: 'filter', attrs: { type }, children, text: '' };
 }
 
+const hasLinkEntity = (element) =>
+  element.name === 'link-entity' || (element.children ?? []).some((child) => hasLinkEntity(child));
+// Whether a filter keeps a predicate on the root table once its linked-table branches are dropped.
+const hasRootPredicate = (element) =>
+  (element.children ?? []).some(
+    (child) => child.name === 'condition' || (child.name === 'filter' && hasRootPredicate(child)),
+  );
+
 /** The documented custom scope consumes only the table's root filters. */
 export function customTablePermissionFilter(source, table) {
   if (typeof source !== 'string' || source.length > 65_536)
@@ -69,9 +77,16 @@ export function customTablePermissionFilter(source, table) {
   const entities = fetch.children.filter((element) => element.name === 'entity');
   if (entities.length !== 1 || String(entities[0].attrs.name ?? '').toLowerCase() !== String(table).toLowerCase())
     throw invalid('Custom Access FetchXML must name the permission table as its single root.');
-  // A linked-table predicate cannot be dropped without broadening the grant to every root-filter match.
-  if (entities[0].children.some((element) => element.name === 'link-entity'))
-    throw invalid('Custom Access FetchXML with link-entity joins is unsupported.');
+  // A linked-table predicate cannot be dropped without broadening the grant to every root-filter match. A hosted site
+  // drops it (session F1, summary-F1.md AUTH-02e): the generated record filter keeps the root filter only, and a rule
+  // whose predicates are all on linked tables becomes an empty filter that admits every row. Mirage refuses the rule
+  // (fail closed); hostedJoinDropped tells the caller what the live site grants instead.
+  if (entities[0].children.some(hasLinkEntity)) {
+    const root = entities[0].children.some((element) => element.name === 'filter' && hasRootPredicate(element));
+    const error = invalid('Custom Access FetchXML with link-entity joins is unsupported.');
+    error.details = { hostedJoinDropped: { grants: root ? 'root-filter' : 'every-row' } };
+    throw error;
+  }
   const filters = entities[0].children.filter((element) => element.name === 'filter').map(normalizeFilter);
   if (!filters.length) throw invalid('Custom Access FetchXML must contain a root filter.');
   return { name: 'filter', attrs: { type: 'and' }, children: filters, text: '' };

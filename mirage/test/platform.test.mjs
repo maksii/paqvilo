@@ -15,6 +15,7 @@ import {
 } from '../lib/platform.mjs';
 import { createWebFormSessions } from '../lib/form-service.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { boundedMarkup } from './support/bounded-markup.mjs';
 
 test('exported advanced redirect steps retain an omitted record query name when rendered directly', async () => {
   const id = 'd6300000-0000-4000-8000-000000000001';
@@ -147,7 +148,11 @@ test('lookup root parsing handles adversarial whitespace and rejects unterminate
 
 test('readonly and hidden lookup bindings do not query inaccessible lookup choices', async () => {
   const formConfig = (html) =>
-    JSON.parse(/<script type="application\/json" data-paqvilo-mirage-form-config>([\s\S]*?)<\/script>/.exec(html)[1]);
+    JSON.parse(
+      /<script type="application\/json" data-paqvilo-mirage-form-config>([\s\S]*?)<\/script>/.exec(
+        boundedMarkup(html),
+      )[1],
+    );
   const lookedUp = [];
   const store = {
     resolveMapping: (entity) => {
@@ -207,7 +212,11 @@ test('readonly and hidden lookup bindings do not query inaccessible lookup choic
 
 test('editable hidden lookups retain native navigation bindings without reading target choices', async () => {
   const formConfig = (html) =>
-    JSON.parse(/<script type="application\/json" data-paqvilo-mirage-form-config>([\s\S]*?)<\/script>/.exec(html)[1]);
+    JSON.parse(
+      /<script type="application\/json" data-paqvilo-mirage-form-config>([\s\S]*?)<\/script>/.exec(
+        boundedMarkup(html),
+      )[1],
+    );
   const store = {
     resolveMapping: (entity) =>
       entity === 'example'
@@ -254,7 +263,16 @@ test('rich text adapters fetch source-bound configuration URLs and reject malfor
   await fs.writeFile(file, JSON.stringify({ defaultSupportedProps: { height: 195 } }));
   const portal = {
     forms: [{ id: 'form' }],
-    records: [],
+    // The editor renders with code component metadata only (formRichTextField).
+    records: [
+      {
+        kind: 'basicformmetadata',
+        adx_entityform: 'form',
+        adx_type: 100000000,
+        adx_attributelogicalname: 'narrative',
+        adx_controlstyle: 756150001,
+      },
+    ],
     webFiles: [
       {
         file,
@@ -303,7 +321,16 @@ test('native form query aliases select component records and rich text binds JSO
         metadata: { adx_recordidquerystringparametername: 'pnpccid' },
       },
     ],
-    records: [],
+    // The editor renders with code component metadata only (formRichTextField).
+    records: [
+      {
+        kind: 'basicformmetadata',
+        adx_entityform: 'edit',
+        adx_type: 100000000,
+        adx_attributelogicalname: 'narrative',
+        adx_controlstyle: 756150001,
+      },
+    ],
     webFiles: [],
   };
   const store = {
@@ -457,7 +484,11 @@ test('systemform XML maps ordered controls, labels, types and disabled controls'
 // @test-kind unproven+security: local model of native form and list output; record values are escaped and reads run as the caller
 test('mapped form and list query identity, render escaping and original custom script', async () => {
   const formConfig = (html) =>
-    JSON.parse(/<script type="application\/json" data-paqvilo-mirage-form-config>([\s\S]*?)<\/script>/.exec(html)[1]);
+    JSON.parse(
+      /<script type="application\/json" data-paqvilo-mirage-form-config>([\s\S]*?)<\/script>/.exec(
+        boundedMarkup(html),
+      )[1],
+    );
   let received;
   const store = {
     resolveMapping: () => ({ entitySet: 'contacts', idColumn: 'contactid' }),
@@ -1101,7 +1132,11 @@ test('imported form layouts supply section legends without an invented outer leg
 
 test('exported lookup views filter choices and owner fields stay hidden when configured', async () => {
   const formConfig = (html) =>
-    JSON.parse(/<script type="application\/json" data-paqvilo-mirage-form-config>([\s\S]*?)<\/script>/.exec(html)[1]);
+    JSON.parse(
+      /<script type="application\/json" data-paqvilo-mirage-form-config>([\s\S]*?)<\/script>/.exec(
+        boundedMarkup(html),
+      )[1],
+    );
   const xml =
       '<fetch><entity name="term"><filter><condition attribute="category" operator="eq" value="country"/></filter></entity></fetch>',
     reads = [];
@@ -1629,7 +1664,7 @@ test("list and grid labels use the request's website language, then the website 
   assert.equal(configuration(french).ErrorMessage, 'Erreur');
   assert.match(
     french,
-    /class="modal fade modal-delete"[^>]*>.*?<h1 class="modal-title" title="Supprimer">Supprimer<\/h1>.*?Supprimer cet enregistrement \?/s,
+    /class="modal fade modal-delete "[^>]*>.*?<h4 class="modal-title ">Supprimer<\/h4>.*?Supprimer cet enregistrement \?/s,
   );
   // A language without labels falls back to the website default (here French), not to the first value.
   portal.websiteLanguages = [

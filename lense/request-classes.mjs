@@ -58,7 +58,7 @@ export const REQUEST_RULES = Object.freeze(
     },
     // mirage/lib/native-services.mjs note attachments (/_entity/annotation/<id>[/...])
     { class: 'portal-data', platform: 'note-attachment', path: /^\/_entity\/annotation\//i },
-    // mirage/server.mjs Power Pages document control (/_apps/portal-documents, lib/sharepoint-documents.mjs)
+    // mirage/server.mjs Power Pages document control file downloads (/_apps/portal-documents, lib/sharepoint-documents.mjs)
     { class: 'portal-data', platform: 'portal-documents', path: /^\/_apps\/portal-documents(?:\/|$)/i },
     // mirage/lib/auth-session.mjs SIGN_OUT_PATH (/Account/Login/LogOff)
     { class: 'portal-data', platform: 'sign-out', path: /^\/account\/login\/logoff\/?$/i },

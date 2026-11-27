@@ -188,14 +188,15 @@ const text = (value) => {
 };
 
 /**
- * The event feed of rows overlapping [from, to): numeric start/end instants (epoch ms), the
- * details URL only when the list has a details page, the organizer as {name, email}, and the
- * conversion and date-time behaviour flags. A list with a fixed time zone sends user-local
+ * The event feed of rows overlapping [from, to): numeric start/end instants (epoch ms), no event URL (with a
+ * details page and a details action alike: hosted-f2 summary-F2 LIST-01f runs a-d), the organizer as {name, email},
+ * and the conversion and date-time behaviour flags. A list with a fixed time zone sends user-local
  * instants as that zone's wall clock (05:05Z in May with time zone 85 is sent as 06:05) and no
  * client conversion.
  */
-export function calendarEvents(rows, { calendar, idColumn, detailsUrl, idParameter = 'id', from, to }) {
+export function calendarEvents(rows, { calendar, idColumn, from, to, queryZone = 0 }) {
   const events = [];
+  const inRange = calendarRangePredicate(calendar, { from, to, queryZone });
   const zone = calendar.timeZoneMode === 'specific' ? TIME_ZONES[Number(calendar.timeZoneCode)] : null;
   const shift = (ms, behavior) => (zone && behavior === 'UserLocal' ? wallClock(ms, zone) : ms);
   for (const row of rows) {
@@ -204,25 +205,50 @@ export function calendarEvents(rows, { calendar, idColumn, detailsUrl, idParamet
     const endValue = calendar.end ? Date.parse(scalar(row[calendar.end]) ?? '') : Number.NaN;
     const startMs = shift(startValue, calendar.startBehavior ?? 'UserLocal');
     const endMs = Number.isFinite(endValue) ? shift(endValue, calendar.endBehavior ?? 'UserLocal') : startMs;
-    if (!eventOverlaps(startMs, endMs, from, to)) continue;
-    events.push(calendarEvent(row, { calendar, idColumn, detailsUrl, idParameter, startMs, endMs }));
+    if (!inRange(startValue, Number.isFinite(endValue) ? endValue : null)) continue;
+    const event = calendarEvent(row, { calendar, idColumn, startMs, endMs });
+    if (!Number.isFinite(endValue)) OPEN_ENDED.add(event);
+    events.push(event);
   }
   return events.sort((a, b) => a.start - b.start);
 }
 
-function eventOverlaps(start, end, from, to) {
-  return !(Number.isFinite(to) && start >= to) && !(Number.isFinite(from) && end < from);
+const DAY = 86400000;
+/**
+ * The platform's range predicate over the stored start and end (hosted-f2 summary-F2 LIST-01f runs e/f: 22 rows against
+ * normal, reversed, empty and one-second-shifted ranges, with and without an all-day column, identical answers):
+ * calendar days, both bounds inclusive, an event matches when its start day lies in [from, to], or its end day does, or
+ * it starts on or before `from` and ends on or after `to`; a row without an end matches only by its start. A UserLocal
+ * column's days, and the bounds compared with it, are read in the portal query zone (observed.portalQueryTimeZone,
+ * minutes east of UTC as a number or a function of the instant); DateOnly and TimeZoneIndependent columns use the stored
+ * date. A range that is not finite (the iCalendar download without a valid range) matches every event.
+ */
+function calendarRangePredicate(calendar, { from, to, queryZone }) {
+  if (!Number.isFinite(from) || !Number.isFinite(to)) return () => true;
+  const offset = typeof queryZone === 'function' ? queryZone : () => Number(queryZone) || 0;
+  const dayOf = (ms, behavior) =>
+    Math.floor((ms + ((behavior ?? 'UserLocal') === 'UserLocal' ? offset(ms) * 60000 : 0)) / DAY);
+  const [startFrom, startTo] = [from, to].map((bound) => dayOf(bound, calendar.startBehavior));
+  const [endFrom, endTo] = [from, to].map((bound) => dayOf(bound, calendar.endBehavior));
+  return (start, end) => {
+    const startDay = dayOf(start, calendar.startBehavior);
+    if (startDay >= startFrom && startDay <= startTo) return true;
+    if (end == null) return false;
+    const endDay = dayOf(end, calendar.endBehavior);
+    return (endDay >= endFrom && endDay <= endTo) || (startDay <= startFrom && endDay >= endTo);
+  };
 }
 
-function calendarEvent(row, { calendar, idColumn, detailsUrl, idParameter, startMs, endMs }) {
+// Events of rows without an end value: the feed sends end = start, the iCalendar download no DTEND (captured).
+const OPEN_ENDED = new WeakSet();
+
+function calendarEvent(row, { calendar, idColumn, startMs, endMs }) {
   const id = canonical(row[idColumn]);
   const event = {
     id,
     class: 'event-info',
     title: text(row[calendar.summary]) ?? '',
   };
-  if (detailsUrl)
-    event.url = `${detailsUrl}${detailsUrl.includes('?') ? '&' : '?'}${encodeURIComponent(idParameter)}=${id}`;
   event.start = startMs;
   event.end = endMs;
   event.description = calendar.description ? text(row[calendar.description]) : null;
@@ -249,22 +275,88 @@ const icsText = (value) =>
     .replaceAll('\n', String.raw`\n`)
     .replaceAll(/[,;]/g, (c) => `\\${c}`)
     .replaceAll(/\p{Cc}/gu, (c) => (c === '\t' ? c : ''));
-/** iCalendar download of the calendar events. */
-export function calendarIcs(events) {
-  const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Paqvilo Mirage//Calendar//EN'];
-  for (const event of events)
+// The plain DESCRIPTION drops markup and turns line breaks into spaces; X-ALT-DESC keeps the HTML (captured).
+function plainText(value) {
+  const source = String(value ?? '');
+  let out = '',
+    cursor = 0;
+  for (let open = source.indexOf('<'); open >= 0; open = source.indexOf('<', cursor)) {
+    const close = source.indexOf('>', open + 1);
+    if (close < 0) break;
+    out += source.slice(cursor, open);
+    cursor = close + 1;
+  }
+  return (out + source.slice(cursor)).replaceAll('\r\n', ' ').replaceAll(/[\r\n]/g, ' ');
+}
+// Content lines fold at 73 octets (75 with the CRLF); a continuation starts with one space (captured).
+function fold(line) {
+  const parts = [];
+  let current = '',
+    size = 0;
+  for (const character of line) {
+    const bytes = Buffer.byteLength(character);
+    if (size + bytes > 73) {
+      parts.push(current);
+      current = ' ';
+      size = 1;
+    }
+    current += character;
+    size += bytes;
+  }
+  parts.push(current);
+  return parts;
+}
+/**
+ * iCalendar download of the calendar events, in the platform's shape (hosted-f2 summary-F2 LIST-01f runs a-d): UID
+ * `<id>@<host>`, DTEND only for a row with an end, DTSTAMP the download time, DESCRIPTION and X-ALT-DESC when the
+ * event has a description, a display alarm 15 minutes before with the summary.
+ */
+export function calendarIcs(events, { host = 'localhost', now = Date.now() } = {}) {
+  const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Adxstudio Inc.//Adxstudio Portals//EN'];
+  for (const event of events) {
+    const summary = icsText(event.title);
     lines.push(
       'BEGIN:VEVENT',
-      `UID:${event.id}`,
+      `UID:${event.id}@${host}`,
       `DTSTART:${icsDate(event.start)}`,
-      `DTEND:${icsDate(event.end)}`,
-      `SUMMARY:${icsText(event.title)}`,
-      ...(event.description ? [`DESCRIPTION:${icsText(event.description)}`] : []),
-      ...(event.location ? [`LOCATION:${icsText(event.location)}`] : []),
+      ...(OPEN_ENDED.has(event) ? [] : [`DTEND:${icsDate(event.end)}`]),
+      `DTSTAMP:${icsDate(now)}`,
+      `SUMMARY:${summary}`,
+      ...(event.description
+        ? [
+            `DESCRIPTION:${icsText(plainText(event.description))}`,
+            `X-ALT-DESC;FMTTYPE=text/html:${icsText(event.description)}`,
+          ]
+        : []),
+      'BEGIN:VALARM',
+      'TRIGGER:-PT15M',
+      'ACTION:DISPLAY',
+      `DESCRIPTION:${summary}`,
+      'END:VALARM',
       'END:VEVENT',
     );
+  }
   lines.push('END:VCALENDAR');
-  return lines.join('\r\n') + '\r\n';
+  return lines.flatMap(fold).join('\r\n') + '\r\n';
+}
+
+// The feed's range format (yyyy-MM-ddTHH:mm:ssZ); milliseconds, epoch values, other zones or a missing value are
+// refused, `from` first, each with its own message text (captured, hosted-f2 summary-F2 LIST-01f runs a-d).
+const RANGE_FORMAT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
+export const CALENDAR_RANGE_ERRORS = Object.freeze({
+  from: '"Unable to parse ""from"" parameter in required date format."',
+  to: 'Unable to parse "to" parameter in required date format.',
+});
+/** The requested range as epoch ms, or `{ error: 'from' | 'to' }` for the first value that is not in the format. */
+export function calendarRange(searchParams) {
+  const range = {};
+  for (const name of ['from', 'to']) {
+    const value = searchParams.get(name) ?? '';
+    const time = RANGE_FORMAT.test(value) ? Date.parse(value) : Number.NaN;
+    if (!Number.isFinite(time)) return { error: name };
+    range[name] = time;
+  }
+  return range;
 }
 
 /** `/EntityList/Calendar/{website}/language.js`, `/{website}/{list}/{view}[/icalendar]`. */

@@ -5,6 +5,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { DataStore } from '../lib/data.mjs';
 import { renderComponent } from '../lib/platform.mjs';
 import { submitPortalForm, createWebFormSessions } from '../lib/form-service.mjs';
+import { boundedMarkup } from './support/bounded-markup.mjs';
 
 // Every writable column of mspp_entityformmetadata (the multistep metadata table has the same Attribute, Section and Tab
 // columns) and where Mirage proves it: `render` and `submit` are asserted below, `diagnostic` names a hosted-only
@@ -273,7 +274,9 @@ test('Randomize Option Set Values shuffles the rendered options', async () => {
     { random: () => 0 },
   );
   const order = (html) =>
-    [...html.matchAll(/<input id="shuffled_\d" type="radio"[^>]*value="(\d)"/g)].map((match) => match[1]);
+    [...boundedMarkup(html).matchAll(/<input id="shuffled_\d" type="radio"[^>]*value="(\d)"/g)].map(
+      (match) => match[1],
+    );
   assert.deepEqual(order(plain.html), ['1', '2']);
   assert.deepEqual(order(shuffled.html), ['2', '1']);
 });

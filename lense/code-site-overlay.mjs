@@ -6,7 +6,8 @@
 // deploy a single-page application") says a server-side refresh of any route returns the site's root page and the
 // client router renders the route; the root page is the configured landing page, and the portal adds its own client
 // context (`Microsoft.Dynamic365.Portal`). The document the portal serves is therefore the deployed landing page plus
-// what the platform adds. The local landing page replaces the deployed one by a line merge: the platform's additions to
+// what the platform adds. Hosted sites nest it in a whole portal page (hosted session F5: the Home page copy on the root,
+// the place of the page content on an application route), so a large served page is merged on the lines that hold it. The local landing page replaces the deployed one by a line merge: the platform's additions to
 // the deployed landing page and the local build's changes to it are applied together where they touch different lines.
 // The deployed landing page is the exported web file at its address (pac pages download-code-site).
 import path from 'node:path';
@@ -27,6 +28,55 @@ const keyOf = (line) => (line.endsWith('\r') ? line.slice(0, -1) : line);
  */
 export function mergeCompiledEntry({ deployed, served, local }) {
   if (deployed == null) return { html: served, outcome: 'unknown-deployed' };
+  const merged = mergeLines({ deployed, served, local });
+  if (merged.outcome !== 'not-entry') return merged;
+  // A portal page around the landing page: merge the served lines from the first to the last deployed line found in
+  // order, and keep the lines around them as served.
+  const theirs = served.split(SPLIT);
+  const window = landingWindow(deployed.split(SPLIT).map(keyOf), theirs.map(keyOf));
+  if (!window || (window.start === 0 && window.end === theirs.length)) return merged;
+  const inner = mergeLines({ deployed, served: theirs.slice(window.start, window.end).join('\n'), local });
+  if (inner.outcome !== 'applied') return { ...inner, html: served };
+  const tail = theirs[window.end - 1].endsWith('\r') ? '\r' : '';
+  return {
+    html: [...theirs.slice(0, window.start), inner.html + tail, ...theirs.slice(window.end)].join('\n'),
+    outcome: 'applied',
+  };
+}
+
+/**
+ * The served lines [start, end) that hold the deployed landing page, or null: around the deployed line that the served
+ * document repeats least, the nearest earlier and later deployed lines in their order, each within a few page lengths,
+ * so that a shell line equal to a landing line (a bare <head>) elsewhere in the portal page does not widen the window.
+ */
+function landingWindow(baseKeys, theirKeys) {
+  const lines = baseKeys.filter((line) => line.trim());
+  const counts = lines.map((line) => theirKeys.reduce((sum, key) => sum + (key === line ? 1 : 0), 0));
+  let anchor = -1;
+  counts.forEach((count, at) => {
+    if (count && (anchor < 0 || count < counts[anchor])) anchor = at;
+  });
+  if (anchor < 0) return null;
+  const reach = baseKeys.length * 4 + 16;
+  const position = theirKeys.indexOf(lines[anchor]);
+  let start = position,
+    end = position + 1;
+  for (let at = anchor - 1; at >= 0; at--)
+    for (let candidate = start - 1; candidate >= Math.max(0, start - reach); candidate--)
+      if (theirKeys[candidate] === lines[at]) {
+        start = candidate;
+        break;
+      }
+  for (let at = anchor + 1; at < lines.length; at++)
+    for (let candidate = end; candidate < Math.min(theirKeys.length, end + reach); candidate++)
+      if (theirKeys[candidate] === lines[at]) {
+        end = candidate + 1;
+        break;
+      }
+  return { start, end };
+}
+
+function mergeLines({ deployed, served, local }) {
   const base = deployed.split(SPLIT);
   const mine = local.split(SPLIT);
   const theirs = served.split(SPLIT);

@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { tempDirSync } from './fixture.mjs';
 import { analyzeProject, analysisRules } from '../lense/analysis/index.mjs';
+import { cachedRequestReads } from '../lense/analysis/output-cache-rules.mjs';
 
 const SITE_ID = '11111111-1111-1111-1111-111111111111';
 const HEADER_ID = '22222222-2222-2222-2222-222222222222';
@@ -85,6 +86,39 @@ test('request, page, params, now and language.url outside substitution are repor
     'Header.webtemplate.source.html:4',
     'Header.webtemplate.source.html:5',
   ]);
+});
+
+// @test-kind observation+compatibility: hosted session F3 (two runs) shared one anonymous header copy whatever the path or query, so the request-built sign-in, sign-out and selected-language URLs show another request's path; their *_substitution forms are the documented cached-safe ones.
+test('the request-built website URLs outside substitution are reported; their substitution forms are not', (t) => {
+  const header = [
+    '<a href="{{ website.sign_in_url }}">Sign in</a>',
+    '<a href="{{ website.sign_out_url | escape }}">Sign out</a>',
+    '<a href="/{{ website.selected_language.url }}">Language</a>',
+    '<a href="{{ website.sign_in_url_substitution }}">{{ website.sign_out_url_substitution }}</a>',
+    '{% substitution %}<a href="{{ website.sign_in_url }}">Sign in</a>{% endsubstitution %}',
+    '{% assign website = "shadow" %}{{ website.sign_in_url }}',
+    '',
+  ].join('\n');
+  const root = project(t, classic({ header, headerCache: 'true' }));
+  assert.deepEqual(located(cacheFindings(root)), [
+    'Header.webtemplate.source.html:1',
+    'Header.webtemplate.source.html:2',
+    'Header.webtemplate.source.html:3',
+  ]);
+});
+
+// @test-kind contract: the scanner export Mirage uses to report a cached header's request reads (mirage/lib/liquid.mjs).
+test('cachedRequestReads lists the reads of a source and the templates it includes', () => {
+  assert.deepEqual(
+    cachedRequestReads('Header', "<a href='{{ website.sign_in_url }}'></a>{% include 'Part' %}", [
+      { name: 'Part', source: '{{ request.path }}{% substitution %}{{ request.query }}{% endsubstitution %}' },
+    ]).map(({ template, text }) => [template, text]),
+    [
+      ['Header', 'website.sign_in_url'],
+      ['Part', 'request.path'],
+    ],
+  );
+  assert.deepEqual(cachedRequestReads('Header', '{% substitution %}{{ request.path }}{% endsubstitution %}'), []);
 });
 
 test('wrapped references, substitution attributes, user and literals are not reported', (t) => {

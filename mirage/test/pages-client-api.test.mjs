@@ -140,7 +140,10 @@ class StubElement {
 const LIST_ROOT = '[data-pp-modern-list], .entity-grid.entitylist';
 const LIST_MESSAGES = ['none', 'view-empty', 'view-error', 'view-access-denied'];
 
-/** A modern list on a stub page with the given columns and layout configuration; its rows come from the list's data URL. */
+/**
+ * A modern list on a stub page with the given columns and layout configuration. The list reads its configuration from
+ * GetListViewConfiguration (answered by listConfiguration below) and its rows from the configuration's data URL.
+ */
 function modernListPage(window, columns, configuration = {}) {
   const messages = LIST_MESSAGES.map((name) =>
     Object.assign(new StubElement('div'), { matches: (selector) => selector === `.${name}` }),
@@ -157,17 +160,25 @@ function modernListPage(window, columns, configuration = {}) {
     SortExpression: '',
   };
   const actions = new StubElement('span');
-  const element = new StubElement('div', {
-    'data-pp-modern-list': '',
-    'data-view-layouts': Buffer.from(JSON.stringify([layout])).toString('base64'),
-    'data-get-url': '/_services/entity-grid-data/list',
-  });
+  const element = new StubElement('div', { 'data-pp-modern-list': '', 'data-list-id': 'list' });
+  window.listConfiguration = {
+    layouts: [layout],
+    defaultViewId: 'all',
+    getDataUrl: `/_services/entity-grid-data.json/${SITE}`,
+    modalFormTemplateUrl: `/_portal/modal-form-template-path/${SITE}`,
+  };
   element.queries = { table, '[data-pp-modern-list-actions]': actions };
   element.querySelectorAll = (selector) => (selector === '.message' ? messages : []);
   window.document.createElement = (tag) => new StubElement(tag);
   window.document.querySelectorAll = (selector) => (selector === LIST_ROOT ? [element] : []);
   window.CSS = { escape: (value) => String(value) };
-  return { body, messages, actions };
+  return { body, messages, actions, element };
+}
+
+/** The stub page's list configuration answer, or null for another request. */
+function listConfiguration(window, url) {
+  if (!String(url).startsWith('/_services/portal/GetListViewConfiguration/')) return null;
+  return new Response(JSON.stringify(window.listConfiguration), { headers: { 'content-type': 'application/json' } });
 }
 
 /** Answers the anti-forgery token request with a token and every other request with the JSON data. */
@@ -175,6 +186,8 @@ function jsonRoutes(window, requests, data) {
   window.fetch = async (url, init = {}) => {
     requests.push({ url: String(url), init });
     if (String(url).endsWith('/_layout/tokenhtml')) return new Response('<input value="tok">');
+    const configuration = listConfiguration(window, url);
+    if (configuration) return configuration;
     return new Response(JSON.stringify(data), { headers: { 'content-type': 'application/json' } });
   };
 }
@@ -231,7 +244,50 @@ test('unsupported members throw PagesClientApiUnsupported with the member name a
   assert.equal($pages.currentPage.forms.getFormByName('x'), undefined);
 });
 
-// @test-kind contract: the local Copilot callback adapter is explicitly same-origin and reports a missing endpoint
+// @test-kind observation: hosted session F3 (paqvilo-developer hosted-f3 summary-F3.md API-05b, agent-probe captures of runs a and b, 2026-11-27): SendActivity reads /_services/agent/BotConfiguration; an empty configuration fails with the captured invalid-agent text, a listed agent posts /_services/auth/portalusertoken and requests its Direct Line token, and a failed connection fails with the captured Direct Line text
+test('$pages.agent.SendActivity follows the hosted configuration, user token and Direct Line token requests', async () => {
+  const { window, requests } = browser();
+  let configuration = [];
+  let token = { token: 'local-token', conversationId: 'c1' };
+  window.fetch = async (url, init) => {
+    requests.push({ url: String(url), init });
+    const path = new URL(String(url), window.location.origin).pathname;
+    if (path === '/_layout/tokenhtml') return new Response('<input value="tok">');
+    if (path === '/_services/agent/BotConfiguration') return new Response(JSON.stringify(configuration));
+    if (path === '/_services/auth/portalusertoken') return new Response('header.payload.signature');
+    if (path === '/powervirtualagents/botsbyschema/x_agent/directline/token')
+      return token ? new Response(JSON.stringify(token)) : new Response('{}', { status: 404 });
+    return new Response('{}', { status: 404 });
+  };
+  const { agent } = await window.Microsoft.PowerPages.onPagesClientApiReady();
+  const send = () => new Promise((resolve) => agent.SendActivity('x_agent', { text: 'Hello' }, resolve, resolve));
+  const paths = () =>
+    requests
+      .filter((item) => !item.url.endsWith('/_layout/tokenhtml'))
+      .map((item) => new URL(item.url, window.location.origin).pathname);
+
+  const denied = await send();
+  assert.equal(
+    denied.message,
+    'Invalid bot schema name or access denied. Please check the bot schema name and try again',
+  );
+  assert.deepEqual(paths(), ['/_services/agent/BotConfiguration'], 'no token is requested for an unlisted agent');
+
+  configuration = [{ name: 'Invented agent', botSchemaName: 'x_agent', isVisible: true }];
+  token = null;
+  requests.length = 0;
+  const failed = await send();
+  assert.equal(failed.message, 'Something went wrong while creating direct line connection: Please try again');
+  assert.deepEqual(paths(), [
+    '/_services/agent/BotConfiguration',
+    '/_services/auth/portalusertoken',
+    '/powervirtualagents/botsbyschema/x_agent/directline/token',
+  ]);
+  const posted = requests.find((item) => item.url.endsWith('/portalusertoken'));
+  assert.equal(posted.init.method, 'POST');
+});
+
+// @test-kind contract: the local Copilot stand-in is explicitly same-origin: a mocked Direct Line token's conversation receives the activity and its reply activities reach the callback
 test('$pages.agent.SendActivity delivers explicit local mock responses and errors through callbacks', async () => {
   const { window, requests } = browser();
   const activities = [
@@ -240,8 +296,15 @@ test('$pages.agent.SendActivity delivers explicit local mock responses and error
   ];
   window.fetch = async (url, init) => {
     requests.push({ url, init });
-    if (String(url).endsWith('/_layout/tokenhtml')) return new Response('<input value="tok">');
-    if (String(url).endsWith('/Available/activities')) return new Response(JSON.stringify(activities));
+    const path = new URL(String(url), window.location.origin).pathname;
+    if (path === '/_layout/tokenhtml') return new Response('<input value="tok">');
+    if (path === '/_services/agent/BotConfiguration')
+      return new Response(JSON.stringify([{ botSchemaName: 'Available' }]));
+    if (path === '/_services/auth/portalusertoken') return new Response('header.payload.signature');
+    if (path === '/powervirtualagents/botsbyschema/Available/directline/token')
+      return new Response(JSON.stringify({ token: 'local', conversationId: 'conversation-1' }));
+    if (path === '/v3/directline/conversations/conversation-1/activities')
+      return new Response(JSON.stringify(activities));
     return new Response('{}', { status: 404 });
   };
   const { agent } = await window.Microsoft.PowerPages.onPagesClientApiReady();
@@ -261,22 +324,75 @@ test('$pages.agent.SendActivity delivers explicit local mock responses and error
     );
   });
   assert.deepEqual(received, activities);
-  assert.equal(requests[1].url, `${window.location.origin}/_api/agents/Available/activities`);
+  const activity = requests.find((item) => String(item.url).endsWith('/activities'));
+  assert.equal(activity.url, `${window.location.origin}/v3/directline/conversations/conversation-1/activities`);
   assert.deepEqual(
-    [requests[1].init.method, requests[1].init.mode, requests[1].init.redirect],
+    [activity.init.method, activity.init.mode, activity.init.redirect],
     ['POST', 'same-origin', 'error'],
   );
-  assert.equal(requests[1].init.headers['x-paqvilo-local-only'], 'true');
-  assert.equal(requests[1].init.headers.__RequestVerificationToken, 'tok');
-  assert.deepEqual(JSON.parse(requests[1].init.body), { text: 'Hello' });
+  assert.equal(activity.init.headers['x-paqvilo-local-only'], 'true');
+  assert.equal(activity.init.headers.__RequestVerificationToken, 'tok');
+  assert.deepEqual(JSON.parse(activity.init.body), { text: 'Hello' });
+  assert.ok(
+    requests.every((item) => new URL(String(item.url), window.location.origin).origin === window.location.origin),
+    'every request stays on the page origin',
+  );
 
+  const before = requests.length;
   const missing = await new Promise((resolve, reject) =>
     agent.SendActivity('Missing', { text: 'Hello' }, reject, resolve),
   );
-  assert.equal(missing.code, 'PAGES_CLIENT_API_MEMBER_UNSUPPORTED');
+  assert.equal(
+    missing.message,
+    'Invalid bot schema name or access denied. Please check the bot schema name and try again',
+  );
   const invalid = await new Promise((resolve, reject) => agent.SendActivity('../Elsewhere', {}, reject, resolve));
   assert.equal(invalid.name, 'TypeError');
-  assert.equal(requests.length, 3, 'a bad schema never starts a request');
+  assert.equal(
+    requests.slice(before).filter((item) => !String(item.url).endsWith('/_layout/tokenhtml')).length,
+    1,
+    'a bad schema never starts a request',
+  );
+});
+
+// @test-kind security: a Direct Line token answer cannot steer the activity off the conversation route or off the portal origin
+test('$pages.agent.SendActivity refuses a conversation id that leaves its same-origin route', async () => {
+  const { window, requests } = browser();
+  let conversationId;
+  window.fetch = async (url, init) => {
+    requests.push({ url: String(url), init });
+    const path = new URL(String(url), window.location.origin).pathname;
+    if (path === '/_layout/tokenhtml') return new Response('<input value="tok">');
+    if (path === '/_services/agent/BotConfiguration')
+      return new Response(JSON.stringify([{ botSchemaName: 'x_agent' }]));
+    if (path === '/_services/auth/portalusertoken') return new Response('header.payload.signature');
+    if (path === '/powervirtualagents/botsbyschema/x_agent/directline/token')
+      return new Response(JSON.stringify({ token: 'local', conversationId }));
+    return new Response('[]');
+  };
+  const { agent } = await window.Microsoft.PowerPages.onPagesClientApiReady();
+  for (conversationId of [
+    '..',
+    '../../_api/x_items',
+    '//elsewhere.example/x',
+    'https://elsewhere.example/',
+    '.',
+    'a/../../x',
+    null,
+  ]) {
+    requests.length = 0;
+    const error = await new Promise((resolve, reject) =>
+      agent.SendActivity('x_agent', { text: 'Hi' }, reject, resolve),
+    );
+    assert.equal(error.message, 'Something went wrong while creating direct line connection: Please try again');
+    assert.ok(
+      requests.every((item) => !String(item.url).includes('/activities')),
+      `no activity is posted for ${conversationId}`,
+    );
+    assert.ok(
+      requests.every((item) => new URL(String(item.url), window.location.origin).origin === window.location.origin),
+    );
+  }
 });
 
 test('languages.setActive switches the language like the language picker: /<code> before the path', async () => {
@@ -722,15 +838,51 @@ test('a throwing loaded handler keeps the rows, paging and the other handlers, a
   assert.equal(reported.length, 1);
   assert.throws(() => reported[0](), { message: 'handler failed' });
   await list.__loadMore();
-  const listRequests = requests.filter((request) => request.url === '/_services/entity-grid-data/list');
+  const listRequests = requests.filter((request) => request.url === `/_services/entity-grid-data.json/${SITE}`);
   assert.equal(listRequests.length, 2, 'paging continues after the handler error');
+});
+
+// @test-kind contract: a failed list configuration is not kept: the next search asks for it again and loads the rows, and another failure shows the error view again.
+test('a modern list asks again for a configuration that failed', async () => {
+  const { window, requests } = browser();
+  const { body, messages, element } = modernListPage(window, LIST_COLUMNS);
+  const search = new StubElement('input');
+  element.queries['[data-pp-modern-list-search]'] = search;
+  let configurationAnswers = 0;
+  window.fetch = async (url, init = {}) => {
+    requests.push({ url: String(url), init });
+    if (String(url).endsWith('/_layout/tokenhtml')) return new Response('<input value="tok">');
+    if (String(url).startsWith('/_services/portal/GetListViewConfiguration/'))
+      return ++configurationAnswers === 2
+        ? listConfiguration(window, url)
+        : new Response('{}', { status: 500, headers: { 'content-type': 'application/json' } });
+    return new Response(JSON.stringify({ MoreRecords: false, Records: [LIST_RECORD] }), {
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+  const $pages = await window.Microsoft.PowerPages.onPagesClientApiReady();
+  const [list] = $pages.currentPage.lists.getAll();
+  const errorShown = () => messages.find((message) => message.matches('.view-error')).hidden === false;
+  const enter = async () => {
+    search.value = '';
+    for (const listener of search.listeners.get('keydown') ?? []) listener({ key: 'Enter', preventDefault() {} });
+    await list.__loadMore();
+  };
+  await list.__loadMore();
+  assert.equal(errorShown(), true);
+  assert.equal(body.children.length, 0);
+  await enter();
+  assert.equal(configurationAnswers, 2);
+  assert.equal(body.children.length, 1);
+  assert.equal(errorShown(), false);
 });
 
 // @test-kind contract: a list response that cannot be read shows the list error view and is logged with console.error.
 test('a list response that is not JSON shows the list error view and is logged', async () => {
   const { window, logs } = browser();
   window.fetch = async (url) =>
-    String(url).endsWith('/_layout/tokenhtml') ? new Response('<input value="tok">') : new Response('not json');
+    listConfiguration(window, url) ??
+    (String(url).endsWith('/_layout/tokenhtml') ? new Response('<input value="tok">') : new Response('not json'));
   const { messages } = modernListPage(window, LIST_COLUMNS);
   const $pages = await window.Microsoft.PowerPages.onPagesClientApiReady();
   const [list] = $pages.currentPage.lists.getAll();
@@ -746,144 +898,6 @@ test('a list response that is not JSON shows the list error view and is logged',
 // is the zero-delay readiness timer (pages-client-api.js). Node runs every pending continuation and every earlier
 // zero-delay timer before a later zero-delay timer, so one flush is an exact barrier and never an allowance of time.
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
-const GRID_CONTROL_MARKERS = ['ppDocumentsUpload', 'ppDocumentsNewFolder', 'ppDocumentsPath'];
-
-/** A document grid on a stub page; the page's readiness timer starts its first load. */
-function documentGridPage(window) {
-  const body = new StubElement('tbody');
-  const status = new StubElement('p');
-  const grid = new StubElement('section', {
-    'data-pp-documents': '',
-    'data-documents-url': '/_apps/portal-documents/site',
-  });
-  grid.queries = { tbody: body, '.message': status };
-  grid.querySelectorAll = () =>
-    grid.children.filter((child) => GRID_CONTROL_MARKERS.some((name) => child.dataset?.[name] !== undefined));
-  window.document.createElement = (tag) => new StubElement(tag);
-  window.document.querySelectorAll = (selector) => (selector === '[data-pp-documents]' ? [grid] : []);
-  window.URLSearchParams = URLSearchParams;
-  return { grid, body, status };
-}
-
-/** Each fetch waits in the returned list until the test answers it, so the test sets the order of the responses. */
-function answerLater(window) {
-  const pending = [];
-  window.fetch = (url) =>
-    new Promise((resolve, reject) =>
-      pending.push({
-        url: String(url),
-        respond: (data) => resolve({ ok: true, status: 200, json: async () => data }),
-        fail: (error) => reject(error),
-      }),
-    );
-  return pending;
-}
-
-const folderLink = (body, name) =>
-  body.children.map((row) => row.children[0].children[0]).find((link) => link.dataset.ppDocumentsFolder === name);
-const folderNames = (body) => body.children.map((row) => row.children[0].children[0].dataset.ppDocumentsFolder);
-const breadcrumbs = (grid) => grid.children.filter((child) => child.dataset?.ppDocumentsPath !== undefined);
-const press = (element) => {
-  for (const listener of element.listeners.get('click') ?? []) listener({});
-};
-
-// @test-kind contract: overlapping folder opens: the latest open renders alone, once, with one breadcrumb.
-test('overlapping folder opens render only the latest folder, once, with one breadcrumb', async () => {
-  const { window } = browser();
-  const pending = answerLater(window);
-  const { grid, body } = documentGridPage(window);
-  await flush();
-  pending[0].respond({ folders: [{ name: 'Alpha' }, { name: 'Beta' }], documents: [] });
-  await flush();
-  press(folderLink(body, 'Alpha'));
-  press(folderLink(body, 'Beta'));
-  assert.equal(pending.length, 3);
-  pending[2].respond({ folders: [{ name: 'Gamma' }], documents: [] });
-  await flush();
-  pending[1].respond({ folders: [{ name: 'Delta' }], documents: [] });
-  await flush();
-  assert.deepEqual(folderNames(body), ['Gamma']);
-  assert.equal(breadcrumbs(grid).length, 1);
-  assert.equal(breadcrumbs(grid)[0].children.at(-1).textContent, 'Beta');
-});
-
-// @test-kind contract: a failed folder open reports the failure in the status line instead of an unhandled rejection.
-test('a failed folder open reports the error in the status line', async () => {
-  const { window } = browser();
-  const pending = answerLater(window);
-  const { body, status } = documentGridPage(window);
-  await flush();
-  pending[0].respond({ folders: [{ name: 'Alpha' }], documents: [] });
-  await flush();
-  press(folderLink(body, 'Alpha'));
-  pending[1].fail(new TypeError('Failed to fetch'));
-  await flush();
-  assert.equal(status.hidden, false);
-  assert.equal(status.textContent, 'Error completing request.');
-});
-
-// @test-kind contract: a folder open superseded by a newer open that then fails leaves the newest folder, its status and aria-busy alone.
-test('a superseded folder open that fails does not overwrite the status line or the newest folder', async () => {
-  const { window } = browser();
-  const pending = answerLater(window);
-  const { grid, body, status } = documentGridPage(window);
-  await flush();
-  pending[0].respond({ folders: [{ name: 'Alpha' }, { name: 'Beta' }], documents: [] });
-  await flush();
-  press(folderLink(body, 'Alpha'));
-  press(folderLink(body, 'Beta'));
-  pending[2].respond({ folders: [{ name: 'Gamma' }], documents: [] });
-  await flush();
-  pending[1].fail(new TypeError('Failed to fetch'));
-  await flush();
-  assert.deepEqual(folderNames(body), ['Gamma']);
-  assert.equal(status.textContent, '');
-  assert.equal(grid.getAttribute('aria-busy'), null);
-});
-
-// @test-kind contract: a folder open whose fetch fails removes aria-busy, so the grid is not left busy.
-test('a failed folder open removes aria-busy from the grid', async () => {
-  const { window } = browser();
-  const pending = answerLater(window);
-  const { grid, body } = documentGridPage(window);
-  await flush();
-  pending[0].respond({ folders: [{ name: 'Alpha' }], documents: [] });
-  await flush();
-  press(folderLink(body, 'Alpha'));
-  assert.equal(grid.getAttribute('aria-busy'), 'true');
-  pending[1].fail(new TypeError('Failed to fetch'));
-  await flush();
-  assert.equal(grid.getAttribute('aria-busy'), null);
-});
-
-// @test-kind contract: a failed upload reports the error in the status line and re-enables the input, with no unhandled rejection.
-test('a failed upload reports the error in the status line and re-enables the input without an unhandled rejection', async () => {
-  const { window, requests } = browser();
-  const listing = { documents: [], folders: [], canUpload: true, canDelete: false };
-  window.fetch = async (url, init = {}) => {
-    requests.push({ url: String(url), init });
-    if (String(url).endsWith('/_layout/tokenhtml')) return new Response('<input value="tok">');
-    if (init.method === 'POST') throw new TypeError('Failed to fetch');
-    return new Response(JSON.stringify(listing));
-  };
-  const { grid, status } = documentGridPage(window);
-  await flush();
-  const input = grid.children.find((child) => child.dataset?.ppDocumentsUpload !== undefined);
-  input.files = [{ name: 'report.txt', type: 'text/plain' }];
-  const unhandled = [];
-  const onUnhandled = (reason) => unhandled.push(reason);
-  process.on('unhandledRejection', onUnhandled);
-  try {
-    // The DOM discards the listener's promise, so the test does too: a rejection left unhandled reaches onUnhandled.
-    for (const listener of input.listeners.get('change') ?? []) void listener({});
-    await flush();
-  } finally {
-    process.off('unhandledRejection', onUnhandled);
-  }
-  assert.deepEqual(unhandled, []);
-  assert.equal(status.textContent, 'Error completing request.');
-  assert.equal(input.disabled, false);
-});
 
 // @test-kind contract: the shared in-flight token request keeps concurrent callers to one anti-forgery fetch.
 test('concurrent requests share one in-flight anti-forgery token request', async () => {
@@ -986,13 +1000,17 @@ test('the modern list CSV download posts the columns of the current view', async
     if (String(url).endsWith('/_layout/tokenhtml')) return new Response('<input value="tok">');
     if (String(url).includes('/_services/download-as-csv/'))
       return new Response(JSON.stringify({ sessionKey: 'key-1' }), { headers: { 'content-type': 'application/json' } });
+    const configuration = listConfiguration(window, url);
+    if (configuration) return configuration;
     return new Response(JSON.stringify({ Records: [], MoreRecords: false }), {
       headers: { 'content-type': 'application/json' },
     });
   };
   const $pages = await window.Microsoft.PowerPages.onPagesClientApiReady();
   await flush();
-  $pages.currentPage.lists.getAll();
+  // The toolbar is drawn from the list's configuration, read before its first page.
+  const [list] = $pages.currentPage.lists.getAll();
+  await list.__loadMore();
   const control = actions.children[0];
   assert.equal(control?.textContent, 'Download');
   for (const listener of control.listeners.get('click') ?? []) listener({ stopPropagation() {} });
@@ -1001,5 +1019,5 @@ test('the modern list CSV download posts the columns of the current view', async
   assert.ok(download, 'the download request is sent');
   assert.deepEqual(JSON.parse(download.init.body).columns, columns);
   assert.equal(JSON.parse(download.init.body).viewName, 'Active Items', 'the export is named for the current view');
-  assert.equal(window.assigned, '/_services/download-as-csv/?key=key-1');
+  assert.equal(window.assigned, `/_services/download-as-csv/${SITE}?key=key-1`);
 });

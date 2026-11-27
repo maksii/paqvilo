@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's toolkit-authored structural fallbacks (platform-icons.css and the local style equivalents), their replacement by captured style bytes and the keyboard use of the fallback controls, on invented fixtures
 import { widgetFormFiles, widgetFormState, CONTACT, ACCOUNT } from '../test/support/widget-form.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -110,6 +111,7 @@ test('capturing preform alone retains hidden offline notification through its PW
   assert.equal(response.headers.get('x-sim-resource-provider'), 'local-platform-partial');
 });
 
+// @test-kind unproven: local model of the lookup dialog's preselection and Remove value; no hosted capture of this dialog behaviour
 test('existing lookup selection is visible on open and keyboard Remove value changes only the local field', async (t) => {
   const { app, launchBrowser } = await fixture(t, { currentLookup: true });
   const browser = await launchBrowser();
@@ -140,6 +142,7 @@ test('existing lookup selection is visible on open and keyboard Remove value cha
   );
 });
 
+// @test-kind security: lookup preselection never selects a row of a foreign target table or a row outside the results the user may read
 for (const targetRead of [true, false]) {
   test(`lookup preselection cannot select a foreign target or a row outside readable results (targetRead=${targetRead})`, async (t) => {
     const { app, launchBrowser } = await fixture(t, { currentLookup: true, targetRead });
@@ -269,7 +272,22 @@ for (const width of [1200, 390]) {
       const source = await fs.readFile(new URL('../lib/' + entry.name, import.meta.url), 'utf8');
       for (const name of source.match(/\bfa-[a-z0-9-]+\b/g) ?? []) emitted.add(name);
     }
-    const modifiers = new Set(['fa-fw', 'fa-spin', 'fa-4x', 'fa-solid']);
+    // Animation modifiers draw no symbol of their own; each one emitted must animate the icon it modifies.
+    const animations = ['fa-spin', 'fa-pulse'].filter((name) => emitted.has(name));
+    const modifiers = new Set(['fa-fw', 'fa-4x', 'fa-solid', ...animations]);
+    const still = await page.evaluate(
+      (names) =>
+        names.filter((name) => {
+          const span = document.createElement('span');
+          span.className = 'fa fa-spinner ' + name;
+          document.body.append(span);
+          const animation = getComputedStyle(span).animationName;
+          span.remove();
+          return animation === 'none';
+        }),
+      animations,
+    );
+    assert.deepEqual(still, [], 'every animation modifier emitted statically by core must animate its fallback icon');
     const missing = await page.evaluate(
       (names) =>
         names.filter((name) => {

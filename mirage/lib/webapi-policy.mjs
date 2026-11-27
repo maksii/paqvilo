@@ -182,8 +182,12 @@ export const POWER_PAGES_TABLES = new Map(
   return fields;
 }
 
+// A list enables a lookup's wire property (_x_value) only when it names it (hosted session F1, 2026-11-26, two runs:
+// _x_value in $select, $filter and $orderby, /$count, $apply and every select-less read answered 403 90040101 while the
+// list held only the logical name, on a Contact- and a Parent-scope table, before any backend query).
+// `observed.webApiLookupFields: logical-aliases` keeps the former local model that derives it from the logical name.
 function addWebApiLookupAliases(fields, portal, mapping, columnType) {
-  for (const field of portal.observed?.webApiLookupFields === 'explicit-wire' ? [] : fields)
+  for (const field of portal.observed?.webApiLookupFields === 'logical-aliases' ? fields : [])
     if (
       ['lookup', 'customer', 'owner'].includes(columnType(field)) ||
       Object.values(mapping.relationships ?? {}).some(
@@ -204,26 +208,63 @@ function addWebApiLookupAliases(fields, portal, mapping, columnType) {
   }
 }
 
-// Power Pages treats a custom activity selection without a column defined on that table as a wildcard.
-function assertActivityColumns(fields, mapping, portal, wildcardExempt) {
+/** The custom activity table's inherited activitypointer columns, or null when the table is not a custom activity. */
+function customActivityColumns(portal, mapping, wildcardExempt) {
   const activity = portal.webApiEntities?.[mapping.logicalName];
-  if (!fields.length || wildcardExempt || activity?.isActivity !== true || standardTableDef(mapping.logicalName))
-    return;
-  const inherited = standardTableDef('activitypointer').attributes;
+  if (wildcardExempt || activity?.isActivity !== true || standardTableDef(mapping.logicalName)) return null;
+  return standardTableDef('activitypointer').attributes;
+}
+
+/** Whether `fields` names a column the custom activity table declares itself (not one it inherits from activitypointer). */
+function namesTableColumn(fields, mapping, portal, inherited) {
+  const activity = portal.webApiEntities?.[mapping.logicalName];
   const declarations = [activity.fields, mapping.fields, mapping.fieldMetadata].filter(Boolean);
   const declared = (name) => declarations.find((attributes) => Object.hasOwn(attributes, name))?.[name];
-  const hasTableColumn = fields.some((name) => {
+  return fields.some((name) => {
     const relationship = mapping.relationships?.[name];
     const lookup = /^_(.+)_value$/.exec(name)?.[1];
     const physical = lookup && fieldKind(declared(lookup)) === 'lookup' ? lookup : name;
     const column = relationship?.many === false ? relationship.from : physical;
     return Boolean(declared(column)) && !Object.hasOwn(inherited, column);
   });
-  if (!hasTableColumn)
+}
+
+// A custom activity's configured columns need one the table defines itself (Microsoft Learn, Power Pages Web API
+// limitations): a list or Web API view without one refuses the table as All Columns. One exception is evidenced: a fields
+// list naming only inherited activitypointer columns is checked per request (hosted session F1, API-01c phase A, two runs:
+// each column answered its own 90040101). A list with other entries (a typo, a navigation or an alias of a column that is no
+// lookup) or a view is not, and stays refused (no capture shows hosted accepting it).
+function assertActivityList(fields, mapping, portal, inherited, { fromView }) {
+  if (!fields.length || !inherited) return;
+  if (!fromView && fields.every((name) => Object.hasOwn(inherited, name))) return;
+  if (!namesTableColumn(fields, mapping, portal, inherited))
     denied('Attribute All Columns is not enabled for Web Api.', 'WebApiWildcardDeprecated', 403, {
       table: mapping.logicalName,
     });
 }
+
+// A custom activity selection that names only inherited activitypointer columns reads as All Columns (hosted session F1,
+// API-01c, two runs: 403 90040101 "Attribute All Columns in table <table> is not enabled for Web Api." once each column
+// passed its own check).
+function assertActivityColumns(fields, mapping, portal, inherited) {
+  if (!fields.length || !inherited) return;
+  if (!namesTableColumn(fields, mapping, portal, inherited))
+    denied(
+      `Attribute All Columns in table ${mapping.logicalName} is not enabled for Web Api.`,
+      'WebApiFieldNotEnabled',
+      403,
+      {
+        attribute: 'All Columns',
+        table: mapping.logicalName,
+      },
+    );
+}
+
+const listedNames = (value) =>
+  String(value ?? '')
+    .split(',')
+    .map((field) => field.trim())
+    .filter(Boolean);
 
 function webApiPermissionProfiles(portal, store, mapping) {
   // The simulator section alone: a whole snapshot copied every table to read one identity.
@@ -270,7 +311,17 @@ export function webApiPolicy(portal, store, entity) {
     portal.observed?.webApiWildcard === 'exempt' &&
     (expiry === undefined || Date.parse(expiry) > Number(store.clock?.now() ?? Date.now()));
   const fields = configuredWebApiFields(portal, mapping, prefix, settings, columnType, wildcardExempt);
-  assertActivityColumns([...fields], mapping, portal, wildcardExempt);
+  // The configured list in its own order: a select-less read reads these columns (selectLessColumns).
+  const listed = [...fields];
+  // A custom activity's inherited columns (activityid, subject, description, ...) are checked against
+  // Webapi/activitypointer/fields, never the table's own list, and Webapi/activitypointer/enabled is not needed (hosted
+  // session F1, API-01c phases A to E, two runs: 403 90040101 "Attribute subject in table activitypointer is not
+  // enabled for Web Api." although the table's own list named subject).
+  const inherited = customActivityColumns(portal, mapping, wildcardExempt);
+  const pointerFields = inherited ? new Set(listedNames(settings['Webapi/activitypointer/fields'])) : null;
+  assertActivityList(listed, mapping, portal, inherited, {
+    fromView: String(settings[prefix + 'UseFieldsFromView'] ?? 'false').toLowerCase() === 'true',
+  });
   const writeFields = new Set(fields);
   // Some sites require the wire property to be explicitly enabled.
   // Keep the usual metadata-derived aliases unless that site observation opts in.
@@ -325,8 +376,23 @@ export function webApiPolicy(portal, store, entity) {
       mapping.relationships?.[logical]?.from ?? (/^_.*_value$/.test(logical) ? logical.slice(1, -6) : logical);
     return /^__sim/i.test(logical) || /^__sim/i.test(physical);
   };
+  const inheritedColumn = (name) => {
+    if (!inherited) return false;
+    const column = String(name);
+    const physical =
+      mapping.relationships?.[column]?.from ?? (/^_.*_value$/.test(column) ? column.slice(1, -6) : column);
+    return Object.hasOwn(inherited, physical);
+  };
+  // The list a column is checked against, and the table its refusal names.
+  const columnListed = (name) => (inheritedColumn(name) ? enabled(name, pointerFields) : enabled(name, fields));
+  const deniedTable = (name) => (inheritedColumn(name) ? 'activitypointer' : mapping.logicalName);
+  // A response always carries the primary key; a request that names a column needs it listed.
   const allowed = (name) =>
-    !reserved(name) && (name === mapping.idColumn || enabled(name, fields)) && columnAllowed(name, 'read');
+    !reserved(name) && (name === mapping.idColumn || columnListed(name)) && columnAllowed(name, 'read');
+  const readable = (name) =>
+    !reserved(name) &&
+    ((name === mapping.idColumn && !inheritedColumn(name)) || columnListed(name)) &&
+    columnAllowed(name, 'read');
   // Power Pages answers 400 InvalidAttribute (90040100) for a column the table
   // doesn't have and 403 AttributePermissionIsMissing (90040101) for a real but
   // disallowed column. A column is known from field metadata, relationships,
@@ -389,7 +455,32 @@ export function webApiPolicy(portal, store, entity) {
         table: mapping.logicalName,
       });
     assertExists(name);
-    if (!allowed(name)) notEnabled(name, mapping.logicalName);
+    if (!readable(name)) notEnabled(name, deniedTable(name));
+  };
+  // A select-less read (a collection, a key, /$count or $apply without $select) reads the configured columns in list
+  // order, each lookup as its wire property, and is refused at the first one the list does not enable (hosted session
+  // F1, two runs: "Attribute _pqf1_contact_value in table pqf1_item" for a list naming the lookup pqf1_contact; a custom
+  // activity's list served its columns once activitypointer enabled the inherited ones).
+  const selectLessColumns = () => {
+    const columns = [];
+    for (const name of listed) {
+      if (name === '*') continue;
+      const rel = relation(name);
+      // A navigation name is no column, unless it names its own lookup column.
+      if (rel && !(rel.many === false && rel.from === name)) continue;
+      const wire = lookupColumn(name) ? `_${name}_value` : name;
+      if (!columns.includes(wire)) columns.push(wire);
+    }
+    return columns;
+  };
+  const assertSelectLess = () => {
+    if (listed.includes('*')) return;
+    const columns = selectLessColumns();
+    // The list decides here; column permissions are checked as for any read (the F1 lists had none).
+    const listedColumn = (name) =>
+      !reserved(name) && ((name === mapping.idColumn && !inheritedColumn(name)) || columnListed(name));
+    for (const column of columns) if (!listedColumn(column)) notEnabled(column, deniedTable(column));
+    assertActivityColumns(columns, mapping, portal, inherited);
   };
   const relation = (name) => mapping.relationships?.[name];
   // A path segment before "/" must be a navigation property; the platform answers
@@ -399,14 +490,27 @@ export function webApiPolicy(portal, store, entity) {
       attribute: name,
       table: mapping.logicalName,
     });
-  const path = (name) => {
+  // A $filter lambda's collection-valued navigation needs no listing of its own, as a collection-valued $expand needs
+  // none; the columns its body reads are checked on the related table (hosted session F1, API-02b, two runs: any and all
+  // over a child collection the item list does not name answered 200).
+  const assertNotReserved = (name) => {
+    if (reserved(name))
+      denied('Private simulator columns are not available through the public Web API.', 'WebApiPrivateField', 403, {
+        attribute: name,
+        table: mapping.logicalName,
+      });
+  };
+  const path = (name, { lambda = false } = {}) => {
     const [first, ...rest] = Array.isArray(name) ? name : String(name).split('/');
+    const rel = relation(first);
+    const lambdaCollection = lambda && rel && rel.many !== false;
     if (rest.length) {
-      const rel = relation(first);
       if (!rel) throw notNavigation(first);
-      assert(first);
-      return webApiPolicy(portal, store, rel.entity).assertPath(rest);
+      if (lambdaCollection) assertNotReserved(first);
+      else assert(first);
+      return webApiPolicy(portal, store, rel.entity).assertPath(rest, { lambda });
     }
+    if (lambdaCollection) return assertNotReserved(first);
     assert(first);
   };
   // Lookup columns are read through _<name>_value; selecting the logical name
@@ -448,11 +552,11 @@ export function webApiPolicy(portal, store, entity) {
         );
       path(field);
     }
-    assertActivityColumns(selection, mapping, portal, wildcardExempt);
+    assertActivityColumns(selection, mapping, portal, inherited);
     for (const spec of parseOrderBy(params.get('$orderby'), { dialect: 'dataverse' })) path(spec.path);
     const filter = params.get('$filter');
     const filterPaths = filter ? expressionPaths(parseODataExpression(filter, { dialect: 'dataverse', aliases })) : [];
-    for (const segments of filterPaths) path(segments);
+    for (const segments of filterPaths) path(segments, { lambda: true });
     const apply = params.get('$apply');
     if (apply) for (const segments of applyPaths(parseApply(apply, { dialect: 'dataverse', aliases }))) path(segments);
     for (const spec of parseExpand(params.get('$expand'))) expand(spec, aliases);
@@ -642,8 +746,13 @@ export function webApiPolicy(portal, store, entity) {
   return {
     mapping,
     fields: [...fields],
+    customActivity: Boolean(inherited),
     allowed,
+    readable,
     assert,
+    assertSelectLess,
+    selectLessColumns,
+    deniedTable,
     assertPath: path,
     assertQuery: query,
     assertExpand: expand,

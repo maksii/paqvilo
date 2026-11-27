@@ -130,7 +130,7 @@ async function fixture(
     assert.equal(response.status, 200);
     return (await response.json()).Records.map((record) => record.Id);
   };
-  return { store, context, diagnostics, post, notesPage, timeline, activityIds };
+  return { store, context, diagnostics, origin, post, notesPage, timeline, activityIds };
 }
 
 const note = (n, notetext, subject = `Note created by Author [contact:${author}]`) => ({
@@ -412,14 +412,19 @@ test('Timeline/RTEEnabled renders the note dialogs with the rich text editor in 
   }
 });
 
-// @test-kind compatibility+unproven: Learn (https://learn.microsoft.com/power-pages/configure/configure-notes and view-all-activities-in-portal-timeline): showing both notes and activities on the same form for a custom table is not supported with configuration; that a notescontrol whose DefaultTabId is ActivitiesTab is the activity timeline served by EntityActivity/GetActivities follows the open-sourced portal code (FormXmlCellMetadata, NotesControlTemplate).
+// @test-kind compatibility+unproven: Learn (https://learn.microsoft.com/power-pages/configure/configure-notes and view-all-activities-in-portal-timeline): showing both notes and activities on the same form for a custom table is not supported with configuration; that a notescontrol whose DefaultTabId is ActivitiesTab is the activity timeline served by EntityActivity/GetActivities, adding portal comments through EntityActivity/AddPortalComment and neither editing nor deleting, follows the open-sourced portal code (FormXmlCellMetadata, NotesControlTemplate).
 test('a timeline control lists activities and reports the custom table notes limitation', async () => {
   const cell = { type: 'notes', id: 'notescontrol', defaultTab: 'ActivitiesTab' };
   const custom = await renderNotesForm({ entity: 'pqx_gadget', recordId: gadget, cell });
   assert.match(custom.html, /data-is-timeline="True"/);
   assert.match(custom.html, /data-url-get="\/_portal\/site\/EntityActivity\/GetActivities"/);
-  assert.match(custom.html, /data-add-enabled="False"[^>]*data-delete-enabled="False" data-edit-enabled="False"/);
-  assert.doesNotMatch(custom.html, /notes-template|modal-addnote|modal-editnote/);
+  assert.match(custom.html, /data-add-enabled="True"[^>]*data-delete-enabled="False" data-edit-enabled="False"/);
+  assert.match(
+    custom.html,
+    /data-url-add="\/_portal\/site\/EntityActivity\/AddPortalComment" data-url-delete="" data-url-edit=""/,
+  );
+  assert.match(custom.html, /modal-addnote/);
+  assert.doesNotMatch(custom.html, /notes-template|modal-editnote/);
   assert.deepEqual(
     custom.diagnostics
       .filter((entry) => /^PORTAL_TIMELINE/.test(entry.code))
@@ -453,4 +458,127 @@ test('timeline activity tables are found from mappings keyed by table without a 
     activities: { phonecall: [activity(1, 'phonecall')], email: [activity(2, 'email')] },
   });
   assert.deepEqual(await activityIds(), [id(2), id(1)]);
+});
+
+// A portal comment fixture: the case owned by the site's application user, activityparty and systemuser tables, and a
+// recorder of the plug-in pipeline's stage-10 messages.
+const APP_USER = id(200);
+async function commentFixture(t, permissions) {
+  const setup = await fixture(t, permissions ? { permissions } : {});
+  const { store } = setup;
+  store.state.mappings.systemuser = {
+    logicalName: 'systemuser',
+    entitySet: 'systemusers',
+    idColumn: 'systemuserid',
+    nameColumn: 'fullname',
+  };
+  store.state.mappings.activityparty = {
+    logicalName: 'activityparty',
+    entitySet: 'activityparties',
+    idColumn: 'activitypartyid',
+  };
+  store.state.tables.systemuser = [{ systemuserid: APP_USER, fullname: '# Portals-invented' }];
+  store.state.tables.activityparty = [];
+  store.state.tables.incident[0].ownerid = lookup(APP_USER, 'systemuser');
+  store.state.tables.adx_portalcomment ??= [];
+  const messages = [];
+  store.setPluginPipeline((context) => {
+    if (context.stage === 10 && ['create', 'update'].includes(context.operation))
+      messages.push({
+        message: context.operation,
+        entity: context.entity,
+        portalRequest: context.portalRequest === true,
+        target: structuredClone(context.target),
+      });
+  });
+  const addComment = (text, regardingEntityId = caseId) =>
+    setup.post(`/_portal/${website}/EntityActivity/AddPortalComment`, {
+      regardingEntityLogicalName: 'incident',
+      regardingEntityId,
+      text,
+    });
+  return { ...setup, messages, addComment };
+}
+const commenterPermissions = [
+  { entity: 'incident', scope: 'global', roles: ['Reader'], operations: ['read', 'appendTo'] },
+  { entity: 'adx_portalcomment', scope: 'global', roles: ['Reader'], operations: ['read', 'create', 'append'] },
+];
+
+// @test-kind observation: hosted F3 Customer Self-Service site (paqvilo-developer hosted-f3, runs a/b cs-cases "portal comment" and the portal comment readback, cs-portalcomment-parties-a.json): a comment added on the case timeline is created then updated (Create, then Update of adx_portalcomment, portal calls of the contact), with subject null, the text in description, direction Incoming (1), state Completed (1) / status Received (3), regarding the case, owned by the case's owner, and its parties are Sender = the contact, To Recipient = the owner, Owner and Regarding
+test('a timeline comment is created then completed with the contact as sender and the case owner as recipient', async (t) => {
+  const { store, messages, addComment } = await commentFixture(t, commenterPermissions);
+  const response = await addComment('Invented portal comment');
+  assert.equal(response.status, 201, await response.clone().text());
+  const { Id } = await response.json();
+  const [comment] = store.tableRows('adx_portalcomment');
+  assert.equal(comment.activityid, Id);
+  assert.equal(comment.subject ?? null, null);
+  assert.equal(comment.description, 'Invented portal comment');
+  assert.equal(comment.adx_portalcommentdirectioncode, 1);
+  assert.deepEqual([comment.statecode, comment.statuscode], [1, 3]);
+  assert.deepEqual([comment.regardingobjectid?.id, comment.regardingobjectid?.logical_name], [caseId, 'incident']);
+  assert.deepEqual([comment.ownerid?.id, comment.ownerid?.logical_name], [APP_USER, 'systemuser']);
+  assert.deepEqual(
+    messages.map((entry) => `${entry.message} ${entry.entity}`),
+    ['create adx_portalcomment', 'update adx_portalcomment'],
+  );
+  assert.ok(messages.every((entry) => entry.portalRequest));
+  assert.deepEqual(
+    store
+      .tableRows('activityparty')
+      .filter((row) => row.activityid?.id === Id)
+      .map((row) => [row.participationtypemask, row.partyid?.logical_name, row.partyid?.id]),
+    [
+      [1, 'contact', reader],
+      [2, 'systemuser', APP_USER],
+      [9, 'systemuser', APP_USER],
+      [8, 'incident', caseId],
+    ],
+  );
+  // The party lists are not stored columns of the comment.
+  assert.equal(Object.hasOwn(comment, 'from') || Object.hasOwn(comment, 'to'), false);
+});
+
+// @test-kind unproven: the Create Target of the comment is not captured (only its message); the open-sourced portal's ActivityDataAdapter.CreatePortalComment sets description, regarding, its type code, the direction, the owner and the from/to party lists (activityparty entities holding only the party), and the state on the following Update
+test('the comment Create carries its party lists and the Update its state', async (t) => {
+  const { messages, addComment } = await commentFixture(t, commenterPermissions);
+  assert.equal((await addComment('Invented portal comment')).status, 201);
+  const [created, updated] = messages;
+  assert.deepEqual(created.target.from, [{ partyid: { id: reader, logical_name: 'contact' } }]);
+  assert.deepEqual(created.target.to, [{ partyid: { id: APP_USER, logical_name: 'systemuser' } }]);
+  assert.equal(created.target.regardingobjecttypecode, 'incident');
+  assert.equal(Object.hasOwn(created.target, 'statecode') && created.target.statecode === 1, false);
+  assert.deepEqual([updated.target.statecode, updated.target.statuscode], [1, 3]);
+});
+
+// @test-kind security: adding a comment needs Create and Append on the portal comment table and AppendTo on the record (the open-sourced portal's NotesControlTemplate and PortalCommentCreateResult checks); a visitor without one of them writes nothing and the timeline offers no add control
+test('a visitor without the comment permissions cannot add a comment', async (t) => {
+  for (const permissions of [
+    [commenterPermissions[0], { ...commenterPermissions[1], operations: ['read', 'append'] }],
+    [commenterPermissions[0], { ...commenterPermissions[1], operations: ['read', 'create'] }],
+    [{ ...commenterPermissions[0], operations: ['read'] }, commenterPermissions[1]],
+  ]) {
+    const { store, messages, addComment } = await commentFixture(t, permissions);
+    const response = await addComment('Refused comment');
+    assert.equal(response.status, 403);
+    assert.equal(store.tableRows('adx_portalcomment').length, 0);
+    assert.equal(store.tableRows('activityparty').length, 0);
+    assert.deepEqual(messages, []);
+  }
+});
+
+// @test-kind security: the comment service takes the anti-forgery token of the page and a signed-in contact, and an empty comment is refused (417, as the open-sourced AddPortalComment answers ExpectationFailed)
+test('the comment service needs the page token, a contact and a text', async (t) => {
+  const { store, context, origin, addComment } = await commentFixture(t, commenterPermissions);
+  assert.equal((await addComment('   ')).status, 417);
+  assert.equal((await addComment('<p> </p>')).status, 417);
+  const forged = await fetch(`${origin}/_portal/${website}/EntityActivity/AddPortalComment`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ regardingEntityLogicalName: 'incident', regardingEntityId: caseId, text: 'Forged' }),
+  });
+  assert.equal(forged.status, 403);
+  context.identity = { roles: ['Reader'] };
+  assert.equal((await addComment('Anonymous')).status, 401);
+  assert.equal(store.tableRows('adx_portalcomment').length, 0);
 });

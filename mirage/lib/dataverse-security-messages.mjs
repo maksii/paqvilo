@@ -25,6 +25,7 @@ import {
 } from './dataverse-security.mjs';
 import { AUDIT_ACTION, writeAudit } from './dataverse-audit.mjs';
 import { contextUrl } from './dataverse-odata.mjs';
+import { RECORD_FILTER_DEPTH } from './record-filter.mjs';
 
 // PrivilegeDepth enum values: Basic 0, Local 1, Deep 2, Global 3. Accepts the name or the number.
 const DEPTH_ENUM = ['Basic', 'Local', 'Deep', 'Global'];
@@ -76,7 +77,11 @@ function maskOf(depth) {
   if (!name) throw invalid(`Invalid privilege depth ${depth}.`);
   return DEPTH[name];
 }
-const depthName = (mask) => Object.keys(DEPTH).find((name) => DEPTH[name] === Number(mask)) ?? 'Basic';
+// 16 is a record-filter grant (PrivilegeDepth RecordFilter; record-filter.mjs).
+const depthName = (mask) =>
+  Number(mask) === RECORD_FILTER_DEPTH
+    ? 'RecordFilter'
+    : (Object.keys(DEPTH).find((name) => DEPTH[name] === Number(mask)) ?? 'Basic');
 const accessNames = (mask) =>
   Object.keys(ACCESS_RIGHTS)
     .filter((right) => Number(mask) & ACCESS_RIGHTS[right])

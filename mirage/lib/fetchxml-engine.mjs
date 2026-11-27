@@ -413,6 +413,11 @@ function reportFilterHint(node, state) {
     );
 }
 
+// The business-unit operators: a portal query evaluates them against the site's application user (observed
+// portalFetchIdentityOperators "application-user", dataverse-conditions.mjs), so their local-support refusal is made when
+// the condition is compiled, after the Web API column checks (hosted F1 DATA-02b: owningbusinessunit outside the Web API
+// fields answered 403 90040101 for eq-businessid). The team and user-hierarchy operators stay refused here.
+const PORTAL_APPLICATION_USER_OPERATORS = new Set(['eq-businessid', 'ne-businessid']);
 function validateConditionNode(node, state) {
   state.conditions++;
   if (!node.attrs.attribute) fail('FetchXML condition requires attribute', 400, 'InvalidFetchXml');
@@ -420,7 +425,8 @@ function validateConditionNode(node, state) {
   if (operator == null)
     fail(`The required attribute 'operator' is missing on condition ${node.attrs.attribute}.`, 400, 'InvalidFetchXml');
   const identityOperator =
-    UNSUPPORTED_FETCH_OPERATORS.has(operator) && (state.dataverseIdentity || HIERARCHY_OPERATORS.has(operator));
+    UNSUPPORTED_FETCH_OPERATORS.has(operator) &&
+    (state.dataverseIdentity || HIERARCHY_OPERATORS.has(operator) || PORTAL_APPLICATION_USER_OPERATORS.has(operator));
   if (UNSUPPORTED_FETCH_OPERATORS.has(operator) && !identityOperator)
     fail(
       `FetchXML operator ${operator} is not supported locally: ${UNSUPPORTED_FETCH_OPERATORS.get(operator)}.`,
@@ -1808,16 +1814,20 @@ function validatePortalDateOnlyIn(operator, definition, values) {
       last = keyed.at(-1);
     const parts = [];
     const pk = rootMapping.idColumn;
+    // A distinct query that projects the primary key still ends its cookie with it (hosted session F1, DATA-02b: the
+    // portal's permission-compiled Liquid queries are distinct, and their cookies list the order columns, then the key).
+    const withKey =
+      !plan.distinct || columns.some((column) => column.alias == null && column.attribute === pk && !column.aliased);
     const seen = new Set();
     for (const spec of first.specs) {
-      if (spec.alias != null || seen.has(spec.attribute) || (spec.attribute === pk && !plan.distinct)) continue;
+      if (spec.alias != null || seen.has(spec.attribute) || (spec.attribute === pk && withKey)) continue;
       seen.add(spec.attribute);
       const read = (item) => fieldValue(item.row.base, spec.attribute);
       parts.push(
         `<${spec.attribute} last="${xmlEscapeAttribute(cookieValue(read(last)))}" first="${xmlEscapeAttribute(cookieValue(read(first)))}" />`,
       );
     }
-    if (!plan.distinct)
+    if (withKey)
       parts.push(
         `<${pk} last="${xmlEscapeAttribute(cookieValue(last.row.base[pk]))}" first="${xmlEscapeAttribute(cookieValue(first.row.base[pk]))}" />`,
       );

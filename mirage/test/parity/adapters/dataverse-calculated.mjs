@@ -87,11 +87,13 @@ export async function open(_context) {
       const { call } = session;
       let parents = 0,
         children = 0;
-      for (const key of input.parents) {
+      // A parent is its key, or { key, values } with the parent's own column values (designer-dc2).
+      for (const entry of input.parents) {
+        const key = typeof entry === 'string' ? entry : entry.key;
         const created = await call(`${schema.parent.set}?$select=${schema.parent.table}id`, {
           method: 'POST',
           headers: { prefer: 'return=representation' },
-          body: { inv_name: key },
+          body: { inv_name: key, ...(typeof entry === 'string' ? {} : entry.values) },
         });
         if (created.status !== 201)
           throw new Error(`parent ${key}: HTTP ${created.status} ${JSON.stringify(created.body)}`);

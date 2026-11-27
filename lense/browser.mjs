@@ -731,6 +731,8 @@ export async function attachSession(context, session) {
   const provenance = createInspectionProvenanceTransport(context, [session.cfg]);
   session.provenanceSlot = provenance.slot;
   session.domProvenanceSlot = provenance.domSlot;
+  // Inspect hands the closed shadow roots it read through the DevTools protocol to the page's registry (dom-pierce.mjs).
+  session.admitSealed = provenance.admitSealed;
   // A script the page runs that is byte for byte a script of the export is followed to that file, whoever served it.
   provenance.registerScriptSources?.(session.cfg.origin, (route) => session.sourceInspector?.sourceIndexFor(route));
   return interceptOrigin(context, session.cfg.origin, session.route, {

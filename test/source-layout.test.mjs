@@ -121,7 +121,7 @@ test('the toolkit model indexes a code site: pages from id:, language copies, pe
     ['Site Name', 'Site Name'],
   );
   // Web link markup with unprefixed keys, one link per file.
-  const link = model.inlineSources.find((source) => source.kind === 'metadata-markup');
+  const link = model.inlineSources.find((source) => source.kind === 'metadata-markup' && !source.pageField);
   assert.deepEqual(
     [link.rel, link.fieldPath, link.label],
     ['weblink-sets/primary-navigation/en-US/About.weblink.yml#name', ['name'], 'About (name)'],

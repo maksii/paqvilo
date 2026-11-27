@@ -9,6 +9,14 @@
 //   (content-access-levels.mjs); hidden articles count in no total, facet or summary source.
 // - Rows come from the view query that lists and entity views use (native-services executeGridQuery), so portal
 //   table permissions filter results per visitor.
+// - Web pages are not governed by table permissions: a page result needs the visitor to pass the page's web page access
+//   control rules (and its ancestors'), as a page request does (page-access.mjs); a row of no exported page is left out.
+//   Hosted session F3 (summary-F3.md PAGE-04f) found web pages for anonymous visitors on a site with no adx_webpage
+//   table permission.
+// - A web page in a non-visible publishing state is left out for a visitor who cannot preview unpublished content. A
+//   hosted site with Dataverse search lists such pages to every visitor, anonymous ones included (hosted session F3,
+//   summary-F3.md PAGE-04f); observed.searchUnpublishedPages "listed" reproduces that, and the exclusion reports
+//   PORTAL_SEARCH_UNPUBLISHED_PAGES_EXCLUDED.
 // - Result URLs come from the site marker `<logicalname>_SearchResultPage` (`Case` for incident, `Knowledge Article`
 //   for knowledgearticle) with the record id in the `id` query parameter; without a marker the url is null.
 // - With Search/IndexNotesAttachments and KnowledgeManagement/DisplayNotes both true, the notes of the knowledge articles a
@@ -30,6 +38,8 @@ import { siteSetting } from './redirects.mjs';
 import { resxCulture } from './liquid-resx.mjs';
 import { compilePortalSearchQuery, compilePortalSearchTemplate } from './portal-search-query.mjs';
 import { knowledgeArticleAccess } from './content-access-levels.mjs';
+import { portalField } from './importer.mjs';
+import { canPreviewUnpublished, pageAccess } from './page-access.mjs';
 
 const DEFAULT_SEARCH_TABLES = Object.freeze([
   'knowledgearticle',
@@ -400,6 +410,57 @@ function recordTypeFacets(portal, hits) {
     .sort((a, b) => a.label.localeCompare(b.label));
 }
 
+/**
+ * The ids of the web page rows in a non-visible publishing state, unless the visitor may preview unpublished content.
+ * The exported page's own state decides (its default-language content page's state wins over the root's, as page access
+ * reads it); a row of no exported page reads its publishing state column.
+ */
+function unpublishedWebPages(rows, idColumn, { portal, identity }) {
+  const hidden = new Set(
+    (portal?.publishingStates ?? []).filter((state) => !state.isVisible).map((state) => canonical(state.id)),
+  );
+  if (!hidden.size || canPreviewUnpublished(portal, identity)) return new Set();
+  const pages = new Map((portal.pages ?? []).map((page) => [canonical(page.id), page]));
+  const stateOf = (row) => {
+    const page = pages.get(canonical(row[idColumn]));
+    const value = page
+      ? portalField(page.metadata ?? page, 'publishingstateid')
+      : (row.adx_publishingstateid ?? row._adx_publishingstateid_value);
+    return canonical(typeof value === 'object' && value ? (value.id ?? value.Id) : value);
+  };
+  return new Set(rows.filter((row) => hidden.has(stateOf(row))).map((row) => canonical(row[idColumn])));
+}
+
+/**
+ * The web page rows this visitor may find: each page's access control rules decide (page-access.mjs pageAccess, the rule
+ * that governs a page request). Security decision: unpublished pages stay out of results unless the site was observed
+ * listing them (F3 PAGE-04f); then only their publishing state stops counting, never their access rules.
+ */
+function admitWebPages(rows, idColumn, context, legacyLucene, diagnostic) {
+  const { portal, identity } = context;
+  const listed = (context.config?.observed ?? portal?.observed)?.searchUnpublishedPages === 'listed';
+  const hidden = listed ? new Set() : unpublishedWebPages(rows, idColumn, context);
+  const rulesOf = listed
+    ? { ...portal, publishingStates: (portal.publishingStates ?? []).map((state) => ({ ...state, isVisible: true })) }
+    : portal;
+  const pages = new Map((portal?.pages ?? []).map((page) => [canonical(page.id), page]));
+  const now = context.store?.clock?.now?.() ?? Date.now();
+  const readable = (row) => {
+    const page = pages.get(canonical(row[idColumn]));
+    return Boolean(page) && pageAccess(rulesOf, page, identity ?? {}, { now }).allowed;
+  };
+  const admitted = rows.filter((row) => !hidden.has(canonical(row[idColumn])) && readable(row));
+  if (hidden.size && !legacyLucene)
+    diagnostic({
+      code: 'PORTAL_SEARCH_UNPUBLISHED_PAGES_EXCLUDED',
+      severity: 'warning',
+      component: 'searchindex',
+      count: hidden.size,
+      message: `${hidden.size} web page(s) in a non-visible publishing state are left out of these search results. A hosted Power Pages site with Dataverse search lists them, with their title and indexed text, to every visitor, anonymous ones included; Mirage keeps them out. Set observed.searchUnpublishedPages to listed, with evidence, to reproduce the hosted results.`,
+    });
+  return admitted;
+}
+
 /** Every page of the view query (the grid's own paging), so the total counts the whole table; null when access is denied. */
 async function readSearchViewRows(model, view, context) {
   const rows = [];
@@ -493,12 +554,17 @@ function searchQueryTemplate(queryTemplate, search, legacyLucene, diagnostic) {
     // The record id is read with the view's columns (a view's fetch need not select it). Knowledge articles are searchable only
     // when Published and not Internal, whatever the view selects (Learn power-pages search overview, "can't be modified"): the
     // store row decides, never a projected column. A row without isinternal reads as the platform default No.
-    const read = await readSearchViewRows(searchViewModel(logicalName, view, mapping), view, context);
+    // Web page rows are read without table permissions; their page access rules admit them (admitWebPages).
+    const readContext =
+      logicalName === 'adx_webpage' ? { ...context, identity: { ...identity, admin: true } } : context;
+    const read = await readSearchViewRows(searchViewModel(logicalName, view, mapping), view, readContext);
     if (!read) continue;
-    const admitted =
+    let admitted =
       knowledgeAccess && logicalName === 'knowledgearticle'
         ? read.rows.filter((row) => knowledgeAccess.visible(row[mapping.idColumn]))
         : read.rows;
+    if (logicalName === 'adx_webpage')
+      admitted = admitWebPages(admitted, mapping.idColumn, context, legacyLucene, diagnostic);
     appendSearchViewHits(hits, admitted, read.columns, logicalName, mapping, clauses, options);
     if (notes && logicalName === 'knowledgearticle') {
       const articles = admitted.map((row) => {

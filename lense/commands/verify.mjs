@@ -51,8 +51,15 @@ function copyVerificationSources(source, destination) {
   });
 }
 
-function commitVerificationBaseline(directory) {
+/**
+ * Commit `directory` as the baseline of a new verification repository. The repository takes file modes from its index,
+ * not from the file system (core.fileMode=false): `git init` enables core.fileMode wherever the file system keeps an
+ * executable bit (Linux, macOS), and the worktree-to-commit `git diff` of the change tracking then never sees a mode
+ * change staged by stageVerificationMode. It also commits every file as non-executable, so staging +x always changes it.
+ */
+export function commitVerificationBaseline(directory) {
   git(directory, 'init', '-q');
+  git(directory, 'config', 'core.fileMode', 'false');
   git(directory, 'add', '-A');
   git(
     directory,
@@ -85,7 +92,8 @@ async function copyVerificationControls(cfg, work) {
   return copies;
 }
 
-function stageVerificationMode(root, file) {
+/** Make `file` differ from the baseline of `root` without changing its bytes (see commitVerificationBaseline). */
+export function stageVerificationMode(root, file) {
   git(root, 'update-index', '--chmod=+x', '--', path.relative(root, file));
 }
 const DIAGNOSTIC_LIMITS = { entriesPerCategory: 200, textCharacters: 1000 };

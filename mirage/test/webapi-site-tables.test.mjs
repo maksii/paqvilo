@@ -342,3 +342,40 @@ test('Liquid FetchXML reads the site tables before any Web API request', async (
   const html = await (await fetch(app.url + '/')).text();
   assert.match(html, /<p id="roles">\[Publishers\]<\/p>/);
 });
+
+// @test-kind security+observation: hosted session F1 (2026-11-26, summary-F1.md AUTH-03c, runs a2 and b2): with Webapi/mspp_webrole enabled the hosted /_api/mspp_webroles answered 200 with the web roles of every site in the environment and columns outside the fields list; Mirage answers 200 with this export's roles and the listed columns only, and reports the hosted disclosure.
+test('enhanced model: mspp_webroles serves the site export only and reports the hosted disclosure', async (t) => {
+  const files = {
+    ...ENHANCED,
+    ...Object.fromEntries([
+      setting(5, 'Webapi/mspp_webrole/enabled', 'true'),
+      setting(6, 'Webapi/mspp_webrole/fields', 'mspp_webroleid,mspp_name'),
+    ]),
+  };
+  const { app, get } = await start(t, files, {
+    permissions: [
+      contactSelf,
+      { id: 'roles', entity: 'mspp_webrole', scope: 'global', roles: ['Authenticated Users'], operations: ['read'] },
+    ],
+    contactRoles: [],
+  });
+  const roles = await get('/_api/mspp_webroles?$select=mspp_name');
+  assert.equal(roles.status, 200);
+  assert.deepEqual(
+    roles.body.value.map((row) =>
+      Object.keys(row)
+        .filter((key) => !key.startsWith('@'))
+        .sort(),
+    ),
+    [
+      ['mspp_name', 'mspp_webroleid'],
+      ['mspp_name', 'mspp_webroleid'],
+    ],
+    'only the listed columns',
+  );
+  assert.deepEqual(roles.body.value.map((row) => row.mspp_name).sort(), ['Publishers', 'Readers']);
+  const exposure = app.state().diagnostics.filter((item) => item.code === 'WEBAPI_WEBROLE_HOSTED_EXPOSURE');
+  assert.equal(exposure.length, 1);
+  assert.equal(exposure[0].severity, 'warning');
+  assert.match(exposure[0].message, /every site in the Dataverse environment/);
+});

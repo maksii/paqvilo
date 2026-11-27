@@ -108,7 +108,11 @@ test('native action requests re-resolve configured actions, record source, metad
   const config = JSON.parse(options.portal.forms[0].metadata.adx_settings);
   config.Actions[0].FilterCriteria = '<filter><condition attribute="title" operator="eq" value="Allowed"/></filter>';
   options.portal.forms[0].metadata.adx_settings = JSON.stringify(config);
-  await assert.rejects(submit(options, body('deactivate')), (error) => error.code === 'FormActionFilterUnsupported');
+  // A bare filter fragment is evaluated on the form table: the record does not match it, so the action is refused.
+  await assert.rejects(
+    submit(options, body('deactivate')),
+    (error) => error.code === 'FormActionNotEnabled' && error.status === 403,
+  );
   delete config.Actions[0].FilterCriteria;
   options.portal.forms[0].metadata.adx_settings = JSON.stringify(config);
   options.store.state.mappings.sample.fieldMetadata.statecode.states[1].defaultStatus = 999;
@@ -144,7 +148,23 @@ test('basic form state-action filters gate rendering and are rechecked before th
   );
   assert.doesNotMatch(await render(other), /deactivate-link/);
   assert.match(await render(other), /activate-link/);
-  assert.doesNotMatch(await render(id, { config: { mode: 'live' } }), /deactivate-link/);
+  // Live mode evaluates the criterion through the live read provider (the connected portal) as it reads every row.
+  const liveQueries = [];
+  const live = (rows) => ({
+    get: (entity, key, identity) => options.store.get(entity, key, identity),
+    query: (...args) => options.store.query(...args),
+    fetchXml: async (xml) => {
+      liveQueries.push(xml);
+      return { entities: rows };
+    },
+  });
+  assert.match(
+    await render(id, { config: { mode: 'live' }, readProvider: live([{ sampleid: id }]) }),
+    /deactivate-link/,
+  );
+  assert.doesNotMatch(await render(id, { config: { mode: 'live' }, readProvider: live([]) }), /deactivate-link/);
+  assert.equal(liveQueries.length, 2);
+  assert.match(liveQueries[0], new RegExp(`<condition attribute="sampleid" operator="eq" value="${id}"`));
 
   await options.store.update('sample', id, { title: 'No longer eligible' }, options.identity);
   await assert.rejects(
@@ -221,6 +241,112 @@ test('native state filters fail closed before evaluating unqualified query or ac
       nativeFormActionApplies(action, scope),
       (error) => error.code === 'FormActionFilterUnsupported',
     );
+});
+
+// @test-kind unproven: local model (no hosted capture of a bare filter fragment or an aggregate criterion; the legacy FormConfiguration.DisableActionsBasedOnFilterCriteria parsed only a full fetch): a bare <filter> criterion is a filter on the form table, an aggregate criterion fails closed with a diagnostic
+test('a bare filter criterion filters the form table and an aggregate criterion hides the action with a diagnostic', async () => {
+  const options = await fixture();
+  const definition = options.portal.forms[0];
+  const authored = JSON.parse(definition.metadata.adx_settings);
+  const setCriterion = (criterion) => {
+    authored.Actions[0].FilterCriteria = criterion;
+    definition.metadata.adx_settings = JSON.stringify(authored);
+  };
+  const diagnostics = [];
+  const render = (row) =>
+    renderComponent(
+      'entityform',
+      'Entry',
+      { identity: options.identity, request: { params: { row } } },
+      { ...options, diagnostic: (entry) => diagnostics.push(entry) },
+    );
+  setCriterion(' <filter type="and"><condition attribute="title" operator="eq" value="Original"/></filter>');
+  assert.match(await render(id), /data-pp-form-action="deactivate"/);
+  assert.doesNotMatch(await render(other), /data-pp-form-action="deactivate"/);
+  await assert.rejects(
+    submit(options, body('deactivate', { recordId: other, query: { row: other } })),
+    (error) => error.code === 'FormActionNotEnabled',
+  );
+  assert.equal((await submit(options, body('deactivate'))).record.statecode, 1);
+  await options.store.update('sample', id, { statecode: 0, statuscode: 10 }, options.identity);
+
+  setCriterion(
+    '<fetch aggregate="true"><entity name="sample"><attribute name="sampleid" alias="rows" aggregate="count"/><filter><condition attribute="title" operator="eq" value="Original"/></filter></entity></fetch>',
+  );
+  assert.doesNotMatch(await render(id), /data-pp-form-action="deactivate"/);
+  assert.deepEqual(
+    diagnostics.map(({ code, action }) => [code, action]),
+    [['FORM_ACTION_FILTER_UNRESOLVED', 'DeactivateAction']],
+  );
+  assert.match(diagnostics[0].message, /aggregate or grouped FetchXML criterion/);
+  await assert.rejects(
+    submit(options, body('deactivate')),
+    (error) => error.code === 'FormActionFilterUnsupported' && error.status === 403,
+  );
+  assert.equal((await options.store.get('sample', id, options.identity)).statecode, 0);
+});
+
+// @test-kind contract: in live mode a filtered action's request re-evaluates its criterion through the live read provider
+test('a filtered state action in live mode is rechecked through the live read provider before the update', async () => {
+  const options = await fixture();
+  const definition = options.portal.forms[0];
+  const authored = JSON.parse(definition.metadata.adx_settings);
+  authored.Actions[0].FilterCriteria =
+    '<fetch><entity name="sample"><filter><condition attribute="title" operator="eq" value="Original"/></filter></entity></fetch>';
+  definition.metadata.adx_settings = JSON.stringify(authored);
+  const queries = [];
+  const live = (rows) => ({
+    get: (entity, key, identity) => options.store.get(entity, key, identity),
+    query: (...args) => options.store.query(...args),
+    fetchXml: async (xml) => {
+      queries.push(xml);
+      return { entities: rows };
+    },
+  });
+  await assert.rejects(
+    submit({ ...options, readProvider: live([]) }, body('deactivate', { actionIndex: 0 })),
+    (error) => error.code === 'FormActionNotEnabled',
+  );
+  const done = await submit(
+    { ...options, readProvider: live([{ sampleid: id }]) },
+    body('deactivate', { actionIndex: 0 }),
+  );
+  assert.equal(done.record.statecode, 1);
+  assert.ok(queries.length >= 2);
+  for (const xml of queries) assert.match(xml, new RegExp(`attribute="sampleid" operator="eq" value="${id}"`));
+});
+
+// @test-kind security: a filtered form action fails closed without a read provider that can evaluate its criterion (live mode with no live FetchXML reads): it is hidden with a diagnostic, its request is refused and nothing is written
+test('a filtered state action without a FetchXML read provider is hidden and refused in live mode', async () => {
+  const options = await fixture();
+  const definition = options.portal.forms[0];
+  const authored = JSON.parse(definition.metadata.adx_settings);
+  authored.Actions[0].FilterCriteria =
+    '<fetch><entity name="sample"><filter><condition attribute="title" operator="eq" value="Original"/></filter></entity></fetch>';
+  definition.metadata.adx_settings = JSON.stringify(authored);
+  // A live read provider that reads records but cannot run FetchXML.
+  const readProvider = {
+    get: (entity, key, identity) => options.store.get(entity, key, identity),
+    query: (...args) => options.store.query(...args),
+  };
+  const diagnostics = [];
+  const html = await renderComponent(
+    'entityform',
+    'Entry',
+    { identity: options.identity, request: { params: { row: id } } },
+    { ...options, config: { mode: 'live' }, readProvider, diagnostic: (entry) => diagnostics.push(entry) },
+  );
+  assert.doesNotMatch(html, /deactivate-link/);
+  assert.deepEqual(
+    diagnostics.map(({ code, action }) => [code, action]),
+    [['FORM_ACTION_FILTER_UNRESOLVED', 'DeactivateAction']],
+  );
+  await assert.rejects(
+    submit({ ...options, readProvider }, body('deactivate', { actionIndex: 0 })),
+    (error) => error.code === 'FormActionFilterUnsupported',
+  );
+  const stored = await options.store.get('sample', id, options.identity);
+  assert.deepEqual([stored.statecode, stored.statuscode, stored.title], [0, 10, 'Original']);
 });
 
 // @test-kind security: a current-user action cannot replace its target with a different contact.

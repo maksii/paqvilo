@@ -15,7 +15,9 @@
 //   observer microtask (a promise a custom element constructor makes). Inline and external scripts run after a
 //   checkpoint and never see one. What such code reads is harmless: the id of one element says nothing about another
 //   element's, and a copy of it gains nothing and costs the element that owns it nothing (`decide`, below).
-// - Elements inside a closed shadow root are never read (it stays a boundary), so their marks stay.
+// - Elements inside a closed shadow root carry no mark (only their component could read it): their bindings name their
+//   place under the host's binding, and the backend hands the root over when Inspect reads it through the DevTools
+//   protocol (`admitSealed`, below).
 // `markFilterOnly`: install only the filter (a frame whose document carries no marks of its own).
 export function installPortalProvenanceRegistry({
   secret,
@@ -107,7 +109,8 @@ export function installPortalProvenanceRegistry({
   const scriptObserved = domReader?.isScriptObserved ?? null,
     watchRoot = domReader?.watchRoot ?? null;
   // Open shadow roots are observed like the document (a closed root stays a boundary: its content is never read).
-  const shadowRootOf = getter(Element.prototype, 'shadowRoot');
+  const shadowRootOf = getter(Element.prototype, 'shadowRoot'),
+    shadowHostOf = getter(ShadowRoot.prototype, 'host');
   const observedRoots = lock(new WeakSet(), WeakSet.prototype, ['add', 'has']);
   // Nodes left unbound because the script registry could not say whether a script made them (its insertion bound).
   const unknownOrigin = lock(new WeakSet(), WeakSet.prototype, ['add', 'has']);
@@ -667,6 +670,42 @@ export function installPortalProvenanceRegistry({
     tooLarge();
     return result;
   };
+  // The binding of each place under the host whose binding is `hostId` (a closed shadow root's elements, by their
+  // element index path from the root; lib/render-provenance.mjs sealedChildren).
+  const sealedPlaces = (hostId) => {
+    const places = new NativeMap();
+    proofs.forEach((proof) => {
+      for (let i = 0; i < proof.bindings.length; i++) {
+        const sealed = proof.bindings[i].sealed;
+        if (sealed?.host === hostId && typeof sealed.path === 'string')
+          apply(mapSet, places, [sealed.path, proof.bindings[i].id]);
+      }
+    });
+    return places;
+  };
+  // Names each element of `root` by the binding of its place, up to `limit` elements; a template's content is left out.
+  const admitPlaces = (root, places) => {
+    const stack = [{ node: root, path: '' }];
+    for (let visited = 0; stack.length && visited < limit; visited++) {
+      const { node, path } = stack.pop();
+      const children = elementChildren(node);
+      for (let i = 0; i < children.length; i++) {
+        const child = children[i],
+          place = path ? path + '.' + i : String(i);
+        const id = apply(mapGet, places, [place]);
+        if (id && !nodeIds.has(child) && !originals.has(id)) admit(child, id, null);
+        if (read(localName, child) !== 'template') stack[stack.length] = { node: child, path: place };
+      }
+    }
+  };
+  // The element children of a node, in order (a closed shadow root or one of its elements).
+  const elementChildren = (node) => {
+    const children = read(childNodes, node),
+      elements = [];
+    for (let i = 0; i < children.length; i++)
+      if (read(nodeType, children[i]) === 1) elements[elements.length] = children[i]; // NOSONAR: array-like or mutated collection, index loop kept
+    return elements;
+  };
   const isArray = Array.isArray;
   const writer = freeze({
     publish(proof) {
@@ -692,6 +731,18 @@ export function installPortalProvenanceRegistry({
     },
     retire(proofId) {
       return proofs.delete(proofId);
+    },
+    // A closed shadow root of this document that the backend reached through the DevTools protocol (Inspect, lense/
+    // dom-pierce.mjs). Its host must be the element its proof names; each of its elements is named by the binding of
+    // its place under that host (the element index path the response wrote), and only while its tag and identity
+    // attributes are what the binding says (proofBindingIsValid, at query time).
+    admitSealed(root) {
+      if (disposed || !root || read(nodeType, root) !== 11 || read(ownerDocument, root) !== document) return false;
+      const host = read(shadowHostOf, root),
+        hostId = host ? nodeIds.get(host) : undefined;
+      if (!hostId || originals.get(hostId) !== host) return false;
+      admitPlaces(root, sealedPlaces(hostId));
+      return true;
     },
     query,
     exclude(node) {

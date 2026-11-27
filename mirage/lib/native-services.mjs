@@ -43,7 +43,7 @@ import {
   PAGE_HEADERS,
   contentDisposition,
 } from './response-headers.mjs';
-import { contextualViewFetchXml } from './platform.mjs';
+import { contextualViewFetchXml, portalCommentAllowed } from './platform.mjs';
 import {
   NATIVE_STATE_ACTIONS,
   assertActionSource,
@@ -61,6 +61,8 @@ import {
   calendarLanguageScript,
   calendarEvents,
   calendarIcs,
+  calendarRange,
+  CALENDAR_RANGE_ERRORS,
   parseCalendarPath,
 } from './list-views.mjs';
 import { CALENDAR_TEMPLATES } from './entitylist-calendar-templates.mjs';
@@ -236,6 +238,8 @@ const ACTION_TYPES = {
   'CrmEntityFormView-AssociateAction': 5,
   'CrmEntityFormView-DisassociateAction': 6,
   'CrmEntityFormView-WorkflowAction': 7,
+  // The name a PAC export gives the maker's workflow action (stored as Adxstudio JsonConfiguration.WorkflowAction).
+  WorkflowAction: 7,
   'CrmEntityFormView-DownloadAction': 8,
   DeactivateAction: 17,
   ActivateAction: 18,
@@ -245,16 +249,20 @@ const ACTION_TYPES = {
 // and default label.
 const RECORD_ACTION_LINKS = {
   CloseIncidentAction: [9, 'action-close-case', 'fa-check-circle', 'Close Case'],
+  QualifyLeadAction: [10, 'action-qualify-lead', 'fa-check', 'Qualify'],
   ConvertQuoteToOrderAction: [11, 'action-convert-quote', 'fa-clipboard', 'Create Order'],
   ConvertOrderToInvoiceAction: [12, 'action-convert-order', 'fa-clipboard', 'Create Invoice'],
   CalculateOpportunityAction: [13, 'action-calculate-opportunity', 'fa-calculator', 'Calculate Value'],
   ResolveCaseAction: [14, 'action-resolve-case', 'fa-check-circle', 'Resolve Case'],
   ReopenCaseAction: [15, 'action-reopen-case', 'fa-reply', 'Reopen Case'],
   CancelCaseAction: [16, 'action-cancel-case', 'fa-times', 'Cancel Case'],
+  ActivateQuoteAction: [19, 'action-activate-quote', 'fa-check-square-o', 'Activate Quote'],
   SetOpportunityOnHoldAction: [20, 'action-set-opportunity-on-hold', 'fa-exclamation-circle', 'Set On Hold'],
   WinOpportunityAction: [21, 'action-win-opportunity', 'fa-check-square-o', 'Close as Won'],
   LoseOpportunityAction: [22, 'action-lose-opportunity', 'fa-ban', 'Close as Lost'],
   GenerateQuoteFromOpportunityAction: [23, 'action-generate-quote', 'fa-clipboard', 'Generate Quote'],
+  // The legacy route has no "action-" prefix (PortalAreaRegistration PortalReopenOpportunity).
+  ReopenOpportunityAction: [25, 'reopen-opportunity', 'fa-reply', 'Reopen'],
 };
 for (const [name, [type]] of Object.entries(RECORD_ACTION_LINKS)) {
   ACTION_TYPES[name] = type;
@@ -413,7 +421,7 @@ export function actionLinks(settings, { portal, requestUrl, website, lcid = 1033
     ['item', gridItemActions(settings)],
   ]) {
     for (const action of list) {
-      const link = actionLink(position, action, { portal, requestUrl, website, settings, lcid });
+      const link = actionLink(position, action, { portal, requestUrl, website, lcid });
       if (link) actions.push(link);
     }
   }
@@ -438,9 +446,11 @@ function actionTarget(action) {
   );
 }
 
-function actionLink(position, action, { portal, requestUrl, website, settings, lcid }) {
+function actionLink(position, action, { portal, requestUrl, website, lcid }) {
   const type = ACTION_TYPES[action?.Type];
-  if (!type) return null;
+  // A workflow action draws no link: hosted lists and subgrids render none in any configured shape (paqvilo-developer
+  // hosted-f2 summary-F2 LIST-01d, runs a and b); the action stays the list's own for execute-workflow.
+  if (!type || type === 7) return null;
   const target = actionTarget(action);
   let url = null;
   if ((type === 1 || type === 2 || type === 3) && target !== 0) {
@@ -469,61 +479,7 @@ function actionLink(position, action, { portal, requestUrl, website, settings, l
         : {}),
     };
   }
-  if (type !== 7) return link;
-  const id = actionWorkflowId(action);
-  return GUID.test(id)
-    ? { ...link, Workflow: { Id: id, LogicalName: 'workflow' }, ...workflowModal(action, settings, lcid) }
-    : null;
-}
-
-/**
- * The grid's one workflow dialog as the legacy grid renders it (EntityGridExtensions/EntityList): the dialog and the
- * confirmation of the first workflow item action, or null without one.
- */
-export function gridWorkflowDialog(settings, lcid = 1033) {
-  const action = gridItemActions(settings).find(
-    (candidate) => ACTION_TYPES[candidate?.Type] === 7 && GUID.test(actionWorkflowId(candidate)),
-  );
-  if (!action) return null;
-  return {
-    ...workflowModal(action, settings, lcid).Modal,
-    Confirmation: localizedText(action.Confirmation, '', lcid) || null,
-  };
-}
-
-const WORKFLOW_DIALOG_TEXTS = ['Title', 'PrimaryButtonText', 'CloseButtonText'];
-/**
- * A workflow link's dialog (the legacy WorkflowActionLink): the grid WorkflowDialog, with the action's
- * WorkflowDialogTitle/PrimaryButtonText/CloseButtonText over its texts. The action's texts apply only beside a grid
- * dialog; CustomizeModal says the action authored any of them.
- */
-function workflowModal(action, settings, lcid) {
-  const dialog =
-    settings?.WorkflowDialog && typeof settings.WorkflowDialog === 'object' ? settings.WorkflowDialog : null;
-  const text = (value) => localizedText(value, '', lcid) || null;
-  const css = (value) => (typeof value === 'string' && value ? value : null);
-  const modal = {
-    Title: null,
-    PrimaryButtonText: null,
-    CloseButtonText: null,
-    DismissButtonSrText: null,
-    Size: null,
-    CssClass: null,
-    TitleCssClass: null,
-    PrimaryButtonCssClass: null,
-    CloseButtonCssClass: null,
-  };
-  if (dialog) {
-    for (const name of WORKFLOW_DIALOG_TEXTS) modal[name] = text(action[`WorkflowDialog${name}`]) ?? text(dialog[name]);
-    modal.DismissButtonSrText = text(dialog.DismissButtonSrText);
-    modal.Size = Number.isInteger(Number(dialog.Size)) && dialog.Size != null ? Number(dialog.Size) : null;
-    for (const name of ['CssClass', 'TitleCssClass', 'PrimaryButtonCssClass', 'CloseButtonCssClass'])
-      modal[name] = css(dialog[name]);
-  }
-  return {
-    CustomizeModal: WORKFLOW_DIALOG_TEXTS.some((name) => action[`WorkflowDialog${name}`] != null),
-    Modal: modal,
-  };
+  return link;
 }
 
 function makeActionLink(position, action, type, target, url, website, lcid = 1033) {
@@ -763,52 +719,75 @@ async function handleCalendarService(req, res, url, context, websiteId) {
     });
     // The platform feed answers a list without its start or end date column with this error.
     if (!model.calendar?.start || !model.calendar?.end)
-      return (sendJson(res, 200, { success: 0, error: 'Calendars require both a start and end date.' }), true);
-    const from = Date.parse(url.searchParams.get('from') ?? '');
-    const to = Date.parse(url.searchParams.get('to') ?? '');
-    const details = model.detailsPage
-      ? context.portal.pages.find((page) => canonical(page.id) === model.detailsPage)?.url
-      : null;
-    const events = [];
-    const pageSize = 5000;
-    let page = 1;
-    while (events.length < pageSize) {
-      const query = await executeGridQuery(
-        model,
-        { viewId: route.view, page, pageSize, allowLargePages: true, search: url.searchParams.get('search') ?? '' },
-        { ...context, calendarWindow: { from, to } },
-      );
-      if (query.accessDenied)
-        return (sendJson(res, 200, { success: 0, error: "You don't have permissions to view these records." }), true);
-      const matching = calendarEvents(query.rows, {
-        calendar: model.calendar,
-        idColumn: model.idColumn,
-        detailsUrl: details,
-        idParameter: model.idParameter,
-        from,
-        to,
-      });
-      events.push(...matching.slice(0, pageSize - events.length));
-      if (!query.moreRecords || !query.rows.length) break;
-      page++;
-    }
-    events.sort((a, b) => a.start - b.start);
+      return (sendCalendarJson(res, { success: 0, error: 'Calendars require both a start and end date.' }), true);
+    // The feed refuses a range outside its format; the download lists every event then (hosted-f2 summary-F2
+    // LIST-01f runs a-d).
+    const range = calendarRange(url.searchParams);
+    if (range.error && route.kind !== 'icalendar')
+      return (sendCalendarJson(res, { success: 0, error: CALENDAR_RANGE_ERRORS[range.error] }), true);
+    const { from, to } = range.error ? { from: Number.NaN, to: Number.NaN } : range;
+    const events = await calendarEventRows(model, route, url, context, { from, to });
+    if (!events)
+      return (sendCalendarJson(res, { success: 0, error: "You don't have permissions to view these records." }), true);
     if (route.kind === 'icalendar') {
-      const body = Buffer.from(calendarIcs(events));
+      // Captured headers: private caching, no attachment disposition, no pragma or expiry.
+      const body = Buffer.from(calendarIcs(events, { host: url.hostname }));
       res.writeHead(200, {
         'content-type': 'text/calendar; charset=utf-8',
-        'content-disposition': 'attachment; filename="calendar.ics"',
-        ...PAGE_HEADERS,
+        'cache-control': 'private',
+        vary: 'Accept-Encoding',
+        'x-frame-options': 'SAMEORIGIN',
         'content-length': body.length,
       });
       res.end(req.method === 'HEAD' ? undefined : body);
       return true;
     }
-    sendJson(res, 200, { success: 1, result: events });
+    sendCalendarJson(res, { success: 1, result: events });
   } catch (error) {
     sendError(res, error);
   }
   return true;
+}
+
+/** The events of the calendar's rows in [from, to) (up to 5,000, by start), or null when the visitor may not read them. */
+async function calendarEventRows(model, route, url, context, { from, to }) {
+  const events = [];
+  // UserLocal days follow the portal query zone, as the platform's Dataverse query does.
+  const settings = context.store?.querySettings?.({ portalRequest: true }) ?? {};
+  const queryZone = settings.userLocalTimeZone ?? Number(settings.timeZoneOffsetMinutes ?? 0);
+  const pageSize = 5000;
+  let page = 1;
+  while (events.length < pageSize) {
+    const query = await executeGridQuery(
+      model,
+      { viewId: route.view, page, pageSize, allowLargePages: true, search: url.searchParams.get('search') ?? '' },
+      { ...context, calendarWindow: { from, to } },
+    );
+    if (query.accessDenied) return null;
+    const matching = calendarEvents(query.rows, {
+      calendar: model.calendar,
+      idColumn: model.idColumn,
+      from,
+      to,
+      queryZone,
+    });
+    events.push(...matching.slice(0, pageSize - events.length));
+    if (!query.moreRecords || !query.rows.length) break;
+    page++;
+  }
+  return events.sort((a, b) => a.start - b.start);
+}
+
+// The feed indents its JSON with CRLF line breaks (captured), with the services' page headers.
+function sendCalendarJson(res, value) {
+  const body = Buffer.from(JSON.stringify(value, null, 2).replaceAll('\n', '\r\n'));
+  res.writeHead(200, {
+    'content-type': 'application/json; charset=utf-8',
+    ...PAGE_HEADERS,
+    'x-frame-options': 'SAMEORIGIN',
+    'content-length': body.length,
+  });
+  res.end(body);
 }
 
 function serveCalendarLanguage(req, res, context, culture) {
@@ -859,10 +838,12 @@ export function subgridModel({ portal, schemas, metadata, store, kind, formId, s
   const cell = formCells(schema).find((candidate) => candidate.type === 'subgrid' && candidate.id === gridId);
   if (!cell) fail('Grid is not bound to the exported form', 403, 'SubgridNotBound');
   const parentMapping = mappingFor(store, schema.entity);
-  const relationshipEntry =
-    Object.entries(parentMapping.relationships ?? {}).find(
-      ([name, relation]) => name === cell.relationship || relation.schemaName === cell.relationship,
-    ) ?? null;
+  const relationshipEntries = Object.entries(parentMapping.relationships ?? {}).filter(
+    ([name, relation]) => name === cell.relationship || relation.schemaName === cell.relationship,
+  );
+  // A self-referential relationship names two navigations of the parent table (its lookup and its collection); the
+  // subgrid lists the collection side.
+  const relationshipEntry = relationshipEntries.find(([, relation]) => relation.many) ?? relationshipEntries[0] ?? null;
   const settings = subgridSettings(portal, definition, schema, gridId);
   const mapping = mappingFor(store, cell.entity);
   const view = cell.fetchXml
@@ -1103,27 +1084,26 @@ function applyCalendarWindow(root, calendar, fields, { from, to }) {
       if (!childNodes(root, 'attribute').some((node) => node.attrs.name === name))
         root.children.unshift({ name: 'attribute', attrs: { name }, children: [], text: '' });
   const typed = (name) => safeName(name) && /^datetime$/i.test(fields[name]?.dataverseType ?? '');
-  const dateCondition = (attribute, operator, timestamp, direction) => {
-    const day = 86400000;
-    // A list can render the stored instant in a fixed time zone. Widen the Dataverse query so clock shifts
-    // and DateOnly precision cannot omit an event. The feed checks the exact displayed interval on every page.
-    const widen = calendar.timeZoneMode === 'specific' || fields[attribute]?.dateTimeBehavior === 'DateOnly';
-    const value = new Date(timestamp + (widen ? day * direction : 0));
-    if (Number.isNaN(value.getTime())) return null;
-    return conditionNode({ attribute, operator, value: value.toISOString() });
-  };
-  const before = typed(calendar.start) ? dateCondition(calendar.start, 'lt', to, 1) : null;
-  const startedAfter = typed(calendar.start) ? dateCondition(calendar.start, 'ge', from, -1) : null;
-  const endedAfter = typed(calendar.end) ? dateCondition(calendar.end, 'ge', from, -1) : null;
-  const conditions = [before].filter(Boolean);
-  if (startedAfter && endedAfter)
-    conditions.push(
-      filterNode('or', [
-        endedAfter,
-        filterNode('and', [conditionNode({ attribute: calendar.end, operator: 'null' }), startedAfter]),
+  // A superset of the feed's day predicate (list-views.mjs calendarRangePredicate) for normal and reversed ranges: the
+  // start or the end within the outer bounds widened by two days, or a start before the later bound with an end after
+  // the earlier one. The feed applies the exact predicate on every page.
+  if (!Number.isFinite(from) || !Number.isFinite(to) || !typed(calendar.start)) return;
+  const [low, high] = [Math.min(from, to) - 2 * 86400000, Math.max(from, to) + 2 * 86400000];
+  const within = (attribute) =>
+    filterNode('and', [
+      conditionNode({ attribute, operator: 'ge', value: new Date(low).toISOString() }),
+      conditionNode({ attribute, operator: 'le', value: new Date(high).toISOString() }),
+    ]);
+  const branches = [within(calendar.start)];
+  if (typed(calendar.end))
+    branches.push(
+      within(calendar.end),
+      filterNode('and', [
+        conditionNode({ attribute: calendar.start, operator: 'le', value: new Date(high).toISOString() }),
+        conditionNode({ attribute: calendar.end, operator: 'ge', value: new Date(low).toISOString() }),
       ]),
     );
-  if (conditions.length) root.children.push(filterNode('and', conditions));
+  root.children.push(filterNode('or', branches));
 }
 
 function applySort(fetch, sort) {
@@ -1343,6 +1323,9 @@ function applyRelationship(fetch, model, parentId, store) {
       'SUBGRID_RELATIONSHIP_REQUIRED',
     );
   if (model.kind === 'associate') return;
+  // An insert-mode form's code component subgrid has no parent record: the platform binds it to the empty id
+  // (data-ref-id all zeros), so a related subgrid lists no rows.
+  parentId ||= '00000000-0000-0000-0000-000000000000';
   const entity = rootEntity(fetch);
   if (!relation.intersect) {
     entity.children.push(
@@ -1822,7 +1805,7 @@ function recordCurrency(context, entity, row, id) {
 }
 
 /** Whether the persona has any read grant for a table (native AccessDenied result). */
-function readDenied(context, entity) {
+export function readDenied(context, entity) {
   const { store, identity } = context;
   if (context.config?.mode === 'live' || typeof store?.rules !== 'function' || identity?.admin) return false;
   let permissive;
@@ -2060,6 +2043,8 @@ function downloadTable(records, columns, { format, context, model }) {
 // ---- Request handling.
 
 const SERVICE = /^\/_services\/([a-z-]+(?:\.json)?)\/([0-9a-f-]{36}|[\w-]+)\/?$/i;
+// The list services a hosted grid also calls, for its chart and its AI summary.
+const GRID_INSIGHT_SERVICES = new Set(['entity-grid-chart-data.json', 'entity-grid-ai-summary-stream.json']);
 const STATIC = new Map([
   ['/__sim-static/native/entity-grid-compat.js', new URL('./entity-grid-compat.js', import.meta.url)],
   ['/__sim-static/native/webforms-compat.js', new URL('./webforms-compat.js', import.meta.url)],
@@ -2096,6 +2081,17 @@ const NATIVE_EQUIVALENTS = new Map([
   // Map lists with credentials (platform.mjs mapListControl).
   ['/xrm-adx/js/entitylist-map.js', { file: new URL('./entitylist-map-compat.js', import.meta.url), type: JAVASCRIPT }],
   ['/xrm-adx/js/json2.min.js', { body: Buffer.from('/* Mirage: JSON is native. */'), type: JAVASCRIPT }],
+  // Basic form geolocation (platform.mjs geolocationFields): the platform's script needs the Bing Maps control, which the
+  // platform's Content Security Policy blocks, so it locates nothing (hosted-f2 summary-F2 LIST-02c).
+  [
+    '/xrm-adx/js/bingmap.js',
+    {
+      body: Buffer.from(
+        '/* Mirage: basic form geolocation; the Bing Maps control is blocked, so nothing is located. */',
+      ),
+      type: JAVASCRIPT,
+    },
+  ],
   ['/xrm-adx/samples/images/loader.gif', { body: GIF_PIXEL, type: 'image/gif' }],
   [
     '/xrm-adx/js/jquery.stackranking.js',
@@ -2663,6 +2659,65 @@ async function authorizeListWorkflow(input, context) {
   fail('This action is not available for the selected record.', 403, 'AccessDenied');
 }
 
+/** The site's observed execute-workflow access: "list-action" (the default) or "any-on-demand" (hosted). */
+const executeWorkflowAccess = (context) =>
+  (context.config?.observed ?? context.portal?.observed)?.executeWorkflowAccess ?? 'list-action';
+
+function reportExecuteWorkflowAccess(context, pathname) {
+  const record = context.recordDiagnostic;
+  if (typeof record !== 'function') return;
+  const seen = reported.get(record) ?? new Set();
+  reported.set(record, seen);
+  if (seen.has('execute-workflow-access')) return;
+  seen.add('execute-workflow-access');
+  record({
+    code: 'EXECUTE_WORKFLOW_HOSTED_ACCESS',
+    severity: 'warning',
+    path: pathname,
+    message:
+      "A hosted site runs any on-demand workflow posted to /_services/execute-workflow with an anti-forgery token, as its application user, without a list workflow action, a signed list configuration or a table permission check (paqvilo-developer hosted-f2 summary-F2 OPS-01f). Mirage runs only a list's own workflow action on a record the visitor can read and write; set observed.executeWorkflowAccess to any-on-demand, with evidence, to reproduce the hosted behaviour.",
+  });
+}
+
+/**
+ * The hosted execute-workflow service (observed.executeWorkflowAccess any-on-demand): ExecuteWorkflow of the posted
+ * workflow on the posted record as the site's application user, with no list or secure configuration (captured,
+ * paqvilo-developer hosted-f2 summary-F2 OPS-01f, background and real-time workflows).
+ */
+async function runHostedWorkflow(body, context) {
+  const workflowId = canonical(body?.workflow?.Id);
+  const recordId = canonical(body?.entity?.Id);
+  if (canonical(body?.workflow?.LogicalName) !== 'workflow' || !GUID.test(workflowId) || !GUID.test(recordId))
+    fail('Invalid workflow or selected record.', 400, 'InvalidRequest');
+  if (context.config?.mode === 'live' || !context.runRecordMessage) workflowUnsupported();
+  const answer = await context.runRecordMessage({
+    method: 'POST',
+    url: `workflows(${workflowId})/Microsoft.Dynamics.CRM.ExecuteWorkflow`,
+    payload: { EntityId: recordId },
+    // The site's application user runs it: no portal table permission applies.
+    identity: { ...context.identity, admin: true },
+  });
+  if (answer.status < 400) return;
+  const message = String(answer.body?.error?.message ?? 'Error completing request.');
+  const missing = /^(\w+) With Id = (\S+) Does Not Exist$/.exec(message);
+  if (missing) fail(`Entity '${missing[1]}' With Id = ${missing[2]} Does Not Exist`, 500, 'WorkflowRecordNotFound');
+  fail(message, answer.status, answer.body?.error?.code ?? 'WorkflowFailed');
+}
+
+/** The platform's answer to a workflow whose table holds no such record: 500 with the Dataverse message (captured). */
+function sendWorkflowRecordNotFound(res, message) {
+  // The platform's JSON writer escapes apostrophes.
+  const body = Buffer.from(
+    JSON.stringify({ InternalServerError: 500, Message: message }).replaceAll("'", String.raw`\u0027`),
+  );
+  res.writeHead(500, {
+    'content-type': 'application/json; charset=utf-8',
+    ...PAGE_HEADERS,
+    'content-length': body.length,
+  });
+  res.end(body);
+}
+
 async function runPortalListWorkflow(body, context, websiteId) {
   const { workflowId, entity, recordId } = listWorkflowRequest(body, context, websiteId);
   const verify = () => {
@@ -2692,6 +2747,9 @@ async function runPortalListWorkflow(body, context, websiteId) {
 // by their route: each checks Write on the record (and Create on the new record's table) as the legacy service does.
 const RECORD_ACTION_ROUTES = Object.freeze({
   'action-close-case': 'close-case',
+  'action-qualify-lead': 'qualify-lead',
+  'action-activate-quote': 'activate-quote',
+  'reopen-opportunity': 'reopen-opportunity',
   'action-resolve-case': 'resolve-case',
   'action-reopen-case': 'reopen-case',
   'action-cancel-case': 'cancel-case',
@@ -2741,7 +2799,7 @@ async function runRecordActionService(key, body, context) {
       hostChange: context.change,
       now: new Date(),
     });
-  const stateValues = nativeActionStateValues(entity, key, { metadata: context.metadata, store });
+  const stateValues = nativeActionStateValues(entity, key, { metadata: context.metadata, store, row });
   if (!stateValues)
     fail('Record actions require unambiguous state and status metadata', 501, 'FormActionStateUnresolved');
   const closeActivity = nativeCloseActivity(key, { configured: {}, resolution, now: new Date() });
@@ -2870,43 +2928,74 @@ function canDownloadAnnotation(context, row, id) {
   return annotationNoteVisibility(context, row, stored, contact, id) !== false;
 }
 
-/** Notes (annotations) visible on portal forms: the NotesFilter prefix (`*WEB*`), private notes only for their author. */
+/**
+ * Notes (annotations) visible on portal forms: the NotesFilter prefix (`*WEB*`), private notes only for their author.
+ * Hosted session F2 (notes runs a and b, entity-notes): a note without the prefix is not listed, its author's own
+ * included, and a `*PRIVATE*` subject without the reader's contact marker is hidden even with the prefix.
+ */
 export function portalNotes(rows, identity, prefix = '*WEB*', visibility = privateNoteVisibility) {
   const contact = canonical(identity?.contactId ?? identity?.id);
-  return rows.filter((row) => visibility(row, contact) ?? String(row.notetext ?? '').startsWith(prefix));
+  return rows.filter((row) => String(row.notetext ?? '').startsWith(prefix) && visibility(row, contact) !== false);
 }
 
-// Note and timeline totals are calculated after portal visibility rules, so a provider total is insufficient.
-// Bound repeated reads of the provider's pages on each request and refuse an incomplete total with `unresolved`
-// ({ message, code }, a 501).
-async function readProviderPages(context, query, idColumn, unresolved) {
+// Note and timeline totals are calculated after portal visibility rules, so a provider total is insufficient: every
+// provider page is read, following its paging cookies (or the page number alone when a page carries none, Dataverse's
+// simple paging). A provider answer that cannot be continued (a repeated cookie or key, an empty page reporting more
+// records, a page without keys) is a provider fault, answered 502 with `invalid` ({ message, code }) and no partial total.
+// The rows of one record are held in memory to order and count them, so at most PROVIDER_ROW_LIMIT rows are read: a
+// record with more answers 503 (`invalid.limitCode`) and a diagnostic, never a truncated list or total.
+const PROVIDER_ROW_LIMIT = 50_000;
+async function readProviderPages(context, query, idColumn, invalid) {
+  let read = 0;
   try {
     const { records } = await collectFetchXmlPages({
       idColumn,
-      maxPages: 4,
+      maxPages: Infinity,
+      simplePaging: true,
       readPage: async ({ page, cookie, pageSize }) => {
         const continuation = cookie ? ` paging-cookie="${xmlEscape(cookie)}"` : '';
         const result = await context.readProvider.fetchXml(
           `<fetch count="${pageSize}" page="${page}"${continuation}>${query}</fetch>`,
           context.identity,
         );
-        return { ...result, entities: result.entities ?? result.value };
+        const entities = result.entities ?? result.value;
+        read += Array.isArray(entities) ? entities.length : 0;
+        if (read > PROVIDER_ROW_LIMIT) providerRowLimitExceeded(context, invalid);
+        return { ...result, entities };
       },
     });
     return records;
   } catch (error) {
     if (error.status ?? error.statusCode) throw error;
-    fail(unresolved.message, 501, unresolved.code);
+    fail(`${invalid.message} ${error.message}`, 502, invalid.code);
   }
 }
 
-const NOTES_PAGING_UNRESOLVED = {
-  message: 'The notes provider could not complete pagination within the supported limits.',
-  code: 'NotesPagingUnresolved',
+function providerRowLimitExceeded(context, { rows, limitCode }) {
+  const message = `The record has more than ${PROVIDER_ROW_LIMIT.toLocaleString('en-US')} ${rows}: Mirage reads at most ${PROVIDER_ROW_LIMIT.toLocaleString('en-US')} per record to order and count them, so this list is not served.`;
+  const record = context.recordDiagnostic;
+  if (typeof record === 'function') {
+    const seen = reported.get(record) ?? new Set();
+    reported.set(record, seen);
+    if (!seen.has(limitCode)) {
+      seen.add(limitCode);
+      record({ code: limitCode, severity: 'warning', component: rows, message });
+    }
+  }
+  fail(message, 503, limitCode);
+}
+
+const NOTES_PAGING_INVALID = {
+  message: 'The notes provider answered a page that cannot be continued:',
+  code: 'NotesProviderPagingInvalid',
+  rows: 'notes',
+  limitCode: 'NotesRowLimitExceeded',
 };
-const TIMELINE_PAGING_UNRESOLVED = {
-  message: 'The activity provider could not complete pagination within the supported limits.',
-  code: 'TimelinePagingUnresolved',
+const TIMELINE_PAGING_INVALID = {
+  message: 'The activity provider answered a page that cannot be continued:',
+  code: 'TimelineProviderPagingInvalid',
+  rows: 'activities',
+  limitCode: 'TimelineRowLimitExceeded',
 };
 
 // The notes service orders by createdon as the request's orders say (Direction 1 descending, null
@@ -2915,8 +3004,13 @@ async function annotationRows(context, entity, id, prefix, descending) {
   const mapping = mappingFor(context.store, 'annotation');
   // The paging cursor needs an explicit primary key when permission expansion adds DISTINCT.
   const key = xmlEscape(mapping.idColumn);
-  const query = `<entity name="annotation"><all-attributes/><attribute name="${key}"/><filter type="and"><condition attribute="objectid" operator="eq" value="${xmlEscape(id)}"/></filter><order attribute="createdon"/><order attribute="${key}"/></entity>`;
-  const records = await readProviderPages(context, query, mapping.idColumn, NOTES_PAGING_UNRESOLVED);
+  // Only the columns the records, attributes and visibility rules use (NOTE_COLUMNS), never documentbody: a page of
+  // notes carries no attachment bodies (a missing filesize reads the body by id afterwards).
+  const columns = NOTE_COLUMNS.filter(([name]) => name !== mapping.idColumn)
+    .map(([name]) => `<attribute name="${name}"/>`)
+    .join('');
+  const query = `<entity name="annotation"><attribute name="${key}"/>${columns}<filter type="and"><condition attribute="objectid" operator="eq" value="${xmlEscape(id)}"/></filter><order attribute="createdon"/><order attribute="${key}"/></entity>`;
+  const records = await readProviderPages(context, query, mapping.idColumn, NOTES_PAGING_INVALID);
   // Notes of the same instant (seeded together) keep the order they were created in, as sequential
   // creates do natively; the query's own tie-break is the table's key order.
   let created = new Map();
@@ -3225,6 +3319,138 @@ const fileSizeDisplay = (bytes) =>
   return sendJson(res, 200, { Id: canonical(id) });
 }
 
+// ---- portal comments from the activity timeline (EntityActivity/AddPortalComment)
+
+// Portal comment direction Incoming (adx_portalcommentdirectioncode 1) and the Completed state with its Received status,
+// as hosted F3 (runs a/b) reads the comment back: statecode 1, statuscode 3. Labelled options in the table's metadata
+// take precedence.
+const COMMENT_INCOMING = 1,
+  COMMENT_COMPLETED = 1,
+  COMMENT_RECEIVED = 3;
+
+function commentColumn(context, column) {
+  try {
+    return context.store.fieldDefinition?.(PORTAL_COMMENT_TABLE, column) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function optionValue(context, column, label, fallback, state = null) {
+  const option = (commentColumn(context, column)?.options ?? []).find(
+    (candidate) =>
+      String(candidate.label ?? candidate.invariantName ?? '').toLowerCase() === label &&
+      (state == null || candidate.state == null || Number(candidate.state) === state),
+  );
+  return option ? Number(option.value) : fallback;
+}
+
+/** A lookup value for one column of the portal comment: its declared navigation binding, else an entity reference. */
+function commentLookup(context, column, target, id) {
+  const comment = mappingFor(context.store, PORTAL_COMMENT_TABLE);
+  const navigation = Object.entries(comment.relationships ?? {}).find(
+    ([, relation]) =>
+      relation.many !== true &&
+      canonical(relation.from) === column &&
+      canonical(relation.entity) === canonical(target.logicalName),
+  )?.[0];
+  return navigation
+    ? { [`${navigation}@odata.bind`]: `/${target.entitySet}(${canonical(id)})` }
+    : { [column]: { id: canonical(id), logical_name: target.logicalName } };
+}
+
+/**
+ * Adds a portal comment to the regarding record's timeline, as the open-sourced portal's EntityActivityController
+ * AddPortalComment and ActivityDataAdapter.CreatePortalComment do (the hosted request was not captured; hosted F3 runs a/b
+ * record its result): the visitor needs Create and Append on the portal comment and AppendTo on the record; the comment
+ * is created regarding the record with the text in its description, direction Incoming, the record's owner as owner,
+ * the contact as Sender and the owner (unless a team) as To recipient, then updated to Completed / Received. Both writes
+ * are portal calls of the contact. A chosen file becomes a note regarding the comment.
+ */
+async function handleAddPortalComment(req, res, context) {
+  if (req.method !== 'POST') fail('AddPortalComment accepts POST only', 405, 'MethodNotAllowed');
+  const { body, native } = await readNoteBody(req);
+  if (
+    native &&
+    req.headers.__requestverificationtoken === undefined &&
+    !bodyTokenAccepted(body.__RequestVerificationToken, context)
+  )
+    fail('The anti-forgery token is missing or invalid.', 403, 'MissingPortalRequestVerificationToken');
+  const contact = canonical(context.identity?.contactId ?? context.identity?.id);
+  if (!contact) fail('Portal comments require a signed-in contact', 401, 'SignInRequired');
+  const entity = body.regardingEntityLogicalName;
+  const id = body.regardingEntityId;
+  if (!safeName(entity) || !GUID.test(String(id ?? ''))) fail('Portal comments require a regarding record');
+  const text = String(body.text ?? '').trim();
+  if (!text || !stripMarkupTags(text).trim()) fail('Comment is a required field.', 417, 'CommentRequired');
+  const target = mappingFor(context.store, entity);
+  const regarding = await context.readProvider.get(target.logicalName, id, context.identity);
+  if (!regarding) fail('The regarding record was not found', 404, 'NotFound');
+  if (!portalCommentAllowed(context.store, target.logicalName, id, regarding, context.identity))
+    fail("You don't have the appropriate permissions.", 403, 'PermissionDenied');
+  const ownerId = canonical(regarding.ownerid?.id ?? regarding.ownerid);
+  const ownerTable = regarding.ownerid?.logical_name ?? regarding.owneridtype ?? (ownerId ? 'systemuser' : null);
+  const owner = ownerId && ownerTable ? { id: ownerId, logical_name: ownerTable } : null;
+  const values = {
+    description: text,
+    ...commentLookup(context, 'regardingobjectid', target, id),
+    regardingobjecttypecode: target.logicalName,
+    adx_portalcommentdirectioncode: optionValue(
+      context,
+      'adx_portalcommentdirectioncode',
+      'incoming',
+      COMMENT_INCOMING,
+    ),
+    ...(owner ? { ownerid: owner } : {}),
+  };
+  const parties = [
+    { column: 'from', mask: 1, partyid: { id: contact, logical_name: 'contact' } },
+    ...(owner && canonical(owner.logical_name) !== 'team' ? [{ column: 'to', mask: 2, partyid: owner }] : []),
+  ];
+  const statecode = optionValue(context, 'statecode', 'completed', COMMENT_COMPLETED);
+  // The permission checks above are the service's; it writes as the platform does, still the contact's portal call.
+  const writer = { ...context.identity, admin: true, portalPlatformWrite: true };
+  const statuscode = optionValue(context, 'statuscode', 'received', COMMENT_RECEIVED, statecode);
+  const created = await context.change(() =>
+    context.store.transact(
+      async () => {
+        const comment = mappingFor(context.store, PORTAL_COMMENT_TABLE);
+        const row = await portalRecordWrites(context.store, { portalRequest: true, activityParties: parties }).create(
+          PORTAL_COMMENT_TABLE,
+          values,
+          writer,
+        );
+        const commentId = canonical(row[comment.idColumn]);
+        // The state changes only after the create (ActivityDataAdapter): an Update with the same values and the state.
+        await portalRecordWrites(context.store, { portalRequest: true }).update(
+          PORTAL_COMMENT_TABLE,
+          commentId,
+          { ...values, statecode, statuscode },
+          writer,
+        );
+        if (body.file?.name) {
+          const note = {
+            subject: '',
+            notetext: '',
+            objecttypecode: PORTAL_COMMENT_TABLE,
+            objectid: { id: commentId, logical_name: PORTAL_COMMENT_TABLE },
+            filename: String(body.file.name).slice(0, 255),
+            mimetype: noteMediaType(body.file.type).slice(0, 255),
+            documentbody: String(body.file.content ?? ''),
+          };
+          note.filesize = Buffer.from(note.documentbody, 'base64').length;
+          noteFileTrace(context, note, 'upload');
+          await portalRecordWrites(context.store, { portalRequest: true }).create('annotation', note, writer);
+        }
+        return commentId;
+      },
+      { incremental: true },
+    ),
+  );
+  if (native) return sendEmpty(res, 201);
+  return sendJson(res, 201, { Id: created });
+}
+
 // ---- activity timeline (Learn: view-all-activities-in-portal-timeline)
 
 // One diagnostic per runtime and timeline condition.
@@ -3274,7 +3500,7 @@ async function timelineRows(context, entity, id) {
   for (const table of tables) {
     const key = xmlEscape(table.idColumn);
     const query = `<entity name="${xmlEscape(table.logicalName)}"><all-attributes/><attribute name="${key}"/><filter type="and"><condition attribute="regardingobjectid" operator="eq" value="${xmlEscape(id)}"/></filter><order attribute="${key}"/></entity>`;
-    for (const row of await readProviderPages(context, query, table.idColumn, TIMELINE_PAGING_UNRESOLVED))
+    for (const row of await readProviderPages(context, query, table.idColumn, TIMELINE_PAGING_INVALID))
       rows.push({ row, table });
   }
   const { attribute, descending } = selection.order ?? { attribute: 'createdon', descending: true };
@@ -3341,7 +3567,9 @@ async function handleTimelineActivities(req, res, context) {
   const pageSize = Math.min(requested > 0 ? requested : TIMELINE_DEFAULT_PAGE_SIZE, TIMELINE_MAX_PAGE_SIZE);
   const page = Math.max(1, Math.floor(Number(body.page)) || 1);
   const entity = canonical(regarding.LogicalName);
-  if (!(await context.readProvider.get(entity, regarding.Id, context.identity)))
+  // The regarding check is the platform's own: a hosted case timeline sends only its activities' RetrieveMultiple
+  // (hosted F3 Customer Self-Service runs a/b, Edit Case load), so the check runs no read steps.
+  if (!(await context.readProvider.get(entity, regarding.Id, context.identity, { skipPluginRead: true })))
     fail('The regarding record was not found', 404, 'NotFound');
   const rows = await timelineRows(context, entity, canonical(regarding.Id));
   const count = rows.length;
@@ -3417,11 +3645,18 @@ async function handleAnnotation(req, res, id, context) {
   const type = noteMediaType(note.mimetype);
   const inline = /^image\/(gif|jpeg|png|tiff|bmp|x-icon)$/i.test(type);
   const name = encodeURIComponent(note.filename || 'attachment').replaceAll('%20', '+');
+  // Hosted session F2 (notes runs a and b, download-file-note, signed in): the name as an RFC 5987 extended value
+  // (attachment;filename*=UTF-8''<name>), cached privately for an hour, last modified when the note was.
+  const signedIn = Boolean(context.identity?.contactId || context.identity?.id);
+  const modified = Date.parse(note.modifiedon ?? '');
+  const now = context.store?.clock?.now?.() ?? Date.now();
   res.writeHead(200, {
     'content-type': type,
     'content-length': bytes.length,
-    'content-disposition': `${inline ? 'inline' : 'attachment'};filename="${name}"`,
-    'cache-control': context.identity?.contactId || context.identity?.id ? 'private' : 'public',
+    'content-disposition': `${inline ? 'inline' : 'attachment'};filename*=UTF-8''${name}`,
+    'cache-control': signedIn ? 'private, max-age=3600' : 'public',
+    ...(signedIn ? { expires: new Date(Number(now) + 3600000).toUTCString() } : {}),
+    ...(Number.isFinite(modified) ? { 'last-modified': new Date(modified).toUTCString() } : {}),
     'x-content-type-options': 'nosniff',
   });
   res.end(req.method === 'HEAD' ? undefined : bytes);
@@ -3550,7 +3785,7 @@ export function antiForgeryCookie(csrf) {
   const value = createHmac('sha256', String(csrf ?? ''))
     .update('__RequestVerificationToken')
     .digest('base64url');
-  return `__RequestVerificationToken=${value}; path=/; secure; HttpOnly; SameSite=None`;
+  return `__RequestVerificationToken=${value}; path=/; secure; HttpOnly; SameSite=Lax`;
 }
 
 /**
@@ -3637,12 +3872,31 @@ export function antiForgeryCookie(csrf) {
     }
     return true;
   }
+  const comment = /^\/_portal\/([^/]+)\/EntityActivity\/AddPortalComment\/?$/i.exec(url.pathname);
+  if (comment) {
+    if (canonical(comment[1]) !== websiteId) return false;
+    const traces = context.store?.traces;
+    const span = traces?.start({
+      kind: 'native-service',
+      name: `${req.method} EntityActivity/AddPortalComment`,
+      module: 'native',
+      operation: 'entity-activity-addportalcomment',
+    });
+    const call = () => handleAddPortalComment(req, res, context).catch((error) => sendError(res, error));
+    try {
+      await (span ? traces.run(span, call) : call());
+    } finally {
+      span?.end({ status: statusFromHttp(res.statusCode), attributes: { statusCode: res.statusCode } });
+    }
+    return true;
+  }
   const match = SERVICE.exec(url.pathname);
   if (!match) return false;
   const [, action, scope] = match;
   if (canonical(scope) !== websiteId) return false;
   const handled = new Set([
     'entity-grid-data.json',
+    ...GRID_INSIGHT_SERVICES,
     'entity-subgrid-data.json',
     'entity-lookup-grid-data.json',
     'entity-grid-update-entity',
@@ -3712,7 +3966,21 @@ export function antiForgeryCookie(csrf) {
       await handleNotes(normalized, req, res, context);
       return true;
     }
+    if (normalized === 'execute-workflow' && req.headers.__requestverificationtoken === undefined) {
+      // Without an anti-forgery token the service runs nothing and answers 200 with an empty body (captured,
+      // paqvilo-developer hosted-f2 summary-F2 OPS-01f, runs a and b).
+      res.writeHead(200, { ...PAGE_HEADERS, 'content-length': 0 });
+      res.end();
+      return true;
+    }
     verifyToken(req, context.csrf);
+    if (GRID_INSIGHT_SERVICES.has(normalized)) {
+      // A list's chart data and AI summary stream answer 400 for a list without a chart or an AI summary (hosted F3
+      // Customer Self-Service runs a/b, the case list page); the response body was not recorded, so it is empty here.
+      res.writeHead(400, { ...PAGE_HEADERS, 'content-length': 0 });
+      res.end();
+      return true;
+    }
     const body = await readJson(req);
     if (/^entity-(grid|subgrid|lookup-grid)-data\.json$/.test(normalized)) {
       // Large pages are for server-side callers (downloads), never a request body's choice.
@@ -3742,7 +4010,13 @@ export function antiForgeryCookie(csrf) {
         pageSize: Number(body.pageSize) || null,
       });
       if (model.kind === 'subgrid' && model.definition && secure.parent) {
-        if (!(await context.readProvider.get(model.schema.entity, secure.parent, context.identity)))
+        // The parent check is the platform's own: a hosted subgrid data request sends only the related table's
+        // RetrieveMultiple (hosted F2 runs a/b subgrid, form-read-messages.mjs), so the check runs no read steps.
+        if (
+          !(await context.readProvider.get(model.schema.entity, secure.parent, context.identity, {
+            skipPluginRead: true,
+          }))
+        )
           return (sendSubgridAccessDenied(res), true);
       }
       const query = () =>
@@ -3977,7 +4251,17 @@ export function antiForgeryCookie(csrf) {
       return true;
     }
     if (normalized === 'execute-workflow') {
-      await runPortalListWorkflow(body, context, websiteId);
+      try {
+        if (executeWorkflowAccess(context) === 'any-on-demand') await runHostedWorkflow(body, context);
+        else {
+          reportExecuteWorkflowAccess(context, url.pathname);
+          await runPortalListWorkflow(body, context, websiteId);
+        }
+      } catch (error) {
+        if (error?.code !== 'WorkflowRecordNotFound') throw error;
+        sendWorkflowRecordNotFound(res, error.message);
+        return true;
+      }
       res.writeHead(204, PAGE_HEADERS);
       res.end();
       return true;

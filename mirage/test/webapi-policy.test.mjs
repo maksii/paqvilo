@@ -17,8 +17,8 @@ const apiError = async (response) => ({
   sim: response.headers.get('x-sim-error-code'),
 });
 
-// @test-kind compatibility: Microsoft Learn Power Pages Web API limitations require a defined table-specific custom activity column
-test('custom activity Web API column lists and selections need a column of their own', () => {
+// An invented custom activity table: its own columns x_detail and the lookup x_case, and inherited activitypointer ones.
+function customActivity(extra = {}) {
   const logicalName = 'x_portalactivity';
   const mapping = {
     logicalName,
@@ -38,15 +38,65 @@ test('custom activity Web API column lists and selections need a column of their
         isActivity: true,
         fields: {
           subject: { dataverseType: 'nvarchar' },
+          description: { dataverseType: 'memo' },
           x_detail: { dataverseType: 'nvarchar' },
           x_case: { dataverseType: 'lookup' },
           regardingobjectid: { dataverseType: 'lookup' },
         },
       },
     },
-    webApiViews: [{ entity: logicalName, name: 'Power Pages Web API Columns', fields: [{ name: 'subject' }] }],
+    ...extra,
   };
-  const policy = () => webApiPolicy(portal, store, logicalName);
+  return { logicalName, portal, policy: () => webApiPolicy(portal, store, logicalName) };
+}
+
+// @test-kind observation: hosted session F1 (paqvilo-developer hosted-f1 summary-F1 API-01c, phases A to E, two runs; replayed by portal-webapi/hosted-f1-activity) checked a custom activity's inherited columns against Webapi/activitypointer/fields and refused an inherited-only selection as All Columns; this invented table restates it on the policy
+test('custom activity inherited columns follow the activitypointer list and a selection needs a column of its own', () => {
+  const { logicalName, portal, policy } = customActivity();
+  const select = ($select) => new URLSearchParams({ $select });
+  const denied = (attribute, table) => ({
+    status: 403,
+    code: 'WebApiFieldNotEnabled',
+    message: `Attribute ${attribute} in table ${table} is not enabled for Web Api.`,
+  });
+  const fieldsKey = `Webapi/${logicalName}/fields`;
+  const pointerKey = 'Webapi/activitypointer/fields';
+
+  // A list of inherited columns only no longer refuses the table: each request is checked (phase A).
+  portal.settings[fieldsKey] = 'activityid,subject,description';
+  assert.doesNotThrow(policy);
+  assert.throws(() => policy().assertQuery(select('x_detail')), denied('x_detail', logicalName));
+  assert.throws(() => policy().assertSelectLess(), denied('activityid', 'activitypointer'));
+
+  // Inherited columns follow the activitypointer list, whatever the table's own list holds (phase B).
+  portal.settings[fieldsKey] = 'activityid,subject,x_detail,x_case,_x_case_value';
+  for (const $select of ['subject', 'subject,x_detail', 'x_detail,_regardingobjectid_value'])
+    assert.throws(
+      () => policy().assertQuery(select($select)),
+      denied($select.includes('subject') ? 'subject' : '_regardingobjectid_value', 'activitypointer'),
+      $select,
+    );
+  assert.doesNotThrow(() => policy().assertQuery(select('x_detail')));
+
+  // With the inherited columns listed there, an inherited-only selection reads as All Columns (phases D and E).
+  portal.settings[pointerKey] = 'activityid,subject,description';
+  for (const $select of ['subject', 'subject,description'])
+    assert.throws(() => policy().assertQuery(select($select)), denied('All Columns', logicalName), $select);
+  for (const $select of ['subject,x_detail', 'subject,_x_case_value', 'description,x_detail'])
+    assert.doesNotThrow(() => policy().assertQuery(select($select)), $select);
+  assert.doesNotThrow(() => policy().assertSelectLess());
+  assert.deepEqual(policy().selectLessColumns(), ['activityid', 'subject', 'x_detail', '_x_case_value']);
+
+  portal.webApiEntities[logicalName].isActivity = false;
+  delete portal.settings[pointerKey];
+  assert.doesNotThrow(() => policy().assertQuery(select('subject')));
+});
+
+// @test-kind compatibility: Microsoft Learn Power Pages Web API limitations require a defined table-specific custom activity column; hosted session F1 (summary-F1 API-01c, phase A only) relaxed this for a fields list of inherited activitypointer columns alone, and no capture covers the other list entries or a Web API view, so they stay refused
+test('custom activity Web API column lists and selections need a column of their own', () => {
+  const { logicalName, portal, policy } = customActivity({
+    webApiViews: [{ entity: 'x_portalactivity', name: 'Power Pages Web API Columns', fields: [{ name: 'subject' }] }],
+  });
   const refused = {
     status: 403,
     code: 'WebApiWildcardDeprecated',
@@ -54,6 +104,8 @@ test('custom activity Web API column lists and selections need a column of their
   };
   const fieldsKey = `Webapi/${logicalName}/fields`;
   const viewKey = `Webapi/${logicalName}/UseFieldsFromView`;
+  // A list whose other entries are no column of the table's own (a navigation, a typo, the alias of a column that is no
+  // lookup) refuses the table, as a list without any column of its own did before hosted session F1.
   for (const extra of ['regarding', 'related', 'x_typo', '_x_detail_value']) {
     portal.settings[fieldsKey] = `subject,${extra}`;
     assert.throws(policy, refused, extra);
@@ -65,17 +117,24 @@ test('custom activity Web API column lists and selections need a column of their
   portal.webApiViews[0].fields.push({ name: 'x_missing_view_column' });
   assert.throws(policy, refused);
 
-  // The column listed explicitly qualifies an otherwise inherited-only view.
-  portal.settings[fieldsKey] = 'x_detail,regardingobjectid,x_case,x_typo,_x_detail_value';
+  // The column listed explicitly qualifies an otherwise inherited-only view. Lookup wire properties are named (the
+  // explicit-wire default, summary-F1 API-02c) and the inherited columns follow Webapi/activitypointer/fields (API-01c).
+  portal.settings[fieldsKey] = 'x_detail,regardingobjectid,x_case,_x_case_value,x_typo,_x_detail_value';
+  portal.settings['Webapi/activitypointer/fields'] = 'activityid,subject,regardingobjectid,_regardingobjectid_value';
   const configured = policy();
-  assert.throws(
-    () => configured.assertQuery(new URLSearchParams({ $select: 'subject,_regardingobjectid_value' })),
-    refused,
-  );
-  for (const column of ['x_typo', 'x_missing_view_column', '_x_detail_value'])
-    assert.throws(() => configured.assertQuery(new URLSearchParams({ $select: 'subject,' + column })), refused);
+  const allColumns = {
+    status: 403,
+    code: 'WebApiFieldNotEnabled',
+    message: `Attribute All Columns in table ${logicalName} is not enabled for Web Api.`,
+  };
+  for (const column of ['_regardingobjectid_value', 'x_typo', 'x_missing_view_column', '_x_detail_value'])
+    assert.throws(
+      () => configured.assertQuery(new URLSearchParams({ $select: 'subject,' + column })),
+      allColumns,
+      column,
+    );
   for (const column of ['x_detail', '_x_case_value'])
-    assert.doesNotThrow(() => configured.assertQuery(new URLSearchParams({ $select: 'subject,' + column })));
+    assert.doesNotThrow(() => configured.assertQuery(new URLSearchParams({ $select: 'subject,' + column })), column);
 
   portal.webApiEntities[logicalName].isActivity = false;
   assert.doesNotThrow(() => policy().assertQuery(new URLSearchParams({ $select: 'subject' })));
@@ -452,6 +511,9 @@ test('plain field lists expose only metadata-proven lookup aliases and empty pro
   const store = new DataStore({ state: fixture() }),
     portal = {
       settings: { ...settings, 'Webapi/contact/fields': 'fullname,companyid' },
+      // The alias model this test bounds is the former default, now a site observation (hosted session F1 summary-F1
+      // API-02c lists name _x_value themselves).
+      observed: { webApiLookupFields: 'logical-aliases', evidence: 'invented site that derives lookup aliases' },
       webApiEntities: {
         contact: { fields: { companyid: { dataverseType: 'lookup' } } },
       },
@@ -936,7 +998,7 @@ test('enabled OData lookup aliases authorize only metadata-equivalent read and e
   );
 });
 
-// @test-kind contract: per-site observed setting for explicit lookup wire fields, with evidence
+// @test-kind observation+contract: explicit lookup wire fields are the hosted default (paqvilo-developer hosted-f1 summary-F1 API-02c, runs a and b: select-lookup-value, filter-lookup-value, orderby-lookup); logical-aliases is a per-site observed setting with evidence
 test('observed explicit lookup wire fields separate OData admission from logical FetchXML and writes', () => {
   const store = new DataStore({ state: fixture() });
   const portal = {
@@ -977,7 +1039,13 @@ test('observed explicit lookup wire fields separate OData admission from logical
     denied,
   );
   portal.settings['Webapi/contact/fields'] = 'fullname,companyid';
+  // The default is explicit-wire (hosted session F1 summary-F1 API-02c, runs a and b); logical-aliases derives the alias.
   delete portal.observed;
+  assert.throws(
+    () => webApiPolicy(portal, store, 'contact').assertQuery(new URLSearchParams({ $select: '_companyid_value' })),
+    denied,
+  );
+  portal.observed = { webApiLookupFields: 'logical-aliases', evidence: 'invented site that derives lookup aliases' };
   webApiPolicy(portal, store, 'contact').assertQuery(new URLSearchParams({ $select: '_companyid_value' }));
   portal.observed = { webApiLookupFields: 'explicit-wire', evidence: 'invented system-view fixture' };
   portal.settings['Webapi/contact/UseFieldsFromView'] = 'true';
@@ -1137,6 +1205,8 @@ test('a user-configured mapping publishes a lookup alias only when Solution meta
     });
   const portal = {
     settings: { 'Webapi/x_probeentry/enabled': 'true', 'Webapi/x_probeentry/fields': 'x_name,x_parentid' },
+    // The derivation this test bounds is the former default, now a site observation.
+    observed: { webApiLookupFields: 'logical-aliases', evidence: 'invented site that derives lookup aliases' },
   };
   const userFields = webApiPolicy(portal, probeStore(), 'x_probeentry').fields;
   assert.equal(userFields.includes('x_parentid'), true);

@@ -635,7 +635,9 @@ test('HTTP: Liquid and API share identity/data; admin CRUD is protected and pers
   assert.equal(disk.tables.contact.find((r) => r.contactid === row.contactid).fullname, 'Updated');
   assert.equal((await call(`/__sim/api/records/contact/${row.contactid}`, 'DELETE')).status, 204);
   assert.equal((await call('/_api/contacts(missing)')).status, 404);
-  assert.equal((await call('/_api/contacts(missing)/fullname')).status, 404);
+  // /<column> is refused before the row is read (hosted session F1 summary-F1 API-02c, two runs); /$value is not.
+  assert.equal((await call('/_api/contacts(missing)/fullname')).status, 403);
+  assert.equal((await call('/_api/contacts(missing)/fullname/$value')).status, 404);
 });
 
 // @test-kind contract+unproven: server behavior is local; portal and service behaviour have no native capture.

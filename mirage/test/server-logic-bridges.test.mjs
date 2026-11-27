@@ -181,7 +181,8 @@ test('CloudFlow.TriggerAsync answers the trigger pipeline envelope, including th
   assert.deepEqual([accepted.StatusCode, accepted.IsSuccessStatusCode, accepted.Body], [202, true, '']);
   assert.deepEqual(calls[0], {
     flowId: '77777777-7777-4777-8777-777777777750',
-    payload: { Location: 'Invented', siteId: SITE, siteUrl, userId: CONTACT },
+    // siteUrl is the site origin without a trailing slash (hosted session F8, request group).
+    payload: { Location: 'Invented', siteId: SITE, siteUrl: 'http://127.0.0.1:12345', userId: CONTACT },
   });
   const refused = JSON.parse(
     await runExportedServerLogic({

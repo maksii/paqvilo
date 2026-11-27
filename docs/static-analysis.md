@@ -58,7 +58,7 @@ recognition and limitations per domain.
 
 | Source domain                       | Inspection boundary                                                                                                                  |
 | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| Power Pages and web content         | Standard/enhanced records, settings and roles; parsed HTML, CSS and Liquid/FetchXML patterns                                         |
+| Power Pages and web content         | Standard/enhanced records, settings, roles and table permissions; parsed HTML, CSS and Liquid/FetchXML patterns                      |
 | Dataverse and ALM                   | Solution metadata, declared dependencies, schema/registrations and environment/connection configuration; literal query contracts     |
 | Model-driven apps                   | Exported forms, event/resource bindings and metadata associations; published/runtime state remains separate                          |
 | PCF                                 | Control manifests, properties/resources/features and package/build contracts; requirements stay host-specific                        |

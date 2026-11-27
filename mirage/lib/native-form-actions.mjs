@@ -4,6 +4,7 @@ import { DataError, parseFetchXml } from './data.mjs';
 import { planFetch } from './fetchxml-engine.mjs';
 import { serializePermissionFetchXml } from './permission-query.mjs';
 import { contextualViewFetchXml } from './platform.mjs';
+import { escapeXmlAttribute } from './paging-validation.mjs';
 
 /** Actions are resolved again from the exported component, never from client configuration. */
 export function nativeFormActions(component) {
@@ -28,19 +29,38 @@ export function nativeFormActions(component) {
 
 const filterUnsupported = () =>
   new DataError(
-    'Native record actions require a full non-aggregate FetchXML filter on the form table and a local read provider.',
+    'Native record actions require a supported action type, a filter criterion and a read provider.',
     501,
     'FormActionFilterUnsupported',
   );
+// A criterion that cannot be evaluated hides the action and refuses its request (403): fail closed, with the reason.
+const criterionRefused = (reason) =>
+  new DataError(
+    `The action's filter criteria cannot be evaluated: ${reason} The action is not offered.`,
+    403,
+    'FormActionFilterUnsupported',
+  );
+
+/*
+ * The criterion as a FetchXML document: a full <fetch>, or a bare <filter> fragment (a filter on the form table, as the
+ * filter designer's criterion reads; LOCAL MODEL: the hosted evaluation of a fragment is not captured, and the legacy
+ * FormConfiguration.DisableActionsBasedOnFilterCriteria parsed only a full fetch).
+ */
+function criterionFetchXml(filter, entity) {
+  const text = filter.trim();
+  if (/^<filter[\s/>]/i.test(text))
+    return `<fetch><entity name="${escapeXmlAttribute(entity)}">${text}</entity></fetch>`;
+  return text;
+}
 
 /** Evaluate the selected record against an exported action criterion using regular table permissions. */
 function nativeFormActionQuery(filter, { entity, idColumn, recordId, identity, context }) {
   let plan;
   try {
-    const bound = contextualViewFetchXml(filter, { ...context, identity });
+    const bound = contextualViewFetchXml(criterionFetchXml(filter, entity), { ...context, identity });
     plan = planFetch(parseFetchXml(bound));
-  } catch {
-    throw filterUnsupported();
+  } catch (error) {
+    throw criterionRefused(`it is not a valid FetchXML query or filter (${error.message}).`);
   }
   const { fetch, root, links, aggregate } = plan;
   const aggregates = [root, ...links].some((node) =>
@@ -49,7 +69,12 @@ function nativeFormActionQuery(filter, { entity, idColumn, recordId, identity, c
         name === 'attribute' && (attrs.aggregate || attrs.rowaggregate || attrs.dategrouping || attrs.groupby),
     ),
   );
-  if (aggregate || aggregates || root.attrs.name.toLowerCase() !== entity.toLowerCase()) throw filterUnsupported();
+  // An aggregate criterion has no per-record answer locally: the hosted evaluation of one is not captured, and the legacy
+  // evaluator dropped its attributes but kept the aggregate query (LOCAL MODEL: refused).
+  if (aggregate || aggregates)
+    throw criterionRefused('an aggregate or grouped FetchXML criterion has no per-record result (not captured).');
+  if (root.attrs.name.toLowerCase() !== entity.toLowerCase())
+    throw criterionRefused(`it queries ${root.attrs.name}, not the form table ${entity}.`);
   const fields = root.children.filter((node) => node.name === 'attribute');
   const projectsId =
     !fields.length ||
@@ -77,8 +102,9 @@ export async function nativeFormActionApplies(action, scope) {
     throw filterUnsupported();
   const filter = action.FilterCriteria;
   if (!filter) return true;
-  if (scope.available === false || typeof filter !== 'string' || typeof scope.readProvider?.fetchXml !== 'function')
-    throw filterUnsupported();
+  if (typeof filter !== 'string') throw criterionRefused('it is not a FetchXML string.');
+  // Live mode evaluates through the live read provider (the connected portal's Web API), as local mode through the store.
+  if (scope.available === false || typeof scope.readProvider?.fetchXml !== 'function') throw filterUnsupported();
   const query = nativeFormActionQuery(filter, scope);
   const result = await scope.readProvider.fetchXml(query, scope.identity);
   return (result.entities ?? result.value ?? []).some(
@@ -159,6 +185,18 @@ export const NATIVE_STATE_ACTIONS = Object.freeze({
     status: 2,
     message: 'The opportunity has been set on hold.',
   },
+  // ReopenOpportunity: open with In Progress (1) for a partner-created opportunity, else the partner portal's Accepted
+  // status (100000003, OpportunityStatusCode in the legacy CoreDataAdapter); a table without that status reason refuses.
+  'reopen-opportunity': {
+    source: (state) => state !== 0,
+    refusal: 'The opportunity is already open.',
+    type: 'ReopenOpportunityAction',
+    table: 'opportunity',
+    label: 'Reopen',
+    state: 0,
+    status: (row) => (row?.adx_partnercreated === true ? 1 : 100000003),
+    message: 'The opportunity has been reopened.',
+  },
   'win-opportunity': {
     source: (state) => state === 0,
     refusal: 'The opportunity is not open.',
@@ -180,6 +218,17 @@ export const NATIVE_STATE_ACTIONS = Object.freeze({
     status: 4,
     message: 'The opportunity has been closed as lost.',
     close: { table: 'opportunityclose', lookup: 'opportunityid', subject: 'Opportunity closed as lost via Web Portal' },
+  },
+  // ActivateQuote: SetState Active (1), In Progress (2) (QuoteState/QuoteStatusCode of the legacy CoreDataAdapter).
+  'activate-quote': {
+    source: (state) => state === 0,
+    refusal: 'Only a draft quote can be activated.',
+    type: 'ActivateQuoteAction',
+    table: 'quote',
+    label: 'Activate Quote',
+    state: 1,
+    status: 2,
+    message: 'The quote has been activated.',
   },
   // The Dynamics 365 message actions (legacy EntityActionController): each runs its Dataverse messages as the site's
   // application user after the record's Update right and, for a conversion, the Create right on the new record's table.
@@ -227,6 +276,51 @@ export const NATIVE_STATE_ACTIONS = Object.freeze({
     message: 'The invoice has been created.',
     messages: ({ recordId }) => [{ method: 'GET', url: `ConvertSalesOrderToInvoice(SalesOrderId='${recordId}')` }],
   },
+  // QualifyLead: the legacy EntityActionController checks Write on the lead and Create on contact, account and opportunity,
+  // and its CoreDataAdapter qualifies with every record created, the "US Dollar" currency (else the first currency) and
+  // the Qualified status (3), whatever the dialog posts.
+  'qualify-lead': {
+    source: (state) => state === 0,
+    refusal: 'The lead is not open.',
+    type: 'QualifyLeadAction',
+    table: 'lead',
+    label: 'Qualify',
+    creates: ['contact', 'account', 'opportunity'],
+    message: 'The lead has been qualified.',
+    messages: ({ recordId, currencyId }) => [
+      {
+        method: 'POST',
+        url: `leads(${recordId})/Microsoft.Dynamics.CRM.QualifyLead`,
+        payload: {
+          CreateAccount: true,
+          CreateContact: true,
+          CreateOpportunity: true,
+          ...(currencyId
+            ? {
+                OpportunityCurrencyId: {
+                  '@odata.type': 'Microsoft.Dynamics.CRM.transactioncurrency',
+                  transactioncurrencyid: currencyId,
+                },
+              }
+            : {}),
+          Status: 3,
+        },
+      },
+    ],
+    currency: true,
+  },
+  // UpdatePipelinePhase (legacy EntityActionController.UpdatePipelinePhase): the dialog posts a Sales Stage option, its
+  // label as the step name and a description; the opportunity takes stepname and salesstage, and a note on it records
+  // "Updated Pipeline Phase: <step name>" with the description as its text. The legacy link shows only on an open one.
+  'update-pipeline-phase': {
+    source: (state) => state === 0,
+    refusal: 'The opportunity is not open.',
+    type: 'UpdatePipelinePhaseAction',
+    table: 'opportunity',
+    label: 'Update Pipeline Phase',
+    message: 'The pipeline phase has been updated.',
+    pipeline: true,
+  },
   'generate-quote': {
     source: (state) => state === 0,
     refusal: 'The opportunity is not open.',
@@ -252,15 +346,65 @@ export function assertActionSource(key, row) {
     throw new DataError(spec.refusal, 400, 'InvalidStateTransition', { innerCode: STATE_REFUSED });
 }
 
+/** The opportunity's Sales Stage options ({ value, label }) for the Update Pipeline Phase dialog, from metadata. */
+export function pipelinePhaseOptions(entity, { metadata, store, schema } = {}) {
+  const field =
+    metadata?.entities?.[entity]?.fields?.salesstage ??
+    store?.fieldDefinition?.(entity, 'salesstage') ??
+    schema?.fields?.find((item) => item.name === 'salesstage');
+  return (field?.options ?? [])
+    .map((option) => ({
+      value: Number(option.value),
+      label: String(
+        option.label ?? option.labels?.[1033] ?? Object.values(option.labels ?? {})[0] ?? option.value ?? '',
+      ),
+    }))
+    .filter((option) => Number.isSafeInteger(option.value));
+}
+
+// The note's text column (annotation.notetext) holds at most 100,000 characters (Learn annotation table reference), as
+// the notes dialog's textarea limits it.
+const PIPELINE_DESCRIPTION_MAX = 100_000;
+const pipelineRefused = (message) => new DataError(message, 400, 'FormActionPipelinePhaseInvalid');
+// A posted Sales Stage: an integer, or the decimal digits of one (the select posts its option value as text).
+function postedStage(value) {
+  if (typeof value === 'number') return Number.isSafeInteger(value) ? value : null;
+  if (typeof value === 'string' && /^-?\d+$/.test(value.trim())) return Number(value.trim());
+  return null;
+}
+
+/**
+ * The posted pipeline phase ({ salesStage, description }) as the writes the legacy action makes: the step name is the
+ * option's label (the dialog posts the selected option's text). A missing, empty or non-integer stage, one that is not
+ * an option, and a missing, blank or too long description (the dialog marks it required) are refused before any write.
+ */
+export function pipelinePhaseWrites(entity, posted, context = {}) {
+  const stage = postedStage(posted?.salesStage);
+  const option = stage == null ? null : pipelinePhaseOptions(entity, context).find((item) => item.value === stage);
+  if (!option) throw pipelineRefused("The pipeline phase must be one of the opportunity's Sales Stage options.");
+  const description = posted?.description;
+  if (typeof description !== 'string' || !description.trim())
+    throw pipelineRefused('The Description of Update field is required.');
+  if (description.length > PIPELINE_DESCRIPTION_MAX)
+    throw pipelineRefused(
+      `The Description of Update exceeds the maximum length of ${PIPELINE_DESCRIPTION_MAX.toLocaleString('en-US')} characters.`,
+    );
+  return {
+    update: { stepname: option.label, salesstage: option.value },
+    note: { subject: `Updated Pipeline Phase: ${option.label}`, notetext: description },
+  };
+}
+
 /** The record action key (NATIVE_STATE_ACTIONS) of an exported Basic Form action type, or null. */
 export function nativeStateActionKey(type) {
   return Object.entries(NATIVE_STATE_ACTIONS).find(([, spec]) => spec.type === type)?.[0] ?? null;
 }
 
-/** A managed table's status values are not necessarily the standard 1/2 pair. */
+/** A managed table's status values are not necessarily the standard 1/2 pair. `context.row`: the record a status rule reads. */
 export function nativeActionStateValues(entity, action, context = {}) {
   const spec = NATIVE_STATE_ACTIONS[action];
-  return stateValues(entity, spec?.state, spec?.status, context);
+  const status = typeof spec?.status === 'function' ? spec.status(context.row) : spec?.status;
+  return stateValues(entity, spec?.state, status, context);
 }
 
 /** The { statecode, statuscode } of `state` with `status`, or its default status (SetState status -1), from metadata. */

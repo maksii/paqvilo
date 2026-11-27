@@ -82,7 +82,8 @@ test('postback mode submits actual URLencoded successful controls and navigates 
   const first = page.locator('#EntityFormControl_first'),
     second = page.locator('#EntityFormControl_second');
   assert.equal(await first.count(), 0, 'only the first form tag of a page renders');
-  const markup = '<img src=x onerror="window.__typedProbe=1"><script>window.__typedProbe=2</script>';
+  // Benign markup saves and renders inert; request validation refuses scripts and handlers (form-rejected-post-hosted.test.mjs).
+  const markup = '<b class="probe">bold</b> & "quoted" <i>text</i>';
   await second.locator('#title').fill(markup);
   await second.locator('#description').fill('First\nSecond');
   await second.locator('#count').fill('4');

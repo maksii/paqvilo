@@ -1,11 +1,11 @@
-// @test-kind compatibility: GIF89a and Windows bitmap decoding as an independent decoder (Chromium's) reads them; the portal GIF and BMP thumbnails must equal the documented crop of Chromium's pixels on invented fixtures
-// Chromium decodes each fixture written by mirage/test/fixtures/gif-bmp-images.mjs; the thumbnail of its pixels (the
-// PNG thumbnail's crop, alpha on white, quality 90 JPEG) must match what mirage/lib/portal-image-formats.mjs returns.
+// @test-kind compatibility: GIF89a and Windows bitmap decoding as an independent decoder (Chromium's) reads them; the portal GIF and BMP thumbnails, read by Chromium, must show the center crop of Chromium's pixels of the source on invented fixtures
+// Chromium decodes each fixture written by mirage/test/fixtures/gif-bmp-images.mjs and the thumbnail
+// mirage/lib/portal-image-formats.mjs makes of it: the thumbnail must show the PNG thumbnail's crop of the source pixels,
+// on the halftone colors for a GIF and opaque for a 32-bit BI_RGB bitmap.
 import test, { after, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
-import { decodeJpeg } from '../lib/portal-jpeg-codec.mjs';
 import { bmpThumbnail, gifThumbnail } from '../lib/portal-image-formats.mjs';
 import {
   BITMAPS,
@@ -16,8 +16,9 @@ import {
   SIXTEEN,
   bitmapOf,
   bmp,
-  expectedThumbnail,
+  expectedCrop,
   gif,
+  halftonePixels,
   indexAt,
   patternGif,
   pick,
@@ -52,18 +53,31 @@ async function chromiumPixels(bytes, type) {
 }
 
 /**
- * Our thumbnail equals the thumbnail of Chromium's pixels. A 2D canvas stores premultiplied alpha, so partially
- * transparent pixels may come back a level off; those fixtures compare the decoded thumbnails within `tolerance`.
+ * Chromium shows our thumbnail as the crop of Chromium's pixels of the source: on the halftone colors for a GIF; opaque
+ * for a bitmap, whose 32-bit BI_RGB fourth byte is not alpha to a reader (the colors under fully transparent source
+ * pixels are not compared). A 2D canvas stores premultiplied alpha, so partially transparent source pixels may come
+ * back a level off; those fixtures compare within `tolerance`.
  */
 async function agrees(thumbnail, bytes, type, label, tolerance = 0) {
   const { width, height, rgba } = await chromiumPixels(bytes, type);
-  const theirs = expectedThumbnail(rgba, width, height);
   const ours = thumbnail(bytes);
   assert.notEqual(ours, bytes, `${label}: a thumbnail is made`);
-  if (!tolerance) return assert.deepEqual(ours, theirs, label);
-  const [a, b] = [decodeJpeg(ours), decodeJpeg(theirs)];
-  assert.deepEqual([a.width, a.height], [b.width, b.height], label);
-  const worst = a.data.reduce((max, value, i) => Math.max(max, Math.abs(value - b.data[i])), 0);
+  const shown = await chromiumPixels(ours, type);
+  const crop = expectedCrop(rgba, width, height);
+  const expected = type === 'image/gif' ? halftonePixels(crop) : crop;
+  assert.deepEqual([shown.width, shown.height], [expected.width, expected.height], label);
+  let worst = 0;
+  for (let at = 0; at < expected.rgba.length; at += 4) {
+    if (type === 'image/gif') {
+      for (let c = 0; c < 4; c++) worst = Math.max(worst, Math.abs(shown.rgba[at + c] - expected.rgba[at + c]));
+      continue;
+    }
+    worst = Math.max(worst, 255 - shown.rgba[at + 3]);
+    // The canvas's premultiplied colors are exact only to 255 / alpha, so the difference is weighed by the alpha.
+    const alpha = crop.rgba[at + 3] / 255;
+    for (let c = 0; c < 3; c++)
+      worst = Math.max(worst, Math.round(Math.abs(shown.rgba[at + c] - expected.rgba[at + c]) * alpha));
+  }
   assert.ok(worst <= tolerance, `${label}: max difference ${worst}`);
 }
 

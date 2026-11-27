@@ -1,4 +1,4 @@
-// @test-kind compatibility: Learn power-pages/templates/dynamics-365-apps/manage-knowledge-articles-content-levels: KnowledgeManagement/ContentAccessLevel/Enabled (default false) filters knowledge articles in search and navigation by the levels of the visitor's web roles, contact, parent contact and account
+// @test-kind unproven: standard data model content access levels; Learn power-pages/templates/dynamics-365-apps/manage-knowledge-articles-content-levels documents the KnowledgeManagement/ContentAccessLevel/Enabled setting (default false) and the level sources (web roles, contact, parent contact, account), and the any-one-level rule is a local model; hosted session F3 (AUTH-07c) could not observe it, because its site used the enhanced data model
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -8,6 +8,7 @@ import { createSimulator } from '../api.mjs';
 import { knowledgeArticleAccess } from '../lib/content-access-levels.mjs';
 import { signInHeaders } from '../testing.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { browserToken } from './support/browser-request-token.mjs';
 
 const G = (n) => `5a5a5a5a-5a5a-4a5a-8a5a-5a5a5a5a${String(n).padStart(4, '0')}`;
 const SITE = G(1);
@@ -70,7 +71,7 @@ const entity = (name, primaryName, columns) =>
 const manyToMany = (name, first, second, intersect) =>
   `<EntityRelationship Name="${name}"><EntityRelationshipType>ManyToMany</EntityRelationshipType><FirstEntityName>${first}</FirstEntityName><SecondEntityName>${second}</SecondEntityName><IntersectEntityName>${intersect}</IntersectEntityName><Entity1IntersectAttribute>${first}id</Entity1IntersectAttribute><Entity2IntersectAttribute>${second}id</Entity2IntersectAttribute><EntityRelationshipRoles><EntityRelationshipRole><AssociationRoleOrdinal>1</AssociationRoleOrdinal><NavigationPropertyName>${name}_1</NavigationPropertyName></EntityRelationshipRole><EntityRelationshipRole><AssociationRoleOrdinal>2</AssociationRoleOrdinal><NavigationPropertyName>${name}_2</NavigationPropertyName></EntityRelationshipRole></EntityRelationshipRoles></EntityRelationship>`;
 
-async function knowledgeSite(t, { enabled = true, articleRelationship = true } = {}) {
+async function knowledgeSite(t, { enabled = true, articleRelationship = true, dataModel, observed } = {}) {
   const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'knowledge-cal-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const levelTable = 'adx_contentaccesslevel';
@@ -90,6 +91,17 @@ async function knowledgeSite(t, { enabled = true, articleRelationship = true } =
     'portal/Main.webtemplate.yml': 'adx_webtemplateid: main\nadx_name: Main',
     'portal/Main.webtemplate.source.html':
       "<main id=probe>{% searchindex query: 'lantern', page_size: 50 %}<p id=n>{{ searchindex.approximate_total_hits }}</p>{% for r in searchindex.results %}<i>{{ r.title }}</i>{% endfor %}{% endsearchindex %}<ul>{% for a in knowledge.articles %}<b>{{ a.title }}</b>{% endfor %}</ul></main>",
+    // fetchxml and entities over the articles (the F3 probe page's three reads, with knowledge.articles on Main).
+    'portal/Reads.webpage.yml':
+      'adx_webpageid: reads\nadx_name: Reads\nadx_partialurl: reads\nadx_parentpageid: home\nadx_pagetemplateid: reads',
+    'portal/Reads.pagetemplate.yml': 'adx_pagetemplateid: reads\nadx_webtemplateid: reads',
+    'portal/Reads.webtemplate.yml': 'adx_webtemplateid: reads\nadx_name: Reads',
+    'portal/Reads.webtemplate.source.html':
+      '<main id=reads>{% fetchxml q %}<fetch><entity name="knowledgearticle"><attribute name="title"/></entity></fetch>{% endfetchxml %}{% for r in q.results.entities %}<f>{{ r.title }}</f>{% endfor %}' +
+      Object.values(ARTICLE)
+        .map((id) => `{% assign e = entities.knowledgearticle['${id}'] %}{% if e %}<e>{{ e.title }}</e>{% endif %}`)
+        .join('') +
+      '</main>',
     'portal/Plain.pagetemplate.yml': 'adx_pagetemplateid: plain\nadx_webtemplateid: plain',
     'portal/Plain.webtemplate.yml': 'adx_webtemplateid: plain\nadx_name: Plain',
     'portal/Plain.webtemplate.source.html': '<main>Invented article page</main>',
@@ -133,6 +145,8 @@ async function knowledgeSite(t, { enabled = true, articleRelationship = true } =
     sourceDir: path.join(dir, 'portal'),
     solutionRoots: [path.join(dir, 'solution')],
     packs: [summaryPack],
+    ...(dataModel ? { dataModel } : {}),
+    ...(observed ? { observed } : {}),
     port: 0,
     watch: false,
     initial: {
@@ -276,19 +290,32 @@ async function knowledgeSite(t, { enabled = true, articleRelationship = true } =
   };
   const summarySources = async (contact) => {
     const headers = as(contact);
-    const tokenHtml = await (await fetch(`${sim.url}/_layout/tokenhtml`, { headers })).text();
-    const token = /value="([^"]+)"/.exec(tokenHtml)[1];
+    const { token, cookie } = await browserToken(sim, headers);
     sources.length = 0;
     const response = await fetch(`${sim.url}/_api/search/v1.0/summary`, {
       method: 'POST',
       body: new URLSearchParams({ userQuery: 'lantern' }),
-      headers: { origin: sim.url, __requestverificationtoken: token, ...headers },
+      headers: {
+        origin: sim.url,
+        'x-requested-with': 'XMLHttpRequest',
+        __requestverificationtoken: token,
+        ...headers,
+        cookie,
+      },
     });
     const body = await response.text();
     assert.equal(response.status, 200, body);
     return { ids: sources[0] ?? [], body };
   };
-  return { sim, home, defaultSearch, summarySources };
+  const reads = async (contact) => {
+    const response = await fetch(`${sim.url}/reads/`, { headers: as(contact) });
+    const html = await response.text();
+    assert.equal(response.status, 200, html);
+    const main = /<main id=reads>([\s\S]*?)<\/main>/.exec(html)[1];
+    return { fetchxml: titles(main, 'f'), entities: titles(main, 'e') };
+  };
+  const articlePage = (contact) => fetch(`${sim.url}/article/`, { headers: as(contact) });
+  return { sim, home, defaultSearch, summarySources, reads, articlePage };
 }
 
 const titlesOf = (...keys) => keys.map((key) => TITLE[key]).sort();
@@ -476,4 +503,90 @@ test('live data applies the content access level rule over rows read through the
   });
   assert.equal(premium.visible(ARTICLE.premium), true);
   assert.equal(premium.visible(ARTICLE.unleveled), false);
+});
+
+// @test-kind security: with content access levels on, entities.knowledgearticle answers nil for an article outside the visitor's levels by default, as knowledge.articles and search do; on an enhanced site, where the hosted platform returns it (F3 AUTH-07c), Mirage still hides it and warns
+test('entities.knowledgearticle keeps the content access level filter by default', async (t) => {
+  const enhanced = await knowledgeSite(t, { dataModel: 'enhanced' });
+  for (const contact of [undefined, CONTACT.plain, CONTACT.premium, CONTACT.direct, CONTACT.employee])
+    assert.deepEqual(await enhanced.reads(contact), { fetchxml: [], entities: [] }, contact ?? 'anonymous');
+  const warning = enhanced.sim
+    .state()
+    .diagnostics.find((item) => item.code === 'KNOWLEDGE_CONTENT_ACCESS_ENTITIES_UNFILTERED');
+  assert.equal(warning?.severity, 'warning');
+  assert.match(warning.message, /observed\.knowledgeEntitiesContentAccess/);
+  const standard = await knowledgeSite(t);
+  assert.deepEqual((await standard.reads()).entities, titlesOf('default'));
+  assert.deepEqual(
+    (await standard.reads(CONTACT.premium)).entities,
+    titlesOf('default', 'registered', 'premium', 'multiple'),
+  );
+});
+
+// @test-kind observation: hosted session F3 (paqvilo-developer hosted-f3 summary-F3.md AUTH-07c, Customer Self-Service site on the enhanced data model, cs-cal-off-repaired, cs-cal-default-roles, cs-cal-contact-A, -AB and -A-roleB captures of runs a and b, 2026-11-27): with the setting on, knowledge.articles and fetchxml return no article for every persona, entities[] still returns every article (reproduced with observed.knowledgeEntitiesContentAccess unfiltered), and the Knowledge Article page answers 500 with RTDV01 adx_webrolecontentaccesslevel not found in the MetadataCache
+test('an enhanced site with content access levels on shows no article through knowledge.articles or fetchxml', async (t) => {
+  const { sim, home, reads, articlePage } = await knowledgeSite(t, {
+    dataModel: 'enhanced',
+    observed: { knowledgeEntitiesContentAccess: 'unfiltered', evidence: 'Invented loopback observation' },
+  });
+  const every = Object.values(TITLE).sort();
+  for (const contact of [undefined, CONTACT.plain, CONTACT.premium, CONTACT.direct, CONTACT.employee]) {
+    assert.deepEqual(await home(contact), { total: 0, search: [], articles: [] }, contact ?? 'anonymous');
+    assert.deepEqual(await reads(contact), { fetchxml: [], entities: every }, contact ?? 'anonymous');
+    const page = await articlePage(contact);
+    assert.equal(page.status, 500, contact ?? 'anonymous');
+  }
+  const codes = sim.state().diagnostics.map((item) => item.code);
+  assert.ok(codes.includes('KNOWLEDGE_CONTENT_ACCESS_ENHANCED'));
+  assert.ok(codes.includes('KNOWLEDGE_CONTENT_ACCESS_ENTITIES_UNFILTERED'));
+  assert.ok(codes.includes('KNOWLEDGE_CONTENT_ACCESS_TABLE_MISSING'));
+});
+
+// @test-kind observation: hosted session F3 (summary-F3.md AUTH-07c, cs-cal-off-repaired of runs a and b): with the setting off, knowledge.articles, fetchxml and entities list every article and the article page answers 200
+test('an enhanced site with content access levels off lists every article everywhere', async (t) => {
+  const { home, reads, articlePage } = await knowledgeSite(t, { dataModel: 'enhanced', enabled: false });
+  const every = Object.values(TITLE).sort();
+  assert.deepEqual((await home()).articles, every);
+  assert.deepEqual(await reads(), { fetchxml: every, entities: every });
+  assert.equal((await articlePage()).status, 200);
+});
+
+// @test-kind observation: hosted session F3 (summary-F3.md AUTH-07c, runs a and b): the generic error page of the enhanced article page carries the RTDV01 server log entry naming adx_webrolecontentaccesslevel
+test('the enhanced article page failure carries the RTDV01 entry on the generic error page', async (t) => {
+  const { sim } = await knowledgeSite(t, {
+    dataModel: 'enhanced',
+    observed: { pageErrorPresentation: 'generic-error', evidence: 'Invented loopback observation' },
+  });
+  const body = await (await fetch(`${sim.url}/article/`)).text();
+  assert.match(body, /"MessageCode": "RTDV01"/);
+  assert.match(
+    body,
+    /Error Message from Dataverse: The entity with a name = 'adx_webrolecontentaccesslevel' with namemapping = 'Logical' was not found in the MetadataCache\./,
+  );
+});
+
+// @test-kind observation: hosted session F3 (summary-F3.md AUTH-07c): an article created through the API carries no level, and the template's Default level is linked to no web role; Mirage adds no link, so on the standard model such an article is hidden
+test('Mirage invents no level link for a new article or the Default level', async (t) => {
+  const { sim, home } = await knowledgeSite(t);
+  // Created as the hosted fixture created it: a plain create, no level named.
+  await sim.store.create(
+    'knowledgearticle',
+    {
+      knowledgearticleid: G(29),
+      title: 'Lantern created',
+      content: 'Lantern created text',
+      statecode: 3,
+      isinternal: false,
+    },
+    { admin: true },
+  );
+  const links = sim.store.tableRows('x_level_article').filter((row) => row.knowledgearticleid === G(29));
+  assert.deepEqual(links, []);
+  assert.ok(!(await home()).articles.includes('Lantern created'));
+  // A Default level linked to no web role reaches no visitor.
+  await sim.store.transact(() => {
+    const rows = sim.store.tableRows('x_role_level');
+    rows.splice(0, rows.length, ...rows.filter((row) => row.adx_contentaccesslevelid !== LEVEL.default));
+  });
+  assert.deepEqual((await home()).articles, []);
 });

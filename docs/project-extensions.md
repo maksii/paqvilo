@@ -88,10 +88,14 @@ origin) and shell-free arguments. The executable is `PAQVILO_PAC_EXECUTABLE`, el
 `executable` must be named `pac`, `pac.exe` or `pac.launcher.exe` (on Windows, never the `pac.cmd` shim or a command
 shell). A missing executable fails with `POWER_PAGES_PAC_MISSING` before PAC runs. Read APIs return site identity,
 visibility, `trialExpiringInDays` (a non-negative integer below 100000, otherwise `null`) and `dataModel` (a string of
-at most 64 characters, otherwise `null`); credentials, certificates and unknown response fields are withheld. The
-management site ID differs from the Dataverse website record ID, so verify both and the site URL before a change. The
-mutation API reports command completion only: your project owns authorization, a durable journal, propagation readback
-and restoration. Mirage session controls do not grant native site access.
+at most 64 characters, otherwise `null`); credentials, certificates and unknown response fields are withheld. A site
+that is still provisioning is listed with `websiteRecordId: null`. The management site ID differs from the Dataverse
+website record ID, so verify both and the site URL before a change. A failed command throws
+`POWER_PAGES_MANAGEMENT_FAILED` with its HTTP `status`; HTTP 409 adds `reason: 'operation-in-progress'`. A change to
+public refused with HTTP 400 names the documented cause to check, the tenant control "Set site visibility to public
+access for non-production sites" (only tenant admins change it); PAC prints no response body, so the cause is not
+confirmed. The mutation API reports command completion only: your project owns authorization, a durable journal,
+propagation readback and restoration. Mirage session controls do not grant native site access.
 
 For model-driven Solution scripts, projects can opt into
 [web-resource lint](../mirage/docs/model-driven-web-resource-lint.md) with their own ESLint configuration and
@@ -128,12 +132,15 @@ transaction: a throw fails the job (or rejects a real-time request) and rolls it
 packs are an error.
 
 In local Power Pages invitation redemption, the `adx_redemptionworkflow` lookup can run an active, on-demand
-real-time classic workflow targeting a Contact when the trusted pack registers the handler by exact workflow GUID.
-Mirage uses its local portal application user as the caller and supplies the redeemed contact as the target with
-empty inputs. Mirage provisions the application user, when needed, before starting the redemption transaction.
-The handler runs after local account and role assignment inside that transaction. A failure rolls back redemption,
-standard Dataverse writes made in the transaction and the workflow log. Elastic writes and external side effects
-retain their independent behavior. Other workflow configurations still emit `INVITATION_WORKFLOW_NOT_RUN`.
+classic workflow targeting a Contact when the trusted pack registers the handler by exact workflow GUID. Mirage uses its
+local portal application user as the caller and supplies the redeemed contact as the target with empty inputs. The
+workflow starts after the redemption has committed, as on a hosted site (hosted session F4): a background workflow
+becomes a system job owned by the application user, a real-time one runs in its own transaction. A failure rolls back
+the workflow's own writes and keeps its log, and the redemption, the account and the sign-in stay
+(`INVITATION_WORKFLOW_FAILED`, a warning). Other workflow configurations still emit `INVITATION_WORKFLOW_NOT_RUN`.
+
+A handler registered for the id of a Power Pages invitation process (UpdateInvitationCode or Send Invitation) replaces
+Mirage's built-in process; see [sign-in and sessions](../mirage/docs/sim-administration.md#sign-in-and-sessions).
 
 ## Custom API handlers
 

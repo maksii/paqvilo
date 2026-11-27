@@ -47,6 +47,7 @@ const ACTION_NAMES = {
   'CrmEntityFormView-AssociateAction': 'associate',
   'CrmEntityFormView-DisassociateAction': 'disassociate',
   'CrmEntityFormView-WorkflowAction': 'workflow',
+  WorkflowAction: 'workflow',
   'CrmEntityFormView-DownloadAction': 'download',
   DeactivateAction: 'deactivate',
   ActivateAction: 'activate',
@@ -567,7 +568,11 @@ class Classifier {
     const { owner } = scope;
     const classes = classList(node);
     const id = attribute(node, 'id') ?? '';
-    if (scope.root && (classes.has('entitylist') || id.startsWith('EntityListControl')) && !classes.has('entity-grid'))
+    if (
+      scope.root &&
+      (classes.has('entitylist') || id.startsWith('EntityListControl') || node.tagName === 'pages-native-container') &&
+      !classes.has('entity-grid')
+    )
       return { ...scope, binding: owner, root: true };
     if (attribute(node, 'data-mirage-component') === 'codecomponent')
       return { ...scope, binding: withPart(owner, 'notice') };

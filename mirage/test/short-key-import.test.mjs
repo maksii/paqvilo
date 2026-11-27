@@ -424,11 +424,16 @@ test('cloud flows import with their trigger, flow and roles; source operations d
   const trigger = () =>
     fetch(`${app.url}/_api/cloudflow/v1.0/trigger/${g(82)}`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', __requestverificationtoken: token },
+      headers: {
+        'content-type': 'application/json',
+        __requestverificationtoken: token,
+        'x-requested-with': 'XMLHttpRequest',
+      },
       body: JSON.stringify({ eventData: '{}' }),
     });
   const unsupported = await trigger();
-  assert.deepEqual([unsupported.status, (await unsupported.json()).error.code], [403, 'Forbidden']);
+  // The flow API's refusal body (hosted session F8, anonymous group): 403 MissingPermissions.
+  assert.deepEqual([unsupported.status, (await unsupported.json()).Message], [403, 'MissingPermissions']);
   const { csrf } = await (await fetch(app.url + '/__sim/api/state?summary=1')).json();
   const added = await fetch(app.url + '/__sim/api/endpoints/request-callback', {
     method: 'POST',

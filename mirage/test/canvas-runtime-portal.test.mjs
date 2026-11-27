@@ -105,7 +105,7 @@ const api = (sim, headers = {}, body) =>
   );
 
 test('a signed-in portal visitor runs the app as the mapped Dataverse user (enhanced authorization)', async (t) => {
-  const sim = await site(t, 1);
+  const sim = await site(t, 3);
   const alex = signInHeaders(sim, 'alex');
   assert.equal((await (await api(sim, alex)).json()).started, false); // a GET never starts the app
   const { snapshot } = await (await api(sim, alex, { action: 'start' })).json();

@@ -290,6 +290,29 @@ function historyMatch(portal, url) {
 }
 
 /**
+ * The platform's robots.txt for a request no exported page or web file answers (any case, any query). Hosted session F3
+ * (two runs, private site): 200 text/plain, `private, max-age=3600`, an inline disposition and exactly the 26 bytes
+ * `User-agent: *\r\nDisallow: /`. Only the private-site body was captured, so a site observed as public, or without the
+ * observation, keeps the Page Not Found answer. sitemap.xml has no platform answer (404).
+ */
+export function platformRobotsResponse(portal, url, now = Date.now()) {
+  if (url.pathname.toLowerCase() !== '/robots.txt' || portal.observed?.siteVisibility !== 'private') return null;
+  const body = Buffer.from('User-agent: *\r\nDisallow: /', 'utf8');
+  return {
+    status: 200,
+    headers: {
+      'content-type': 'text/plain',
+      'content-disposition': "inline;filename*=UTF-8''robots.txt",
+      'cache-control': 'private, max-age=3600',
+      expires: new Date(now + 3600 * 1000).toUTCString(),
+      vary: 'Accept-Encoding',
+      'content-length': body.byteLength,
+    },
+    body,
+  };
+}
+
+/**
  * Decide the response for a request that no exported page or web file resolves.
  * `readable(page)` reports whether the current persona may read a page.
  */

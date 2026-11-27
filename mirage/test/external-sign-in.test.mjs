@@ -32,6 +32,7 @@ import {
 import { startIdentityProvider } from '../lib/identity-provider.mjs';
 import { authCookieName } from '../lib/auth-session.mjs';
 import { fixedClock } from '../lib/runtime-clock.mjs';
+import { settleCommittedWork } from '../lib/committed-work.mjs';
 import { SCENARIO_HANG_GUARD_MS } from '../../test/helpers/bounded-command.mjs';
 
 const TENANT = 'https://login.windows.net/0f0f0f0f-1111-4222-8333-444444444444/';
@@ -537,9 +538,11 @@ test(
     assert.match(
       html,
       new RegExp(
-        `<form action="/Account/Login/ExternalLogin\\?ReturnUrl=%2Fmembers%2F" method="post"><input name="__RequestVerificationToken" type="hidden" value="${app.portalToken}"><div class=""><h2 class="login-heading-section" id="external-login-heading">.*?<button name="provider" type="submit" class="btn btn-primary btn-line" id="https://idp.example.test/local/" title="Sign in with your Local IdP account." value="https://idp.example.test/local/">Local IdP</button></div></form>`,
+        `<form action="/Account/Login/ExternalLogin\\?ReturnUrl=%2Fmembers%2F" method="post"><input name="__RequestVerificationToken" type="hidden" value="[0-9a-f]{64}"><div class=""><h2 class="login-heading-section" id="external-login-heading">.*?<button name="provider" type="submit" class="btn btn-primary btn-line" id="https://idp.example.test/local/" title="Sign in with your Local IdP account." value="https://idp.example.test/local/">Local IdP</button></div></form>`,
       ),
     );
+    // The form carries this browser's paired token, never the tool token.
+    assert.equal(html.includes(app.portalToken), false);
     assert.doesNotMatch(html, /paqvilo-mirage-persona/);
     const local = await browser.request('/SignIn', formBody({ contactId: 'alex', ReturnUrl: '/' }));
     assert.equal(local.status, 400);
@@ -922,7 +925,7 @@ test("a new user's first sign-in follows the registration settings: open registr
   }
 });
 
-// @test-kind security: external identity and single invitation lookups require an existing eligible contact.
+// @test-kind security+unproven: external identity and single invitation lookups require an existing eligible contact; an absent contact target is a local data case F4 did not capture, refused with the one message (200) the platform gives every refused code (hosted session F4 AUTH-05d, redeem-{a,b}-{expired,inactive,single}-link).
 test('sign-in and single invitation redemption refuse an absent contact target', async (t) => {
   const contact = { id: 'missing-contact', logical_name: 'contact' };
   const state = initialState({
@@ -966,8 +969,8 @@ test('sign-in and single invitation redemption refuse an absent contact target',
   );
   const visitor = client(app);
   const signIn = await signInThrough(visitor, idp, { contactId: 'alex' });
-  assert.deepEqual([invitation.status, signIn.status], [400, 403], 'both unresolved contact lookups must be refused');
-  assert.match(await text(invitation), /The invited contact is missing or inactive/);
+  assert.deepEqual([invitation.status, signIn.status], [200, 403], 'both unresolved contact lookups must be refused');
+  assert.match(await text(invitation), /Invalid invitation code\./);
   assert.match(await text(signIn), /Invalid sign-in attempt\./);
   assert.equal((await json(visitor, '/_sim/api/session')).signedIn, false);
   assert.deepEqual(
@@ -976,6 +979,7 @@ test('sign-in and single invitation redemption refuse an absent contact target',
   );
 });
 
+// @test-kind contract+observation: external redemption is the designed local flow; refused codes answer "Invalid invitation code." with 200 and a redemption records an adx_inviteredemption activity regarding the invitation (hosted session F4 AUTH-05d, two agreeing runs (redeem-{a,b}-{expired,inactive,single}-link, digest-F4.json in the hosted-f4 evidence folder); redeem-{a,b}-lower-lower).
 test('invitation codes register into the invited contact with its account and web roles; group invitations count redemptions', async (t) => {
   const settings = [...LOCAL_PROVIDER, ['Authentication/Registration/OpenRegistrationEnabled', 'false']];
   const invitations = [
@@ -1050,13 +1054,10 @@ test('invitation codes register into the invited contact with its account and we
       '/Account/Login/RedeemInvitation?ReturnUrl=%2Fmembers%2F',
       formBody({ __RequestVerificationToken: csrf, InvitationCode: code }),
     );
-  for (const [code, message] of [
-    ['NOPE', /The invitation code is not valid\./],
-    ['OLD', /The invitation has expired\./],
-  ]) {
+  for (const code of ['NOPE', 'OLD']) {
     const refused = await redeem(code);
-    assert.equal(refused.status, 400, code);
-    assert.match(await text(refused), message);
+    assert.equal(refused.status, 200, code);
+    assert.match(await text(refused), /Invalid invitation code\./);
   }
   const redeemed = await redeem('welcome-casey');
   assert.equal(redeemed.status, 302);
@@ -1069,6 +1070,12 @@ test('invitation codes register into the invited contact with its account and we
   assert.deepEqual(
     [single.adx_redeemedcontact?.id, single.adx_redemptions, single.statuscode],
     ['casey', 1, 756150001],
+  );
+  assert.deepEqual(
+    app.store
+      .tableRows('adx_inviteredemption')
+      .map((row) => [row.regardingobjectid?.id, row.regardingobjectid?.logical_name]),
+    [['inv-single', 'adx_invitation']],
   );
   assert.deepEqual(
     (await json(browser, '/_sim/api/session/identities')).identities.map((item) => [
@@ -1106,8 +1113,8 @@ test('invitation codes register into the invited contact with its account and we
   const later = client(app);
   await signInThrough(later, idp, { newUser: { given_name: 'Hal', family_name: 'Late', email: 'hal@example.test' } });
   const full = await redeem('TEAM', later);
-  assert.equal(full.status, 400);
-  assert.match(await text(full), /The invitation has reached its maximum number of redemptions\./);
+  assert.equal(full.status, 200);
+  assert.match(await text(full), /Invalid invitation code\./);
   // Registration turned off: redemption is refused with the RegistrationDisabledMessage snippet.
   const { app: closedApp } = await simulator(
     t,
@@ -1119,10 +1126,11 @@ test('invitation codes register into the invited contact with its account and we
   assert.match(await text(disabled), /New accounts are closed\./);
 });
 
-// @test-kind security+contract: local invitation redemption runs only an exact trusted workflow and rolls back all writes on failure.
-test('trusted invitation workflows run on the redeemed contact and failure rolls back provisioning', async (t) => {
+// @test-kind security+observation: only an exact trusted handler runs, as the local application user; the workflow starts after the redemption has committed and its failure rolls back only its own writes, keeping the redemption and the sign-in (hosted session F4 AUTH-05d, two agreeing runs: redeem-{a,b}-failwf-link, redeem-{a,b}-single-link and digest-F4.json in the hosted-f4 evidence folder).
+test('trusted invitation workflows run on the redeemed contact after the redemption; a failure keeps the redemption', async (t) => {
   const exact = '77777777-7777-4777-8777-777777777720';
   const nameOnly = '77777777-7777-4777-8777-777777777721';
+  const background = '77777777-7777-4777-8777-777777777722';
   const phase = (id, code, workflowId) => ({
     adx_invitationid: id,
     adx_invitationcode: code,
@@ -1135,9 +1143,22 @@ test('trusted invitation workflows run on the redeemed contact and failure rolls
   });
   const invitations = [
     phase('workflow-invite-success', 'WORKFLOW-SUCCESS', exact),
-    phase('workflow-invite-failure', 'WORKFLOW-ROLLBACK', exact),
+    phase('workflow-invite-failure', 'WORKFLOW-FAILURE', exact),
     phase('workflow-invite-unsupported', 'WORKFLOW-NAME-ONLY', nameOnly),
+    phase('workflow-invite-background', 'WORKFLOW-BACKGROUND', background),
   ];
+  const workflow = (workflowid, mode, uniquename) => ({
+    workflowid,
+    name: 'Invented invitation workflow ' + mode,
+    uniquename,
+    category: 0,
+    type: 1,
+    mode,
+    ondemand: true,
+    primaryentity: 'contact',
+    statecode: 1,
+    statuscode: 2,
+  });
   const state = initialState({
     tables: {
       adx_invitation: invitations,
@@ -1145,36 +1166,35 @@ test('trusted invitation workflows run on the redeemed contact and failure rolls
         adx_invitationid: row.adx_invitationid,
         powerpagecomponentid: 'reviewer',
       })),
-      workflow: [exact, nameOnly].map((workflowid) => ({
-        workflowid,
-        name: 'Invented invitation workflow',
-        uniquename: 'InventedInvitation',
-        category: 0,
-        type: 1,
-        mode: 1,
-        ondemand: true,
-        primaryentity: 'contact',
-        statecode: 1,
-        statuscode: 2,
-      })),
+      workflow: [
+        workflow(exact, 1, 'InventedInvitation'),
+        workflow(nameOnly, 1, 'InventedInvitation'),
+        workflow(background, 0, 'InventedBackground'),
+      ],
     },
     mappings: {
       adx_invitation: { entitySet: 'adx_invitations', idColumn: 'adx_invitationid', nameColumn: 'adx_name' },
     },
   });
   const settings = [...LOCAL_PROVIDER, ['Authentication/Registration/OpenRegistrationEnabled', 'false']];
+  const handler = (id, title) => [
+    '    ' + JSON.stringify(id) + ': async ({ api, target, caller, inputs }) => {',
+    '      if (target.logicalName !== "contact" || target.row.parentcustomerid?.id !== "helios" || Object.keys(inputs).length)',
+    '        throw new Error("Unexpected workflow target.");',
+    '      await api.store.updateRecordAsync("contact", target.id, { jobtitle: ' +
+      JSON.stringify(title) +
+      ' + caller.systemuserid }, { admin: true });',
+    '      if (target.row.firstname === "Failing") throw new Error("Private fixture handler error.");',
+    '      return { message: "Local invitation handler completed" };',
+    '    },',
+  ];
   const pack = [
     'export default {',
     '  id: "invitation-fixture", name: "Invitation fixture", description: "Invented local workflow",',
     '  matches: () => true, presets: () => ({}),',
     '  workflows: {',
-    '    ' + JSON.stringify(exact) + ': async ({ api, target, caller, inputs }) => {',
-    '      if (target.logicalName !== "contact" || target.row.parentcustomerid?.id !== "helios" || Object.keys(inputs).length)',
-    '        throw new Error("Unexpected workflow target.");',
-    '      await api.store.updateRecordAsync("contact", target.id, { jobtitle: caller.systemuserid }, { admin: true });',
-    '      if (target.row.firstname === "Rollback") throw new Error("Private fixture handler error.");',
-    '      return { message: "Local invitation handler completed" };',
-    '    },',
+    ...handler(exact, ''),
+    ...handler(background, 'background:'),
     '    InventedInvitation: () => { throw new Error("Name-only handler must not run for invitation."); },',
     '  },',
     '};',
@@ -1195,10 +1215,12 @@ test('trusted invitation workflows run on the redeemed contact and failure rolls
     );
     return { response, browser };
   };
+  const invitation = (id) => app.store.tableRows('adx_invitation').find((row) => row.adx_invitationid === id);
+  const contactOf = (contactId) => app.store.tableRows('contact').find((row) => row.contactid === contactId);
   const success = await invite('WORKFLOW-SUCCESS', 'Accepted');
   assert.equal(success.response.status, 302);
   const signed = await json(success.browser, '/_sim/api/session');
-  const target = app.store.tableRows('contact').find((row) => row.contactid === signed.contactId);
+  const target = contactOf(signed.contactId);
   const caller = app.store.tableRows('systemuser').find((row) => row.systemuserid === target.jobtitle);
   assert.ok(caller?.fullname.startsWith('# Portals-'), 'the local application user runs the exact trusted workflow');
   assert.ok(signed.roles.includes('Reviewer'));
@@ -1207,36 +1229,49 @@ test('trusted invitation workflows run on the redeemed contact and failure rolls
   assert.equal(logs[0].regardingobjectid.id, target.contactid);
   assert.equal(logs[0].message, 'Local invitation handler completed');
 
-  const sections = {
-    sections: ['simulator'],
-    tables: ['contact', 'adx_externalidentity', 'adx_invitation', 'workflowlog'],
-  };
-  const snapshot = () => {
-    const {
-      simulator: { contactRoles, signInRegistrations },
-      tables,
-    } = app.store.snapshot(sections);
-    return { contactRoles, signInRegistrations, tables };
-  };
-  const before = snapshot();
-  const failed = await invite('WORKFLOW-ROLLBACK', 'Rollback');
-  assert.equal(failed.response.status, 500);
-  const returned = await text(failed.response);
-  assert.match(returned, /The local invitation workflow could not complete/);
-  assert.doesNotMatch(returned, /Private fixture handler error/);
-  assert.equal((await json(failed.browser, '/_sim/api/session')).signedIn, false);
-  assert.deepEqual(snapshot(), before);
+  // A failing workflow rolls back its own writes; the redemption, the new contact and the sign-in stay.
+  const failed = await invite('WORKFLOW-FAILURE', 'Failing');
+  assert.equal(failed.response.status, 302);
+  assert.doesNotMatch(await text(failed.response), /Private fixture handler error/);
+  const failedSession = await json(failed.browser, '/_sim/api/session');
+  assert.equal(failedSession.signedIn, true);
+  assert.equal(contactOf(failedSession.contactId).jobtitle ?? null, null, "the failed workflow's write rolled back");
+  assert.deepEqual(
+    [invitation('workflow-invite-failure').adx_redemptions, invitation('workflow-invite-failure').statuscode],
+    [1, 756150001],
+  );
+  assert.equal(app.store.tableRows('workflowlog').length, 2, 'the failed run keeps its log');
+  const { diagnostics } = await json(failed.browser, '/_sim/api/diagnostics');
+  const failure = diagnostics.find((row) => row.code === 'INVITATION_WORKFLOW_FAILED');
+  assert.equal(failure?.id, 'workflow-invite-failure');
+  assert.doesNotMatch(JSON.stringify(diagnostics), /Private fixture handler error/);
 
   const fallback = await invite('WORKFLOW-NAME-ONLY', 'Fallback');
   assert.equal(fallback.response.status, 302);
   assert.equal((await json(fallback.browser, '/_sim/api/session')).signedIn, true);
-  assert.equal(app.store.tableRows('workflowlog').length, 1);
-  const { diagnostics } = await json(fallback.browser, '/_sim/api/diagnostics');
+  assert.equal(app.store.tableRows('workflowlog').length, 2);
+  const after = await json(fallback.browser, '/_sim/api/diagnostics');
   assert.ok(
-    diagnostics.some((row) => row.code === 'INVITATION_WORKFLOW_NOT_RUN' && row.id === 'workflow-invite-unsupported'),
+    after.diagnostics.some(
+      (row) => row.code === 'INVITATION_WORKFLOW_NOT_RUN' && row.id === 'workflow-invite-unsupported',
+    ),
   );
+
+  // A background workflow is a system job owned by the application user that runs after the redemption.
+  const queued = await invite('WORKFLOW-BACKGROUND', 'Queued');
+  assert.equal(queued.response.status, 302);
+  const queuedSession = await json(queued.browser, '/_sim/api/session');
+  const job = app.store.tableRows('asyncoperation').find((row) => row.name === 'Invented invitation workflow 0');
+  assert.ok(job, 'the redemption starts a system job');
+  assert.equal(job.regardingobjectid?.id, queuedSession.contactId);
+  await settleCommittedWork(app.store, []);
+  const ran = contactOf(queuedSession.contactId).jobtitle;
+  assert.match(ran, /^background:/);
+  const owner = app.store.tableRows('systemuser').find((row) => row.systemuserid === ran.slice('background:'.length));
+  assert.ok(owner?.fullname.startsWith('# Portals-'), 'the job runs as the local application user');
 });
 
+// @test-kind contract+observation: the provider routing is the designed local identity flow; an anonymous LogOff's sign-in redirect is hosted session F4 (paqvilo-developer hosted-f4 accounts lifecycle runs a and b).
 test("LoginButtonAuthenticationType sends the sign-in page to its provider; LogOff runs the provider's end-session when external logout is on", async (t) => {
   const settings = [
     ...LOCAL_PROVIDER,
@@ -1267,7 +1302,7 @@ test("LoginButtonAuthenticationType sends the sign-in page to its provider; LogO
   assert.equal(back.status, 302);
   assert.equal(back.headers.get('location'), `${app.url}/_sim/#access`);
   const anonymous = await browser.request('/Account/Login/LogOff?returnUrl=%2F');
-  assert.equal(anonymous.headers.get('location'), '/signin?ReturnUrl=%2FAccount%2FLogin%2FLogOff');
+  assert.equal(anonymous.headers.get('location'), '/signin?ReturnUrl=/Account/Login/LogOff');
   // A configured PostLogoutRedirectUri is followed on the local origin.
   const { app: other, idp: otherIdp } = await simulator(t, [
     ...LOCAL_PROVIDER,
@@ -1376,7 +1411,7 @@ test('the sign-in forms accept the admin token as their anti-forgery field only 
     });
   const admin = () => 'admin-token';
   assert.match((await external(admin, 'admin-token')).body, /is not an identity provider of this site/);
-  assert.match((await invitation(admin, 'admin-token')).body, /invitation code is not valid/);
+  assert.match((await invitation(admin, 'admin-token')).body, /Invalid invitation code\./);
   assert.match((await external(admin, 'wrong')).body, /anti-forgery token is missing or invalid/);
   assert.match((await external(undefined, 'admin-token')).body, /anti-forgery token is missing or invalid/);
   assert.match((await invitation(undefined, 'admin-token')).body, /anti-forgery token is missing or invalid/);

@@ -8,6 +8,7 @@ import {
   TIME_PRECISION_OPERATORS,
   compareForFilter,
   dateOperatorPredicate,
+  dateTimeBehavior,
   fieldKind,
   guidKey,
   isDateOnlyField,
@@ -16,7 +17,37 @@ import {
   parseDateValue,
   scalar,
   valuesEqual,
+  wallToUtc,
 } from './dataverse-values.mjs';
+
+/**
+ * The offset a condition on this column evaluates in. settings.userLocalTimeZone (a function of the UTC instant, set for
+ * portal queries by observed.portalQueryTimeZone, lib/portal-query-time-zone.mjs) applies to UserLocal date and time
+ * columns, including columns without date behaviour metadata (UserLocal is the Dataverse default); DateOnly and
+ * TimeZoneIndependent columns, and every column without that setting, keep settings.timeZoneOffsetMinutes.
+ */
+function conditionTimeZone(settings = {}, definition) {
+  const zone = settings.userLocalTimeZone;
+  if (
+    typeof zone === 'function' &&
+    !isDateOnlyField(definition) &&
+    dateTimeBehavior(definition) !== 'timezoneindependent'
+  )
+    return zone;
+  return Number(settings.timeZoneOffsetMinutes ?? 0);
+}
+const ZONELESS_DATETIME = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,7}))?)?$/;
+// A datetime literal without a zone names the wall-clock time in the condition's zone (hosted F1 DATA-03d: a portal
+// ge/lt pair of zone-less midnights selected the local day). Literals with a zone, and every literal under a fixed
+// offset, are read as before.
+const zonedLiteral = (value, zone) => {
+  if (typeof zone !== 'function' || typeof value !== 'string') return value;
+  const match = ZONELESS_DATETIME.exec(value.trim());
+  if (!match) return value;
+  const wall = Date.UTC(+match[1], +match[2] - 1, +match[3], +match[4], +match[5], +(match[6] ?? 0));
+  const fraction = match[7] ? Math.trunc(Number('0.' + match[7]) * 1000) : 0;
+  return Number.isFinite(wall) ? new Date(wallToUtc(wall, zone) + fraction).toISOString() : value;
+};
 
 const VALUE_OPERATORS = new Set([
   'eq',
@@ -104,6 +135,15 @@ const isNullValue = (value) => value == null || value === '' || (Array.isArray(v
 function compileSpecialOperator(op, operator, { attribute, values, table, identity }) {
   if (identity.dataverse && DATAVERSE_IDENTITY_OPERATORS.has(op))
     return compileIdentityOperator(op, { attribute, values, table, identity: identity.dataverse });
+  // observed portalFetchIdentityOperators "application-user": a portal query's business-unit operators compare with the
+  // site's application user (identity.portalApplicationUser, data.mjs portalApplicationUserContext).
+  if (identity.portalApplicationUser && (op === 'eq-businessid' || op === 'ne-businessid'))
+    return compileIdentityOperator(op, {
+      attribute,
+      values,
+      table,
+      identity: { businessUnitId: identity.portalApplicationUser.businessUnitId },
+    });
   const hierarchy = HIERARCHY_OPERATORS.has(op) ? queryScope.getStore()?.hierarchy : null;
   if (hierarchy) return compileIdentityOperator(op, { attribute, values, table, identity: { hierarchy } });
   if (op === 'eq-userauthcontext') {
@@ -224,7 +264,7 @@ function compileCalendarPredicate(op, first, attribute, timeZoneOffsetMinutes) {
 
 function compileUserPredicate(op, identity, settings, equal) {
   if (op === 'eq-userid' || op === 'ne-userid') {
-    const self = identity.systemUserId ?? identity.dataverse?.userId;
+    const self = identity.systemUserId ?? identity.dataverse?.userId ?? identity.portalApplicationUser?.userId;
     const user = guidKey(self) ?? self ?? null;
     return op === 'eq-userid'
       ? (x) => user != null && !isNullValue(x) && equal(x, user)
@@ -315,8 +355,10 @@ export function compileOperator(
     throw new DataError(`Unsupported FetchXML operator ${operator}`, 400, 'UnsupportedQuery');
   const kind = fieldKind(definition) ?? undefined;
   const collation = settings.collation ?? 'CI_AI';
-  const timeZoneOffsetMinutes = Number(settings.timeZoneOffsetMinutes ?? 0);
+  const timeZoneOffsetMinutes = conditionTimeZone(settings, definition);
   const options = { kind, collation, timeZoneOffsetMinutes };
+  if (typeof timeZoneOffsetMinutes === 'function' && kind === 'datetime')
+    values = values.map((value) => zonedLiteral(value, timeZoneOffsetMinutes));
   const first = values[0];
   validateOperatorOperands(op, operator, attribute, values, definition);
   const equal = (x, y) => valuesEqual(x, y, options);

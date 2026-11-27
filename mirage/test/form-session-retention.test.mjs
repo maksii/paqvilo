@@ -56,3 +56,85 @@ test('recently committed multistep progress survives retention and a state-file 
   assert.equal(resumed.revision, 2);
   assert.deepEqual(resumed.history, firstProgress.history);
 });
+
+const rowFacts = (contactId) => ({
+  identity: { id: contactId, contactId },
+  webform: { id: 'wizard', name: 'Wizard' },
+  enhanced: false,
+  userHostAddress: null,
+  stepEntity: () => null,
+  stepName: () => null,
+});
+
+// @test-kind observation+contract: hosted F2 runs e and f keep every adx_webformsession row (no cleanup, no bulk-delete job), so a contact session backed by its row is never evicted; anonymous sessions and sessions without a row have no evidence and keep Mirage's bound, oldest first
+test('the session bound evicts anonymous and row-less sessions only, oldest first', async () => {
+  const contacts = ['c1', 'c2', 'c3'].map((suffix) => `c0000000-0000-4000-8000-0000000000${suffix}`);
+  const store = await new DataStore({
+    state: {
+      mappings: { contact: { entitySet: 'contacts', idColumn: 'contactid', nameColumn: 'fullname' } },
+      tables: { contact: contacts.map((contactid) => ({ contactid, fullname: 'Invented contact' })) },
+      settings: { permissionMode: 'permissive' },
+    },
+  }).init();
+  const sessions = createWebFormSessions({ store, limit: 2 });
+  const stage = async (owner, row = null) => {
+    const session = sessions.create('wizard', owner, true);
+    await sessions.stage(
+      session,
+      { ...session, current: 'details', history: [{ stepId: 'start', recordId: null }] },
+      false,
+      row,
+    );
+    return session.id;
+  };
+  const backed = [];
+  for (const contact of contacts) backed.push(await stage(`contact:${contact}`, rowFacts(contact)));
+  const anonymous = [];
+  for (let index = 0; index < 4; index++) anonymous.push(await stage(`visitor:v${index}`));
+  // Three row-backed contact sessions survive a bound of two; of four anonymous sessions the newest two remain.
+  for (const id of backed) assert.ok(sessions.get(id), id);
+  assert.deepEqual(
+    anonymous.map((id) => Boolean(sessions.get(id))),
+    [false, false, true, true],
+  );
+  assert.equal(store.tableRows('adx_webformsession').length, 3);
+  assert.equal(store.state.portalFormSessions.length, 5);
+});
+
+// @test-kind security+observation: hosted session F4 (paqvilo-developer hosted-f4 multistep-private runs a and b) writes an anonymous visitor's adx_webformsession row with its anonymous identification; Mirage writes it only for a visitor the browser's own cookie named, and keeps anonymous sessions bounded even with a row, so cookieless or new-identification visitors cannot grow the session store or the table without bound.
+test('anonymous sessions with a row stay bounded and a cookieless visitor writes no row', async () => {
+  const store = await new DataStore({
+    state: {
+      mappings: { contact: { entitySet: 'contacts', idColumn: 'contactid', nameColumn: 'fullname' } },
+      tables: { contact: [] },
+      settings: { permissionMode: 'permissive' },
+    },
+  }).init();
+  const sessions = createWebFormSessions({ store, limit: 2 });
+  const anonymousFacts = (anonymousIdentified) => ({ ...rowFacts(null), identity: {}, anonymousIdentified });
+  const stage = async (owner, identified) => {
+    const session = sessions.create('wizard', owner, true);
+    await sessions.stage(
+      session,
+      { ...session, current: 'details', history: [{ stepId: 'start', recordId: null }] },
+      false,
+      anonymousFacts(identified),
+    );
+    return session.id;
+  };
+  const visitor = (index) => `visitor:a0000000-0000-4000-8000-00000000000${index}`;
+  const identified = [];
+  for (let index = 0; index < 3; index++) identified.push(await stage(visitor(index), true));
+  assert.equal(store.tableRows('adx_webformsession').length, 3, 'an identified visitor has a row');
+  assert.ok(store.tableRows('adx_webformsession').every((row) => row.adx_anonymousidentification && !row.adx_contact));
+  // A cookieless visitor (started by the request itself) gets a session but no row.
+  const cookieless = await stage(visitor(5), false);
+  assert.ok(sessions.get(cookieless));
+  assert.equal(store.tableRows('adx_webformsession').length, 3);
+  // Rows do not lift the bound for anonymous sessions: the two newest remain.
+  assert.deepEqual(
+    [...identified, cookieless].map((id) => Boolean(sessions.get(id))),
+    [false, false, true, true],
+  );
+  assert.equal(store.state.portalFormSessions.length, 2);
+});

@@ -99,6 +99,7 @@ export const LENSE_OPTIONS = {
   timeout: { type: 'string' },
   'full-page': { type: 'boolean' },
   'include-panel': { type: 'boolean' },
+  pierce: { type: 'boolean' },
   width: { type: 'string' },
   height: { type: 'string' },
   styles: { type: 'string' },
@@ -190,6 +191,7 @@ export const LENSE_COMMAND_OPTIONS = {
     'timeout',
     'full-page',
     'include-panel',
+    'pierce',
     'width',
     'height',
     'styles',
@@ -382,7 +384,7 @@ export function agentActionOptions(action) {
   if (AGENT_PAGE_ACTIONS.has(action)) allowed.add('page-id');
   for (const option of {
     events: ['after', 'limit'],
-    snapshot: ['selector', 'limit', 'styles'],
+    snapshot: ['selector', 'limit', 'styles', 'pierce'],
     screenshot: ['output', 'full-page', 'include-panel'],
     viewport: ['width', 'height'],
     coverage: ['limit', 'samples'],

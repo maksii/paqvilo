@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo local rich text runtime (compatibility editor and captured-editor adapter) bound to the native JSON hidden input of a form field
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { openPortalPage } from './shared-browser.mjs';
@@ -21,6 +22,9 @@ async function fixture(t, { compatibility = false, mode = 100000000, readOnly = 
     'web-templates/main/Main.webtemplate.yml': 'adx_webtemplateid: main\nadx_name: Main',
     'web-templates/main/Main.webtemplate.source.html': '{% entityform name: "Narrative" %}',
     'basic-forms/Narrative.basicform.yml': `adx_entityformid: narrative-form\nadx_name: Narrative\nadx_entityname: example\nadx_mode: ${mode}`,
+    // The editor renders with code component metadata only (formRichTextField).
+    'basic-forms/Narrative.narrative.basicformmetadata.yml':
+      'adx_entityformmetadataid: narrative-editor\nadx_entityform: narrative-form\nadx_type: 100000000\nadx_attributelogicalname: narrative\nadx_controlstyle: 756150001',
     // Native custom JavaScript precedes the form markup, so it observes after ready.
     'basic-forms/Narrative.basicform.custom_javascript.js':
       script ??
@@ -170,6 +174,7 @@ test('compatibility HTML survives repeated edit/postback/reopen cycles with auth
   assert.deepEqual(errors, []);
 });
 
+// @test-kind security: the compatibility editor never lets executable markup, handlers, javascript URLs or a page script reach or replace its private sanitizer
 test('compatibility markup retains formatting while excluding executable elements, handlers and URLs', async (t) => {
   const { app, page } = await fixture(t, { compatibility: true, mode: 100000001 });
   const unsafe =
@@ -366,6 +371,7 @@ test('class selection wrappers answer jQuery class names that are not CSS identi
   assert.deepEqual(errors, []);
 });
 
+// @test-kind security: the compatibility editor never lets executable markup, handlers, javascript URLs or a page script reach or replace its private sanitizer
 test('the compatibility sanitizer is private beside an AMD loader', async (t) => {
   const { app, page, errors } = await fixture(t, { compatibility: true, mode: 100000001 });
   // A RequireJS-style loader: anonymous modules are only recorded, as outside its own loading.
@@ -395,6 +401,7 @@ test('the compatibility sanitizer is private beside an AMD loader', async (t) =>
   assert.deepEqual(errors, []);
 });
 
+// @test-kind security: the compatibility editor never lets executable markup, handlers, javascript URLs or a page script reach or replace its private sanitizer
 test('the compatibility sanitizer leaves an authored DOMPurify untouched and ignores later DOMPurify reassignment', async (t) => {
   const { app, page, errors } = await fixture(t, { compatibility: true, mode: 100000001 });
   await page.addInitScript(() => {

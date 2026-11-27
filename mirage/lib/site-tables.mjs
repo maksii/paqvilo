@@ -68,6 +68,40 @@ const WEBROLE_FIELDS = {
   },
 };
 
+// Enhanced data model: mspp_webrole, the Power Pages Management virtual table of web roles, holds the site's web roles.
+// A hosted site's /_api/mspp_webroles returned these columns (session F1, summary-F1.md AUTH-03c) and, beyond them, the
+// web roles of every site in the environment with their audit columns; locally the table holds this export's roles only.
+const MSPP_WEBROLE_FIELDS = {
+  mspp_webroleid: { dataverseType: 'uniqueidentifier' },
+  mspp_name: { dataverseType: 'nvarchar', isPrimaryName: true },
+  statecode: WEBROLE_FIELDS.statecode,
+  statuscode: WEBROLE_FIELDS.statuscode,
+};
+
+/** The mspp_webrole site table of an enhanced data model export: { mapping, rows } or null. */
+function webRoleTable(records, declared) {
+  const rows = records
+    .filter((record) => record.kind === 'webrole')
+    .map((record) => ({
+      mspp_webroleid: normalizedId(record.id),
+      mspp_name: record.name ?? null,
+      statecode: Number(record.statecode ?? 0),
+      statuscode: Number(record.statecode ?? 0) === 1 ? 2 : 1,
+    }));
+  if (!rows.length) return null;
+  return {
+    mapping: {
+      logicalName: 'mspp_webrole',
+      entitySet: declared?.entitySet ?? 'mspp_webroles',
+      idColumn: declared?.idColumn ?? 'mspp_webroleid',
+      nameColumn: 'mspp_name',
+      fields: { ...MSPP_WEBROLE_FIELDS, ...declared?.fields },
+      relationships: {},
+    },
+    rows,
+  };
+}
+
 export function contactRoleIntersection(portal) {
   return portal.format === 'enhanced'
     ? { table: 'powerpagecomponent_mspp_webrole_contact', roleColumn: 'powerpagecomponentid' }
@@ -250,6 +284,8 @@ export function buildSiteTables(portal, state) {
       },
       rows,
     };
+  const webRoles = enhanced && !own('mspp_webrole') ? webRoleTable(records, declared('mspp_webrole')) : null;
+  if (webRoles) tables.mspp_webrole = webRoles;
   if (!Object.hasOwn(state.tables ?? {}, intersect))
     tables[intersect] = {
       mapping: {
@@ -258,6 +294,9 @@ export function buildSiteTables(portal, state) {
         idColumn: declared(intersect)?.idColumn ?? `${intersect}id`,
         fields: { contactid: { dataverseType: 'uniqueidentifier' }, [idColumn]: { dataverseType: 'uniqueidentifier' } },
         relationships: {},
+        // The web role memberships: a permitted portal association stores them as local data (data.mjs storeSiteMembership).
+        intersect: true,
+        siteMembership: true,
       },
       rows: memberships(portal, state)
         .filter((membership) => roleIds.has(membership.roleId))
@@ -267,12 +306,16 @@ export function buildSiteTables(portal, state) {
           [idColumn]: membership.roleId,
         })),
     };
+  // The platform's N:N (its schema name is the intersect's): a portal $ref needs the endpoint tables' Append and Append
+  // To, never a permission on the intersect itself.
   relationships.contact = {
     [intersect]: {
       entity: table,
       from: 'contactid',
       to: idColumn,
       many: true,
+      type: 'many-to-many',
+      schemaName: intersect,
       intersect: { entity: intersect, from: 'contactid', to: idColumn },
     },
   };
@@ -282,6 +325,8 @@ export function buildSiteTables(portal, state) {
       from: idColumn,
       to: 'contactid',
       many: true,
+      type: 'many-to-many',
+      schemaName: intersect,
       intersect: { entity: intersect, from: idColumn, to: 'contactid' },
     },
   };

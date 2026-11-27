@@ -1,7 +1,12 @@
 import { requiredArgument } from './required-argument.mjs';
-/** Bounded acceptance collector. Never treats a partial or repeated page as complete. */
+/**
+ * Bounded acceptance collector. Never treats a partial or repeated page as complete. `simplePaging`: a page that reports
+ * more records without a paging cookie continues with the next page number alone, as Dataverse falls back to simple
+ * paging for a query that does not support cookies (Learn fetchxml/page-results, "Queries that don't support paging
+ * cookies"); a repeated cookie or primary key still throws.
+ */
 export async function collectFetchXmlPages(
-  { readPage, idColumn, pageSize = 5000, maxPages = 100 } = requiredArgument(
+  { readPage, idColumn, pageSize = 5000, maxPages = 100, simplePaging = false } = requiredArgument(
     'collectFetchXmlPages(options)',
     'an options object with readPage and idColumn',
   ),
@@ -25,7 +30,7 @@ export async function collectFetchXmlPages(
       moreRecords: result.more_records,
     });
     if (!result.more_records) return { records, pages, complete: true };
-    cookie = continuationCookie(result, cookies);
+    cookie = simplePaging && !result.paging_cookie ? nextSimplePage(result) : continuationCookie(result, cookies);
   }
   throw new Error('FetchXML continuation exceeded the bounded page limit.');
 }
@@ -41,6 +46,11 @@ function appendPageRecords(result, pageSize, idColumn, ids, records) {
     ids.add(id.toLowerCase());
     records.push(record);
   }
+}
+
+function nextSimplePage(result) {
+  if (!result.entities.length) throw new Error('FetchXML continuation returned an empty page.');
+  return null;
 }
 
 function continuationCookie(result, cookies) {

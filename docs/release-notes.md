@@ -23,7 +23,6 @@ Each version lists what changed for users of the package and what to do when upg
   as PNG already did, and a JPEG uploaded with a rotation in its Exif data is stored upright.
 - **Publishing preview switch.** A contact allowed to preview unpublished content turns preview on or off in
   `/_sim/` and in Lense **Tweaks**.
-
 - **Every element of a live page is identified.** Lense aligns the page the portal sent with your export: X-ray names
   an element's own tag in the template, snippet or page copy that wrote it, the Liquid code that generated it, the
   form, list, column or code component it belongs to, the web file or portal file it loads, the portal's page shell,
@@ -47,8 +46,9 @@ Each version lists what changed for users of the package and what to do when upg
   calls `/_api/<table logical name>` with the `pcf-entity-logical-name` header, and `retrieveMultipleRecords` ignores
   `maxPageSize` and resolves `{ entities, nextLink: undefined }`. See
   [code components](../mirage/docs/code-components.md).
-- **Subgrid view picker.** A form subgrid that hosts a dataset code component, with `EnableViewPicker` on, offers
-  its `ViewIds` views in its toolbar, the default view first. An ordinary subgrid keeps its default view.
+- **Subgrid view picker.** A form subgrid with `EnableViewPicker` on, ordinary or hosting a dataset code component,
+  offers its `ViewIds` views in its toolbar, the default view first; choosing one loads that view's rows, sorted as
+  the view sorts them.
 - **The `pcf` setting.** `pcf.sources` serves pcf-scripts build outputs (an `out/controls` folder or a `.pcfproj`)
   under the name `pac pcf push` gives them, ahead of the exported controls, and a rebuild reloads only the code
   components. `pcf.platformLibraries` supplies React 16.14.0, ReactDOM 16.14.0 and Fluent UI 8.122.8 from project
@@ -66,8 +66,9 @@ Each version lists what changed for users of the package and what to do when upg
   main operations of an assembly with uploaded content run it (`clr`, the default) or start as placeholders; a choice
   in `/_sim/` still overrides it, and preflight says where a step's mode came from. See
   [configuration](configuration.md).
-- **Sessions that follow the site's sign-in settings.** With `Authentication/ApplicationCookie/SlidingExpiration`
-  explicitly `true` and an `ExpireTimeSpan`, a local browser session renews after more than half its window.
+- **Sessions that follow the site's sign-in settings.** A local browser session follows
+  `Authentication/ApplicationCookie/ExpireTimeSpan` and `SlidingExpiration` (24 hours, sliding, by default) and
+  renews after more than half its window.
   `Authentication/Registration/RememberMeEnabled` adds **Remember me?** to the local password form, and
   `RememberBrowserEnabled` adds **Remember browser?** to the email code form (a later sign-in still needs the
   password). An OpenID Connect provider with `UseTokenLifetime` ends the local session at the ID token's deadline. See
@@ -83,7 +84,7 @@ Each version lists what changed for users of the package and what to do when upg
   [OAuth 2.0, SAML 2.0 and WS-Federation providers](../mirage/docs/sim-administration.md#oauth-20-saml-20-and-ws-federation-providers).
 - **Security stamp validation.** After `Authentication/ApplicationCookie/SecurityStampValidator/ValidateInterval`
   (30 minutes by default), a persona or external sign-in session ends when its contact's `adx_identity_securitystamp`
-  changed. A private-site admission session ends after `ExpireTimeSpan` (24 hours by default). See
+  changed. See
   [sign-in and sessions](../mirage/docs/sim-administration.md#sign-in-and-sessions).
 - **Stable implicit grant tokens.** The project setting `implicitGrant.signingKeys` lists PEM RSA key files that sign
   `/_services/auth/token`; a key with a `thumbprint` signs when `CustomCertificates/ImplicitGrantflow` names it, and
@@ -108,6 +109,11 @@ Each version lists what changed for users of the package and what to do when upg
   `Search/Query` template on the default search page, the `Search/Filters` drop-down and, with
   `Search/IndexNotesAttachments` and `KnowledgeManagement/DisplayNotes`, the notes of knowledge articles. See
   [search](../mirage/docs/liquid-parity.md#search).
+- **Content access levels on the enhanced data model.** With `KnowledgeManagement/ContentAccessLevel/Enabled` on an
+  enhanced site, `knowledge.articles`, the `fetchxml` tag and search show no knowledge article, `entities` still
+  returns them only with `observed.knowledgeEntitiesContentAccess: unfiltered` (by default it keeps the filter and
+  warns `KNOWLEDGE_CONTENT_ACCESS_ENTITIES_UNFILTERED`), and the Knowledge Article page answers 500, as a hosted
+  site does. See [search](../mirage/docs/liquid-parity.md#search).
 - **Knowledge content access levels.** With `KnowledgeManagement/ContentAccessLevel/Enabled`, search, its totals and
   facets, search summary sources and `knowledge.articles` keep only the articles that share a content access level
   with the visitor's web roles, contact or account. See [search](../mirage/docs/liquid-parity.md#search).
@@ -157,13 +163,32 @@ Each version lists what changed for users of the package and what to do when upg
   Publish to web URL (`https://app.powerbi.com/view?r=…`) renders the report's iframe, and the browser loads the
   public report. `AAD` and `powerbiembedded` reports keep the placeholder, whose diagnostic now says they need the
   platform's embed token and points to Lense. See [service fixtures](../mirage/docs/service-fixtures.md#power-bi-in-liquid).
-- **HSTS, the default CSP and CORS for authored pages.** Observations a site records with evidence:
-  `strictTransportSecurity` sends the site's HSTS header on the http loopback listener, where browsers ignore it, so
-  `localhost` is never pinned to HTTPS. `defaultContentSecurityPolicy: platform` sends the default policy that Learn
-  documents for sites created after November 10, 2025, while the site has no CSP setting. `corsPages` answers
-  cross-origin GET, HEAD and preflight requests of authored pages from an exact allowed origin, with the literal page
-  source and no credentials; other cross-origin requests are still refused. See
-  [HTTP transport and CORS](../mirage/docs/http-headers.md).
+- **HSTS, the default CSP and the CORS settings as hosted sites send them.** `strictTransportSecurity`, an
+  observation a site records with evidence, sends the site's HSTS header on every response of the http loopback
+  listener, where browsers ignore it, so `localhost` is never pinned to HTTPS.
+  `defaultContentSecurityPolicy: platform` sends the default policy of sites created after November 10, 2025 with the
+  exact text hosted sites send while they have no CSP setting: a 256-bit nonce for each response on every response
+  kind, and `'inject-hashes'` replaced by the page's inline-handler hashes on rendered pages and kept on files,
+  redirects and error pages. A site's own `'nonce'` setting expands the same way and reaches every response.
+  Scripts and handlers that data writes still get no nonce or hash by default (`PORTAL_CSP_NONCE_WITHHELD` now says
+  hosted sites nonce them); `scriptNonceScope: every-script` gives every script the nonce and every handler its hash,
+  as hosted sites do. Handler hashes are listed in the hosted groups (the platform's, then the page's). The
+  `HTTP/Access-Control-*` settings are sent as written as fixed headers on every
+  response, without origin logic or `Vary: Origin`; a wildcard origin is never sent with the credentials header (`PORTAL_HTTP_CORS_WILDCARD_CREDENTIALS`).
+  Cross-origin requests to the loopback runtime are still refused (the warning `PORTAL_HTTP_CORS_LOOPBACK_BOUNDARY`)
+  unless `corsPages` admits an authored page a public site was observed sharing, and a setting value a header cannot carry is
+  dropped and reported (`PORTAL_HTTP_HEADER_INVALID`). An application route of a code site whose Home page the visitor
+  may not read answers as the root does.
+  See [HTTP transport and CORS](../mirage/docs/http-headers.md) and
+  [Content Security Policy](../mirage/docs/content-security-policy.md).
+- **Code sites served as the hosted platform serves the uploaded build.** The root renders the Home page with the
+  landing page as its copy, and an application route renders the Page Not Found page with HTTP 200 and the landing
+  page in place of its content. Each build folder is a page (`/assets` redirects to `/assets/`), build files and the
+  landing page's own address are raw web files with case-insensitive paths, the captured types (WebAssembly and web
+  app manifests as `application/octet-stream`), public or private caching, ETags and gzip. A missing file of a static
+  type answers the platform's plain 404 document, and a path with any other extension is an application route.
+  Mirage no longer adds `<base href="/">` to the landing page, so a build's relative asset URLs resolve as they do
+  online. See [Liquid parity](../mirage/docs/liquid-parity.md).
 - **Edge controls of the live site.** `readPowerPagesEdge` from `paqvilo/dataverse` reads a site's visibility, WAF
   status, custom and managed rules and IP restrictions with read-only PAC commands, and says what Mirage does not
   emulate. See [Lense](lense.md#edge-controls-of-the-live-site).
@@ -173,9 +198,82 @@ Each version lists what changed for users of the package and what to do when upg
   `$orderby`, FetchXML and the portal see the computed value, and writing the column is ignored with 204. Before, every
   designer column read null with `CALCULATED_UNSUPPORTED`. See
   [calculated columns](../mirage/docs/dataverse-contract-modules.md#calculated-columns).
+- **The SharePoint document control as Power Pages renders it.** A Document Locations subgrid on a basic or multistep
+  form renders the platform's grid, list template, toolbar, panels and dialogs, with add and delete following the
+  visitor's document permissions, and talks to `/_services/sharepoint-data.json`, `sharepoint-addfiles`,
+  `sharepoint-addfolder` and `sharepoint-deleteitem` with the platform's request bodies, answers and check order,
+  as a hosted site recorded them with the SharePoint integration off. With SharePoint storage configured the same
+  services list, upload, create folders and delete in the record's folders. A create-mode form shows the platform's
+  file input and its unknown-failure alert. The new observed choice `sharePointIntegration: off` gives the hosted
+  answers of an environment whose integration is off. See
+  [SharePoint documents](../mirage/docs/sharepoint.md#power-pages-document-control).
+- **The `sharepointdocument` table.** Reads answer as a hosted environment does: no rows without a regarding
+  condition, `/$count` -1, 400 `0x80071017` for a regarding read while the integration is off (portal Web API
+  `9004010D`, Liquid's target-invocation error), and 404 `0x80040217` for a keyed read. With SharePoint storage
+  configured, a regarding read lists the record's folder. Document management now infers
+  `<table>_SharePointDocuments` next to `<table>_SharePointDocumentLocations`, both with the recorded cascade.
+  See [SharePoint documents](../mirage/docs/sharepoint.md#the-sharepointdocument-table).
+
+- **Chart data.** `/_services/visualizations/get-chart-builder` answers the chart tag's data from the exported
+  system chart and view: the chart's aggregate FetchXML with the view's filters, the rows the visitor may read in
+  `DataJson` with the platform's `for(;;);` prefix, and the chart, view and table metadata. Without a table
+  permission that grants read it answers `{"ChartDefinition":"","EntityPermissionDenied":true}`, and the platform's
+  chart script shows its permission message. See [charts](../mirage/docs/liquid-parity.md#charts).
+- **Snapshots inside closed shadow roots and cross-origin frames.** `paqvilo lense agent snapshot --pierce` reads the
+  page through the browser's DevTools protocol, read-only, so it also reports elements in closed shadow roots and in
+  cross-origin frames, out-of-process ones included, with the shadow root and frame each one stands in. Field values
+  stay out. See [agent snapshot](lense.md#agent-snapshot).
+- **Inspect inside closed shadow roots and cross-origin frames.** Picking a closed shadow root's host or a cross-origin
+  frame now also shows the element under the pointer inside it, read the same way: its tag, text, attributes, the path
+  from the selection and where it stands. A closed declarative shadow root your template, page copy or snippet writes
+  maps to its file and line like other markup, also inside a same-origin portal frame; content a script creates in a
+  closed root takes its host's source; a cross-origin frame's content is shown as not portal source. See
+  [selection evidence](lense.md#selection-evidence).
+- **Portal pages in out-of-process frames.** With site isolation, a portal page nested in a cross-site frame runs in a
+  frame target of its own. Lense now holds each such target until it is set up, so that page is served with your local
+  changes and identified like the tab, closed declarative shadow roots included. See
+  [selection evidence](lense.md#selection-evidence).
+- **IP restrictions and WAF custom rules in Mirage.** `observed.ipRestrictions` answers a visitor address outside the
+  site's allow list with the hosted 403 page, and `observed.firewall` evaluates the site's WAF custom rules and rate
+  limits before the site, as `readPowerPagesEdge` reads them; a rule Mirage cannot decide locally fails closed and is
+  logged. The managed rule set is not emulated. See [edge controls](../mirage/docs/http-headers.md#edge-controls).
 
 ### Improved
 
+- Lense previews a local page title change (`adx_title`) in the page's `<title>`, HTML-encoded as the document
+  shell writes it; a title that holds markup is no longer reported as deployment-only.
+- With `observed.nativeNumberCultures: locale-data`, Basic Form and multistep form number boxes in a page language
+  other than en-US and de-DE show and parse that language's decimal and group marks from the locale data (fr-FR
+  `12 345,00`, ja-JP `12,345.00`); a space group mark accepts a typed space, U+00A0 and U+202F. Without it such
+  boxes keep invariant numbers, as before, and the form reports `FORM_NUMBER_CULTURE_UNCAPTURED`. Validator messages
+  stay English outside de-DE.
+- In a portal Web API FetchXML read, a primary key the query did not list now follows the authored columns in the
+  `@odata.context` column list, as a hosted site answers.
+- **Search finds word forms.** With Dataverse search, a plain word or phrase also finds its other forms: `lantern`
+  finds `lanterns`, `run` finds `running` and `catalog` finds `catalogue`, as hosted search does. See
+  [search](../mirage/docs/liquid-parity.md#search).
+- **Search summary as the hosted API answers it.** The summary cites the web pages and the readable knowledge
+  articles the visitor's search finds, with
+  the keys, titles, miss and error answers of the hosted API, accepts a JSON `userQuery` and serves
+  `/_api/search/v1.0/summarystream` as an event stream. See
+  [portal search summary](../mirage/docs/data-packs.md#portal-search-summary-fixture).
+- **Data summarization as the hosted API answers it.** `InstructionIdentifier` is optional and a prompt setting the
+  site does not have is accepted; a missing record answers 404 `9004010D`, and a disabled site the hosted text. See
+  [data summarization](../mirage/docs/data-packs.md#portal-data-summarization-fixture).
+- **Site agent requests.** `$pages.agent.SendActivity` reads `/_services/agent/BotConfiguration`, then requests
+  `/_services/auth/portalusertoken` and a Direct Line token, and fails with the hosted texts. Mirage answers the
+  configuration with `[]`; an endpoint mock supplies an agent. See
+  [forms and lists](../mirage/docs/forms-lists-parity.md#modern-lists-and-the-client-api).
+- PAC 2.13.1 downloads enhanced data model sites with `adx_` keys (`--modelVersion 2` and `Enhanced`), so the
+  `mspp_`-key YAML layout is labelled as one PAC 2.13.1 does not write; it is still read as before. Set
+  `dataModel: enhanced` for an `adx_` export of an enhanced site.
+- `readPowerPagesEdge` reads PAC 2.13.1 WAF output (bare rule arrays, dotted managed rule-set keys with
+  `ruleGroups` and `rules` counts) and classifies refusals as `firewall-not-created` (HTTP 500 before the WAF is
+  Created) and `operation-in-progress` (HTTP 409). `readPowerPagesSites` keeps a site that is still provisioning,
+  with `websiteRecordId: null`, and a visibility change to public refused with HTTP 400 names the tenant control
+  "Set site visibility to public access for non-production sites" as the cause to check.
+- `PERSONA_ACCOUNT_ROLES_NOT_APPLIED` now states the hosted evidence: a web role associated only with a contact's
+  parent account was not applied on a hosted site, so Mirage does not apply it either.
 - Inspect names its frame boundary: selecting a cross-origin or sandboxed frame says the browser keeps it closed to the
   page, and **Not everything was read** counts the frames the page read could not enter.
 - A Power Pages cloud flow request whose run waits before its Response now waits for that Response, up to the
@@ -244,18 +342,205 @@ Each version lists what changed for users of the package and what to do when upg
   `CalculateActualValueOpportunity`, `WinQuote`, `ConvertQuoteToSalesOrder`, `ConvertSalesOrderToInvoice` and
   `GenerateQuoteFromOpportunity` messages, which the Dataverse API also answers.
 - Lists and subgrids offer the same actions as row actions, shown by the record's state and posted to the legacy
-  `/_services/action-*` routes.
-- Lists and subgrids include `ExtendedItemActions` after `ItemActions`, ordered by `ActionIndex`. The grid's workflow
-  dialog shows the first workflow action's dialog (title, title class, confirmation, buttons, size) on Bootstrap 3 and
-  5, and an action with its own dialog texts writes them into it; action labels and dialog texts follow the request
-  language.
+  `/_services/action-*` routes, Qualify, Activate Quote and Reopen included. A Qualify action with `ShowModal` 1
+  confirms in the legacy qualify dialog first, on a form and in a grid.
+- A list or subgrid `SearchAction` view action sets the search box placeholder, tooltip and button label, and a
+  `NextAction` or `PreviousAction` sets the label and class of a basic form's auto-generated step buttons, as the legacy
+  portal applies them.
+- Lists and subgrids include `ExtendedItemActions` after `ItemActions`, ordered by `ActionIndex`, with labels in the
+  request language. A workflow action draws no row link and a list always draws the default **Run workflow** dialog
+  with its body HTML-escaped, ignoring `WorkflowDialog` and the actions' dialog texts, as a hosted site does.
+- **Modern lists as hosted.** A list included with `isModern: 'true'` is a `pages-native-container` holding a
+  `pages-grid`, and its grid reads `GET /_services/portal/GetListViewConfiguration/<list>` and the `entity-grid-data`
+  pages with `odataFilterQuery` and `nlSearchFilter`. The hosted page draws it with Microsoft's data_grid control
+  from content.powerapps.com, which is not served locally: Mirage draws its own grid in the container. A map list
+  included as modern renders the modern grid of its view. The configuration route answers only for a list included
+  as modern and a visitor who may read its table (otherwise 404 or 403, inferred), and the grid uses only portal routes from
+  it. See
+  [forms and lists](../mirage/docs/forms-lists-parity.md#modern-lists-and-the-client-api).
+- A Bootstrap 3 list renders the hosted list template with Bootstrap 3 tokens (div dialogs with the close button before
+  the title, its create and delete icons and resolve form); a page control keeps the legacy grid.
+- **Basic form geolocation.** A basic form with geolocation draws its hidden mapping fields in its map section
+  (named `section_map` or ending with it), with `Bingmaps/restURL` and `Bingmaps/credentials`, and loads the Bing Maps control and `/xrm-adx/js/bingmap.js`; the platform's Content Security Policy blocks
+  the control, so a post saves the address without latitude and longitude, as hosted.
+- **`observed.executeWorkflowAccess`.** `/_services/execute-workflow` runs only a list's own workflow action on a
+  record the visitor can read and write, and reports `EXECUTE_WORKFLOW_HOSTED_ACCESS`: a hosted site runs any
+  on-demand workflow posted with an anti-forgery token, as its application user. `any-on-demand` reproduces that.
+  Without a token the service runs nothing and answers 200 with an empty body; a workflow of another table answers 500
+  with the Dataverse message. See [configuration](configuration.md).
 - A form's choices (multi-select) field bound to a global choice lists the published options in the page language and
   refuses a value outside them; a list's dynamic choice filter on a choices column finds the rows holding the option.
 - With live data and `KnowledgeManagement/ContentAccessLevel/Enabled` true, search and `knowledge.articles` apply the
   content access levels over rows read through the live data path.
+- **Virtual tables answer portal reads as their provider does.** A Liquid `{% fetchxml %}`, Web API `fetchXml` or
+  OData collection read of a virtual table hands its provider the portal's translated query as well as the OData
+  text: `retrieveMultiple` receives `query`, the QueryExpression a hosted site gives a data provider plug-in, and
+  `ctx.userId` is the site's application user. The rows come back as the provider returned them, with no local
+  filter, order, `top`, paging or `$select` projection and a total record count of 0. Table permissions and the
+  Web API column settings still apply to them. See
+  [contract modules](../mirage/docs/dataverse-contract-modules.md).
+- **Portal FetchXML as the portal sends it.** With `observed.portalFetchXmlAuthoring: portal-classic`, Liquid and
+  Web API FetchXML lose `rowaggregate`, `datasource` and a valid `top` before Dataverse runs them, as on Power Pages.
+  With `observed.portalFetchIdentityOperators: application-user`, `eq-userid` and `eq-businessid` compare with the
+  site's application user. A paging cookie of a distinct query that selects the primary key ends with that key. See
+  [Dataverse parity](../mirage/docs/dataverse-parity.md).
+- **Portal date conditions in the visitor's zone.** `observed.portalQueryTimeZone` names the zone (an IANA name, or
+  `runtime` for the local one) in which portal queries evaluate `on`, `today` and the other calendar conditions on
+  UserLocal columns, daylight saving time included; DateOnly and TimeZoneIndependent columns and direct Dataverse
+  queries keep the fixed offset. Where Power Pages takes the zone from is not known, so name the zone the site was
+  observed in.
+- **Local accounts as Power Pages serves them.** With `identityProvider.localAccounts`, the local sign-in posts
+  `Username`, `PasswordValue` and `RememberMe` to `/SignIn`, registration takes the platform's WebForms controls and
+  signs in at once without an email, and the account pages answer the platform's messages on the page ("Invalid sign-in
+  attempt.", the lockout and password policy messages, "Invalid token.", "Invalid code."). The credentials are the
+  contact's `adx_identity_*` columns, the password as an ASP.NET Identity version 3 hash, so an account lasts as long as the data. A hosted site writes
+  version 2; Mirage verifies it and replaces it with version 3 at the next successful sign-in. A hosted site (ASP.NET
+  Identity 2) may not read the version 3 hashes Mirage writes, so exported local-account hashes are for Mirage only.
+  The local account pages send `Referrer-Policy: strict-origin` instead of `no-referrer`: with `no-referrer` a browser
+  posts their forms with `Origin: null`, which the portal's origin check refuses; only the origin, never the reset or
+  confirmation code in the address, leaves as a referrer. Confirmation is sent only when the profile asks for it (`PostConfirmEmailRequest`), and the mailbox items
+  carry the platform's subjects, bodies and `userId`/`code` links. Two-factor sign-in goes through `SendCode` and
+  `VerifyCode`, and `Authentication/LoginThrottling/*` throttles sign-in by address. See
+  [sign-in and sessions](../mirage/docs/sim-administration.md#sign-in-and-sessions).
+- **Invitation codes for local accounts.** The `/register/?invitation=` link of an invitation email opens the
+  redemption form with its code; a valid code opens the local registration page, which makes the invited contact the
+  account, and **I have an existing account** redeems the code for the contact who signs in. A redemption records an
+  `adx_inviteredemption` activity, and its redemption workflow, real-time or background, runs after the redemption.
+- **Send Invitation and UpdateInvitationCode.** With the Dataverse API on, Mirage provides the Power Pages invitation
+  processes: a new invitation gets its 172-character code, and `ExecuteWorkflow` on **Send Invitation** starts a
+  background job that emails the invited contact the redemption link (to Mirage's own origin, where the hosted email
+  links to `http://localhost:7500`) and sets the invitation Sent. See
+  [sign-in and sessions](../mirage/docs/sim-administration.md#sign-in-and-sessions).
 
 ### Fixed
 
+- With source maps on (the default), an authored inline script in a page copy rendered by `{% editable page 'adx_copy' %}`
+  now keeps the nonce of a nonce policy; the editable tag read the copy without its source-debugging offsets and
+  withheld the nonce. Decisions for data-written scripts are unchanged.
+- **Pages follow hosted session F3.** On the enhanced data model `Page.aspx` and `Listing.aspx` rewrite layouts
+  answer 500, an `.aspx` page the runtime does not ship answers the route-handler 500 and `Search.aspx` renders the
+  header and footer around its captured content region (the native search summary control, no page copy); the
+  standard model keeps its layouts. With `pageErrorPresentation: generic-error` every 500
+  server exception of a GET page request answers the generic error page with `Error ID # [<id>]`, the UTC time and
+  the DevTools server log (`RTSS09`, `RTDV01`, `RTGE01`); `customErrors: disabled` names the exception in the log.
+  A private site without an exported `robots.txt` answers the platform's 26-byte `Disallow: /` file; `sitemap.xml`
+  stays 404. `page.parent` is empty when the visitor may not read the parent. See
+  [liquid parity](../mirage/docs/liquid-parity.md#pages-and-web-links) and
+  [error pages](../mirage/docs/liquid-parity.md#error-pages).
+- **Header and footer output caching.** With `Header/OutputCache/Enabled` or `Footer/OutputCache/Enabled` true, the
+  header or footer is cached for 5 minutes from its render: one copy for all anonymous visitors per website and
+  language, one per signed-in contact, `{% substitution %}` rendered on every request, a Liquid error kept in the
+  copy. A template change or a change of the contact's web roles renders it afresh.
+- **Editable wrappers and the PWA as hosted.** `{% editable %}` writes the lowercase `data-languagecontext`; with the
+  editing right (Manage Content Snippets for a snippet, a Grant Change rule for a page) the wrapper adds only
+  `data-encoded`, `data-liquid` and, on a missing snippet with a default, `data-default`; `page.editable` and
+  `snippets.editable` follow the same rights, and `{% editable <web link set> %}` writes nothing. The legacy CMS
+  file browser answers 500 and the other legacy CMS services 404. `PWAFeature` enabled adds the manifest link, the
+  service worker registration and `/js/sw.js` with `Service-Worker-Allowed: /` (a local worker that handles no
+  request in place of Microsoft's Workbox build); disabled adds the script that unregisters service workers.
+- **Request tokens belong to one browser.** As hosted session F4 showed, a portal request token is now tied to the
+  browser and its current sign-in by default. A token from another browser, or from before sign-in or LogOff, is
+  refused. A portal Web API or file API write answers every refusal with 401 `90040107` and the hosted text after
+  `Request validation failed : `: the form field is not present, the token could not be decrypted, the cookie and
+  form field tokens do not match, or the token was meant for a different claims-based user. The token fragment's
+  `__RequestVerificationToken` cookie is `SameSite=Lax`, and the browser binding cookie is a browser-session cookie.
+- **Application cookies follow hosted session F4.** Without `Authentication/ApplicationCookie/ExpireTimeSpan` or
+  `SlidingExpiration`, a session has a 24-hour sliding lifetime, and the cookie persists only for a remembered local
+  sign-in. A portal Web API response renews a sliding session, as a page load does. A cookie longer than 4,050
+  characters is sent in `chunks:<n>` and `C1`…`C<n>` parts. An anonymous LogOff redirects to
+  `/SignIn?ReturnUrl=/Account/Login/LogOff`.
+- **Private-site admission is separate from portal sign-in.** Admission does not sign the browser in and survives
+  LogOff. It still ends at the application cookie's `ExpireTimeSpan` (24 hours without it); a shorter deadline reports
+  `PRIVATE_SITE_ADMISSION_HOSTED_LIFETIME`, because hosted session F4 kept an admission at least 59 minutes with a
+  6-minute cookie. Set `observed.privateSiteAdmissionLifetime: fixed-day`, with evidence, for 24 hours whatever the
+  cookie lifetime.
+- **Local account defaults that stay stricter than hosted sites.** A registration with a taken user name or address
+  answers 409 "These details cannot be used for local registration." naming neither, and a confirmation link is used
+  once, each with a warning (`LOCAL_ACCOUNT_DUPLICATE_HOSTED_MESSAGES`, `LOCAL_ACCOUNT_CONFIRMATION_HOSTED_REUSE`).
+  `observed.registrationDuplicateMessages: named` and `observed.confirmationLinkReuse: reusable`, with evidence,
+  reproduce the hosted `The username "<name>" is already taken.` messages and the reusable link.
+- **Implicit grant errors use the hosted IDs.** `/_services/auth/token` refuses a long `state` with `PortalSTS0005`, a
+  long `nonce` with `PortalSTS0006`, a `client_id` over 36 characters with `PortalSTS0010`, an unregistered one with
+  `PortalSTS0001` and another `response_type` with `PortalSTS0007`, in that order and with the hosted texts. A `state`
+  with a control character, or a signing key that became unusable, answers 400 `PortalSTS0018`. Every answer is
+  `no-cache, no-store, must-revalidate`, `GET` answers 404 without a body, and an anonymous AJAX call's
+  `X-Responded-JSON` is written as .NET writes it.
+- **Anonymous multistep sessions are `adx_webformsession` rows.** From its first saved step, an anonymous visitor's
+  session row carries a GUID in `adx_anonymousidentification`, the visitor's address, the step index, the step history
+  and the record, without a contact, as hosted session F4 recorded. The same browser resumes, another browser starts
+  fresh, completion sets `statecode` 1 and no cookie is set when the session starts. Only a browser that already holds
+  its visitor cookie gets a row, and anonymous sessions stay within the 1,000-session bound.
+- The attach-file control follows hosted session F2. Every note of the record takes a slot, including notes the
+  visitor cannot read, text-only notes and orphan staged notes. Existing notes no longer satisfy **Attach File
+  Required**. The hint reads "a maximum of N files, each up to" when several files are allowed, and "1 file, up to"
+  with one file. `InitializeFileUpload` creates the staged note on the record and refuses a file beyond the count with
+  400 `AU00039`. `UploadFileBlock` needs annotation Write, otherwise it answers 403 `AU0005` with the literal `{0}`.
+  The new `DELETE /_api/file/delete/note` route needs annotation Delete (403 `AU0005` "…to DELETE attachments.") and
+  deletes the staged note. The last upload block writes the file into the staged note, so an upload that is never
+  submitted keeps its file; a postback re-render keeps the posted MaxFile. Without annotation Create on the
+  record the edit form renders no attach-file control and Required does not apply (state-0 re-run s0g/s0h; every other
+  attachment and notes behaviour is the same in state 0 and state 3).
+  `InitializeFileUpload` refuses a file over the form's maximum size or outside its restricted types with 400 before
+  anything is stored (the hosted server answer is not captured; the code and message are the form service's). See
+  [attachments](../mirage/docs/forms-lists-parity.md#submission).
+- The notes service no longer lists an author's own note that lacks the `*WEB*` prefix. Note downloads answer
+  `attachment;filename*=UTF-8''<name>`, and a signed-in download answers `private, max-age=3600` with
+  `Last-Modified`.
+- Portal files follow hosted sessions F1 and F2. Image thumbnails are a centred square of the shorter side, at most
+  144 px, in the source format: JPEG at quality 75 and 96 dpi (progressive sources included), RGBA PNG, GIF89a on the
+  halftone colour table, and 32-bit BMP. The organization `$value` read serves the same thumbnail, and a portal
+  thumbnail read ignores `Range`. `size=full` returns the upload byte for byte, Exif included, and a nameless image
+  upload is stored as `Untitled.txt`. The file control's `/File/download.aspx` link downloads the file as an attachment
+  for visitors who can read the record and its column (column security applies, as on `/_api`), with `nosniff`, and every
+  refusal answers the same 404. A thumbnail of an image that already is that square is re-encoded too, so it carries no
+  Exif. With `Site/FileManagement/EnableWebAPI` off, the Azure file Web API answers
+  501 `{"ErrorCode":"FU0009","Message":"Azure webapi is not enabled for use"}` (captured on the download route; the
+  other routes are assumed to answer the same). A portal `/_api` file or `size=full`
+  read answers `inline; filename=<name>` with `x-ms-file-name`, a thumbnail neither, and no `mimetype` or
+  `x-ms-file-size` header; `size=thumbnail` answers 400 `9004010D` (cdscode `0x80060888`). Mirage keeps sending
+  `X-Content-Type-Options: nosniff`, which hosted does not.
+- Power Pages cloud flow requests answer as on a hosted site. The flow receives `siteId`, `siteUrl` (the site origin
+  without a trailing slash) and `userId` before the `eventData` values, also through
+  `Server.Connector.CloudFlow.TriggerAsync`. Its declared trigger schema is still enforced (400 `IncorrectPayload`) and
+  each refusal reports `FLOW_TRIGGER_SCHEMA_ENFORCED`, since a hosted site does not enforce it; the new
+  `observed.powerPagesFlowTriggerSchema: not-enforced` runs the flow with what was sent. `siteId` is the site's hosted portal
+  id when the new `observed.portalId` records it (then also the page's `Portal.id`), else the website id. A 200
+  Response comes back as `text/html` without its custom headers; other answers are `{ ErrorCode, Message }`: 202
+  `Default` for a flow without a Response, 201 and 202 `Default`, 404 `FlowNotFound`, 400 and 409 `IncorrectPayload`,
+  500 and 503 400 `BadGateway` (other statuses follow their class; that is inferred, not captured). A run that ends
+  without answering its Response answers 400 with its run id; one still waiting 120 seconds after the request arrived
+  answers 400 `BadGateway`, and its later Response fails the run with `ActionFailed`, also after a restart.
+  `CloudFlow.TriggerAsync` answers the same statuses and bodies in its envelope. A request without the session's token
+  or `X-Requested-With`, or with a body that does not parse, gets the 500 error page and runs nothing; an id that is not
+  a consumer's process id answers 404 `IncorrectFlowId`, a role not held 403 `MissingPermissions`, an exported flow
+  whose workflow is not activated 400 `FlowDisabled` and a consumer without its workflow 404 `FlowNotFound`; a local
+  mock or pack handler still answers. Any version segment is routed. See
+  [the flow API](../mirage/docs/operations.md#power-pages-flow-api).
+- A PAC export's list workflow action (`WorkflowAction`, with `WorkflowModal` and `LanguageResources`) is the list's
+  own action; before, only `CrmEntityFormView-WorkflowAction` was read and the action was lost.
+- An authored `{% entitylist id: ..., pp_page_control: true %}{% endentitylist %}` renders nothing, as hosted; before,
+  it rendered the list.
+- A dataset code component subgrid mounts on an insert-mode form, as hosted: its requests send an empty `entityId`, a
+  related subgrid lists no rows and an unrelated one its view. A subgrid over a self-referential relationship lists the
+  related rows; before, the page answered 501. The control is hosted in the subgrid's grid element with its parent reference (`data-ref-*`), as hosted.
+- A site whose `enhancedauthorization` is 1 (Migration in progress) or 2 (Migration Failed) runs the standard
+  authorization model, as a hosted site does until the migration sets 3; before, Mirage ran the enhanced model for both.
+  Custom Access grants nothing in these states, as before.
+- In the enhanced model the security role mapped to a web role grants every table permission at depth 16 (record
+  filter), with the record filter a hosted site writes for its scope, and also reads the visitor's own contact, parent
+  account and user mapping and the metadata and SharePoint privileges at Global. An activity table permission uses the
+  shared activity privileges. A Canvas app or workflow that runs as the mapped user reaches only the rows the filters
+  select. Before, scopes mapped to Global, Local and Basic depths. What a visitor reads through the portal is unchanged.
+  See [enhanced authorization](../mirage/docs/dataverse-parity.md#enhanced-authorization).
+- A `$ref` on a contact's web role memberships (`powerpagecomponent_mspp_webrole_contact`) answers the hosted
+  refusals `90040106` and `90040103` instead of 501, a permitted one adds or removes the membership (stored as local
+  data, so the visitor's roles, Liquid `user.roles` and table permissions follow it and it survives a restart), a DELETE
+  of a membership the contact does not hold answers 204, and `mspp_webrole_contact` or `adx_webrole_contact` answers
+  400 `9004010A`. With `Webapi/mspp_webrole` enabled, `/_api/mspp_webroles` lists the site's web roles instead of a
+  read refusal. A collection-valued navigation read checks Read on the related table before the navigation's field
+  check (403 `90040120`), and an unlisted navigation answers 403 `90040101` naming "All Columns" of the request's
+  table. See
+  [portal associations](../mirage/docs/dataverse-parity.md#column-security-on-portal-reads).
 - With live data and `KnowledgeManagement/ContentAccessLevel/Enabled` true, knowledge articles are no longer shown
   unfiltered: when the live level links cannot be read, every article is hidden (`KNOWLEDGE_CONTENT_ACCESS_LIVE_HIDDEN`).
 - A code component's date-only value no longer moves a day west of UTC, a number in a comma-decimal language saves
@@ -287,14 +572,48 @@ Each version lists what changed for users of the package and what to do when upg
   `90040106`. A collection-valued `$ref` also needs Write on its own row (403 `90040103`) and its navigation listed in
   `Webapi/<table>/fields`, which listing the table's key no longer stands in for. Before, Mirage required Append and
   Append To the other way round and, for grants from an export, did not check them at all for a lookup bind.
-- The portal Web API (`/_api`) applies `Prefer: odata.maxpagesize` only to a query with `$top`, as Power Pages does:
-  without `$top` the preference is ignored and a response holds up to 5,000 rows, as without the header. Before,
-  Mirage paged such a query. To page portal reads, add `$top`; the next link keeps it and the last page stops at it.
-  The Dataverse Web API still pages without `$top`. See
+- The portal Web API (`/_api`) applies `Prefer: odata.maxpagesize` to a query with `$top` and to a permission-filtered
+  read (no Global grant), as Power Pages does: a Global-scope read without `$top` ignores the preference and holds up to
+  5,000 rows, as without the header. The next link of a permission-filtered read is checked like the portal's, which
+  carries the permission filter: with only the logical lookup in the column list, following it answers 403 `90040101`
+  naming `_<lookup>_value`. The Dataverse Web API still pages without `$top`. See
   [input and rendering contracts](../mirage/docs/dataverse-parity.md#input-and-rendering-contracts).
+- Portal Web API reads answer as a hosted site does (two recorded runs, replayed by the `hosted-f1-*` suites of the
+  `portal-webapi` surface): a read without `$select` (a collection, a key, `/$count`, `$apply`, a navigation's row) is
+  refused at the first column of `Webapi/<table>/fields`, in list order, that the list does not enable;
+  `GET .../$ref` answers 400 `9004010A`; `$skip`, `$search`,
+  `$compute`, `savedQuery` and `userQuery` answer 400 `9004010B` "The `<option>` query parameter is not supported";
+  a missing row answers 404 `9004010D` without `cdscode` or inner error; `any` and `all` lambdas need no listing of
+  their collection and `all` over no rows is false; a collection read's collection-valued `$expand` carries the
+  parent lookup in each child row and a next link; every response carries `x-ms-request-id`, JSON answers a
+  `Server-Timing` correlation id. A chunked upload (`x-ms-transfer-mode: chunked`) answers 500 `9004010A`; before, it
+  stored the file in one request. A lookup's `_<name>_value` is enabled only when the list names it, and `/<column>` and
+  navigations to another table answer 403 "Attribute All Columns in table `<table>` ..." before any read (403
+  `90040120` first when the related table cannot be read). A navigation's `/$count` answers 400 `9004010A` in every
+  shape.
+  See [input and rendering contracts](../mirage/docs/dataverse-parity.md#input-and-rendering-contracts).
+- The inherited columns of a custom activity table (`activityid`, `subject`, `description`, ...) are checked against
+  `Webapi/activitypointer/fields`, and a selection of only inherited columns answers "Attribute All Columns in table
+  `<table>` is not enabled for Web Api."; before, the table's own list decided and a list without a column of the
+  table's own refused every request. A list of inherited columns alone no longer does; a list with other entries that
+  are no column of the table's own, or a Web API view without one, still refuses every request. A select-less read of
+  such a table returns its listed columns.
+- Under `odataPermissionQueryPipeline: native-classic`, keyed reads, navigation collections, `$expand`, `$top`, paged
+  reads and navigation and lambda filters over ordinary tables run the modeled permission pipeline instead of answering 501.
+- Provider-backed (virtual) tables on the portal Web API answer as a hosted site does (replayed by the
+  `hosted-f1-nav-followup` suites): a `$filter` path into the table answers 500 `9004010D` with `cdscode` `0x80044150`
+  and calls no provider, in both pipelines (before, the default pipeline filtered the provider's rows locally and
+  native-classic answered 501); a single-valued `$expand` into it reads `null`; a throwing provider answers 400
+  `9004010D` (`cdscode` `0x80040265`, its message hidden) to a collection read or `$expand` and 500 `9004010A` to a
+  keyed read, instead of 400 `VirtualProviderFailed`. Mirage keeps the column list on provider rows although the hosted
+  site returned every provider column, and reports `WEBAPI_PROVIDER_COLUMNS_HOSTED_EXPOSED`. A site observed with the
+  hosted read cache can set `observed.webApiReadCache: { seconds }`; it is off by default. See [provider-backed
+  tables](../mirage/docs/dataverse-parity.md#provider-backed-tables-on-the-portal-web-api).
 - A Custom Access table permission whose FetchXML has a `link-entity` is disabled
   (`PERMISSION_CUSTOM_ACCESS_FILTER_UNSUPPORTED`); before, Mirage dropped the link and granted every row the root
-  filter matched.
+  filter matched. `PERMISSION_CUSTOM_ACCESS_HOSTED_JOIN_DROPPED` and `paqvilo analyze` rule `PP-PERM-001` warn that a
+  hosted site does drop the join: it grants every row the root filter matches, or every row when the permission
+  filters only through joins.
 - A local account stays usable after its contact's email address changes. Email sign-in and password recovery use the
   current address, a confirmation link is sent again when a reset replaces the credentials of an unconfirmed account or
   its link has expired, wrong email two-factor codes count toward the lockout, and an unknown user name takes as long
@@ -319,6 +638,20 @@ Each version lists what changed for users of the package and what to do when upg
   created, deleted, purged after its time to live (elastic targets, matched in the child's partition) or brought in by
   replacing the whole table. A rollup on or over a virtual or elastic table stores state 2 with `ROLLUP_UNSUPPORTED`,
   and a bare GUID of a lookup that also targets a virtual table is not counted (`ROLLUP_BARE_LOOKUP_UNRESOLVED`).
+- Rollups saved by the classic rollup designer are read as it writes them: Yes/No filter values `1` and `0`, date
+  filter values, the **Does not equal**, **Does not contain data**, **Is greater than or equal to**, **Is less than** and
+  **Is less than or equal to** operators, several checked choice options in one condition, source filters on a
+  hierarchy, and a hierarchical rollup of the table's own column. Before, these read state 2 with `ROLLUP_UNSUPPORTED`.
+- `observed.rollupCreateState: not-calculated` stamps new rows NotCalculated, as rollup columns saved by the classic
+  rollup designer do (state 0, an empty `_date` until the column's mass calculation, 0 or null);
+  `api.rollups.massCalculate(table, column)` runs a column's mass calculation; and a child update marks only the rollups
+  that read a column it writes.
+- Calculated columns saved by the classic designer are read as it writes them: `TrimLeft` and `TrimRight`, a Yes/No value
+  saved as `1` or `0`, and `DiffInHours`, `DiffInWeeks` and `DiffInYears` counting unit boundaries (23:30 to 00:29 is
+  one hour); before, those columns read null or a truncated difference.
+- Classic workflows with the process designer's Timeout waits (`{Due}`, `{2 Minutes After Due}`), parallel wait branches
+  and Yes/No conditions run: the job waits until the due time and completes then, or completes earlier when a write
+  makes a branch's condition hold; before, such a workflow was refused as unsupported XAML.
 - One malformed component file (for example a character reference outside Unicode) no longer stops Lense from loading
   the whole Solution; it is skipped, as in Mirage.
 - Lense and Mirage read an enhanced site's site and language records from the same place, `Assets/` (or the root) of
@@ -340,9 +673,143 @@ Each version lists what changed for users of the package and what to do when upg
 - Creating a second parental relationship from a table through `RelationshipDefinitions` is refused with 400
   `0x80047007`, and creating a calculated column whose designer XAML reads a literal without `SelectFirstNonNull` with
   400 `0x80060424`, as Dataverse refuses them.
+- A plug-in that rebinds a portal query to a virtual table now fails as on Power Pages: the Web API answers 500
+  `9004010D` with the inner code `0x80044150` and Liquid shows "Exception has been thrown by the target of an
+  invocation." when `liquidFetchErrorMessage` is `target-invocation`. Before, Mirage answered 501
+  `LocalPluginQueryUnsupported`.
+- A Web API `fetchXml` query with `eq-businessid` or `ne-businessid` on a column outside `Webapi/<table>/fields`
+  answers 403 `90040101` for that column, as on Power Pages, instead of the local 400 refusal of the operator.
+- Rejected basic form posts answer as on Power Pages. A choices value outside the column's options re-renders the form
+  with HTTP 200 and Dataverse's own message in the danger panel, whatever `Site/EnableCustomPluginError` says, once the
+  form's validators pass; before, Mirage answered 400 for a bound global choice and saved an unlisted value of the
+  column's own options. Basic and multistep form posts go through request validation ("Request validation has
+  detected potentially dangerous input value(s)…"): by default only a script block is refused and other markup is stored
+  as posted, as the hosted site does; with `Site/DisableFormDataSafeHtmlValidation` false event handlers, script URLs
+  and embedding elements are refused too, and with `DisableValidationWebTemplate` true nothing is. The choices control's posted JSON selection is stored as the column's values, `[]` clears
+  the column and text that is not such a list answers 500; before, the posted JSON was stored as text. The control's
+  option metadata lists every exported language label of an option. See
+  [validation and write errors](../mirage/docs/forms-lists-parity.md#forms).
+- A basic form that associates the current contact with an activity's `partners` column records the Chat Participant
+  party (12) instead of answering 501. The activity create carries the party list in its plug-in Target as
+  activityparty entities naming the contact, writes the parties with the record (no activityparty Create of their own)
+  and adds the activity owner's party (Owner, 9).
+- Rich text columns follow the hosted form: a column whose FormXml binds only the rich text editor renders, posts and
+  validates as the plain textarea of its column. The editor renders when the column's form metadata sets the code
+  component style; there the hosted portal hosts `RichTextEditorControlV2` from `/_pcfwebresource`, and Mirage renders
+  its local editor in its place and reports `RICHTEXT_HOSTED_V2_CONTROL`. Shell capture no longer asks for editor
+  assets for a FormXml-only binding.
+- Portal form writes and multistep sessions reach plug-ins as on Power Pages: `IsPortalsClientCall` true,
+  `PortalsContactId` the signed-in contact and the site's host application user as `UserId` and `InitiatingUserId`, in
+  the hosted message order. A signed-in contact's multistep session is an `adx_webformsession` row (contact, user
+  identity name, visitor address, step index, step history, primary record), deactivated on completion and never
+  removed. Anonymous sessions and sessions without a row stay bounded to 1,000, oldest first. The caller is the host
+  application user in both authorization models, as captured. A real-time classic workflow that runs inside a portal
+  call keeps `IsPortalsClientCall` and `PortalsContactId` on its writes at depth 2, and a background workflow job
+  reports false and the empty GUID. Form pages and saves also send the reads a
+  hosted form sends: an edit page's Retrieve and RetrieveMultiple reads, the update save's RetrieveMultiple before the
+  Update, a multistep page's session and record reads and the session read before each session Update. See
+  [multistep forms](../mirage/docs/forms-lists-parity.md#forms).
+- A list's `entity-grid-chart-data.json` and `entity-grid-ai-summary-stream.json` services answer 400, as on a hosted
+  Customer Self-Service site, instead of 405, and a timeline's activity read no longer sends a Retrieve of the record.
+- A record's timeline adds portal comments: Add posts to `EntityActivity/AddPortalComment`, which creates the comment
+  regarding the record (text in the description, direction Incoming) and completes it as Received in a second write,
+  with the contact as Sender, the owner as To Recipient and the Owner and Regarding parties. The visitor needs Create and
+  Append on portal comments and AppendTo on the record. See
+  [notes and the activity timeline](../mirage/docs/forms-lists-parity.md#notes-and-the-activity-timeline).
+- A portal `$apply` whose filter, groupby or aggregate path reaches a provider-backed (virtual) table answers 500
+  `9004010D` with cdscode `0x80044150` before the provider is read, as a `$filter` path does (hosted session F1).
+- A collection `$expand` into a provider-backed table hands its nested `$select`, `$filter`, `$orderby` and `$top` to the
+  provider and keeps the provider's rows as returned, still behind table permissions and the Web API column settings.
+- A portal `$apply` of `filter(<navigation path>)/aggregate($count as <alias>)` answers one empty object per matching
+  row, as hosted session F1 captured it.
+- With `observed.webApiFileDownload: portal-range` a file download refuses several ranges with the captured 100-byte
+  416 body, a reversed range with 500 `9004010A` and an unparseable `Range` header with the front end's 400 page; each
+  error carries its `Content-Length`.
+- A direct `POST /EntityList/Map/Search/` answers the platform's 500 error page, as hosted session F2 captured it.
+- `scripts/parity-cases.mjs build --redact <term>` replaces a hosted site's host or name with `<redacted>` in every
+  capture input and output before the cases are built, and records only the placeholder and counts in the case file.
+  The thirteen hosted session F1 file-range downloads are now replay cases (`portal-file-range/hosted-f1-20261126`).
+- A calendar or dataset code component list included as modern now reports the classic layout it renders to render
+  provenance, with its `MODERN_LIST_RENDERED_CLASSIC` diagnostic.
+- A calendar or dataset code component list included as modern renders the modern grid of its view, with no calendar
+  and no code component, as hosted session F2 captured it; `MODERN_LIST_RENDERED_CLASSIC` and the `portal:modern-list`
+  preflight row are gone for these lists.
+- A calendar list's event feed refuses a `from` or `to` outside `yyyy-MM-ddTHH:mm:ssZ` with the platform's messages,
+  answers indented JSON and sends no event URL; its iCalendar download has the platform's shape (UID with the host,
+  DTSTAMP, HTML description, alarm, folded lines), lists every event unless the range is in that format and sends no
+  `Content-Disposition`, as hosted session F2 captured it.
+- A calendar list's events are selected by calendar day as on the platform: an event matches when its start day or its
+  end day lies in the range (bounds inclusive) or it starts on or before `from` and ends on or after `to`, so a reversed
+  range lists the events spanning it; UserLocal days follow `observed.portalQueryTimeZone`.
+- A classic workflow of a virtual table never runs: Dataverse does not trigger workflows on virtual tables
+  (`CanTriggerWorkflow` is false). Publishing or executing one answers 400 `WorkflowVirtualTableUnsupported`, and a write
+  to the table reports `WORKFLOW_VIRTUAL_TABLE_UNSUPPORTED` once per activated definition.
+- The notes control and the activity timeline read every page of their notes and activities, following the provider's
+  paging cookies, or the page number when a page carries none, instead of answering 501 beyond four pages of 5,000. The
+  notes read selects only the columns the control shows, so it no longer carries attachment bodies. A provider page that
+  cannot be continued (a repeated paging cookie or key) answers 502 `NotesProviderPagingInvalid` or
+  `TimelineProviderPagingInvalid`. A record with more than 50,000 notes or activities answers 503
+  `NotesRowLimitExceeded` or `TimelineRowLimitExceeded` with a diagnostic, instead of a truncated list.
+- Basic forms run **Activate Quote** (a draft quote becomes Active, In Progress), **Reopen** for a closed
+  opportunity (Open with the partner portal's Accepted status, or In Progress for a partner-created one), **Qualify**
+  for an open lead (the new local `QualifyLead` message, with an account, a contact and an opportunity) and **Update
+  Pipeline Phase** (a dialog of the opportunity's Sales Stage options and a description, saved with a note), as the
+  legacy portal's actions do.
+- The Dataverse API answers `QualifyLead` on a lead: the lead becomes Qualified and gets the account, contact and
+  opportunity the request asks for, and the answer lists their references.
+- A Basic Form action's filter criteria can be a bare `<filter>` on the form table as well as a full FetchXML query,
+  and are evaluated in live mode through the connected portal. An aggregate or grouped criterion, or one on another
+  table, hides the action with a `FORM_ACTION_FILTER_UNRESOLVED` diagnostic naming the reason, and its request answers
+  403 instead of 501.
 
 ### Upgrade notes
 
+- A test that read a header or footer value from the request, the page or the time outside `{% substitution %}` on a
+  site with `Header/OutputCache/Enabled` or `Footer/OutputCache/Enabled` true now reads the value of the request that
+  filled the cached copy, `website.sign_in_url` with that request's returnUrl included, as on Power Pages; the page
+  reports `OUTPUT_CACHE_REQUEST_VALUE` and `paqvilo analyze` reports `PP-CACHE-001`. Move the value into a
+  substitution block, use `website.sign_in_url_substitution`, or set the setting to false.
+- A test that matched `data-languageContext`, the CMS metadata a content editor's wrapper carried (`data-cms*`,
+  `data-editable-url`, `data-filebrowser-url`) or the hidden `data-mirage-editable` span of a web link set now reads
+  the hosted markup. With `pageErrorPresentation: generic-error`, read the error id from `Error ID # [<id>]`; the
+  page-query rejection text is no longer shown on the page, and an exported `Portal Generic Error` snippet sits in the
+  same dialog instead of the `Error ID: [<id>]`, date and portal ID lines. A visitor whose only website access right
+  is Preview Unpublished Entities no longer gets `page.editable`, `snippets.editable` or the editor attributes.
+  page-query rejection text is no longer shown on the page.
+- Web pages in search results and search summary sources no longer need an `adx_webpage` table permission, as on a
+  hosted site: the page's web page access control rules decide, so a Restrict Read page is found only by its roles.
+- Search results leave out web pages in a non-visible publishing state for a visitor who cannot preview them, and
+  report `PORTAL_SEARCH_UNPUBLISHED_PAGES_EXCLUDED`. A hosted site with Dataverse search lists them to every visitor;
+  set `observed.searchUnpublishedPages: listed`, with evidence from your site, to get its results. The same rule
+  decides which web pages are search summary sources.
+- With `KnowledgeManagement/ContentAccessLevel/Enabled`, `entities.knowledgearticle` answers nil for an article outside
+  the visitor's content access levels, as `knowledge.articles` does. A hosted enhanced site returns every article
+  there; Mirage warns (`KNOWLEDGE_CONTENT_ACCESS_ENTITIES_UNFILTERED`), and
+  `observed.knowledgeEntitiesContentAccess: unfiltered`, with evidence, reproduces the hosted site.
+- The search summary and data summarization answers send `Cache-Control: private` to an anonymous visitor and
+  `no-cache, no-store, must-revalidate` with `Expires: -1` to a signed-in one, as hosted; `summarystream` stays
+  `private`.
+- A search test that expected a plain word to miss its plural or other forms now finds them.
+- A `portalSearchSummary` pack now receives web pages as `sources` (`id`, `title`, page text) as well as knowledge
+  articles, and the answer carries `SummaryTitle`, `SearchTitle`, `ErrorMessage`, `ResponseStatus`,
+  `CitationTitleMapping` and `Chunks` too. A request to either summary API sends `X-Requested-With`, as the
+  platform's scripts do: without it a signed-out request answers the 500 error page and a signed-in one 401, and
+  without a verification token the answer is 401.
+- A `$pages.agent.SendActivity` mock moves from `/_api/agents/<schema>/activities` (which now answers 400
+  `9004010A`, as hosted) to endpoint mocks for `/_services/agent/BotConfiguration`,
+  `/powervirtualagents/botsbyschema/<schema>/directline/token` and
+  `/v3/directline/conversations/<conversationId>/activities`.
+- A script or test that posts to `/_api/cloudflow/<version>/trigger/<id>` sends `X-Requested-With`, as jQuery and
+  `shell.ajaxSafePost` do, and its parameters as the `eventData` JSON string: a raw JSON body no longer reaches the
+  flow. Read a 200 answer as text and an error from `ErrorCode` and `Message`. An exported flow whose `.data.xml` has a
+  `StateCode` other than 1, or no `StateCode` (Mirage then seeds its workflow row as Draft), answers `FlowDisabled`
+  unless it is explicitly activated locally; add `<StateCode>1</StateCode>` to an invented fixture.
+- A test that relied on the enhanced authorization model with `enhancedauthorization` 1 or 2 now gets the standard
+  model; set 3 in the site record to keep the enhanced model.
+- The security roles Mirage maps to web roles hold depth 16 with a `recordfilterid` on each table permission privilege;
+  a test that read `privilegedepthmask` 1, 2 or 8 from them now reads 16.
+- `Webapi/mspp_webrole/enabled` now reports `WEBAPI_WEBROLE_HOSTED_EXPOSURE` (and `PP-SEC-004` in `paqvilo analyze`):
+  a hosted site answers `/_api/mspp_webroles` with the web roles of every site in the environment.
 - A test that read a designer calculated column as null, or a rollup `FormulaDefinition` with an XML declaration,
   now reads the computed value and the exported file text.
 - Write `codecomponent` names unquoted (`name:pub_Namespace.Control`). A quoted name, an unknown control and a second
@@ -376,16 +843,77 @@ Each version lists what changed for users of the package and what to do when upg
   those types. SAML 2.0 and WS-Federation providers no longer accept OpenID Connect answers. A Twitter provider signs
   in with OAuth 1.0a at `/signin-twitter` and needs `ConsumerSecret`.
 - A browser session that was signed in more than 30 minutes ago (or `ValidateInterval`) ends when its contact's
-  `adx_identity_securitystamp` changes, and a private-site admission session now ends after 24 hours (or
-  `ExpireTimeSpan`).
+  `adx_identity_securitystamp` changes.
 - Lense with a code-site project answers a file of the local build ahead of the exported `.powerpages-site` web file at
   the same address, as Mirage does; a rebuild reloads the tabs. Edit the build's sources rather than the exported copy
   of a built file.
 - `PORTAL_SEARCH_QUERY_WEIGHTS_IGNORED` is now `PORTAL_SEARCH_QUERY_WEIGHTS_LOCAL`, because `Search/Query` weights now
   rank the default search page. Results with the same matches can come back in another order than before.
+- Portal Web API defaults follow the hosted captures: a CDS error reads "Common Data Service error occurred." and
+  carries `error.cdscode`, and `$skip`, `$search`, `$compute`, `savedQuery` and `userQuery` answer `9004010B` instead of
+  `9004010A` or `9004010D`. A site observed otherwise keeps the former text or code with evidence:
+  `observed.webApiCdsErrorMessage: "CDS error occurred."`, `observed.webApiCdsErrorCode: "innererror"`.
+- List a lookup's `_<name>_value` next to its logical name (`parentcustomerid,_parentcustomerid_value`) where a
+  script reads, filters or orders by the value, or reads without `$select`, `/$count` or `$apply`; with the logical name
+  alone these answer 403 `90040101`. Read a column with `$select` or `/<column>/$value` instead of `/<column>`, and
+  related rows with `$expand` instead of a navigation route. A site observed otherwise keeps the former model with
+  evidence: `observed.webApiLookupFields: "logical-aliases"`, `observed.webApiMemberReads: "served"`.
+- A select-less read of a custom activity table whose list names only inherited columns, or whose inherited columns
+  `Webapi/activitypointer/fields` does not list, now answers 403; add the table's own column and list the inherited
+  ones in `Webapi/activitypointer/fields`.
 - A persona launched from the sign-in page picker, `POST /_sim/api/personas/launch` or `/_sim/sign-in` is now a browser
   session like any sign-in: it follows the site's `ExpireTimeSpan` and sliding window and the security stamp check.
   `signIn()` stays a programmatic session; pass `browserSession: true` for a browser session.
+- A provider whose portal reads relied on Mirage filtering, ordering or paging its rows now returns them as they are:
+  apply `request.query` (or the OData text) in the provider. Rows outside a scoped table permission are still removed.
+- The local document grid route `/_apps/portal-documents/<table>/<id>` now only downloads a file
+  (`…/<name>[?folder=<path>]`). List, upload, new folder and delete go through the `/_services/sharepoint-*`
+  services; their failures are the platform's `{ "Message": … }` bodies: a missing or invalid write token answers the
+  500 page instead of 403, a missing permission 400 instead of 403, a list without permission `AccessDenied: true`, and
+  no SharePoint storage 500 "SharePoint integration is not enabled…" instead of 501. A successful write answers 204.
+- `SharePoint/MaxTotalUploadSize` no longer lowers the total upload limit below 50 MB, and an unset value is 50 MB
+  instead of unlimited.
+- A multistep step that shows the document control for the record in its query string needs
+  `adx_primarykeyattributelogicalname`; without it the page answers 500, as on Power Pages.
+- A deleted record now deletes its document locations (the recorded Cascade Delete), and a `Webapi/<table>/fields`
+  wildcard answers 403 `90040122` "You are unauthorized to process this request." for every table.
+- Local account routes and fields follow the hosted pages. Post the local sign-in to `/SignIn` (the site's sign-in
+  path) with `Username` and `PasswordValue` instead of `/Account/Login/Login` with `UserName` and `Password`. Register
+  with `ctl00$ctl00$ContentContainer$MainContent$MainContent$EmailTextBox`, `…UserNameTextBox`, `…PasswordTextBox` and
+  `…ConfirmPasswordTextBox`; `LastName` is gone. A reset posts `UserId` and `Code` from the
+  `/Account/Login/ResetPassword?userId=&code=` link (was `account` and `token`) and redirects to
+  `/Account/Login/ResetPasswordConfirmation`; the confirmation link is `/Account/Manage/ConfirmEmail?userId=&code=` (was
+  `/Account/Login/ConfirmEmail`), redirects to the profile page and is used once. **Change password** posts
+  `NewPassword` (was `Password`). Two-factor enrollment is `/Account/Manage/ChangeTwoFactor`, posting only the form
+  token to `/Account/Manage/EnableTFA` or `DisableTFA` (was `/Account/Manage/TwoFactor` with `OldPassword` and
+  `Enabled`), and a two-factor sign-in redirects to `/Account/Login/SendCode`, which sends the code.
+- Local account refusals that the platform shows on the page now answer 200 with its message instead of 400, 401, 403
+  or 409; a throttled sign-in and a taken user name or address answer 409. Read the message, or the session, instead of the status.
+- Local registration needs a CAPTCHA when `Authentication/Registration/CaptchaEnabled` is absent, as on a new hosted
+  site: set it to `false` or supply the local CAPTCHA fixture. `RememberMeEnabled` and `RememberBrowserEnabled` are on
+  when absent. Registration sends no confirmation unless `RequiresConfirmation` is on; request one through
+  `POST /Account/Manage/PostConfirmEmailRequest`.
+- After registration, and after a sign-in without a return URL, a site with a **Profile** site marker opens the profile
+  page (`Authentication/Registration/ProfileRedirectEnabled`, on by default).
+- Every refused invitation code answers "Invalid invitation code." with 200; the reason is in an `INVITATION_INVALID`
+  diagnostic. A group invitation is refused at local registration. An invitation's redemption workflow now runs after
+  the redemption has committed: a failure keeps the redemption and the sign-in (`INVITATION_WORKFLOW_FAILED`) instead of
+  rolling them back with 500, and a background workflow qualifies too.
+- A system job that `ExecuteWorkflow` starts for a background classic workflow is now created by SYSTEM; it is still
+  owned by the caller. Hosted session F4 observed this for Send Invitation; for other workflows it is inferred.
+- A local password reset or change no longer clears an account's lockout or failure count: the new password signs in
+  once the lockout has passed. An invitation whose invited contact already has a local account is redeemed through
+  **I have an existing account**; local registration with its code answers "Invalid invitation code.".
+- Browser request tokens are now paired by default. A browser test or page script that sent `simulator.portalToken`
+  (or one runtime token for every browser) from a page, or that posted the sign-in form without its token, is now
+  refused. Read the token from the page or from `/_layout/tokenhtml` in the same browser, after its latest sign-in or
+  LogOff, and send the browser's cookies with it. Tools without Fetch Metadata keep `simulator.portalToken`. Set
+  `identityProvider.pairedBrowserTokens: false` to keep one shared browser token.
+- A refused portal Web API token now answers 401 instead of 403, with the text after `Request validation failed : `.
+  Set `observed.webApiAntiForgery: cookie-mismatch-403` to keep the former answer for a site observed giving it.
+- A test that expected a local session without lifetime settings to last until the browser closes now sees a 24-hour
+  sliding session. A test that read `PortalSTS0002`, `PortalSTS0004` or a 500 `PortalSTS0006` from the token service now
+  reads the hosted IDs listed under Fixed.
 
 ## 0.9.8
 

@@ -76,10 +76,17 @@ export function withLiquidIdentity(record, identity) {
   return new Proxy(record, {
     get(target, key, receiver) {
       if (key === 'liquidGet') return liquidGet;
+      if (key === LIQUID_RECORD) return target;
       return Reflect.get(target, key, receiver);
     },
   });
 }
+/**
+ * The record a Liquid identity proxy (withLiquidIdentity) wraps: host code that keys data by the record object (render
+ * provenance object sources) reads it through this symbol. Other objects return themselves.
+ */
+const LIQUID_RECORD = Symbol.for('paqvilo.liquid.record');
+export const liquidRecordOf = (value) => (value && typeof value === 'object' ? (value[LIQUID_RECORD] ?? value) : value);
 
 /** Apply only observed drop members/types; source-derived identity is independent. */
 export function applyObservedLiquidObjects(context, { mode = 'dotliquid', pageIdentity = null } = {}) {

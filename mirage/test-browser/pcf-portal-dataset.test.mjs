@@ -831,9 +831,10 @@ test('the local Liquid view binding reads the tag argument view through the port
     host: 'liquid',
     pcf: { liquidDatasetBinding: 'view' },
     columns: ['tst_title', 'tst_contact'],
+    // The binding reads the lookup's _x_value, which a list enables only by naming it (hosted session F1 summary-F1).
     files: {
       'portal/sitesetting.yml':
-        '- adx_sitesettingid: a\n  adx_name: Webapi/tst_row/enabled\n  adx_value: true\n- adx_sitesettingid: b\n  adx_name: Webapi/tst_row/fields\n  adx_value: tst_rowid,tst_title,tst_contact\n- adx_sitesettingid: c\n  adx_name: Webapi/contact/enabled\n  adx_value: true\n- adx_sitesettingid: d\n  adx_name: Webapi/contact/fields\n  adx_value: contactid,emailaddress1',
+        '- adx_sitesettingid: a\n  adx_name: Webapi/tst_row/enabled\n  adx_value: true\n- adx_sitesettingid: b\n  adx_name: Webapi/tst_row/fields\n  adx_value: tst_rowid,tst_title,tst_contact,_tst_contact_value\n- adx_sitesettingid: c\n  adx_name: Webapi/contact/enabled\n  adx_value: true\n- adx_sitesettingid: d\n  adx_name: Webapi/contact/fields\n  adx_value: contactid,emailaddress1',
     },
   });
   const local = await page.evaluate(() => ({
@@ -1035,10 +1036,10 @@ adx_views: '{"Type":"ViewMetadata","Views":[${viewEntry(viewId, 'All rows by tit
   }
 });
 
-// @test-kind unproven: the view picker of an ordinary (non code component) subgrid is not captured (pcf-parity summary-F section 4 captured it on a code component subgrid only); Mirage keeps such a subgrid on its default view
-test('an ordinary subgrid with its view picker on keeps its default view and draws no view dropdown', async (t) => {
+// @test-kind observation: paqvilo-developer hosted-f2 summary-F2 "Ordinary subgrid view picker" (runs a and c, subgrid.json subgrid:render and subgrid:switch-view, 2026-11-26): an ordinary subgrid with EnableViewPicker and ViewIds draws ul.view-select > li.dropdown#filterDropdownId listing both views, and choosing the second sends a new entity-subgrid-data request sorted by that view
+test('an ordinary subgrid with its view picker on draws the view dropdown and loads the chosen view', async (t) => {
   const picker = `<EnableViewPicker>true</EnableViewPicker><ViewIds>{${viewId.toUpperCase()}},{${rankViewId.toUpperCase()}}</ViewIds>`;
-  const { page } = await datasetPortal(t, {
+  const { page, bodies, errors } = await datasetPortal(t, {
     host: 'subgrid',
     loads: 0,
     subgridParameters: picker,
@@ -1050,16 +1051,52 @@ test('an ordinary subgrid with its view picker on keeps its default view and dra
         0,
         'tst_rank',
       ),
+      // A Bootstrap 5 site, as captured.
+      'portal/Main.webtemplate.source.html':
+        '<html><body><script src="/resource/powerappsportal/dist/app.BootstrapV5.bundle.js"></script>{% entityform name:\'Parent form\' %}</body></html>',
+      'portal/sitesetting.yml':
+        '- adx_sitesettingid: 5e300000-0000-4000-8000-000000000011\n  adx_name: Site/BootstrapV5Enabled\n  adx_value: "true"',
+      // An ordinary subgrid: no code component on the table, the form control or the form metadata.
+      'portal/Parent.basicform.basicformmetadata.yml':
+        'adx_entityformmetadataid: parent-subgrid\nadx_entityform: parent-basic\nadx_type: 100000003\nadx_subgrid_name: children',
       'solution/Entities/tst_row/Entity.xml': `<Entity><Name>tst_row</Name><EntityInfo><entity Name="tst_row"><EntitySetName>tst_rows</EntitySetName><attributes>${rowAttributes}</attributes></entity></EntityInfo></Entity>`,
       'solution/Entities/tst_parent/FormXml/main/parent-form.xml': `<systemform><formid>{${formId}}</formid><type>2</type><LocalizedNames><LocalizedName description="Parent" languagecode="1033"/></LocalizedNames><form><tabs><tab name="general"><columns><column><sections><section name="main"><rows><row><cell><control id="children" indicationOfSubgrid="true"><parameters><TargetEntityType>tst_row</TargetEntityType><ViewId>${viewId}</ViewId><RelationshipName>tst_parent_rows</RelationshipName><RecordsPerPage>3</RecordsPerPage>${picker}</parameters></control></cell></row></rows></section></sections></column></columns></tab></tabs></form></systemform>`,
     },
   });
-  await page.waitForFunction(() => document.querySelectorAll('.entity-grid tbody tr').length === 3);
+  const rows = () =>
+    page.evaluate(() =>
+      [...document.querySelectorAll('#children .entity-grid tbody tr')].map((row) => row.dataset.name ?? ''),
+    );
+  await page.waitForFunction(() => document.querySelectorAll('#children .entity-grid tbody tr').length === 3);
   assert.deepEqual(
-    await page.evaluate(() => ({
-      select: document.querySelectorAll('.view-select').length,
-      pcf: document.querySelectorAll('[data-pcf-view-host]').length,
-    })),
-    { select: 0, pcf: 0 },
+    await page.evaluate(() => {
+      const select = document.querySelector('#children .entity-grid .view-toolbar ul.view-select > li.dropdown');
+      return {
+        id: select?.id,
+        selected: select?.querySelector('.selected-view .title')?.textContent,
+        views: [...(select?.querySelectorAll('.dropdown-menu [role="menuitem"]') ?? [])].map((item) =>
+          item.textContent.trim(),
+        ),
+        pcf: document.querySelectorAll('[data-pcf-view-host]').length,
+      };
+    }),
+    { id: 'filterDropdownId', selected: ' Rows view', views: ['Rows view', 'Rows by rank'], pcf: 0 },
   );
+  assert.deepEqual(await rows(), ['Alpha', 'Bravo', 'Charlie']);
+  const loads = bodies.filter((entry) => entry.path.startsWith('/_services/entity-subgrid-data.json/')).length;
+  await page.evaluate(() => {
+    const select = document.querySelector('#children .view-select');
+    select.querySelector('.selected-view').click();
+    select.querySelectorAll('[role="menuitem"]')[1].click();
+  });
+  await page.waitForFunction(
+    () => document.querySelector('#children .view-select .selected-view .title')?.textContent === ' Rows by rank',
+  );
+  await page.waitForFunction(() => document.querySelector('#children .entity-grid tbody tr')?.dataset.name === 'Golf');
+  const requests = bodies.filter((entry) => entry.path.startsWith('/_services/entity-subgrid-data.json/'));
+  assert.equal(requests.length, loads + 1);
+  assert.equal(requests.at(-1).body.sortExpression, 'tst_rank ASC');
+  assert.deepEqual([requests.at(-1).body.entityName, requests.at(-1).body.entityId], ['tst_parent', parentId]);
+  assert.deepEqual(await rows(), ['Golf', 'Foxtrot', 'Echo']);
+  assert.deepEqual(errors, []);
 });

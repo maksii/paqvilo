@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
-import { isSourceFile, isEnhancedSiteMetadata, isServerLogicPath } from './portal-model.mjs';
+import { isSourceFile, isEnhancedSiteMetadata, isServerLogicPath, isPageSource } from './portal-model.mjs';
 import { Resolver } from './resolver.mjs';
 import { inspectComponentJson } from './audit-json.mjs';
 import { hasDelimitedText } from '../mirage/lib/text-scanning.mjs';
@@ -80,7 +80,7 @@ function yamlStrings(node, document, visit, parts = [], ancestors = new Set()) {
 
 const PROFILE_PATH = /^deployment-profiles\//i;
 
-function metadataReason(rel, key, context) {
+function metadataReason(rel, key) {
   if (PROFILE_PATH.test(rel))
     return {
       code: 'deployment-profile',
@@ -89,12 +89,6 @@ function metadataReason(rel, key, context) {
     };
   if (key === 'notetext' && /\.webfile\.ya?ml$/i.test(rel))
     return { code: 'portal-metadata', reason: 'Attachment annotation metadata, not the web-file response body.' };
-  if (barePortalField(key) === 'title' && (/\.webpage\.ya?ml$/i.test(rel) || context === 'type:2'))
-    return {
-      code: 'portal-metadata',
-      reason:
-        'The portal renders the configured page title as text; Lense does not replace this field in the response.',
-    };
   if (/^(?:filter_definition|subgrid_settings|settings)$/i.test(barePortalField(key)))
     return {
       code: 'portal-metadata',
@@ -362,7 +356,7 @@ function nestedAuditStrings(parts, value, inheritedReason, depth, state, source)
 function visitAuditValue(parts, value, state, source, inheritedReason = null, depth = 0) {
   const key = parts.at(-1) ?? '';
   const language = languageOf(key, value, source.context);
-  let reason = inheritedReason ?? metadataReason(source.rel, key, source.context);
+  let reason = inheritedReason ?? metadataReason(source.rel, key);
   const entryInactive = auditValueIsInactive(parts, state, source);
   let nestedCount = 0;
   // Localized metadata is a serialized JSON array. Inventory its literal strings
@@ -444,7 +438,7 @@ function applyInactiveEntries(state) {
     // They are capabilities, not additional code occurrences found on disk.
     if (field && !state.entries.has(`${state.relative(file)}#${field}`)) continue;
     const item = addAuditEntry(state, file, field, { kind: source.kind });
-    const supported = isSourceFile(state.root, file) && (!source.kind.startsWith('page-') || source.pageUrl != null);
+    const supported = isSourceFile(state.root, file) && (!isPageSource(source) || source.pageUrl != null);
     const settings = source.mode === 'block' ? site.inline : site.markup;
     let reason = 'Source is missing, unsafe, or its page URL cannot be resolved.';
     if (supported && source.mode === 'block')
@@ -460,7 +454,7 @@ function applyInactiveEntries(state) {
     });
     // The conditions under which `lense verify` lists a change to this source as needing deployment.
     delete item.deploymentCode;
-    if (source.kind.startsWith('page-') && source.pageUrl == null) item.deploymentCode = 'unresolved-page-url';
+    if (isPageSource(source) && source.pageUrl == null) item.deploymentCode = 'unresolved-page-url';
     else if (supported && !enabled) item.deploymentCode = 'preview-disabled';
   }
 }

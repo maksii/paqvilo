@@ -1,8 +1,8 @@
 /*
  * Local compatibility runtime for the managed Power Pages entity grid, lookup
- * modal, subgrid, associate dialog and notes controls. It binds the
+ * modal, subgrid, associate dialog, notes and SharePoint document controls. It binds the
  * server-rendered native markup (div.entity-grid[data-view-layouts], .entity-lookup,
- * .entity-associate, .entity-notes) and uses the native JSON services under
+ * .entity-associate, .entity-notes, .sharepoint-grid) and uses the native JSON services under
  * /_services/... with the __RequestVerificationToken header. Requests are sent
  * through jQuery.ajax/XMLHttpRequest because authored scripts observe them there.
  * Events: "loaded" (bubbling, after rows render), "refresh" and "metafilter".
@@ -413,6 +413,23 @@
       : { entityReference: reference };
     if (formAction === 'workflow') return confirmFormWorkflow(row, button, body);
     if (formAction === 'resolve-case') return confirmResolveCase(row, button, body);
+    // Qualify confirms first only when its dialog is drawn (an action with ShowModal 1, legacy entity-form.js).
+    if (
+      formAction === 'qualify-lead' &&
+      row.querySelector(`.modal-qualify[data-pp-action-index="${body.actionIndex}"]`)
+    )
+      return confirmFormDialog(row, button, body, '.modal-qualify', () => ({}));
+    if (formAction === 'update-pipeline-phase')
+      return confirmFormDialog(row, button, body, '.modal-updatepipelinephase', (modal) => {
+        const phase = modal.querySelector('.pipelinephase-input');
+        return {
+          pipeline: {
+            salesStage: phase?.value ?? '',
+            stepName: phase?.selectedOptions?.[0]?.textContent ?? '',
+            description: modal.querySelector('.resolution-description-input')?.value ?? '',
+          },
+        };
+      });
     const submit = () =>
       post(/* NOSONAR */ button.getAttribute('data-url') || location.href, body, { json: false }).then(
         // NOSONAR: read actual attributes, not inherited dataset properties
@@ -608,12 +625,15 @@
   // (StateCode, StatusCode), beside the Write privilege.
   const RECORD_ACTIONS = {
     9: { link: 'close-case-link', shows: (record) => record.StateCode === 0 },
+    // Qualify confirms in the grid's qualify dialog, which the grid draws only for an action with ShowModal 1.
+    10: { link: 'qualify-lead-link', shows: (record) => record.StateCode === 0, modal: '.modal-qualify' },
     11: { link: 'convert-quote-link', shows: (record) => record.StateCode === 1 },
     12: { link: 'convert-order-link', shows: (record) => record.StateCode !== 2 },
     13: { link: 'calculate-opportunity-link', shows: () => true },
     14: { link: 'resolve-case-link', shows: (record) => record.StateCode === 0, modal: '.modal-resolvecase' },
     15: { link: 'reopen-case-link', shows: (record) => record.StateCode !== 0 },
     16: { link: 'cancel-case-link', shows: (record) => record.StateCode === 0 },
+    19: { link: 'activate-quote-link', shows: (record) => record.StateCode === 0 },
     20: {
       link: 'set-opportunity-on-hold-link',
       shows: (record) => record.StateCode === 0 && record.StatusCode !== 2,
@@ -621,6 +641,7 @@
     21: { link: 'win-opportunity-link', shows: (record) => record.StateCode === 0 },
     22: { link: 'lose-opportunity-link', shows: (record) => record.StateCode === 0 },
     23: { link: 'generate-quote-from-opportunity-link', shows: (record) => record.StateCode === 0 },
+    25: { link: 'reopen-opportunity-link', shows: (record) => record.StateCode !== 0 },
   };
   const RECORD_ACTION_LINKS = Object.values(RECORD_ACTIONS)
     .map(({ link }) => `, a.${link}`)
@@ -772,7 +793,7 @@
       const name = current.Configuration?.ViewDisplayName || current.ViewName;
       const count = this.layouts.length;
       select.innerHTML = this.bs5
-        ? `<li class="dropdown" id="filterDropdownId"><a class="selected-view dropdown-toggle" data-bs-toggle="dropdown" href="#" role="button" title="${esc(name)}" aria-label="${esc(name)}" aria-expanded="false" tabindex="0"><span class="fa fa-list" aria-hidden="true"></span><span class="title">${esc(name)}</span></a><ul class="dropdown-menu" role="menu">${this.layouts
+        ? `<li class="dropdown" id="filterDropdownId"><a class="selected-view dropdown-toggle" data-bs-toggle="dropdown" href="#" role="button" title="${esc(name)}" aria-label="${esc(name)}" aria-expanded="false" tabindex="0"><span class="fa fa-list" aria-hidden="true"></span><span class="title"> ${esc(name)}</span></a><ul class="dropdown-menu" role="menu">${this.layouts
             .map(
               (layout, index) =>
                 `<li role="none"${layout === current ? ' class="active"' : ''}><a href="#" role="menuitem" class="dropdown-item" tabindex="0" aria-posinset="${index + 1}" aria-setsize="${count}" aria-label="${esc(layout.Configuration?.ViewDisplayName || layout.ViewName)}">${esc(layout.Configuration?.ViewDisplayName || layout.ViewName)}</a></li>`,
@@ -1702,7 +1723,6 @@
             { force: action.ShowModal === 1 },
           );
         case ACTION.Workflow:
-          this.customizeWorkflowModal(this.child('.modal-run-workflow'), action);
           return this.confirmAndRun(
             '.modal-run-workflow',
             action,
@@ -1749,24 +1769,6 @@
           ),
         { force: Boolean(modal) },
       );
-    }
-
-    // A workflow action with its own dialog texts (CustomizeModal) writes them into the grid's one workflow dialog, as the
-    // legacy entity-grid.js does: its title and primary button (text, title and aria-label); its confirmation becomes the
-    // body (confirmAndRun). The legacy client stores the close text under data-modal-canled-action and reads
-    // data-modal-cancel-action, so it never applies the action's close text, and nothing restores the dialog for a later
-    // action without its own texts. Both are kept as the legacy client behaves.
-    customizeWorkflowModal(modal, action) {
-      if (!modal || action.CustomizeModal !== true) return;
-      const custom = action.Modal ?? {};
-      const title = modal.querySelector('.modal-title');
-      if (title && custom.Title) title.innerHTML = custom.Title;
-      const primary = modal.querySelector('.modal-footer button.primary');
-      if (primary && custom.PrimaryButtonText) {
-        primary.innerHTML = custom.PrimaryButtonText;
-        primary.setAttribute('title', custom.PrimaryButtonText);
-        primary.setAttribute('aria-label', custom.PrimaryButtonText);
-      }
     }
 
     websiteId() {
@@ -2668,6 +2670,257 @@
     location.assign(url.href);
   });
 
+  // ---- SharePoint document control (sharepoint-documents.mjs sharePointControlMarkup and its services)
+  // The list posts { regarding, sortExpression, page, pageSize, folderPath } and shows the access-denied, config-error,
+  // error or empty panel from the answer (hosted session F7); a failed Add files or New folder puts the answer's Message
+  // into the dialog. Folder navigation, the breadcrumbs, the size refusal text and the destination line are local: F7 could
+  // not record them with SharePoint on.
+  const SHAREPOINT_PANELS = [
+    '.sharepoint-empty',
+    '.sharepoint-access-denied',
+    '.sharepoint-config-error',
+    '.sharepoint-error',
+    '.sharepoint-loading',
+  ];
+  function initSharePoint(container) {
+    if (container.__ppSharePoint) return;
+    container.__ppSharePoint = true;
+    const read = (name) => container.getAttribute(name); // NOSONAR: actual attributes exclude inherited dataset values
+    let regarding = {};
+    try {
+      regarding = JSON.parse(read('data-bs-target') || '{}');
+    } catch {
+      regarding = {};
+    }
+    const canDelete = read('data-delete-enabled') === 'True';
+    const pageSize = Number(read('data-pagesize')) || 10;
+    const maxFile = Number(read('data-maxfileuploadsize')) || 10;
+    const maxTotal = Number(read('data-maxtotaluploadsize')) || 50;
+    const output = container.querySelector('.sharepoint-data');
+    const crumbs = container.querySelector('.sharepoint-breadcrumbs');
+    const pager = container.querySelector('.sharepoint-pagination');
+    const label = container.closest('td')?.querySelector('label.field-label')?.textContent?.trim() || 'Documents';
+    const state = { folderPath: '', page: 1, sort: 'FileLeafRef ASC', request: 0 };
+    const show = (selector) => {
+      for (const name of SHAREPOINT_PANELS) {
+        const node = container.querySelector(`:scope > ${name}`);
+        if (node) node.style.display = name === selector ? '' : 'none';
+      }
+    };
+    // A listed file's link stays on this portal (the local download route); any other address is dropped.
+    const sameOrigin = (value) => {
+      try {
+        const address = new URL(String(value ?? ''), location.href);
+        const local = address.pathname + address.search;
+        // A path that starts like a protocol-relative URL (/.//host normalises to //host) would leave the portal.
+        return address.origin === location.origin &&
+          ['http:', 'https:'].includes(address.protocol) &&
+          !/^\/[/\\]/.test(local)
+          ? local
+          : '#';
+      } catch {
+        return '#';
+      }
+    };
+    // A service URL outside this portal is refused before any request (the token never leaves the portal).
+    const service = (name) => {
+      const url = sameOrigin(read(name));
+      return url === '#' ? Promise.reject(new Error('Error completing request.')) : url;
+    };
+    const send = (name, body, options) => Promise.resolve(service(name)).then((url) => post(url, body, options));
+    const actionMenu = (last) => {
+      if (!canDelete) return '';
+      const menuClass = last ? ' dropup ' : ' dropdown ';
+      return `<td aria-label="action menu"><div class="${menuClass}"><button aria-expanded="false" aria-label="action menu" class="btn btn-default btn-sm" data-bs-toggle="dropdown" href="#" role="button"><span class='fa fa-chevron-circle-down fa-fw' aria-hidden='true'></span></button><ul class="dropdown-menu" role="menu"><li role="presentation"><a class="dropdown-item delete-link" href="#" role="menuitem" tabindex="-1"><span class='fa-solid fa-trash-can' aria-hidden='true'></span>Delete</a></li></ul></div></td>`;
+    };
+    const modified = (item) => {
+      const stamp = item.ModifiedOnDisplay ? new Date(item.ModifiedOnDisplay) : null;
+      const text = stamp && !Number.isNaN(stamp.getTime()) ? timeAgo(stamp) : (item.ModifiedOnDisplay ?? '');
+      return `<td class="postedon"><abbr class="timeago" data-datetime="${esc(item.ModifiedOnDisplay)}" title="${esc(item.ModifiedOnDisplay)}">${esc(text)}</abbr></td>`;
+    };
+    // The rows of the platform's list template (#sharepoint-template) for the answer's items.
+    const row = (item, index, items) => {
+      const last = index === items.length - 1;
+      if (item.IsFolder)
+        return `<tr class="sp-item" data-foldername="${esc(item.Name)}" data-folderpath="${esc(item.FolderPath)}" data-id="${esc(item.Id)}"><td data-type="System.String" data-value="${esc(item.Name)}"><a class="sharepoint-custom-icon folder-link" data-folderpath="${esc(item.FolderPath)}" href="#"><span class='fa fa-folder text-primary' aria-hidden='true'></span><span class='sharepoint-custom-underline' title='${esc(item.Name)}'><span> ${esc(item.Name)} </span></span></a></td>${modified(item)}${actionMenu(last)}</tr>`;
+      const url = sameOrigin(item.Url);
+      return `<tr class="sp-item" data-filename="${esc(item.Name)}" data-id="${esc(item.Id)}" data-url="${esc(url)}"><td data-type="System.String" data-value="${esc(item.Name)}"><a class="sharepoint-custom-icon" href="${esc(url)}" target="_blank"><span class='fa fa-file-o' aria-hidden='true'></span><span class='sharepoint-custom-underline' title='${esc(item.Name)} (${esc(item.FileSizeDisplay)})'><span>${esc(item.Name)} <small>(${esc(item.FileSizeDisplay)})</small></span></span></a></td>${modified(item)}${actionMenu(last)}</tr>`;
+    };
+    const head = () => {
+      const template = container.querySelector('#sharepoint-template')?.innerHTML ?? '';
+      return /<thead>[\s\S]*?<\/thead>/.exec(template)?.[0] ?? '';
+    };
+    function renderCrumbs() {
+      if (!crumbs) return;
+      if (!state.folderPath) {
+        crumbs.replaceChildren();
+        crumbs.style.display = 'none';
+        return;
+      }
+      const names = state.folderPath.split('/');
+      crumbs.innerHTML = [
+        `<li class="breadcrumb-item"><a href="#" data-folderpath="">${esc(label)}</a></li>`,
+        ...names.map((name, index) =>
+          index === names.length - 1
+            ? `<li class="breadcrumb-item active" aria-current="page">${esc(name)}</li>`
+            : `<li class="breadcrumb-item"><a href="#" data-folderpath="${esc(names.slice(0, index + 1).join('/'))}">${esc(name)}</a></li>`,
+        ),
+      ].join('');
+      crumbs.style.display = '';
+    }
+    function load(page = state.page) {
+      const request = ++state.request;
+      state.page = page;
+      output.replaceChildren();
+      show('.sharepoint-loading');
+      return send(
+        'data-url-get',
+        { regarding, sortExpression: state.sort, page, pageSize, folderPath: state.folderPath },
+        { jsonType: 'application/json', global: false },
+      )
+        .then((data) => {
+          if (request !== state.request) return;
+          if (!data || typeof data !== 'object') throw new Error('Error completing request.');
+          renderCrumbs();
+          if (data.AccessDenied) return show('.sharepoint-access-denied');
+          if (data.ConfigError) return show('.sharepoint-config-error');
+          const items = data.SharePointItems ?? [];
+          // A page past the last one (its last item was deleted) steps back to the last page that has items.
+          const last = Math.max(1, Math.ceil((Number(data.TotalCount) || 0) / pageSize));
+          if (!items.length && Number(data.TotalCount) > 0 && page > last) return load(last);
+          if (!items.length) {
+            renderNotesPagination(pager, 1, 1, 0, true);
+            if (pager) pager.style.display = 'none';
+            return show('.sharepoint-empty');
+          }
+          show(null);
+          output.innerHTML = `<div class="view-grid"><table aria-label="Document list" aria-live="polite" aria-relevant="additions" class="table-striped table">${head()}${items.map(row).join('')}</table></div>`;
+          renderNotesPagination(pager, Math.ceil((Number(data.TotalCount) || 0) / pageSize), page, items.length, true);
+          trigger(container, 'loaded');
+        })
+        .catch(() => {
+          if (request !== state.request) return;
+          if (pager) pager.style.display = 'none';
+          show('.sharepoint-error');
+        });
+    }
+    const open = (folderPath) => {
+      state.folderPath = folderPath;
+      void load(1);
+    };
+    const alertIn = (modal, text) => {
+      modal.querySelector('.modal-body > .alert')?.remove();
+      modal
+        .querySelector('.modal-body')
+        .insertAdjacentHTML(
+          'afterbegin',
+          `<div class="alert alert-block alert-danger error clearfix">${esc(text)}</div>`,
+        );
+    };
+    // Each dialog opens with a fresh primary handler, no earlier error and the current folder as its destination.
+    const prepare = (modal, run) => {
+      modal.querySelector('.modal-body > .alert')?.remove();
+      for (const group of modal.querySelectorAll('.destination-group')) {
+        group.style.display = state.folderPath ? '' : 'none';
+        const line = group.querySelector('.destination-folder');
+        if (line) line.textContent = state.folderPath ? `${label}/${state.folderPath}` : '';
+      }
+      const primary = modal.querySelector('.modal-footer .primary');
+      const replacement = primary.cloneNode(true);
+      primary.replaceWith(replacement);
+      replacement.addEventListener('click', () => run(replacement));
+      return replacement;
+    };
+    const finish = (modal, request) =>
+      request
+        .then(() => {
+          hideModal(modal);
+          void load(state.page);
+        })
+        .catch((error) => alertIn(modal, error.message));
+    container.querySelector('a.add-file')?.addEventListener('click', (event) => {
+      event.preventDefault();
+      const modal = container.querySelector('.modal-add-file');
+      if (!modal) return;
+      const input = modal.querySelector('input[name="file"]');
+      if (input) input.value = '';
+      prepare(modal, () => {
+        const files = [...(input?.files ?? [])];
+        if (!files.length) return;
+        const large = files.find((file) => file.size > maxFile * 1048576);
+        if (large) return alertIn(modal, `The file ${large.name} exceeds the maximum upload size of ${maxFile} MB.`);
+        if (files.reduce((sum, file) => sum + file.size, 0) > maxTotal * 1048576)
+          return alertIn(modal, `The files exceed the maximum total upload size of ${maxTotal} MB.`);
+        const body = new FormData();
+        body.append('regardingEntityLogicalName', regarding.LogicalName ?? '');
+        body.append('regardingEntityId', regarding.Id ?? '');
+        for (const file of files) body.append('files', file);
+        body.append('overwrite', String(Boolean(modal.querySelector('input[name="overwrite"]')?.checked)));
+        if (state.folderPath) body.append('folderPath', state.folderPath);
+        void finish(modal, send('data-url-add-files', body, { json: false, form: true }));
+      });
+      showModal(modal);
+    });
+    container.querySelector('a.add-folder')?.addEventListener('click', (event) => {
+      event.preventDefault();
+      const modal = container.querySelector('.modal-add-folder');
+      if (!modal) return;
+      const name = modal.querySelector('#FolderName');
+      if (name) name.value = '';
+      const primary = prepare(modal, () =>
+        finish(
+          modal,
+          send(
+            'data-url-add-folder',
+            { regarding, name: name?.value ?? '', folderPath: state.folderPath },
+            { json: false, jsonType: 'application/json' },
+          ),
+        ),
+      );
+      // Create folder stays disabled until the name has text.
+      primary.disabled = true;
+      if (name) name.onkeyup = () => (primary.disabled = !name.value.trim());
+      showModal(modal);
+    });
+    container.addEventListener('click', (event) => {
+      const crumb = event.target.closest('.sharepoint-breadcrumbs a[data-folderpath]');
+      const folder = event.target.closest('.sharepoint-data a.folder-link');
+      const sort = event.target.closest('.sharepoint-data th.sort-enabled');
+      const remove = event.target.closest('.sharepoint-data .delete-link');
+      const page = event.target.closest('.sharepoint-pagination button[data-page]');
+      if (!crumb && !folder && !sort && !remove && !page) return;
+      event.preventDefault();
+      if (crumb || folder) return open((crumb ?? folder).getAttribute('data-folderpath') ?? ''); // NOSONAR: actual attributes exclude inherited dataset values
+      if (page) return page.disabled ? undefined : void load(Number(page.getAttribute('data-page'))); // NOSONAR: actual attributes exclude inherited dataset values
+      if (sort) {
+        const name = sort.getAttribute('data-sort-name'); // NOSONAR: actual attributes exclude inherited dataset values
+        const ascending = `${name} ASC`;
+        state.sort = `${name} ${state.sort === ascending ? 'DESC' : 'ASC'}`;
+        return void load(1);
+      }
+      const item = remove.closest('tr.sp-item');
+      const modal = container.querySelector(
+        item.hasAttribute('data-foldername') ? '.modal-delete-folder' : '.modal-delete-file',
+      ); // NOSONAR: actual attributes exclude inherited dataset values
+      if (!modal) return;
+      prepare(modal, () =>
+        finish(
+          modal,
+          send(
+            'data-url-delete',
+            { regarding, id: item.getAttribute('data-id'), folderPath: state.folderPath }, // NOSONAR: actual attributes exclude inherited dataset values
+            { json: false, jsonType: 'application/json' },
+          ),
+        ),
+      );
+      showModal(modal);
+    });
+    on(container, 'refresh', (event) => {
+      if (event.target === container) void load(state.page);
+    });
+    void load(1);
+  }
+
   // ---- modal form completion
   window.addEventListener('message', (event) => {
     if (event.origin !== location.origin || event.data !== 'Success') return;
@@ -2688,6 +2941,7 @@
   function initialise(root = document) {
     // Notes load before the grids: the notes POST precedes the subgrid POST.
     for (const notes of root.querySelectorAll('.entity-notes')) initNotes(notes);
+    for (const documents of root.querySelectorAll('.sharepoint-grid')) initSharePoint(documents);
     for (const element of root.querySelectorAll('.entity-grid')) {
       if (element.__ppEntityGrid) continue;
       if (element.closest('.entity-lookup, .entity-associate')) continue;

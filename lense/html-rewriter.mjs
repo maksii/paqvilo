@@ -13,7 +13,7 @@ import { createHash } from 'node:crypto';
 import { racyStat } from './file-cache.mjs';
 import { readLocalFile } from './local-file.mjs';
 import { diffLines } from './line-diff.mjs';
-import { urlKey, sourceText, createSourceReader, isSourceFile, indexingPass } from './portal-model.mjs';
+import { urlKey, sourceText, createSourceReader, isSourceFile, indexingPass, isPageSource } from './portal-model.mjs';
 import { applyRenderEdits, finalizePortalProvenance } from '../mirage/lib/render-provenance.mjs';
 import { alignDocument, scanLiquidTokens as liquidTokens } from './response-alignment.mjs';
 
@@ -529,8 +529,7 @@ function differentLocalizedVariants(a, b) {
   if (aLocale == null || bLocale == null || aLocale === bLocale || a.kind !== b.kind) return false;
   if (a.lcid != null || b.lcid != null)
     return a.file === b.file && a.field === b.field && JSON.stringify(a.fieldPath) === JSON.stringify(b.fieldPath);
-  if (a.kind.startsWith('page-'))
-    return a.pageUrl != null && b.pageUrl != null && urlKey(a.pageUrl) === urlKey(b.pageUrl);
+  if (isPageSource(a)) return a.pageUrl != null && b.pageUrl != null && urlKey(a.pageUrl) === urlKey(b.pageUrl);
   return (
     a.kind === 'content-snippet' &&
     a.snippetName &&
@@ -1084,6 +1083,16 @@ function prepareLogicHunk(oldCore, added, { where, place, baseText, otherLanguag
   };
 }
 
+// A text field (encoding 'html-text', a page title) stands in the page HTML-encoded, as Mirage's document shell writes
+// it into <title> (inferred: no hosted capture of a title holding markup). Its changes are matched and laid over in
+// that form.
+const TEXT_ENTITIES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+function renderedText(src, text) {
+  return src.encoding === 'html-text' && typeof text === 'string'
+    ? text.replace(/[&<>"']/g, (c) => TEXT_ENTITIES[c])
+    : text;
+}
+
 function prepareHunk(baseLines, newLines, hunk, baseText, otherLanguages = []) {
   const oldCore = baseLines.slice(hunk.aStart, hunk.aEnd);
   const added = newLines.slice(hunk.bStart, hunk.bEnd);
@@ -1227,7 +1236,7 @@ export class HtmlRewriter {
         model.inlineSources
           .filter(
             (src) =>
-              !(src.kind.startsWith('page-') && src.pageUrl == null) &&
+              !(isPageSource(src) && src.pageUrl == null) &&
               (src.mode === 'block' ? inline.has(src.kind) : markup.has(src.kind) && changed.has(src.file)),
           )
           .map((src) => src.file),
@@ -1362,9 +1371,9 @@ export class HtmlRewriter {
     this.lineWeight = (line) => sourceLineWeight(frequency, weights, line);
 
     // the deployed version of a source; several sources can live in one file (enhanced format)
-    const baseOf = (src) => this.baselineReader(src);
+    const baseOf = (src) => renderedText(src, this.baselineReader(src));
     const unreadable = new Set();
-    const read = (src) => this.#readSourceForRefresh(src, unreadable);
+    const read = (src) => renderedText(src, this.#readSourceForRefresh(src, unreadable));
 
     const refreshState = {
       changed,
@@ -1436,7 +1445,7 @@ export class HtmlRewriter {
 
   /* NOSONAR: single-pass routine, splitting it would change shared state */ #refreshSource(src, state) {
     const { changed, inlineKinds, markupKinds, read, baseOf } = state;
-    if (src.kind.startsWith('page-') && src.pageUrl == null) {
+    if (isPageSource(src) && src.pageUrl == null) {
       // Only a local edit of such a source is a limitation worth reporting; an untouched one is
       // what the portal already serves. The model warns about the broken page hierarchy itself.
       if (changed.has(src.file) && !this.disabled.has(src.rel))
@@ -1583,7 +1592,7 @@ export class HtmlRewriter {
         ? []
         : this.model.inlineSources
             .filter((other) => other !== src && differentLocalizedVariants(src, other))
-            .map((other) => this.baselineReader(other))
+            .map((other) => renderedText(other, this.baselineReader(other)))
             .filter((value) => value != null)
             .map(normEol);
     const prepared = [];

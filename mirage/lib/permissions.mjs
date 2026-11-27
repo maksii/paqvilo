@@ -178,7 +178,7 @@ function membershipPortalIdentity(portal, state, model, contactId, contact) {
               roleIds: accountRoles,
               roles: accountRoles.map((roleId) => model.roles.get(roleId)?.name).filter(Boolean),
               message:
-                "Web roles associated with the persona's parent account are not applied locally. The 2017 Adxstudio portal source gave contacts their parent account's web roles; current Power Pages behaviour is not documented (mirage/docs/dataverse-parity.md, Platform changes).",
+                "Web roles associated with the persona's parent account are not applied, as on a hosted site: an account-linked web role was absent from Liquid user.roles and its Global read granted nothing, 13 and 48 minutes after the association and after a fresh sign-in (hosted session F1). The 2017 Adxstudio portal source gave contacts their parent account's web roles; current Power Pages does not (mirage/docs/dataverse-parity.md, Platform changes).",
             },
           ]
         : []),
@@ -446,6 +446,20 @@ export function buildPermissionModel(
             });
           } catch (error) {
             disable(rule, 'PERMISSION_CUSTOM_ACCESS_FILTER_UNSUPPORTED', error.message);
+            const dropped = error.details?.hostedJoinDropped;
+            // Security decision: Mirage keeps the refusal; the live site would widen access (session F1, AUTH-02e).
+            if (dropped)
+              diagnostics.push({
+                code: 'PERMISSION_CUSTOM_ACCESS_HOSTED_JOIN_DROPPED',
+                severity: 'warning',
+                id: rule.id,
+                entity: rule.entity,
+                hostedGrants: dropped.grants,
+                message:
+                  dropped.grants === 'every-row'
+                    ? `Custom Access permission '${rule.name ?? rule.id}' filters ${rule.entity} only through link-entity joins. A hosted Power Pages site drops the joins and generates an empty record filter, so the live site grants this permission's privileges on every ${rule.entity} row; Mirage refuses the permission instead. Move the predicate onto ${rule.entity} columns.`
+                    : `Custom Access permission '${rule.name ?? rule.id}' combines a root filter with link-entity joins on ${rule.entity}. A hosted Power Pages site drops the joins and keeps only the root filter, so the live site grants this permission on every row the root filter matches; Mirage refuses the permission instead. Move the linked predicate onto ${rule.entity} columns.`,
+              });
           }
         }
       }

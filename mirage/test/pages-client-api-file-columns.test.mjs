@@ -157,21 +157,20 @@ test('portal image reads project saved bytes, survive restart and distinguish th
       (await (await call('GET', `x_items?fetchXml=${encodeURIComponent(xml)}`)).json()).value[0].x_image,
       image,
     );
-    assert.equal(
-      (await (await call('GET', `contacts(${CONTACT})/x_items?$select=x_image`)).json()).value[0].x_image,
-      image,
-    );
+    // A navigation to another table and /<column> are refused before any read (hosted session F1 summary-F1 API-02c);
+    // the expansion carries the image.
+    assert.equal((await call('GET', `contacts(${CONTACT})/x_items?$select=x_image`)).status, 403);
     assert.equal(
       (await (await call('GET', `contacts(${CONTACT})?$select=fullname&$expand=x_items($select=x_image)`)).json())
         .x_items[0].x_image,
       image,
     );
-    assert.equal((await (await call('GET', `${route}/x_image`)).json()).value, image);
-    for (const suffix of ['', '?size=thumbnail']) {
-      const response = await call('GET', `${route}/x_image/$value${suffix}`);
-      assert.equal(response.status, 200);
-      assert.deepEqual(Buffer.from(await response.arrayBuffer()), Buffer.from(image, 'base64'));
-    }
+    assert.equal((await call('GET', `${route}/x_image`)).status, 403);
+    const thumbnail = await call('GET', `${route}/x_image/$value`);
+    assert.equal(thumbnail.status, 200);
+    assert.deepEqual(Buffer.from(await thumbnail.arrayBuffer()), Buffer.from(image, 'base64'));
+    // size=thumbnail is refused (hosted session F1 files runs a and b: 400 9004010D, cdscode 0x80060888).
+    assert.equal((await call('GET', `${route}/x_image/$value?size=thumbnail`)).status, 400);
     assert.equal((await call('GET', `${route}/x_image/$value?size=full`)).status, 204);
   };
   await checkReads();
@@ -191,8 +190,8 @@ test('portal image reads project saved bytes, survive restart and distinguish th
   assert.equal((await call('GET', `${route}/x_image/$value`)).status, 204);
 });
 
-// @test-kind contract: the local portal PNG route removes eXIf and serves center-cropped thumbnail pixels independently of CSS
-test('portal PNG upload drops EXIF and preserves full pixels separately from a centered thumbnail', async (t) => {
+// @test-kind observation: hosted sessions F1 files and F2 thumbs (runs a and b): size=full answers the upload byte for byte, a thumbnail read ignores Range and answers the whole center-cropped thumbnail (300x428 -> 144x144, 91x130 -> 91x91), the record projection carries the thumbnail
+test('portal PNG upload keeps its bytes for size=full and serves a whole centered thumbnail', async (t) => {
   const { app, call } = await simulator(t, { images: true, fullImage: true });
   const route = `x_items(${ITEM})/x_image`;
   const name = { 'content-type': 'application/octet-stream', 'x-ms-file-name': 'fixture.png' };
@@ -215,19 +214,20 @@ test('portal PNG upload drops EXIF and preserves full pixels separately from a c
 
   const full = await call('GET', `${route}/$value?size=full`);
   assert.equal(full.status, 200);
-  assert.deepEqual(
-    Buffer.from(await full.arrayBuffer()),
-    original,
-    'removing eXIf does not re-encode full-sized pixels',
-  );
+  assert.deepEqual(Buffer.from(await full.arrayBuffer()), uploaded, 'size=full is the upload, eXIf included');
 
-  const result = await call('GET', `${route}/$value`, undefined, { Range: 'bytes=0-4095' });
-  assert.equal(result.status, 206);
+  const result = await call('GET', `${route}/$value`, undefined, { Range: 'bytes=0-15' });
+  assert.equal(result.status, 200, 'a thumbnail read ignores Range');
+  assert.equal(result.headers.get('content-range'), null);
+  // F1 files: a thumbnail carries no disposition and no x-ms-file-name; size=thumbnail is refused with the CDS envelope.
+  assert.deepEqual([result.headers.get('content-disposition'), result.headers.get('x-ms-file-name')], [null, null]);
+  const named = await call('GET', `${route}/$value?size=thumbnail`);
+  assert.equal(named.status, 400);
+  assert.deepEqual(await named.json(), {
+    error: { code: '9004010D', message: 'Common Data Service error occurred.', cdscode: '0x80060888' },
+  });
   const thumbnailBytes = Buffer.from(await result.arrayBuffer());
-  assert.match(
-    result.headers.get('content-range'),
-    new RegExp(`^bytes 0-${thumbnailBytes.length - 1}/${thumbnailBytes.length}$`),
-  );
+  assert.ok(!thumbnailBytes.includes(Buffer.from('eXIf')), 'the re-encoded thumbnail carries no eXIf');
   const thumbnail = PNG.sync.read(thumbnailBytes);
   assert.deepEqual([thumbnail.width, thumbnail.height], [144, 144]);
   assert.deepEqual([...thumbnail.data.subarray(0, 4)], interior);
@@ -241,6 +241,24 @@ test('portal PNG upload drops EXIF and preserves full pixels separately from a c
   const smallResult = await call('GET', `${route}/$value`);
   const smallThumbnail = PNG.sync.read(Buffer.from(await smallResult.arrayBuffer()));
   assert.deepEqual([smallThumbnail.width, smallThumbnail.height], [91, 91]);
+  // An image that already is its thumbnail is re-encoded too, so its eXIf never reaches the thumbnail.
+  const squarePng = PNG.sync.write(new PNG({ width: 100, height: 100 }));
+  const taggedSquare = Buffer.concat([squarePng.subarray(0, 33), chunk, squarePng.subarray(33)]);
+  assert.equal((await call('PATCH', route, taggedSquare, name)).status, 204);
+  const squareBytes = Buffer.from(await (await call('GET', `${route}/$value`)).arrayBuffer());
+  assert.ok(!squareBytes.includes(Buffer.from('eXIf')), 'a square thumbnail carries no eXIf');
+  assert.deepEqual([PNG.sync.read(squareBytes).width, PNG.sync.read(squareBytes).height], [100, 100]);
+  const squareFull = await call('GET', `${route}/$value?size=full`);
+  assert.deepEqual(Buffer.from(await squareFull.arrayBuffer()), taggedSquare, 'size=full stays the upload');
+  // F1 files: an image uploaded without a name (to an empty column) downloads at size=full as inline Untitled.txt.
+  assert.equal((await call('DELETE', route)).status, 204);
+  assert.equal((await call('PATCH', route, uploaded, { 'content-type': 'application/octet-stream' })).status, 204);
+  const nameless = await call('GET', `${route}/$value?size=full`);
+  assert.deepEqual(
+    [nameless.status, nameless.headers.get('content-disposition'), nameless.headers.get('x-ms-file-name')],
+    [200, 'inline; filename=Untitled.txt', 'Untitled.txt'],
+  );
+  await nameless.arrayBuffer();
 
   const file = app.store.recordPipeline.fileContentInternal;
   const internal = {
@@ -258,8 +276,8 @@ test('portal PNG upload drops EXIF and preserves full pixels separately from a c
   assert.deepEqual(Buffer.from(internalFull.body.$content, 'base64'), uploaded);
 });
 
-// @test-kind contract: portal JPEG image uploads remove Exif APP1 while preserving all other JPEG bytes
-test('portal JPEG upload removes EXIF from image columns while leaving ordinary file bytes intact', async (t) => {
+// @test-kind observation: hosted sessions F1 files and F2 thumbs (runs a and b) answer size=full of an Exif JPEG byte for byte with its Exif APP1; file columns keep their bytes as well
+test('portal JPEG upload keeps its Exif for size=full, as file columns keep their bytes', async (t) => {
   const { call } = await simulator(t, { images: true, fullImage: true });
   // A 16x16 solid-color JPEG generated for this fixture, with no preexisting Exif.
   const jpeg = Buffer.from(
@@ -274,15 +292,17 @@ test('portal JPEG upload removes EXIF from image columns while leaving ordinary 
   const exif = app1(Buffer.from('45786966000049492a0008000000000000000000', 'hex'));
   const xmp = app1(Buffer.from('http://ns.adobe.com/xap/1.0/\0fixture', 'utf8'));
   const segmented = Buffer.concat([jpeg.subarray(0, 2), exif, xmp, jpeg.subarray(2)]);
-  const expected = Buffer.concat([jpeg.subarray(0, 2), xmp, jpeg.subarray(2)]);
   const image = `x_items(${ITEM})/x_image`;
   const file = `x_items(${ITEM})/x_doc`;
   const headers = { 'content-type': 'application/octet-stream', 'x-ms-file-name': 'app1-fixture.jpg' };
 
   assert.equal((await call('PATCH', image, segmented, headers)).status, 204);
   const download = await call('GET', `${image}/$value?size=full`);
-  assert.deepEqual([download.status, download.headers.get('mimetype')], [200, 'image/jpeg']);
-  assert.deepEqual(Buffer.from(await download.arrayBuffer()), expected);
+  assert.deepEqual(
+    [download.status, download.headers.get('content-disposition'), download.headers.get('x-ms-file-name')],
+    [200, 'inline; filename=app1-fixture.jpg', 'app1-fixture.jpg'],
+  );
+  assert.deepEqual(Buffer.from(await download.arrayBuffer()), segmented);
 
   assert.equal((await call('PATCH', file, segmented, headers)).status, 204);
   const fileDownload = await call('GET', `${file}/$value`);
@@ -303,11 +323,13 @@ test('image hydration and binary downloads preserve the portal reader field-secu
   });
   assert.equal((await (await call('GET', `${route}?$select=x_image`)).json()).x_image, null);
   assert.equal((await (await call('GET', 'x_items?$select=x_image')).json()).value[0].x_image, null);
-  assert.equal((await call('GET', `${route}/x_image`)).status, 204);
+  // /<column> is refused before any read (hosted session F1 summary-F1 API-02c); /$value keeps the mask.
+  assert.equal((await call('GET', `${route}/x_image`)).status, 403);
   assert.equal((await call('GET', `${route}/x_image/$value`)).status, 204);
   assert.ok(app.store.tableRows('x_item')[0].x_image, 'the stored image still exists behind the denied projection');
 });
 
+// @test-kind observation: hosted session F1 files runs a and b (application/octet-stream, inline; filename=<name> and x-ms-file-name, no mimetype or x-ms-file-size); the round trip, permissions, limits and the added nosniff are the local portal byte seam
 test("a file column round-trips through the portal Web API with the visitor's table permissions", async (t) => {
   const { call } = await simulator(t);
   const octet = { 'content-type': 'application/octet-stream' };
@@ -317,12 +339,12 @@ test("a file column round-trips through the portal Web API with the visitor's ta
   );
   const download = await call('GET', `x_items(${ITEM})/x_doc/$value`);
   assert.equal(download.status, 200);
-  // Never the stored type on the portal origin: octet-stream as an attachment, the stored type in mimetype.
+  // Never the stored type on the portal origin: octet-stream inline with the name (hosted session F1 files) and the
+  // local nosniff; no mimetype or x-ms-file-size header.
   assert.equal(download.headers.get('content-type'), 'application/octet-stream');
-  assert.equal(download.headers.get('mimetype'), 'text/plain');
   assert.equal(download.headers.get('x-content-type-options'), 'nosniff');
-  assert.equal(download.headers.get('x-ms-file-size'), '5');
-  assert.match(download.headers.get('content-disposition'), /^attachment;.*filename\*=UTF-8''r%C3%A9sum%C3%A9\.txt/);
+  assert.deepEqual([download.headers.get('mimetype'), download.headers.get('x-ms-file-size')], [null, null]);
+  assert.match(download.headers.get('content-disposition'), /^inline;.*filename\*=UTF-8''r%C3%A9sum%C3%A9\.txt/);
   assert.equal(await download.text(), 'hello');
   const named = await (await call('GET', `x_items(${ITEM})?$select=x_name`)).json();
   assert.equal(named.x_name, 'Mine');
@@ -370,10 +392,10 @@ test("a file column round-trips through the portal Web API with the visitor's ta
   );
   const page = await call('GET', `x_items(${ITEM})/x_doc/$value`);
   assert.deepEqual(
-    [page.headers.get('content-type'), page.headers.get('mimetype')],
-    ['application/octet-stream', 'text/html'],
+    [page.headers.get('content-type'), page.headers.get('x-content-type-options')],
+    ['application/octet-stream', 'nosniff'],
   );
-  assert.match(page.headers.get('content-disposition'), /^attachment/);
+  assert.equal(page.headers.get('content-disposition'), 'inline; filename=a.html');
   assert.equal((await call('PATCH', `x_items(${OTHER})/x_doc`, 'x', octet)).status, 403);
   assert.equal((await call('DELETE', `x_items(${OTHER})/x_doc`)).status, 403);
   assert.equal((await call('DELETE', `x_items(${ITEM})/x_doc`)).status, 204);
@@ -401,8 +423,8 @@ test('portal file ranges return partial bytes and reject continuation after repl
   const etag = first.headers.get('etag');
   assert.match(etag ?? '', /^"[0-9a-f]{64}"$/);
   assert.deepEqual(
-    [first.status, first.headers.get('content-range'), first.headers.get('x-ms-file-size'), await first.text()],
-    [206, 'bytes 0-1/5', '5', 'fi'],
+    [first.status, first.headers.get('content-range'), first.headers.get('x-ms-file-name'), await first.text()],
+    [206, 'bytes 0-1/5', 'file.txt', 'fi'],
   );
   const second = await call('GET', `${file}/$value`, undefined, { Range: 'bytes=2-9', 'If-Match': etag });
   assert.deepEqual(
@@ -449,6 +471,59 @@ test('observed portal file range matches the captured download envelopes', async
   assert.match(outside.headers.get('content-type'), /^application\/json;\s*charset=utf-8$/i);
   for (const header of ['content-range', 'etag', 'accept-ranges']) assert.equal(outside.headers.get(header), null);
   assert.equal((await outside.json()).error.code, '9004010D');
+});
+
+// @test-kind observation: hosted session F1 API-04g, paqvilo-developer hosted-f1 summary-F1 and parity/portal-file-range-a.json and -b.json (runs a and b, 13 cases identical): the exact 416 body, multi-range, a reversed range and a malformed Range header of an observed portal file download
+test('observed portal file range answers unsatisfiable, multiple, reversed and malformed ranges as captured', async (t) => {
+  const { call } = await simulator(t, {
+    observed: { webApiFileDownload: 'portal-range', evidence: 'Hosted F1 file range captures.' },
+  });
+  const file = `x_items(${ITEM})/x_doc`;
+  // An invented 100-byte body, the captured file's size.
+  const content = 'Invented range body 0123456789 '.repeat(4).slice(0, 100);
+  const uploaded = await call('PATCH', file, content, {
+    'content-type': 'application/octet-stream',
+    'x-ms-file-name': 'invented.txt',
+  });
+  assert.equal(uploaded.status, 204);
+  const download = (range) => call('GET', `${file}/$value`, undefined, { Range: range });
+  const unsatisfiable =
+    '{"error":{"code":"9004010D","message":"Common Data Service error occurred.","cdscode":"0x80090000"}}';
+  for (const range of ['bytes=100-100', 'bytes=1000-1015', 'bytes=0-1,4-5']) {
+    const response = await download(range);
+    assert.equal(response.status, 416, range);
+    assert.match(response.headers.get('content-type'), /^application\/json; charset=utf-8$/i);
+    assert.equal(response.headers.get('content-length'), '100', range);
+    for (const header of ['content-range', 'etag', 'accept-ranges']) assert.equal(response.headers.get(header), null);
+    assert.equal(await response.text(), unsatisfiable, range);
+  }
+  const reversed = await download('bytes=20-10');
+  assert.equal(reversed.status, 500);
+  assert.equal(reversed.headers.get('content-length'), '99');
+  assert.equal(
+    await reversed.text(),
+    '{"error":{"code":"9004010A","message":"An unexpected error occurred while processing the request"}}',
+  );
+  // The front end refuses a Range header it cannot parse before the portal sees the request.
+  const malformed = await download('bytes=abc');
+  assert.equal(malformed.status, 400);
+  assert.equal(malformed.headers.get('content-type'), 'text/html; charset=us-ascii');
+  const page = await malformed.text();
+  assert.equal(Buffer.byteLength(page), 339);
+  assert.equal(malformed.headers.get('content-length'), '339');
+  assert.match(page, /<TITLE>Bad Request<\/TITLE>[\s\S]*<h2>Bad Request - Invalid Header<\/h2>/);
+  for (const [range, contentRange, bytes] of [
+    ['bytes=99-99', 'bytes 99-99/100', content.slice(99)],
+    ['bytes=90-200', 'bytes 90-99/100', content.slice(90)],
+    ['bytes=95-', 'bytes 95-99/100', content.slice(95)],
+    ['bytes=0-0', 'bytes 0-0/100', content.slice(0, 1)],
+  ]) {
+    const response = await download(range);
+    assert.deepEqual(
+      [response.status, response.headers.get('content-range'), await response.text()],
+      [206, contentRange, bytes],
+    );
+  }
 });
 
 test('closing the runtime drains an accepted blob release before its state directory is removed', async () => {

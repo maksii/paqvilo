@@ -1,4 +1,4 @@
-// @test-kind unproven: local model of the legacy list workflow dialog (Adxstudio EntityGridExtensions renders the first workflow action's dialog; entity-grid.js writes a CustomizeModal action's title, confirmation and primary text into it, never its close text, and never restores it); no hosted capture of a configured list workflow action
+// @test-kind observation: paqvilo-developer hosted-f2 summary-F2 LIST-01d (lists.json and lists-bs3.json, runs a and b, 2026-11-26): a list's workflow actions, with or without their own dialog texts and a grid WorkflowDialog, draw no link in the grid's rows, and the list's workflow dialog keeps the default texts with its body HTML-escaped; replayed on invented loopback fixtures
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -108,49 +108,26 @@ async function launch(t) {
   return { app, page, errors };
 }
 
-test('a list workflow action writes its own dialog texts into the grid dialog as the legacy grid does', async (t) => {
-  const { app, page, errors } = await launch(t);
+test('a list draws no workflow link in its rows and keeps the default workflow dialog', async (t) => {
+  const { page, errors } = await launch(t);
   const row = page.locator(`.entity-grid tr[data-id="${ROW}"]`);
   await row.waitFor();
+  assert.deepEqual(await row.locator('a.workflow-link').count(), 0);
+  assert.doesNotMatch(await row.textContent(), /Plain run|Custom run/);
   const modal = page.locator('.entity-grid .modal-run-workflow');
-  const texts = () =>
-    modal.evaluate((element) => {
-      const primary = element.querySelector('.modal-footer button.primary');
-      return {
-        title: element.querySelector('.modal-title').textContent,
-        body: element.querySelector('.modal-body').textContent,
-        primary: primary.textContent,
-        primaryTitle: primary.getAttribute('title'),
-        cancel: element.querySelector('.modal-footer button.cancel').textContent,
-      };
-    });
-  // The extended action (index 1) comes before the item action (index 2), and the dialog is the first action's.
-  assert.deepEqual(await row.locator('a.workflow-link').allTextContents(), ['Plain run', 'Custom run']);
-  assert.deepEqual(await texts(), {
-    title: 'Grid title',
-    body: 'Are you sure you want to run this workflow?',
-    primary: 'Go',
-    primaryTitle: null,
-    cancel: 'Back',
-  });
-  await row.locator('a.workflow-link', { hasText: 'Custom run' }).evaluate((link) => link.click());
-  await modal.locator('.modal-footer button.primary', { hasText: 'Start' }).waitFor({ state: 'attached' });
-  // The action's close text never reaches the dialog (legacy data-modal-canled-action).
-  assert.deepEqual(await texts(), {
-    title: 'Custom title',
-    body: 'Run the custom process?',
-    primary: 'Start',
-    primaryTitle: 'Start',
-    cancel: 'Back',
-  });
-  await modal.locator('.modal-footer button.cancel').evaluate((button) => button.click());
-  // An action without its own texts leaves the dialog as the last customized action wrote it.
-  await row.locator('a.workflow-link', { hasText: 'Plain run' }).evaluate((link) => link.click());
-  const plain = await texts();
-  assert.deepEqual([plain.title, plain.primary, plain.cancel], ['Custom title', 'Start', 'Back']);
-  const done = page.waitForResponse((response) => response.url().includes('/_services/execute-workflow/'));
-  await modal.locator('.modal-footer button.primary').evaluate((button) => button.click());
-  assert.equal((await done).status(), 204);
-  assert.equal(app.store.tableRows('contoso_widget')[0].status, 3);
+  assert.deepEqual(
+    await modal.evaluate((element) => ({
+      title: element.querySelector('.modal-title').textContent,
+      body: element.querySelector('.modal-body').textContent,
+      primary: element.querySelector('.modal-footer button.primary').textContent,
+      cancel: element.querySelector('.modal-footer button.cancel').textContent,
+    })),
+    {
+      title: ' Run workflow',
+      body: '<p>Are you sure you want to run this workflow?</p>',
+      primary: 'Run workflow',
+      cancel: 'Cancel',
+    },
+  );
   assert.deepEqual(errors, []);
 });

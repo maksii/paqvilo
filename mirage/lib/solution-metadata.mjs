@@ -89,6 +89,7 @@ function parseViewDocument(xml, entity, file, lcid) {
   for (const view of document.name === 'savedquery' ? [document] : descendants(document, 'savedquery')) {
     const fetch = descendants(child(view, 'fetchxml'), 'fetch')[0];
     const layout = child(view, 'layoutxml');
+    const grid = descendants(layout, 'grid')[0];
     views.push({
       id: norm(text(view, 'savedqueryid') ?? path.basename(file, '.xml')),
       entity,
@@ -108,6 +109,8 @@ function parseViewDocument(xml, entity, file, lcid) {
           ...(c.attrs.width == null ? { widthless: true } : {}),
           ...(c.attrs.disableSorting === '1' ? { sortDisabled: true } : {}),
         })),
+      // The exported layout as XML, for services that return the view definition (portal-chart-builder.mjs).
+      ...(grid ? { layoutXml: serialize(grid) } : {}),
       file,
     });
   }

@@ -22,7 +22,7 @@ test('Canvas runs trusted manifest-bound PCF, synchronizes outputs/events and pr
   };
   await write(
     'portal/website.yml',
-    'adx_websiteid: 77777777-7777-4777-8777-777777777777\nadx_name: Invented\nadx_enhancedauthorization: 1\n',
+    'adx_websiteid: 77777777-7777-4777-8777-777777777777\nadx_name: Invented\nadx_enhancedauthorization: 3\n',
   );
   await write('portal/Home.webpage.yml', 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\n');
   await write(

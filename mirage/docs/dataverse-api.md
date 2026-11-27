@@ -493,6 +493,18 @@ else the default refusal. Several response shapes and error codes are local choi
   `CalculateActualValueOpportunity` (a won opportunity) answers the sum of its products' extended amounts, else its
   estimated value, and writes it to `actualvalue`. The copied columns, the state checks' texts and the written value
   are local choices.
+- `QualifyLead`, bound to a lead
+  ([Learn](https://learn.microsoft.com/dotnet/api/microsoft.crm.sdk.messages.qualifyleadrequest)): an open lead becomes
+  Qualified (state 1) with `Status` (-1 is the state's default status; a status of another state is refused) and, as
+  `CreateAccount`, `CreateContact` and `CreateOpportunity` ask, gets an account, a contact and an opportunity whose
+  `originatingleadid` is the lead. With both an account and a contact, the account is the contact's parent customer
+  and the contact the account's primary contact. The opportunity takes `OpportunityCurrencyId`, `SourceCampaignId`
+  and `OpportunityCustomerId` (else the new account, else the new contact), and the lead's
+  `qualifyingopportunityid`. The answer is the created records' references as a
+  `Collection(Microsoft.Dynamics.CRM.crmbaseentity)`. A closed lead is refused. Local choices: the copied columns
+  (every column the new table also has, the account name from `companyname`, the opportunity name from `subject`), no
+  account for a lead without a company name, no duplicate detection and the refusal texts. An organization without a lead table gets an insert-only stand-in (entity set `leads`, key `leadid`, the columns
+  QualifyLead uses and the documented lead states and status reasons), so `$metadata` declares the bound type.
 
 ### Duplicate detection
 
@@ -552,7 +564,8 @@ readable like any other. Writes through the portal and `/_sim/` are audited too,
   workflow definition or draft workflow template can be published."). A Web API create with another `type` answers 400
   `0x8004431a` ("… The value 9 of 'type' on record of type 'workflow' is outside the valid range. Accepted Values:
   1,2,3"). A classic (category 0) definition created or updated through the Web API is accepted when its XAML is
-  designer-shaped: the supported subset below, without a Postpone and with `xml:space="preserve"` on an empty
+  designer-shaped: the supported subset below, without a Postpone (other than the non-blocking one a designer Timeout wait
+  holds) and with `xml:space="preserve"` on an empty
   RetrieveCurrentTime parameter list; any other XAML answers 400 `0x80045040` ("This workflow cannot be created, updated
   or published because it was created outside the Microsoft Dynamics 365 Web application. …"). Activation checks each
   lookup literal of the XAML: a row that does not exist answers 400 `0x80048455` ("Error: This workflow has errors and
@@ -616,6 +629,13 @@ readable like any other. Writes through the portal and `/_sim/` are audited too,
   it. A delete of the record wakes it and ends the job Canceled (local model). An on-demand run that suspends hands its
   system job to the same runner. Waiting jobs survive a restart. A real-time definition that waits is not interpreted
   ("A real-time workflow cannot use wait conditions or Postpone.").
+- Timeout waits, as the process designer saves them (hosted runs dc2wa/dc2wb, summary-F6 DATA-04c2): the branch condition
+  "Process Timeout equals {Due}" or "{N Minutes After Due}" (RetrieveLastExecutionTime, the date column, an optional
+  XrmTimeSpan offset added to it, an unset date read as never, the test `UtcNow >= due` and a non-blocking Postpone to
+  the due time as the branch's Else). The job waits 1/10 with wait-until the due time (with its offset) and completes
+  when that time comes; a parallel wait branch with a column condition waits until the earliest timeout, and a write of
+  a column a branch reads still wakes it before then (Ready: the branch runs, job Succeeded; the timeout: Stop workflow
+  Canceled, job 3/32). The Web API creates and activates these texts. A Yes/No condition value is the literal `"1"`.
 - Postpone is a local model: every Postpone form was refused at Web API create in the hosted session, so none ran there.
   Postpone with `BlockExecution` True and `PostponeUntil` a DateTime variable suspends the run until that time on the
   runtime clock (`postponeuntil`); BlockExecution False, or a time already passed, does not suspend.

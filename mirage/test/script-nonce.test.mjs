@@ -24,7 +24,6 @@ import {
   nonceInjectedScripts,
   scriptNoncePendingAttribute,
   scriptNonceInjectedAttribute,
-  staticDocumentScriptNonces,
   finalizePortalProvenance,
 } from '../lib/render-provenance.mjs';
 import { injectRuntime } from '../lib/platform.mjs';
@@ -60,7 +59,7 @@ const decide = (parts) => {
   return applyScriptNonces({ fragment, index, nonce: NONCE, pending: 'data-paqvilo-nonce-pending-test' });
 };
 
-// @test-kind compatibility: Learn "Manage your site's Content Security Policy": 'nonce' in the HTTP/Content-Security-Policy and HTTP/Content-Security-Policy-Report-Only site settings is replaced by a unique per-request nonce; both settings may be used together
+// @test-kind compatibility+observation: Learn "Manage your site's Content Security Policy": 'nonce' in the HTTP/Content-Security-Policy and HTTP/Content-Security-Policy-Report-Only site settings is replaced by a unique per-request nonce; both settings may be used together. The enforced expansion is the one hosted session F3 sent for a custom 'nonce' setting (run a, captures runs/a/csp-custom), the nonce length the one hosted session F5 sent (256 bits; captures http-*-private-1b)
 test('the documented nonce placeholder becomes the response nonce in the enforced and report-only policies', () => {
   const site = portal({
     'HTTP/Content-Security-Policy':
@@ -73,20 +72,21 @@ test('the documented nonce placeholder becomes the response nonce in the enforce
   const headers = siteHeaders(site, { nonce: NONCE, kind: 'page', loopback: false });
   assert.equal(
     headers['content-security-policy'],
-    `script-src 'self' content.powerapps.com 'nonce-${NONCE}'; style-src 'unsafe-inline' https:;`,
+    `script-src 'self' content.powerapps.com  'unsafe-eval' 'nonce-${NONCE}' 'sha256-YpBM7xPJQJfSSthwTVGpeXpUbzvd1XmAqvdlDUvm/QM=' 'unsafe-hashes' 'inject-hashes'; style-src 'unsafe-inline' https:;`,
   );
+  // The report-only policy, whose hosted text is not observed, gets the nonce alone.
   assert.equal(headers['content-security-policy-report-only'], `script-src 'nonce-${NONCE}' 'strict-dynamic'`);
   assert.deepEqual(
     siteHttpPolicyDiagnostics(site).map((entry) => entry.code),
     ['PORTAL_HTTP_CSP_LOOPBACK_TRANSPORT'],
   );
-  // Two calls of the generator never repeat; the value is a CSP base64-value of 128 bits.
+  // Two calls of the generator never repeat; the value is a CSP base64-value of 256 bits, as long as hosted nonces.
   const [first, second] = [cspNonce(), cspNonce()];
   assert.notEqual(first, second);
-  assert.match(first, /^[A-Za-z0-9+/]{22}==$/);
+  assert.match(first, /^[A-Za-z0-9+/]{43}=$/);
 });
 
-// @test-kind security: a policy whose nonce no script carries is never sent: responses that did not nonce their scripts keep the earlier omission, and policies without a nonce source are unchanged
+// @test-kind security+observation: a policy whose nonce no script carries is never sent on a document whose scripts were not decided: such responses keep the earlier omission, and policies without a nonce source are unchanged; the enforced expansion is the one hosted session F3 sent for a custom 'nonce' setting (run a, captures runs/a/csp-custom)
 test('a nonce policy is sent only with the nonce its scripts carry; other policies are unchanged', () => {
   const site = portal({
     'HTTP/Content-Security-Policy': "script-src 'self' 'nonce'",
@@ -99,7 +99,7 @@ test('a nonce policy is sent only with the nonce its scripts carry; other polici
     "connect-src 'self'",
   );
   assert.deepEqual(siteHeaders(site, { nonce: NONCE, confinement: "connect-src 'self'" })['content-security-policy'], [
-    `script-src 'self' 'nonce-${NONCE}'`,
+    `script-src 'self'  'unsafe-eval' 'nonce-${NONCE}' 'sha256-YpBM7xPJQJfSSthwTVGpeXpUbzvd1XmAqvdlDUvm/QM=' 'unsafe-hashes' 'inject-hashes'`,
     "connect-src 'self'",
   ]);
   const plain = portal({ 'HTTP/Content-Security-Policy': "default-src 'self'" });
@@ -137,7 +137,7 @@ test('fixed or malformed nonce sources are still omitted with PORTAL_HTTP_CSP_NO
   assert.equal(sitePolicy(portal({ 'HTTP/Content-Security-Policy': 'report-uri /nonce' })).reason, 'site-setting');
 });
 
-// @test-kind unproven: Learn says the platform secures inline event handlers "through automatic hash generation"; the hosted header text of those hashes is not documented, so 'unsafe-hashes' plus one sha256 source per proved handler in the script directives is a local model
+// @test-kind observation+unproven: hosted session F3 (run a, captures runs/a/csp-custom) expanded a custom 'nonce' in script-src with the page's handler hashes after 'unsafe-hashes', each followed by a space and one more space after them; a placeholder in another directive getting the nonce alone is a local model
 test('handler hashes join only the directives that govern inline event handlers', () => {
   // The site's policy as the hosted HTTPS site sends it, with the response's nonce and handler hashes.
   const substituted = (policy, handlerHashes) =>
@@ -147,9 +147,12 @@ test('handler hashes join only the directives that govern inline event handlers'
   const policy = "default-src 'self'; script-src 'self' 'nonce'; style-src 'nonce' 'unsafe-inline'";
   assert.equal(
     substituted(policy, ['h1', 'h2', 'h1']),
-    `default-src 'self'; script-src 'self' 'nonce-${NONCE}' 'unsafe-hashes' 'sha256-h1' 'sha256-h2'; style-src 'nonce-${NONCE}' 'unsafe-inline'`,
+    `default-src 'self'; script-src 'self'  'unsafe-eval' 'nonce-${NONCE}' 'sha256-YpBM7xPJQJfSSthwTVGpeXpUbzvd1XmAqvdlDUvm/QM=' 'unsafe-hashes' 'sha256-h1' 'sha256-h2'  ; style-src 'nonce-${NONCE}' 'unsafe-inline'`,
   );
-  assert.equal(substituted("script-src 'nonce'"), `script-src 'nonce-${NONCE}'`);
+  assert.equal(
+    substituted("script-src 'nonce'"),
+    `script-src  'unsafe-eval' 'nonce-${NONCE}' 'sha256-YpBM7xPJQJfSSthwTVGpeXpUbzvd1XmAqvdlDUvm/QM=' 'unsafe-hashes' 'inject-hashes'`,
+  );
 });
 
 test('exported source scripts and platform scripts get the nonce; data-written script markup does not', () => {
@@ -183,6 +186,113 @@ test('exported source scripts and platform scripts get the nonce; data-written s
     result.scriptPolicy.withheld.map((entry) => entry.reason),
     ['unaccounted', 'unaccounted', 'unaccounted'],
   );
+});
+
+// @test-kind observation+security: hosted session F3 (two runs, captures runs/a/csp-base, runs/b/csp-base and runs/a/csp-custom) gave the nonce to every script element of a rendered page (template, record field, snippet, built string and an authored external script) and hashed a handler a record wrote; only observed.scriptNonceScope "every-script" does so locally, and without it the same markup keeps the fail-closed decisions
+test('observed every-script scope nonces every script element and hashes every handler, data-written ones included', () => {
+  const parts = [
+    '<script>window.authored = 1;</script>',
+    '<div>',
+    { data: '<script>window.injected = 1;</script><img src="x" onerror="window.dataHandler = 1">' },
+    '</div>',
+    { raw: '<script>window.unaccounted = 1;</script>' },
+    '<script src="https://cdn.example.test/authored.js"></script>',
+  ];
+  const { fragment, index } = fragmentOf(parts);
+  const pending = 'data-paqvilo-nonce-pending-test';
+  const every = applyScriptNonces({ fragment, index, nonce: NONCE, pending, everyScript: true });
+  assert.deepEqual(
+    scripts(every.html).map((script) => script.nonce),
+    [NONCE, NONCE, NONCE, NONCE],
+  );
+  assert.deepEqual(every.scriptPolicy.withheld, []);
+  assert.deepEqual(every.scriptPolicy.handlerHashes, [hash('window.dataHandler = 1')]);
+  // The default: the same markup keeps the proved decisions.
+  const proven = decide(parts);
+  assert.deepEqual(
+    scripts(proven.html).map((script) => script.nonce),
+    [NONCE, null, null, null],
+  );
+  assert.deepEqual(proven.scriptPolicy.handlerHashes, []);
+});
+
+// @test-kind contract: observed.scriptNonceScope is a per-site choice that needs evidence; the default is the fail-closed "proven"
+test('observed.scriptNonceScope accepts proven or every-script with evidence', async () => {
+  const { observedConfig } = await import('../lib/project-config.mjs');
+  assert.equal(
+    observedConfig({ scriptNonceScope: 'every-script', evidence: 'invented capture' }).scriptNonceScope,
+    'every-script',
+  );
+  assert.throws(() => observedConfig({ scriptNonceScope: 'every-script' }), /evidence/);
+  assert.throws(() => observedConfig({ scriptNonceScope: 'all', evidence: 'invented capture' }), /scriptNonceScope/);
+});
+
+// @test-kind security: source debugging (the sourceURL comment Mirage adds to an authored inline script) changes no nonce decision: a page copy's authored script keeps the nonce through the editable tag and the page proxy, and a script a Liquid string builds stays without it
+test('source-debugged page copy scripts keep their nonce decisions through the editable tag', async (t) => {
+  const { default: fsp } = await import('node:fs/promises');
+  const { default: os } = await import('node:os');
+  const { default: path } = await import('node:path');
+  const { importPortal } = await import('../lib/importer.mjs');
+  const { createPortalRenderer } = await import('../lib/liquid.mjs');
+  const { runWithSourceDebugging } = await import('../lib/source-debug.mjs');
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'paqvilo-debug-copy-'));
+  t.after(() => fsp.rm(root, { recursive: true, force: true }));
+  const files = {
+    'website.yml': 'adx_websiteid: invented-site\nadx_name: Invented debug site',
+    'web-pages/home/Home.webpage.yml':
+      'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\nadx_isroot: true\nadx_pagetemplateid: page',
+    'web-pages/home/Home.webpage.copy.html':
+      "<script>window.authored = 'ran';</script>" +
+      "{% assign built = '<scr' | append: 'ipt>window.built = 1;</scr' | append: 'ipt>' %}{{ built }}",
+    'page-templates/Page.pagetemplate.yml':
+      'adx_pagetemplateid: page\nadx_webtemplateid: page\nadx_usewebsiteheaderandfooter: false',
+    'web-templates/Page.webtemplate.yml': 'adx_webtemplateid: page\nadx_name: Page',
+    'web-templates/Page.webtemplate.source.html':
+      "<div>{% editable page 'adx_copy' type: 'html', liquid: true %}</div><div>{% editable page 'adx_copy' type: 'html', liquid: false %}</div>",
+  };
+  for (const [relative, text] of Object.entries(files)) {
+    await fsp.mkdir(path.dirname(path.join(root, relative)), { recursive: true });
+    await fsp.writeFile(path.join(root, relative), text);
+  }
+  const renderer = createPortalRenderer(await importPortal(root));
+  const decisions = async (debug) =>
+    runWithSourceDebugging(debug, async () => {
+      const rendered = await renderer.renderPage('/', {});
+      const { html, scriptPolicy } = renderer.scriptNoncesFor(rendered, { nonce: NONCE, pending: 'data-pending' });
+      return {
+        debugged: html.includes('//# sourceURL='),
+        scripts: scripts(html).map((script) => [script.text.split('\n')[0], script.nonce]),
+        withheld: scriptPolicy.withheld.map((entry) => entry.reason),
+      };
+    });
+  const plain = await decisions(false);
+  const debugged = await decisions(true);
+  assert.equal(plain.debugged, false);
+  assert.equal(debugged.debugged, true);
+  // The Liquid copy: the authored script keeps the nonce, the built one does not; the literal copy writes the
+  // assign tag as text, so only its authored script is a script element.
+  const expected = [
+    ["window.authored = 'ran';", NONCE],
+    ['window.built = 1;', null],
+    ["window.authored = 'ran';", NONCE],
+  ];
+  assert.deepEqual(plain.scripts, expected);
+  assert.deepEqual(debugged.scripts, expected);
+  assert.deepEqual(debugged.withheld, plain.withheld);
+});
+
+// @test-kind observation: hosted session F3 (two runs, captures runs/a/csp-base and runs/b/csp-base) listed the platform shell's handler hashes first and the page's own after them, as two groups
+test("handler hashes are grouped by writer: the platform's, then the page's", () => {
+  const result = decide([
+    { platform: '<img src="x" onerror="window.platformHandler = 1">' },
+    '<button onclick="window.authoredHandler = 1">x</button>',
+    { platform: '<img src="y" onerror="window.secondPlatform = 1">' },
+  ]);
+  assert.deepEqual(result.scriptPolicy.handlerHashGroups, [
+    [hash('window.platformHandler = 1'), hash('window.secondPlatform = 1')],
+    [hash('window.authoredHandler = 1')],
+  ]);
+  assert.deepEqual(result.scriptPolicy.handlerHashes, result.scriptPolicy.handlerHashGroups.flat());
 });
 
 test('a value inside an authored script cannot close it and open a nonced one', () => {
@@ -695,17 +805,6 @@ test('render provenance and nonces are decided in one pass with the same result'
   assert.ok(!plain.html.includes('nonce='));
 });
 
-test('a static exported document (a code site entry) nonces its inline scripts only', () => {
-  const result = staticDocumentScriptNonces(
-    '<!doctype html><html><head><script>window.boot = 1;</script><script type="module" src="/assets/app.js"></script></head></html>',
-    { nonce: NONCE, pending: 'data-p' },
-  );
-  assert.deepEqual(
-    scripts(result.html).map((script) => script.nonce),
-    [NONCE, null],
-  );
-});
-
 // ---- The served page
 let served;
 after(async () => (await served)?.close());
@@ -753,6 +852,32 @@ for (const dest of [null, 'document'])
     assert.ok(policy.includes(`'sha256-${hash("window.clicked = 'ran'")}'`), policy);
     assert.ok(!policy.includes(hash("window.dataHandler = 'ran'")), policy);
   });
+
+// @test-kind observation: hosted session F3 (two runs, captures runs/a/csp-base and runs/b/csp-base) nonced the scripts and hashed the handlers a record wrote on a served page; a site observed with scriptNonceScope "every-script" is served the same way and reports nothing withheld
+test('a served page of a site observed with every-script scope nonces the record-written script and hashes its handler', async (t) => {
+  const portal = await startNoncePortal({
+    observed: { scriptNonceScope: 'every-script', evidence: 'Invented nonce capture' },
+  });
+  t.after(() => portal.close());
+  const response = await fetch(portal.sim.url + '/', { headers: { 'sec-fetch-dest': 'document' } });
+  const html = await response.text();
+  const nonce = pageNonce(response.headers);
+  assert.ok(nonce);
+  assert.deepEqual(
+    scripts(html)
+      .filter((script) => script.text.includes("window.injected = 'ran'"))
+      .map((script) => script.nonce),
+    [nonce],
+  );
+  assert.ok(response.headers.get('content-security-policy').includes(`'sha256-${hash("window.dataHandler = 'ran'")}'`));
+  const { diagnostics } = await (
+    await fetch(portal.sim.url + '/_sim/api/diagnostics', { headers: { 'x-sim-csrf': portal.sim.csrf } })
+  ).json();
+  assert.deepEqual(
+    diagnostics.filter((entry) => entry.code === 'PORTAL_CSP_NONCE_WITHHELD'),
+    [],
+  );
+});
 
 // Record names a security review tried against the served page: none of their scripts may carry the response's nonce.
 const SERVED_PAYLOADS = [
@@ -942,6 +1067,7 @@ test('a handler a record merges onto the page html or body element is not hashed
   }
 });
 
+// @test-kind security+observation: the served page withholds the nonce from data-written markup and reports it; a response without scripts carries the policy with a nonce no script has, as hosted session F3 sent it on the token fragment (run a, captures runs/a/csp-custom)
 test('the served page reports the script markup it withholds the nonce from, and data responses omit the nonce policy', async () => {
   const { sim } = await servedPortal();
   await (await fetch(sim.url + '/')).text();
@@ -954,13 +1080,17 @@ test('the served page reports the script markup it withholds the nonce from, and
     [['/', 1, 1]],
   );
   assert.doesNotMatch(JSON.stringify(withheld), /window\.|dataHandler|'ran'/);
-  // The anti-forgery fragment has no scripts: it carries the site headers without the nonce policy, as before nonces
-  // were issued.
+  // The anti-forgery fragment has no scripts. It carries the site's nonce policy with a fresh nonce and the literal
+  // 'inject-hashes', as hosted session F3 sent it there (run a, captures runs/a/csp-custom); the report-only policy,
+  // whose hosted text is not observed, keeps its omission.
   const token = await fetch(sim.url + '/_layout/tokenhtml');
   await token.text();
   assert.equal(token.status, 200);
   assert.equal(token.headers.get('x-frame-options'), 'SAMEORIGIN');
-  assert.equal(token.headers.get('content-security-policy'), null);
+  assert.match(
+    token.headers.get('content-security-policy'),
+    /'nonce-[^']+' 'sha256-[^']+' 'unsafe-hashes' 'inject-hashes'/,
+  );
   assert.equal(token.headers.get('content-security-policy-report-only'), null);
 });
 
@@ -1124,20 +1254,29 @@ test('a custom error page carries the nonce policy and withholds the nonce from 
       assert.match(html, /Invented error/);
       const nonce = pageNonce(response.headers);
       assert.ok(nonce, response.headers.get('content-security-policy'));
+      // The snippet's script and the error page's DevTools server log script (hosted session F3: it has no nonce
+      // either) are both unproved.
       assert.deepEqual(
-        scripts(html).map((script) => [script.text, script.nonce]),
-        [["window.errorSnippet = 'ran';", null]],
+        scripts(html).map((script) => [
+          /updateDevToolRuntime/.test(script.text) ? 'devtools-log' : script.text,
+          script.nonce,
+        ]),
+        [
+          ['devtools-log', null],
+          ["window.errorSnippet = 'ran';", null],
+        ],
       );
       assert.doesNotMatch(html, /data-paqvilo-nonce-pending-/);
     }
     const { diagnostics } = await (
       await fetch(sim.url + '/_sim/api/diagnostics', { headers: { 'x-sim-csrf': sim.csrf } })
     ).json();
+    // Both scripts above are withheld: the snippet's and the server log's.
     assert.deepEqual(
       diagnostics
         .filter((entry) => entry.code === 'PORTAL_CSP_NONCE_WITHHELD')
         .map((entry) => [entry.path, entry.scripts]),
-      [['/', 1]],
+      [['/', 2]],
     );
   } finally {
     await portalError.close();

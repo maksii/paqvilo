@@ -148,7 +148,10 @@ answer locally (`lib/portal-file-api.mjs`); a `live` runtime forwards them with 
 | `GET /_api/file/download/annotation(<id>)/blob/$value`                | 302 to a short-lived read URL; 200 with the bytes when SAS is off |
 | `DELETE /_api/file/delete/annotation(<id>)/blob/$value`               | 204; the note and its file are deleted                            |
 
-Settings (Learn): `Site/FileManagement/EnableWebAPI` must be `true` (otherwise every route answers 501 `FU00009`);
+Settings (Learn): `Site/FileManagement/EnableWebAPI` must be `true`; otherwise the download route answers 501
+`{"ErrorCode":"FU0009","Message":"Azure webapi is not enabled for use"}` with the page cache headers, the code and body
+the hosted portal sent in session F2 (Learn lists `FU00009`). Only the download route was captured; Mirage assumes the
+same answer for the initialize, upload-block and delete routes;
 `BlobStorageAccountName` and `BlobStorageContainerName` are required (`FU00022`); `SupportedFileType` (comma separated
 extensions) and `SupportedMimeType` (`;` separated) are required (`FU00015`, `FU00016`) and checked against the file name
 and the MIME type of its extension (`FU00004`, `FU00005`); `MaxFileSize` is in KB, default 1048576, capped at the
@@ -190,8 +193,8 @@ Requests and permissions:
 - Download needs Read on the note, delete needs Read and Delete. Both accept only an `annotation` whose file name ends
   in `.azure.txt` and whose placeholder `Url` is stored under that note's own id (`FU00010` otherwise). Delete removes
   the note first, then the object; a failed object delete reports `FILE_API_BLOB_DELETE_FAILED`.
-- Writes carry the page's `__RequestVerificationToken`: missing is 401 and another session's 403, `90040107`, as the
-  portal Web API answers.
+- Writes carry the page's `__RequestVerificationToken`: a missing or refused token answers 401 `90040107`, as the portal
+  Web API answers ([token failures](dataverse-parity.md#token-failures)).
 - An account or container name that Azure would refuse, or no provider on `portalCloudAttachments`, is `FU00007`; an
   unauthorized provider is `FU00018`.
 

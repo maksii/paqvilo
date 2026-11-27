@@ -40,3 +40,39 @@ For the attachment suite, pass its two scenario ids after `OUT` in each converte
 `baseline-basic-form-attachments-20261015` from those two captures.
 
 The existing suite supplies the oracle description when regenerating its case file.
+
+## Hosted session F2
+
+The suites `hosted-f2-basic-form-20261127` (runs a and b, 21 cases) and `hosted-f2-basic-form-attachments-20261127`
+(runs k and l, 6 cases) are postbacks of hosted session F2 on an Enhanced, Bootstrap 5 site, recorded on 2026-11-27 by
+the workbench's hosted-f2 harness over an invented `pqf2` schema. The workbench converter `to-postback-captures.mjs
+<run> <other run>` writes both captures of a pair: it replaces the run name with `<run>` only where the scenario put
+it (the last word of a value it filled in, the attachment file names and their text), leaves the texts the page showed
+as shown, and writes the same case list for both runs. `attach:max2-admin:two-files` was recorded in run b only and is
+not in the a/b suite; run e has no second run and gives no case.
+
+The adapter replays a page under `/pqf2-` on `hosted-f2-fixture-site.mjs`: the forms, fields, pages and records those
+postbacks read, from the workbench's provision, seed and site-component sources, with `Site/EnableCustomPluginError`
+absent as on the recorded site. A form that stays on its page after a save with files reports no attachments. The
+attachment suite has no declared gaps; recorded files are the ones offered to the control, and a selection over the
+rendered MaxFile uploads none, as the control does.
+
+The site ran with enhanced authorization enabled (`enhancedauthorization` 3) for the whole session (setup correction
+of the workbench summary `summary-F2.md`); the suites' oracle scope says so. The state-0 re-run of the workbench
+(`enhancedauthorization` 0, attach runs s0b–s0f and the attachdel and notes runs, `compare-state3-state0.json`) gave the
+same attachment and notes results; the oracle scope keeps naming state 3 until a revision rebuilds it from captures. The F2 summary lists the multistep step
+1 messages in the order of a sorted digest; the raw traces of runs e and f order them Create of the step's record,
+Create of the `adx_webformsession` row, then its Update, which is what the plug-in message tests assert.
+
+To regenerate, convert each pair in the workbench and build each suite from its two captures:
+
+```sh
+node to-postback-captures.mjs a b
+node to-postback-captures.mjs k l
+node scripts/parity-cases.mjs build --surface portal-form-postback --suite hosted-f2-basic-form-20261127 \
+  --capture A_CAPTURE --capture B_CAPTURE
+node scripts/parity-cases.mjs build --surface portal-form-postback --suite hosted-f2-basic-form-attachments-20261127 \
+  --capture K_CAPTURE --capture L_CAPTURE
+```
+
+The existing suites supply the oracle description when regenerating their case files.

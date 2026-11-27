@@ -1,7 +1,8 @@
-// @test-kind unproven: local model of the legacy grid workflow dialog markup (Adxstudio EntityGridExtensions/EntityList render the first workflow item action's WorkflowActionLink modal, localized in the request language); no hosted capture of a configured list workflow action
+// @test-kind observation: paqvilo-developer hosted-f2 summary-F2 LIST-01d (lists.json and lists-bs3.json, runs a and b, 2026-11-26), the list workflow dialog markup replayed on invented loopback fixtures
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { renderComponent } from '../lib/platform.mjs';
+import { boundedMarkup } from './support/bounded-markup.mjs';
 
 const SITE = '6a000000-0000-4000-8000-000000000001';
 const LIST = '6b000000-0000-4000-8000-000000000001';
@@ -106,58 +107,39 @@ const render = async (settings, { v5 = false, lcid = 1033 } = {}) =>
   ).html;
 const workflowDialog = (html) =>
   /<(section|div) aria-hidden="true"[^>]*modal-run-workflow[\s\S]*?<\/(section|div)><\/div><\/div><\/\1>/.exec(
-    html,
+    boundedMarkup(html),
   )?.[0] ?? '';
 const itemLinks = (html) =>
   JSON.parse(Buffer.from(/data-view-layouts="([^"]*)"/.exec(html)[1], 'base64').toString('utf8'))[0].Configuration
     .ItemActionLinks;
 
-test('a Bootstrap 3 grid renders the first workflow action dialog in the request language', async () => {
-  const html = await render(configured, { lcid: 1036 });
-  const dialog = workflowDialog(html);
-  assert.match(dialog, /class="modal fade modal-run-workflow gadget-run"/);
-  assert.match(dialog, /<div class="modal-sm modal-dialog">/);
-  assert.match(dialog, /<h1 class="modal-title gadget-title" title="Approuver le gadget">Approuver le gadget<\/h1>/);
-  assert.match(dialog, /<span class="sr-only">Fermer<\/span>/);
-  assert.match(dialog, /<div class="modal-body">Approuver ce gadget \?<\/div>/);
-  assert.match(dialog, /<button class="primary btn btn-primary" type="button">Lancer<\/button>/);
-  assert.match(dialog, /<button class="cancel btn btn-default" data-dismiss="modal" type="button">Garder<\/button>/);
-  // Labels and link dialogs are localized with the same request language.
-  const links = itemLinks(html);
-  assert.deepEqual(
-    links.map((link) => [link.Label, link.CustomizeModal, link.Modal.Title, link.Modal.PrimaryButtonText]),
-    [
-      ['Approuver', true, 'Approuver le gadget', 'Lancer'],
-      ['Plus tard', false, 'Processus', 'Lancer'],
-    ],
-  );
-  assert.equal(itemLinks(await render(configured)).at(0).Label, 'Approve');
+// The captured list workflow dialog (paqvilo-developer hosted-f2 summary-F2 LIST-01d, lists.json and lists-bs3.json):
+// whatever the configured workflow actions and WorkflowDialog, the list draws no workflow link and one default dialog.
+const DEFAULT_DIALOG = {
+  bs5: '<div aria-hidden="true" class="modal fade modal-run-workflow " role="dialog" tabindex="-1"><div class="modal-dialog "><div class="modal-content"><div class="modal-header"><h4 class="modal-title "> Run workflow</h4><button class="btn-close" data-bs-dismiss="modal" type="button"><span aria-hidden="true">&times;</span><span class="visually-hidden">Close</span></button></div><div class="modal-body">&lt;p&gt;Are you sure you want to run this workflow?&lt;/p&gt;</div><div class="modal-footer"><button class="primary btn btn-primary " type="button">Run workflow</button><button class="cancel btn btn-default " data-bs-dismiss="modal" type="button">Cancel</button></div></div></div></div>',
+  bs3: '<div aria-hidden="true" class="modal fade modal-run-workflow " role="dialog" tabindex="-1"><div class="modal-dialog "><div class="modal-content"><div class="modal-header"><button class="close" data-dismiss="modal" type="button"><span aria-hidden="true">&times;</span><span class="sr-only">Close</span></button><h4 class="modal-title "> Run workflow</h4></div><div class="modal-body">&lt;p&gt;Are you sure you want to run this workflow?&lt;/p&gt;</div><div class="modal-footer"><button class="primary btn btn-primary " type="button">Run workflow</button><button class="cancel btn btn-default " data-dismiss="modal" type="button">Cancel</button></div></div></div></div>',
+};
+
+// @test-kind observation: paqvilo-developer hosted-f2 summary-F2 LIST-01d (lists.json and lists-bs3.json, runs a and b, 2026-11-26): workflow actions in ItemActions and ExtendedItemActions draw no item action link, and the default modal-run-workflow dialog is drawn with its body HTML-escaped, the grid WorkflowDialog and the actions' dialog texts ignored, in the Bootstrap 5 and the Bootstrap 3 list markup
+test('a list draws no workflow link and the default workflow dialog whatever its workflow settings', async () => {
+  for (const v5 of [true, false])
+    for (const lcid of [1033, 1036]) {
+      const html = await render(configured, { v5, lcid });
+      assert.equal(workflowDialog(html), DEFAULT_DIALOG[v5 ? 'bs5' : 'bs3'], `v5 ${v5}, lcid ${lcid}`);
+      assert.deepEqual(itemLinks(html), [], `v5 ${v5}, lcid ${lcid}`);
+      assert.doesNotMatch(html, /gadget-run|Approuver|Approve|Gadget process/);
+    }
 });
 
-test('a Bootstrap 5 list renders the first workflow action dialog texts and classes', async () => {
-  const dialog = workflowDialog(await render(configured, { v5: true }));
-  assert.match(dialog, /class="modal fade modal-run-workflow gadget-run"/);
-  assert.match(dialog, /<div class="modal-dialog modal-sm">/);
-  assert.match(dialog, /<h4 class="modal-title gadget-title">Approve gadget<\/h4>/);
-  assert.match(dialog, /<span class="visually-hidden">Close dialog<\/span>/);
-  assert.match(dialog, /<div class="modal-body">Approve this gadget\?<\/div>/);
-  assert.match(dialog, /<button class="primary btn btn-primary btn btn-primary" type="button">Go<\/button>/);
-  assert.match(dialog, /data-bs-dismiss="modal" type="button">Keep<\/button>/);
-});
-
-test('an exported WorkflowDialog with empty values keeps the default workflow dialog', async () => {
-  for (const v5 of [false, true]) {
+// @test-kind observation: paqvilo-developer hosted-f2 summary-F2 LIST-01d (runs a and b): a list without any workflow action draws the same default workflow dialog; an exported WorkflowDialog with empty values changes nothing
+test('a list without a workflow action and one with an empty WorkflowDialog draw the same default dialog', async () => {
+  for (const v5 of [true, false]) {
     const plain = { ItemActions: [workflow(FIRST, {})] };
-    const exported = { ...plain, WorkflowDialog: emptyDialog };
-    const defaults = workflowDialog(await render(plain, { v5 }));
-    const dialog = workflowDialog(await render(exported, { v5 }));
-    assert.ok(defaults, 'the default dialog renders');
-    // Bootstrap 5 repeats the button classes for a configured dialog, as for the list's other dialogs.
-    const expected = v5
-      ? defaults
-          .replace('primary btn btn-primary "', 'primary btn btn-primary btn btn-primary"')
-          .replace('cancel btn btn-default "', 'cancel btn btn-default btn btn-default"')
-      : defaults;
-    assert.equal(dialog, expected, `v5 ${v5}`);
+    assert.equal(workflowDialog(await render({}, { v5 })), DEFAULT_DIALOG[v5 ? 'bs5' : 'bs3']);
+    assert.equal(workflowDialog(await render(plain, { v5 })), DEFAULT_DIALOG[v5 ? 'bs5' : 'bs3']);
+    assert.equal(
+      workflowDialog(await render({ ...plain, WorkflowDialog: emptyDialog }, { v5 })),
+      DEFAULT_DIALOG[v5 ? 'bs5' : 'bs3'],
+    );
   }
 });

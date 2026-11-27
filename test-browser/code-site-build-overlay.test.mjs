@@ -1,4 +1,4 @@
-// @test-kind unproven: the portal's answer to a code-site route is modelled as Microsoft Learn describes it (the root page, the deployed landing page plus the platform's client context), with a Mirage code site standing in for the hosted one; no hosted code-site document has been captured yet
+// @test-kind unproven: the Lense line merge of a local landing page over the document a deployed code site serves, with a Mirage code site standing in for the hosted one (Mirage serves it as hosted session F5 captured, captures code-site-serve-a..d); the merge itself is a local model
 // Lense in front of a deployed code site, with a different local build: the build's files answer their addresses, and
 // on a client route the local landing page is laid over the deployed one the portal served, keeping what the portal
 // added (its client context, isSpaSite included).
@@ -25,7 +25,7 @@ const DEPLOYED_ENTRY = [
   '<html>',
   '<head>',
   '<title>Compiled app</title>',
-  '<script src="./app.js"></script>',
+  '<script src="/app.js"></script>',
   '</head>',
   '<body>',
   '<main>Compiled app</main>',

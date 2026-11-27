@@ -841,9 +841,21 @@
     for (const field of config.fields ?? []) appendSubmittedField(config, field, values);
     return values;
   }
+  // A refused answer spends its challenge: the refusal carries the next one, which replaces the rendered challenge.
+  function renewFixtureCaptcha(form, errors) {
+    const challenge = errors.find((error) => error?.field === 'captcha' && error.challenge)?.challenge;
+    const input = form.querySelector('[data-pp-captcha-challenge]');
+    const answer = form.querySelector('[data-pp-captcha-answer]');
+    if (!challenge || !input || !answer) return;
+    input.value = String(challenge.id ?? '');
+    const label = answer.id ? form.querySelector('label[for="' + CSS.escape(answer.id) + '"]') : null;
+    if (label) label.textContent = String(challenge.prompt ?? '');
+    answer.value = '';
+  }
   function handleNativeResponse(form, config, response, result) {
     if (!response.ok) {
       if (Array.isArray(result.error?.validationErrors) && result.error.validationErrors.length) {
+        renewFixtureCaptcha(form, result.error.validationErrors);
         restoreButtons();
         showValidationErrors(form, result.error.validationErrors);
         return;

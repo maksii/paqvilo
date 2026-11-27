@@ -7,6 +7,7 @@ import path from 'node:path';
 import { createSimulator } from '../server.mjs';
 import { answerPageCors, corsPageDiagnostics } from '../lib/page-cors.mjs';
 import { observedConfig } from '../lib/project-config.mjs';
+import { everyResponseHeaders, siteHeaders, siteHttpPolicyDiagnostics } from '../lib/response-headers.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 // Invented origins on reserved names; the page is an authored layout without the website header and footer.
@@ -32,7 +33,7 @@ function settingsYaml(settings) {
     .join('\n');
 }
 
-async function host(t, { settings = {}, observed = OBSERVED, options = {} } = {}) {
+async function host(t, { settings = {}, observed = OBSERVED, options = {}, extraFiles = {} } = {}) {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'page-cors-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
@@ -60,6 +61,7 @@ async function host(t, { settings = {}, observed = OBSERVED, options = {} } = {}
     'web-templates/Layout.webtemplate.source.html': LAYOUT,
     'web-templates/Liquid.webtemplate.yml': 'adx_webtemplateid: liquid\nadx_name: Liquid',
     'web-templates/Liquid.webtemplate.source.html': '<div id="api">{{ page.title }}</div>',
+    ...extraFiles,
   };
   for (const [relative, text] of Object.entries(files)) {
     const file = path.join(root, relative);
@@ -100,6 +102,7 @@ const preflight = (sim, pathname, headers = {}) =>
     headers: { origin: ALLOWED, 'access-control-request-method': 'GET', ...headers },
   });
 
+// @test-kind security+observation: cross-origin reads of an observed CORS page are granted only to an exact allowed origin, without credentials; the same page on its own origin carries the settings as fixed headers, as hosted session F5 sent them on every response (captures cors-private-a and cors-private-b)
 test('an allowed origin reads the literal authored page: preflight then GET, without cookies or tokens', async (t) => {
   const sim = await host(t);
   const before = await preflight(sim, '/custom-layout/');
@@ -122,10 +125,13 @@ test('an allowed origin reads the literal authored page: preflight then GET, wit
   assert.equal(html, LAYOUT);
   assert.doesNotMatch(html, /__portalSimulation|RequestVerificationToken|<script/i);
 
-  // The same page on its own origin keeps the ordinary rendered response without any Access-Control-* header.
+  // The same page on its own origin is the ordinary rendered response, with the CORS settings as fixed headers, as
+  // hosted session F5 sent them on every response (captures cors-private-a and cors-private-b).
   const own = await fetch(sim.url + '/custom-layout/');
   assert.equal(own.status, 200);
-  assert.deepEqual(accessControl(own), []);
+  assert.deepEqual(accessControl(own), ['access-control-allow-methods', 'access-control-allow-origin']);
+  assert.equal(own.headers.get('access-control-allow-origin'), ALLOWED);
+  assert.doesNotMatch(own.headers.get('vary') ?? '', /origin/i);
 });
 
 test('origins other than the allowed one are never reflected', async (t) => {
@@ -300,4 +306,55 @@ test('diagnostics list the shared and refused observed CORS pages', async (t) =>
     { path: '/shared-layout/', refusal: 'website-header-footer' },
   ]);
   assert.doesNotMatch(JSON.stringify(http), /example\.test/);
+});
+
+// @test-kind security: the fixed CORS headers never pair a wildcard origin with credentials (the Fetch standard refuses it; hosted sites were not captured with it): the credentials header is dropped and the pair reported, on pages and on every other response
+test('a wildcard origin setting is never sent with the credentials header', async (t) => {
+  const settings = { 'HTTP/Access-Control-Allow-Origin': '*', 'HTTP/Access-Control-Allow-Credentials': 'true' };
+  const portal = { settings };
+  assert.equal(siteHeaders(portal)['access-control-allow-origin'], '*');
+  assert.equal(siteHeaders(portal)['access-control-allow-credentials'], undefined);
+  assert.equal(everyResponseHeaders(portal, { status: 302 })['access-control-allow-credentials'], undefined);
+  const reported = siteHttpPolicyDiagnostics(portal);
+  assert.equal(reported.find((entry) => entry.code === 'PORTAL_HTTP_CORS_WILDCARD_CREDENTIALS')?.severity, 'warning');
+  // Without the opt-in every cross-origin request is refused, and that is reported as a warning.
+  assert.equal(reported.find((entry) => entry.code === 'PORTAL_HTTP_CORS_LOOPBACK_BOUNDARY')?.severity, 'warning');
+  // An exact origin keeps its credentials header, as the captured settings did.
+  const exact = { settings: { ...settings, 'HTTP/Access-Control-Allow-Origin': ALLOWED } };
+  assert.equal(siteHeaders(exact)['access-control-allow-credentials'], 'true');
+  const sim = await host(t, { settings, observed: null });
+  for (const target of ['/', '/custom-layout/', '/~/']) {
+    const response = await fetch(sim.url + target, { redirect: 'manual' });
+    await response.arrayBuffer();
+    assert.equal(response.headers.get('access-control-allow-origin'), '*', target);
+    assert.equal(response.headers.get('access-control-allow-credentials'), null, target);
+  }
+});
+
+// @test-kind security: an observed CORS page the anonymous visitor may not read is never shared across origins
+test('an observed CORS page that page permissions restrict is refused across origins', async (t) => {
+  const sim = await host(t);
+  // The rule restricts the listed page to a web role: the anonymous cross-origin read is refused.
+  const restricted = await host(t, {
+    observed: OBSERVED,
+    options: {},
+    extraFiles: {
+      'webrole.yml': '- adx_webroleid: member\n  adx_name: Member',
+      'webpagerule.yml':
+        '- adx_webpageaccesscontrolruleid: lock\n  adx_name: Members only\n  adx_webpageid: custom\n  adx_right: 2\n  adx_scope: 1\n  adx_webpageaccesscontrolrule_webrole:\n  - member',
+    },
+  });
+  const open = await fetch(sim.url + '/custom-layout/', { headers: { origin: ALLOWED } });
+  await open.text();
+  assert.equal(open.status, 200);
+  for (const request of [
+    { method: 'GET', headers: { origin: ALLOWED } },
+    { method: 'OPTIONS', headers: { origin: ALLOWED, 'access-control-request-method': 'GET' } },
+  ]) {
+    const response = await fetch(restricted.url + '/custom-layout/', request);
+    const body = await response.text();
+    assert.equal(response.status, 403, request.method);
+    assert.deepEqual(accessControl(response), [], request.method);
+    assert.doesNotMatch(body, /Invented layout/, request.method);
+  }
 });

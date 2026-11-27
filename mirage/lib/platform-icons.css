@@ -115,6 +115,12 @@
 .fa-filter:before {
   content: '\22a5';
 }
+.fa-folder:before {
+  content: '\1f4c1';
+}
+.fa-level-up:before {
+  content: '\2934';
+}
 .fa-list:before {
   content: '\2261';
 }
@@ -147,13 +153,17 @@
 .fa-spin {
   animation: paqvilo-icon-spin 1s linear infinite;
 }
+.fa-pulse {
+  animation: paqvilo-icon-spin 1s steps(8) infinite;
+}
 @keyframes paqvilo-icon-spin {
   to {
     transform: rotate(360deg);
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .fa-spin {
+  .fa-spin,
+  .fa-pulse {
     animation: none;
   }
 }

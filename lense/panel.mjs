@@ -15,7 +15,8 @@ import { indexPersonaCatalog, PERSONA_TRANSLITERATIONS } from '../mirage/lib/per
 import { personaStartPath } from '../mirage/lib/persona-catalog.mjs';
 import { diffLines } from './line-diff.mjs';
 import { pageKey, INLINE_PREFIX } from './html-rewriter.mjs';
-import { redactText } from './agent-server.mjs';
+import { redactSnapshotElement, redactText, redactUrl } from './agent-server.mjs';
+import { piercedElementAt } from './dom-pierce.mjs';
 import { urlKey, sourceText } from './portal-model.mjs';
 import { portalResourceUrl, withoutSourceMapComments } from './online.mjs';
 import { filesForPage } from './browser.mjs';
@@ -45,6 +46,23 @@ const KEYS = { hide: 'KeyL', panel: 'KeyP', mode: 'KeyO' };
 const keyName = (code) => `Alt+Shift+${code.replace(/^Key/, '')}`;
 export const panelVisibilityNotice = (panel) =>
   panel.hidden ? `dev panel   hidden; ${panel.keys.hide} shows it` : null;
+
+// The bounded shape of an identification X-ray answers for a pierced element (page code answers it, so only plain,
+// bounded text and numbers are kept).
+function sealedIdentity(value) {
+  if (!value || typeof value !== 'object') return null;
+  const text = (item, max) => (typeof item === 'string' && item.length <= max ? item : null);
+  const refs = (Array.isArray(value.refs) ? value.refs : [])
+    .slice(0, 16)
+    .map((ref) => ({
+      ref: text(ref?.ref, 1024),
+      name: text(ref?.name, 512),
+      line: Number.isSafeInteger(ref?.line) && ref.line > 0 ? ref.line : null,
+      status: text(ref?.status, 64),
+    }))
+    .filter((ref) => ref.ref || ref.name);
+  return { title: text(value.title, 512), kind: text(value.kind, 256), status: text(value.status, 64), refs };
+}
 
 /** what the panel remembers between pages and sessions */
 function cleanUi(input) {
@@ -2069,6 +2087,32 @@ export function enablePanel(context, session, opts = {}) {
     return entries;
   };
 
+  // The source of an element in a closed shadow root of the page: its roots go to the page's registry, which reads their
+  // source marks (a declarative shadow root the export writes carries them), then X-ray identifies the element as it
+  // identifies any other. Null when the element has no source of its own (script made it) or nothing could be read.
+  // `frameId`: the frame whose document holds the roots (null: the page's own document). X-ray runs in the page's
+  // document and identifies an element of a same-origin frame as it identifies the page's own.
+  const sealedSource = async (page, { cdp, backendNodeId, roots, frameId }) => {
+    if (!(await session.admitSealed?.(page, roots, frameId))) return null;
+    const resolved = await cdp
+      .send('DOM.resolveNode', { backendNodeId, objectGroup: 'paqvilo-sealed' })
+      .catch(() => null);
+    const objectId = resolved?.object?.objectId;
+    if (!objectId) return null;
+    try {
+      // The node is resolved in its own document's world; X-ray is the page's (`top` cannot be redefined by a page).
+      const { result } = await cdp.send('Runtime.callFunctionOn', {
+        objectId,
+        functionDeclaration:
+          'function(){const x=globalThis.top.__paqviloXrayUi;return x&&typeof x.identifySealed==="function"?x.identifySealed(this):null}',
+        returnByValue: true,
+        timeout: 5000,
+      });
+      return sealedIdentity(result?.value);
+    } finally {
+      await cdp.send('Runtime.releaseObjectGroup', { objectGroup: 'paqvilo-sealed' }).catch(() => {});
+    }
+  };
   const actions = {
     ui: (body) => {
       Object.assign(ui, cleanUi(body));
@@ -2217,6 +2261,29 @@ export function enablePanel(context, session, opts = {}) {
       return { ok: true };
     },
     diff: (body, page) => compare(page, body),
+    // Inspect below the selection where page code cannot reach (a closed shadow root, a cross-origin frame), read-only
+    // through the DevTools protocol (lense/dom-pierce.mjs), with the agent snapshot's redaction.
+    pierce: async (body, page) => {
+      const point = (value) => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 100_000;
+      if (!point(body.x) || !point(body.y)) return { ok: false, error: 'pierce needs a point in the page' };
+      const found = await piercedElementAt({
+        context: page.context(),
+        page,
+        origin: cfg.origin,
+        x: body.x,
+        y: body.y,
+        sealedSource: (target) => sealedSource(page, target),
+      });
+      if (found.denied) return { ok: false, error: 'The page left the portal origin.' };
+      if (found.element) {
+        redactSnapshotElement(found.element, page.url());
+        for (const step of found.path) {
+          step.id = step.id === null ? null : redactText(step.id, 200);
+          step.class = step.class === null ? null : redactText(step.class, 200);
+        }
+      }
+      return { ok: true, ...found, page: redactUrl(page.url()) };
+    },
     catalog: () => ({ ok: true, entries: catalog() }),
     // ---- Mirage inspection and tweaks (local runtime only)
     /* NOSONAR: single-pass routine, splitting it would change shared state */ inspect: async (body, page) => {
@@ -2566,7 +2633,7 @@ export function enablePanel(context, session, opts = {}) {
     }
     await json(200, result);
     // every tab shows the new state, not only the one that asked
-    if (!['ui', 'diff', 'catalog', 'inspect', 'tweaks', 'open'].includes(name)) scheduleAll();
+    if (!['ui', 'diff', 'catalog', 'inspect', 'tweaks', 'open', 'pierce'].includes(name)) scheduleAll();
   };
 
   session.api = api;

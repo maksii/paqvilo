@@ -189,6 +189,75 @@ test('site inventory projects bounded trial and data-model metadata and withhold
   assert.deepEqual([absent.trialExpiringInDays, absent.dataModel], [null, null]);
 });
 
+// @test-kind observation: hosted session F5 (summary-F5.md VERIFY-03e): PAC 2.13.1 get-websites lists a site that is still provisioning with websiteRecordId "" or null; invented values
+test('a site still provisioning stays in the inventory with a null website record id', async () => {
+  const provisioning = { ...row, id: '10000000-0000-4000-8000-000000000003', status: 'StateDeployingApplication' };
+  for (const websiteRecordId of ['', null]) {
+    const sites = await readPowerPagesSites({
+      environment: 'https://tenant.example.invalid',
+      executable: 'C:/CLI/pac.exe',
+      run: async () => ({ stdout: JSON.stringify({ value: [row, { ...provisioning, websiteRecordId }] }) }),
+    });
+    assert.deepEqual(
+      sites.map((site) => [site.id, site.websiteRecordId]),
+      [
+        [id, record],
+        [provisioning.id, null],
+      ],
+      JSON.stringify(websiteRecordId),
+    );
+  }
+  for (const websiteRecordId of [undefined, 'not-a-guid', 7])
+    await assert.rejects(
+      readPowerPagesSites({
+        environment: 'https://tenant.example.invalid',
+        executable: 'C:/CLI/pac.exe',
+        run: async () => ({ stdout: JSON.stringify({ value: [{ ...row, websiteRecordId }] }) }),
+      }),
+      /identity or visibility is incomplete/,
+      String(websiteRecordId),
+    );
+});
+
+// @test-kind observation+security: hosted session F5 (visibility-*-public-*.json): update-site-visibility to public exits 1 with "HTTP 400 (BadRequest)" and no body, and a command during another operation exits 1 with HTTP 409 (enable-waf in edge-d-production-writes-*.json); the message names the documented tenant governance cause and withholds PAC's output
+test('a refused change to public names the non-production visibility governance control and keeps the status', async () => {
+  const refusal = async () => ({
+    exitCode: 1,
+    stdout:
+      'Microsoft PowerPlatform CLI\nError: The request failed with HTTP 400 (BadRequest). Correlation ID: WITHHELD_SECRET',
+  });
+  const options = { environment: 'https://tenant.example.invalid', executable: 'C:/CLI/pac.exe', id, run: refusal };
+  await assert.rejects(
+    setPowerPagesSiteVisibility({ ...options, visibility: 'public' }),
+    (error) =>
+      error.code === 'POWER_PAGES_MANAGEMENT_FAILED' &&
+      error.status === 400 &&
+      error.exitCode === 1 &&
+      /Set site visibility to public access for non-production sites/.test(error.message) &&
+      /tenant admins/.test(error.message) &&
+      /cause to check/.test(error.message) &&
+      !error.message.includes('WITHHELD_SECRET'),
+  );
+  // A refused change to private is not explained by that control.
+  await assert.rejects(
+    setPowerPagesSiteVisibility({ ...options, visibility: 'private' }),
+    (error) => error.status === 400 && !/non-production/.test(error.message),
+  );
+  // Another operation in progress is named by its own reason.
+  await assert.rejects(
+    setPowerPagesSiteVisibility({
+      ...options,
+      visibility: 'public',
+      run: async () => ({ exitCode: 1, stdout: 'Error: WITHHELD_SECRET [HTTP 409 (Conflict)]' }),
+    }),
+    (error) =>
+      error.status === 409 &&
+      error.reason === 'operation-in-progress' &&
+      /another operation on the site is in progress/.test(error.message) &&
+      !error.message.includes('WITHHELD_SECRET'),
+  );
+});
+
 test('without an explicit executable, a missing PAC is reported with its code and cause', async (t) => {
   const emptyDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-no-pac-'));
   t.after(() => fs.rmSync(emptyDirectory, { recursive: true, force: true }));

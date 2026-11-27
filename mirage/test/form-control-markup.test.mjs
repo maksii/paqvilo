@@ -5,6 +5,7 @@ import { renderComponent } from '../lib/platform.mjs';
 import { webFormsForm } from '../lib/platform-manifest.mjs';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
+import { boundedMarkup } from './support/bounded-markup.mjs';
 
 // A contact form exercising one control of each kind.
 const ID = 'c0000000-0000-4000-8000-000000000001';
@@ -107,7 +108,7 @@ async function render(mode, schema = { entity: 'contact', title: 'Contact', fiel
   );
 }
 const element = (html, pattern) => {
-  const match = html.match(pattern);
+  const match = boundedMarkup(html).match(pattern);
   assert.ok(match, `missing ${pattern}`);
   return match[0];
 };

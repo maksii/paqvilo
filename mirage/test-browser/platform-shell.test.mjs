@@ -140,7 +140,7 @@ async function directNativeSubmit(page, name) {
   return response;
 }
 
-// @test-kind security+contract: the opted-in Chromium session binds issued tokens to actual browser navigation and native ViewState.
+// @test-kind security+contract+observation: the Chromium session binds issued tokens to actual browser navigation and native ViewState; the anti-forgery cookie is Secure, HttpOnly and SameSite=Lax as hosted session F4 set it (paqvilo-developer hosted-f4 swap runs a and b).
 test('paired Chromium token survives reload and the first native post follows portal sign-in', async (t) => {
   const { app, page } = await portalFixture(t, { pairedBrowserTokens: true, signIn: false });
   const fragment = (url) => isTokenFragment(url.pathname);
@@ -186,7 +186,7 @@ test('paired Chromium token survives reload and the first native post follows po
   const nativeCookie = (await page.context().cookies(app.url)).find(
     (item) => item.name === '__RequestVerificationToken',
   );
-  assert.ok(nativeCookie?.secure && nativeCookie.httpOnly && nativeCookie.sameSite === 'None');
+  assert.ok(nativeCookie?.secure && nativeCookie.httpOnly && nativeCookie.sameSite === 'Lax');
 });
 
 async function gateInitialDocuments(t, app) {
@@ -323,10 +323,12 @@ test('platform chrome, lazy anti-forgery token, app-bundle accessibility and Dat
   const tokens = await page.evaluate(() =>
     Promise.all([0, 1].map(() => new Promise((resolve) => window.shell.getTokenDeferred().done(resolve)))),
   );
-  assert.deepEqual(tokens, [app.portalToken, app.portalToken]);
+  // The browser's own paired token, the same for both callers and never the tool token.
+  assert.equal(tokens[0], tokens[1]);
+  assert.ok(tokens[0] && tokens[0] !== app.portalToken);
   assert.equal(
     await page.locator('#antiforgerytoken input[name="__RequestVerificationToken"]').getAttribute('value'),
-    app.portalToken,
+    tokens[0],
   );
   assert.equal(requests.filter((request) => /^GET \/_layout\/tokenhtml\?_=\d+$/.test(request)).length, 1);
   // app.bundle accessibility block: dropdown toggles.

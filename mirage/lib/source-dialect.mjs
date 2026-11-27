@@ -6,8 +6,10 @@ import path from 'node:path';
  * Mirage imports five of them; the others are named so that a source the importer
  * cannot read fails loudly instead of importing as an empty portal.
  *
- * - "standard-yaml": PAC YAML with adx_ keys (website.yml adx_websiteid). Standard data
- *   model downloads, and enhanced data model downloads that keep adx_ keys.
+ * - "standard-yaml": PAC YAML with adx_ keys (website.yml adx_websiteid). PAC 2.13.1
+ *   pac pages download writes adx_ keys for both data models: an enhanced data model site
+ *   (--modelVersion 2 or Enhanced) also downloads with adx_ keys, and its website.yml can
+ *   carry adx_enhancedauthorization (hosted session F5).
  * - "enhanced-solution": an unpacked Solution with powerpagecomponents/<id>/powerpagecomponent.xml.
  * - "short-key-yaml": .powerpages-site YAML with unprefixed keys (id:, isroot, parentpageid),
  *   written by code sites (pac pages download-code-site) and, per Microsoft's Power Pages
@@ -16,7 +18,9 @@ import path from 'node:path';
  *   .portalconfig/*.portallanguage.yml.
  * - "code-site-project": a code-site project folder with its .powerpages-site/ records,
  *   or a project with powerpages.config.json that can be served from its compiled output.
- * - "enhanced-yaml": PAC-style YAML with mspp_ keys for enhanced site records.
+ * - "enhanced-yaml": YAML records with mspp_ keys, read as the enhanced data model. PAC 2.13.1
+ *   does not write this layout (its enhanced data model downloads keep adx_ keys); the reader
+ *   stays for existing sources in it.
  * - "solution-without-site": an unpacked Solution (Other/Solution.xml) without site components.
  * - "unknown": none of the above.
  */
@@ -31,7 +35,7 @@ const IMPORTED_DIALECTS = Object.freeze([
 const LABELS = {
   'standard-yaml': 'PAC YAML with adx_ keys',
   'enhanced-solution': 'an unpacked Solution with powerpagecomponents/ (enhanced data model)',
-  'enhanced-yaml': 'PAC YAML with mspp_ keys',
+  'enhanced-yaml': 'portal YAML with mspp_ keys (a layout PAC 2.13.1 does not write)',
   'short-key-yaml':
     '.powerpages-site short-key YAML (keys such as id:, isroot and parentpageid, written by code sites and current pac pages download)',
   'code-site-project': 'a Power Pages code-site project',

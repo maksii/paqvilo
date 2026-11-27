@@ -217,6 +217,16 @@ test('required rich text rejects markup-only values and preserves meaningful for
     richText: { name: 'MscrmControls.RichTextEditor.RichTextEditorControl' },
     required: true,
   });
+  // The editor renders with code component metadata only (formRichTextField).
+  options.portal.records = [
+    {
+      kind: 'basicformmetadata',
+      adx_entityform: 'create',
+      adx_type: 100000000,
+      adx_attributelogicalname: 'narrative',
+      adx_controlstyle: 756150001,
+    },
+  ];
   await assert.rejects(
     submitPortalForm(
       'entityform',
@@ -769,7 +779,7 @@ test("a submission's record and notes are one unit: a refused note or a rejected
   );
 });
 
-// @test-kind contract: the form save service enforces configured attachment requirements before mutating records
+// @test-kind observation: hosted session F2 attach runs b/e, f/g, i/j and k/l (zero-files and zero-files-server): a save without a new file is refused as required also when the record already has a file, and the form's file count bounds the record's notes; the transports and the custom required message are Mirage's own form service
 test('both form save transports enforce required attachments and remaining slots', async () => {
   const options = await setupUnits();
   const metadata = {
@@ -810,7 +820,11 @@ test('both form save transports enforce required attachments and remaining slots
       { values, attachments: files.slice(0, 1) },
       inputs,
     );
-    await submitPortalForm('entityform', 'attach-edit', { values, recordId }, inputs);
+    // The record's file does not satisfy Required on an edit without a new file.
+    await assert.rejects(
+      submitPortalForm('entityform', 'attach-edit', { values, recordId }, inputs),
+      (error) => error.code === 'FormAttachmentRequired' && error.message === 'Please attach a document.',
+    );
     const responses = await Promise.allSettled(
       files
         .slice(1)
@@ -827,7 +841,7 @@ test('both form save transports enforce required attachments and remaining slots
 });
 
 // @test-kind security: the file count of a record cannot be reset by a visitor who cannot read its notes, and it is read as the system without returning any note to the visitor
-test("the remaining file count and Attach File Required count the record's notes the visitor cannot read", async () => {
+test("the remaining file count counts the record's notes the visitor cannot read, and they do not satisfy Attach File Required", async () => {
   const otherNote = (recordId) => ({
     annotationid: 'a0000000-0000-4000-8000-0000000000aa',
     objectid: { id: recordId, logical_name: 'contact' },
@@ -886,7 +900,9 @@ test("the remaining file count and Attach File Required count the record's notes
         1,
         `${label}: the count the form renders includes the unreadable note`,
       );
-      // The rendered control offers the one remaining slot, is not required, and names no existing note.
+      // The rendered control offers the one remaining slot, stays required, and names no existing note. Hosted session
+      // F2 (attach runs k and l, max2-admin and max1-admin: an admin note the persona cannot read): "a maximum of 1
+      // files, each up to", MaxFile 1, and aria-required whatever notes the record carries.
       const html = await renderComponent(
         'entityform',
         'Attach render',
@@ -896,18 +912,22 @@ test("the remaining file count and Attach File Required count the record's notes
       const control = html.slice(html.indexOf('<div class="file-cell cell">'));
       assert.ok(control.startsWith('<div class="file-cell cell">'), `${label}: the attach control renders`);
       assert.match(control, /id="AttachFile_HiddenField_MaxFile" value="1"/, label);
-      assert.match(control, /You can upload a maximum of 1 file,/, label);
-      assert.doesNotMatch(control, /aria-required="true"/, label);
+      assert.match(control, /You can upload a maximum of 1 files, each up to/, label);
+      assert.match(control, /aria-required="true"/, label);
       assert.doesNotMatch(html, /other.txt|someone-else/, label);
 
-      // The existing file satisfies Attach File Required on an edit without a new file.
-      const edited = await submitPortalForm(
-        'entityform',
-        'attach-edit',
-        { values: { fullname: 'Renamed' }, recordId },
-        inputs,
+      // The existing file does not satisfy Attach File Required (hosted session F2, attach runs b/e, f/g, i/j, k/l,
+      // zero-files-server): an edit without a new file is refused and saves nothing.
+      await assert.rejects(
+        submitPortalForm('entityform', 'attach-edit', { values: { fullname: 'Renamed' }, recordId }, inputs),
+        (error) => error.code === 'FormAttachmentRequired' && error.message === 'Attach a File is a required field.',
+        label,
       );
-      assert.equal(edited.record.fullname, 'Renamed', label);
+      assert.notEqual(
+        options.store.snapshot().tables.contact.find((row) => row.contactid === recordId)?.fullname,
+        'Renamed',
+        label,
+      );
       // One slot of two remains: two new files are refused, one is saved, and then none remains.
       await assert.rejects(
         submitPortalForm(

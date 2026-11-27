@@ -17,15 +17,15 @@ import { metaFilterOptionGroups } from './metafilters.mjs';
 import { DataError } from './data-error.mjs';
 import { multiChoiceText } from './webapi-format.mjs';
 import { canPreviewUnpublished, pageAccess, pageRuleMatcher, shortcutAccess } from './page-access.mjs';
+import { enhancedArticlePageError, enhancedContentAccessLevels } from './content-access-levels.mjs';
 import { siteSetting, servicePages } from './redirects.mjs';
 import { reconcileFooterLogos } from './footer-capture.mjs';
 import { reconcileHeaderNotifications } from './header-notification-capture.mjs';
 import { headerNotificationQueries } from './extensions.mjs';
 import { resolveSnippetComposition } from './observed-snippet-composition.mjs';
 import { resolveObservedPageCopy } from './observed-pagecopy-layout.mjs';
-import { applyObservedLiquidObjects } from './liquid-observed-objects.mjs';
+import { applyObservedLiquidObjects, liquidRecordOf } from './liquid-observed-objects.mjs';
 import { editableMetadataAttributes } from './liquid-editable-metadata.mjs';
-import { portalWebRoles } from './permissions.mjs';
 import { injectRuntimeCompatibility, isHtmlDocument, runtimeCompatibilityEdits } from './source-dependencies.mjs';
 import {
   OFFLINE_NOTIFICATION_BAR,
@@ -38,8 +38,11 @@ import {
   platformShell,
   bootstrapVariant,
   PLATFORM_BOOTSTRAP_STYLESHEET,
+  pwaShellMarkup,
+  SEARCH_PAGE_CONTENT,
 } from './platform-manifest.mjs';
 import { calendarResources, CALENDAR_MARKER } from './list-views.mjs';
+import { cachedRequestReads } from '../../lense/analysis/output-cache-rules.mjs';
 import {
   LiquidEngine,
   LiquidContext,
@@ -659,8 +662,12 @@ class EntityRecordDrop extends LiquidDrop {
     return readEntityMember(() => members.related?.(table, id, key, identity));
   }
 }
+const ENTITIES_ENHANCED_HIDDEN =
+  "entities.knowledgearticle answers nil for an article outside the visitor's content access levels while KnowledgeManagement/ContentAccessLevel/Enabled is true. A hosted enhanced data model site returns every article through entities (the setting reaches only knowledge.articles, fetchxml and the Knowledge Article page); Mirage keeps the article hidden. Set observed.knowledgeEntitiesContentAccess to unfiltered, with evidence, to reproduce the hosted site.";
+const ENTITIES_UNFILTERED =
+  'entities.knowledgearticle returns every article although KnowledgeManagement/ContentAccessLevel/Enabled is true (observed.knowledgeEntitiesContentAccess unfiltered): on an enhanced data model site the setting has no effect through entities, as on a hosted site, while knowledge.articles and fetchxml return no article and the Knowledge Article page fails with 500.';
 class EntityTableDrop extends LiquidDrop {
-  constructor(name, read, user, cache, members, choiceColumns) {
+  constructor(name, read, user, cache, members, choiceColumns, articleAccess = null) {
     super();
     this.name = name;
     this.read = read;
@@ -668,6 +675,33 @@ class EntityTableDrop extends LiquidDrop {
     this.cache = cache;
     this.members = members;
     this.choiceColumns = choiceColumns;
+    // The content access level filter of knowledge articles (content-access-levels.mjs), null when the site has none.
+    this.articleAccess = articleAccess;
+  }
+  /**
+   * Whether entities.knowledgearticle may answer the article: with content access levels on, only an article that
+   * shares a level with the visitor, as knowledge.articles (fail-closed). Hosted session F3 (summary-F3.md AUTH-07c)
+   * found an enhanced site returning every article through entities; observed.knowledgeEntitiesContentAccess
+   * unfiltered reproduces that, and an article hidden on such a site reports KNOWLEDGE_CONTENT_ACCESS_ENTITIES_UNFILTERED.
+   */
+  async admitsArticle(id, context) {
+    const access = await this.articleAccess?.();
+    if (!access) return true;
+    const host = context?.engine?.portalHost;
+    const enhanced = enhancedContentAccessLevels(host?.portal);
+    if (host?.observed?.knowledgeEntitiesContentAccess === 'unfiltered') {
+      if (enhanced)
+        context.diagnostic?.('KNOWLEDGE_CONTENT_ACCESS_ENTITIES_UNFILTERED', ENTITIES_UNFILTERED, {
+          severity: 'warning',
+        });
+      return true;
+    }
+    const visible = Boolean(await access.visible(id));
+    if (!visible && enhanced)
+      context.diagnostic?.('KNOWLEDGE_CONTENT_ACCESS_ENTITIES_UNFILTERED', ENTITIES_ENHANCED_HIDDEN, {
+        severity: 'warning',
+      });
+    return visible;
   }
   async liquidGet(key, context) {
     if (key.toLowerCase() === 'logical_name' || key.toLowerCase() === 'logicalname') return this.name;
@@ -676,6 +710,7 @@ class EntityTableDrop extends LiquidDrop {
     // platform answers nil; local synthetic ids are still resolved and reported.
     const text = String(key).trim();
     if (!text) return null;
+    if (this.name === 'knowledgearticle' && !(await this.admitsArticle(text, context))) return null;
     const guid = GUID_KEY.test(text);
     const id = guid ? text.replace(/[{}]/g, '').toLowerCase() : text;
     const cacheKey = `${this.name}|${id}`;
@@ -723,7 +758,7 @@ class EntityTableDrop extends LiquidDrop {
   }
 }
 class EntitiesDrop extends LiquidDrop {
-  constructor(read, user, members, choiceColumns) {
+  constructor(read, user, members, choiceColumns, articleAccess = null) {
     super();
     this.read = read;
     this.user = user;
@@ -731,12 +766,23 @@ class EntitiesDrop extends LiquidDrop {
     this.choiceColumns = choiceColumns;
     this.tables = new Map();
     this.cache = new Map();
+    // One content access level filter per render, built on the first knowledge article lookup.
+    let access;
+    this.articleAccess = articleAccess ? () => (access ??= Promise.resolve(articleAccess())) : null;
   }
   liquidGet(key) {
     if (!this.tables.has(key))
       this.tables.set(
         key,
-        new EntityTableDrop(String(key), this.read, this.user, this.cache, this.members, this.choiceColumns),
+        new EntityTableDrop(
+          String(key),
+          this.read,
+          this.user,
+          this.cache,
+          this.members,
+          this.choiceColumns,
+          this.articleAccess,
+        ),
       );
     return this.tables.get(key);
   }
@@ -910,9 +956,10 @@ class SettingsDrop extends LiquidDrop {
 
 /** Snippets render the Liquid they contain in the current context. */
 class SnippetsDrop extends LiquidDrop {
-  constructor({ snippets, engine, profiles, origin, diagnostics, sourceIndex }) {
+  constructor({ snippets, engine, profiles, origin, diagnostics, sourceIndex, editable = false }) {
     super();
     this.snippets = snippets ?? {};
+    this.editable = Boolean(editable);
     this.engine = engine;
     this.profiles = profiles ?? [];
     this.origin = origin;
@@ -963,6 +1010,9 @@ class SnippetsDrop extends LiquidDrop {
     };
   }
   async liquidGet(key, context) {
+    // SnippetsDrop.Editable (hosted session F3: false for an anonymous visitor, true for an administrator). F3 has no
+    // snippet named editable, so an exported snippet of that name keeps its value.
+    if (key === 'editable' && this.resolveName(key) === undefined) return this.editable;
     const { name, source, sourceRef, fragment } = this.rawValue(key);
     // Dataverse stores empty text as null: a snippet record without a value is nil.
     if (source == null || source === '') return null;
@@ -1156,7 +1206,14 @@ class FetchXmlTag extends Block {
     }
     fetchDiagnostics(context, results);
     const multiSelect = host.choiceColumns(fetchEntityName(results, xml));
-    const entities = (results.entities ?? []).map((row) => liquidRecord(row, undefined, { multiSelect }));
+    // An enhanced site with content access levels on returns no knowledge article through fetchxml (hosted session F3,
+    // AUTH-07c); the standard model's fetchxml is not filtered (not captured).
+    const hiddenArticles =
+      fetchEntityName(results, xml) === 'knowledgearticle' && enhancedContentAccessLevels(host.portal);
+    if (hiddenArticles) results = { ...results, more_records: false, paging_cookie: null };
+    const entities = hiddenArticles
+      ? []
+      : (results.entities ?? []).map((row) => liquidRecord(row, undefined, { multiSelect }));
     // FetchXmlQueryDrop: results exposes the EntityCollection members; xml the executed query.
     context.assignGlobal(this.variable, {
       xml: results.xml ?? xml,
@@ -1586,6 +1643,9 @@ function componentTag(tag) {
         args.key == null
       )
         return;
+      // An authored entitylist block with pp_page_control is an ordinary block (its body only): the tag renders no list
+      // (captured, paqvilo-developer hosted-f2 summary-F2 LIST-01d). Only a rewrite page template's list is a page control.
+      if (tag === 'entitylist' && context.state.formTags !== 'rewrite') delete args.pp_page_control;
       if (!claimFormTag(context, tag, args)) return;
       // The enclosing template's trace span names each platform component this render produced, so page
       // inspection can report the form or list as rendered (docs/design/tracing.md). Only the tag's id, key or
@@ -1863,6 +1923,17 @@ export function contentStylesheetFiles(portal, page) {
 }
 
 // ---- Renderer
+// Header and footer output cache lifetime from the render that filled the copy (hosted session F3: 5:00 to 5:23).
+const OUTPUT_CACHE_MS = 5 * 60 * 1000;
+// The rewrite pages an enhanced site renders (hosted session F3): any other ASPX page has no route handler.
+const ENHANCED_REWRITE_PAGES = new Set([
+  'pages/fullpage.aspx',
+  'pages/webform.aspx',
+  'pages/webformnovalidation.aspx',
+  'pages/blank.aspx',
+  'pages/search.aspx',
+]);
+
 /** Render exported templates with Power Pages tags and request-local data/identity. */
 export function createPortalRenderer(
   portal = requiredArgument('createPortalRenderer(portal)', 'a portal (the importPortal result)'),
@@ -1872,7 +1943,30 @@ export function createPortalRenderer(
   const clock = clockFunction(options.clock ?? systemClock);
   const choiceColumns = (entity) => choiceColumnsOf(options.metadata, entity);
   const renderedFragments = new WeakMap();
-  const webLinkEditingMetadata = new WeakMap();
+  // Header and footer output cache copies (renderOutputCached).
+  const outputCache = new Map();
+  // The request-dependent reads of a header or footer source (lense PP-CACHE-001), by source text.
+  const requestReads = new Map();
+  /**
+   * The content-editing rights of a signed-in visitor, from the export and never from a role name, failing closed:
+   * content snippets need Manage Content Snippets website access (adx_websiteaccess), a web page needs a Grant Change
+   * page access rule on the page or an ancestor. Hosted session F3 observed the editor markup and the editable flags for
+   * an administrator, who holds both; which right each object reads is inferred from the classic portal's permissions.
+   * Preview Unpublished Entities alone is not an editing right. Web link sets use Manage Web Link Sets (buildWeblinks).
+   */
+  const editingRights = (identity, user, accessOptions) => {
+    if (!user) return { snippets: false, page: () => false };
+    const matchesRole = pageRuleMatcher(portal, identity);
+    return {
+      snippets: (portal.websiteAccess ?? []).some(
+        (access) => access.manageContentSnippets && matchesRole(access.roleIds),
+      ),
+      page: (pageId) => {
+        const target = portal.pages.find((item) => item.id === pageId);
+        return Boolean(target) && pageAccess(portal, target, identity, accessOptions).reason === 'grant-change';
+      },
+    };
+  };
   const finishRender = (fragment, index, fields) => {
     const result = {
       ...(options.provenance && fields.isDocument
@@ -2169,6 +2263,7 @@ export function createPortalRenderer(
     tag = 'div',
     languageName,
     metadata = '',
+    editor = null,
     provenance = null,
     context = null,
     platform = null,
@@ -2180,8 +2275,20 @@ export function createPortalRenderer(
     const inner = escape ? htmlEncode(value) : value;
     // TagBuilder sorts attributes and AntiXSS attribute encoding renders spaces as &#32;.
     const attr = (text) => text.replace(/[^A-Za-z0-9,.\-_]/g, (c) => `&#${c.codePointAt(0)};`);
-    const language = languageName ? ` data-languageContext="${attr(languageName)}"` : '';
-    const prefix = `<${tag} class="${attr(classes.join(' '))}"${metadata}${language}><${tag} class="${valueClasses.replaceAll(' ', '&#32;')}">`;
+    // Hosted session F3 (PAGE-05b): the language context attribute is lowercase; a content editor's wrapper adds only
+    // data-encoded and data-liquid (data-default for a missing snippet with a default), sorted with it.
+    const data = {};
+    if (languageName) data['data-languagecontext'] = languageName;
+    if (editor) {
+      data['data-encoded'] = String(editor.encoded);
+      data['data-liquid'] = String(editor.liquid);
+      if (editor.defaultValue != null) data['data-default'] = editor.defaultValue;
+    }
+    const dataAttributes = Object.keys(data)
+      .sort(/* NOSONAR: ordinal attribute order */)
+      .map((name) => ` ${name}="${attr(String(data[name]))}"`)
+      .join('');
+    const prefix = `<${tag} class="${attr(classes.join(' '))}"${metadata}${dataAttributes}><${tag} class="${valueClasses.replaceAll(' ', '&#32;')}">`;
     const suffix = `</${tag}></${tag}>`;
     if (context)
       context.resolvedFragment = joinRenderFragments(
@@ -2233,9 +2340,12 @@ export function createPortalRenderer(
         ? new Set([...AUTO_ENCODE_ROOTS, 'params'])
         : AUTO_ENCODE_ROOTS;
     },
+    // A substitution block reads the current request, also inside a cached header or footer (renderOutputCached).
     freshContext: (context) =>
       new LiquidContext(engine, {
-        environment: context.environments[0],
+        environment: context.environments[0].get('__substitutionContext')
+          ? liquidContextFor(context.environments[0].get('__substitutionContext')).environments[0]
+          : context.environments[0],
         registers: context.registers,
         diagnostics: context.diagnostics,
         state: context.state,
@@ -2258,6 +2368,12 @@ export function createPortalRenderer(
       const tag = editOptions.tag == null ? 'div' : formatItem(editOptions.tag);
       const cssClass = editOptions.class == null ? null : formatItem(editOptions.class);
       const defaultValue = editOptions.default == null ? null : formatItem(editOptions.default);
+      // The visitor's editing rights for this render (contextForPage); a context without them edits nothing.
+      const rights = context.environments[0].get('__editRights');
+      const snippetEditor = rights?.snippets === true;
+      const editorFor = (allowed, extra = {}) =>
+        allowed ? { encoded: escape, liquid: liquidEnabled, ...extra } : null;
+      const contextLanguageName = () => context.environments[0].get('__language')?.name ?? websiteLanguageName();
       const render = async (value, sourceRef = null) => {
         context.resolvedFragment = null;
         if (liquidEnabled)
@@ -2268,18 +2384,21 @@ export function createPortalRenderer(
             context.liquidHalt = error;
             return (error.partial ?? '') + LIQUID_HALT_MARK;
           }
+        // A source-debugged value (its sourceURL comments added) is literal only where its offset map says so.
+        const offsets =
+          sourceRef?.offsetMap && sourceRef.renderedText === value
+            ? sourceRef.offsetMap
+            : [{ start: 0, end: value.length, sourceStart: 0 }];
         if (sourceRef)
           context.resolvedFragment = {
             text: value,
-            intervals: [
-              {
-                start: 0,
-                end: value.length,
-                sourceRefId: sourceRef.id,
-                sourceSpan: { start: 0, end: value.length },
-                mapping: 'literal',
-              },
-            ],
+            intervals: offsets.map((offset) => ({
+              start: offset.start,
+              end: offset.end,
+              sourceRefId: sourceRef.id,
+              sourceSpan: { start: offset.sourceStart, end: offset.sourceStart + offset.end - offset.start },
+              mapping: 'literal',
+            })),
           };
         return value;
       };
@@ -2298,6 +2417,9 @@ export function createPortalRenderer(
             cssClass,
             escape,
             tag,
+            // Hosted session F3: a content editor's wrapper names the language and the default; an anonymous one neither.
+            languageName: snippetEditor ? contextLanguageName() : null,
+            editor: editorFor(snippetEditor, { defaultValue }),
           });
         }
         // An existing snippet keeps its language context; without a value it is a no-value wrapper
@@ -2312,7 +2434,8 @@ export function createPortalRenderer(
           cssClass,
           escape,
           tag,
-          languageName: snippetLanguageName(name, context),
+          languageName: snippetLanguageName(name, context) ?? (snippetEditor ? contextLanguageName() : null),
+          editor: editorFor(snippetEditor),
         });
       }
       if (target && typeof target === 'object' && target.__liquidEditable === 'entity') {
@@ -2335,23 +2458,11 @@ export function createPortalRenderer(
         // Dataverse stores empty text as null: an empty attribute renders the no-value wrapper.
         const hasValue = value != null && value !== '';
         const request = context.environments[0].get('request');
-        // Content-editing metadata renders for a signed-in user whose web role carries website
-        // access permissions (adx_websiteaccess), derived from the export; never from a role name.
-        const user = context.environments[0].get('user');
-        const roleNames = new Set(
-          (user?.roles ?? []).map((role) => (typeof role === 'object' && role ? role.name : role)),
-        );
-        const roleIds = new Set(
-          portalWebRoles(portal)
-            .filter((role) => roleNames.has(role.name))
-            .map((role) => role.id),
-        );
-        const contentEditor =
-          user &&
-          (portal.websiteAccess ?? []).some((access) => (access.roleIds ?? []).some((roleId) => roleIds.has(roleId)));
+        // A site's observed CMS metadata (liquidEditableMetadata: observed) for the current page. A content editor's
+        // wrapper otherwise carries only the attributes hosted session F3 captured (wrapEditable).
         const metadata = target.__isCurrentPage
           ? editableMetadataAttributes({
-              observed: contentEditor ? { liquidEditableMetadata: 'observed' } : (options.observed ?? portal.observed),
+              observed: options.observed ?? portal.observed,
               websiteId: portal.website?.id ?? portalField(portal.website ?? {}, 'websiteid'),
               rootId: target.id,
               contentId:
@@ -2367,8 +2478,10 @@ export function createPortalRenderer(
             })
           : '';
         const field = key.replace(/^(?:adx|mspp)_/, '');
+        // The current page reaches the tag through its Liquid identity proxy: its field sources are kept on the record
+        // (decoratePageNode), with the offset map of a source-debugged copy.
         const fieldRef =
-          getObjectSource(target, key) ??
+          getObjectSource(liquidRecordOf(target), key) ??
           sourceIndex(context.environments[0].get('__language')?.id).source(target.metadata, field);
         return wrapEditable({
           value: await render(hasValue ? formatItem(value) : (defaultValue ?? ''), hasValue ? fieldRef : null),
@@ -2389,9 +2502,11 @@ export function createPortalRenderer(
           escape,
           tag,
           metadata,
+          editor: metadata ? null : editorFor(rights?.page?.(target.id) === true),
         });
       }
-      return key ? null : (webLinkEditingMetadata.get(target) ?? null);
+      // Hosted session F3: `{% editable <weblink set> %}` writes nothing, also for a content editor.
+      return null;
     },
   };
   engine.portalHost = portalHost;
@@ -2425,6 +2540,11 @@ export function createPortalRenderer(
       attributes[key] = target && typeof value === 'string' ? pageEntityReference(value, target) : liquidValue(value);
     }
     addPageAttributePrefixes(attributes);
+    const copy = sourceIndex(languageId).source(p.metadata, 'copy');
+    // A code site's landing page as the copy (lib/code-site.mjs codeSiteUploadPages) is the compiled build's bytes, as
+    // the platform serves them: its scripts get no source debugging annotation.
+    const landingCopy = Boolean(copy?.file) && copy.file === portal.codeSite?.entryFile;
+    const copyTarget = landingCopy ? null : exportFieldFile(p.metadata, 'copy.html');
     const node = {
       ...attributes,
       ...p,
@@ -2434,14 +2554,13 @@ export function createPortalRenderer(
       adx_webpageid: p.id,
       adx_name: p.name,
       adx_title: p.title,
-      adx_copy: debugMarkup(p.html, exportFieldFile(p.metadata, 'copy.html')),
+      adx_copy: debugMarkup(p.html, copyTarget),
       adx_summary: p.summary,
       adx_entityform: p.formId ? pageEntityReference(p.formId, 'adx_entityform') : null,
       adx_entitylist: p.listId ? pageEntityReference(p.listId, 'adx_entitylist') : null,
       adx_webform: p.advancedFormId ? pageEntityReference(p.advancedFormId, 'adx_webform') : null,
     };
-    const copy = sourceIndex(languageId).source(p.metadata, 'copy');
-    const debuggedCopy = debugTemplate(p.html, copy, exportFieldFile(p.metadata, 'copy.html'));
+    const debuggedCopy = debugTemplate(p.html, copy, copyTarget);
     node.adx_copy = debuggedCopy.text;
     setObjectSource(node, ['html', 'mspp_copy', 'copy'], copy);
     setObjectSource(node, ['adx_copy'], debuggedCopy.sourceRef);
@@ -2517,7 +2636,13 @@ export function createPortalRenderer(
       weblinks: null,
       sitemarkers: null,
       resx: new ResxDrop(language.selected?.code),
-      entities: new EntitiesDrop(options.entity, user, options.entityMembers, choiceColumns),
+      entities: new EntitiesDrop(
+        options.entity,
+        user,
+        options.entityMembers,
+        choiceColumns,
+        options.knowledgeArticleAccess,
+      ),
       knowledge: new KnowledgeDrop(
         options.fetchXml,
         user,
@@ -2574,6 +2699,15 @@ export function createPortalRenderer(
       sourceIndex: sourceIndex(languageId),
     });
     const accessOptions = { now: clock(), languageId, previewCookie: extra.previewCookie };
+    const rights = editingRights(identity, context.user, accessOptions);
+    context.__editRights = rights;
+    context.snippets.editable = rights.snippets;
+    // page.breadcrumbs pass the same access check as page.parent: an ancestor the visitor may not read is left out.
+    // Inferred (fails closed): hosted session F3 captured page.parent only.
+    current.breadcrumbs = current.breadcrumbs.filter((crumb) => {
+      const ancestor = portal.pages.find((item) => item.id === crumb.id);
+      return Boolean(ancestor) && pageAccess(portal, ancestor, identity, accessOptions).allowed;
+    });
     const visible = (p) =>
       !portalField(localizedPortalPage(p, languageId).metadata ?? {}, 'hiddenfromsitemap', false) &&
       pageAccess(portal, p, identity, accessOptions).allowed;
@@ -2624,7 +2758,15 @@ export function createPortalRenderer(
       node.is_sitemap_current = node.id === page.id;
       node.is_sitemap_ancestor = current.breadcrumbs.some((crumb) => crumb.id === node.id);
     }
-    current.parent = nodes.get(page.parentId) ?? null;
+    // page.parent passes the same access check as the page (hosted session F3, AUTH-07e: a draft parent is empty for an
+    // anonymous visitor and set for an administrator who may preview it).
+    const parentPage = portal.pages.find((p) => p.id === page.parentId);
+    current.parent =
+      parentPage && pageAccess(portal, parentPage, identity, accessOptions).allowed
+        ? (nodes.get(parentPage.id) ?? null)
+        : null;
+    // PageDrop.Editable (hosted session F3: false for an anonymous visitor, true for an administrator): Grant Change.
+    current.editable = rights.page(page.id);
     current.children = nodes.get(page.id)?.children ?? [];
     current.entity = { ...current, id: page.id, logical_name: 'adx_webpage' };
     current.is_sitemap_current = true;
@@ -2756,14 +2898,6 @@ export function createPortalRenderer(
     const convert = (set) => {
       const drop = convertSet(set);
       setRecordSources(drop, [recordRef(set.id, languageId)]);
-      if (canEdit) {
-        const label = portalField(set.metadata ?? {}, 'display_name') ?? set.name;
-        // The local preview exposes source metadata without the classic CMS service links.
-        webLinkEditingMetadata.set(
-          drop,
-          `<span hidden aria-hidden="true" data-mirage-editable="weblinkset" data-logicalname="adx_weblinkset" data-id="${htmlEscape(set.id)}" data-label="${htmlEscape(label)}"></span>`,
-        );
-      }
       return drop;
     };
     // The adapter selects the first active set by name before applying publishing access. A denied first set
@@ -2873,6 +3007,23 @@ export function createPortalRenderer(
     return (await renderSourceFragment(source, context, sourceRef, slot)).text;
   }
   async function renderString(source, context = {}) {
+    // The snippets object is a global of every Power Pages render; a context without one reads the export's snippets.
+    if (!Object.hasOwn(context, 'snippets')) {
+      // The context's language selects the snippet values, as contextForPage does.
+      const languageId = context.__language?.id ?? null;
+      context = {
+        ...context,
+        snippets: new SnippetsDrop({
+          snippets:
+            languageId && portal.snippetTranslations?.[languageId]
+              ? { ...portal.snippets, ...portal.snippetTranslations[languageId] }
+              : portal.snippets,
+          engine,
+          diagnostics: Array.isArray(context.__diagnostics) ? context.__diagnostics : [],
+          sourceIndex: sourceIndex(languageId),
+        }),
+      };
+    }
     return renderSource(source, context, null, 'inline liquid');
   }
   async function renderPage(url, extra = {}) {
@@ -2898,6 +3049,98 @@ export function createPortalRenderer(
       throw error;
     }
   }
+  /**
+   * Header and footer output caching (Header/OutputCache/Enabled, Footer/OutputCache/Enabled literally true; hosted
+   * session F3, PAGE-06d2, two runs). One copy per website, language and visitor: every anonymous visitor shares one,
+   * a signed-in contact has its own (keyed with the contact's web roles, so a role change renders afresh: the hosted
+   * timing after a role removal differed between the runs). A copy lives a fixed 5 minutes from the render that filled
+   * it (the hosted copies expired 5:00 to 5:23 after rendering; requests do not extend them); a changed template source
+   * or source revision replaces it at once (hosted: 10 to 25 seconds). A cached copy is rendered again from the inputs
+   * of the request that filled it (its page, URL, visitor, language and time), so request values outside
+   * {% substitution %} stay those of that request, a Liquid error stays in it, and every {% substitution %} block reads
+   * the current request. Data the template reads is read again.
+   */
+  async function renderOutputCached(part, template, context, { page, url, extra, index }) {
+    const sourceRef = index.source(template.metadata, 'source');
+    const setting = Object.entries(portal.settings ?? {}).find(
+      ([name]) => name.toLowerCase() === `${part.toLowerCase()}/outputcache/enabled`,
+    )?.[1];
+    const value = setting && typeof setting === 'object' ? setting.value : setting;
+    if (
+      String(value ?? '')
+        .trim()
+        .toLowerCase() !== 'true'
+    )
+      return renderSourceFragment(template.source, context, sourceRef);
+    const user = context.user;
+    const visitor = user
+      ? ['contact', String(user.id ?? user.contactid ?? '').toLowerCase(), [...(user.roles ?? [])].map(String).sort()]
+      : ['anonymous'];
+    const key = JSON.stringify([part, portal.website?.id ?? null, context.__language?.id ?? null, visitor]);
+    const now = clock();
+    const entry = outputCache.get(key);
+    if (!entry || now >= entry.expires || entry.revision !== index.sourceRevision || entry.source !== template.source) {
+      // Expired copies of other visitors are dropped as new copies are filled.
+      for (const [other, copy] of outputCache) if (now >= copy.expires) outputCache.delete(other);
+      outputCache.set(key, {
+        expires: now + OUTPUT_CACHE_MS,
+        revision: index.sourceRevision,
+        source: template.source,
+        page,
+        url,
+        extra: { ...extra, now: context.now },
+      });
+      return renderSourceFragment(template.source, context, sourceRef);
+    }
+    // The copy shows the filling request's values (hosted behaviour): a read of the request outside a substitution
+    // block (lense analyze PP-CACHE-001) is reported, so a returnUrl or query of another request is not mistaken.
+    if (!requestReads.has(template.source))
+      requestReads.set(
+        template.source,
+        cachedRequestReads(
+          template.name ?? part,
+          template.source,
+          Object.values(portal.templates ?? {}).map((item) => ({ name: item.name, source: item.source })),
+        ),
+      );
+    const reads = requestReads.get(template.source);
+    if (reads.length)
+      context.__diagnostics.push({
+        code: 'OUTPUT_CACHE_REQUEST_VALUE',
+        severity: 'warning',
+        part,
+        reads: reads.slice(0, 10).map((read) => ({ template: read.template, offset: read.offset, text: read.text })),
+        message: `The cached ${part} reads request-dependent values outside {% substitution %} (${[...new Set(reads.map((read) => read.text))].slice(0, 5).join(', ')}); this copy shows the values of the request that rendered it.`,
+      });
+    const cached = contextForPage(entry.page, entry.url, entry.extra);
+    cached.__provenance = context.__provenance;
+    cached.__diagnostics = context.__diagnostics;
+    cached.__substitutionContext = context;
+    return renderSourceFragment(template.source, cached, sourceRef);
+  }
+  /**
+   * The landing document of a code site as it is stored: the Home page copy in the request's language, literal to that
+   * copy's source (lib/code-site.mjs codeSiteUploadPages).
+   */
+  function codeSiteLandingFragment(context, index) {
+    const root = portal.pages.find((entry) => normalizePortalPath(entry.url) === '/');
+    const home = root ? localizedPortalPage(root, context.__language?.id) : null;
+    const text = String(home?.html ?? '');
+    const ref = home ? index.source(home.metadata ?? root.metadata, 'copy') : null;
+    if (ref?.text !== text) return { text, intervals: [] };
+    return {
+      text,
+      intervals: [
+        {
+          start: 0,
+          end: text.length,
+          sourceRefId: ref.id,
+          sourceSpan: { start: 0, end: text.length },
+          mapping: 'literal',
+        },
+      ],
+    };
+  }
   /* NOSONAR */ async function renderFoundPage(found, url, extra, span) {
     const context = contextForPage(found, url, extra);
     const index = sourceIndex(context.__language?.id);
@@ -2919,6 +3162,31 @@ export function createPortalRenderer(
         error.code = 'INVALID_REWRITE_HANDLER';
         throw error;
       }
+      // The enhanced data model (hosted session F3, PAGE-03c, two runs): Page.aspx and Listing.aspx read the adx_webpage
+      // table that the model does not have (500); an ASPX page the runtime does not ship (Home.aspx, a missing file) has no
+      // handler (500); Search.aspx renders. The standard model keeps its layouts: only the enhanced model was captured.
+      // The Knowledge Article page of an enhanced site with content access levels on (hosted session F3, AUTH-07c, every
+      // persona): 500, RTDV01, the standard-model intersect table the feature reads is not in the MetadataCache.
+      if (enhancedContentAccessLevels(portal) && portal.sitemarkers?.['Knowledge Article']?.id === found.id)
+        throw enhancedArticlePageError();
+      const rewriteName = physicalRewrite.replace(/^~?\//, '').toLowerCase();
+      if (rewriteSelected && portal.format === 'enhanced' && /\.aspx$/i.test(physicalRewrite)) {
+        if (['pages/page.aspx', 'pages/listing.aspx'].includes(rewriteName)) {
+          const error = new Error(
+            "The entity with a name = 'adx_webpage' with namemapping = 'Logical' was not found in the MetadataCache.",
+          );
+          error.code = 'REWRITE_LAYOUT_TABLE_MISSING';
+          error.dataverse = true;
+          throw error;
+        }
+        if (!ENHANCED_REWRITE_PAGES.has(rewriteName)) {
+          const error = new Error(
+            "The route handler 'Adxstudio.Xrm.Web.Routing.PortalRouteHandler' did not return an IHttpHandler from its GetHttpHandler() method.",
+          );
+          error.code = 'INVALID_REWRITE_HANDLER';
+          throw error;
+        }
+      }
       const template = rewriteSelected ? null : portal.templates[pageTemplate?.webTemplateId];
       if (!rewriteSelected && pageTemplate?.webTemplateId && !template)
         diagnostics.push({
@@ -2927,7 +3195,14 @@ export function createPortalRenderer(
         });
       // Legacy ASPX page templates render their WebForms layout with the page's attached
       // advanced form, basic form and list (lib/platform-manifest.mjs).
-      const rewriteLayout = template ? null : rewritePageLayout(page, pageTemplate);
+      const searchLayout = rewriteSelected && portal.format === 'enhanced' && rewriteName === 'pages/search.aspx';
+      // Search.aspx renders the header and footer around its own content region as hosted session F3 captured it
+      // (SEARCH_PAGE_CONTENT): no page heading, page copy or server form.
+      let rewriteLayout = null;
+      if (!template)
+        rewriteLayout = searchLayout
+          ? { source: SEARCH_PAGE_CONTENT, serverFormId: null, contentRegion: true }
+          : rewritePageLayout(page, pageTemplate);
       if (rewriteSelected && physicalRewrite && !rewriteLayout)
         diagnostics.push({
           code: 'REWRITE_LAYOUT_UNSUPPORTED',
@@ -2945,17 +3220,32 @@ export function createPortalRenderer(
       const layoutContext = layoutTrace.platformContext;
       if (layoutRef) layoutTrace.platformContext = layoutRef.id;
       let bodyFragment;
+      // A code site's application route (extra.codeSiteLanding): the page's template output is replaced by the landing
+      // document, which follows the anti-forgery holder (hosted session F5).
+      const landing = extra.codeSiteLanding ? codeSiteLandingFragment(context, index) : null;
       try {
-        bodyFragment = await renderSourceFragment(
-          template ? template.source : (rewriteLayout?.source ?? "{% include 'Page Copy' %}"),
-          context,
-          template ? index.source(template.metadata, 'source') : null,
-          sourceDescription(),
-        );
+        // The Search.aspx region is the platform's own markup (no Liquid, no record): its script gets the page nonce.
+        if (landing) bodyFragment = landing;
+        else if (searchLayout)
+          bodyFragment = platformFragment(SEARCH_PAGE_CONTENT, shellTags(portal, index, 'search-page'));
+        else if (template)
+          bodyFragment = await renderSourceFragment(
+            template.source,
+            context,
+            index.source(template.metadata, 'source'),
+            sourceDescription(),
+          );
+        else
+          bodyFragment = await renderSourceFragment(
+            rewriteLayout?.source ?? "{% include 'Page Copy' %}",
+            context,
+            null,
+            sourceDescription(),
+          );
       } finally {
         layoutTrace.platformContext = layoutContext;
       }
-      if (rewriteLayout)
+      if (rewriteLayout && !landing)
         bodyFragment = withPlatformTags(bodyFragment, {
           component: {
             kind: 'page-template',
@@ -3013,7 +3303,7 @@ export function createPortalRenderer(
       const header = portal.templates[portalField(portal.website, 'headerwebtemplateid')];
       const footer = portal.templates[portalField(portal.website, 'footerwebtemplateid')];
       let headerFragment = header
-        ? await renderSourceFragment(header.source, context, index.source(header.metadata, 'source'))
+        ? await renderOutputCached('Header', header, context, { page: found, url, extra, index })
         : { text: '', intervals: [] };
       let renderedHeader = headerFragment.text;
       const shellProfile = extra.shellProfile ?? options.shellProfile;
@@ -3060,7 +3350,7 @@ export function createPortalRenderer(
         }
       }
       let footerFragment = footer
-        ? await renderSourceFragment(footer.source, context, index.source(footer.metadata, 'source'))
+        ? await renderOutputCached('Footer', footer, context, { page: found, url, extra, index })
         : { text: '', intervals: [] };
       let renderedFooter = footerFragment.text;
       const observedLogos = shellProfile?.footerLogos;
@@ -3148,7 +3438,8 @@ export function createPortalRenderer(
       const encodedSuffix = htmlEscape(titleSuffix).replace(/&amp;(#x[\da-f]+|#\d+|[a-z]\w+);/gi, '&$1;');
       // Web templates own their content structure, including main landmarks.
       // A legacy page layout that names its own content region (div#mainContent) has no main landmark.
-      const content = template || rewriteLayout?.contentRegion ? body : `<main id="mainContent">${body}</main>`;
+      const ownRegion = Boolean(template || rewriteLayout?.contentRegion || landing);
+      const content = ownRegion ? body : `<main id="mainContent">${body}</main>`;
       // Native platform regions (lib/platform-manifest.mjs): WebForms form and AXD
       // scripts only on form pages; chrome markup around the header, content and footer.
       // A calendar list adds its stylesheets at the end of the head and its scripts after the
@@ -3171,14 +3462,13 @@ export function createPortalRenderer(
         variant: platform.variant,
         formScripts: calendar?.body ?? '',
       });
-      const contentFragment =
-        template || rewriteLayout?.contentRegion
-          ? bodyFragment
-          : joinRenderFragments(
-              platformFragment('<main id="mainContent">', { component: shellComponent('main-content') }),
-              bodyFragment,
-              '</main>',
-            );
+      const contentFragment = ownRegion
+        ? bodyFragment
+        : joinRenderFragments(
+            platformFragment('<main id="mainContent">', { component: shellComponent('main-content') }),
+            bodyFragment,
+            '</main>',
+          );
       // The server form removes component state (data-pp-viewstate) and an aborted control's tail from the content:
       // the intervals are re-based on those removals, then moved to where the content sits in the form.
       const { contentRange } = nativeRegions;
@@ -3198,6 +3488,11 @@ export function createPortalRenderer(
       };
       const languageCode = layoutLanguageCode(context);
       const direction = /^(ar|fa|he|ur)(-|$)/i.test(languageCode) ? 'rtl' : 'ltr';
+      // The PWAFeature site setting's manifest link and service worker script (lib/platform-manifest.mjs pwaShellMarkup).
+      const pwa = pwaShellMarkup(
+        Object.entries(portal.settings ?? {}).find(([name]) => name.toLowerCase() === 'pwafeature')?.[1],
+        portal.website?.id,
+      );
       const bodyAttributes = layoutBodyAttributes(page, context);
       const htmlAttributes = layoutHtmlAttributes(languageCode, context.__language?.lcid);
       // The footer-spacing adapter is a script element; authored footer markup is not modified.
@@ -3237,6 +3532,7 @@ export function createPortalRenderer(
         tags(platform.headEnd),
         tags(/MultiSelectPicklist\.UpdMSPicklistControl/.test(content) ? platform.controlsStyle : ''),
         tags(calendar?.head ?? ''),
+        tags(pwa.head, 'pwa'),
         '</head>',
         tags(`<body${bodyAttributes}>`, 'body'),
         tags(platform.bodyOpen),
@@ -3254,6 +3550,7 @@ export function createPortalRenderer(
         footerFragment,
         tags(shellAfterFooterScripts),
         tags(platform.afterFooter),
+        tags(pwa.body, 'pwa'),
         js,
         extra.bodyHtml ?? '',
         '</body></html>',
@@ -3304,6 +3601,13 @@ export function createPortalRenderer(
         page,
         diagnostics,
       });
+      // The server exception, for a site's observed error presentation (lib/page-error-presentation.mjs).
+      failed.failure = {
+        status: failed.status,
+        code: original?.code ?? 'liquid-render-error',
+        message: error.message,
+        dataverse: Boolean(original?.dataverse),
+      };
       return failed;
     }
   }
@@ -3542,9 +3846,11 @@ export function createPortalRenderer(
      * A rendered document (after host `edits`, as provenanceForEdited) with the script nonces of a nonce policy and no
      * provenance proof: { html, scriptPolicy }, or null for a result this renderer did not render.
      */
-    scriptNoncesFor(rendered, { nonce, pending }, edits = []) {
+    scriptNoncesFor(rendered, { nonce, pending, everyScript = false }, edits = []) {
       const trace = renderedFragments.get(rendered);
-      return trace ? applyScriptNonces({ fragment: trace.fragment, index: trace.index, nonce, pending, edits }) : null;
+      return trace
+        ? applyScriptNonces({ fragment: trace.fragment, index: trace.index, nonce, pending, everyScript, edits })
+        : null;
     },
     sourceIndex,
     async renderStringWithProvenance(source, context = {}, sourceRef = null) {

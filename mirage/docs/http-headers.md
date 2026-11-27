@@ -2,8 +2,9 @@
 
 Power Pages answers on HTTPS behind its edge, and Mirage answers on http loopback. This page describes how Mirage
 handles the headers that belong to that difference: `Strict-Transport-Security` and the CORS headers of the
-`HTTP/Access-Control-*` site settings. The edge controls that Mirage does not emulate are listed at the end, with the
-Lense report that reads them on the live site.
+`HTTP/Access-Control-*` site settings. The edge controls in front of the site (IP restrictions and WAF custom rules,
+modelled from observations, and what stays out) are described at the end, with the Lense report that reads them on the
+live site.
 
 ## Strict-Transport-Security
 
@@ -15,12 +16,13 @@ A site records the header that it sends as an observation:
 
 ```yaml
 observed:
-  strictTransportSecurity: max-age=31536000; includeSubDomains
+  strictTransportSecurity: max-age=31536000; includeSubDomains; preload
   evidence: <where the header was observed>
 ```
 
-The value must follow RFC 6797: one `max-age`, plus `includeSubDomains` and `preload` if the site sends them. Mirage
-sends it on page, web file and Web API responses of its http loopback listener.
+The value must follow RFC 6797: one `max-age`, plus `includeSubDomains` and `preload` if the site sends them. The value
+above is the one hosted sites sent on every response in hosted session F5. Mirage sends it on every response of its
+http loopback listener: pages, redirects, errors, web files and Web API answers.
 
 Browsers ignore this header on loopback. RFC 6797 section 8.1 says that a user agent must ignore the header when it
 arrives over a transport that is not secure, and Chromium and Firefox store HSTS only from a valid TLS connection. The
@@ -29,17 +31,32 @@ sends it over TLS. HSTS is keyed by host, not by port, so a browser that stored 
 other local server on that host to HTTPS until `max-age` expires. The response headers helper sends the observed value
 only when its transport is the http loopback listener (`loopback`, the default).
 
-## CORS for authored pages
+## CORS settings
 
 Learn's HTTP headers page lists the CORS settings: `HTTP/Access-Control-Allow-Origin`, `-Allow-Methods`,
-`-Allow-Headers`, `-Allow-Credentials`, `-Expose-Headers` and `-Max-Age`. Learn's Azure AD B2C recipe sets two of them
-and publishes an authored page that the B2C origin loads across origins.
+`-Allow-Headers`, `-Allow-Credentials`, `-Expose-Headers` and `-Max-Age`.
 
-The export does not show which responses the platform gives these headers. A spare site had the three settings
-applied to its private root: across 42 probes, with the settings, after the documented Clear config and after the
-restore, the root sent no `Access-Control-*` header to the allowed origin, to another origin or to any preflight. So
-Mirage refuses cross-origin requests (403, no CORS header) unless a site records the authored pages that it was
-observed to share:
+Hosted sites send each of these settings with its value as written, as a fixed header on every response (hosted
+session F5, two runs). The header does not depend on the request's `Origin` (none, the allowed origin or another one),
+on the method (`GET`, `HEAD`, `POST`, `OPTIONS`), on the route or on the status (200, 302, 404). The platform does
+not echo the request's origin and sends no `Vary: Origin`. An `OPTIONS` request gets no preflight answer: the route
+answers it as it answers any request, for example `/_services/about` with 200 and its body, `/_layout/tokenhtml` with
+404 and a page of a private site with the sign-in redirect. A site without these settings sends no such header.
+
+Mirage sends the settings the same way on every response of the portal listener that its origin boundary admits:
+each value as written, with no origin logic and no `Vary: Origin`. It has no preflight answer either: an `OPTIONS`
+request reaches its route, and the anti-forgery fragment answers `HEAD`, `POST` and `OPTIONS` with an empty 404, as
+online. The boundary itself is unchanged. The local runtime
+refuses a request from another origin (403, without any site header), so a page on another origin cannot read the
+loopback runtime, whatever the settings allow. A site with CORS settings and no `corsPages` observation reports the
+warning `PORTAL_HTTP_CORS_LOOPBACK_BOUNDARY` with the setting names. `HTTP/Access-Control-Allow-Origin: *` with
+`HTTP/Access-Control-Allow-Credentials: true` is never sent as a pair: the Fetch standard refuses it and Learn's
+security best practices say not to combine them, and no hosted site was captured with it. Mirage sends the origin
+without the credentials header and reports `PORTAL_HTTP_CORS_WILDCARD_CREDENTIALS`.
+
+The cross-origin answer of a public site was not captured (F5 captured private sites, where every cross-origin request
+fails at the sign-in redirect). Mirage therefore refuses cross-origin requests by default and admits only the authored
+pages a public site was observed sharing:
 
 ```yaml
 observed:
@@ -80,26 +97,83 @@ A request is answered only when it comes from an allowed origin and carries no c
 Everything else keeps the ordinary cross-origin refusal. A refusal of a listed page reports `PORTAL_HTTP_CORS_REFUSED`
 with the path and the reason. The info diagnostic `PORTAL_HTTP_CORS_PAGES` lists the shared pages.
 `PORTAL_HTTP_CORS_PAGE_REFUSED` lists each listed page that cannot be shared, with its reason (`liquid`,
-`website-header-footer`, `page-not-found`, `wildcard-credentials`, and so on). A site with CORS settings and no
-`corsPages` keeps `PORTAL_HTTP_CORS_UNSUPPORTED`. Same-origin requests to these pages are rendered as usual and carry
-no CORS header.
+`website-header-footer`, `page-not-found`, `wildcard-credentials`, and so on). Same-origin requests to these pages
+are rendered as usual, with the settings as fixed headers as above.
 
-A hosted capture of a positive answer for an authored public page is still open, so the header set above is a local
-profile. A browser that enforces Local Network Access may also ask the user before a public origin can read a
-loopback page; that prompt is outside Mirage.
+A hosted capture of a positive cross-origin answer for an authored public page is still open, so the answer above is a
+local profile. A value that a header cannot carry (a line break, a control character or a character outside Latin-1,
+such as `€`) is not sent, for any `HTTP/*` setting, and `PORTAL_HTTP_HEADER_INVALID` names the setting.
 
-## Edge controls that Mirage does not emulate
+## Edge controls
 
-The hosted edge applies these controls before a request reaches the site. They are not in the export, and Mirage does
-not apply them:
+The hosted edge applies these controls before a request reaches the site. They are not in the export:
 
-| Control                       | Local runtime                                                                                  |
-| ----------------------------- | ---------------------------------------------------------------------------------------------- |
-| Site visibility               | `observed.siteVisibility`: the private-site banner, and admission with `privateSiteContactIds` |
-| IP restrictions               | Not emulated: every loopback request comes from the local machine.                             |
-| WAF custom rules, rate limits | Not emulated: Mirage filters and limits no request.                                            |
-| WAF managed rule sets         | Not emulated: the rule content and anomaly thresholds are not published.                       |
-| TLS versions and ciphers      | Not applicable: the listener is plain http.                                                    |
+| Control                       | Local runtime                                                                                     |
+| ----------------------------- | ------------------------------------------------------------------------------------------------- |
+| Site visibility               | `observed.siteVisibility`: the private-site banner, and admission with `privateSiteContactIds`    |
+| IP restrictions               | `observed.ipRestrictions`: a visitor address outside the allow list gets the hosted 403 page      |
+| WAF custom rules, rate limits | `observed.firewall`: a local model of the rules; an undecidable rule fails closed                 |
+| WAF managed rule sets         | Not emulated: the rule content and anomaly thresholds are not published.                          |
+| HSTS on an HTTPS loopback     | Not emulated: HSTS is keyed by host, so it would pin `localhost` to HTTPS for every local server. |
+| TLS versions and ciphers      | Not applicable: the listener is plain http.                                                       |
 
-`readPowerPagesEdge` from `paqvilo/dataverse` reads these controls on a live site with read-only PAC commands. See
+`readPowerPagesEdge` from `paqvilo/dataverse` reads these controls on a live site with read-only PAC commands, and its
+`local` section names the observation and the value that models each one. See
 [Lense](../../docs/lense.md#edge-controls-of-the-live-site).
+
+```yaml
+observed:
+  ipRestrictions: [203.0.113.7/32, 2001:db8::/32]
+  firewall:
+    mode: Prevention
+    customRules:
+      - name: BlockPrivateArea
+        priority: 10
+        action: Block
+        matchConditions:
+          - { matchVariable: RequestUri, operator: StartsWith, values: [/private] }
+  evidence: <where the allow list and the rules were read>
+```
+
+### IP restrictions
+
+`ipRestrictions` lists the allowed addresses and CIDR ranges (`{ ipAddress, type }` entries are accepted as well), or
+takes `{ allowed, withheld }` as `readPowerPagesEdge` reports it in `local.ipRestrictions.value`: `withheld` counts the
+rows the read could not report. A list without rows restricts nothing. With withheld rows, a visitor address that the
+known entries do not admit might be on one of them: Mirage refuses it, failing closed, logs why and reports
+`PORTAL_EDGE_IP_RESTRICTION_WITHHELD`. Hosted
+session F5 recorded the hosted behaviour twice: with an allow list that does not hold the caller, every path answers
+403 with the Azure "Web App - Unavailable" page, `content-type: text/html`, an `x-ms-forbidden-ip` header naming the
+caller and no site header. Mirage answers the same way, with a shortened page of the same title and text, on every
+method, before any site header, sign-in, cookie or cross-origin page answer (`observed.corsPages`). The visitor address
+is the loopback connection's (`127.0.0.1` or `::1`), so a recorded list without a loopback entry refuses every portal
+request, as a visitor outside the list is refused online; `PORTAL_EDGE_IP_RESTRICTION` says so (a warning). The
+custom rules below run at the same point. Both apply to the portal-facing simulator routes as well (native form posts
+under `/_sim/forms/`, the local sign-in page, the scripts portal pages load); only the administration surface (the
+`/_sim/` console, its assets and the admin API) is outside them and stays reachable.
+
+### WAF custom rules
+
+`firewall.customRules` takes the rules as `readPowerPagesEdge` reports them in `firewall.customRules.rules`, or in the
+Power Platform API's shape (`matchValue` for `values`): `name`, `priority`, `enabledState`, `action` (`Allow`, `Block`,
+`Log`), `ruleType` (`MatchRule`, `RateLimitRule` with `rateLimitThreshold` and `rateLimitDurationInMinutes`, 1 to 5)
+and `matchConditions` (`matchVariable`, `operator` `Contains`, `EndsWith`, `Equals`, `GeoMatch` or `StartsWith`,
+`negateCondition`, `selector`, `transforms`, `values`). `mode` is the policy mode, `Prevention` or `Detection`.
+
+Hosted enforcement of a custom rule was not observed (in session F5 the firewall never reached `Created`), so the
+evaluation is a local model of Azure Front Door's custom rules, reported as `PORTAL_EDGE_FIREWALL_LOCAL_MODEL`: enabled
+rules run in priority order, the conditions of a rule must all match and any value of a condition matches; `Allow`
+admits the request without the later rules, `Block` answers 403 before the site, `Log` writes a `request` log line with
+`kind: edge` and goes on, and a rate-limit rule acts once one client address sent more than its threshold in its window.
+In `Detection` mode a `Block` rule is logged, not enforced. `RemoteAddr` and `SocketAddr` are the connection's address
+(`Equals` matches an address or a range that holds it), `RequestUri` is the path and query string, and `QueryString`,
+`RequestHeader` and `Cookies` (by `selector`) and `RequestMethod` are read from the request.
+
+Where the local runtime cannot know the answer, the rule fails closed: a `Block` rule acts and an `Allow` rule does not,
+and the log line names the reason. That is the case for a `GeoMatch` condition (no geolocation of a local address),
+values the read withheld (`values: null`: Lense reports only the count for headers, cookies, query strings and bodies),
+`PostArgs` and `RequestBody` of a request that has a body (the local gate does not read it before the site), and a
+comparison whose result depends on letter case. `PORTAL_EDGE_FIREWALL_RULE_UNDECIDED` lists the rules with conditions
+that can never be decided, and `PORTAL_EDGE_FIREWALL_MODE_UNRECORDED` warns that a rule set without `mode` is enforced.
+The hosted block response was not observed; Mirage answers 403 with a short "The request is blocked." page. The managed
+rule set stays out: exact parity would need its tuned rule content and anomaly thresholds, which are not published.

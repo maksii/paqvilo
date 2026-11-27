@@ -93,6 +93,8 @@ function* assignChildren(api, state, c, parent, previousOwner, newOwner, visited
       const link = child[reference.column];
       if (link && typeof link === 'object' && link.logical_name && link.logical_name !== parent.logicalName)
         return false;
+      // A multi-table lookup names its table: a bare id references none.
+      if (reference.polymorphic && !link?.logical_name) return false;
       if (!sameId(refId(link), target)) return false;
       if (behaviour === 'Active' && Number(child.statecode ?? 0) !== 0) return false;
       if (behaviour === 'UserOwned' && !sameId(refId(child.ownerid), previousOwner)) return false;

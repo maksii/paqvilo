@@ -393,6 +393,7 @@ test('grid reads follow table permissions and report native access denial', asyn
   );
 });
 
+// @test-kind observation: hosted session F2 notes runs a and b (entity-notes lists only *WEB* notes; the /_entity/annotation download of a signed-in reader answers attachment;filename*=UTF-8''<name> and cache-control private, max-age=3600)
 test('notes service lists portal notes and annotation downloads stream the document body', async () => {
   const { post, get } = shared;
   const response = await post('entity-notes', {
@@ -423,7 +424,8 @@ test('notes service lists portal notes and annotation downloads stream the docum
   const download = await get(notes.Records[0].AttachmentUrl);
   assert.equal(download.status, 200);
   assert.equal(download.headers.get('content-type'), 'text/plain');
-  assert.match(download.headers.get('content-disposition'), /^attachment;filename="evidence\.txt"$/);
+  assert.equal(download.headers.get('content-disposition'), "attachment;filename*=UTF-8''evidence.txt");
+  assert.equal(download.headers.get('cache-control'), 'private, max-age=3600');
   assert.equal(await download.text(), 'evidence');
   assert.equal((await get(`/_entity/annotation/e0000000-0000-4000-8000-0000000000ff`)).status, 404);
   assert.equal((await post('entity-notes', { regarding: { LogicalName: 'contact', Id: CONTACT } }, {})).status, 403);

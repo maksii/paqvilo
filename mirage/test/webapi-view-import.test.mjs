@@ -93,9 +93,11 @@ test('imported Web API view columns combine with explicit fields without exposin
   for (const $select of ['subject,activityid', 'subject,unknowncolumn']) {
     const inherited = await get({ $select });
     assert.equal(inherited.status, 403, $select);
+    // An inherited column is checked against Webapi/activitypointer/fields, which this site does not set (hosted
+    // session F1 summary-F1 API-01c, two runs).
     assert.deepEqual((await inherited.json()).error, {
       code: '90040101',
-      message: 'Attribute All Columns is not enabled for Web Api.',
+      message: 'Attribute subject in table activitypointer is not enabled for Web Api.',
     });
   }
   for (const query of [

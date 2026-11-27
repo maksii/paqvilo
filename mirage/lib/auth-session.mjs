@@ -52,6 +52,51 @@ export function parseCookies(header = '') {
   return Object.fromEntries(cookies);
 }
 
+// The application cookie's chunking (Microsoft.Owin ChunkingCookieManager, ChunkSize 4050): a name=value longer than the
+// chunk size is sent as name=chunks:<n> and the value split into nameC1..nameC<n>, each 4050 - (name + "=") - 3
+// characters at most. Hosted session F4 (paqvilo-developer hosted-f4 cookies runs a and b): .AspNet.ApplicationCookie=
+// chunks:2 with C1 of 4021 and C2 of 993 characters, every part with the cookie's own attributes.
+const CHUNK_SIZE = 4050;
+const MAX_CHUNKS = 99;
+const CHUNKS = /^chunks:([1-9]\d?)$/;
+
+/** Set-Cookie for name=value with `attributes`: one header, or the chunk headers when it is longer than a cookie. */
+function chunkedCookie(name, value, attributes) {
+  if (name.length + 1 + value.length < CHUNK_SIZE) return `${name}=${value}${attributes}`;
+  const size = CHUNK_SIZE - name.length - 1 - 3;
+  const count = Math.ceil(value.length / size);
+  if (count > MAX_CHUNKS) throw new Error(`The ${name} cookie value is too long to send.`);
+  const headers = [`${name}=chunks:${count}${attributes}`];
+  for (let index = 0; index < count; index++)
+    headers.push(`${name}C${index + 1}=${value.slice(index * size, (index + 1) * size)}${attributes}`);
+  return headers;
+}
+
+/** The value of cookie `name` from parsed cookies, joined from its chunks; null when a chunk is missing. */
+export function chunkedCookieValue(cookies, name) {
+  const value = cookies[name];
+  const chunked = CHUNKS.exec(value ?? '');
+  if (!chunked) return value;
+  let joined = '';
+  for (let index = 1; index <= Number(chunked[1]); index++) {
+    const part = cookies[`${name}C${index}`];
+    if (!part) return null;
+    joined += part;
+  }
+  return joined;
+}
+
+/** Whether `cookie` is a chunk (nameC<n>) of the chunked cookie `name`. */
+export const isCookieChunk = (cookie, name) =>
+  cookie.startsWith(name + 'C') && /^[1-9]\d?$/.test(cookie.slice(name.length + 1));
+
+/** The Cookie request header value for one or more Set-Cookie headers (their name=value pairs). */
+export const cookieRequestHeader = (setCookie) =>
+  [setCookie]
+    .flat()
+    .map((header) => String(header).split(';')[0])
+    .join('; ');
+
 /** `name`: the cookie name, or a function returning it (known once the runtime listens). */
 export function createAuthSessions({
   secret = randomBytes(32),
@@ -111,10 +156,12 @@ export function createAuthSessions({
     return `${payload}.${signature(payload)}`;
   };
   const cookie = (session) => {
-    const header = `${cookieName()}=${signed(session)}; Path=/; HttpOnly; SameSite=Lax`;
-    if (!hasPersistentExpiry(session?.persistent, session?.expiresAt)) return header;
-    const expiry = new Date(session.expiresAt);
-    return Number.isFinite(expiry.getTime()) ? `${header}; Expires=${expiry.toUTCString()}` : header;
+    let attributes = '; Path=/; HttpOnly; SameSite=Lax';
+    if (hasPersistentExpiry(session?.persistent, session?.expiresAt)) {
+      const expiry = new Date(session.expiresAt);
+      if (Number.isFinite(expiry.getTime())) attributes += `; Expires=${expiry.toUTCString()}`;
+    }
+    return chunkedCookie(cookieName(), signed(session), attributes);
   };
   return {
     get name() {
@@ -122,7 +169,7 @@ export function createAuthSessions({
     },
     /** Session from a Cookie header: { contactId, roles?, provider? }, { contactId: null } (signed out) or null. */
     read(header) {
-      const payload = verifiedPayload(parseCookies(header)[cookieName()]);
+      const payload = verifiedPayload(chunkedCookieValue(parseCookies(header), cookieName()));
       if (!payload) return null;
       try {
         const data = decode(payload);

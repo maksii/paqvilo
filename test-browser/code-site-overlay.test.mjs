@@ -75,7 +75,7 @@ test('a configured build runs on a client route; Lense answers the build file fi
   );
   fs.writeFileSync(
     path.join(work, 'dist', 'index.html'),
-    '<!doctype html><html><head><title>Compiled app</title><script src="./app.js"></script></head><body><main>Compiled app</main></body></html>',
+    '<!doctype html><html><head><title>Compiled app</title><script src="/app.js"></script></head><body><main>Compiled app</main></body></html>',
   );
   fs.writeFileSync(path.join(work, 'dist', 'app.js'), 'window.syntheticApp = "from the build";');
   const app = await createSimulator({ sourceDir: work, watch: false, requirePortalSource: true });

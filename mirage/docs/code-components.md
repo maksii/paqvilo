@@ -281,7 +281,10 @@ as a generic control: `getValue` and `setValue` throw `Method not implemented.`,
 
 A list opts in with its code component setting and its table's desktop grid control; a form subgrid opts in through
 its portal metadata (code-component style) and an exported desktop FormXml dataset binding with one data-set and only
-static inputs besides it. The host binds the first view of the list or the subgrid's view, and `getTitle()` is the view's own name. A
+static inputs besides it. The host binds the first view of the list or the subgrid's view, and `getTitle()` is the view's own name.
+A subgrid also mounts on an insert-mode form: its requests send an empty `entityId`, a subgrid with a relationship
+lists no rows and one without a relationship lists its view; self-referential and polymorphic regarding relationships
+list the parent's related rows (hosted session F2, PCF-01c). The control sits in the subgrid's grid element, as hosted: `div.entity-grid.subgrid` with `data-default-pcf-controlid`, `data-ref-entity`, `data-ref-id` (the zero GUID in insert mode), `data-ref-rel` (and `data-ref-rel-role="Referenced"` for a self-referential relationship), `data-selected-view`, the grid service URLs, `data-view-layouts` and `data-user-*`, inside `div#<name>.subgrid` and the `subgrid-cell` cell, also in insert mode. A
 list with two or more views, or a subgrid with its view picker on (`EnableViewPicker` and `ViewIds`), hosts the
 control in its grid element, and the grid's own toolbar draws the view dropdown with the list's display names (the
 saved query names on a subgrid), whatever the control's manifest declares; `CDSDataSetOptions` stays null. Choosing a
@@ -290,7 +293,8 @@ reports that view (its columns, links and title) and loads as on the page load: 
 `updateView` with `['dataset', 'Items', 'records']`. The other data sets of the control keep their unbound rows. An authored `{% entitylist %}...{% endentitylist %}`
 block on a code-component list renders only its body, with neither the code component nor the grid. Map, calendar and
 user-, account- or website-filtered lists, a view absent from the sources, a binding for another table or view and a
-refused control keep the ordinary grid below an alert (`PCF_NATIVE_DATASET_UNSUPPORTED`).
+refused control keep the ordinary grid below an alert (`PCF_NATIVE_DATASET_UNSUPPORTED`). An ordinary subgrid (no code component) with its
+view picker on draws the same dropdown, and choosing a view loads that view's rows through `entity-subgrid-data`.
 
 ### Data transport
 

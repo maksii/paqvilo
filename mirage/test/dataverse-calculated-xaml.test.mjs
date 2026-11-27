@@ -73,13 +73,14 @@ const evaluate = (
   return runCalculatedXaml(program, { row, column, related, now: () => now });
 };
 
-test('the date, text and current-time functions outside the hosted captures', () => {
+// @test-kind observation: designer saves of summary-F6 DATA-04c2 (paqvilo-developer hosted-f6 runs dc2ka/dc2kb, the same start and end on row k1): DiffIn functions count UTC unit boundaries (675 hours, 5 Sunday-based weeks, 2 months), AddMonths clamps to the month end; Now stays a local model
+test('the date, text and current-time functions', () => {
   const diff = (operator) =>
     formula('x_value', get('x_start', 'a') + get('x_end', 'b') + expression(operator, ['a', 'b'], 'r'), 'r');
   const row = { x_start: '2026-01-31T22:30:00Z', x_end: '2026-03-01T01:15:00Z' };
   assert.equal(evaluate(diff('DiffInMinutes'), row), 40_485);
-  assert.equal(evaluate(diff('DiffInHours'), row), 674);
-  assert.equal(evaluate(diff('DiffInWeeks'), row), 4);
+  assert.equal(evaluate(diff('DiffInHours'), row), 675);
+  assert.equal(evaluate(diff('DiffInWeeks'), row), 5);
   assert.equal(evaluate(diff('DiffInMonths'), row), 2);
   assert.equal(evaluate(diff('DiffInYears'), row), 0);
   const shift = (operator) =>
@@ -144,7 +145,7 @@ test('text conditions, Or and a related row read through the lookup named in the
 test('shapes outside the subset answer unsupported with the reason, never a guess', () => {
   const cases = [
     ['<Formula><Constant Value="1"/></Formula>', null],
-    [formula('x_value', expression('TrimLeft', ['a', 'b'], 'r'), 'r'), /TrimLeft is outside the supported subset/],
+    [formula('x_value', expression('TrimBoth', ['a', 'b'], 'r'), 'r'), /TrimBoth is outside the supported subset/],
     [formula('x_value', '<WriteLine Text="x" />', 'r'), /<WriteLine>, which is outside the supported subset/],
     [
       formula(

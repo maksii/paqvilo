@@ -1,5 +1,6 @@
 // Request interception on the DevTools protocol. Each paused request is answered by this module,
 // including handler failures, without relying on another network event to complete the route.
+import { watchFrameTargets } from './frame-targets.mjs';
 import { refreshUrl } from './navigation.mjs';
 import { randomUUID } from 'node:crypto';
 import { setMaxListeners } from 'node:events';
@@ -270,8 +271,10 @@ export async function interceptOrigins(
     record.closed = true;
     record.ending.abort();
     sessions.delete(record.cdp);
-    record.page.off('close', record.onClose);
-    record.page.off('crash', record.onCrash);
+    if (record.onClose) record.page.off('close', record.onClose);
+    if (record.onCrash) record.page.off('crash', record.onCrash);
+    // The frame targets below this one go with it.
+    for (const child of record.children ?? []) release(child).catch(() => {});
     if (record.late) record.page.off('domcontentloaded', record.late);
     record.cdp.off('Fetch.requestPaused', record.onPaused);
     // A request whose response was asked for and has not arrived stops being waited for.
@@ -308,6 +311,7 @@ export async function interceptOrigins(
         ),
       );
       record.routes.clear();
+      if (record.stopFrames) await step('frame targets', () => record.stopFrames());
       if (record.draftInstall) {
         // The answer names the registration, and the browser installs the tracker whether or not setup still waits
         // for that answer. A release that overtakes it waits for it, then removes the registration and the tracker.
@@ -340,6 +344,130 @@ export async function interceptOrigins(
     pendingClosures.add(record.closing);
     record.closing.finally(() => pendingClosures.delete(record.closing)).catch(() => {});
     return record.closing;
+  };
+  const pausedListener = (record, mainDocument) => (event) => {
+    const { cdp, page } = record;
+    // The second pause of one request: its response, which route.response() asked to see. A response nobody waits
+    // for any more (the wait ended) goes on to the browser as it is.
+    if (event.responseStatusCode !== undefined || event.responseErrorReason !== undefined) {
+      const waiting = record.staged.get(event.requestId);
+      record.staged.delete(event.requestId);
+      if (waiting) waiting.resolve(event);
+      else cdp.send('Fetch.continueRequest', { requestId: event.requestId }).catch(() => {});
+      return;
+    }
+    const isMainDocument = mainDocument(event);
+    const route = makeRoute({
+      cdp,
+      context,
+      page,
+      event,
+      isMainDocument,
+      stageResponse: () =>
+        new Promise((resolve, reject) => {
+          record.staged.set(event.requestId, { resolve, reject });
+        }),
+      unstageResponse: () => record.staged.delete(event.requestId),
+      onFulfilled: (proof) => record.attachment?.publishProvenance?.(event, proof),
+      // A refusal while this tab is released is part of releasing it, not a tab failure.
+      onAnswerRejected: (method, error) =>
+        !stopped &&
+        !record.closed &&
+        diagnose(
+          Object.assign(
+            new Error(
+              `The browser refused ${method} for a paused ${RESOURCE_TYPES[event.resourceType] ?? 'other'} request: ${error.message}. The request was failed so the tab does not wait for it.`,
+              { cause: error },
+            ),
+            { scope: 'target', phase: method },
+          ),
+        ),
+    });
+    activeRoutes.add(route);
+    record.routes.add(route);
+    // whatever the handler does or fails to do, the request is not left paused
+    Promise.resolve()
+      .then(() => {
+        if (stopped || record.closed) return route.abort();
+        if (matches(event.request.url)) return handler(route);
+        return route.fallback();
+      })
+      .catch(() => {})
+      .then(() => route.answered || route.fallback())
+      .finally(async () => {
+        activeRoutes.delete(route);
+        record.routes.delete(route);
+        await route.disposeResponses();
+      })
+      .catch(() => {});
+  };
+  // Instruments an out-of-process frame target of `owner`'s tab while it waits to run: the portal origins' requests
+  // it makes are intercepted (a portal page nested in it is served by Lense, local changes applied), and the provenance
+  // attachment installs its registry bootstrap, which runs only in documents of a portal origin. Nothing else of a
+  // frame of another origin is read or changed. Its own out-of-process frames are instrumented the same way. A frame
+  // that navigates within its target keeps this setup; one that moves to another process is a new target.
+  const instrumentFrame = async (owner, child, info) => {
+    if (stopped || owner.closed) return;
+    const record = {
+      page: owner.page,
+      cdp: child,
+      frame: info,
+      routes: new Set(),
+      staged: new Map(),
+      closed: false,
+      ending: new AbortController(),
+    };
+    owner.children.add(record);
+    sessions.set(child, record);
+    child.on('paqvilo.closed', () => {
+      owner.children.delete(record);
+      // A detached target answers nothing: its release only drops what this process holds.
+      record.crashed = true;
+      release(record).catch(() => {});
+    });
+    record.onPaused = pausedListener(record, () => false);
+    child.on('Fetch.requestPaused', record.onPaused);
+    const step = async (phase, work) => {
+      let timer;
+      try {
+        return await Promise.race([
+          work(),
+          new Promise((_, reject) => {
+            timer = clock.setTimeout(
+              () =>
+                reject(Object.assign(new Error(`${phase} did not answer within ${CDP_SETUP_HANG_MS} ms`), { phase })),
+              CDP_SETUP_HANG_MS,
+            );
+          }),
+        ]);
+      } finally {
+        clock.clearTimeout(timer);
+      }
+    };
+    const configure = (method, params) => step(method, () => child.send(method, params));
+    await configure('Page.enable');
+    await configure('Runtime.enable');
+    await configure('Network.enable');
+    await configure('Network.setCacheDisabled', { cacheDisabled: true });
+    await configure('Network.setBypassServiceWorker', { bypass: true });
+    if (onAttach) {
+      const report = (error) => {
+        if (!stopped && !record.closed) provenanceIncomplete(error);
+      };
+      const attachment = await step('interception attachment', () =>
+        onAttach({ page: owner.page, cdp: child, configure, report, clock, frame: info }),
+      );
+      if (record.closed) await Promise.resolve(attachment?.dispose?.()).catch(() => {});
+      else record.attachment = attachment;
+    }
+    await configure('Fetch.enable', { patterns: [...allowed].map((origin) => ({ urlPattern: `${origin}/*` })) });
+    record.children = new Set();
+    record.stopFrames = await step('Target.setAutoAttach', () =>
+      watchFrameTargets(child, (grandchild, grandInfo) => instrumentFrame(record, grandchild, grandInfo), {
+        clock,
+        onError: diagnose,
+      }),
+    );
   };
   const attach = async (page) => {
     if (stopped || attached.has(page) || !ownsPage(page)) return;
@@ -384,63 +512,12 @@ export async function interceptOrigins(
     sessions.set(cdp, record);
     let mainFrameId = null;
     let sawDocument = false;
-    record.onPaused = (event) => {
-      // The second pause of one request: its response, which route.response() asked to see. A response nobody waits
-      // for any more (the wait ended) goes on to the browser as it is.
-      if (event.responseStatusCode !== undefined || event.responseErrorReason !== undefined) {
-        const waiting = record.staged.get(event.requestId);
-        record.staged.delete(event.requestId);
-        if (waiting) waiting.resolve(event);
-        else cdp.send('Fetch.continueRequest', { requestId: event.requestId }).catch(() => {});
-        return;
-      }
+    record.onPaused = pausedListener(record, (event) => {
       const isMainDocument =
         event.resourceType === 'Document' && (mainFrameId === null || event.frameId === mainFrameId);
       if (isMainDocument) sawDocument = true;
-      const route = makeRoute({
-        cdp,
-        context,
-        page,
-        event,
-        isMainDocument,
-        stageResponse: () =>
-          new Promise((resolve, reject) => {
-            record.staged.set(event.requestId, { resolve, reject });
-          }),
-        unstageResponse: () => record.staged.delete(event.requestId),
-        onFulfilled: (proof) => record.attachment?.publishProvenance?.(event, proof),
-        // A refusal while this tab is released is part of releasing it, not a tab failure.
-        onAnswerRejected: (method, error) =>
-          !stopped &&
-          !record.closed &&
-          diagnose(
-            Object.assign(
-              new Error(
-                `The browser refused ${method} for a paused ${RESOURCE_TYPES[event.resourceType] ?? 'other'} request: ${error.message}. The request was failed so the tab does not wait for it.`,
-                { cause: error },
-              ),
-              { scope: 'target', phase: method },
-            ),
-          ),
-      });
-      activeRoutes.add(route);
-      record.routes.add(route);
-      // whatever the handler does or fails to do, the request is not left paused
-      Promise.resolve()
-        .then(() => {
-          if (stopped || record.closed) return route.abort();
-          if (matches(event.request.url)) return handler(route);
-          return route.fallback();
-        })
-        .catch(() => {})
-        .then(() => route.answered || route.fallback())
-        .finally(async () => {
-          activeRoutes.delete(route);
-          record.routes.delete(route);
-          await route.disposeResponses();
-        })
-        .catch(() => {});
-    };
+      return isMainDocument;
+    });
     cdp.on('Fetch.requestPaused', record.onPaused);
     record.onClose = () => {
       release(record).catch(() => {});
@@ -576,6 +653,11 @@ export async function interceptOrigins(
         await setupStep('interception attachment', () => opening);
       }
       await configure('Fetch.enable', { patterns: [...allowed].map((origin) => ({ urlPattern: `${origin}/*` })) });
+      // Out-of-process frames (lense/frame-targets.mjs): each is held while it is instrumented as this tab is.
+      record.children = new Set();
+      record.stopFrames = await setupStep('Target.setAutoAttach', () =>
+        watchFrameTargets(cdp, (child, info) => instrumentFrame(record, child, info), { clock, onError: diagnose }),
+      );
     } catch (error) {
       const pageClosed = stopped || record.closed || page.isClosed();
       await release(record);

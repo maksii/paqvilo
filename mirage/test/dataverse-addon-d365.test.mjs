@@ -655,3 +655,191 @@ describe('Dynamics 365 sales conversions over HTTP', () => {
     assert.equal(rows('opportunity').find((row) => row.opportunityid === SALES.emptyOpportunity).actualvalue, 70);
   });
 });
+
+// Invented lead tables: an open lead with a company name, an open lead without one and a qualified lead.
+const LEADS = { open: id(80), person: id(81), closed: id(82), currency: id(83), customer: id(84) };
+function leadState() {
+  const state = emptyState();
+  const text = { dataverseType: 'nvarchar' };
+  const lookup = (target) => ({ dataverseType: 'lookup', targets: [target] });
+  const statusField = (pairs) => ({
+    dataverseType: 'status',
+    statuses: pairs.map(([value, s]) => ({ value, state: s })),
+  });
+  state.mappings.lead = table('lead', 'leads', 'leadid', {
+    subject: text,
+    companyname: text,
+    firstname: text,
+    lastname: text,
+    emailaddress1: text,
+    qualifyingopportunityid: lookup('opportunity'),
+    statecode: stateField([
+      [0, 1],
+      [1, 3],
+      [2, 4],
+    ]),
+    statuscode: statusField([
+      [1, 0],
+      [2, 0],
+      [3, 1],
+      [4, 2],
+      [7, 2],
+    ]),
+  });
+  state.mappings.account = table('account', 'accounts', 'accountid', {
+    emailaddress1: text,
+    originatingleadid: lookup('lead'),
+    primarycontactid: lookup('contact'),
+  });
+  state.mappings.contact = table('contact', 'contacts', 'contactid', {
+    firstname: text,
+    lastname: text,
+    emailaddress1: text,
+    originatingleadid: lookup('lead'),
+    parentcustomerid: { dataverseType: 'customer', targets: ['account', 'contact'] },
+  });
+  state.mappings.opportunity = table('opportunity', 'opportunities', 'opportunityid', {
+    originatingleadid: lookup('lead'),
+    customerid: { dataverseType: 'customer', targets: ['account', 'contact'] },
+    parentaccountid: lookup('account'),
+    parentcontactid: lookup('contact'),
+    transactioncurrencyid: lookup('transactioncurrency'),
+  });
+  state.mappings.transactioncurrency = table('transactioncurrency', 'transactioncurrencies', 'transactioncurrencyid', {
+    currencyname: text,
+  });
+  state.tables.lead = [
+    {
+      leadid: LEADS.open,
+      subject: 'Invented interest',
+      companyname: 'Invented Company',
+      firstname: 'Ada',
+      lastname: 'Lead',
+      emailaddress1: 'ada@invented.test',
+      statecode: 0,
+      statuscode: 1,
+    },
+    { leadid: LEADS.person, subject: 'Invented person', lastname: 'Solo', statecode: 0, statuscode: 1 },
+    { leadid: LEADS.closed, subject: 'Invented closed', lastname: 'Done', statecode: 1, statuscode: 3 },
+  ];
+  state.tables.account = [{ accountid: LEADS.customer, name: 'Invented customer' }];
+  state.tables.contact = [];
+  state.tables.opportunity = [];
+  state.tables.transactioncurrency = [{ transactioncurrencyid: LEADS.currency, name: 'Euro', currencyname: 'Euro' }];
+  return state;
+}
+
+describe('Dynamics 365 QualifyLead over HTTP', () => {
+  let h;
+  before(async () => {
+    h = await startServer({ state: leadState() });
+  });
+  after(async () => {
+    delete process.env[SECRET_VAR];
+    await h?.close();
+  });
+  const rows = (logical) => h.store.state.tables[logical];
+  const ref = (row, column) => String(row?.[column]?.id ?? row?.[column] ?? '').toLowerCase();
+  const lead = (leadId) => rows('lead').find((row) => row.leadid === leadId);
+  const qualify = (leadId, body) => h.call('POST', `/leads(${leadId})/${CRM}QualifyLead`, body);
+
+  // @test-kind unproven: local model of QualifyLead (Learn QualifyLeadRequest and QualifyLeadResponse.CreatedEntities: the lead becomes Qualified with the given status, the created account is the contact's parent and the contact the account's primary contact); no native capture of the response or the copied columns
+  it('qualifies an open lead into an account, a contact and an opportunity and answers their references', async () => {
+    const answer = await qualify(LEADS.open, {
+      CreateAccount: true,
+      CreateContact: true,
+      CreateOpportunity: true,
+      OpportunityCurrencyId: { '@odata.type': `${CRM}transactioncurrency`, transactioncurrencyid: LEADS.currency },
+      Status: 3,
+    });
+    assert.equal(answer.status, 200, JSON.stringify(answer.body));
+    assert.match(answer.body['@odata.context'], /\$metadata#Collection\(Microsoft\.Dynamics\.CRM\.crmbaseentity\)$/);
+    assert.deepEqual(
+      answer.body.value.map((entry) => entry['@odata.type']),
+      ['#Microsoft.Dynamics.CRM.account', '#Microsoft.Dynamics.CRM.contact', '#Microsoft.Dynamics.CRM.opportunity'],
+    );
+    const [accountRef, contactRef, opportunityRef] = answer.body.value;
+    const account = rows('account').find((row) => row.accountid === accountRef.accountid);
+    const contact = rows('contact').find((row) => row.contactid === contactRef.contactid);
+    const opportunity = rows('opportunity').find((row) => row.opportunityid === opportunityRef.opportunityid);
+    assert.equal(account.name, 'Invented Company');
+    assert.equal(account.emailaddress1, 'ada@invented.test');
+    assert.equal(ref(account, 'originatingleadid'), LEADS.open);
+    assert.equal(ref(account, 'primarycontactid'), contactRef.contactid);
+    assert.deepEqual([contact.firstname, contact.lastname], ['Ada', 'Lead']);
+    assert.equal(ref(contact, 'parentcustomerid'), accountRef.accountid);
+    assert.equal(opportunity.name, 'Invented interest');
+    assert.equal(ref(opportunity, 'customerid'), accountRef.accountid);
+    assert.equal(ref(opportunity, 'parentcontactid'), contactRef.contactid);
+    assert.equal(ref(opportunity, 'transactioncurrencyid'), LEADS.currency);
+    assert.equal(ref(opportunity, 'originatingleadid'), LEADS.open);
+    const qualified = lead(LEADS.open);
+    assert.deepEqual([qualified.statecode, qualified.statuscode], [1, 3]);
+    assert.equal(ref(qualified, 'qualifyingopportunityid'), opportunityRef.opportunityid);
+  });
+
+  // @test-kind contract: QualifyLead's Status is an Edm.Int32: a non-integer Status is refused before any write even when the lead table declares no status reasons
+  it('refuses a non-integer Status on a lead table without status metadata', async () => {
+    const state = leadState();
+    state.mappings.lead.fields.statuscode = { dataverseType: 'status' };
+    const server = await startServer({ state });
+    try {
+      for (const Status of ['abc', 3.5, true, null]) {
+        const answer = await server.call('POST', `/leads(${LEADS.person})/${CRM}QualifyLead`, {
+          CreateAccount: false,
+          CreateContact: true,
+          CreateOpportunity: false,
+          Status,
+        });
+        if (Status === null) continue; // a null Status is the default status (-1)
+        assert.equal(answer.status, 400, String(Status));
+        assert.match(answer.body.error.message, /Status must be an integer/);
+      }
+      const lead = server.store.state.tables.lead.find((row) => row.leadid === LEADS.person);
+      assert.equal(lead.statecode, 1, 'only the null Status qualified the lead');
+      assert.equal(server.store.state.tables.contact.length, 1);
+    } finally {
+      await server.close();
+    }
+  });
+
+  // @test-kind unproven: local model of QualifyLead refusals (an already qualified lead, a status of another state) and of the flags (no account without a company name, the given opportunity customer); refusal texts are guesses
+  it('refuses a closed lead and a status of another state and creates only what the flags ask for', async () => {
+    const before = [rows('account').length, rows('contact').length, rows('opportunity').length];
+    const closed = await qualify(LEADS.closed, {
+      CreateAccount: false,
+      CreateContact: true,
+      CreateOpportunity: false,
+      Status: 3,
+    });
+    assert.equal(closed.status, 400);
+    const wrongState = await qualify(LEADS.person, {
+      CreateAccount: false,
+      CreateContact: true,
+      CreateOpportunity: false,
+      Status: 7,
+    });
+    assert.equal(wrongState.status, 400);
+    assert.match(wrongState.body.error.message, /7 is not a valid status code/);
+    assert.deepEqual([rows('account').length, rows('contact').length, rows('opportunity').length], before);
+    assert.deepEqual([lead(LEADS.person).statecode, lead(LEADS.person).statuscode], [0, 1]);
+
+    const answer = await qualify(LEADS.person, {
+      CreateAccount: true,
+      CreateContact: false,
+      CreateOpportunity: true,
+      OpportunityCustomerId: { '@odata.type': `${CRM}account`, accountid: LEADS.customer },
+      Status: -1,
+    });
+    assert.equal(answer.status, 200, JSON.stringify(answer.body));
+    // The lead has no company name: no account; the opportunity's customer is the given account.
+    assert.deepEqual(
+      answer.body.value.map((entry) => entry['@odata.type']),
+      ['#Microsoft.Dynamics.CRM.opportunity'],
+    );
+    const opportunity = rows('opportunity').find((row) => row.opportunityid === answer.body.value[0].opportunityid);
+    assert.equal(ref(opportunity, 'customerid'), LEADS.customer);
+    assert.equal(rows('account').length, before[0]);
+    assert.deepEqual([lead(LEADS.person).statecode, lead(LEADS.person).statuscode], [1, 3]);
+  });
+});

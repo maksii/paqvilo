@@ -41,6 +41,7 @@ import { runtimeSettings } from './lib/runtime-config.mjs';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import http from 'node:http';
 import { isDeepStrictEqual } from 'node:util';
+import { gzipSync } from 'node:zlib';
 import {
   validatePersonaCatalog,
   mergePersonaCatalogs,
@@ -112,7 +113,7 @@ import {
 import { formContentStyles } from './lib/form-head.mjs';
 import { emptyUnmappedLiquidFetchXml, observedLiquidEntityRead } from './lib/liquid-missing-data.mjs';
 import { observedPageQueryValidation } from './lib/page-query-validation.mjs';
-import { observedPageErrorResponse } from './lib/page-error-presentation.mjs';
+import { observedPageErrorResponse, platformErrorDocument } from './lib/page-error-presentation.mjs';
 import { initialState } from './lib/bootstrap.mjs';
 import { contentPolicyDefaults as resolvePolicyDefaults } from './lib/content-policy-defaults.mjs';
 import { withFileSourceMap, identityMapUrl } from '../lense/source-map.mjs';
@@ -127,7 +128,6 @@ import {
   nonceInjectedScripts,
   scriptNoncePendingAttribute,
   scriptNonceInjectedAttribute,
-  staticDocumentScriptNonces,
   applyScriptNonces,
   withPlatformTags,
 } from './lib/render-provenance.mjs';
@@ -174,6 +174,9 @@ import {
   runExportedCloudFlow,
   importOperationWorkflows,
   organizationCustomApi,
+  powerPagesFlowAnswer,
+  powerPagesFlowPayload,
+  workflowAnswers,
 } from './lib/exported-operations.mjs';
 import { createPortalAuthorization, portalAuthorizationModel } from './lib/portal-authorization.mjs';
 import { changeOperationOverride, checkOperationOverrides } from './lib/operation-override-route.mjs';
@@ -183,10 +186,14 @@ import { knowledgeArticleAccess } from './lib/content-access-levels.mjs';
 import { NATIVE_STATE_ACTIONS } from './lib/native-form-actions.mjs';
 import {
   PORTAL_SEARCH_SUMMARY,
+  PORTAL_SEARCH_SUMMARY_STREAM,
   readSummaryQuery,
+  summaryStreamEvents,
+  unansweredSummary,
   searchSummarySources,
   summarizeSearch,
 } from './lib/portal-search-summary.mjs';
+import { CHART_BUILDER_PATH, chartBuilderAnswer } from './lib/portal-chart-builder.mjs';
 import {
   validateOperationOverrides,
   operationPlaceholder,
@@ -209,7 +216,12 @@ import { captureObservedStylesheets, resolveObservedStylesheet } from './lib/obs
 import { resolveRichTextConfiguration, richTextConfigurationStatus } from './lib/richtext-config.mjs';
 import { pageAccess } from './lib/page-access.mjs';
 import { answerPageCors } from './lib/page-cors.mjs';
-import { codeSiteDocument, codeSiteNavigation, compiledCodeSiteAsset } from './lib/code-site.mjs';
+import {
+  CODE_SITE_MISSING_FILE_DOCUMENT,
+  codeSiteMissingFile,
+  codeSiteNavigation,
+  resolveCompiledCodeSiteFile,
+} from './lib/code-site.mjs';
 import { CONTEXT_LANGUAGE_COOKIE, localizedPortalPage } from './lib/portal-languages.mjs';
 import { cachedImplementationSourceFingerprint, observedEvidence, implementationEvidence } from './lib/evidence.mjs';
 import { verificationWitness, verificationTableSelection } from './lib/verification-witness.mjs';
@@ -231,6 +243,7 @@ import { solutionContentFingerprint, solutionSideFileHashes } from './lib/soluti
 import { SolutionFileCache, sourceDirectoryDigest } from './lib/solution-cache.mjs';
 import {
   resolveUnmatchedRoute,
+  platformRobotsResponse,
   deniedPageRoute,
   languageRoute,
   siteMarkerRoute,
@@ -246,6 +259,9 @@ import {
   authCookieName,
   createAuthSessions,
   authRoute,
+  chunkedCookieValue,
+  cookieRequestHeader,
+  isCookieChunk,
   parseCookies,
   safeReturnUrl,
   returnUrlParameter,
@@ -286,6 +302,7 @@ import { buildSourceGraph } from './lib/source-graph.mjs';
 import { scenarioSettings } from './lib/capability-report.mjs';
 import { environmentVariablePayload } from './lib/secret-resolver.mjs';
 import {
+  admissionLifetimeDiagnostic,
   admissionSessionLifetime,
   applicationSessionLifetime,
   authenticationSettings,
@@ -377,9 +394,12 @@ import {
   PAGE_CACHE_CONTROL,
   PAGE_HEADERS,
   platformResourceHeaders,
+  everyResponseHeaders,
+  codeSiteFileHeaders,
 } from './lib/response-headers.mjs';
 import { solutionWatchFilter } from './lib/solution-roots.mjs';
 import { observedConfig } from './lib/project-config.mjs';
+import { createEdgeAccess, edgeDiagnostics } from './lib/edge-access.mjs';
 import { runtimePort } from './lib/runtime-port.mjs';
 import { createFrameReadiness } from './lib/frame-readiness.mjs';
 import { formWriteError } from './lib/form-error-presentation.mjs';
@@ -388,6 +408,7 @@ import { collectWebApiErrorTemplates } from './lib/webapi-error-templates.mjs';
 import { collectDataverseErrorTemplates } from './lib/dataverse-error-templates.mjs';
 import {
   injectRuntime,
+  listViewConfiguration,
   renderComponent,
   renderQuickForm,
   captchaRefreshDelta,
@@ -399,6 +420,11 @@ import {
   createWebFormSessions,
   webFormSessionOwner,
   portalRecordWrites,
+  formAttachmentCount,
+  formAttachmentLimit,
+  formAttachmentScope,
+  formAttachmentFileProblem,
+  stagedAttachmentNote,
 } from './lib/form-service.mjs';
 import {
   resolveNativeFormSubmission,
@@ -421,6 +447,8 @@ import {
   webFormsForm,
   platformShell,
   bootstrapVariant,
+  pwaFeatureStatus,
+  LOCAL_SERVICE_WORKER,
 } from './lib/platform-manifest.mjs';
 import { packEndpoints } from './lib/extensions.mjs';
 import {
@@ -441,6 +469,7 @@ import {
 } from './lib/permissions.mjs';
 import { handleWebApi } from './lib/webapi-handler.mjs';
 import { handlePortalFileApi } from './lib/portal-file-api.mjs';
+import { handlePortalFileDownload, isPortalFileDownload } from './lib/portal-file-download.mjs';
 import {
   buildSiteTables,
   configureContactRoles,
@@ -764,6 +793,9 @@ const ANTI_FORGERY_COOKIE = '__RequestVerificationToken';
 // /__sim/api/ paths that are not sim roots: the trace routes, the run-starting flow routes (sim-flow-routes.mjs opens
 // their roots) and the portal ticket.
 const SIM_API_PREFIX = '/__sim/api/';
+// The administration surface on the portal listener: the console page, its assets, its evidence images and the admin
+// API. The hosted edge model (lib/edge-access.mjs) does not apply to it; every other /__sim route is portal-facing.
+const ADMINISTRATION_PATH = /^\/__sim(?:\/?$|\/api(?:\/|$)|\/[^/]+\.(?:mjs|css|js)$|\/evidence\/)/;
 const SIM_ROOT_EXEMPT = [
   /^trace(?:\/|$)/,
   /^(?:flow-runs|session\/portal-ticket)$/,
@@ -1066,6 +1098,8 @@ export async function createSimulator(options) {
   // read running against the source directory.
   const observed = observedConfig(observedOption);
   const frameReadiness = createFrameReadiness({ diagnostic: (entry) => recordDiagnostic(entry) });
+  // The hosted edge in front of the site (observed IP restriction and WAF custom rules; lib/edge-access.mjs).
+  const edgeAccess = createEdgeAccess({ observed: () => portal?.observed ?? null, now: () => store.clock.now() });
   const setupHandler = await createSetupHandler({
     directory: projectRoot,
     ...(setup ?? (project?.configFile ? { project: project.configFile } : {})),
@@ -1717,6 +1751,11 @@ export async function createSimulator(options) {
   // annotation id before the form posts the ids (live: InitializeFileUpload, UploadFileBlock,
   // then the postback's AttachFile_HiddenField_AnnotationIds). Staged files live in memory until
   // the postback takes them.
+  // An upload that names its form and a regarding record the visitor can read also creates its note row at once, as the
+  // hosted portal does (session F2, attach and attachdel runs): the row takes an attach-file slot from then on (also when
+  // the upload fails or the form is never saved), UploadFileBlock needs annotation Write on it, DELETE
+  // /_api/file/delete/note removes it with annotation Delete. The last block writes the file into it (Dataverse storage), and the form
+  // save writes it again with the form's own checks.
   // Staging is process-local, bounded to 50 files and one hour; a restart discards pending uploads. The bytes are provider
   // blocks of the annotations storage route under staged/<id>, committed by the last block and read when the form saves.
   // ponytail: an upload abandoned before its last block leaves its uncommitted blocks in the provider's staging area until
@@ -1778,7 +1817,13 @@ export async function createSimulator(options) {
       return {
         id: String(id).toLowerCase(),
         entry,
-        attachment: { field: field.replace(/_HiddenField_AnnotationIds$/, ''), name: entry.name, type: entry.type },
+        attachment: {
+          field: field.replace(/_HiddenField_AnnotationIds$/, ''),
+          name: entry.name,
+          type: entry.type,
+          // A staged note row (InitializeFileUpload on a regarding record) receives the file instead of a new note.
+          ...(entry.note ? { noteId: String(id).toLowerCase(), regarding: entry.regarding } : {}),
+        },
       };
     });
   };
@@ -1810,6 +1855,14 @@ export async function createSimulator(options) {
       staged = [];
     }
     state.stagedAttachments = staged.map(({ id, entry }) => ({ id, name: entry.name, size: entry.size }));
+    // The re-rendered page keeps the posted MaxFile, as an ASP.NET hidden field does (hosted session F2, attach runs k
+    // and l, max1-none:one-file: MaxFile 1 after the save while the hint states 0 files).
+    const controls = new URLSearchParams(entries);
+    const field = prefix
+      ? `${prefix}AttachFile_HiddenField_MaxFile`
+      : [...controls.keys()].find((key) => key.endsWith('AttachFile_HiddenField_MaxFile'));
+    const posted = field ? controls.getAll(field) : [];
+    if (posted.length === 1 && /^\d{1,9}$/.test(posted[0])) state.postedMaxFile = posted[0];
   };
   const verificationRuntimeId = randomUUID();
   let revision = 1,
@@ -2036,7 +2089,8 @@ export async function createSimulator(options) {
     identifyIssuedSessions: true,
     securityStamp: (contactId) => contactSecurity(contactId)?.stamp ?? null,
   });
-  // The private-site admission session ends at a fixed deadline (lib/external-login.mjs admissionSessionLifetime).
+  // The private-site admission is a browser session of its own, apart from portal sign-in, with a fixed deadline
+  // (lib/external-login.mjs admissionSessionLifetime).
   const privateSiteSessions = createAuthSessions({
     name: () => `${authSessions.name}-site-access`,
     clock: () => store.clock.now(),
@@ -2107,9 +2161,12 @@ export async function createSimulator(options) {
     if (!contact?.active || securityStampDigest(contact.stamp) !== session.securityStamp) return { contactId: null };
     return { ...session, validatedAt: now };
   };
-  const appendApplicationSessionRenewal = (req, res, headers) => {
+  // A portal Web API response renews whatever its caching (hosted session F4, paqvilo-developer hosted-f4 renewal runs a
+  // and b: a background /_api read alone re-issued the application cookie, as a page load did).
+  const appendApplicationSessionRenewal = (req, res, headers, { anyCaching = false } = {}) => {
     if (req.method === 'HEAD' || !browserRequest(req) || onAdmin(req) || onApps(req)) return;
     if (
+      !anyCaching &&
       !String(headers['cache-control'] ?? '')
         .split(',')
         .some((part) => part.trim().toLowerCase() === 'no-store')
@@ -2123,9 +2180,11 @@ export async function createSimulator(options) {
     const cookies = Array.isArray(written) ? written : [written];
     if (cookies.some((cookie) => String(cookie).startsWith(authSessions.name + '='))) return;
     if (explicitCookies === undefined) res.appendHeader('set-cookie', renewal);
-    else headers['set-cookie'] = [...cookies, renewal];
+    else headers['set-cookie'] = [...cookies, ...[renewal].flat()];
   };
-  const pairedBrowserTokens = providerSettings.pairedBrowserTokens === true;
+  // Request tokens belong to one browser and its current sign-in unless the project turns pairing off (hosted session
+  // F4, paqvilo-developer hosted-f4 swap runs a and b: another browser's token, or one from before LogOff, is refused).
+  const pairedBrowserTokens = providerSettings.pairedBrowserTokens !== false;
   const pairedPortalRequest = (req) => pairedBrowserTokens && !onAdmin(req) && !onApps(req) && browserRequest(req);
   const requestTokenCookie = () => authSessions.name + '-request-binding';
   const requestTokens = createPortalRequestTokens({
@@ -2142,6 +2201,20 @@ export async function createSimulator(options) {
     const supplied = req.headers.__requestverificationtoken;
     return sameToken(supplied, adminToken) ? adminToken : requestTokens.expected(req, supplied);
   };
+  // Why the request's header token is refused (the token refusals of portal-request-tokens.mjs), or null when it is accepted.
+  const headerTokenRefusal = (req) =>
+    sameToken(req.headers.__requestverificationtoken, adminToken)
+      ? null
+      : requestTokens.refusal(req, req.headers.__requestverificationtoken);
+  // The site's hosted portal id when observed (observed.portalId, hosted session F8 section 1), else null: Mirage then shows
+  // the exported website id as Microsoft.Dynamic365.Portal.id and sends it as a cloud flow's siteId.
+  const observedPortalId = () => (config().observed ?? portal.observed)?.portalId ?? null;
+  // injectRuntime with the observed portal id as the page client object's Portal.id.
+  const injectPageRuntime = (html, token, revision, identity, traceId, languages, options = {}) =>
+    injectRuntime(html, token, revision, identity, traceId, languages, {
+      ...options,
+      site: { ...options.site, ...(observedPortalId() ? { portalId: observedPortalId() } : {}) },
+    });
   const currentIdentity = () => {
     // Read without copying the contact table on every call: identity resolution copies what it returns (the
     // configured identity in live mode and the matched contact are copied here).
@@ -2391,7 +2464,11 @@ export async function createSimulator(options) {
           const mappings = liquidMappings(solutionMetadata);
           return normalizeMockLiquidRecord(
             await store.withPortalReadSources(identity, { table: entity, id }, () =>
-              store.get(entity, id, identity, { portalRequest: true }),
+              store.get(entity, id, identity, {
+                portalRequest: true,
+                // A read the hosted form does not send to Dataverse (its values travel with the page) runs no read steps.
+                ...(readOptions.skipPluginRead === true ? { skipPluginRead: true } : {}),
+              }),
             ),
             mappings(entity),
             { mappings, lcid: readOptions.language?.lcid, globalChoices: portalGlobalChoices() },
@@ -2431,6 +2508,11 @@ export async function createSimulator(options) {
     },
   };
   const readProvider = {
+    // The runtime's portal reads run the read pipeline: forms send the hosted form's reads through it
+    // (form-read-messages.mjs). Live mode reads the real portal, which already sends them: no extra reads.
+    get sendsFormReadMessages() {
+      return config().mode !== 'live';
+    },
     fetchXml: (xml, identity, fetchOptions) =>
       auditRead('liquid-fetchxml', /<entity\b[^>]*\bname\s*=\s*["']([^"']+)/i.exec(xml)?.[1], xml, identity, () =>
         rawReadProvider.fetchXml(xml, identity, fetchOptions),
@@ -2551,8 +2633,9 @@ export async function createSimulator(options) {
       principal: async () => store.portalAuthorization?.principalId(currentIdentity()) ?? portalApplicationUser(),
       origin: dataverse?.origin ?? localOrigin,
     }),
-    triggerFlow: ({ flowId, payload, identity }) =>
-      runPortalFlow({
+    // The flow API's answer (portalFlowOutcome), as the server-object envelope's status and body.
+    triggerFlow: async ({ flowId, payload, identity }) => {
+      const outcome = await portalFlowOutcome({
         flow: operationPortal().cloudFlows.find(
           (record) =>
             String(record.processId ?? '')
@@ -2561,7 +2644,14 @@ export async function createSimulator(options) {
         ),
         input: payload,
         identity,
-      }),
+        requestedAt: +store.clock.now(),
+      });
+      return {
+        status: outcome.status,
+        body: outcome.error ? JSON.stringify(outcome.error) : (outcome.text ?? ''),
+        headers: {},
+      };
+    },
     httpRewrites: Object.assign(
       {},
       ...Object.values(settingOptionsRest.connections ?? {}).map((connection) => connection?.settings?.rewrites ?? {}),
@@ -2574,30 +2664,82 @@ export async function createSimulator(options) {
       }),
     diagnostic: (entry) => recordDiagnostic(entry),
   });
-  // The portal cloud-flow pipeline (/_api/cloudflow/v1.0/trigger/<guid> and Server.Connector.CloudFlow.TriggerAsync).
-  const runPortalFlow = async ({ flow, input, identity }) => {
+  // The portal cloud-flow pipeline (/_api/cloudflow/<version>/trigger/<guid> and Server.Connector.CloudFlow.TriggerAsync).
+  // A refusal answers { status, body, refusal }: refusal is the Power Pages flow API's code (powerPagesFlowAnswer). `onRun`
+  // receives a tracked exported run's id, `responseClosed` runs the flow without waiting for its Response and `requestedAt`
+  // (store clock) starts the 120-second Response limit.
+  // The refusal of a flow request the caller cannot make: no such flow, or a caller without the flow's web role.
+  const flowAccessRefusal = (flow, identity) => {
     if (!flow)
-      return { status: 404, body: { error: { code: 'NotFound', message: 'The site has no such cloud flow.' } } };
+      return {
+        status: 404,
+        refusal: 'IncorrectFlowId',
+        body: { error: { code: 'NotFound', message: 'The site has no such cloud flow.' } },
+      };
     try {
       assertOperationRole(flow, identity);
     } catch (cause) {
       return {
         status: cause.status ?? 403,
+        refusal: 'MissingPermissions',
         body: { error: { code: cause.code ?? 'Forbidden', message: cause.message } },
       };
     }
+    return null;
+  };
+  // Hosted session F8 (disabled group, two runs): a workflow that is not activated answers FlowDisabled at once, and a
+  // consumer whose workflow is gone answers FlowNotFound. Explicit local activation runs a Draft export. A mock or pack
+  // handler answers for the flow without reading its definition, so neither check applies to it.
+  const flowDefinitionRefusal = (item, workflow) => {
+    if (!['placeholder', 'exported'].includes(item.mode)) return null;
+    if (workflow?.active === false && item.configuration?.activation !== 'local-enabled')
+      return {
+        status: 400,
+        refusal: 'FlowDisabled',
+        body: { error: { code: 'FlowDisabled', message: 'The cloud flow is not activated in its exported source.' } },
+      };
+    if (!workflow) {
+      recordDiagnostic({
+        code: 'CLOUD_FLOW_DEFINITION_MISSING',
+        severity: 'warning',
+        operationKey: item.key,
+        message:
+          'The cloud-flow consumer names a flow that has no definition in the selected Solution sources; it answers FlowNotFound, as a deleted flow does. Select its Solution or configure a local response.',
+      });
+      return {
+        status: 404,
+        refusal: 'FlowNotFound',
+        body: { error: { code: 'FlowNotFound', message: 'The cloud flow has no definition in the selected sources.' } },
+      };
+    }
+    return null;
+  };
+  const runPortalFlow = async ({ flow, input, identity, onRun = null, responseClosed = false, requestedAt = null }) => {
+    const accessRefusal = flowAccessRefusal(flow, identity);
+    if (accessRefusal) return accessRefusal;
     const flowHandler = registeredOperations.cloudFlows.get(flow.name.toLowerCase());
     const item = operations().find((item) => item.kind === 'cloud-flow' && item.id === flow.id);
-    if (item.mode === 'placeholder') operationPlaceholder(item);
     if (item.mode === 'disabled') throw error('This cloud flow is explicitly disabled locally.', 503);
+    const workflow = workflowsView().get(
+      String(flow.processId ?? '')
+        .replace(/[{}]/g, '')
+        .toLowerCase(),
+    );
+    const definitionRefusal = flowDefinitionRefusal(item, workflow);
+    if (definitionRefusal) return definitionRefusal;
+    if (item.mode === 'placeholder') operationPlaceholder(item);
     const correlationId = currentRequest()?.correlationId ?? null;
     const context = {
+      onRun,
+      responseClosed,
       record: flow,
       workflows: workflowsView(),
       input,
       identity,
       store,
       portal,
+      // The site's observations: powerPagesFlowTriggerSchema (runExportedCloudFlow).
+      observed: config().observed,
       serviceProfile: registeredOperations.flowIdentities.get(
         String(flow.processId ?? '')
           .replace(/[{}]/g, '')
@@ -2626,7 +2768,7 @@ export async function createSimulator(options) {
       });
       if (failure) throw failure;
       // A run that waited before its Response: the request waits for it outside the transaction.
-      return awaitPortalFlowResponse(store, value);
+      return awaitPortalFlowResponse(store, value, { requestedAt });
     }
     return packHandlerAnswer(
       {
@@ -2637,6 +2779,143 @@ export async function createSimulator(options) {
       },
       () => flowHandler({ ...context, runExportedCloudFlow: () => runExportedCloudFlow(context) }),
     );
+  };
+  // The Power Pages flow API's answer of one flow request (powerPagesFlowAnswer): the HTTP route and CloudFlow.TriggerAsync.
+  const portalFlowOutcome = async ({ flow, input, identity, responseClosed = false, requestedAt = null }) => {
+    const item = flow && operations().find((entry) => entry.kind === 'cloud-flow' && entry.id === flow.id);
+    const responds =
+      item?.mode === 'exported'
+        ? workflowAnswers(
+            workflowsView().get(
+              String(flow.processId ?? '')
+                .replace(/[{}]/g, '')
+                .toLowerCase(),
+            ),
+          )
+        : true;
+    let runId = null;
+    try {
+      const answer = await runPortalFlow({
+        flow,
+        input,
+        identity,
+        onRun: (started) => (runId = started),
+        responseClosed,
+        requestedAt,
+      });
+      return powerPagesFlowAnswer({ answer, runId, responds });
+    } catch (cause) {
+      return powerPagesFlowAnswer({ error: cause, runId, responds });
+    }
+  };
+  // POST /_api/cloudflow/<version>/trigger/<id> as the Power Pages flow API answers it (hosted session F8, two runs; the
+  // statuses and bodies are powerPagesFlowAnswer's). Another method answers 404 with no body. The request filters refuse
+  // before the flow is looked up: without this session's anti-forgery token or X-Requested-With, or with a body that does not
+  // parse, the platform's 500 error page. The id is the consumer's process id (no braces, any case); an unknown, malformed,
+  // braced, consumer or other site's id answers IncorrectFlowId, no id the Web API's 400 9004010A. An eventData string that is
+  // not JSON answers an empty 500; a body without an eventData string runs the flow without waiting for its Response.
+  // The cloud-flow request body: URL-encoded fields or JSON (an empty body is {}); undefined when it does not parse.
+  const cloudFlowBody = async (req) => {
+    const bytes = (await rawBody(req)).toString('utf8');
+    try {
+      if (/^application\/x-www-form-urlencoded\b/i.test(String(req.headers['content-type'] ?? '')))
+        return Object.fromEntries(new URLSearchParams(bytes));
+      return bytes.trim() ? JSON.parse(bytes) : {};
+    } catch {
+      return undefined;
+    }
+  };
+  // The flow input of a parsed body: { eventData, input }, the input parsed from an eventData string ({} without one), or
+  // null when eventData is a string that is not JSON.
+  const cloudFlowEvent = (parsed) => {
+    const eventData = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed.eventData : undefined;
+    if (typeof eventData !== 'string') return { eventData, input: {} };
+    try {
+      return { eventData, input: JSON.parse(eventData) };
+    } catch {
+      return null;
+    }
+  };
+  // The cloud flow a request's id names: the consumer's process id (no braces, any case), or a flow record's path.
+  const cloudFlowForSegment = (segment, pathname) => {
+    const id = segment.toLowerCase();
+    return operationPortal().cloudFlows.find((record) =>
+      record.processId
+        ? String(record.processId).replace(/[{}]/g, '').toLowerCase() === id
+        : record.path?.replace(/\/$/, '').toLowerCase() === pathname.replace(/\/$/, '').toLowerCase(),
+    );
+  };
+  const cloudFlowRequest = async (req, res, pathname, segment) => {
+    const requestedAt = +store.clock.now();
+    const identity = currentIdentity();
+    const signedIn = Boolean(identity?.contactId ?? identity?.id);
+    const noStore = { 'cache-control': PAGE_CACHE_CONTROL, pragma: 'no-cache', expires: '-1' };
+    const write = (status, headers, body, failure = null) => {
+      if (failure) res[auditResponse] = { error: failure };
+      res.writeHead(status, { ...headers, 'x-sim-route': 'cloud-flow-local' });
+      res.end(body);
+    };
+    const errorPage = (code, message) =>
+      write(500, { 'content-type': 'text/html; charset=utf-8', ...noStore }, platformErrorDocument(), {
+        code,
+        message,
+      });
+    if (req.method !== 'POST') return write(404, noStore);
+    if (!sameToken(req.headers.__requestverificationtoken, headerToken(req)))
+      return errorPage(
+        'HttpAntiForgeryException',
+        req.headers.__requestverificationtoken
+          ? 'The portal verification token is not valid for this session.'
+          : 'Missing portal verification token.',
+      );
+    if (!String(req.headers['x-requested-with'] ?? '').trim())
+      return errorPage('AjaxRequestRequired', 'The cloud-flow API takes only requests with X-Requested-With.');
+    const parsed = await cloudFlowBody(req);
+    if (parsed === undefined) return errorPage('InvalidRequestBody', 'The cloud-flow request body is not valid JSON.');
+    const event = cloudFlowEvent(parsed);
+    if (!event)
+      return write(500, noStore, undefined, { code: 'InvalidEventData', message: 'eventData is not valid JSON.' });
+    const { eventData, input } = event;
+    if (!segment) {
+      const failure = { code: '9004010A', message: 'An unexpected error occurred while processing the request' };
+      return write(
+        400,
+        {
+          'content-type': 'application/json; charset=utf-8',
+          ...noStore,
+          ...(signedIn ? {} : { 'cache-control': 'no-cache' }),
+        },
+        JSON.stringify({ error: failure }),
+        failure,
+      );
+    }
+    const flow = cloudFlowForSegment(segment, pathname);
+    const outcome = await portalFlowOutcome({
+      flow,
+      input: powerPagesFlowPayload(input, {
+        portal,
+        portalId: observedPortalId(),
+        siteUrl: localOrigin,
+        identity,
+      }),
+      identity,
+      responseClosed: typeof eventData !== 'string',
+      requestedAt,
+    });
+    if (outcome.error)
+      // An anonymous caller's error answer is privately cacheable, as captured; a signed-in caller's is not stored.
+      return write(
+        outcome.status,
+        {
+          'content-type': 'application/json; charset=utf-8',
+          ...(signedIn ? noStore : { 'cache-control': 'private' }),
+        },
+        JSON.stringify(outcome.error),
+        { code: outcome.error.ErrorCode, message: outcome.error.Message },
+      );
+    if (outcome.text !== undefined)
+      return write(outcome.status, { 'content-type': 'text/html; charset=utf-8', ...noStore }, outcome.text);
+    return write(outcome.status, noStore);
   };
   const executeServerLogic = async ({
     name,
@@ -2680,7 +2959,8 @@ export async function createSimulator(options) {
       query,
       requestUrl,
       requestHeaders,
-      siteUrl: new URL('/', localOrigin).href,
+      siteUrl: new URL(localOrigin).origin,
+      portalId: observedPortalId(),
       timeout: serverLogicTimeoutMs,
       environmentVariables: environmentVariablePayload(store.state),
       services: serverLogicServices(),
@@ -2713,11 +2993,13 @@ export async function createSimulator(options) {
       // FileStorage/CloudStorageAccount: attachment bytes go to storage route portalCloudAttachments (lib/form-service.mjs).
       cloudAttachments: () => organizationHost.providers.storage.forRoute('portalCloudAttachments'),
       diagnostic: recordDiagnostic,
-      actionFiltersAvailable: config().mode !== 'live',
       verifyCaptcha: useLocalCaptcha()
         ? (scope, proof) =>
             useLocalCaptcha() &&
             localCaptcha.redeem({ ...scope, owner: webFormSessionOwner(formIdentity, visitor) }, proof)
+        : null,
+      issueCaptcha: useLocalCaptcha()
+        ? (scope) => localCaptcha.issue({ ...scope, owner: webFormSessionOwner(formIdentity, visitor) })
         : null,
       schemas: {
         ...solutionMetadata.componentSchemas,
@@ -2746,7 +3028,8 @@ export async function createSimulator(options) {
             return store.transact(
               () =>
                 work({
-                  ...portalRecordWrites(store),
+                  // A form write is a portal call of the signed-in contact (IsPortalsClientCall, PortalsContactId).
+                  ...portalRecordWrites(store, { portalRequest: true }),
                   associate: (entity, id, navigation, targetId, identity) =>
                     store.changeAssociationRecord(entity, id, navigation, targetId, identity, true),
                 }),
@@ -2785,6 +3068,12 @@ export async function createSimulator(options) {
       requestUrl: pageTarget.href,
       sessions: webFormSessions,
       owner: webFormSessionOwner(formIdentity, visitor),
+      // Locally a multistep session is also its adx_webformsession row; the live site keeps its own.
+      webFormSessionRows: config().mode !== 'live',
+      // An anonymous row needs the identification the browser already holds: a visitor this request started (a
+      // cookieless request) gets bounded session bookkeeping and no row.
+      anonymousIdentified: Boolean(visitor) && visitor === trace.getStore()?.cookieVisitor,
+      userHostAddress: trace.getStore()?.remoteAddress ?? null,
       language: {
         lcid: formLanguage.selected?.lcid ?? null,
         defaultLcid: formLanguage.languages.find((entry) => entry.isDefault)?.lcid ?? null,
@@ -3767,7 +4056,7 @@ export async function createSimulator(options) {
       contactId: persona.contactId,
       isolated: Boolean(personaInstance),
       browser: definition?.browser ?? {},
-      cookieHeader: setCookie.split(';')[0],
+      cookieHeader: cookieRequestHeader(setCookie),
       setCookie,
       identity: describeSession(session),
     };
@@ -3841,9 +4130,16 @@ export async function createSimulator(options) {
   // The script nonce of a page response under a nonce policy (lib/response-headers.mjs siteUsesScriptNonce), with the
   // marker that names the rendered scripts left without it and the marker the injectors put on the scripts they add
   // afterwards (`injected`: the only scripts nonceInjectedScripts gives the nonce); null without such a policy.
+  // observed.scriptNonceScope "every-script" (hosted session F3): every script element gets the nonce and every inline
+  // handler its hash, also those that data writes (lib/render-provenance.mjs); the default keeps the proved decisions.
   const pageScriptNonce = (site) =>
     siteUsesScriptNonce(site)
-      ? { nonce: cspNonce(), pending: scriptNoncePendingAttribute(), injected: scriptNonceInjectedAttribute() }
+      ? {
+          nonce: cspNonce(),
+          pending: scriptNoncePendingAttribute(),
+          injected: scriptNonceInjectedAttribute(),
+          everyScript: (config().observed ?? site.observed)?.scriptNonceScope === 'every-script',
+        }
       : null;
   // Script elements and inline handlers that render provenance does not prove were written by the exported source or
   // the platform keep no nonce (lib/render-provenance.mjs): one finding per path.
@@ -3861,7 +4157,9 @@ export async function createSimulator(options) {
       message:
         'The page has script elements or inline event handlers that the exported source and the platform did not write ' +
         '(data output, a script tag with Liquid inside it, or a part of a runtime-built document it cannot attribute): ' +
-        'the local nonce policy blocks them. Learn describes the hosted nonce as injected into Liquid output after rendering.',
+        'the local nonce policy blocks them. Hosted sites give every script element the nonce and hash every inline ' +
+        'handler, also those that data writes (hosted session F3); a site observed doing so records ' +
+        'observed.scriptNonceScope: every-script.',
     });
   };
   // The script nonces of a document the runtime builds outside the page layout (modal form, quick view, search page,
@@ -3874,7 +4172,13 @@ export async function createSimulator(options) {
     const trust = proved?.text === html ? proved : { text: html, intervals: [] };
     const decided = provenance
       ? finalizePortalProvenance({ fragment: provenance, index, scriptNonce: { ...scriptNonce, trust } })
-      : applyScriptNonces({ fragment: trust, index, nonce: scriptNonce.nonce, pending: scriptNonce.pending });
+      : applyScriptNonces({
+          fragment: trust,
+          index,
+          nonce: scriptNonce.nonce,
+          pending: scriptNonce.pending,
+          everyScript: scriptNonce.everyScript,
+        });
     recordWithheldScriptNonces(decided.scriptPolicy, pathname);
     return decided;
   };
@@ -3884,7 +4188,7 @@ export async function createSimulator(options) {
     const headers = siteHeaders(portal, {
       ...options,
       nonce: scriptNonce.nonce,
-      handlerHashes: scriptPolicy.handlerHashes,
+      handlerHashes: scriptPolicy.handlerHashGroups ?? scriptPolicy.handlerHashes,
     });
     return Object.fromEntries(
       ['content-security-policy', 'content-security-policy-report-only']
@@ -4138,6 +4442,7 @@ export async function createSimulator(options) {
     ...(activeProfiles.diagnostics ?? []),
     ...portal.diagnostics,
     ...siteHttpPolicyDiagnostics(portal),
+    ...edgeDiagnostics(portal.observed),
     ...(portal.observed?.siteVisibility === 'private' && !privateSiteAdmission()
       ? [
           {
@@ -4148,6 +4453,7 @@ export async function createSimulator(options) {
           },
         ]
       : []),
+    ...[privateSiteAdmission() ? admissionLifetimeDiagnostic(portal) : null].filter(Boolean),
     ...(cfg.importDiagnostics ?? []),
     ...(appliedPermissionModel?.diagnostics ?? []),
     ...(solutionMetadata.diagnostics ?? []),
@@ -5862,10 +6168,13 @@ export async function createSimulator(options) {
     (portal.websiteLanguages ?? [])
       .filter((language) => language.code && language.published !== false)
       .map((language) => language.code);
+  // A permitted portal association stores the derived memberships (data.mjs storeSiteMembership): the intersect then
+  // leaves the site tables, so whether local data holds it is part of the key.
   function siteTables() {
-    const cache = siteTables.cache;
-    if (cache?.portal !== portal || cache?.state !== store.state)
-      siteTables.cache = { portal, state: store.state, value: buildSiteTables(portal, store.state) };
+    const cache = siteTables.cache,
+      stored = Object.hasOwn(store.state.tables ?? {}, contactRoleIntersection(portal).table);
+    if (cache?.portal !== portal || cache?.state !== store.state || cache?.stored !== stored)
+      siteTables.cache = { portal, state: store.state, stored, value: buildSiteTables(portal, store.state) };
     return siteTables.cache.value;
   }
   const webApiReadDeps = (identity) => ({
@@ -5886,9 +6195,10 @@ export async function createSimulator(options) {
   async function summarizePortalData(req, res, url, origin) {
     if (req.method !== 'POST') throw error('Data summarization requires POST.', 405);
     if (req.headers.origin && req.headers.origin !== origin) throw error('Cross-origin requests are not allowed.', 403);
+    if (portalAiRequestRefused(req, res)) return;
     assertPortalToken(req.headers.__requestverificationtoken, headerToken(req));
     const request = await dataSummaryBody(req);
-    const source = await readPortalData(() => {
+    const read = readPortalData(() => {
       if (config().mode === 'live') throw error('The data summarization provider requires local data.', 501);
       const session = trace.getStore()?.auth?.session;
       const identity = session?.contactId ? currentIdentity() : identityFor(null);
@@ -5903,8 +6213,13 @@ export async function createSimulator(options) {
         prefer: req.headers.prefer,
       });
     });
+    // The site's answered refusals (400 90041003, 404 9004010D) carry the caching headers of an answer (F3 API-05d).
+    const source = await read.catch((error_) => {
+      if (error_?.status >= 400 && error_.status < 500) error_.responseHeaders = portalAiCacheHeaders();
+      throw error_;
+    });
     const answer = await summarizeData(dataSummaryProvider, source);
-    return json(res, 200, answer, { 'odata-version': '4.0', 'cache-control': 'no-store' });
+    return json(res, 200, answer, portalAiCacheHeaders());
   }
   async function api(req, res, url, { forceLocal = false } = {}) {
     const context = trace.getStore();
@@ -5922,12 +6237,17 @@ export async function createSimulator(options) {
       captureAttachmentBody: portalAttachmentReader(identity, organizationHost.captureAttachmentBody),
       webApiErrorTemplates: registeredWebApiErrorTemplates,
       csrf: headerToken(req),
+      tokenRefusal: () => headerTokenRefusal(req),
       origin: url.origin,
       // Portal scripts address @odata.id targets on the live portal origin.
       origins: [url.origin, live.origin].filter(Boolean),
       // The organization's metadata service answers the code component EntityDefinitions read (portal-entity-definitions.mjs).
       entityMetadata: () => organization?.metadata ?? null,
-      json,
+      json: (target, status, value, headers = {}, options) => {
+        const answered = { ...headers };
+        appendApplicationSessionRenewal(req, target, answered, { anyCaching: true });
+        return json(target, status, value, answered, options);
+      },
       jsonBody,
       change,
       onError: (cause, response) => {
@@ -6010,7 +6330,13 @@ export async function createSimulator(options) {
   const sendSession = (res, session, { allowSliding = true, ...extra } = {}) => {
     const header = authSessions.cookie(session, { allowSliding });
     const name = authSessions.name;
-    const cookie = { name, value: parseCookies(header)[name], path: '/', httpOnly: true, sameSite: 'Lax' };
+    const cookie = {
+      name,
+      value: chunkedCookieValue(parseCookies(cookieRequestHeader(header)), name),
+      path: '/',
+      httpOnly: true,
+      sameSite: 'Lax',
+    };
     return json(res, 200, describeSession(session, { ...extra, cookie }), { 'set-cookie': header });
   };
   const sessionRolesResponse = (res, auth, body) => {
@@ -6163,7 +6489,7 @@ export async function createSimulator(options) {
     traceSignIn(contactId, 'local');
     res.writeHead(302, {
       location,
-      'set-cookie': [authSessions.cookie({ contactId, ...sessionDetails }), ...cookies],
+      'set-cookie': [authSessions.cookie({ contactId, ...sessionDetails }), ...cookies].flat(),
       'cache-control': 'no-store',
       'x-sim-route': 'sign-in',
     });
@@ -6278,7 +6604,7 @@ export async function createSimulator(options) {
         traced?.provenance ?? null,
         injected,
       );
-      html = injectRuntime(
+      html = injectPageRuntime(
         html,
         requestTokens.issue(req, res),
         renderedRevision,
@@ -6299,7 +6625,7 @@ export async function createSimulator(options) {
         confinement: confinementPolicy(),
         kind: 'page',
         nonce: scriptNonce?.nonce,
-        handlerHashes: scriptPolicy?.handlerHashes,
+        handlerHashes: scriptPolicy?.handlerHashGroups ?? scriptPolicy?.handlerHashes,
       }),
       'x-sim-route': route,
     };
@@ -6362,8 +6688,9 @@ export async function createSimulator(options) {
   }
   // The sign-in page and the local persona sign-in; sign-out and external sign-in are
   // answered earlier by lib/sign-in-flow.mjs.
-  const authenticateSignInPost = async (req, res, url, requested) => {
-    const form = await signInForm(req);
+  // form: the fields lib/local-accounts.mjs already read from a sign-in post that carried no local password.
+  const authenticateSignInPost = async (req, res, url, requested, form = null) => {
+    form ??= await signInForm(req);
     const returnUrl = safeReturnUrl(form.ReturnUrl ?? form.returnUrl ?? requested);
     if (!authenticationSettings(portal).localLogin && externalSignIn?.signInProviders().length)
       return renderSignIn(req, res, url, {
@@ -6418,20 +6745,40 @@ export async function createSimulator(options) {
     adminToken: () => adminToken,
     sessions: authSessions,
     store,
-    invitationTransaction: (work, workflowId) => {
+    // The redemption workflow starts after the redemption has committed, as the local portal application user (hosted
+    // session F4 AUTH-05d: the job is owned by the runtime user and its failure keeps the redemption).
+    redemptionWorkflow: async ({ workflowId, contactId }) => {
       const cfg = config();
       const api = organization.api;
       if (cfg.mode !== 'local' || cfg.pageMode !== 'local' || !api?.hasPortalInvitationWorkflow?.(workflowId))
-        return store.transact(work);
-      return change(async () => {
-        // Authorization indexes are built from committed role membership.
-        await portalApplicationUser();
-        const executeWorkflow = (input) =>
-          input.workflowId === workflowId &&
-          api.executePortalInvitationWorkflow({ ...input, principal: applicationWorkflowPrincipal });
-        return organization.runOwned(() => organization.runAtomic(() => work(executeWorkflow)));
-      });
+        return false;
+      // Authorization indexes are built from committed role membership.
+      await portalApplicationUser();
+      let failure = null;
+      const started = await change(() =>
+        organization.runOwned(async () => {
+          try {
+            return await api.executePortalInvitationWorkflow({
+              workflowId,
+              contactId,
+              principal: applicationWorkflowPrincipal,
+            });
+          } catch (cause) {
+            failure = cause;
+            return true;
+          }
+        }),
+      );
+      if (failure) throw failure;
+      return started;
     },
+    localAccounts: () =>
+      localAccounts.enabled
+        ? {
+            registration: () => localAccounts.invitationRegistrationAvailable(),
+            signInPage: (req, res, url, options) => localAccounts.signInPage(req, res, url, options),
+          }
+        : null,
     personas: signInPersonas,
     personaCatalog: personaReport,
     identityProvider: { settings: providerSettings, assets: providerAssets },
@@ -6474,11 +6821,17 @@ export async function createSimulator(options) {
     enabled: localAccountsEnabled,
     captcha: registrationCaptcha,
     portal: () => portal,
+    origin: () => localOrigin,
     store,
     requestTokens,
+    invitations: externalSignIn.invitations,
+    diagnostic: recordDiagnostic,
+    // A sign-in page post without a local password is the platform sign-in page's persona or provider post.
+    signInPost: (req, res, url, form) =>
+      authenticateSignInPost(req, res, url, returnUrlParameter(url.searchParams), form),
     authCookieName: () => authSessions.name,
     signedSession: readPortalSession,
-    canRememberSession: () => localApplicationSessions() && Boolean(applicationSessionLifetime(portal)),
+    canRememberSession: localApplicationSessions,
     canRememberBrowser: localApplicationSessions,
     signIn: (res, account, location, cookies, { persistent } = {}) =>
       localSignInResponse(res, account.contactId, location, cookies, {
@@ -6489,7 +6842,9 @@ export async function createSimulator(options) {
       res.writeHead(status, {
         'content-type': 'text/html; charset=utf-8',
         'cache-control': 'no-store',
-        'referrer-policy': 'no-referrer',
+        // Only the origin, never the path or the reset and confirmation codes in the query, leaves as a referrer; a
+        // no-referrer page would post its forms with Origin: null, which the portal's origin check refuses.
+        'referrer-policy': 'strict-origin',
         'content-security-policy': "default-src 'none'; form-action 'self'; frame-ancestors 'none'",
         'x-sim-route': route,
       });
@@ -6669,14 +7024,52 @@ export async function createSimulator(options) {
         `${CONTEXT_LANGUAGE_COOKIE}=${encodeURIComponent(code)}; Path=/; HttpOnly; SameSite=Lax`,
       );
   };
-  const handleSearchSummary = async (req, res, origin) => {
-    if (req.method !== 'POST') throw error('Search summary requires POST.', 405);
+  // The request filters of the portal AI APIs (hosted session F3, summary-F3.md API-05d, runs a and b): without
+  // X-Requested-With an anonymous request answers the platform's 500 error page and a signed-in one 401; with it, a
+  // request without a verification token answers 401. Both with an empty body. True when the request was answered.
+  const portalAiRequestRefused = (req, res) => {
+    const noStore = { 'cache-control': PAGE_CACHE_CONTROL, expires: '-1' };
+    const ajax = /^xmlhttprequest$/i.test(String(req.headers['x-requested-with'] ?? '').trim());
+    if (!ajax && !trace.getStore()?.auth?.session?.contactId) {
+      res.writeHead(500, { 'content-type': 'text/html; charset=utf-8', ...noStore });
+      res.end(platformErrorDocument());
+      return true;
+    }
+    if (ajax && req.headers.__requestverificationtoken) return false;
+    res.writeHead(401, noStore);
+    res.end();
+    return true;
+  };
+  // The caching headers of a portal AI JSON answer (hosted session F3, summary-F3.md API-05d, ai-xrw-* and ai-datasum-*
+  // captures of runs a and b): an anonymous visitor's answers are private; a signed-in visitor's, like every 401, are
+  // no-cache, no-store, must-revalidate with Expires -1. /summarystream is private for both.
+  const portalAiCacheHeaders = () =>
+    trace.getStore()?.auth?.session?.contactId
+      ? { 'cache-control': PAGE_CACHE_CONTROL, expires: '-1' }
+      : { 'cache-control': 'private' };
+  const handleSearchSummary = async (req, res, origin, stream) => {
+    // Another method answers 404 with no body (captured for GET).
+    if (req.method !== 'POST') {
+      res.writeHead(404, { 'cache-control': PAGE_CACHE_CONTROL });
+      return res.end();
+    }
     if (req.headers.origin && req.headers.origin !== origin) throw error('Cross-origin requests are not allowed.', 403);
+    if (portalAiRequestRefused(req, res)) return;
     assertPortalToken(req.headers.__requestverificationtoken, headerToken(req));
     const query = await readSummaryQuery(req, rawBody);
+    if (!query) return json(res, 500, unansweredSummary(), portalAiCacheHeaders());
     const sources = await readPortalData(() => {
       if (config().mode === 'live') throw error('The search summary provider requires local data.', 501);
       const identity = trace.getStore()?.auth?.session?.contactId ? currentIdentity() : identityFor(null);
+      // observed.searchUnpublishedPages listed: a found web page's publishing state stops counting for its citation, as
+      // it does for the search that found it (portal-search.mjs admitWebPages); its access rules still apply.
+      const listed = (config().observed ?? portal.observed)?.searchUnpublishedPages === 'listed';
+      const citationRules = listed
+        ? {
+            ...portal,
+            publishingStates: (portal.publishingStates ?? []).map((state) => ({ ...state, isVisible: true })),
+          }
+        : portal;
       return searchSummarySources({
         portal,
         store,
@@ -6686,11 +7079,12 @@ export async function createSimulator(options) {
         readProvider: { fetchXml: localPortalFetch },
         metadata: modelMetadata(),
         config: config(),
-        canReadPage(citation) {
+        diagnostic: recordDiagnostic,
+        canReadPage(citation, { found = false } = {}) {
           const route = languageRoute(portal, citation, 'GET');
           const target = route?.kind === 'rewrite' ? route.pathname : citation.pathname;
           const locale = requestLocale(req, citation, route?.code, identity);
-          return pageAccess(portal, target, identity, {
+          return pageAccess(found ? citationRules : portal, target, identity, {
             previewCookie: false,
             now: store.clock.now(),
             languageId: locale?.id,
@@ -6699,7 +7093,60 @@ export async function createSimulator(options) {
       });
     });
     const answer = await summarizeSearch(summaryProvider, query, sources);
-    return json(res, 200, answer, { 'cache-control': 'no-store' });
+    if (!stream) return json(res, 200, answer, portalAiCacheHeaders());
+    res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'private' });
+    return res.end(summaryStreamEvents(answer));
+  };
+  // The observed edge controls (lib/edge-access.mjs): logs the WAF rules that matched, or might have, and answers a
+  // refused request as the edge does. True when the request was refused.
+  const refuseAtEdge = (req, res, url) => {
+    const { refusal, events } = edgeAccess.check(req, url);
+    for (const event of events)
+      publishLog('request', {
+        kind: 'edge',
+        level: event.decided ? 'info' : 'warning',
+        ...event,
+        message: event.decided
+          ? `WAF custom rule ${event.rule} (${event.action}) matched.`
+          : `WAF custom rule ${event.rule} (${event.action}) might match: ${event.reason}; failing closed.`,
+      });
+    if (!refusal) return false;
+    const routed = trace.getStore();
+    if (routed) routed.httpError = { code: refusal.code, message: refusal.message };
+    const body = req.method === 'HEAD' ? '' : refusal.body;
+    // The edge answers before the site: no local visitor session either.
+    res.removeHeader('set-cookie');
+    res.writeHead(refusal.status, { ...refusal.headers, 'content-length': Buffer.byteLength(refusal.body) });
+    res.end(body);
+    return true;
+  };
+  // Adds everyResponseHeaders to the response when it is written, for each header the response does not set itself.
+  const sendEveryResponseHeaders = (res) => {
+    const writeHead = res.writeHead;
+    res.writeHead = function writeHeadWithSiteHeaders(status, ...rest) {
+      const given = rest.find((value) => value && typeof value === 'object' && !Array.isArray(value)) ?? {};
+      const names = new Set(Object.keys(given).map((name) => name.toLowerCase()));
+      const contentType = Object.entries(given).find(([name]) => name.toLowerCase() === 'content-type')?.[1];
+      const fixed = everyResponseHeaders(portal, {
+        status,
+        contentType: String(contentType ?? res.getHeader('content-type') ?? ''),
+      });
+      for (const [name, value] of Object.entries(fixed)) {
+        if (names.has(name) || res.hasHeader(name)) continue;
+        try {
+          res.setHeader(name, value);
+        } catch (error_) {
+          // A value Node refuses (ERR_INVALID_CHAR) never fails the response: the header is dropped and reported.
+          recordDiagnostic({
+            code: 'PORTAL_HTTP_HEADER_INVALID',
+            severity: 'warning',
+            header: name,
+            message: `The ${name} header could not be sent (${error_.code ?? 'invalid value'}) and was dropped.`,
+          });
+        }
+      }
+      return writeHead.call(this, status, ...rest);
+    };
   };
   /* NOSONAR: single-pass routine, splitting it would change shared state */ async function handle(req, res) {
     // Normalize the admin alias before security checks so rejected requests
@@ -6712,13 +7159,22 @@ export async function createSimulator(options) {
     // The portal also accepts the administration's origin for the paths the console reaches across ports; the portal
     // listener's gate has already refused every browser-shaped administration request outside the allow-list.
     const adminOriginAccepted = !onAdmin(req) && !onApps(req) && req.headers.origin === adminOrigin;
+    const url = requestTargetUrl(req.url, localOrigin);
+    // The hosted edge (observed IP restriction and WAF custom rules) answers before the site: before the CORS page
+    // answer, every page and every portal-facing simulator route (form posts, sign-in, static compat scripts). Only
+    // the administration surface, which the hosted edge never sees, and the other listeners are outside it. Its
+    // refusal carries no site header.
+    if (!onAdmin(req) && !onApps(req) && !ADMINISTRATION_PATH.test(url.pathname) && refuseAtEdge(req, res, url)) return;
     if (
       req.headers.origin &&
       req.headers.origin !== ownOrigin &&
       !adminOriginAccepted &&
       !externalSignIn?.acceptsOrigin(req)
     ) {
-      // The other one: a credential-free read of an authored page the site was observed sharing (lib/page-cors.mjs).
+      // The loopback origin boundary: a cross-origin request is refused without any site header, whatever the site's
+      // HTTP/Access-Control-* settings say (they are sent on the requests this boundary admits). The one opt-in: a
+      // credential-free read of an authored page a public site was observed sharing (observed.corsPages,
+      // lib/page-cors.mjs), from an exact allowed origin.
       if (
         !onAdmin(req) &&
         !onApps(req) &&
@@ -6736,7 +7192,9 @@ export async function createSimulator(options) {
     }
     if (req.headers['sec-fetch-site'] === 'cross-site' && isWrite(req.method))
       throw error('Cross-site writes are not allowed.', 403);
-    const url = requestTargetUrl(req.url, localOrigin);
+    // The headers hosted sites send on every response (lib/response-headers.mjs everyResponseHeaders), on the portal's
+    // own responses past the origin boundary; the administration keeps its own headers.
+    if (!onAdmin(req) && !onApps(req) && !url.pathname.startsWith('/__sim')) sendEveryResponseHeaders(res);
     if (!onAdmin(req) && !onApps(req) && privateSiteAdmission() && !hasPrivateSiteSession(req)) {
       if (await externalSignIn.route(req, res, url, { privateSiteOnly: true })) return;
       const wantsDocument =
@@ -6765,13 +7223,16 @@ export async function createSimulator(options) {
       !isDeepStrictEqual(store.state.simulator?.modelDriven?.records ?? {}, appliedManagementRecords)
     )
       await change(async () => {});
-    // Power Pages document control (sharepoint-documents.mjs createPortalDocumentService), local route under /_apps/ (before the model-driven handler, which refuses other /_apps paths).
+    // Power Pages document control (sharepoint-documents.mjs createPortalDocumentService): the /_services/sharepoint-* services
+    // and the local download route under /_apps/ (before the model-driven handler, which refuses other /_apps paths).
     if (organization?.api?.sharepoint) {
       portalDocuments ??= createPortalDocumentService({
         sharepoint: organization.api.sharepoint,
         store,
         portal: () => portal,
         access: portalDocumentAccess,
+        // An unexpected failure's detail stays local; the visitor gets a generic message.
+        diagnostic: recordDiagnostic,
         // An unconfigured BlockedAttachments uses the Dataverse organization default list
         // (DATAVERSE_BLOCKED_ATTACHMENTS); the organization row, a catalogue default or an instance override (even empty) replaces it.
         blockedExtensions: () => {
@@ -6784,7 +7245,14 @@ export async function createSimulator(options) {
             .filter(Boolean);
         },
       });
-      if (await portalDocuments.handle(req, res, url, { identity: currentIdentity(), csrf: headerToken(req) })) return;
+      if (
+        await portalDocuments.handle(req, res, url, {
+          identity: currentIdentity(),
+          tokenAccepted: (value) => pageToken(req, value),
+          origin: localOrigin,
+        })
+      )
+        return;
     }
     if (canvasHandler(req, res, url)) return;
     if (await codeAppsHandler(req, res, url)) return;
@@ -7033,6 +7501,13 @@ export async function createSimulator(options) {
     }
     if (/^\/__sim(?:\/|$)/.test(url.pathname)) throw error('Simulator resource not found.', 404);
     if (url.pathname === '/_layout/tokenhtml') {
+      // Only GET answers the fragment: HEAD, POST and OPTIONS get an empty 404 with the page caching headers (hosted
+      // session F5, two runs); an OPTIONS request is not a preflight there.
+      if (req.method !== 'GET') {
+        const { vary: _vary, ...headers } = tokenHtmlHeaders(portal, { confinement: confinementPolicy() }); // NOSONAR: binding is excluded from the rest object or is a placeholder
+        res.writeHead(404, { ...headers, 'content-length': 0 });
+        return res.end();
+      }
       // Native: a self-closing hidden input plus the anti-forgery cookie token, with the page
       // headers the platform sends on it (lib/response-headers.mjs tokenHtmlHeaders).
       const token = requestTokens.issue(req, res);
@@ -7047,7 +7522,8 @@ export async function createSimulator(options) {
       res.writeHead(200, headers);
       return res.end(`<input name="__RequestVerificationToken" type="hidden" value="${token}" />`);
     }
-    if (summaryProvider && url.pathname === PORTAL_SEARCH_SUMMARY) return handleSearchSummary(req, res, ownOrigin);
+    if (summaryProvider && [PORTAL_SEARCH_SUMMARY, PORTAL_SEARCH_SUMMARY_STREAM].includes(url.pathname))
+      return handleSearchSummary(req, res, ownOrigin, url.pathname === PORTAL_SEARCH_SUMMARY_STREAM);
     const endpoint = (config().endpoints ?? []).find(
       (e) =>
         e.enabled !== false &&
@@ -7064,6 +7540,19 @@ export async function createSimulator(options) {
       }
       return json(res, Number(endpoint.status) || 200, endpoint.body ?? {});
     }
+    // The site agent (hosted session F3, summary-F3.md API-05b). BotConfiguration lists the agents whose Bot Consumer grants
+    // one of the visitor's web roles; Mirage holds no Copilot Studio agent, so it lists none unless an endpoint mock above
+    // supplies the configuration. The portal agents API answers 400 9004010A in every captured state.
+    if (
+      /^\/_services\/agent\/botconfiguration$/i.test(url.pathname) &&
+      req.method === 'GET' &&
+      config().pageMode !== 'live'
+    )
+      return json(res, 200, []);
+    if (/^\/_api\/agents\/[^/]+\/activities\/?$/i.test(url.pathname) && config().mode !== 'live')
+      return json(res, 400, {
+        error: { code: '9004010A', message: 'An unexpected error occurred while processing the request' },
+      });
     // Source operations are discovered automatically; executing exported JavaScript
     // requires a trusted pack or an explicit local mode selected in Operations.
     if (url.pathname === '/__sim-static/pcf-host.js') {
@@ -7192,7 +7681,7 @@ export async function createSimulator(options) {
           confinement: confinementPolicy(),
           kind: 'page',
           nonce: traced?.scriptPolicy ? scriptNonce.nonce : null,
-          handlerHashes: traced?.scriptPolicy?.handlerHashes,
+          handlerHashes: traced?.scriptPolicy?.handlerHashGroups ?? traced?.scriptPolicy?.handlerHashes,
         }),
         'x-sim-route': 'portal-search-local',
       };
@@ -7202,31 +7691,21 @@ export async function createSimulator(options) {
       const searchBody = traced?.html ?? html;
       return res.end(refreshProof(traced?.scriptPolicy ? nonceInjectedScripts(searchBody, scriptNonce) : searchBody));
     }
-    const flow = operationPortal().cloudFlows.find(
-      (record) =>
-        record.path && record.path?.replace(/\/$/, '').toLowerCase() === url.pathname.replace(/\/$/, '').toLowerCase(),
-    );
-    if (flow && config().mode !== 'live') {
-      if (req.method !== 'POST') throw error('Cloud-flow triggers require POST.', 405);
-      assertPortalToken(req.headers.__requestverificationtoken, headerToken(req));
-      const identity = currentIdentity();
-      assertOperationRole(flow, identity);
-      const bytes = (await rawBody(req)).toString('utf8');
-      let input;
-      try {
-        const parsed = String(req.headers['content-type']).startsWith('application/x-www-form-urlencoded')
-          ? Object.fromEntries(new URLSearchParams(bytes))
-          : JSON.parse(bytes || '{}');
-        input = typeof parsed.eventData === 'string' ? JSON.parse(parsed.eventData) : (parsed.eventData ?? parsed);
-      } catch {
-        throw error('Cloud-flow input must be valid JSON.', 400);
-      }
-      const answer = await runPortalFlow({ flow, input, identity });
-      return json(res, answer.status ?? 200, Object.hasOwn(answer, 'body') ? answer.body : answer, {
-        ...answer.headers,
-        'x-sim-route': 'cloud-flow-local',
-        'cache-control': 'no-store',
+    // The Power Pages flow API under any version segment (hosted session F8: v2.0 is routed as v1.0 is).
+    const flowRoute = /^\/_api\/cloudflow\/[^/]+\/trigger\/([^/]*)\/?$/i.exec(url.pathname);
+    if (flowRoute && config().mode !== 'live') return cloudFlowRequest(req, res, url.pathname, flowRoute[1]);
+    // The map list data service a map list names in data-search-url: a direct POST answers the platform's 500 error page
+    // (hosted session F2, LIST-02b, runs a and b: no map data request is ever sent by the page itself, the map provider
+    // script being blocked by the page's content security policy).
+    if (/^\/entitylist\/map\/search\/?$/i.test(url.pathname) && req.method === 'POST' && config().mode !== 'live') {
+      res.writeHead(500, {
+        'content-type': 'text/html; charset=utf-8',
+        'cache-control': PAGE_CACHE_CONTROL,
+        pragma: 'no-cache',
+        expires: '-1',
+        'x-sim-route': 'entitylist-map-search-local',
       });
+      return res.end(platformErrorDocument());
     }
     // The platform's account stylesheet (account pages): local equivalent.
     if (/^\/areas\/account\/css\/account\.css$/i.test(url.pathname) && ['GET', 'HEAD'].includes(req.method)) {
@@ -7247,6 +7726,29 @@ export async function createSimulator(options) {
       const unchanged = notModified(req.headers, headers);
       res.writeHead(unchanged ? 304 : 200, headers);
       return res.end(req.method === 'HEAD' || unchanged ? undefined : body);
+    }
+    // The legacy CMS inline editor's file browser answers a server exception (hosted session F3, PAGE-05b); the other
+    // legacy CMS services (/_services/cms, .../__templates/...) have no route and answer Page Not Found.
+    if (/^\/_services\/portal\/[^/]+\/elfinder\/connector$/i.test(url.pathname))
+      throw error('The CMS inline editor file browser has been deprecated.', 500, 'CMS_FILE_BROWSER_DEPRECATED');
+    // The PWA service worker of an enabled PWAFeature (hosted session F3: /js/sw.js, any query, application/x-javascript,
+    // Service-Worker-Allowed: /). The body is the local stand-in (lib/platform-manifest.mjs LOCAL_SERVICE_WORKER).
+    // An exported web file at that path answers instead (web-file routing below).
+    if (
+      url.pathname.toLowerCase() === '/js/sw.js' &&
+      ['GET', 'HEAD'].includes(req.method) &&
+      pwaFeatureStatus(siteSetting(portal, 'PWAFeature')) === 'enable' &&
+      !portal.webFiles.some((file) => normalizePortalPath(file.url) === normalizePortalPath(url.pathname))
+    ) {
+      const body = Buffer.from(LOCAL_SERVICE_WORKER, 'utf8');
+      res.writeHead(200, {
+        ...siteHeaders(portal, { confinement: confinementPolicy(), kind: 'webFile' }),
+        'content-type': 'application/x-javascript',
+        'service-worker-allowed': '/',
+        'content-length': body.byteLength,
+        'x-sim-resource-provider': 'local-platform-equivalent',
+      });
+      return res.end(req.method === 'HEAD' ? undefined : body);
     }
     // The platform's stack ranking plug-in (form pages with stack rank cells): local equivalent.
     if (url.pathname === '/xrm-adx/js/jquery.stackranking.js' && ['GET', 'HEAD'].includes(req.method)) {
@@ -7438,6 +7940,52 @@ export async function createSimulator(options) {
       }
     }
     const previewCookie = requestPublishingPreview(req);
+    // The modern list's configuration (lib/platform.mjs listViewConfiguration), read by its grid with a GET.
+    const listConfiguration = /^\/_services\/portal\/GetListViewConfiguration\/([0-9a-f-]{36})\/?$/i.exec(url.pathname);
+    if (listConfiguration && req.method === 'GET' && config().pageMode !== 'live') {
+      const home = servicePages(portal).home ?? { id: 'service', url: '/', name: '', title: '', metadata: {} };
+      const body = listViewConfiguration(
+        listConfiguration[1],
+        renderer.contextForPage(home, url, { user: currentIdentity(), previewCookie }),
+        {
+          portal,
+          store,
+          identity: currentIdentity(),
+          config: config(),
+          metadata: modelMetadata(),
+          schemas: { ...solutionMetadata.componentSchemas, ...config().componentSchemas },
+        },
+      );
+      // Inferred refusals (not captured): an unknown or unincluded list answers 404 with an empty object, a visitor who
+      // may not read the list's table 403 with the grid service's AccessDenied body.
+      if (!body || body.AccessDenied) {
+        res.writeHead(body ? 403 : 404, { ...PAGE_HEADERS, 'content-type': 'application/json; charset=utf-8' });
+        return res.end(JSON.stringify(body ?? {}));
+      }
+      res.writeHead(200, { ...PAGE_HEADERS, 'content-type': 'application/json; charset=utf-8' });
+      // The platform indents the configuration with CRLF line breaks (captured).
+      return res.end(JSON.stringify(body, null, 2).replaceAll('\n', '\r\n'));
+    }
+    // The chart tag's data service (lib/portal-chart-builder.mjs), read by the platform chart script.
+    if (url.pathname.toLowerCase() === CHART_BUILDER_PATH && req.method === 'GET' && config().mode !== 'live') {
+      const identity = currentIdentity();
+      const answer = await chartBuilderAnswer({
+        chartId: url.searchParams.get('chartId'),
+        viewId: url.searchParams.get('viewId'),
+        charts: solutionInventory.filter((record) => record.component === 'chart'),
+        views: modelMetadata().views ?? [],
+        metadata: modelMetadata(),
+        canRead: (table) =>
+          Boolean(identity?.admin) ||
+          store.state.settings.permissionMode === 'permissive' ||
+          store.rules(table, 'read', identity).length > 0,
+        fetchXml: (xml) => localPortalFetch(xml, identity),
+        entityMetadata: (table) =>
+          organization?.metadata?.retrieveEntityResponse(table, 'Attributes Relationships')?.EntityMetadata ?? null,
+        diagnostic: recordDiagnostic,
+      });
+      return json(res, answer.status, answer.body);
+    }
     const nativeIdentity = currentIdentity();
     const localAttachments = config().mode !== 'live';
     const listWorkflowSourceEpoch = portalSourcePublications ? null : portalSourceEpoch;
@@ -7505,21 +8053,69 @@ export async function createSimulator(options) {
       })
     )
       return;
-    const fileApi = /^\/_api\/file\/(InitializeFileUpload|UploadFileBlock)\/note$/i.exec(url.pathname);
+    const fileApi = /^\/_api\/file\/(InitializeFileUpload|UploadFileBlock|delete)\/note$/i.exec(url.pathname);
     if (fileApi) {
-      const answer = (status, body) => {
-        // Live: page cache headers and the site frame option; a JSON answer also varies by encoding, the 204 does not.
+      const answer = (status, body, { varies = true } = {}) => {
+        // Live: page cache headers and the site frame option; a JSON answer also varies by encoding, the 204 does not,
+        // and neither do the AU error answers (hosted session F2, attach and attachdel runs).
         const { vary, ...page } = PAGE_HEADERS;
         res.writeHead(status, {
           ...page,
           'x-frame-options': siteHeaders(portal)['x-frame-options'],
-          ...(body === undefined ? {} : { 'content-type': 'application/json; charset=utf-8', vary }),
+          ...(body === undefined
+            ? {}
+            : { 'content-type': 'application/json; charset=utf-8', ...(varies ? { vary } : {}) }),
         });
         return res.end(body === undefined ? undefined : JSON.stringify(body));
+      };
+      // Hosted session F2 (attach runs a/b, e, f/g, i/j; attachdel a2/b2, h/p2): an upload block without annotation Write
+      // answers 403 with the message's placeholder unformatted, cache-control private and content type "UPLOAD".
+      const attachmentWriteDenied = () => {
+        res.writeHead(403, {
+          'cache-control': 'private',
+          'content-type': 'UPLOAD; charset=utf-8',
+          'x-frame-options': siteHeaders(portal)['x-frame-options'],
+        });
+        return res.end(
+          JSON.stringify({
+            ErrorCode: 'AU0005',
+            ErrorMessage: 'User does not have required permissions to {0} attachments.',
+          }),
+        );
       };
       assertPortalToken(req.headers.__requestverificationtoken, headerToken(req));
       const now = Date.now();
       for (const [id, entry] of stagedUploads) if (now - entry.created > 3600000) dropStaged(id);
+      // The staged note row of an entry, as stored now (a DELETE or another write may have removed it).
+      const stagedNoteRow = (id) =>
+        store.tableRows('annotation').find((row) => String(row.annotationid ?? '').toLowerCase() === id) ?? null;
+      if (/^delete$/i.test(fileApi[1])) {
+        // DELETE /_api/file/delete/note?noteId=: the control's remove button before the form is saved (API-04f).
+        if (req.method !== 'DELETE') throw error('Staged attachment removal requires DELETE.', 405);
+        await rawBody(req);
+        const noteId = String(url.searchParams.get('noteId') ?? '').toLowerCase();
+        const entry = stagedUploads.get(noteId);
+        if (entry?.owner !== uploadOwner()) throw error('Unknown file upload.', 404);
+        const row = entry.note ? stagedNoteRow(noteId) : null;
+        if (row) {
+          // Hosted session F2 (attachdel m/n, o/q): without annotation Delete 403 AU0005 "…to DELETE attachments." and
+          // the note stays; with it 204 and the note is deleted.
+          if (!store.allowed('annotation', 'delete', row, currentIdentity()))
+            return answer(
+              403,
+              { ErrorCode: 'AU0005', ErrorMessage: 'User does not have required permissions to DELETE attachments.' },
+              { varies: false },
+            );
+          await change(() =>
+            store.transact(
+              () => portalRecordWrites(store, { portalRequest: true }).remove('annotation', noteId, currentIdentity()),
+              { incremental: true },
+            ),
+          );
+        }
+        if (stagedUploads.get(noteId) === entry) dropStaged(noteId);
+        return answer(204);
+      }
       if (/^InitializeFileUpload$/i.test(fileApi[1])) {
         if (req.method !== 'POST') throw error('File upload initialisation requires POST.', 405);
         await rawBody(req);
@@ -7533,7 +8129,71 @@ export async function createSimulator(options) {
             409,
             'StagedUploadLimit',
           );
-        const id = randomUUID();
+        // The form and regarding record the upload names. Hosted session F2 (attach runs b/e, f/g, i/j, k/l): the portal
+        // counts the record's notes by the system read and refuses a file beyond the form's count with 400 AU00039
+        // (also when the page's MaxFile was raised in the browser), then creates the staged note on the record.
+        const regardingId = String(url.searchParams.get('regardingId') ?? '');
+        const scope =
+          config().mode !== 'live'
+            ? formAttachmentScope({
+                portal,
+                schemas: { ...solutionMetadata.componentSchemas, ...config().componentSchemas },
+                metadata: modelMetadata(),
+                formType: url.searchParams.get('formType'),
+                formId: url.searchParams.get('formId'),
+              })
+            : null;
+        // The form's size and type limits are checked on the declared file before anything is staged or written, so no
+        // file outside them is ever stored (fail closed: hosted refuses such files in the browser; its server answer was
+        // not captured). The answer takes the hosted AU shape with the form service's own code and message (inferred).
+        const problem = scope
+          ? formAttachmentFileProblem(scope.component, {
+              name,
+              type: String(req.headers['x-ms-file-type'] ?? req.headers['content-type'] ?? ''),
+              size,
+            })
+          : null;
+        if (problem) return answer(400, { ErrorCode: problem.code, ErrorMessage: problem.message }, { varies: false });
+        // Only a record the visitor can read binds the upload; any other upload stays staged until the form saves it.
+        const regarding =
+          scope &&
+          /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(regardingId) &&
+          (await readProvider.get(scope.entity, regardingId, currentIdentity()).catch(() => null))
+            ? { entity: scope.entity, id: regardingId.toLowerCase() }
+            : null;
+        if (regarding) {
+          const count = await formAttachmentCount(readProvider, null, regarding.entity, regarding.id);
+          if (count >= formAttachmentLimit(scope.component))
+            return answer(400, { ErrorCode: 'AU00039', ErrorMessage: null }, { varies: false });
+        }
+        let id = randomUUID();
+        let note = false;
+        if (regarding) {
+          const values = stagedAttachmentNote({
+            store,
+            portal,
+            entity: regarding.entity,
+            recordId: regarding.id,
+            identity: currentIdentity(),
+            now: new Date(now),
+          });
+          // The staged note needs annotation Create on the record (hosted session F2: the attachdel runs a2/b2 and h/p2
+          // had Read, Create and Append; with Read only, state-0 runs s0g and s0h, the form renders no control at all).
+          const draft = {
+            objectid: { id: regarding.id, logical_name: values.objecttypecode },
+            objecttypecode: values.objecttypecode,
+          };
+          if (store.allowed('annotation', 'create', draft, currentIdentity())) {
+            const created = await change(() =>
+              store.transact(
+                () => portalRecordWrites(store, { portalRequest: true }).create('annotation', values, { admin: true }),
+                { incremental: true },
+              ),
+            );
+            id = String(created?.annotationid ?? id).toLowerCase();
+            note = true;
+          }
+        }
         const token = randomBytes(24).toString('base64');
         if (!trace.getStore().visitor) {
           const visitor = newVisitor(visitorName());
@@ -7550,6 +8210,10 @@ export async function createSimulator(options) {
           writing: Promise.resolve(),
           received: 0,
           created: now,
+          regarding,
+          note,
+          // The bytes go into the staged note with the last block when the form keeps its files in Dataverse.
+          writesNote: note && scope.dataverse === true,
         });
         // The staged note upload on the request's root (D-R3-10): the file, never its bytes.
         trace.getStore()?.traceSpan?.set({
@@ -7573,6 +8237,19 @@ export async function createSimulator(options) {
       if (stagedUploads.get(String(url.searchParams.get('noteId') ?? '').toLowerCase()) !== entry)
         throw error('Unknown file upload.', 404);
       const noteId = String(url.searchParams.get('noteId') ?? '').toLowerCase();
+      if (entry.regarding) {
+        const row = entry.note ? stagedNoteRow(noteId) : null;
+        if (entry.note && !row) {
+          dropStaged(noteId);
+          throw error('Unknown file upload.', 404);
+        }
+        // The staged note keeps its row when the block is refused (hosted session F2, attach runs b/e, f/g, i/j).
+        const target = row ?? {
+          objectid: { id: entry.regarding.id, logical_name: entry.regarding.entity },
+          objecttypecode: entry.regarding.entity,
+        };
+        if (!store.allowed('annotation', 'update', target, currentIdentity())) return attachmentWriteDenied();
+      }
       if (Date.now() - entry.created > 3600000) {
         dropStaged(noteId);
         throw error('Unknown file upload.', 404);
@@ -7598,6 +8275,29 @@ export async function createSimulator(options) {
         if (stagedUploads.get(noteId) === entry) stagedUploads.delete(noteId);
         throw cause;
       }
+      // Hosted session F2 (attach runs k and l, max1-none:one-file): the upload writes its file into the staged note
+      // (Update annotation during UploadFileBlock), so a file that is never submitted stays on the record.
+      if (last && entry.writesNote && stagedUploads.get(noteId) === entry && stagedNoteRow(noteId)) {
+        const documentbody = await stagedContent(noteId, entry);
+        await change(() =>
+          store.transact(
+            () =>
+              portalRecordWrites(store, { portalRequest: true }).update(
+                'annotation',
+                noteId,
+                {
+                  filename: entry.name.slice(0, 255),
+                  mimetype: String(entry.type || 'application/octet-stream').slice(0, 255),
+                  documentbody,
+                  filesize: entry.size,
+                  isdocument: true,
+                },
+                { admin: true },
+              ),
+            { incremental: true },
+          ),
+        );
+      }
       trace.getStore()?.traceSpan?.set({
         transfer: 'upload-block',
         fileColumn: 'documentbody',
@@ -7619,6 +8319,7 @@ export async function createSimulator(options) {
         portal,
         identity: currentIdentity(),
         csrf: headerToken(req),
+        tokenRefusal: () => headerTokenRefusal(req),
         owner: ({ start }) => {
           if (start && !trace.getStore().visitor) {
             const visitor = newVisitor(visitorName());
@@ -7639,6 +8340,9 @@ export async function createSimulator(options) {
       return summarizePortalData(req, res, url, ownOrigin);
     if (url.pathname.startsWith('/_api/')) return api(req, res, url);
     if (config().pageMode === 'live') return forward(req, res, url);
+    // The file control's download link (lib/portal-file-download.mjs).
+    if (isPortalFileDownload(url.pathname) && config().mode !== 'live')
+      return handlePortalFileDownload(req, res, url, { store, portal, identity: currentIdentity(), recordDiagnostic });
     // A read may yield to a source publication between routing, authorization, and Liquid rendering.
     const requestedPortalSource = portalSourcePublications ? null : portalSourceEpoch;
     const requirePageSource = () => {
@@ -7668,10 +8372,15 @@ export async function createSimulator(options) {
     const pageAccessOptions = { now: store.clock.now(), languageId: selectedLanguage?.id, previewCookie };
     // /Register is the platform's invitation redemption page (the sign-in page's "Redeem
     // invitation" tab); locally it is the RedeemInvitation route.
+    // Its invitation= query (the Send Invitation email's link) prefills the code (hosted session F4 AUTH-05d).
     if (/^\/register\/?$/i.test(url.pathname) && !exportedPageFor(portal, url.pathname)) {
       const back = returnUrlParameter(url.searchParams);
+      const invitation = url.searchParams.get('invitation');
       url.pathname = '/Account/Login/RedeemInvitation';
-      url.search = back ? `?ReturnUrl=${encodeURIComponent(back)}` : '';
+      const query = new URLSearchParams();
+      if (back) query.set('ReturnUrl', back);
+      if (invitation) query.set('invitation', invitation);
+      url.search = query.size ? `?${query}` : '';
     }
     // External sign-in: ExternalLogin, the provider's response at the reply URL,
     // ExternalLoginCallback, RedeemInvitation, LogOff and the default-provider redirect.
@@ -7874,6 +8583,8 @@ export async function createSimulator(options) {
           globalChoices: localPortalGlobalChoices(),
           config: config(),
           modal: true,
+          // A modal form draws the same trusted local CAPTCHA challenge as its page form.
+          issueCaptcha: issueFormCaptcha,
           observed: config().observed ?? portal.observed,
           onNativePostbackDescriptor: nativePostbackEnabled ? (item) => collected.push(item) : null,
           nativePostbackState: trace.getStore()?.nativePostbackState,
@@ -7914,19 +8625,19 @@ export async function createSimulator(options) {
             nativeFiles,
           );
           response = nativePostbackResponse({ result, context, values: submission.body.values });
-        } catch (cause) {
+        } catch (error_) {
           response = nativePostbackResponse({
-            error: cause,
+            error: error_,
             context: submission.context,
             values: submission.body.values,
             observed: config().observed ?? portal.observed,
             portal,
           });
-          trace.getStore().error = cause;
+          trace.getStore().error = error_;
           recordDiagnostic({
-            ...(cause.details?.permissionDiagnostic ?? {
-              code: cause.code ?? 'FORM_SAVE_FAILED',
-              message: cause.message,
+            ...(error_.details?.permissionDiagnostic ?? {
+              code: error_.code ?? 'FORM_SAVE_FAILED',
+              message: error_.message,
             }),
             path: url.pathname,
             ...(response.state?.outcome?.requestId ? { errorId: response.state.outcome.requestId } : {}),
@@ -8113,7 +8824,7 @@ export async function createSimulator(options) {
         { injectedScripts: modalInjected },
       );
       return res.end(
-        injectRuntime(
+        injectPageRuntime(
           frameReadiness.decorate(injectLocalHead(document, localOverrides), {
             path: url.pathname,
             observed: config().observed ?? portal.observed,
@@ -8190,9 +8901,9 @@ export async function createSimulator(options) {
     const knownPage = portal.pages.find((page) => normalizePortalPath(page.url) === key);
     const codeSite = portal.codeSite?.entryFile && ['GET', 'HEAD'].includes(req.method) ? portal.codeSite : null;
     const codeSiteRoot = codeSite ? portal.pages.find((page) => normalizePortalPath(page.url) === '/') : null;
-    const codeSiteEntry = codeSiteRoot && (key === '/' || url.pathname === codeSite.entryPath);
-    const compiledFile =
-      codeSiteRoot && !knownPage && !codeSiteEntry ? await compiledCodeSiteAsset(codeSite, url.pathname) : null;
+    // A code site's build files are its web files (the landing page among them), with case-insensitive paths.
+    const compiled = codeSiteRoot && !knownPage ? await resolveCompiledCodeSiteFile(codeSite, url.pathname) : null;
+    const compiledFile = compiled?.file ?? null;
     // A path ending with "/" is looked up as a page first (legacy slash rule); a web file
     // answers only when no page has that URL.
     const pageFirst = url.pathname.endsWith('/') && knownPage;
@@ -8216,18 +8927,23 @@ export async function createSimulator(options) {
         ? deniedPageRoute(portal, url, currentIdentity(), assetAccess, routeOptions)
         : null;
     if (compiledFile && assetAccess?.allowed) {
-      const body = await readWebFileSource(compiledFile, codeSite.compiledDir, url.pathname);
-      const contentType = mime(compiledFile);
+      const source = await readWebFileSource(compiledFile, codeSite.compiledDir, url.pathname);
+      // As hosted code sites serve the uploaded build (lib/response-headers.mjs codeSiteFileHeaders): an HTML file is a
+      // raw document without the portal shell, and compressible types are gzipped for a client that accepts it.
+      const served = codeSiteFileHeaders({
+        body: source,
+        fileName: path.basename(compiledFile),
+        caseVariant: compiled.caseVariant,
+        caching:
+          assetAccess.previewOnly || store.state.settings?.webFileCaching === 'revalidate' ? 'revalidate' : 'platform',
+        fallbackType: mime(compiledFile),
+      });
+      const gzip = served.compress && /\bgzip\b/i.test(String(req.headers['accept-encoding'] ?? ''));
+      const body = gzip ? gzipSync(source) : source;
       const headers = {
-        ...siteHeaders(portal, { confinement: confinementPolicy(), kind: 'webFile' }),
-        ...webFileHeaders({
-          body,
-          contentType,
-          fileName: path.basename(compiledFile),
-          caching: 'revalidate',
-          // Streaming WebAssembly requires exactly application/wasm, without MIME parameters.
-          mimeCharset: contentType === 'application/wasm' ? 'source' : 'utf8',
-        }),
+        ...siteHeaders(portal, { confinement: confinementPolicy(), kind: 'webFile', freshNonce: true }),
+        ...served.headers,
+        ...(gzip ? { 'content-encoding': 'gzip' } : {}),
         'content-length': body.byteLength,
         'x-sim-resource-provider': 'code-site-build',
         ...(assetAccess.previewOnly ? { 'cache-control': 'private, no-store' } : {}),
@@ -8236,7 +8952,7 @@ export async function createSimulator(options) {
       res.writeHead(status, headers);
       return res.end(req.method === 'HEAD' || status === 304 ? undefined : body);
     }
-    if (asset && !deniedRoute && (!codeSiteEntry || url.pathname !== codeSite.entryPath)) {
+    if (asset && !deniedRoute) {
       const { root, file } = await webFileSourcePaths(portal.sourceDir, asset.file, url.pathname);
       const relative = path.relative(root, file);
       if (relative.startsWith('..') || path.isAbsolute(relative))
@@ -8245,7 +8961,7 @@ export async function createSimulator(options) {
       // record's disposition, platform caching, ETag with 304, HTTP/* settings.
       const sendFile = (body, contentType, extra = {}) => {
         const headers = {
-          ...siteHeaders(portal, { confinement: confinementPolicy(), kind: 'webFile' }),
+          ...siteHeaders(portal, { confinement: confinementPolicy(), kind: 'webFile', freshNonce: true }),
           ...webFileHeaders({
             body,
             contentType,
@@ -8427,13 +9143,18 @@ export async function createSimulator(options) {
     const pageIdentity = currentIdentity();
     const exportedPage = !deniedRoute && (url.pathname.endsWith('/') || key === '/') ? knownPage : null;
     const markerRoute = exportedPage || deniedRoute ? null : siteMarkerRoute(portal, url);
+    // A code site's application route (hosted session F5): no page, web file or build file at the path, and the path
+    // is not a static file type. It renders the Page Not Found page (the Home page without one) with HTTP 200, the
+    // landing document in place of its template output (lib/liquid.mjs codeSiteLanding).
     const spaPage =
       codeSiteRoot &&
       !deniedRoute &&
       !markerRoute &&
-      (!webFile || asset) &&
-      (codeSiteEntry || (!knownPage && !webFile && codeSiteNavigation(codeSite, url.pathname)));
-    const routedPage = exportedPage ?? markerRoute?.page ?? (spaPage ? codeSiteRoot : null);
+      !knownPage &&
+      !webFile &&
+      codeSiteNavigation(codeSite, url.pathname);
+    const routedPage =
+      exportedPage ?? markerRoute?.page ?? (spaPage ? (servicePages(portal).notFound ?? codeSiteRoot) : null);
     const access = routedPage ? pageAccess(portal, routedPage, pageIdentity, pageAccessOptions) : null;
     // The Profile site-marker page requires a signed-in user (platform profile page).
     const profile = servicePages(portal).profile;
@@ -8447,11 +9168,35 @@ export async function createSimulator(options) {
           urlHistory: store.state.settings?.urlHistoryRedirects === true,
         });
       if (!access.allowed) return deniedPageRoute(portal, url, pageIdentity, access, routeOptions);
+      // An application route shows the Home page copy (the landing page): a visitor who may not read Home gets the
+      // answer the root gives. Hosted handling of a restricted Home is not captured; this fails closed.
+      if (spaPage) {
+        const homeAccess = pageAccess(portal, codeSiteRoot, pageIdentity, pageAccessOptions);
+        if (!homeAccess.allowed) return deniedPageRoute(portal, url, pageIdentity, homeAccess, routeOptions);
+      }
       if (signInRequired)
         return deniedPageRoute(portal, url, pageIdentity, { code: 'PROFILE_SIGN_IN_REQUIRED' }, routeOptions);
       return null;
     };
     const route = deniedRoute ?? pageRouteOf();
+    // The platform's robots.txt of a private site where nothing of the export answers: no web file, page, code-site
+    // route, redirect or canonical match, only Page Not Found (lib/redirects.mjs platformRobotsResponse).
+    const robots =
+      !webFile &&
+      !routedPage &&
+      !deniedRoute &&
+      route?.status === 404 &&
+      ['PAGE_NOT_FOUND', 'UNMAPPED_RESOURCE'].includes(route.code) &&
+      ['GET', 'HEAD'].includes(req.method)
+        ? platformRobotsResponse(portal, url, store.clock.now())
+        : null;
+    if (robots) {
+      res.writeHead(robots.status, {
+        ...siteHeaders(portal, { confinement: confinementPolicy(), kind: 'webFile' }),
+        ...robots.headers,
+      });
+      return res.end(req.method === 'HEAD' ? undefined : robots.body);
+    }
     if (route?.kind === 'redirect' && !route.page) {
       res.writeHead(route.status, {
         location:
@@ -8462,6 +9207,24 @@ export async function createSimulator(options) {
         'x-sim-route': route.source ?? 'redirect',
       });
       return res.end();
+    }
+    // A missing build file of a code site is the platform's plain 404 document, not the Page Not Found page.
+    if (!routedPage && route?.status === 404 && codeSiteRoot && codeSiteMissingFile(codeSite, url.pathname)) {
+      recordDiagnostic({
+        code: 'PAGE_NOT_FOUND',
+        path: url.pathname,
+        message: 'The code site build has no such file.',
+      });
+      const body = Buffer.from(CODE_SITE_MISSING_FILE_DOCUMENT);
+      const { vary: _vary, ...page } = PAGE_HEADERS; // NOSONAR: binding is excluded from the rest object or is a placeholder
+      res.writeHead(404, {
+        ...page,
+        ...siteHeaders(portal, { confinement: confinementPolicy(), freshNonce: true }),
+        'content-type': 'text/html; charset=utf-8',
+        'content-length': body.byteLength,
+        'x-sim-route': 'code-site-missing-file',
+      });
+      return res.end(req.method === 'HEAD' ? undefined : body);
     }
     if (route?.kind === 'error') throw error(route.message, route.status, route.code);
     if (route) {
@@ -8483,46 +9246,6 @@ export async function createSimulator(options) {
     const nativeContext = trace.getStore();
     if (nativeEntries && (route || !routedPage || !access?.allowed))
       throw error('Native form page is not accessible.', 403);
-    if (spaPage && !route && access?.allowed) {
-      const body = await readWebFileSource(codeSite.entryFile, codeSite.compiledDir, url.pathname);
-      requirePageSource();
-      const token = requestTokens.issue(req, res);
-      // The compiled entry document is exported source as it is: under a nonce policy its inline scripts get the nonce.
-      const scriptNonce = pageScriptNonce(portal);
-      const document = codeSiteDocument(body.toString('utf8'));
-      const decided = scriptNonce ? staticDocumentScriptNonces(document, scriptNonce) : null;
-      let html = injectRuntime(
-        decided?.html ?? document,
-        token,
-        revision,
-        pageIdentity,
-        nativeContext?.spanId,
-        siteLanguageCodes(),
-        {
-          rootTraceId: nativeContext?.traceSpan?.traceId,
-          site: { websiteId: portal.website?.id, isSpaSite: portal.isSpaSite },
-          injectedScripts: decided ? scriptNonce.injected : null,
-        },
-      );
-      if (decided) html = nonceInjectedScripts(html, scriptNonce);
-      const headers = {
-        ...PAGE_HEADERS,
-        ...siteHeaders(portal, {
-          confinement: confinementPolicy(),
-          kind: 'page',
-          nonce: scriptNonce?.nonce,
-          handlerHashes: decided?.scriptPolicy.handlerHashes,
-        }),
-        'content-type': 'text/html; charset=utf-8',
-        'x-sim-route': 'code-site-app',
-      };
-      // An unbound browser HEAD omits the GET-only token and cannot advertise the rendered length.
-      if (req.method === 'HEAD' && !token) delete headers['content-length'];
-      else headers['content-length'] = Buffer.byteLength(html);
-      appendApplicationSessionRenewal(req, res, headers);
-      res.writeHead(200, headers);
-      return res.end(req.method === 'HEAD' ? undefined : html);
-    }
     let renderedSource;
     // A nonce policy (the 'nonce' placeholder): one nonce for this response's headers and scripts.
     const scriptNonce = pageScriptNonce(portal);
@@ -8552,7 +9275,9 @@ export async function createSimulator(options) {
       let renderPath = url.pathname;
       if (route) renderPath = route.page.url;
       else if (markerRoute) renderPath = markerRoute.page.url;
+      else if (spaPage) renderPath = routedPage.url;
       return renderedSource.renderer.renderPage(renderPath + url.search, {
+        ...(spaPage && !route ? { codeSiteLanding: true } : {}),
         user: pageIdentity,
         languageCode: selectedLanguage?.code ?? null,
         previewCookie,
@@ -8581,19 +9306,19 @@ export async function createSimulator(options) {
           nativeFiles,
         );
         response = nativePostbackResponse({ result, context, values: submission.body.values });
-      } catch (cause) {
+      } catch (error_) {
         response = nativePostbackResponse({
-          error: cause,
+          error: error_,
           context: submission.context,
           values: submission.body.values,
           observed: config().observed ?? portal.observed,
           portal,
         });
-        nativeContext.error = cause;
+        nativeContext.error = error_;
         recordDiagnostic({
-          ...(cause.details?.permissionDiagnostic ?? {
-            code: cause.code ?? 'FORM_SAVE_FAILED',
-            message: cause.message,
+          ...(error_.details?.permissionDiagnostic ?? {
+            code: error_.code ?? 'FORM_SAVE_FAILED',
+            message: error_.message,
           }),
           path: url.pathname,
           ...(response.state?.outcome?.requestId ? { errorId: response.state.outcome.requestId } : {}),
@@ -8606,6 +9331,19 @@ export async function createSimulator(options) {
     }
     let html = typeof rendered === 'string' ? rendered : rendered.html;
     for (const diagnostic of rendered.diagnostics ?? []) recordDiagnostic({ ...diagnostic, path: url.pathname });
+    // A page whose render failed with a server exception answers the site's observed error page (hosted session F3).
+    if (rendered.failure) {
+      const presentation = observedPageErrorResponse({
+        method: req.method,
+        error: rendered.failure,
+        observed: config().observed ?? portal.observed,
+        portal,
+        languageId: selectedLanguage?.id,
+        requestPath: url.pathname,
+        now: store.clock.now(),
+      });
+      if (presentation) return writeErrorPresentation(presentation, req, res);
+    }
     // A component that sends the visitor elsewhere (an advanced form that requires
     // authentication sends an anonymous visitor to sign in) answers for the whole page.
     const componentRedirect = (rendered.diagnostics ?? []).find(
@@ -8664,10 +9402,13 @@ export async function createSimulator(options) {
     const headers = {
       'content-type': contentType,
       ...PAGE_HEADERS,
-      ...(scriptPolicy ? renderedSource.policyHeaders(scriptPolicy.handlerHashes) : renderedSource.headers),
+      ...(scriptPolicy
+        ? renderedSource.policyHeaders(scriptPolicy.handlerHashGroups ?? scriptPolicy.handlerHashes)
+        : renderedSource.headers),
       ...(nativeContext?.nativePostbackState?.outcome?.requestId
         ? { 'x-ms-request-id': nativeContext.nativePostbackState.outcome.requestId }
         : {}),
+      ...(spaPage && !route ? { 'x-sim-route': 'code-site-app' } : {}),
     };
     // A redirecting page answer has no Vary header (live sign-in redirect).
     if (route?.kind === 'redirect') {
@@ -8695,10 +9436,11 @@ export async function createSimulator(options) {
       if (adapters.length) headers['x-sim-compatibility'] = adapters.join(', ');
       if (rendered.provenance) headers['x-paqvilo-provenance'] = rendered.provenance.proofId;
     }
+    const documentToken = isDocument ? requestTokens.issue(req, res) : null;
     let responseBody = isDocument
-      ? injectRuntime(
+      ? injectPageRuntime(
           html,
-          requestTokens.issue(req, res),
+          documentToken,
           renderedSource.revision,
           pageIdentity,
           trace.getStore()?.spanId,
@@ -8717,6 +9459,12 @@ export async function createSimulator(options) {
       if (entry) entry.proof = refreshScriptProofLocations(responseBody, rendered.provenance);
     }
     const status = route?.status ?? rendered.status ?? 200;
+    // A code site's application route advertises its rendered length, except on an unbound browser HEAD: that answer
+    // omits the GET-only token, so its length is not the GET representation's.
+    if (spaPage && !route) {
+      if (req.method === 'HEAD' && !documentToken) delete headers['content-length'];
+      else headers['content-length'] = Buffer.byteLength(responseBody);
+    }
     if (isDocument && !route && status < 300) appendApplicationSessionRenewal(req, res, headers);
     res.writeHead(status, headers);
     res.end(responseBody);
@@ -8767,7 +9515,7 @@ export async function createSimulator(options) {
             confinement: confinementPolicy(),
             kind: 'page',
             nonce: nonced ? scriptNonce.nonce : null,
-            handlerHashes: nonced?.scriptPolicy.handlerHashes,
+            handlerHashes: nonced?.scriptPolicy.handlerHashGroups ?? nonced?.scriptPolicy.handlerHashes,
           }),
         }
       : {};
@@ -8778,13 +9526,23 @@ export async function createSimulator(options) {
     return res.end(traced ? refreshProof(traced.html) : presentation.body);
   };
   const writePageRequestError = (err, req, res, status) => {
-    const queryValidation = err?.code === 'PAGE_QUERY_REQUEST_VALIDATION';
+    const siteObserved = config().observed ?? portal.observed;
+    // The error snippet's language; a request whose language cannot be read keeps the import language's snippet.
+    const errorLanguageId = () => {
+      try {
+        return requestLocale(req, requestTargetUrl(req.url, localOrigin))?.id;
+      } catch {
+        return undefined;
+      }
+    };
+    // Every server exception of a page request answers the observed error page (hosted session F3), with the answered status.
     const presentation = observedPageErrorResponse({
       method: req.method,
-      error: err,
-      observed: config().observed ?? portal.observed,
+      error: { status, code: err?.code, message: err?.message, dataverse: Boolean(err?.dataverse) },
+      observed: siteObserved,
       portal,
-      languageId: queryValidation ? requestLocale(req, requestTargetUrl(req.url, localOrigin))?.id : undefined,
+      languageId: siteObserved?.pageErrorPresentation === 'generic-error' ? errorLanguageId() : undefined,
+      requestPath: req.url?.split('?')[0],
       now: store.clock.now(),
     });
     const errorProof = (body) => errorDocumentProof(req, body);
@@ -8830,22 +9588,28 @@ export async function createSimulator(options) {
       const postback = req.url.startsWith('/__sim/forms/entityform/')
         ? formWriteError(err, config().observed ?? portal.observed, 'entityform', portal)
         : null;
-      return void json(res, status, {
-        error: {
-          code: requestErrorCode(err) ?? 'SIMULATOR_ERROR',
-          message: requestErrorMessage(err),
-          // The admin API's error shape names the refused query parameter (sim-administration.md); so does the local
-          // sign-in shortcut's (`persona`).
-          ...((req.url.startsWith('/__sim/api') || /^\/__?sim\/sign-in(?:\?|$)/.test(req.url)) &&
-          typeof err.parameter === 'string'
-            ? { parameter: err.parameter }
-            : {}),
-          ...(req.url.startsWith('/__sim/forms/') && Array.isArray(err.details?.validationErrors)
-            ? { validationErrors: err.details.validationErrors }
-            : {}),
+      return void json(
+        res,
+        status,
+        {
+          error: {
+            code: requestErrorCode(err) ?? 'SIMULATOR_ERROR',
+            message: requestErrorMessage(err),
+            // The admin API's error shape names the refused query parameter (sim-administration.md); so does the local
+            // sign-in shortcut's (`persona`).
+            ...((req.url.startsWith('/__sim/api') || /^\/__?sim\/sign-in(?:\?|$)/.test(req.url)) &&
+            typeof err.parameter === 'string'
+              ? { parameter: err.parameter }
+              : {}),
+            ...(req.url.startsWith('/__sim/forms/') && Array.isArray(err.details?.validationErrors)
+              ? { validationErrors: err.details.validationErrors }
+              : {}),
+          },
+          ...(postback ? { postback } : {}),
         },
-        ...(postback ? { postback } : {}),
-      });
+        // A handler's own caching headers for its answered refusals (summarizePortalData).
+        err?.responseHeaders ?? {},
+      );
     }
     return writePageRequestError(err, req, res, status);
   };
@@ -8902,7 +9666,7 @@ export async function createSimulator(options) {
       ANTI_FORGERY_COOKIE,
     ]);
     const cookies = Object.entries(parseCookies(req.headers.cookie)).filter(
-      ([name]) => !own.has(name) && !isPortalBindingCookie(name),
+      ([name]) => !own.has(name) && !isPortalBindingCookie(name) && !isCookieChunk(name, authSessions.name),
     );
     return { ...Object.fromEntries(cookies), ...form, ...Object.fromEntries(url.searchParams) };
   };
@@ -9052,6 +9816,11 @@ export async function createSimulator(options) {
       auth,
       localOnly: req.headers['x-paqvilo-local-only'] === 'true',
       visitor,
+      // The visitor the browser's cookie named (null when the visitor was started by this request): only such a visitor
+      // has an anonymous adx_webformsession row (web-form-session-row.mjs).
+      cookieVisitor: readVisitor(req.headers.cookie, visitorName()),
+      // The visitor's address, as a multistep form session row records it (web-form-session-row.mjs).
+      remoteAddress: req.socket?.remoteAddress ?? null,
       // A page path with a file suffix (/report.pdf, /data.json) is not audited; when it reaches the Liquid renderer it
       // still gets its http root, opened there (D-R3-13).
       lateRoot:
@@ -9635,7 +10404,7 @@ export async function createSimulator(options) {
       const session = signInSession(contactId, options);
       if (browserSession) {
         const setCookie = authSessions.cookie(session);
-        return { cookieHeader: setCookie.split(';')[0], setCookie, identity: describeSession(session) };
+        return { cookieHeader: cookieRequestHeader(setCookie), setCookie, identity: describeSession(session) };
       }
       return {
         cookieHeader: `${authSessions.name}=${authSessions.value(session)}`,

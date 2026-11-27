@@ -16,39 +16,12 @@ function jpegSegment(bytes, start) {
   return { marker, start: offset + 2, end };
 }
 
-/** Remove Exif APP1 from JPEG headers without changing encoded pixels or other application segments. */
-export function stripJpegExif(bytes) {
-  if (bytes.length < 4 || bytes.readUInt16BE(0) !== 0xffd8) return bytes;
-  let cleaned = null;
-  let written = 0;
-  let keepFrom = 0;
-  for (let offset = 2; offset < bytes.length;) {
-    const segment = jpegSegment(bytes, offset);
-    if (!segment) return bytes;
-    if (segment.marker === 0xda || segment.marker === 0xd9) {
-      if (!cleaned) return bytes;
-      return cleaned.subarray(0, written + bytes.copy(cleaned, written, keepFrom));
-    }
-    if (
-      segment.marker === 0xe1 &&
-      segment.end - segment.start >= EXIF.length &&
-      bytes.subarray(segment.start, segment.start + EXIF.length).equals(EXIF)
-    ) {
-      cleaned ??= Buffer.allocUnsafe(bytes.length);
-      written += bytes.copy(cleaned, written, keepFrom, offset);
-      keepFrom = segment.end;
-    }
-    offset = segment.end;
-  }
-  return bytes;
-}
-
 const THUMBNAIL_EDGE = 144;
-const THUMBNAIL_QUALITY = 90;
+// Hosted thumbnails (sessions F1 and F2) carry the IJG quality 75 tables and a JFIF 1.1 header at 96 dpi.
+const THUMBNAIL_QUALITY = 75;
+const THUMBNAIL_DPI = 96;
 // The same decode bounds as portal-png.mjs: larger frames keep their original bytes.
 const DECODE_LIMITS = Object.freeze({ maxPixels: 8 * 1024 * 1024, maxDimension: 8192 });
-const ADOBE = 0xee;
-const SOI_AND_JFIF = 20;
 
 const isExif = (bytes, segment) =>
   segment.marker === 0xe1 &&
@@ -119,32 +92,6 @@ function orient(image, orientation) {
   return { ...image, width: outWidth, height: outHeight, data: out, sampling };
 }
 
-/**
- * Re-encodes a JPEG whose Exif orientation is 2..8 with upright pixels, so removing its Exif keeps what a browser
- * shows. The source quantization tables and chroma sampling are reused, and other APPn and comment segments are kept
- * (not APP0, Exif or Adobe APP14). Other images, and any the codec cannot decode within bounds, keep their bytes.
- */
-export function orientJpeg(bytes) {
-  const orientation = jpegOrientation(bytes);
-  if (orientation === 1) return bytes;
-  const image = decodeJpeg(bytes, DECODE_LIMITS);
-  if (!image) return bytes;
-  try {
-    const encoded = encodeJpeg(orient(image, orientation), {
-      quantTables: image.quantTables,
-      sampling: image.sampling ?? { h: 2, v: 2 },
-    });
-    const kept = headerSegments(bytes)
-      .filter(
-        (s) => (s.marker > 0xe0 && s.marker <= 0xef && s.marker !== ADOBE && !isExif(bytes, s)) || s.marker === 0xfe,
-      )
-      .map((s) => bytes.subarray(s.offset, s.end));
-    return Buffer.concat([encoded.subarray(0, SOI_AND_JFIF), ...kept, encoded.subarray(SOI_AND_JFIF)]);
-  } catch {
-    return bytes;
-  }
-}
-
 // Nearest-sample center crop, the same sampling as pngThumbnail in portal-png.mjs.
 function centerCrop({ width, height, channels, data }, edge) {
   const side = Math.min(width, height);
@@ -162,21 +109,24 @@ function centerCrop({ width, height, channels, data }, edge) {
 }
 
 /**
- * Center-crops JPEG pixels for portal reads with the documented thumbnail rule: a side over 144 px gives 144x144,
- * otherwise a square of the shorter side; a 144x144 image keeps its bytes. The thumbnail is a baseline JFIF JPEG
- * (quality 90, 4:2:0, or one component for grayscale) shown upright for an Exif orientation. Unsupported processes,
- * malformed streams and frames past the decode bounds keep their original bytes.
+ * Center-crops JPEG pixels for portal reads to a square of the shorter side, at most 144 px (hosted sessions F1 and F2);
+ * an image that already is that square is re-encoded too, so no thumbnail carries Exif. The thumbnail is a baseline JFIF JPEG (quality 75, 96 dpi,
+ * 4:2:0, or one component for grayscale) without Exif, shown upright for an Exif orientation; a progressive source
+ * gives a baseline thumbnail too. Unsupported processes, malformed streams and frames past the decode bounds keep their
+ * original bytes.
  */
 export function jpegThumbnail(bytes) {
   const frame = jpegFrame(bytes, DECODE_LIMITS);
   if (!frame) return bytes;
   const { width, height } = frame;
-  const edge = Math.max(width, height) > THUMBNAIL_EDGE ? THUMBNAIL_EDGE : Math.min(width, height);
-  if (width === edge && height === edge) return bytes;
+  const edge = Math.min(THUMBNAIL_EDGE, width, height);
   const image = decodeJpeg(bytes, DECODE_LIMITS);
   if (!image) return bytes;
   try {
-    return encodeJpeg(orient(centerCrop(image, edge), jpegOrientation(bytes)), { quality: THUMBNAIL_QUALITY });
+    return encodeJpeg(orient(centerCrop(image, edge), jpegOrientation(bytes)), {
+      quality: THUMBNAIL_QUALITY,
+      dpi: THUMBNAIL_DPI,
+    });
   } catch {
     return bytes;
   }

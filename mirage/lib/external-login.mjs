@@ -34,15 +34,21 @@ export function timeSpanMs(value) {
   return (((Number(days) * 24 + Number(hours)) * 60 + Number(minutes)) * 60 + Number(seconds)) * 1000;
 }
 
-/** The explicit application-cookie lifetime supported by the local runtime. */
+const ONE_DAY = 24 * 60 * 60 * 1000;
+/**
+ * The application-cookie lifetime: Authentication/ApplicationCookie/ExpireTimeSpan (Learn default 24 hours) and
+ * SlidingExpiration (Learn default true); a value that is not a TimeSpan or a boolean keeps its default. Hosted session
+ * F4 (paqvilo-developer hosted-f4 cookies runs a and b): without either setting a remembered sign-in's persistent cookie
+ * expires 24 hours after it is issued.
+ */
 export function applicationSessionLifetime(portal) {
   const setting = (name) => siteSetting(portal, 'Authentication/ApplicationCookie/' + name);
-  const sliding = lower(setting('SlidingExpiration'));
-  if (sliding !== 'true' && sliding !== 'false') return null;
   const value = text(setting('ExpireTimeSpan'));
-  if (!/^(?:\d+\.)?\d{1,2}:[0-5]\d:[0-5]\d$/.test(value ?? '')) return null;
-  const duration = timeSpanMs(value);
-  return Number.isSafeInteger(duration) && duration > 0 ? { duration, sliding: sliding === 'true' } : null;
+  const duration = /^(?:\d+\.)?\d{1,2}:[0-5]\d:[0-5]\d$/.test(value ?? '') ? timeSpanMs(value) : null;
+  return {
+    duration: Number.isSafeInteger(duration) && duration > 0 ? duration : ONE_DAY,
+    sliding: lower(setting('SlidingExpiration')) !== 'false',
+  };
 }
 
 const THIRTY_MINUTES = 30 * 60 * 1000;
@@ -58,11 +64,32 @@ export function securityStampInterval(portal) {
 }
 
 /**
- * The private-site admission session's lifetime: the explicit application-cookie ExpireTimeSpan, else its documented
- * default of 24 hours, as a fixed deadline.
+ * The private-site admission session's lifetime, a fixed deadline: the application cookie's ExpireTimeSpan (24 hours
+ * without it). With observed.privateSiteAdmissionLifetime "fixed-day" it is 24 hours whatever the cookie lifetime: hosted
+ * session F4 AUTH-06h (paqvilo-developer hosted-f4 admission-watch runs a and b) kept an admission for at least 59
+ * minutes, through LogOff, with an application cookie lifetime of 6 minutes and without issuing it again; its own expiry
+ * was not reached, so the 24 hours are inferred, not observed.
  */
 export function admissionSessionLifetime(portal) {
-  return { duration: applicationSessionLifetime(portal)?.duration ?? 24 * 60 * 60 * 1000, sliding: false };
+  const duration =
+    portal?.observed?.privateSiteAdmissionLifetime === 'fixed-day'
+      ? ONE_DAY
+      : applicationSessionLifetime(portal).duration;
+  return { duration, sliding: false };
+}
+
+/**
+ * The warning for an admission deadline shorter than a hosted site keeps (observed.privateSiteAdmissionLifetime
+ * application-cookie with an ExpireTimeSpan under 24 hours), or null.
+ */
+export function admissionLifetimeDiagnostic(portal) {
+  const { duration } = admissionSessionLifetime(portal);
+  if (duration >= ONE_DAY) return null;
+  return {
+    code: 'PRIVATE_SITE_ADMISSION_HOSTED_LIFETIME',
+    severity: 'warning',
+    message: `Private-site admission ends ${duration / 1000} seconds after admission, at Authentication/ApplicationCookie/ExpireTimeSpan. A hosted site kept an admission for at least 59 minutes with a 6-minute application cookie lifetime, without issuing it again (hosted session F4 AUTH-06h); set observed.privateSiteAdmissionLifetime to fixed-day, with evidence, for a 24-hour admission whatever the cookie lifetime.`,
+  };
 }
 
 /** Registration and sign-in switches with their documented defaults. */

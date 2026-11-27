@@ -1,5 +1,7 @@
 import { validateCanvasDisplay } from './canvas-display.mjs';
 import { validateDataverseAttributeErrorContexts } from './dataverse-attribute-context.mjs';
+import { isTimeZoneName } from './portal-query-time-zone.mjs';
+import { observedFirewall, observedIpRestrictions } from './edge-access.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { contentPolicyDefaults } from './content-policy-defaults.mjs';
@@ -90,8 +92,9 @@ const OBSERVED_CHOICES = {
   webApiInnerError: ['all-errors', 'dataverse-errors'],
   webApiUpdatePermissionQuery: ['native-classic'],
   webApiMutationPermissionText: ['table'],
-  webApiCdsErrorMessage: ['CDS error occurred.', 'Common Data Service error occurred.'],
-  webApiCdsErrorCode: ['innererror', 'cdscode'],
+  // Defaults first: the text of every hosted capture (the demo site, hosted session F1) and the cdscode F1 sent.
+  webApiCdsErrorMessage: ['Common Data Service error occurred.', 'CDS error occurred.'],
+  webApiCdsErrorCode: ['cdscode', 'innererror'],
   webApiAntiForgery: ['cookie-mismatch-403', 'decryption-401'],
   webApiReferenceErrors: ['dataverse', 'unexpected'],
   webApiInvalidDate: ['invalid-format', 'crm-minimum'],
@@ -101,6 +104,10 @@ const OBSERVED_CHOICES = {
   webApiWriteResponse: ['local', 'portal-classic'],
   webApiReadResponse: ['local', 'jsonnet-indented'],
   webApiFileDownload: ['portal-range'],
+  // GET routes below an entity: "refused" (hosted session F1: /<column> and navigations to another table answer 403 All
+  // Columns, a collection navigation to the same table names itself; lib/webapi-handler.mjs assertMemberRead) or
+  // "served" (the former local model).
+  webApiMemberReads: ['refused', 'served'],
   webApiRequestBody: ['strict', 'portal-classic'],
   anonymousDataAccess: ['allowed', 'blocked'],
   // Replay a recorded inactive-parent defect only for a site observed to have it.
@@ -115,8 +122,15 @@ const OBSERVED_CHOICES = {
   odataSameTableParentAnchor: ['shared-root'],
   liquidFetchExecution: ['eager', 'lazy-query-drop'],
   liquidFetchTop: ['drop-valid'],
+  // The portal object model's authoring conversion of Liquid and Web API FetchXML (lib/portal-fetchxml.mjs).
+  portalFetchXmlAuthoring: ['portal-classic'],
+  // eq-userid, ne-userid, eq-businessid and ne-businessid of portal FetchXML evaluate against the site's application user.
+  portalFetchIdentityOperators: ['application-user'],
   liquidFetchRights: ['read-only', 'native-classic'],
   liquidFetchErrorMessage: ['diagnostic', 'target-invocation'],
+  // The environment's SharePoint integration: on with the sharepointDocuments storage route, or "off" as hosted session F7
+  // recorded it (lib/sharepoint-document-table.mjs).
+  sharePointIntegration: ['storage', 'off'],
   // Some deployments return 302 for an explicitly configured 301 redirect record.
   // Other status values are outside this observation and keep their source behavior.
   redirect301: ['configured', 'temporary'],
@@ -124,6 +138,26 @@ const OBSERVED_CHOICES = {
   webFileMimeCharset: ['utf8', 'source'],
   siteMarkerRedirect: ['resolve', 'null-reference'],
   nativeFormTransport: ['json', 'postback'],
+  // Native number boxes of a page culture other than the captured en-US and de-DE: "captured" (default: invariant
+  // numbers, FORM_NUMBER_CULTURE_UNCAPTURED) or "locale-data" (the culture's marks from the locale data, uncaptured).
+  nativeNumberCultures: ['captured', 'locale-data'],
+  // /_services/execute-workflow: "list-action" (Mirage's default: a list's own workflow action, its signed
+  // configuration and read/write access to the record) or "any-on-demand" (hosted session F2 OPS-01f: any on-demand
+  // workflow, run as the site's application user, with no list or secure configuration; lib/native-services.mjs).
+  executeWorkflowAccess: ['list-action', 'any-on-demand'],
+  // Local account registration with a taken user name or address: "generic" (Mirage's default: 409 naming neither) or
+  // "named" (hosted session F4 AUTH-04g: `The username "x" is already taken.`; lib/local-accounts.mjs).
+  registrationDuplicateMessages: ['generic', 'named'],
+  // A local account confirmation link: "one-time" (Mirage's default) or "reusable" (hosted session F4 AUTH-04g).
+  confirmationLinkReuse: ['one-time', 'reusable'],
+  // The private-site admission deadline: "application-cookie" (Mirage's default: the ExpireTimeSpan, 24 hours without
+  // it) or "fixed-day" (24 hours whatever the cookie lifetime; hosted session F4 AUTH-06h held an admission at least
+  // 59 minutes with a 6-minute cookie; lib/external-login.mjs admissionSessionLifetime).
+  privateSiteAdmissionLifetime: ['application-cookie', 'fixed-day'],
+  // A Power Pages cloud flow trigger's declared schema: "enforced" (Mirage's default: input the schema refuses fails the run
+  // with InvalidRequest and reports FLOW_TRIGGER_SCHEMA_ENFORCED) or "not-enforced" (hosted session F8: the flow runs with
+  // what was sent; lib/flow-runtime.mjs validateTriggerInput).
+  powerPagesFlowTriggerSchema: ['enforced', 'not-enforced'],
   // List OData feeds: "removed" (the platform default since June 2026, LIST_ODATA_FEED_REMOVED:
   // /_odata/<feed> answers the Page Not Found page) or "served" (a site observed still serving them).
   listODataFeeds: ['removed', 'served'],
@@ -141,10 +175,14 @@ const OBSERVED_CHOICES = {
   // "platform": the site sends the default policy Learn documents for sites created after November 10, 2025 while it
   // sets no HTTP/Content-Security-Policy (lib/response-headers.mjs sitePolicy). The export does not show it.
   defaultContentSecurityPolicy: ['none', 'platform'],
+  // Which script elements get the nonce of a nonce policy (lib/render-provenance.mjs): "proven" (the default, fail-closed:
+  // only scripts and handlers the exported source or the platform wrote) or "every-script" (every script element and
+  // inline handler, also those data writes, as hosted session F3 observed).
+  scriptNonceScope: ['proven', 'every-script'],
   // Webapi/<table>/fields = "*": "enforced" (the hosted default; read by the Web API policy)
   // or "exempt" (the site was observed exposing every column for such a table).
   webApiWildcard: ['enforced', 'exempt'],
-  webApiLookupFields: ['logical-aliases', 'explicit-wire'],
+  webApiLookupFields: ['explicit-wire', 'logical-aliases'],
   // A site's Liquid math adapter may convert string inputs before decimal multiplication.
   // The pinned DotLiquid contract remains the default; a different result needs site evidence.
   liquidDecimalStringMultiply: ['dotliquid', 'convert'],
@@ -156,6 +194,18 @@ const OBSERVED_CHOICES = {
   // Generative AI for site users (Copilot hub governance at tenant, environment or site level; Power Platform admin,
   // not exported): "disabled" answers the Data Summarization API with 400 90041001 (lib/portal-data-summary.mjs).
   siteUserGenerativeAi: ['enabled', 'disabled'],
+  // Web pages in a non-visible publishing state in portal search results: "excluded" (Mirage's default for a visitor
+  // who cannot preview unpublished content) or "listed" (hosted session F3 PAGE-04f: a hosted site with Dataverse search
+  // lists them to every visitor; lib/portal-search.mjs).
+  searchUnpublishedPages: ['excluded', 'listed'],
+  // entities.knowledgearticle with KnowledgeManagement/ContentAccessLevel/Enabled: "filtered" (Mirage's default: only an
+  // article that shares a content access level with the visitor) or "unfiltered" (hosted session F3 AUTH-07c: an enhanced
+  // site returns every article through entities; lib/liquid.mjs).
+  knowledgeEntitiesContentAccess: ['filtered', 'unfiltered'],
+  // The stamp of a new row's rollup columns (lib/dataverse-rollup.mjs): "calculated" (Mirage's default and a column created
+  // with its definition through the Web API: state 1, _date the row's createdon) or "not-calculated" (summary-F6 DATA-04c2:
+  // a column saved by the classic rollup designer: state 0, 0 or null, _date its last mass calculation or null).
+  rollupCreateState: ['calculated', 'not-calculated'],
   liquidObjectCompatibility: ['dotliquid', 'observed'],
   liquidHtmlVoidSerialization: ['dotliquid', 'html'],
   liquidHtmlSafeInput: ['excluded', 'observed'],
@@ -169,9 +219,19 @@ const OBSERVED_CHOICES = {
   liquidMissingData: ['diagnostic', 'empty'],
   requestValidation: ['diagnostic', 'aspnet-query'],
   pageErrorPresentation: ['diagnostic', 'generic-error'],
+  // The admin center's "Disable custom errors" site action (not exported): the error page's RTGE01 server log entry
+  // gains the exception message (hosted session F3).
+  customErrors: ['enabled', 'disabled'],
 };
 
 function applyObservedBasics(value, label, observed) {
+  // portalId: the site's hosted portal id (the admin-center id, Microsoft.Dynamic365.Portal.id and a flow's siteId), which
+  // differs from the website record id and is not in an export (hosted session F8 section 1).
+  if (value.portalId != null) {
+    if (typeof value.portalId !== 'string' || !/^[a-f\d]{8}-(?:[a-f\d]{4}-){3}[a-f\d]{12}$/i.test(value.portalId))
+      throw new Error(`${label}.portalId must be a GUID`);
+    observed.portalId = value.portalId.toLowerCase();
+  }
   if (value.canvasDisplay !== undefined)
     observed.canvasDisplay = validateCanvasDisplay(value.canvasDisplay, `${label}.canvasDisplay`);
   if (value.webApiFetchXmlTransport != null) {
@@ -191,6 +251,22 @@ function applyObservedBasics(value, label, observed) {
         `${label}.webApiFetchXmlTransport requires double-rfc3986 encoding and ordered bounded integer XML byte budgets`,
       );
     observed.webApiFetchXmlTransport = { ...transport };
+  }
+  // A read cache the site was observed with (hosted session F1 follow-up: repeated identical reads were answered from a
+  // cache for at least 195 s and under 415 s), so the lifetime must lie in that window.
+  if (value.webApiReadCache != null) {
+    const cache = value.webApiReadCache;
+    if (
+      !cache ||
+      typeof cache !== 'object' ||
+      Array.isArray(cache) ||
+      Object.keys(cache).some((key) => key !== 'seconds') ||
+      !Number.isInteger(cache.seconds) ||
+      cache.seconds < 195 ||
+      cache.seconds > 414
+    )
+      throw new Error(`${label}.webApiReadCache must be { seconds } with an integer from 195 to 414`);
+    observed.webApiReadCache = { seconds: cache.seconds };
   }
   if (value.webApiTwoDigitYearMax != null) {
     if (
@@ -458,6 +534,15 @@ function applyObservedCodeComponents(value, label, observed) {
   }
 }
 
+// The zone portal queries evaluate UserLocal date operators in (lib/portal-query-time-zone.mjs): an IANA zone name or
+// "runtime" (the zone this local runtime is configured for).
+function portalQueryTimeZone(raw, label) {
+  const zone = typeof raw === 'string' ? raw.trim() : '';
+  if (zone !== 'runtime' && !isTimeZoneName(zone))
+    throw new Error(`${label}.portalQueryTimeZone must be an IANA time zone name or runtime`);
+  return zone;
+}
+
 function applyObservedUserSettings(value, label, observed) {
   if (value.portalApplicationUser != null) {
     const name = String(value.portalApplicationUser).trim();
@@ -471,6 +556,8 @@ function applyObservedUserSettings(value, label, observed) {
       throw new Error(`${label}.portalApplicationUserId must be the application user's systemuser GUID`);
     observed.portalApplicationUserId = id;
   }
+  if (value.portalQueryTimeZone != null)
+    observed.portalQueryTimeZone = portalQueryTimeZone(value.portalQueryTimeZone, label);
   if (value.loginPath != null) {
     const loginPath = String(value.loginPath).trim();
     if (!/^\/(?!\/)[^?#\s]*$/.test(loginPath))
@@ -573,6 +660,13 @@ function applyObservedStrictTransportSecurity(value, label, observed) {
   observed.strictTransportSecurity = header;
 }
 
+// The hosted edge in front of the site: its IP allow list and WAF custom rules (lib/edge-access.mjs).
+function applyObservedEdge(value, label, observed) {
+  if (value.ipRestrictions != null)
+    observed.ipRestrictions = observedIpRestrictions(value.ipRestrictions, `${label}.ipRestrictions`);
+  if (value.firewall != null) observed.firewall = observedFirewall(value.firewall, `${label}.firewall`);
+}
+
 const CORS_PAGE_PATH = /^\/(?:[\w.~!$&'()*+,;=:@%-]+\/)+$/;
 // Authored pages the site was observed sharing across origins (lib/page-cors.mjs): canonical page paths ending in "/".
 function applyObservedCorsPages(value, label, observed) {
@@ -645,10 +739,15 @@ export function observedConfig(value, label = 'observed') {
         'odataPermissionGrantOrder',
         'webApiTwoDigitYearMax',
         'webApiFetchXmlTransport',
+        'webApiReadCache',
         'webApiSelfNnPermissionErrors',
         'dataverseAttributeErrorContexts',
         'strictTransportSecurity',
+        'ipRestrictions',
+        'firewall',
         'corsPages',
+        'portalQueryTimeZone',
+        'portalId',
       ].includes(key) &&
       !Object.hasOwn(OBSERVED_CHOICES, key)
     )
@@ -681,8 +780,9 @@ export function observedConfig(value, label = 'observed') {
   applyObservedSelfNnErrors(value, label, observed);
   applyObservedChoices(value, label, observed);
   applyObservedWildcardExpiry(value, label, observed);
-  applyObservedStrictTransportSecurity(value, label, observed);
   applyObservedCorsPages(value, label, observed);
+  applyObservedStrictTransportSecurity(value, label, observed);
+  applyObservedEdge(value, label, observed);
   if (!Object.keys(observed).length) return null;
   const evidence = typeof value.evidence === 'string' ? value.evidence.trim() : '';
   if (!evidence)

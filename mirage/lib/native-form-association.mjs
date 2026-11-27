@@ -14,17 +14,17 @@ export function takeNativeFormContactAssociation(entity, identity) {
   const contactId = String(identity?.contactId ?? identity?.id ?? '')
     .replace(/[{}]/g, '')
     .toLowerCase();
-  return association.entity === entity && contactId && association.contactId === contactId
-    ? { column: association.column, contactId }
-    : null;
+  if (association.entity !== entity || !contactId || association.contactId !== contactId) return null;
+  // An activity party association is written by the record create itself (data.mjs): the caller learns it was taken.
+  if (association.party) association.party.taken?.();
+  return { column: association.column, contactId, ...(association.party ? { party: association.party } : {}) };
 }
 
 // The participation type each party list column records, from the Learn table "Activity party types available for each
 // activity" (https://learn.microsoft.com/power-apps/developer/data-platform/activityparty-entity) and the values of
 // ActivityParty.ParticipationTypeMask on the same page. The system creates every party list column; makers cannot add one
 // (https://learn.microsoft.com/power-apps/maker/data-platform/types-of-fields#different-types-of-lookups), so the column
-// logical names are the platform's own. Partners and Partner are listed without a party type of their own, so they stay
-// unresolved rather than guessed.
+// logical names are the platform's own. Partners has no party type on that page; the hosted capture below gives it.
 const PARTY_LIST_TYPES = Object.freeze({
   from: 1, // Sender
   to: 2, // ToRecipient
@@ -35,6 +35,9 @@ const PARTY_LIST_TYPES = Object.freeze({
   organizer: 7, // Organizer
   resources: 10, // Resource
   customers: 11, // Customer (ServiceAppointment.Customers)
+  // Partners records Chat Participant (12): hosted F2, both runs, a basic form associating the current contact on a
+  // custom activity's partners column (the participationtypemask label of 12 is "Chat Participant").
+  partners: 12,
   customer: 11, // Customer (CampaignResponse.Customer)
   related: 13, // Related (Email.Related)
 });
@@ -107,6 +110,37 @@ export function currentContactPartyRow(party, recordId, { activityMapping, party
     participationtypemask: party.participationtypemask,
   };
 }
+
+// The Owner participation type (activityparty.participationtypemask 9): the platform adds the activity owner's party to
+// every activity it creates through the form (hosted F2, all ten party list columns, both runs).
+const OWNER_PARTY = 9;
+
+/**
+ * The activityparty rows a record create writes for a current-contact party association, as stored-row input of the
+ * activityparty table: the contact with the column's participation type, then the owner (systemuser or team) with the
+ * Owner type when the created record has an owner. The plug-in Target carries the party list as activityparty entities
+ * holding only the party (hosted F2 Create Target: `partners` = Entity[] of activityparty { partyid }).
+ */
+export function nativeFormPartyRows(party, recordId, record, mappings) {
+  const owner = record?.ownerid;
+  const ownerId = canonical(owner?.id ?? owner);
+  const ownerEntity = owner?.logical_name ?? (ownerId ? (record?.owneridtype ?? 'systemuser') : null);
+  return [
+    currentContactPartyRow(party, recordId, mappings),
+    ...(ownerId && ownerEntity
+      ? [
+          {
+            ...currentContactPartyRow(party, recordId, { ...mappings, contactMapping: null }),
+            partyid: { id: ownerId, logical_name: ownerEntity },
+            participationtypemask: OWNER_PARTY,
+          },
+        ]
+      : []),
+  ];
+}
+
+/** The party list value of the record create's plug-in Target: one activityparty entity naming the contact. */
+export const nativeFormPartyTarget = (party) => [{ partyid: { id: party.contactId, logical_name: 'contact' } }];
 
 /**
  * The party as a Web API deep insert of the activity create, for a provider that writes through the Web API (the live

@@ -5,9 +5,10 @@
 // recorded texts in place of its column inputs -> what the response says.
 // Only `input` drives Mirage. The page is read and posted over HTTP (no browser), as the native form posts back: every
 // named input of the served form, the recorded texts for the recorded columns, the uploaded annotation ids, and the
-// recorded button as the postback target, multipart (with empty file inputs) when the form declares it. Which of a
-// scenario's offered files the control accepted is the recorded input, not replayed. A fixture record is named by its
-// key in examples/project/baseline/data.mjs (`ids`), never by a live id.
+// recorded button as the postback target, multipart (with empty file inputs) when the form declares it. The recorded
+// files are the ones offered to the control; a selection over the rendered MaxFile uploads none, as the control does. A fixture record is named by its
+// key in examples/project/baseline/data.mjs (`ids`), never by a live id. A page under /pqf2- belongs to the invented
+// schema of hosted session F2 (../hosted-f2-fixture-site.mjs), with its own record keys and persona.
 // Projection (projectPostback and projectAttachments, shared with capture-portal-form-postback.mjs): the HTTP status, a
 // redirect's target (site path or external origin and path, query values with record ids replaced), the form's message
 // panel (kind and text), the validation summary entries and, with files, the attachments the created record lists.
@@ -19,6 +20,12 @@ import { signInHeaders } from '../../../testing/session.mjs';
 import { makeTemporaryDirectory, removeFixtureDirectory } from '../../../testing/owned-fixture.mjs';
 import { ids, ITEM, TESTER_CONTACT } from '../../../../examples/project/baseline/data.mjs';
 import { baselineFixtureOptions, writeBaselineFixtureSite } from '../baseline-fixture-site.mjs';
+import {
+  HOSTED_F2_CONTACT,
+  hostedF2FixtureOptions,
+  hostedF2Ids,
+  writeHostedF2FixtureSite,
+} from '../hosted-f2-fixture-site.mjs';
 
 const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -105,7 +112,24 @@ function servedFields(html) {
   };
 }
 
-const fixtureValue = (value) => (value && typeof value === 'object' ? ids[value.fixture] : value);
+// The site a case was recorded on: the hosted F2 session's pages are under /pqf2-, every other case is the baseline's.
+const siteOf = (page) =>
+  String(page).startsWith('/pqf2-')
+    ? {
+        ids: hostedF2Ids,
+        write: writeHostedF2FixtureSite,
+        options: hostedF2FixtureOptions,
+        contact: HOSTED_F2_CONTACT,
+        roles: [],
+      }
+    : {
+        ids,
+        write: writeBaselineFixtureSite,
+        options: baselineFixtureOptions,
+        contact: TESTER_CONTACT,
+        roles: ['Baseline Editors'],
+      };
+const fixtureValueOf = (site) => (value) => (value && typeof value === 'object' ? site.ids[value.fixture] : value);
 
 /** A browser's cookies for the simulator: every request sends them, every answer's Set-Cookie updates them. */
 function cookieJar(initial) {
@@ -131,6 +155,11 @@ async function uploadFiles(app, send, form, files) {
   const hidden = (suffix) => form.fields.find(([name]) => name.endsWith('AttachFile' + suffix))?.[1] ?? '';
   const common = { formId: hidden('_HiddenField_FormID'), formType: hidden('_HiddenField_FormType') };
   const annotationIds = [];
+  // The control takes a selection only as a whole: more files than the rendered MaxFile upload none, with "None of the
+  // files could be uploaded" (hosted session F2, attach runs b/e, i/j and k/l, max2-admin:two-files: no
+  // InitializeFileUpload, an empty AnnotationIds and the post saved without files).
+  const maxFile = Number.parseInt(hidden('_HiddenField_MaxFile'), 10);
+  if (Number.isInteger(maxFile) && files.length > maxFile) return annotationIds;
   for (const file of files) {
     const bytes = Buffer.from(file.base64, 'base64');
     const headers = {
@@ -204,9 +233,11 @@ export default async function run({ page, query = {}, fields, action, files = nu
   const sourceDir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-replay-form-postback-'));
   let app;
   try {
-    await writeBaselineFixtureSite(sourceDir);
-    app = await createSimulator(baselineFixtureOptions(sourceDir));
-    const send = cookieJar(signInHeaders(app, TESTER_CONTACT, { roles: ['Baseline Editors'] }).cookie);
+    const site = siteOf(page);
+    const fixtureValue = fixtureValueOf(site);
+    await site.write(sourceDir);
+    app = await createSimulator(site.options(sourceDir));
+    const send = cookieJar(signInHeaders(app, site.contact, { roles: site.roles }).cookie);
     const address = new URL(page, app.url);
     for (const [key, value] of Object.entries(query)) address.searchParams.set(key, fixtureValue(value));
     const served = await send(address);
@@ -225,7 +256,7 @@ export default async function run({ page, query = {}, fields, action, files = nu
       let posted = recorded.has(column) ? fixtureValue(recorded.get(column)) : value;
       if (name === '__EVENTTARGET') posted = target;
       else if (annotationIds && name.endsWith('AttachFile_HiddenField_AnnotationIds'))
-        posted = JSON.stringify(annotationIds);
+        posted = annotationIds.length ? JSON.stringify(annotationIds) : '';
       body.append(name, posted);
     }
     if (!form.fields.some(([name]) => name === '__EVENTTARGET')) body.append('__EVENTTARGET', target);
@@ -244,8 +275,9 @@ export default async function run({ page, query = {}, fields, action, files = nu
       location,
       html: response.status === 200 ? await response.text() : '',
     });
-    if (!files) return outcome;
-    return { ...outcome, attachments: location ? await recordAttachments(app, send, location) : [] };
+    // The attachments are read from the record a create redirected to; a form that stays on the page reports none.
+    if (!files || !location) return outcome;
+    return { ...outcome, attachments: await recordAttachments(app, send, location) };
   } finally {
     await app?.close();
     await removeFixtureDirectory(sourceDir);

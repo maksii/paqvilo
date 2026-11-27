@@ -23,6 +23,7 @@ async function fixture(t) {
   return { app, html, layout, post, row, reader };
 }
 
+// @test-kind unproven+observation: the record action services are the local model of the file tag; the list's resolve dialog class string is the hosted list template markup (paqvilo-developer hosted-f2 summary-F2 LIST-01d, lists and lists-bs3 runs a and b)
 test('a list renders the table-specific record actions and runs them through the legacy action services', async (t) => {
   const { app, html, layout, post, row } = await fixture(t);
   assert.deepEqual(
@@ -40,7 +41,7 @@ test('a list renders the table-specific record actions and runs them through the
       ],
     ],
   );
-  assert.match(html, /class="modal fade modal-resolvecase"/, 'the grid renders its resolve dialog');
+  assert.match(html, /class="modal fade modal-resolvecase {2}"/, 'the grid renders its resolve dialog');
   const reference = (id) => ({ entityReference: { LogicalName: 'incident', Id: id } });
   const refused = await post('action-resolve-case', { ...reference(OPEN), resolutionSubject: 'Fixed' });
   assert.equal(refused.status, 403);

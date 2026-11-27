@@ -36,7 +36,7 @@ import { portalRecordWrites } from './form-service.mjs';
 import { readRawBody } from './http-body.mjs';
 import { siteSetting } from './redirects.mjs';
 import { contentDisposition, siteHeaders } from './response-headers.mjs';
-import { webApiErrorResponse } from './webapi-handler.mjs';
+import { assertAntiForgeryToken, webApiErrorResponse } from './webapi-handler.mjs';
 
 const MB = 1024 * 1024;
 // Learn: "Chunk size is greater than 100 mb" (FU00013), "More than 128-mb file without chunking" (FU00017),
@@ -65,7 +65,9 @@ const FU = Object.freeze({
   FU00006: [400, 'File size is greater than {0}MB'],
   FU00007: [400, 'Azure configurations are incorrect'],
   FU00008: [400, 'Header x-ms-file-name is missing in the request'],
-  FU00009: [501, "Azure webapi isn't enabled for use"],
+  // Hosted session F2 (fileapi runs a and b): the code is FU0009 (four digits, not Learn's FU00009) with this message.
+  // Only the download route was captured; the other routes are assumed to answer the same.
+  FU0009: [501, 'Azure webapi is not enabled for use'],
   FU00010: [400, "Requested file isn't available for {0}"],
   FU00012: [400, "File doesn't exist"],
   FU00013: [400, 'Chunk size is greater than 100mb'],
@@ -152,7 +154,7 @@ export async function handlePortalFileApi(req, res, url, deps) {
   if (!route) return false;
   try {
     await sweep(deps);
-    if (!settingTrue(deps.portal, 'Site/FileManagement/EnableWebAPI')) throw fu('FU00009');
+    if (!settingTrue(deps.portal, 'Site/FileManagement/EnableWebAPI')) throw fu('FU0009');
     // The read URL also answers HEAD, as Azure Get Blob Properties does.
     const headRead = route.kind === 'sas' && req.method === 'HEAD';
     if (req.method !== route.method && !headRead)
@@ -161,7 +163,7 @@ export async function handlePortalFileApi(req, res, url, deps) {
         405,
         'MethodNotAllowed',
       );
-    if (route.method !== 'GET') assertRequestToken(req, deps.csrf);
+    if (route.method !== 'GET') assertRequestToken(req, deps.csrf, deps.tokenRefusal);
     if (route.kind === 'initialize') await initializeUpload(route, req, res, deps);
     else if (route.kind === 'upload') await uploadBlock(req, res, url, deps);
     else if (route.kind === 'download') await download(route, res, deps);
@@ -178,21 +180,9 @@ export async function handlePortalFileApi(req, res, url, deps) {
   return true;
 }
 
-// The portal Web API's anti-forgery rule (webapi-handler.mjs route): none is 401, another session's token 403.
-function assertRequestToken(req, expected) {
-  const supplied = req.headers.__requestverificationtoken;
-  if (supplied == null || supplied === '')
-    throw new DataError(
-      'The required anti-forgery form field "__RequestVerificationToken" is not present.',
-      401,
-      'MissingPortalRequestVerificationToken',
-    );
-  if (supplied !== expected)
-    throw new DataError(
-      'The anti-forgery cookie token and form field token do not match.',
-      403,
-      'HttpAntiForgeryException',
-    );
+// The portal Web API's anti-forgery rule (webapi-handler.mjs assertAntiForgeryToken).
+function assertRequestToken(req, expected, refusal) {
+  assertAntiForgeryToken(req.headers.__requestverificationtoken, expected, refusal);
 }
 
 function respondError(cause, req, url, res, deps) {
@@ -202,6 +192,19 @@ function respondError(cause, req, url, res, deps) {
     permissionDiagnostic(deps, url, cause);
     cause = fu('FU00003');
   } else if (cause?.name === 'ProviderError') cause = providerFailure(cause, deps);
+  // The disabled API answers { ErrorCode, Message } with the page cache headers (hosted session F2, fileapi runs a and b).
+  if (cause?.code === 'FU0009')
+    return deps.json(
+      res,
+      cause.status,
+      { ErrorCode: cause.code, Message: cause.message },
+      {
+        ...siteHeaders(deps.portal ?? {}),
+        'cache-control': 'no-cache, no-store, must-revalidate',
+        pragma: 'no-cache',
+        expires: '-1',
+      },
+    );
   if (cause?.details?.fileApi) {
     const body = { error: { code: cause.code, message: cause.message } };
     return deps.json(

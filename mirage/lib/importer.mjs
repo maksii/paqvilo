@@ -12,7 +12,7 @@ import { COMPONENT_KINDS as TYPES, COMPONENT_TYPE_OF_KIND } from './portal-compo
 import { portalField as field } from './portal-field.mjs';
 import { assertSingleEnhancedSite, enhancedPortalRecords, enhancedSiteLookup } from './portal-solution.mjs';
 import { child, childText, parseSolutionXml } from './solution-xml.mjs';
-import { readCodeSite } from './code-site.mjs';
+import { codeSiteUploadPages, readCodeSite } from './code-site.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import YAML from 'yaml';
@@ -491,15 +491,16 @@ async function readEnhancedSiteMetadata(sourceDir, files, contents, siteIds, rec
 }
 
 /**
- * Read a portal source; no source mutation. Layouts: PAC YAML with adx_ or mspp_ keys, the short-key
- * .powerpages-site YAML (unprefixed keys, record IDs in id:, language folders under
+ * Read a portal source; no source mutation. Layouts: PAC YAML with adx_ keys, YAML with mspp_ keys
+ * (a layout PAC 2.13.1 does not write), the short-key .powerpages-site YAML (unprefixed keys, record IDs in id:, language folders under
  * content-pages/ and content-snippets/, one folder per web file, language codes in
  * .portalconfig/*.portallanguage.yml), and an unpacked Solution with powerpagecomponents/.
  * A code-site project folder is read through its .powerpages-site/ folder.
  *
  * `dataModel` ("standard" or "enhanced") selects the site's data model for a YAML layout. The
  * unpacked or mspp_ layout is always the enhanced data model; adx_ YAML defaults to the standard data
- * model, and short-key YAML, which does not record it, defaults to the enhanced data model with
+ * model (PAC 2.13.1 also downloads enhanced data model sites with adx_ keys, so set dataModel for
+ * them), and short-key YAML, which does not record it, defaults to the enhanced data model with
  * a DATA_MODEL_ASSUMED diagnostic (code sites require it).
  */
 /* NOSONAR: single-pass routine, splitting it would change shared state */ export async function importPortal(
@@ -915,6 +916,9 @@ async function readEnhancedSiteMetadata(sourceDir, files, contents, siteIds, rec
       message: 'The compiled app uses a local entry page because the project has no exported home-page record.',
     });
   }
+  // The local build as pac pages upload-code-site would store it: the landing page in the Home page copy and one web
+  // page per build folder (lib/code-site.mjs codeSiteUploadPages).
+  if (codeSite?.entryFile) await codeSiteUploadPages(codeSite, pages, diagnostics);
   const templates = {};
   for (const r of byKind('webtemplate')) {
     const t = {
@@ -1324,7 +1328,7 @@ async function readEnhancedSiteMetadata(sourceDir, files, contents, siteIds, rec
     };
   });
   // Platform changes the runtime reports instead of modelling (lib/platform-changes.mjs).
-  diagnostics.push(...platformChangeDiagnostics({ website, lists, forms, records, pages, templates }));
+  diagnostics.push(...platformChangeDiagnostics({ website, lists, forms, records, pages, templates, settings }));
   const codeSiteSetting = Object.keys(settings).find((name) => name.toLowerCase() === 'codesite/enabled');
   const codeSiteEnabled =
     codeSiteSetting !== undefined && flagOf(settings['CodeSite/Enabled'] ?? settings[codeSiteSetting]);

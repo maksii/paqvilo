@@ -340,7 +340,16 @@ test('custom workspaces search and page lookups, retain selections and edit rela
   const endWithHeldScript = async (route) => {
     const request = route.request();
     if (request.resourceType() !== 'document' || request.frame() === page.mainFrame()) return route.fallback();
-    const response = await route.fetch();
+    // route.fetch() sends the request from Playwright without the Fetch Metadata the browser sends with this
+    // same-origin frame navigation; Mirage binds the form's request token to the browser only on a browser request.
+    const response = await route.fetch({
+      headers: {
+        ...request.headers(),
+        'sec-fetch-dest': 'iframe',
+        'sec-fetch-mode': 'navigate',
+        'sec-fetch-site': 'same-origin',
+      },
+    });
     const body = (await response.text()).replace('</body>', '<script src="/held-form-script.js"></script></body>');
     return route.fulfill({ response, body });
   };

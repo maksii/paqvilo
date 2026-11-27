@@ -16,7 +16,11 @@ import { syncDirectory } from './record-page-file.mjs';
 import { encodeRecordReferences } from './record-state.mjs';
 import { releaseStamps, stampMs, systemClock, systemIds } from './runtime-clock.mjs';
 import { currentRequest } from './request-context.mjs';
-import { takeNativeFormContactAssociation } from './native-form-association.mjs';
+import {
+  nativeFormPartyRows,
+  nativeFormPartyTarget,
+  takeNativeFormContactAssociation,
+} from './native-form-association.mjs';
 import { builtinPresets, resolvePreset, compactBuiltinPresets, applyPresetSections } from './presets.mjs';
 // Preset functions live in presets.mjs; these re-exports keep existing imports working.
 export { resolvePreset, compactBuiltinPresets };
@@ -86,6 +90,8 @@ import {
 } from './custom-table-permission.mjs';
 import { rebindPermissionQuery } from './permission-query-mutation.mjs';
 import { preparePortalFetchXml } from './portal-fetchxml.mjs';
+import { zoneOffsetFunction } from './portal-query-time-zone.mjs';
+import { providerFetchQuery, providerODataFetch, providerODataRequest } from './portal-provider-query.mjs';
 import {
   compileODataPermissionQuery,
   authoredScalarODataFetch,
@@ -116,6 +122,7 @@ import {
   columnValue,
   compileODataPredicate,
   evaluateApply,
+  expressionPaths,
   parseApply,
   parseExpand,
   parseODataExpression,
@@ -147,6 +154,11 @@ export { DataError };
 // check): an administrator registers a step impersonating a systemuser that does not exist (recorded native n6-registration,
 // two captures: 204). The column keeps the unresolved id.
 const UNCHECKED_LOOKUPS = { sdkmessageprocessingstep: { impersonatinguserid: 'systemuser' } };
+// The platform writes an activity's parties with the activity create: no visitor permission applies to them.
+const PLATFORM_PARTY_WRITER = Object.freeze({ admin: true });
+// activityparty.participationtypemask: Owner (9) and Regarding (8).
+const ACTIVITY_OWNER_PARTY = 9,
+  ACTIVITY_REGARDING_PARTY = 8;
 export const uncheckedLookup = (table, column, target) => UNCHECKED_LOOKUPS[table]?.[column] === target;
 const clone = cloneStateData;
 const cloneInternal = (value) => cloneStateData(value, { forkTables: true });
@@ -194,6 +206,26 @@ const unchangedSince = (state, backup) =>
 // Per async context, the transaction frame of each DataStore (see DataStore#transact).
 const transactionFrames = new AsyncLocalStorage();
 const portalRowSources = new AsyncLocalStorage();
+// Rows one organization request reads for a table a platform service answers per read (store.requestRowTables;
+// sharepoint-document-table.mjs): request-local, never stored, never seen by another request.
+const requestRowSources = new AsyncLocalStorage();
+// One offset function per observed portal query zone (lib/portal-query-time-zone.mjs); its quarter-hour cache is shared.
+const portalZones = new Map();
+// The comparable key of a provider row id (data.mjs providerOrder).
+const providerRowKey = (value) => guidKey(scalar(value)) ?? String(scalar(value) ?? '').toLowerCase();
+/** Whether $apply steps are filter(<a path through a navigation of `mapping`>)/aggregate($count as <alias>) only. */
+function navigationFilterCount(steps, mapping) {
+  if (steps.length !== 2 || steps[0].kind !== 'filter' || steps[1].kind !== 'aggregate') return false;
+  if (!steps[1].aggregates.length || steps[1].aggregates.some((aggregate) => aggregate.method !== '$count'))
+    return false;
+  return expressionPaths(steps[0].ast).some(
+    (segments) => segments.length > 1 && Object.hasOwn(mapping.relationships ?? {}, segments[0]),
+  );
+}
+const portalZoneOffset = (zone) => {
+  if (!portalZones.has(zone)) portalZones.set(zone, zoneOffsetFunction(zone));
+  return portalZones.get(zone);
+};
 const transactionFrameOf = (store, { closed = false } = {}) => {
   for (let frame = transactionFrames.getStore(); frame; frame = frame.parent)
     if (frame.store === store && (closed || !frame.closed)) return frame;
@@ -760,12 +792,15 @@ class RowKeyIndex {
 const primaryKeyFns = new Map();
 /** Primary-key index key: string ids only (other values keep the linear coercive scan). */
 const primaryKeyOf = (column) => {
-  if (!primaryKeyFns.has(column))
-    primaryKeyFns.set(column, (row) => {
+  let keyOf = primaryKeyFns.get(column);
+  if (typeof keyOf !== 'function') {
+    keyOf = (row) => {
       const value = row?.[column];
       return typeof value === 'string' ? comparable(value) : undefined;
-    });
-  return primaryKeyFns.get(column);
+    };
+    primaryKeyFns.set(column, keyOf);
+  }
+  return keyOf;
 };
 /**
  * Elastic row key: the comparable primary key with the partition (null when absent), so the same id in two partitions
@@ -1409,6 +1444,8 @@ function addReferenceTableEntry(tables, owner, rel, only) {
         cascade: rel.cascade,
         schemaName: rel.schemaName,
       };
+  // A multi-table lookup (a regarding column): only a value naming this table references it.
+  if (rel.polymorphic === true) reference.polymorphic = true;
   let found = tables.get(logical);
   if (!found) {
     found = new Map();
@@ -1434,6 +1471,30 @@ function alternateKeyMatchesNames(alternate, names) {
     .map((name) => String(name).toLowerCase())
     .sort();
   return attributes.length === names.length && attributes.every((name, index) => name === names[index]);
+}
+
+/**
+ * Whether the native-classic OData lane converts this portal read: a first-page collection query of $select, $filter,
+ * $orderby and $count, or the keyed primary-key projection. The other shapes the hosted portal serves (keyed reads,
+ * navigation collections, $expand with nested options, $top, odata.maxpagesize and continuation pages: hosted session
+ * F1, API-02b, two runs) run the modeled pipeline, which applies the same table permissions row by row; only its backend
+ * permission FetchXML is the local one. Navigation and lambda paths in $filter: DataStore#modeledODataNavigation.
+ */
+function nativeScalarODataRead(p, paging, options) {
+  if (
+    options.portalPrimaryKeyProjection === true &&
+    typeof options.id === 'string' &&
+    GUID_PATTERN.test(options.id) &&
+    !paging &&
+    !options.ids &&
+    Object.keys(p).length === 1 &&
+    Object.hasOwn(p, '$select')
+  )
+    return true;
+  if (paging && (paging.offset !== 0 || paging.pageSize !== 5000 || paging.preferenceApplied)) return false;
+  if (options.id != null || options.ids) return false;
+  if (Object.keys(p).some((key) => !['$select', '$filter', '$orderby', '$count'].includes(key))) return false;
+  return p.$count === undefined || ['true', 'false'].includes(p.$count);
 }
 
 export class DataStore {
@@ -2022,8 +2083,31 @@ export class DataStore {
   readOperation(fn) {
     return this.transact(fn, { skipSaveIfUnchanged: true, cloneResult: false, lazyReadSnapshot: true });
   }
-  /** Resolve provider reads before the synchronous query engine evaluates and authorizes the rows. */
-  async withPortalReadSources(identity, { table, id = null, fetchXml, expand, navigation, queryPaths, right }, fn) {
+  /**
+   * Resolve provider reads before the synchronous query engine evaluates and authorizes the rows. `params` are the OData
+   * options of a collection read. When the read's own table is virtual and no join, expansion or permission path of the
+   * read needs that table too, its provider receives the portal's translated query and its answer stands as returned
+   * (providerAnswered; hosted session F1, DATA-01d); every other virtual table of the read is read whole.
+   */
+  async withPortalReadSources(identity, read, fn) {
+    // Tables whose rows a platform service answers per read (store.portalReadRowSources: logical name -> async
+    // ({ table, id, fetchXml, params }, identity) -> rows or null; sharepoint-document-table.mjs) join the read's request-local
+    // scope.
+    const tables = new Map();
+    for (const [logical, rowsOf] of this.portalReadRowSources ?? []) {
+      const rows = await rowsOf(read, identity);
+      if (rows) tables.set(logical, rows);
+    }
+    if (!tables.size) return this.withProviderReadSources(identity, read, fn);
+    return portalRowSources.run({ store: this, tables, answered: null }, () =>
+      this.withProviderReadSources(identity, read, fn),
+    );
+  }
+  async withProviderReadSources(
+    identity,
+    { table, id = null, fetchXml, expand, navigation, queryPaths, right, params = null, onProviderRows = null },
+    fn,
+  ) {
     const source = this.recordPipeline?.virtualProviders;
     if (!source) return fn();
     const permitted = (logical, operation = 'read') =>
@@ -2032,8 +2116,14 @@ export class DataStore {
       this.rules(logical, operation, identity).length;
     const requests = new Map();
     const reads = new Map();
+    const ownLogical = this.portalReadOwnTable({ table, id, fetchXml, navigation, params });
+    let ownUses = 0;
+    const uses = new Map();
+    const expansions = new Map();
     const add = (logical, key = null) => {
       const mapping = this.resolveMapping(logical);
+      if (mapping.logicalName === ownLogical) ownUses++;
+      uses.set(mapping.logicalName, (uses.get(mapping.logicalName) ?? 0) + 1);
       if (source.status(mapping.logicalName).virtual) requests.set(mapping.logicalName, { mapping, id: key });
       return mapping;
     };
@@ -2045,22 +2135,171 @@ export class DataStore {
     const admitted =
       fetchXml != null
         ? this.collectPortalFetchReadSources(fetchXml, right, permitted, addRead)
-        : this.collectPortalNavigationReadSources({ table, id, expand, navigation, queryPaths }, permitted, addRead);
+        : this.collectPortalNavigationReadSources(
+            { table, id, expand, navigation, queryPaths },
+            permitted,
+            addRead,
+            (logical, spec) => expansions.set(logical, spec),
+          );
     if (!admitted) return fn();
     if (!identity?.admin && this.state.settings.permissionMode !== 'permissive')
       this.addPortalPermissionSources(identity, reads.values(), add);
     if (!requests.size) return fn();
-    const tables = new Map();
-    for (const [logical, { mapping, id: key }] of requests) {
-      const rows = await source.readPortalRows(mapping, key);
-      if (rows !== null) tables.set(logical, rows);
-    }
+    const own = ownUses === 1 && requests.has(ownLogical) ? ownLogical : null;
+    // A virtual table the read only expands into, once, receives that expansion's options (portalExpansionRequest).
+    for (const logical of expansions.keys()) if (uses.get(logical) !== 1) expansions.delete(logical);
+    return this.runWithPortalProviderRows(
+      identity,
+      source,
+      requests,
+      own,
+      { fetchXml, params, right, onProviderRows, expansions },
+      fn,
+    );
+  }
+  /** Run `fn` with the provider rows of a portal read's virtual tables in scope (withProviderReadSources). */
+  async runWithPortalProviderRows(
+    identity,
+    source,
+    requests,
+    own,
+    { fetchXml, params, right, onProviderRows, expansions = null },
+    fn,
+  ) {
+    const { tables, answered } = await this.loadPortalProviderRows(identity, source, requests, own, {
+      fetchXml,
+      params,
+      right,
+      expansions,
+    });
+    if (onProviderRows) for (const [logical, rows] of tables) onProviderRows(logical, rows);
     if (!tables.size) return fn();
+    // Rows a platform service put in the scope already (withPortalReadSources) stay visible to this read.
+    const outer = portalRowSources.getStore();
+    if (outer?.store === this)
+      for (const [logical, rows] of outer.tables) if (!tables.has(logical)) tables.set(logical, rows);
     try {
-      return await portalRowSources.run({ store: this, tables }, fn);
+      return await portalRowSources.run({ store: this, tables, answered }, fn);
     } finally {
       tables.clear();
     }
+  }
+  /** The logical name of the table a portal read reads itself (a FetchXML root, an OData collection or keyed read), or null. */
+  portalReadOwnTable({ table, id, fetchXml, navigation, params }) {
+    let own = null;
+    if (fetchXml != null) own = parseFetchXml(fetchXml).children.find((node) => node.name === 'entity')?.attrs.name;
+    else if (!navigation && table && (id != null || params)) own = table;
+    return own ? this.resolveMapping(own).logicalName : null;
+  }
+  /** Provider rows of a portal read's virtual tables, and the answer of its own table `own` (withPortalReadSources). */
+  async loadPortalProviderRows(identity, source, requests, own, { fetchXml, params, right, expansions = null }) {
+    const userId = this.portalApplicationUserContext(identity).userId;
+    const tables = new Map();
+    let answered = null;
+    for (const [logical, { mapping, id: key }] of requests) {
+      const isOwn = logical === own;
+      const expansion = !isOwn && key == null ? expansions?.get(logical) : null;
+      let request = null;
+      if (isOwn && key == null) request = this.portalProviderRequest(identity, { fetchXml, params, mapping, right });
+      else if (expansion) request = this.portalExpansionRequest(identity, expansion, mapping, right);
+      const rows = await source.readPortalRows(mapping, key, { request, userId });
+      if (rows === null) continue;
+      tables.set(logical, rows);
+      if (isOwn)
+        answered = { logical, single: key != null, ids: rows.map((row) => providerRowKey(row[mapping.idColumn])) };
+    }
+    return { tables, answered };
+  }
+  /**
+   * The request a collection-valued $expand into a virtual table hands its provider: the expansion's own $select,
+   * $filter, $orderby and $top, as the platform passes them (hosted session F1 follow-up (2) 2026-11-27, runs a and b,
+   * nav-followup-nested: one provider query for every parent with the nested conditions and order; the portal applies
+   * none of them, projectRow). A table the read also reads otherwise is read whole instead.
+   * ponytail: the platform's query also carried the inner link to the parent table and a page size shared by every
+   * parent (page 1/5000, or 0/<$top>); the QueryExpression here is the expansion's own query without that link.
+   */
+  portalExpansionRequest(identity, spec, mapping, right) {
+    const params = {};
+    for (const [key, value] of [
+      ['$select', spec.select],
+      ['$filter', spec.filter],
+      ['$orderby', spec.orderby],
+      ['$top', spec.top],
+    ])
+      if (value != null) params[key] = value;
+    return this.portalProviderRequest(identity, { fetchXml: null, params, mapping, right });
+  }
+  /** Whether a portal $expand into `target` reads provider rows that stand as the provider returned them (projectRow). */
+  portalProviderExpansion(target) {
+    const scope = portalRowSources.getStore();
+    return (
+      scope?.store === this &&
+      scope.tables.has(target.logicalName) &&
+      Boolean(this.recordPipeline?.virtualProviders?.status(target.logicalName).virtual)
+    );
+  }
+  /** The translated query a portal read hands its virtual table's provider (lib/portal-provider-query.mjs). */
+  portalProviderRequest(identity, { fetchXml, params, mapping, right }) {
+    const base = providerODataRequest(fetchXml == null ? params : null);
+    const authored = fetchXml ?? providerODataFetch(params, mapping);
+    let query = null;
+    if (authored)
+      try {
+        query = providerFetchQuery(this, this.previewPermissionFetchXml(authored, identity, { right }).xml, mapping);
+      } catch {
+        query = null;
+      }
+    return { ...base, query };
+  }
+  /** The provider answer of this portal read's own virtual table ({ logical, single, ids }), or null. */
+  portalProviderAnswer(logical) {
+    const scope = portalRowSources.getStore();
+    return scope?.store === this && scope.answered?.logical === logical ? scope.answered : null;
+  }
+  /** Rows of a provider answer in the order the provider returned them. */
+  providerOrder(rows, answered, idColumn) {
+    const index = new Map(answered.ids.map((id, position) => [id, position]));
+    const at = (row) => index.get(providerRowKey(row?.[idColumn])) ?? Number.MAX_SAFE_INTEGER;
+    return [...rows].sort((left, right) => at(left) - at(right));
+  }
+  /**
+   * A portal FetchXML read of a provider-answered virtual table: the provider's rows as returned (hosted session F1,
+   * DATA-01d: no local filter, order, top, paging or projection, a total record count of 0, no more records). The rows
+   * still pass the read's table permissions, links and column security: the query that evaluates them keeps the root's
+   * links and drops its filters, orders, paging and attribute list.
+   */
+  providerAnsweredFetch(xml, identity, options, answered) {
+    const fetch = parseFetchXml(xml);
+    for (const name of ['top', 'count', 'page', 'paging-cookie', 'returntotalrecordcount', 'distinct'])
+      delete fetch.attrs[name];
+    const root = fetch.children.find((node) => node.name === 'entity');
+    root.children = [
+      { name: 'all-attributes', attrs: {}, children: [], text: '' },
+      ...root.children.filter((node) => node.name === 'link-entity'),
+    ];
+    const result = this.fetchXmlRecords(serializePermissionFetchXml(fetch), identity, {
+      ...options,
+      providerAnswered: true,
+    });
+    const mapping = this.resolveMapping(root.attrs.name);
+    return Object.assign(result, {
+      entities: this.providerOrder(result.entities ?? [], answered, mapping.idColumn),
+      more_records: false,
+      paging_cookie: null,
+      total_record_count: 0,
+      total_record_count_limit_exceeded: false,
+      providerAnswered: true,
+    });
+  }
+  /** A portal OData read of a provider-answered virtual table (see providerAnsweredFetch); $expand still applies. */
+  providerAnsweredQuery(entity, p, identity, paging, options, answered) {
+    const neutral = p.$expand == null ? {} : { $expand: p.$expand };
+    const result = this.queryRecords(entity, neutral, identity, paging, { ...options, providerAnswered: true });
+    const mapping = this.resolveMapping(entity);
+    result.value = this.providerOrder(result.value ?? [], answered, mapping.idColumn);
+    if (String(p.$count).toLowerCase() === 'true') result['@odata.count'] = 0;
+    result.totalRecordCount = 0;
+    return result;
   }
   collectPortalFetchReadSources(xml, right, permitted, addRead) {
     const fetch = parseFetchXml(xml);
@@ -2076,7 +2315,7 @@ export class DataStore {
     visit(fetch);
     return true;
   }
-  collectPortalNavigationReadSources({ table, id, expand, navigation, queryPaths }, permitted, addRead) {
+  collectPortalNavigationReadSources({ table, id, expand, navigation, queryPaths }, permitted, addRead, noteExpansion) {
     const root = addRead(table, id);
     if (!permitted(root.logicalName)) return false;
     const related = (mapping, name) => {
@@ -2084,9 +2323,23 @@ export class DataStore {
       if (!relationship || !permitted(this.resolveMapping(relationship.entity).logicalName)) return null;
       return addRead(relationship.entity);
     };
+    // A single-valued $expand into a provider-backed table reads null on the portal and calls no provider (hosted session
+    // F1 follow-up 2026-11-27, runs a and b; lib/webapi-handler.mjs nullProviderLookups).
+    const providerLookup = (mapping, name) => {
+      const relationship = ownMember(mapping.relationships, name);
+      return (
+        relationship?.many === false &&
+        Boolean(
+          this.recordPipeline?.virtualProviders?.status(this.resolveMapping(relationship.entity).logicalName).virtual,
+        )
+      );
+    };
     const visit = (mapping, specs) => {
       for (const spec of specs) {
+        if (providerLookup(mapping, spec.navigation)) continue;
         const target = related(mapping, spec.navigation);
+        if (target && this.recordPipeline?.virtualProviders?.status(target.logicalName).virtual)
+          noteExpansion?.(target.logicalName, spec);
         if (target) visit(target, spec.expand);
       }
     };
@@ -3429,6 +3682,7 @@ export class DataStore {
       identity,
       changedAttributes,
       portalRequest: options.portalRequest === true,
+      ...(options.inheritedPortalCall ? { inheritedPortalCall: options.inheritedPortalCall } : {}),
       sdkFromSandbox: options.sdkFromSandbox === true,
       acceptLanguage: options.pluginAcceptLanguage ?? '',
       ...(options.frameworkInputTarget ? { frameworkInputTarget: options.frameworkInputTarget } : {}),
@@ -3483,6 +3737,37 @@ export class DataStore {
     if (stage !== 40 && operation !== 'delete')
       this.applyPluginTarget(mapping, operation, stage, target, row, options, { id, targetPrimary });
   }
+  /**
+   * The activityparty rows of an activity a portal service creates, written with the record (no message of their own):
+   * each given party, then the platform's Owner (9) and Regarding (8) parties of the record. Hosted F3 (runs a/b): a
+   * portal comment's parties are Sender = the contact, To = the regarding record's owner, Owner and Regarding.
+   */
+  insertServiceParties(mapping, row, serviceParties) {
+    const parties = this.resolveMapping('activityparty');
+    const table = (this.state.tables[parties.logicalName] ??= []);
+    const activity = { id: row[mapping.idColumn], logical_name: mapping.logicalName };
+    const reference = (value, fallback) => {
+      const id = scalar(value?.id ?? value);
+      const logical = value?.logical_name ?? fallback;
+      return id && logical ? { id: String(id).toLowerCase(), logical_name: logical } : null;
+    };
+    const owner = reference(row.ownerid, row.owneridtype ?? 'systemuser');
+    const regarding = reference(row.regardingobjectid, row.regardingobjecttypecode);
+    const entries = [
+      ...serviceParties.map((party) => [party.partyid, party.mask]),
+      ...(owner ? [[owner, ACTIVITY_OWNER_PARTY]] : []),
+      ...(regarding ? [[regarding, ACTIVITY_REGARDING_PARTY]] : []),
+    ];
+    for (const [partyid, mask] of entries) {
+      const input = { activityid: activity, partyid: clone(partyid), participationtypemask: mask };
+      const partyRow = {
+        ...this.normalizeRecord(parties, input, PLATFORM_PARTY_WRITER),
+        [parties.idColumn]: this.ids.uuid(),
+      };
+      this.validateBindings(parties, input, partyRow, PLATFORM_PARTY_WRITER);
+      this.insertRow(parties.logicalName, table, partyRow);
+    }
+  }
   applyPluginTarget(mapping, operation, stage, target, row, options, { id, targetPrimary }) {
     const normalized = this.normalizePluginTarget(mapping, target, options);
     const retainsEmpty =
@@ -3500,6 +3785,8 @@ export class DataStore {
       this.pluginMainTargets.set(row, clone(target));
     }
     if (retainsEmpty) delete normalized[mapping.idColumn];
+    // A party list column in a Target is never a stored column (the activity's parties are rows of their own).
+    for (const name of this.partyTargetColumns?.get(row) ?? []) delete normalized[name];
     Object.assign(row, normalized);
     if (options.coerce) this.assertStateStatus(mapping, row, options);
   }
@@ -3529,14 +3816,54 @@ export class DataStore {
     if (own(tables, name)) return tables[name];
     return Object.values(tables).find((table) => table.mapping.entitySet === name) ?? null;
   }
+  /** Runs `fn` in a request-local row scope (setRequestRows); an enclosing scope of this store is kept. */
+  withRequestRows(fn) {
+    if (requestRowSources.getStore()?.store === this) return fn();
+    return requestRowSources.run({ store: this, tables: new Map() }, fn);
+  }
+  /** The rows this request reads for `logical` (one of requestRowTables); false outside a request scope. */
+  setRequestRows(logical, rows) {
+    const scope = requestRowSources.getStore();
+    if (scope?.store !== this) return false;
+    scope.tables.set(logical, rows);
+    return true;
+  }
   /** Rows of a table: a virtual site table when the host supplies one, else local data. */
   tableRows(logical) {
+    if (this.requestRowTables?.has(logical)) {
+      const scope = requestRowSources.getStore();
+      if (scope?.store === this && scope.tables.has(logical)) return scope.tables.get(logical);
+    }
     const local = own(this.state.tables, logical) ? this.state.tables[logical] : undefined;
     const rows = this.virtualTable(logical)?.rows ?? local ?? [];
     // Elastic tables only: rows past their time to live are hidden from every reader (dataverse-elastic.mjs installs expiryFilter).
     return this.expiryFilter && this.state.mappings?.[logical]?.tableType === 'Elastic'
       ? this.expiryFilter(logical, rows)
       : rows;
+  }
+  /**
+   * Whether `logical` is the web role membership intersect of the site (site-tables.mjs), derived from the export and the
+   * personas or already stored locally.
+   */
+  siteMembership(logical) {
+    return Boolean(
+      this.virtualTable(logical)?.mapping?.siteMembership || this.state.mappings?.[logical]?.siteMembership,
+    );
+  }
+  /**
+   * Stores the derived web role memberships as local data before a portal association changes one: from then on the
+   * stored rows are the memberships (site-tables.mjs contactRoleAssignments), so personas, Liquid user.roles, table
+   * permissions and the Web API read the change, and it persists with the rest of local data. Inside the write's
+   * transaction. Local mode only: with live data the memberships stay read-only (assertWritable).
+   */
+  storeSiteMembership(logical) {
+    const derived = this.virtualTable(logical);
+    if (!derived?.mapping?.siteMembership || own(this.state.tables, logical) || this.liveData()) return;
+    this.state.mappings[logical] ??= clone(derived.mapping);
+    this.state.tables[logical] = derived.rows.map((row) => clone(row));
+  }
+  liveData() {
+    return this.state.simulator?.mode === 'live';
   }
   /** Site tables are derived from the export; local writes to them aren't simulated. */
   assertWritable(logical) {
@@ -4252,13 +4579,19 @@ export class DataStore {
       fiscalPeriodType: scalar(organization.fiscalperiodtype) ?? undefined,
     };
   }
-  /** Query evaluation settings: collation, local time zone and fiscal calendar. */
-  querySettings() {
+  /**
+   * Query evaluation settings: collation, local time zone and fiscal calendar. A portal request (options.portalRequest)
+   * on a site with observed.portalQueryTimeZone also carries userLocalTimeZone, the zone its UserLocal date conditions
+   * evaluate in (dataverse-conditions.mjs conditionTimeZone).
+   */
+  querySettings(options = {}) {
     const settings = this.state.settings ?? {};
     const platform = platformValues(this.state);
+    const zone = options.portalRequest === true ? this.observed?.portalQueryTimeZone : null;
     return {
       collation: settings.collation ?? 'CI_AI',
       timeZoneOffsetMinutes: Number(settings.timeZoneOffsetMinutes ?? 0),
+      ...(zone ? { userLocalTimeZone: portalZoneOffset(zone) } : {}),
       languageCode: settings.languageCode,
       // The organisation fiscal calendar (lib/fiscal-calendar.mjs): simulator settings, else
       // the FiscalCalendarStart and FiscalPeriodType of a single local organization row.
@@ -4523,6 +4856,8 @@ export class DataStore {
     return {
       dialect: options.dialect ?? 'extended',
       odataNullEquality: options.odataNullEquality === true,
+      // A portal Web API all lambda is false over an empty collection (odata-query.mjs lambda).
+      lambdaAllNeedsRows: options.portalRequest === true,
       readRows,
       related,
       navigate: (mapping, row, name) => {
@@ -4543,7 +4878,7 @@ export class DataStore {
       lookupName,
       identity,
       relationships: (mapping) => this.relationshipsFor(mapping, identity),
-      settings: this.querySettings(),
+      settings: this.querySettings(options),
       now: this.clock.now(),
     };
   }
@@ -4656,6 +4991,7 @@ export class DataStore {
         top: spec.top == null ? null : boundedInt(spec.top, '$top'),
         select: parseSelect(spec.select),
         expand: this.prepareExpand(ctx, target, spec.expand ?? [], query),
+        providerRows: rel.many !== false && this.portalProviderExpansion(target),
       };
     });
   }
@@ -4668,23 +5004,30 @@ export class DataStore {
         : select,
     );
     for (const spec of expand) {
-      let linked = ctx.related(row, spec.rel);
-      if (spec.predicate) linked = linked.filter(spec.predicate);
-      if (spec.order.length)
-        linked = sortRows(linked, spec.order, {
-          mapping: spec.target,
-          valueOf: (item, path) => this.pathValue(ctx, spec.target, item, path),
-          definition: (path) => this.pathDefinition(ctx, spec.target, path),
-          lookupName: ctx.lookupName,
-          collation: ctx.settings.collation,
-          tieBreak: false,
-        });
-      if (spec.top != null) linked = linked.slice(0, spec.top);
+      const linked = this.expandedRows(ctx, row, spec);
       const nested = (item) => this.projectRow(ctx, spec.target, item, spec.select, spec.expand, includeKeys);
       if (spec.rel.many === false) out[spec.navigation] = linked[0] ? nested(linked[0]) : null;
       else out[spec.navigation] = linked.map(nested);
     }
     return out;
+  }
+  /** The rows of one $expand of `row`, after its nested $filter, $orderby and $top. */
+  expandedRows(ctx, row, spec) {
+    let linked = ctx.related(row, spec.rel);
+    // A portal expansion into a virtual table keeps the provider's rows as returned: its options went to the provider.
+    if (spec.providerRows) return linked;
+    if (spec.predicate) linked = linked.filter(spec.predicate);
+    if (spec.order.length)
+      linked = sortRows(linked, spec.order, {
+        mapping: spec.target,
+        valueOf: (item, path) => this.pathValue(ctx, spec.target, item, path),
+        definition: (path) => this.pathDefinition(ctx, spec.target, path),
+        lookupName: ctx.lookupName,
+        collation: ctx.settings.collation,
+        tieBreak: false,
+      });
+    if (spec.top != null) linked = linked.slice(0, spec.top);
+    return linked;
   }
   /**
    * OData collection query. options.dialect "dataverse" applies the public
@@ -4700,6 +5043,36 @@ export class DataStore {
       options,
       () => this.queryRecords(entity, params, identity, paging, options),
     );
+  }
+  /**
+   * Whether a native-classic portal OData read with navigation or lambda paths in $filter runs the modeled pipeline: the
+   * hosted portal served such filters one and two lookups deep and any/all over a child collection, with the rows its
+   * table permissions allow (hosted session F1, API-02b, runs a and b; its backend query joined the authored path and the
+   * permission filter). A portal path into a provider-backed (virtual) table is refused before this, 500 9004010D
+   * (lib/webapi-handler.mjs assertNoProviderJoin); other callers keep the native refusal for it.
+   */
+  modeledODataNavigation(mapping, p) {
+    if (p.$filter == null || String(p.$filter).trim() === '') return false;
+    let paths;
+    try {
+      const aliases = Object.fromEntries(Object.entries(p).filter(([key]) => key.startsWith('@')));
+      paths = expressionPaths(parseODataExpression(p.$filter, { dialect: 'dataverse', aliases }));
+    } catch {
+      return false;
+    }
+    const providers = this.recordPipeline?.virtualProviders;
+    let navigates = false;
+    for (const segments of paths) {
+      let current = mapping;
+      for (const segment of segments) {
+        const rel = current.relationships?.[segment];
+        if (!rel) break;
+        navigates = true;
+        current = this.resolveMapping(rel.entity);
+        if (providers?.status(current.logicalName).virtual) return false;
+      }
+    }
+    return navigates;
   }
   /* NOSONAR */ queryRecords(entity, params = {}, identity = {}, paging, options = {}) {
     const p = params instanceof URLSearchParams ? Object.fromEntries(params) : params;
@@ -4720,10 +5093,18 @@ export class DataStore {
       return result;
     }
     const mapping = this.resolveMapping(entity);
+    const answered =
+      options.portalRequest === true && !options.providerAnswered && p.$apply == null
+        ? this.portalProviderAnswer(mapping.logicalName)
+        : null;
+    if (answered?.single === (options.id != null))
+      return this.providerAnsweredQuery(entity, p, identity, paging, options, answered);
     if (
       options.portalRequest === true &&
       !identity.admin &&
-      this.observed?.odataPermissionQueryPipeline === 'native-classic'
+      this.observed?.odataPermissionQueryPipeline === 'native-classic' &&
+      nativeScalarODataRead(p, paging, options) &&
+      !this.modeledODataNavigation(mapping, p)
     ) {
       // The keyed route has already run Retrieve. Its scalar projection uses the local indexed row reader
       // without dispatching a second RetrieveMultiple or manufacturing a native collection query.
@@ -4737,18 +5118,6 @@ export class DataStore {
         Object.hasOwn(p, '$select')
       )
         return this.queryCore(entity, params, identity, paging, options);
-      if (
-        (paging && (paging.offset !== 0 || paging.pageSize !== 5000 || paging.preferenceApplied)) ||
-        options.id != null ||
-        options.ids ||
-        Object.keys(p).some((key) => !['$select', '$filter', '$orderby', '$count'].includes(key)) ||
-        (p.$count !== undefined && !['true', 'false'].includes(p.$count))
-      )
-        throw new DataError(
-          'This OData navigation, paging or option conversion requires a qualified native adapter.',
-          501,
-          'ODataPermissionQueryUnsupported',
-        );
       const scalarParams = { ...p };
       delete scalarParams.$count;
       const resolveAttribute = (table, attribute) => {
@@ -4883,10 +5252,10 @@ export class DataStore {
     if (shown.$type === 'FetchExpression' && query.$type === 'FetchExpression')
       query = query.query === shown.query ? original : webApiFetchToQuery(query.query, this);
     if (!['QueryExpression', 'QueryByAttribute'].includes(query.$type) || query.entityName !== mapping.logicalName)
-      throw new DataError(
+      throw this.reboundPluginQuery(
+        query,
+        options,
         'A RetrieveMultiple plugin cannot change the bound query table or query language.',
-        501,
-        'LocalPluginQueryUnsupported',
       );
     if (sameSdkQuery(query, original)) {
       const answer = this.queryCore(entity, params, identity, paging, { ...options, captureRootIds: true });
@@ -5124,6 +5493,8 @@ export class DataStore {
     const aliases = Object.fromEntries(Object.entries(p).filter(([key]) => key.startsWith('@')));
     this.validateQueryOptions(p);
     this.assertQueryReadable(entity, m, identity);
+    // A table whose platform RetrieveMultiple plug-in refuses some queries (sharepoint-document-table.mjs).
+    this.tableReadGuards?.get(m.logicalName)?.({ filter: p.$filter ?? null });
     const queryOptions = { dialect, aliases };
     const ctx = this.queryContext(identity, { ...options, dialect });
     const rows = this.queryRows(m, p, queryOptions, ctx, options);
@@ -5189,13 +5560,20 @@ export class DataStore {
     for (const key of ['$select', '$expand', '$skip'])
       if (own(p, key)) throw new DataError(`OData $apply can't be combined with ${key}`, 400, 'UnsupportedQuery');
     const steps = parseApply(p.$apply, queryOptions);
-    const applied = evaluateApply(steps, rows, {
+    const applyContext = {
       ...ctx,
       mapping: m,
       pathValue: (row, segments) => this.pathValue(ctx, m, row, segments),
       pathDefinition: (segments) => this.pathDefinition(ctx, m, segments),
       targetLogicalName: (segments) => this.pathMapping(ctx, m, segments).logicalName,
-    });
+    };
+    // The portal answers filter(<navigation path>)/aggregate($count as <alias>) with one empty object per matching row
+    // and no count (hosted session F1 follow-up (2) 2026-11-27, runs a and b, nav-followup-nested
+    // control:apply-lookup-filter-count and control:apply-collection-any-count: value [{}, {}]; its FetchXML asks for
+    // aggregate="true" with no aggregate attribute). Other aggregates after such a filter were not captured.
+    if (options.portalRequest === true && navigationFilterCount(steps, m))
+      return { value: evaluateApply([steps[0]], rows, applyContext).rows.map(() => ({})) };
+    const applied = evaluateApply(steps, rows, applyContext);
     let values = applied.rows;
     if (order.length) values = this.sortAppliedQuery(values, order, steps, sortOptions, ctx, m);
     if (!order.length && options.dialect === 'dataverse')
@@ -6185,7 +6563,10 @@ export class DataStore {
     delete childOptions.derivedCreateColumns;
     delete childOptions.authorizeEffectiveWrite;
     delete childOptions.afterPreValidation;
+    delete childOptions.activityParties;
     const nativeContactAssociation = takeNativeFormContactAssociation(m.logicalName, identity);
+    // The parties a portal service writes with an activity it creates (a portal comment's sender and recipient).
+    const serviceParties = Array.isArray(options.activityParties) ? options.activityParties : [];
     this.assertWritable(m.logicalName);
     const rows = (this.state.tables[m.logicalName] ??= []);
     const { input, nested, collectionBinds } = this.splitDeepInsert(m, data, identity);
@@ -6196,6 +6577,22 @@ export class DataStore {
     for (const name of blanks) pluginTarget[name] = '';
     for (const [name, value] of Object.entries(options.derivedCreateColumns ?? {}))
       if (isDeepStrictEqual(pluginTarget[name], value)) delete pluginTarget[name];
+    // A basic form's current-contact activity party travels in the create's Target as the party list column (hosted F2);
+    // the column is never a stored value: its activityparty rows are written with the record below.
+    if (nativeContactAssociation?.party) {
+      pluginTarget[nativeContactAssociation.column] = nativeFormPartyTarget(nativeContactAssociation);
+      this.partyTargetColumns ??= new WeakMap();
+      this.partyTargetColumns.set(row, [nativeContactAssociation.column]);
+    }
+    if (serviceParties.length) {
+      const columns = [...new Set(serviceParties.map((party) => party.column))];
+      for (const column of columns)
+        pluginTarget[column] = serviceParties
+          .filter((party) => party.column === column)
+          .map((party) => ({ partyid: clone(party.partyid) }));
+      const targets = (this.partyTargetColumns ??= new WeakMap());
+      targets.set(row, [...(targets.get(row) ?? []), ...columns]);
+    }
     // Caller-owned audit and ownership columns (Dataverse layer); merged after coercion, only when passed.
     const systemColumns = this.systemColumnsFor(options.systemColumns, m, input);
     if (systemColumns) Object.assign(row, systemColumns);
@@ -6355,6 +6752,27 @@ export class DataStore {
     this.assertAlternateKeys(m, row, rows, -1);
     options.authorizeEffectiveWrite?.(m.logicalName, 'create', row, null);
     this.insertRow(m.logicalName, rows, row);
+    // The activity's parties belong to its create, as the platform writes them: no message of their own (hosted F2: the
+    // create is the only Create the pipeline sees).
+    if (nativeContactAssociation?.party) {
+      const parties = this.resolveMapping('activityparty');
+      const table = (this.state.tables[parties.logicalName] ??= []);
+      const party = {
+        entity: m.logicalName,
+        contactId: nativeContactAssociation.contactId,
+        participationtypemask: nativeContactAssociation.party.mask,
+      };
+      for (const input of nativeFormPartyRows(party, row[m.idColumn], row, nativeContactAssociation.party.mappings)) {
+        const partyRow = {
+          ...this.normalizeRecord(parties, input, PLATFORM_PARTY_WRITER),
+          [parties.idColumn]: this.ids.uuid(),
+        };
+        // A party that names no existing record fails the activity create, as a bound lookup does.
+        this.validateBindings(parties, input, partyRow, PLATFORM_PARTY_WRITER);
+        this.insertRow(parties.logicalName, table, partyRow);
+      }
+    }
+    if (serviceParties.length) this.insertServiceParties(m, row, serviceParties);
     if (addresses.length && this.state.mappings?.customeraddress) {
       const table = (this.state.tables.customeraddress ??= []);
       for (const { column, n } of addresses)
@@ -6976,6 +7394,7 @@ export class DataStore {
       const value = field(child, reference.column);
       if (value && typeof value === 'object' && value.logical_name && value.logical_name !== mapping.logicalName)
         return false;
+      if (reference.polymorphic && !value?.logical_name) return false;
       return equal(scalar(value), target);
     });
     if (!children.length) return;
@@ -7147,13 +7566,13 @@ export class DataStore {
     const mapping = this.resolveMapping(entity);
     const relationship = this.relationshipsFor(mapping, identity)[safeName(navigation)];
     if (!relationship) throw new DataError('Association navigation has no mapping', 400, 'MissingRelationship');
-    if (relationship.intersect) this.assertWritable(this.resolveMapping(relationship.intersect.entity).logicalName);
     if (relationship.many === false)
       throw new DataError('Use a lookup binding for a single-valued navigation', 400, 'InvalidAssociation');
-    const row = (this.state.tables[mapping.logicalName] ?? []).find((record) => equal(record[mapping.idColumn], id));
+    // tableRows: the rows of an export-derived site table (a web role component) are association endpoints too.
+    const row = this.tableRows(mapping.logicalName).find((record) => equal(record[mapping.idColumn], id));
     if (!row) throw new DataError('Association source record not found', 404, 'NotFound');
     const targetMapping = this.resolveMapping(relationship.entity);
-    const target = (this.state.tables[targetMapping.logicalName] ?? []).find((record) =>
+    const target = this.tableRows(targetMapping.logicalName).find((record) =>
       equal(record[targetMapping.idColumn], targetId),
     );
     if (!target) throw new DataError('Association target record not found', 404, 'NotFound');
@@ -7177,16 +7596,27 @@ export class DataStore {
       options,
       identity,
     });
+    const context = { mapping, row, target, targetMapping, edgeMapping, relationship, nativeIntersect };
+    // A portal $ref removing a web role membership checks the association rights only (hosted session F1, AUTH-03c).
+    if (options.associationOnly === true) return context;
     // After the association check (native order): Write on the request's row. The portal reports its absence on a
-    // collection-valued $ref as 403 90040103 "...create records for <table> table." (captured 2026-11-23).
+    // collection-valued $ref as 403 90040103 "...create records for <table> table." (captured 2026-11-23; for the web
+    // role membership intersect too, hosted session F1, AUTH-03c).
     try {
       this.assertAllowed(mapping.logicalName, 'update', row, identity);
     } catch (error) {
-      if (error?.code === 'PermissionDenied' && !relationship.intersect)
+      if (
+        error?.code === 'PermissionDenied' &&
+        (!relationship.intersect || this.siteMembership(edgeMapping.logicalName))
+      )
         error.details = { ...error.details, associationSourceWrite: true };
       throw error;
     }
-    return { mapping, row, target, targetMapping, edgeMapping, relationship, nativeIntersect };
+    // Another export-derived intersect is read-only locally; the web role memberships are stored on their first change
+    // (storeSiteMembership).
+    if (relationship.intersect && (this.liveData() || !this.siteMembership(edgeMapping.logicalName)))
+      this.assertWritable(edgeMapping.logicalName);
+    return context;
   }
   authorizeAssociation({ mapping, row, targetMapping, target, relationship, nativeIntersect, options, identity }) {
     if (!nativeIntersect) return this.assertBindingTarget(mapping, row, targetMapping, target, identity);
@@ -7211,6 +7641,7 @@ export class DataStore {
   }
   applyIntersectAssociationSteps({ row, target, edgeMapping, relationship, associate, identity, nativeIntersect }) {
     const link = relationship.intersect;
+    this.storeSiteMembership(edgeMapping.logicalName);
     const edges = (this.state.tables[edgeMapping.logicalName] ??= []);
     const values = {
       [link.from]: scalar(field(row, relationship.from)),
@@ -7300,6 +7731,7 @@ export class DataStore {
       linkTypes: identity.admin ? undefined : linkTypes,
       profile: webapi ? 'webapi' : 'liquid',
       dropValidTop: !webapi && options.liquidTag === true && this.observed?.liquidFetchTop === 'drop-valid',
+      authoring: identity.admin ? null : this.observed?.portalFetchXmlAuthoring,
     });
   }
   previewPermissionFetchXml(xml, identity = {}, options = {}) {
@@ -7357,6 +7789,15 @@ export class DataStore {
     if (options.portalRequest === true) xml = this.preparePortalFetchXml(xml, identity, options);
     const authoredFetch = parseFetchXml(xml);
     const entity = authoredFetch.children.find((node) => node.name === 'entity')?.attrs.name;
+    if (
+      options.portalRequest === true &&
+      !options.providerAnswered &&
+      entity &&
+      !/^(?:true|1)$/i.test(authoredFetch.attrs.aggregate ?? '')
+    ) {
+      const answered = this.portalProviderAnswer(this.resolveMapping(entity).logicalName);
+      if (answered && !answered.single) return this.providerAnsweredFetch(xml, identity, options, answered);
+    }
     // Observers may mutate data inside a read transaction before its revision advances.
     // Keep every plugin invocation and discard cached row inputs at that boundary.
     if (
@@ -7600,10 +8041,10 @@ export class DataStore {
           source = queryExpressionToFetch(expression, this);
         } else if (query.$type === 'FetchExpression') source = query.query;
         if (!source || parseFetchXml(source).children.find((node) => node.name === 'entity')?.attrs.name !== entity)
-          throw new DataError(
+          throw this.reboundPluginQuery(
+            query,
+            options,
             'A RetrieveMultiple observer cannot change the bound query table or type.',
-            501,
-            'LocalPluginQueryUnsupported',
           );
         return execute(source);
       },
@@ -7633,13 +8074,26 @@ export class DataStore {
       linkBudgetError: this.observed?.fetchLinkBudgetError,
       ...(identity?.dataverse ? { dataverseIdentity: true } : {}),
     };
+    // observed portalFetchIdentityOperators "application-user" (hosted F1 DATA-02b): the identity operators of a portal
+    // query compare with the site's application user, the principal portal queries run as.
+    const applicationUser =
+      options.portalRequest === true &&
+      !identity?.dataverse &&
+      this.observed?.portalFetchIdentityOperators === 'application-user'
+        ? this.portalApplicationUserContext(identity)
+        : null;
     const buildPlan = () => planFetch(parseFetchXml(xml), planOptions);
     const validated = options.fetchCache
       ? options.fetchCache.plan(JSON.stringify([xml, planOptions]), buildPlan)
       : buildPlan();
     // Syntax and admission errors precede table lookup, including an unmapped root. Specialize the validated
     // plan without mutating the render cache; the count attribute has already passed integer validation.
-    const elastic = isElastic(this.resolveMapping(validated.root.attrs.name));
+    const rootMapping = this.resolveMapping(validated.root.attrs.name);
+    // The backend query of a table whose platform RetrieveMultiple plug-in refuses some queries runs that check
+    // (sharepoint-document-table.mjs); a denied portal root never reaches the backend.
+    if (!options.noBackendAdmission)
+      this.tableReadGuards?.get(rootMapping.logicalName)?.({ fetchRoot: validated.root });
+    const elastic = isElastic(rootMapping);
     const count = Number(validated.fetch.attrs.count);
     const plan = elastic
       ? {
@@ -7697,7 +8151,7 @@ export class DataStore {
       column: ctx.column,
       sortable: (logical, attribute) => this.sortableColumn(logical, attribute),
       lookupName: ctx.lookupName,
-      identity,
+      identity: applicationUser ? { ...identity, portalApplicationUser: applicationUser } : identity,
       settings: options.noBackendAdmission ? { ...ctx.settings, fetchAllWithoutFilter: undefined } : ctx.settings,
       now: ctx.now,
       platformLanguageCode: options.platformLanguageCode,
@@ -7705,6 +8159,43 @@ export class DataStore {
         ? (rows, column, value) => options.fetchCache.equalRows(rows, column, value)
         : undefined,
     });
+  }
+  /**
+   * The error of a RetrieveMultiple whose plug-in rebound its query to another table. Hosted session F1 (DATA-01e, two runs,
+   * Liquid and the portal Web API): a PreOperation plug-in that replaced a portal query with a QueryExpression on a virtual
+   * table failed in the backend's SQL execution of the bound table (Web API 500 9004010D, cdscode 0x80044150; Liquid
+   * "Exception has been thrown by the target of an invocation."). Any other rebind, and every non-portal one, has no
+   * native evidence and stays the local 501 LocalPluginQueryUnsupported with `message`.
+   */
+  reboundPluginQuery(query, options, message) {
+    let target = null;
+    if (['QueryExpression', 'QueryByAttribute'].includes(query?.$type)) target = query.entityName;
+    else if (query?.$type === 'FetchExpression')
+      try {
+        target = parseFetchXml(query.query).children.find((node) => node.name === 'entity')?.attrs.name ?? null;
+      } catch {
+        target = null;
+      }
+    if (
+      options?.portalRequest === true &&
+      target &&
+      this.recordPipeline?.virtualProviders?.status(this.resolveMapping(target).logicalName)?.virtual
+    )
+      return new DataError('Generic SQL error.', 500, 'PluginQueryBackendFailure', { innerCode: '0x80044150' });
+    return new DataError(message, 501, 'LocalPluginQueryUnsupported');
+  }
+  /**
+   * { userId, businessUnitId } of the principal a portal query runs as (portal-authorization.mjs readerUser: the site's
+   * application user in the standard model, the mapped user in the enhanced one). Before the application user exists its id
+   * is null and its business unit is the organization's root business unit, where the site creates it.
+   */
+  portalApplicationUserContext(identity) {
+    const user = this.portalAuthorization?.readerUser?.(identity) ?? null;
+    const unit =
+      scalar(user?.businessunitid) ??
+      this.tableRows('businessunit').find((row) => scalar(row.parentbusinessunitid) == null)?.businessunitid ??
+      null;
+    return { userId: user?.systemuserid ?? null, businessUnitId: unit };
   }
   readDatasourceRows(source, logical, identity, plan, options) {
     const rows =

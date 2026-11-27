@@ -9,6 +9,7 @@ import { RENDER_ABORT_MARKER } from '../lib/platform.mjs';
 import { webFormsForm } from '../lib/platform-manifest.mjs';
 import fs from 'node:fs';
 import { makeTemporaryDirectorySync } from '../testing/owned-fixture.mjs';
+import { boundedMarkup } from './support/bounded-markup.mjs';
 
 const HOLDER = 'a0000000-0000-4000-8000-000000000001';
 const FORM = 'f0000000-0000-4000-8000-000000000002';
@@ -210,7 +211,7 @@ test('auto-generated steps render one tab per page with the Next submit button i
   const ids = nativeFormControlIds('entityform', FORM);
   const first = await gadget({ metadata, cells });
   assert.deepEqual(
-    [...first.matchAll(/tab-title">([^<]*)</g)].map((m) => m[1]),
+    [...boundedMarkup(first).matchAll(/tab-title">([^<]*)</g)].map((m) => m[1]),
     ['general'],
   );
   assert.match(
@@ -238,7 +239,7 @@ test('auto-generated steps render one tab per page with the Next submit button i
     },
   });
   assert.deepEqual(
-    [...second.matchAll(/tab-title">([^<]*)</g)].map((m) => m[1]),
+    [...boundedMarkup(second).matchAll(/tab-title">([^<]*)</g)].map((m) => m[1]),
     ['related'],
   );
   assert.match(
@@ -266,7 +267,7 @@ test('auto-generated steps render one tab per page with the Next submit button i
     },
   });
   assert.deepEqual(
-    [...last.matchAll(/tab-title">([^<]*)</g)].map((m) => m[1]),
+    [...boundedMarkup(last).matchAll(/tab-title">([^<]*)</g)].map((m) => m[1]),
     ['last'],
   );
   assert.match(

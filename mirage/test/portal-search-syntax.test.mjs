@@ -78,7 +78,7 @@ test('malformed fuzzy modifiers are syntax errors in strict mode and plain text 
   assert.throws(() => compilePortalSearchQuery('lantern~0.5^0'), invalid, 'a zero boost after a slop');
   const recovered = compilePortalSearchQuery('lantern~1.5', { recoverSyntax: true });
   assert.notEqual(recovered.score(['lantern']), null);
-  assert.equal(recovered.score(['lanterns']), null, 'recovered text has no fuzzy matching');
+  assert.equal(recovered.score(['lantren']), null, 'recovered text has no fuzzy matching');
   for (const query of ['~', '~~', '"~"', '"a b"~x', 'a~~b', '"~', '~^2', 'a~-1', '(~)', 'a~0.5~0.5'])
     assert.doesNotThrow(() => compilePortalSearchQuery(query).score(['a b']), query);
 });
@@ -377,8 +377,9 @@ test('the Liquid tag and the default page run proximity and fuzzy queries over t
   assert.deepEqual(fuzzy.items.map((item) => item.title).sort(), ['Invented anchor', 'Invented lantern']);
   assert.match(fuzzy.items.find((item) => item.title === 'Invented lantern').fragment, /<em>lantern<\/em>/);
   assert.equal((await liquid({ q: '"lantern bright"~2' })).total, 1);
-  // The Liquid tag treats a malformed fuzzy modifier as plain text; the default search page refuses it.
-  assert.equal((await liquid({ q: 'lantern~1.5' })).total, 2);
+  // The Liquid tag treats a malformed fuzzy modifier as plain text; the default search page refuses it. The plain word
+  // lantern also finds Lanterns pack through its stem (hosted session F3, summary-F3.md PAGE-04f).
+  assert.equal((await liquid({ q: 'lantern~1.5' })).total, 3);
   assert.equal((await page({ q: 'lantern~1.5' })).status, 400);
   assert.equal((await page({ q: 'lantren~1' })).status, 200);
 });
@@ -398,6 +399,7 @@ test('Search/Query filters the default search page but not the Liquid tag', asyn
     [
       ['x_item', 'Invented anchor'],
       ['x_item', 'Invented lantern'],
+      ['x_item', 'Lanterns pack'],
     ],
   );
   assert.doesNotMatch(html, /Invented lantern secret/);
@@ -409,7 +411,7 @@ test('an invalid Search/Query template is reported and the visitor query runs al
   const { page, diagnostics } = await syntaxSite(t, { settings: [['Search/Query', '+(@Query']] });
   const { status, html } = await page({ q: 'lantern' });
   assert.equal(status, 200);
-  assert.match(html, /role="status">2 result\(s\)/);
+  assert.match(html, /role="status">3 result\(s\)/);
   assert.match(diagnostics(), /PORTAL_SEARCH_QUERY_TEMPLATE_INVALID/);
 });
 

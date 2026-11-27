@@ -129,7 +129,279 @@ export function sharedCorpus(first, second) {
   return [keep(first), keep(second)];
 }
 
-if (isEntryPoint(import.meta.url)) {
+// ---- Hosted session F1 (paqvilo-developer hosted-f1): one structured file per scenario group and run, runs/<run>/<group>.json
+
+// The settings each recorded activity phase ran with (the session's phases-activity scripts), over the site's own; null
+// removes a setting.
+const TASK_FIELDS = 'activityid,subject,pqf1_note';
+const POINTER_FIELDS = 'activityid,subject,description,activitytypecode';
+const ACTIVITY_PHASES = {
+  'A-inherited-only': {
+    'Webapi/pqf1_task/enabled': 'true',
+    'Webapi/pqf1_task/fields': 'activityid,subject,description',
+  },
+  'B-mixed': { 'Webapi/pqf1_task/enabled': 'true', 'Webapi/pqf1_task/fields': TASK_FIELDS },
+  'C-activitypointer-only': {
+    'Webapi/activitypointer/enabled': 'true',
+    'Webapi/activitypointer/fields': POINTER_FIELDS,
+  },
+  'D-task-settings-plus-activitypointer-fields': {
+    'Webapi/pqf1_task/enabled': 'true',
+    'Webapi/pqf1_task/fields': TASK_FIELDS,
+    'Webapi/activitypointer/fields': POINTER_FIELDS,
+  },
+  'E-task-settings-plus-activitypointer-enabled-fields': {
+    'Webapi/pqf1_task/enabled': 'true',
+    'Webapi/pqf1_task/fields': TASK_FIELDS,
+    'Webapi/activitypointer/enabled': 'true',
+    'Webapi/activitypointer/fields': POINTER_FIELDS,
+  },
+};
+// The suites of the hosted-f1 corpus: the group files each run recorded, and the results each suite keeps.
+const HOSTED_F1_SUITES = {
+  'hosted-f1-odata-shapes': {
+    files: ['odata-shapes.json'],
+    // FetchXML reads are the FetchXML surface's (DATA-02b), recorded in their own groups.
+    keep: (result) => !result.id.startsWith('fetch-'),
+  },
+  'hosted-f1-predefined': { files: ['predefined.json'], keep: (result) => result.input },
+  // The first phase A attempt of the second run read 404 everywhere because the new setting had not reached the portal
+  // yet (phases-activity-a-retry.sh); its retry, with a readiness check, is that run's phase A.
+  'hosted-f1-activity': {
+    files: ['activity-A.json', 'activity-B.json', 'activity-C.json', 'activity-D.json', 'activity-E.json'],
+    replacement: { 'activity-A.json': 'activity-A-retry.json' },
+    keep: (result) => result.input,
+  },
+  'hosted-f1-chunked-upload': { files: ['files.json'], keep: (result) => result.id === 'chunked-start' },
+  // The follow-up of 2026-11-27 on its own trial site (hosted-f1-nav-fixture-site.mjs): the provider healthy, the provider
+  // throwing (the run made sequentially after the overlapped attempt was discarded), and the phase-marked reads, which
+  // bypass the platform's read cache. The -throw-cache runs read cached answers in one run and fresh ones in the other, so
+  // they are evidence for the read cache, not replay cases.
+  'hosted-f1-nav-followup': { files: ['nav-followup.json'], keep: (result) => result.input, site: 'nav' },
+  'hosted-f1-nav-followup-throw': { files: ['nav-followup-throw.json'], keep: (result) => result.input, site: 'nav' },
+  'hosted-f1-nav-followup-marked': {
+    files: ['nav-followup-marked.json'],
+    keep: (result) =>
+      ['nav1:vrows-phase-marked', 'nav1:expand-collection-phase-marked', 'nav1:keyed-vrow'].includes(result.id),
+    site: 'nav',
+  },
+};
+// The provider state of each follow-up phase (the session's trial-nav.mjs --switch).
+const PROVIDER_PHASES = { 'provider-healthy': 'healthy', 'provider-throwing': 'throwing' };
+export const HOSTED_F1_SUITE_NAMES = Object.keys(HOSTED_F1_SUITES);
+
+const GUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+
+/** The recorded response in the portable shape the adapter answers: status, wire headers, the error or the body. */
+export function hostedOutput(output) {
+  const headers = output.headers ?? {};
+  const projected = {
+    status: output.status,
+    wire: {
+      odataVersion: headers['odata-version'] ?? null,
+      requestId: Object.hasOwn(headers, 'x-ms-request-id'),
+      serverTiming: headers['server-timing']?.replaceAll(GUID, '<id>') ?? null,
+    },
+  };
+  const body = output.body;
+  if (body?.error) projected.error = body.error;
+  else if (body && typeof body === 'object') projected.body = hostedBody(body);
+  else if (typeof output.text === 'string') projected.text = output.text;
+  return projected;
+}
+
+// pqf1_query is the follow-up test provider's echo of the query it received, with the platform's own user ids: provider
+// output, not platform behaviour.
+const ROW_SKIP = new Set(['@odata.etag', 'pqf1_query']);
+function hostedRow(row) {
+  if (Array.isArray(row)) return row.map(hostedRow);
+  if (!row || typeof row !== 'object') return row;
+  const out = {};
+  for (const key of Object.keys(row).sort()) {
+    if (ROW_SKIP.has(key)) continue;
+    out[key] = key.endsWith('@odata.nextLink') ? true : hostedRow(row[key]);
+  }
+  return out;
+}
+function hostedBody(body) {
+  const context = String(body['@odata.context'] ?? '').replace(/^https?:\/\/[^/]+/, '');
+  const projected = { context };
+  if (Object.hasOwn(body, '@odata.count')) projected.count = body['@odata.count'];
+  if (Object.hasOwn(body, '@Microsoft.Dynamics.CRM.totalrecordcount'))
+    projected.total = body['@Microsoft.Dynamics.CRM.totalrecordcount'];
+  if (Object.hasOwn(body, 'value')) {
+    projected.nextLink = Object.hasOwn(body, '@odata.nextLink');
+    projected.rows = hostedRow(body.value);
+  } else {
+    const row = Object.fromEntries(Object.entries(body).filter(([key]) => key !== '@odata.context'));
+    projected.rows = [hostedRow(row)];
+  }
+  return projected;
+}
+
+/**
+ * Replaces the recorded contact's id and name, and the ids of the environment's own views, with placeholders and fails on
+ * any other recorded identifier.
+ */
+function anonymized(value, contact, contactName, views = []) {
+  let text = JSON.stringify(value)
+    .replace(new RegExp(contact, 'gi'), '{contact}')
+    .replaceAll(JSON.stringify(contactName), JSON.stringify('{contactName}'));
+  views.forEach((id, index) => {
+    text = text.replace(new RegExp(id, 'gi'), `{view-${index + 1}}`);
+  });
+  for (const id of text.match(GUID) ?? [])
+    if (!id.toLowerCase().startsWith('f1f1f1f1-0000-4000-8000-'))
+      throw new Error(`A recorded identifier outside the session's synthetic rows would enter a case: ${id}.`);
+  return JSON.parse(text);
+}
+
+/**
+ * Converts one hosted-F1 run (`runDir` = runs/<run>) to the raw input of scripts/parity-cases.mjs build for `suite`.
+ * A case's input is its request (method, path, headers) and the phase settings it ran with; a request that followed the
+ * nextLink of an earlier result names that request (`follow`) instead of the hosted link, which carries the platform's
+ * own paging cookie. The recorded contact becomes `{contact}` and its name `{contactName}`.
+ */
+export function prepareHostedF1Capture(runDir, suite) {
+  const spec = HOSTED_F1_SUITES[suite];
+  assert.ok(spec, `unknown hosted-f1 suite ${suite}`);
+  const hash = createHash('sha256');
+  const results = [];
+  const dates = [];
+  for (const file of spec.files) {
+    const name = fs.existsSync(path.join(runDir, spec.replacement?.[file] ?? '\0')) ? spec.replacement[file] : file;
+    const raw = fs.readFileSync(path.join(runDir, name));
+    hash.update(name).update('\0').update(raw);
+    const run = JSON.parse(raw.toString('utf8'));
+    dates.push(run.recordedAt.slice(0, 10));
+    const contact = run.session.contactId;
+    const phase = run.results.find((result) => result.id === 'phase')?.note;
+    const provider = spec.site === 'nav' ? PROVIDER_PHASES[phase] : undefined;
+    const settings = phase === undefined || provider ? {} : ACTIVITY_PHASES[phase];
+    assert.ok(settings, `the phase ${phase} of ${name} has recorded settings`);
+    const byId = new Map(run.results.map((result) => [result.id, result]));
+    // The environment's own saved and user views (savedQuery values), named by their order in the run.
+    const listed = byId.get('views')?.note;
+    const views = [...(listed?.savedqueries ?? []), ...(listed?.userqueries ?? [])].map((view) => view.id);
+    const named = run.results
+      .flatMap((result) => [result.output?.body, ...(result.output?.body?.value ?? [])])
+      .flatMap((row) => (row && typeof row === 'object' ? Object.values(row) : []))
+      .find((value) => value?.contactid?.toLowerCase?.() === contact.toLowerCase())?.fullname;
+    for (const result of run.results.filter((item) => item.input && spec.keep(item))) {
+      const { method, path: address, headers = {}, followed } = result.input;
+      const input = provider
+        ? { method, site: spec.site, provider, settings, headers }
+        : { method, ...(phase === undefined ? {} : { phase }), settings, headers };
+      if (followed) {
+        const source = byId.get(/^nextLink of (.+)$/.exec(followed)?.[1] ?? '');
+        assert.ok(source?.input, `${result.id} follows a recorded result`);
+        input.follow = { path: source.input.path, headers: source.input.headers ?? {} };
+      } else input.path = address;
+      const id = phase === undefined || provider ? result.id : `${phase.split('-')[0]}:${result.id}`;
+      results.push({
+        id,
+        input: anonymized(input, contact, named ?? '\0', views),
+        output: anonymized(hostedOutput(result.output), contact, named ?? '\0', views),
+      });
+    }
+  }
+  const capturedAt = dates.sort().at(-1);
+  return {
+    capture: { id: `hosted-f1-${path.basename(runDir)}-${suite}`, capturedAt, sha256: hash.digest('hex') },
+    results,
+  };
+}
+
+// ---- Hosted session F7 (paqvilo-developer hosted-f7): one file per phase and run, runs/<run>/api-<phase>.json, each an
+// `api` map of read id -> { path, status, headers, body }. The recorded paths name the read record as `<record>`.
+const HOSTED_F7_SUITES = {
+  // S0 (Web API lists `*` on the two SharePoint tables) and the explicit-list phase of S1-loc.
+  'hosted-f7-sharepoint-reads': { phases: ['s0', 's1-loc-fields'] },
+};
+export const HOSTED_F7_SUITE_NAMES = Object.keys(HOSTED_F7_SUITES);
+
+/**
+ * Converts one hosted-F7 run (`runDir` = runs/<run>) to the raw input of scripts/parity-cases.mjs build. A case's input
+ * is its phase and its request, the read record as `{record}`; the output of a read that names the record names it, its
+ * name, its folder id (upper case without dashes) and its location as `{record}`, `{recordName}`, `{RECORD}` and
+ * `{location}`, since the two runs read different records. Any other identifier outside the session's synthetic
+ * `f7f7f7f7-0000-4000-8000-…` rows stops the conversion.
+ */
+export function prepareHostedF7Capture(runDir, suite) {
+  const spec = HOSTED_F7_SUITES[suite];
+  assert.ok(spec, `unknown hosted-f7 suite ${suite}`);
+  const hash = createHash('sha256');
+  const results = [];
+  const dates = [];
+  for (const phase of spec.phases) {
+    const name = `api-${phase}.json`;
+    const raw = fs.readFileSync(path.join(runDir, name));
+    hash.update(name).update('\0').update(raw);
+    const run = JSON.parse(raw.toString('utf8'));
+    dates.push(run.recordedAt.slice(0, 10));
+    const record = run.record;
+    const location = run.locationsBefore?.find(
+      (row) => row._regardingobjectid_value?.toLowerCase() === record.id.toLowerCase(),
+    )?.sharepointdocumentlocationid;
+    for (const [id, read] of Object.entries(run.api)) {
+      const named = read.path.includes('<record>');
+      let text = JSON.stringify(hostedOutput({ status: read.status, headers: read.headers, body: read.body }));
+      if (named) {
+        text = text
+          .replace(new RegExp(record.id, 'gi'), '{record}')
+          .replace(new RegExp(record.id.replaceAll('-', ''), 'gi'), '{RECORD}')
+          .replaceAll(JSON.stringify(record.name).slice(1, -1), '{recordName}');
+        if (location) text = text.replace(new RegExp(location, 'gi'), '{location}');
+      }
+      for (const guid of text.match(GUID) ?? [])
+        if (!guid.toLowerCase().startsWith('f7f7f7f7-0000-4000-8000-'))
+          throw new Error(`A recorded identifier outside the session's synthetic rows would enter a case: ${guid}.`);
+      results.push({
+        id: `${phase}:${id}`,
+        input: { method: 'GET', phase, headers: {}, path: read.path.replaceAll('<record>', '{record}') },
+        output: JSON.parse(text),
+      });
+    }
+  }
+  return {
+    capture: {
+      id: `hosted-f7-${path.basename(runDir)}-${suite}`,
+      capturedAt: dates.sort().at(-1),
+      sha256: hash.digest('hex'),
+    },
+    results,
+  };
+}
+
+if (isEntryPoint(import.meta.url) && process.argv[2] === '--hosted-f7') {
+  const [, suite, firstDir, secondDir, firstOut, secondOut, ...extra] = process.argv.slice(2);
+  if (!HOSTED_F7_SUITES[suite] || !firstDir || !secondDir || !firstOut || !secondOut || extra.length)
+    throw new Error(
+      'Usage: node mirage/test/parity/capture-portal-webapi.mjs --hosted-f7 SUITE FIRST_RUN_DIR SECOND_RUN_DIR FIRST_OUT SECOND_OUT\n' +
+        `  SUITE: ${HOSTED_F7_SUITE_NAMES.join(', ')}`,
+    );
+  const [first, second] = sharedCorpus(
+    prepareHostedF7Capture(firstDir, suite),
+    prepareHostedF7Capture(secondDir, suite),
+  );
+  fs.writeFileSync(firstOut, JSON.stringify(first, null, 2) + '\n');
+  fs.writeFileSync(secondOut, JSON.stringify(second, null, 2) + '\n');
+  process.stdout.write(`${first.results.length} shared cases\n`);
+} else if (isEntryPoint(import.meta.url) && process.argv[2] === '--hosted-f1') {
+  const [, suite, firstDir, secondDir, firstOut, secondOut, ...extra] = process.argv.slice(2);
+  if (!HOSTED_F1_SUITES[suite] || !firstDir || !secondDir || !firstOut || !secondOut || extra.length)
+    throw new Error(
+      'Usage: node mirage/test/parity/capture-portal-webapi.mjs --hosted-f1 SUITE FIRST_RUN_DIR SECOND_RUN_DIR FIRST_OUT SECOND_OUT\n' +
+        `  SUITE: ${HOSTED_F1_SUITE_NAMES.join(', ')}`,
+    );
+  const [first, second] = sharedCorpus(
+    prepareHostedF1Capture(firstDir, suite),
+    prepareHostedF1Capture(secondDir, suite),
+  );
+  fs.writeFileSync(firstOut, JSON.stringify(first, null, 2) + '\n');
+  fs.writeFileSync(secondOut, JSON.stringify(second, null, 2) + '\n');
+  process.stdout.write(`${first.results.length} shared cases\n`);
+} else if (isEntryPoint(import.meta.url)) {
   const [firstDir, secondDir, firstOut, secondOut, ...extra] = process.argv.slice(2);
   if (!firstDir || !secondDir || !firstOut || !secondOut || extra.length)
     throw new Error(

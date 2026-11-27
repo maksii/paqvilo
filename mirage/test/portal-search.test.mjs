@@ -162,16 +162,24 @@ async function defaultSearchHtml(sim) {
 test('searchindex returns permission-filtered results from the Portal Search views with site-marker urls', async (t) => {
   const { sim, page, id } = await searchSite(t);
   const anonymous = await page({ q: 'lantern' });
-  // x_plain has no Portal Search view; x_secret is not readable anonymously; the view filter hides the spare.
+  // x_plain has no Portal Search view; x_secret is not readable anonymously; the view filter hides the spare. Lanterns
+  // pack matches lantern by its stem (hosted session F3, summary-F3.md PAGE-04f).
   assert.deepEqual(
     anonymous.items.map((item) => [item.title, item.ln]),
-    [['Invented lantern', 'x_item']],
+    [
+      ['Invented lantern', 'x_item'],
+      ['Lanterns pack', 'x_item'],
+    ],
   );
-  assert.equal(anonymous.total, 1);
+  assert.equal(anonymous.total, 2);
   assert.equal(anonymous.items[0].url, `/item/?id=${id(1)}`);
   assert.match(anonymous.items[0].fragment, /<em>lantern<\/em>/);
   const member = await page({ q: 'lantern' }, signInHeaders(sim, 'alex', { roles: ['Member'] }));
-  assert.deepEqual(member.items.map((item) => item.title).sort(), ['Invented lantern', 'Invented lantern secret']);
+  assert.deepEqual(member.items.map((item) => item.title).sort(), [
+    'Invented lantern',
+    'Invented lantern secret',
+    'Lanterns pack',
+  ]);
   assert.equal(member.items.find((item) => item.ln === 'x_secret').url, '', 'no site marker: no url');
   // logical_names, prefix terms and paging.
   assert.deepEqual(
@@ -266,7 +274,6 @@ test('portal search keeps phrases, operators, wildcard matching and term boosts 
   assert.deepEqual(await titles('invented +anchor -heavy'), []);
   assert.deepEqual(await titles('anchor OR lan?erns'), ['Invented anchor', 'Lanterns pack']);
   assert.deepEqual(await titles('anchor OR l*erns^2'), ['Lanterns pack', 'Invented anchor']);
-  assert.deepEqual(await titles('lantern AND lanterns'), [], 'plain words remain exact terms');
 });
 
 test('searchindex treats a malformed request query as literal terms and keeps paging', async (t) => {
@@ -297,7 +304,7 @@ test('searchindex omits highlighted fragments when a query uses wildcards', asyn
     ],
   );
   const literal = await page({ q: '(lantern*' });
-  assert.equal(literal.total, 1);
+  assert.equal(literal.total, 2, 'the recovered word lantern finds Lanterns pack by its stem');
   assert.match(literal.items[0].fragment, /<em>lantern<\/em>/);
 });
 
@@ -343,10 +350,11 @@ test('default record-type facets group readable results without exposing restric
   const search = async (headers) => (await fetch(sim.url + '/search/?q=lantern', { headers })).text();
   const anonymous = await search();
   assert.match(anonymous, /aria-label="Record Type"/);
-  assert.match(anonymous, /logicalNames=x_item">Matching fixtures \(1\)/);
+  // lantern finds Invented lantern and, by its stem, Lanterns pack; the unreadable x_secret match is never counted.
+  assert.match(anonymous, /logicalNames=x_item">Matching fixtures \(2\)/);
   assert.doesNotMatch(anonymous, /x_secret|Invented lantern secret/);
   const member = await search(signInHeaders(sim, 'alex', { roles: ['Member'] }));
-  assert.match(member, /logicalNames=x_item%2Cx_secret">Matching fixtures \(2\)/);
+  assert.match(member, /logicalNames=x_item%2Cx_secret">Matching fixtures \(3\)/);
 });
 
 test('the default /search/ page renders the search results markup and states a disabled search', async () => {

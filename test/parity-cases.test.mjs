@@ -1137,3 +1137,109 @@ test('replayParityDirectory: a missing or empty cases directory registers nothin
   assert.equal(collector.tests.length, 0);
   assert.equal(collector.hooks.length, 0);
 });
+
+// ---------------------------------------------------------------- redaction
+
+const SITE_RESULTS = [
+  {
+    id: 'site-read',
+    input: { evidence: 'Reads of example-site (Example-Site.invented.test, two runs).', note: 'none' },
+    output: { url: 'https://example-site.invented.test/a', 'example-site-header': 'x', status: 200 },
+  },
+];
+
+test('build: redact replaces every term case-insensitively in inputs, outputs and keys and records only counts', () => {
+  const captures = [rawCapture('run-1', SITE_RESULTS), rawCapture('run-2', SITE_RESULTS)];
+  const terms = ['example-site', 'example-site.invented.test'];
+  const built = buildParityCases({ surface: SURFACE, suite: SUITE, oracle: ORACLE, captures, redact: terms });
+  const [parityCase] = built.cases;
+  assert.deepEqual(parityCase.input, {
+    evidence: 'Reads of <redacted> (<redacted>, two runs).',
+    note: 'none',
+  });
+  // The longer term wins over the shorter one inside it.
+  assert.deepEqual(parityCase.output, { url: 'https://<redacted>/a', '<redacted>-header': 'x', status: 200 });
+  // Four occurrences per capture (two in the input, one in a value and one in a key of the output), two captures.
+  assert.deepEqual(built.redaction, { placeholder: '<redacted>', terms: 2, occurrences: 8 });
+  assert.doesNotMatch(JSON.stringify(built), /example-site/i);
+  assert.deepEqual(validateParityCases(built, { surface: SURFACE, suite: SUITE }), []);
+  // Deterministic: the same captures and terms in another order build the same file; the captures are not changed.
+  const again = buildParityCases({
+    surface: SURFACE,
+    suite: SUITE,
+    oracle: ORACLE,
+    captures,
+    redact: [...terms].reverse(),
+  });
+  assert.deepEqual(again, built);
+  assert.match(captures[0].results[0].input.evidence, /example-site/);
+});
+
+test('build: a redacted existing file refuses an unredacted rebuild; terms must be distinct from the placeholder', () => {
+  const captures = [rawCapture('run-1', SITE_RESULTS), rawCapture('run-2', SITE_RESULTS)];
+  const existing = buildParityCases({
+    surface: SURFACE,
+    suite: SUITE,
+    oracle: ORACLE,
+    captures,
+    redact: ['example-site'],
+  });
+  assert.throws(
+    () => buildParityCases({ surface: SURFACE, suite: SUITE, oracle: ORACLE, captures, existing }),
+    /built with a redaction/,
+  );
+  const rebuilt = buildParityCases({
+    surface: SURFACE,
+    suite: SUITE,
+    oracle: ORACLE,
+    captures,
+    existing,
+    redact: ['example-site'],
+  });
+  assert.deepEqual(rebuilt, existing);
+  for (const redact of [[], ['ab'], ['redacted'], [7]])
+    assert.throws(
+      () => buildParityCases({ surface: SURFACE, suite: SUITE, oracle: ORACLE, captures, redact }),
+      /redact/,
+    );
+});
+
+test('validate: a redaction records the placeholder and non-negative counts only', () => {
+  assert.deepEqual(
+    validateParityCases(validFile({ redaction: { placeholder: '<redacted>', terms: 1, occurrences: 0 } })),
+    [],
+  );
+  assertProblem(
+    validFile({ redaction: { placeholder: '<site>', terms: 1, occurrences: 0 } }),
+    /redaction\.placeholder/,
+  );
+  assertProblem(validFile({ redaction: { placeholder: '<redacted>', terms: 0, occurrences: 0 } }), /redaction\.terms/);
+  assertProblem(
+    validFile({ redaction: { placeholder: '<redacted>', terms: 1, occurrences: 0, names: ['x'] } }),
+    /unknown key "names"/,
+  );
+});
+
+test('cli: build --redact keeps the terms out of the written case file', async (t) => {
+  const root = tempDir(t);
+  const a = { capture: { id: 'run-1', capturedAt: '2026-11-08' }, results: SITE_RESULTS };
+  const b = { capture: { id: 'run-2', capturedAt: '2026-11-08' }, results: SITE_RESULTS };
+  const files = [writeRawCapture(root, 'a.json', a), writeRawCapture(root, 'b.json', b)];
+  const built = await runCli(
+    [
+      'build',
+      ...BUILD_FLAGS,
+      ...captureFlags(files),
+      '--redact',
+      'example-site.invented.test',
+      '--redact',
+      'example-site',
+    ],
+    root,
+  );
+  assert.equal(built.code, 0, built.err);
+  const file = path.join(root, 'mirage/test/parity/cases', SURFACE, `${SUITE}.json`);
+  assert.doesNotMatch(fs.readFileSync(file, 'utf8'), /example-site/i);
+  assert.deepEqual(loadParityCases(file).redaction, { placeholder: '<redacted>', terms: 2, occurrences: 8 });
+  assert.equal((await runCli(['check'], root)).code, 0);
+});

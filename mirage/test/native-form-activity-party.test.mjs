@@ -3,6 +3,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore } from '../lib/data.mjs';
 import { submitPortalForm, createWebFormSessions } from '../lib/form-service.mjs';
+import { recordToSdkEntity } from '../lib/plugin-clr.mjs';
+import { sdkValueToRecord } from '../lib/local-organization-service.mjs';
 
 const CONTACT = '0a5e0000-0000-4000-8000-000000000001';
 // The party list columns of an invented custom activity and the party type the Learn table gives each column.
@@ -123,20 +125,71 @@ test('a failing party row write leaves neither the activity nor a party row', as
   options.identity = { ...options.identity, contactId: '0a5e0000-0000-4000-8000-0000000000ff' };
   await assert.rejects(submit(options, { subject: 'Orphan' }), (error) => error.nativeFormWriteFailure === true);
   assert.deepEqual(options.store.snapshot(), before);
-  // A plug-in failure on the party row rolls the activity back as well.
-  const blocked = await setup({
-    plugins: [
-      {
-        entity: 'activityparty',
-        operations: ['create'],
-        validate: [{ field: 'participationtypemask', pattern: '^9$', message: 'Blocked party' }],
-      },
-    ],
+});
+
+// @test-kind observation: hosted F2 (paqvilo-developer hosted-f2 runs a and b, group visit, ten party list columns of a custom activity): the basic form insert sends one Create, of the activity, whose Target carries the party list column as activityparty entities holding only the contact; the stored parties are the contact with the column's participation type (partners: 12, "Chat Participant") and the activity owner with the Owner type 9; no activityparty Create reaches the pipeline
+test('the party list column travels in the Create Target and the owner party is added', async () => {
+  const OWNER = '0a5e0000-0000-4000-8000-0000000000a1';
+  const options = await setup({ relationships: true });
+  options.store.state.mappings.systemuser = { entitySet: 'systemusers', idColumn: 'systemuserid' };
+  options.store.state.tables.systemuser = [{ systemuserid: OWNER, fullname: '# Portals-invented' }];
+  options.store.state.mappings.activityparty.relationships.partyid_systemuser = {
+    entity: 'systemuser',
+    from: 'partyid',
+    to: 'systemuserid',
+    many: false,
+  };
+  options.store.state.mappings.new_visit.recordDefaults = { ownerid: { id: OWNER, logical_name: 'systemuser' } };
+  const seen = [];
+  options.store.setPluginPipeline((context) => {
+    if (context.stage === 10)
+      seen.push({ message: context.operation, entity: context.entity, target: structuredClone(context.target) });
   });
-  configure(blocked, 'to');
-  const empty = blocked.store.snapshot();
-  await assert.rejects(submit(blocked), (error) => error.nativeFormWriteFailure === true);
-  assert.deepEqual(blocked.store.snapshot(), empty);
+  for (const [column, mask] of [
+    ['partners', 12],
+    ['to', 2],
+  ]) {
+    configure(options, column);
+    seen.length = 0;
+    const saved = await submit(options, { subject: `Visit ${column}` });
+    assert.deepEqual(
+      seen.map((entry) => `${entry.message} ${entry.entity}`),
+      ['create new_visit'],
+      column,
+    );
+    assert.deepEqual(seen[0].target[column], [{ partyid: { id: CONTACT, logical_name: 'contact' } }], column);
+    // The SDK Target: Entity[] of activityparty entities, each with only partyid (no participationtypemask, empty id).
+    const sdk = recordToSdkEntity(options.store, 'new_visit', seen[0].target, { allColumns: true, target: true });
+    assert.equal(sdk.attributes[column].$type, 'SdkArray', column);
+    // A CLR step's Target comes back as the same party rows.
+    assert.deepEqual(sdkValueToRecord(sdk.attributes[column]), [{ partyid: { id: CONTACT, logical_name: 'contact' } }]);
+    assert.equal(sdk.attributes[column].elementType, 'Entity', column);
+    assert.deepEqual(
+      sdk.attributes[column].values.map((party) => [party.logicalName, party.id, Object.keys(party.attributes)]),
+      [['activityparty', '00000000-0000-0000-0000-000000000000', ['partyid']]],
+      column,
+    );
+    assert.deepEqual(
+      [
+        sdk.attributes[column].values[0].attributes.partyid.logicalName,
+        sdk.attributes[column].values[0].attributes.partyid.id,
+      ],
+      ['contact', CONTACT],
+    );
+    const stored = options.store.snapshot().tables.new_visit.find((row) => row.activityid === saved.recordId);
+    assert.equal(Object.hasOwn(stored, column), false, `${column} is not a stored column`);
+    assert.deepEqual(
+      options.store
+        .snapshot()
+        .tables.activityparty.filter((row) => row.activityid?.id === saved.recordId)
+        .map((row) => [row.partyid?.logical_name, row.partyid?.id, row.participationtypemask]),
+      [
+        ['contact', CONTACT, mask],
+        ['systemuser', OWNER, 9],
+      ],
+      column,
+    );
+  }
 });
 
 // @test-kind security: an anonymous visitor cannot be stamped as an activity party, and a visitor cannot post the party list column to name another contact
@@ -196,7 +249,6 @@ test('columns that are not documented contact party lists are refused before any
   const before = options.store.snapshot();
   for (const [column, status, code] of [
     ['new_lookup', 501, 'FormUserAssociationUnsupported'],
-    ['partners', 501, 'FormUserAssociationUnresolved'],
     ['from', 400, 'FormUserAssociationInvalid'],
     ['new_absent', 501, 'FormUserAssociationUnresolved'],
   ]) {
@@ -235,4 +287,20 @@ test('a lookup association without Is Activity Party writes no activityparty row
   const saved = await submit(options);
   assert.equal(saved.record.new_lookup.id, CONTACT);
   assert.deepEqual(options.store.snapshot().tables.activityparty, []);
+});
+
+// @test-kind unproven: native rollback of a failure after the activity's parties are written is not captured; the parties belong to the record create (no activityparty Create of their own), so a failure later in that create leaves neither the activity nor a party row
+test('a failure after the parties are written rolls the activity and its parties back', async () => {
+  const options = await setup({ relationships: true });
+  configure(options, 'to');
+  const before = options.store.snapshot();
+  options.store.setPluginPipeline((context) => {
+    if (context.entity === 'new_visit' && context.operation === 'create' && context.stage === 40) {
+      // The party rows exist inside the create when its PostOperation runs.
+      assert.equal(options.store.tableRows('activityparty').length, 1);
+      throw Object.assign(new Error('Invented PostOperation refusal'), { status: 400, code: 'PluginValidation' });
+    }
+  });
+  await assert.rejects(submit(options, { subject: 'Refused later' }), (error) => error.nativeFormWriteFailure === true);
+  assert.deepEqual(options.store.snapshot(), before);
 });

@@ -279,28 +279,44 @@ Standard PCF controls come from Solution manifests, not packs; see [code compone
 
 ## Portal search summary fixture
 
-Register one trusted `portalSearchSummary` function across the packs matched to a local portal.
-It serves `POST /_api/search/v1.0/summary` with an `application/x-www-form-urlencoded` body containing one
-`userQuery` and the normal portal request-verification token. The local query limit is 1,024 characters and the
-request body limit is 16 KiB. An absent provider leaves ordinary route dispatch in effect.
+Register one trusted `portalSearchSummary` function across the packs matched to a local portal. The function stands in
+for the AI; the HTTP contract, request filters and sources are the hosted API's (hosted session F3). It serves
+`POST /_api/search/v1.0/summary` with an `application/x-www-form-urlencoded` body holding one `userQuery` or a JSON
+object `{ "userQuery": "..." }`, and `POST /_api/search/v1.0/summarystream` with `{ "UserQuery": "..." }`. Send
+`X-Requested-With: XMLHttpRequest` and the portal request-verification token, as the platform's scripts do: without
+`X-Requested-With` a signed-out request answers the platform's 500 error page and a signed-in one 401, and without the
+token the answer is 401. Another method answers 404. The local query limit is 1,024 characters and the request body
+limit is 16 KiB. An absent provider leaves ordinary route dispatch in effect.
 
 ```js
 portalSearchSummary: ({ sources: [first] }) => ({
-  summary: 'The local search found a matching article.',
+  summary: 'The local search found a matching page.',
   citationIds: [first.id],
 }),
 ```
 
-The provider receives `{ query, sources }` with up to ten matching published, non-internal knowledge articles from
-the site's authorized search view. Its `sources` contain only copies of the article ID, title and displayed
-`content` column. Field permissions apply, and the `Knowledge Article` site marker must resolve to a published
-same-origin page that the active visitor can read. The provider never runs for an empty source set. Anonymous requests
-can use sources readable through that visitor's applicable local table and page permissions.
+The provider receives `{ query, sources }` with up to ten web pages and knowledge articles the visitor's portal
+search finds, as generative AI search grounds on the content keyword search indexes. A web page needs its web page
+access control rules (no table permission) and the publishing-state rule (`observed.searchUnpublishedPages`, which
+reports `PORTAL_SEARCH_UNPUBLISHED_PAGES_EXCLUDED` when it leaves a page out); its source holds the page ID, title and
+copy as text and is cited by the page URL. A knowledge article needs a `knowledgearticle` read permission, its content
+access level and read access to its `content` column; its source holds the article ID, title (when readable) and
+indexed content, and is cited by the Knowledge Article page with the article id in `id`. Every citation page must be
+readable by the visitor. The provider never runs for an empty source set.
 
-Return plain summary text and a list of distinct IDs from `sources`. Mirage derives the `Citations` map and inline
-citation links from those IDs. This contract supports deterministic local fixtures. Hosted generation, authored
-generative search scope outside the knowledge-article fixture and the platform's error responses still require
-independent evidence. [Power Pages Search Summary API](https://learn.microsoft.com/en-us/power-pages/configure/search/generative-ai#search-summary-api)
+Return plain summary text and a list of distinct IDs from `sources`. The answer has the hosted keys: `Summary` (the
+text, then each citation as `[[n]](page url)`), `SummaryTitle` "Summarized by AI", `SearchTitle` "Other results",
+`ErrorMessage`, `ResponseStatus { Code, Message }` ("Success"), `Citations` and `CitationTitleMapping` (both map
+`[n]` to the page URL) and `Chunks` null. When no page is found the answer is 200 with `ErrorMessage` "I'm sorry, I'm
+unable to process your question. Can you rephrase or ask another question?" and the status message "No relevant
+chunks found in dataverse."; an empty summary gives "No relevant responses were found."; a request without a query
+answers 500 with the same keys. `summarystream` answers `text/event-stream`: `data: <answer>` events, each a
+"Partial Message" piece of the summary, the first with the titles. The hosted stream's closing events were not
+captured, so the local stream ends after the last piece. An anonymous visitor's JSON answers send
+`Cache-Control: private`; a signed-in visitor's send `no-cache, no-store, must-revalidate` with `Expires: -1`, as
+every 401 does; `summarystream` is `private` for both. The data summarization answers, its 400 and 404 refusals
+included, send the same caching headers.
+[Power Pages Search Summary API](https://learn.microsoft.com/en-us/power-pages/configure/search/generative-ai#search-summary-api)
 
 ## Captured error templates
 
@@ -331,9 +347,13 @@ declared, active alternate key, resolved as the Web API resolves it) and
 `$apply`; and each `$expand` takes its own `$select`, `$filter`, `$orderby`, `$top` and nested `$expand`. Every level
 except an `$apply` names an explicit `$select`. A collection summarizes the page a Web API GET of the same query returns:
 at most 5,000 rows, `Prefer: odata.maxpagesize` with `$top`, and the `$skiptoken` of an `@odata.nextLink` (bound to the
-visitor that read it). FetchXML is not a summary source. Send the normal portal verification token and a JSON object
-with `InstructionIdentifier` naming an authored `Summarization/prompt/<identifier>` site setting. Enable the
-fixture with `Summarization/Data/Enable=true` and the Web API settings for the root and related tables.
+visitor that read it). FetchXML is not a summary source. Send `X-Requested-With: XMLHttpRequest`, the normal portal
+verification token and a JSON object that may name a `Summarization/prompt/<identifier>` site setting as
+`InstructionIdentifier`: without one, or naming a setting the site does not have, the summary runs without a prompt
+(`instructionIdentifier` and `prompt` are null), as a hosted site answers it. The request filters are the search
+summary's. Enable the fixture with `Summarization/Data/Enable=true` and the Web API settings for the root and related
+tables. A site without the setting answers 400 `90041003` "Data summarization disabled for this site. Please enable
+using site setting." and a missing record 404 `9004010D` "Common Data Service error occurred.".
 
 ```js
 portalDataSummary: ({ record, records, recommendation }) => ({

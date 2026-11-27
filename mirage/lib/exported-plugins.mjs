@@ -66,6 +66,7 @@ import {
   unbridgeTargetInputs,
 } from './plugin-single-multiple.mjs';
 import { ownershipOf } from './dataverse-security.mjs';
+import { portalCall, portalCallerUserId } from './plugin-portal-caller.mjs';
 import {
   recordStepConstructorSettings,
   copyStepConstructorSettings,
@@ -934,6 +935,7 @@ function typedContext({
   holder,
   changedAttributes = [],
   bridged = false,
+  portalCaller = null,
 }) {
   const idColumn = entity && !(customApi && entity === 'none') ? store?.resolveMapping(entity)?.idColumn : null;
   const images = (types, source) => registeredImages(item, types, source, frame?.imageRows);
@@ -946,7 +948,8 @@ function typedContext({
     frame?.delegatedParentContext ??
     (preValidationParent || store?.pluginParentContext || pluginInvocationSdkParent(store));
   initializePluginOperation(frame, store, parent);
-  const executing = identity?.systemUserId ?? identity?.id ?? parent?.values?.UserId?.value ?? null;
+  // A portal request runs as the site's host application user, not as the visitor's contact (plugin-portal-caller.mjs).
+  const executing = portalCaller ?? identity?.systemUserId ?? identity?.id ?? parent?.values?.UserId?.value ?? null;
   // A plug-in's SDK call: the service's user initiates the nested operation (recorded native sdkSurface, readNested).
   const initiating = store?.pluginExecutionUserId ?? parent?.values?.InitiatingUserId?.value ?? executing;
   const result = {
@@ -1590,6 +1593,8 @@ function copyBulkParentFrame(phaseFrame, bulkParent, asyncExecution) {
   customApi,
   messageParameters,
   portalRequest = false,
+  // A real-time workflow's operation inside a portal call: the call's contact and caller (dataverse-workflows.mjs).
+  inheritedPortalCall = null,
   sdkFromSandbox = false,
   preValidationSourceOperation,
   frameworkInputTarget,
@@ -1666,6 +1671,12 @@ function copyBulkParentFrame(phaseFrame, bulkParent, asyncExecution) {
   // A request a plug-in issued through its IOrganizationService (plugin-clr.mjs InitiatingUserAgent); its asynchronous
   // jobs keep the fact.
   if (!asyncExecution) phaseFrame.sdkIssued ??= Boolean(store?.pluginParentContext || pluginInvocationSdkParent(store));
+  // A portal call's caller (plugin-portal-caller.mjs) travels with the operation, so its asynchronous jobs and web hooks
+  // report the same UserId as its synchronous steps.
+  const inherited = !asyncExecution && inheritedPortalCall?.contactId ? inheritedPortalCall : null;
+  if (inherited) phaseFrame.portalCallerUserId ??= inherited.callerUserId ?? null;
+  else if (!asyncExecution && portalCall(store, identity, portalRequest))
+    phaseFrame.portalCallerUserId ??= portalCallerUserId(store, identity);
   executionFrames.set(record, phaseFrame);
   // UpsertMultiple's UpdateMultiple carries ConcurrencyBehavior on the message (dataverse-records.mjs bulkWrite).
   if (operation === 'updatemultiple' && bulkConcurrencyBehavior !== undefined) {
@@ -2277,6 +2288,9 @@ function copyBulkParentFrame(phaseFrame, bulkParent, asyncExecution) {
           record,
           previous,
           identity,
+          portalCaller:
+            inherited?.callerUserId ??
+            (portalCall(store, identity, portalRequest) ? portalCallerUserId(store, identity) : null),
           changedAttributes,
           bridged,
           depth: phaseFrame.operationDepth,
@@ -2369,11 +2383,19 @@ function copyBulkParentFrame(phaseFrame, bulkParent, asyncExecution) {
               501,
             );
           const frame = executionFrames.get(record);
-          frame.portalContactId =
-            portalRequest && !store.pluginParentContext && !identity?.admin
-              ? (identity?.contactId ?? identity?.id ?? null)
-              : null;
-          frame.portalRequest = portalRequest && !store.pluginParentContext && !identity?.admin;
+          frame.portalContactId = portalCall(store, identity, portalRequest)
+            ? (identity?.contactId ?? identity?.id ?? null)
+            : null;
+          frame.portalRequest = portalCall(store, identity, portalRequest);
+          // A portal request calls Dataverse as the site's host application user (plugin-portal-caller.mjs).
+          frame.portalCallerUserId = frame.portalRequest ? portalCallerUserId(store, identity) : null;
+          // A real-time workflow's operation keeps its portal call's facts at its depth (hosted F2 state 0 s0a/s0b).
+          if (inherited) {
+            frame.portalRequest = true;
+            frame.portalContactId = inherited.contactId;
+            frame.portalCallerUserId = inherited.callerUserId ?? null;
+            frame.portalInherited = true;
+          }
           frame.callerIdentity ??= identity;
           if (read) {
             frame.query = query;
@@ -2568,6 +2590,9 @@ function copyBulkParentFrame(phaseFrame, bulkParent, asyncExecution) {
             columns,
             holder,
             bridged,
+            portalCaller:
+              inherited?.callerUserId ??
+              (portalCall(store, identity, portalRequest) ? portalCallerUserId(store, identity) : null),
           };
           let handlerContext = typed ? typedContext(contextArguments) : undefined;
           const invocationContext = handlerContext ?? (store ? typedContext(contextArguments) : undefined);

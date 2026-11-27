@@ -1,0 +1,474 @@
+{
+  "schema": "paqvilo.parity-cases/1",
+  "surface": "dataverse-webapi",
+  "suite": "hosted-f7-sharepoint-documents",
+  "oracle": {
+    "kind": "native",
+    "name": "Dataverse Web API (/api/data/v9.2)",
+    "version": "hosted Dataverse environment, 2026-11-27",
+    "scope": "Reads of the sharepointdocument table on hosted session F7's environment with its SharePoint integration off, as the session's application user with Prefer odata.include-annotations=*: select-less and $select collection reads, a $filter and FetchXML on regardingobjectid (with and without regardingobjecttypecode), a FetchXML without a regarding condition, a keyed read, /$count and the table's EntityDefinitions with its columns, in phase s0 (no SharePoint site) and s1-loc (a default site, the table library and one record location per case). Projection: status; the error code, message and the raising plug-in, message name, category and status annotations; the /$count text; the table properties without MetadataId and the columns as name:type:readable; or the context path, the total record count annotations and the rows. Runs a and b."
+  },
+  "captures": [
+    {
+      "id": "hosted-f7-a-hosted-f7-sharepoint-documents",
+      "sha256": "670f696b3e6e839773fcead5daf72e937ad361e88d4009ac022dd8634b93732e",
+      "capturedAt": "2026-11-27"
+    },
+    {
+      "id": "hosted-f7-b-hosted-f7-sharepoint-documents",
+      "sha256": "c04354975a075b7c42880010bfedd4cbaf2505a1c2cd0a01eb3ed5be7cbd38cf",
+      "capturedAt": "2026-11-27"
+    }
+  ],
+  "cases": [
+    {
+      "id": "s0:documents-top",
+      "input": {
+        "method": "GET",
+        "path": "sharepointdocuments?$top=5"
+      },
+      "output": {
+        "status": 200,
+        "context": "/api/data/v9.2/$metadata#sharepointdocuments",
+        "total": -1,
+        "totalLimitExceeded": false,
+        "rows": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "s0:documents-select",
+      "input": {
+        "method": "GET",
+        "path": "sharepointdocuments?$select=fullname,relativelocation,isfolder,documentid&$top=5"
+      },
+      "output": {
+        "status": 200,
+        "context": "/api/data/v9.2/$metadata#sharepointdocuments(fullname,relativelocation,isfolder,documentid)",
+        "total": -1,
+        "totalLimitExceeded": false,
+        "rows": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "s0:documents-by-regarding",
+      "input": {
+        "method": "GET",
+        "path": "sharepointdocuments?$select=fullname,relativelocation&$filter=_regardingobjectid_value eq {record}"
+      },
+      "output": {
+        "status": 400,
+        "error": {
+          "code": "0x80071017",
+          "message": "SharePoint S2S and MSTeams integration is not enabled for this org",
+          "ApiExceptionSourceKey": "Plugin/Microsoft.Crm.ObjectModel.SharePointDocumentService",
+          "ApiExceptionMessageName": "SharePointS2SIsDisabled",
+          "ApiExceptionCategory": "ClientError",
+          "ApiExceptionHttpStatusCode": "400"
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "s0:documents-fetch-regarding",
+      "input": {
+        "method": "GET",
+        "path": "sharepointdocuments?fetchXml=%3Cfetch%3E%3Centity%20name%3D%22sharepointdocument%22%3E%3Cattribute%20name%3D%22fullname%22%2F%3E%3Cattribute%20name%3D%22relativelocation%22%2F%3E%3Cfilter%3E%3Ccondition%20attribute%3D%22regardingobjectid%22%20operator%3D%22eq%22%20value%3D%22{record}%22%2F%3E%3C%2Ffilter%3E%3C%2Fentity%3E%3C%2Ffetch%3E"
+      },
+      "output": {
+        "status": 400,
+        "error": {
+          "code": "0x80071017",
+          "message": "SharePoint S2S and MSTeams integration is not enabled for this org",
+          "ApiExceptionSourceKey": "Plugin/Microsoft.Crm.ObjectModel.SharePointDocumentService",
+          "ApiExceptionMessageName": "SharePointS2SIsDisabled",
+          "ApiExceptionCategory": "ClientError",
+          "ApiExceptionHttpStatusCode": "400"
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "s0:documents-fetch-regarding-type",
+      "input": {
+        "method": "GET",
+        "path": "sharepointdocuments?fetchXml=%3Cfetch%3E%3Centity%20name%3D%22sharepointdocument%22%3E%3Cattribute%20name%3D%22fullname%22%2F%3E%3Cfilter%3E%3Ccondition%20attribute%3D%22regardingobjectid%22%20operator%3D%22eq%22%20value%3D%22{record}%22%2F%3E%3Ccondition%20attribute%3D%22regardingobjecttypecode%22%20operator%3D%22eq%22%20value%3D%2210709%22%2F%3E%3C%2Ffilter%3E%3C%2Fentity%3E%3C%2Ffetch%3E"
+      },
+      "output": {
+        "status": 400,
+        "error": {
+          "code": "0x80071017",
+          "message": "SharePoint S2S and MSTeams integration is not enabled for this org",
+          "ApiExceptionSourceKey": "Plugin/Microsoft.Crm.ObjectModel.SharePointDocumentService",
+          "ApiExceptionMessageName": "SharePointS2SIsDisabled",
+          "ApiExceptionCategory": "ClientError",
+          "ApiExceptionHttpStatusCode": "400"
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "s0:documents-fetch-plain",
+      "input": {
+        "method": "GET",
+        "path": "sharepointdocuments?fetchXml=%3Cfetch%20top%3D%225%22%3E%3Centity%20name%3D%22sharepointdocument%22%3E%3Cattribute%20name%3D%22fullname%22%2F%3E%3C%2Fentity%3E%3C%2Ffetch%3E"
+      },
+      "output": {
+        "status": 200,
+        "context": "/api/data/v9.2/$metadata#sharepointdocuments",
+        "total": -1,
+        "totalLimitExceeded": false,
+        "rows": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "s0:documents-by-id",
+      "input": {
+        "method": "GET",
+        "path": "sharepointdocuments(00000000-0000-0000-0000-000000000001)"
+      },
+      "output": {
+        "status": 404,
+        "error": {
+          "code": "0x80040217",
+          "message": "Entity 'sharepointdocument' With Id = 00000000-0000-0000-0000-000000000001 Does Not Exist",
+          "ApiExceptionSourceKey": "Plugin/Microsoft.Crm.ObjectModel.SharePointDocumentService",
+          "ApiExceptionMessageName": "ObjectDoesNotExist",
+          "ApiExceptionCategory": "ClientError",
+          "ApiExceptionHttpStatusCode": "404"
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "s0:documents-count",
+      "input": {
+        "method": "GET",
+        "path": "sharepointdocuments/$count"
+      },
+      "output": {
+        "status": 200,
+        "text": "-1"
+      },
+      "volatile": []
+    },
+    {
+      "id": "s0:documents-metadata",
+      "input": {
+        "method": "GET",
+        "path": "EntityDefinitions(LogicalName='sharepointdocument')?$select=LogicalName,EntitySetName,TableType,DataProviderId,DataSourceId,IsValidForAdvancedFind,PrimaryIdAttribute,PrimaryNameAttribute&$expand=Attributes($select=LogicalName,AttributeType,IsValidForRead)"
+      },
+      "output": {
+        "status": 200,
+        "table": {
+          "DataProviderId": null,
+          "DataSourceId": null,
+          "IsValidForAdvancedFind": true,
+          "LogicalName": "sharepointdocument",
+          "PrimaryNameAttribute": "fullname",
+          "PrimaryIdAttribute": "sharepointdocumentid",
+          "EntitySetName": "sharepointdocuments",
+          "TableType": "Standard"
+        },
+        "attributes": [
+          "absoluteurl:String:true",
+          "appcreatedby:String:true",
+          "appmodifiedby:String:true",
+          "author:String:true",
+          "businessunitid:Lookup:true",
+          "businessunitidname:String:true",
+          "checkedoutto:String:true",
+          "checkincomment:String:true",
+          "childfoldercount:Integer:true",
+          "childitemcount:Integer:true",
+          "contenttype:String:true",
+          "contenttypeid:Integer:true",
+          "copysource:String:true",
+          "createdby:Lookup:true",
+          "createdbyname:String:true",
+          "createdbyyominame:String:true",
+          "createdon:DateTime:true",
+          "createdonbehalfby:Lookup:true",
+          "createdonbehalfbyname:String:true",
+          "createdonbehalfbyyominame:String:true",
+          "documentid:Integer:true",
+          "documentlocationtype:Picklist:true",
+          "documentlocationtypename:Virtual:true",
+          "edit:String:true",
+          "editurl:String:true",
+          "exchangerate:Decimal:true",
+          "filesize:Integer:true",
+          "filetype:String:true",
+          "fullname:String:true",
+          "iconclassname:String:true",
+          "ischeckedout:Boolean:true",
+          "isfolder:Boolean:true",
+          "isrecursivefetch:Boolean:true",
+          "locationid:String:true",
+          "locationname:String:true",
+          "modified:DateTime:true",
+          "modifiedby:Lookup:true",
+          "modifiedbyname:String:true",
+          "modifiedbyyominame:String:true",
+          "modifiedon:DateTime:true",
+          "modifiedonbehalfby:Lookup:true",
+          "modifiedonbehalfbyname:String:true",
+          "modifiedonbehalfbyyominame:String:true",
+          "organizationid:Lookup:true",
+          "organizationidname:String:true",
+          "ownerid:Owner:true",
+          "owneridname:String:true",
+          "owneridtype:EntityName:true",
+          "owneridyominame:String:true",
+          "owningbusinessunit:Lookup:true",
+          "owningbusinessunitname:String:true",
+          "owningteam:Lookup:true",
+          "owninguser:Lookup:true",
+          "readurl:String:true",
+          "regardingobjectid:Lookup:true",
+          "regardingobjectidname:String:true",
+          "regardingobjectidyominame:String:true",
+          "regardingobjecttypecode:EntityName:true",
+          "relativelocation:String:true",
+          "servicetype:Picklist:true",
+          "servicetypename:Virtual:true",
+          "sharepointcreatedon:DateTime:true",
+          "sharepointdocumentid:Uniqueidentifier:true",
+          "sharepointmodifiedby:String:true",
+          "title:String:true",
+          "transactioncurrencyid:Lookup:true",
+          "transactioncurrencyidname:String:true",
+          "version:String:true"
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "s1-loc:documents-top",
+      "input": {
+        "method": "GET",
+        "path": "sharepointdocuments?$top=5"
+      },
+      "output": {
+        "status": 200,
+        "context": "/api/data/v9.2/$metadata#sharepointdocuments",
+        "total": -1,
+        "totalLimitExceeded": false,
+        "rows": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "s1-loc:documents-select",
+      "input": {
+        "method": "GET",
+        "path": "sharepointdocuments?$select=fullname,relativelocation,isfolder,documentid&$top=5"
+      },
+      "output": {
+        "status": 200,
+        "context": "/api/data/v9.2/$metadata#sharepointdocuments(fullname,relativelocation,isfolder,documentid)",
+        "total": -1,
+        "totalLimitExceeded": false,
+        "rows": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "s1-loc:documents-by-regarding",
+      "input": {
+        "method": "GET",
+        "path": "sharepointdocuments?$select=fullname,relativelocation&$filter=_regardingobjectid_value eq {record}"
+      },
+      "output": {
+        "status": 400,
+        "error": {
+          "code": "0x80071017",
+          "message": "SharePoint S2S and MSTeams integration is not enabled for this org",
+          "ApiExceptionSourceKey": "Plugin/Microsoft.Crm.ObjectModel.SharePointDocumentService",
+          "ApiExceptionMessageName": "SharePointS2SIsDisabled",
+          "ApiExceptionCategory": "ClientError",
+          "ApiExceptionHttpStatusCode": "400"
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "s1-loc:documents-fetch-regarding",
+      "input": {
+        "method": "GET",
+        "path": "sharepointdocuments?fetchXml=%3Cfetch%3E%3Centity%20name%3D%22sharepointdocument%22%3E%3Cattribute%20name%3D%22fullname%22%2F%3E%3Cattribute%20name%3D%22relativelocation%22%2F%3E%3Cfilter%3E%3Ccondition%20attribute%3D%22regardingobjectid%22%20operator%3D%22eq%22%20value%3D%22{record}%22%2F%3E%3C%2Ffilter%3E%3C%2Fentity%3E%3C%2Ffetch%3E"
+      },
+      "output": {
+        "status": 400,
+        "error": {
+          "code": "0x80071017",
+          "message": "SharePoint S2S and MSTeams integration is not enabled for this org",
+          "ApiExceptionSourceKey": "Plugin/Microsoft.Crm.ObjectModel.SharePointDocumentService",
+          "ApiExceptionMessageName": "SharePointS2SIsDisabled",
+          "ApiExceptionCategory": "ClientError",
+          "ApiExceptionHttpStatusCode": "400"
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "s1-loc:documents-fetch-regarding-type",
+      "input": {
+        "method": "GET",
+        "path": "sharepointdocuments?fetchXml=%3Cfetch%3E%3Centity%20name%3D%22sharepointdocument%22%3E%3Cattribute%20name%3D%22fullname%22%2F%3E%3Cfilter%3E%3Ccondition%20attribute%3D%22regardingobjectid%22%20operator%3D%22eq%22%20value%3D%22{record}%22%2F%3E%3Ccondition%20attribute%3D%22regardingobjecttypecode%22%20operator%3D%22eq%22%20value%3D%2210709%22%2F%3E%3C%2Ffilter%3E%3C%2Fentity%3E%3C%2Ffetch%3E"
+      },
+      "output": {
+        "status": 400,
+        "error": {
+          "code": "0x80071017",
+          "message": "SharePoint S2S and MSTeams integration is not enabled for this org",
+          "ApiExceptionSourceKey": "Plugin/Microsoft.Crm.ObjectModel.SharePointDocumentService",
+          "ApiExceptionMessageName": "SharePointS2SIsDisabled",
+          "ApiExceptionCategory": "ClientError",
+          "ApiExceptionHttpStatusCode": "400"
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "s1-loc:documents-fetch-plain",
+      "input": {
+        "method": "GET",
+        "path": "sharepointdocuments?fetchXml=%3Cfetch%20top%3D%225%22%3E%3Centity%20name%3D%22sharepointdocument%22%3E%3Cattribute%20name%3D%22fullname%22%2F%3E%3C%2Fentity%3E%3C%2Ffetch%3E"
+      },
+      "output": {
+        "status": 200,
+        "context": "/api/data/v9.2/$metadata#sharepointdocuments",
+        "total": -1,
+        "totalLimitExceeded": false,
+        "rows": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "s1-loc:documents-by-id",
+      "input": {
+        "method": "GET",
+        "path": "sharepointdocuments(00000000-0000-0000-0000-000000000001)"
+      },
+      "output": {
+        "status": 404,
+        "error": {
+          "code": "0x80040217",
+          "message": "Entity 'sharepointdocument' With Id = 00000000-0000-0000-0000-000000000001 Does Not Exist",
+          "ApiExceptionSourceKey": "Plugin/Microsoft.Crm.ObjectModel.SharePointDocumentService",
+          "ApiExceptionMessageName": "ObjectDoesNotExist",
+          "ApiExceptionCategory": "ClientError",
+          "ApiExceptionHttpStatusCode": "404"
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "s1-loc:documents-count",
+      "input": {
+        "method": "GET",
+        "path": "sharepointdocuments/$count"
+      },
+      "output": {
+        "status": 200,
+        "text": "-1"
+      },
+      "volatile": []
+    },
+    {
+      "id": "s1-loc:documents-metadata",
+      "input": {
+        "method": "GET",
+        "path": "EntityDefinitions(LogicalName='sharepointdocument')?$select=LogicalName,EntitySetName,TableType,DataProviderId,DataSourceId,IsValidForAdvancedFind,PrimaryIdAttribute,PrimaryNameAttribute&$expand=Attributes($select=LogicalName,AttributeType,IsValidForRead)"
+      },
+      "output": {
+        "status": 200,
+        "table": {
+          "DataProviderId": null,
+          "DataSourceId": null,
+          "IsValidForAdvancedFind": true,
+          "LogicalName": "sharepointdocument",
+          "PrimaryNameAttribute": "fullname",
+          "PrimaryIdAttribute": "sharepointdocumentid",
+          "EntitySetName": "sharepointdocuments",
+          "TableType": "Standard"
+        },
+        "attributes": [
+          "absoluteurl:String:true",
+          "appcreatedby:String:true",
+          "appmodifiedby:String:true",
+          "author:String:true",
+          "businessunitid:Lookup:true",
+          "businessunitidname:String:true",
+          "checkedoutto:String:true",
+          "checkincomment:String:true",
+          "childfoldercount:Integer:true",
+          "childitemcount:Integer:true",
+          "contenttype:String:true",
+          "contenttypeid:Integer:true",
+          "copysource:String:true",
+          "createdby:Lookup:true",
+          "createdbyname:String:true",
+          "createdbyyominame:String:true",
+          "createdon:DateTime:true",
+          "createdonbehalfby:Lookup:true",
+          "createdonbehalfbyname:String:true",
+          "createdonbehalfbyyominame:String:true",
+          "documentid:Integer:true",
+          "documentlocationtype:Picklist:true",
+          "documentlocationtypename:Virtual:true",
+          "edit:String:true",
+          "editurl:String:true",
+          "exchangerate:Decimal:true",
+          "filesize:Integer:true",
+          "filetype:String:true",
+          "fullname:String:true",
+          "iconclassname:String:true",
+          "ischeckedout:Boolean:true",
+          "isfolder:Boolean:true",
+          "isrecursivefetch:Boolean:true",
+          "locationid:String:true",
+          "locationname:String:true",
+          "modified:DateTime:true",
+          "modifiedby:Lookup:true",
+          "modifiedbyname:String:true",
+          "modifiedbyyominame:String:true",
+          "modifiedon:DateTime:true",
+          "modifiedonbehalfby:Lookup:true",
+          "modifiedonbehalfbyname:String:true",
+          "modifiedonbehalfbyyominame:String:true",
+          "organizationid:Lookup:true",
+          "organizationidname:String:true",
+          "ownerid:Owner:true",
+          "owneridname:String:true",
+          "owneridtype:EntityName:true",
+          "owneridyominame:String:true",
+          "owningbusinessunit:Lookup:true",
+          "owningbusinessunitname:String:true",
+          "owningteam:Lookup:true",
+          "owninguser:Lookup:true",
+          "readurl:String:true",
+          "regardingobjectid:Lookup:true",
+          "regardingobjectidname:String:true",
+          "regardingobjectidyominame:String:true",
+          "regardingobjecttypecode:EntityName:true",
+          "relativelocation:String:true",
+          "servicetype:Picklist:true",
+          "servicetypename:Virtual:true",
+          "sharepointcreatedon:DateTime:true",
+          "sharepointdocumentid:Uniqueidentifier:true",
+          "sharepointmodifiedby:String:true",
+          "title:String:true",
+          "transactioncurrencyid:Lookup:true",
+          "transactioncurrencyidname:String:true",
+          "version:String:true"
+        ]
+      },
+      "volatile": []
+    }
+  ],
+  "history": []
+}

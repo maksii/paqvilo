@@ -319,7 +319,11 @@ function xrayBrowserImpl(data) {
     candidateLimit = false,
     pickGesture = false,
     pendingPick = null,
+    pendingPoint = null,
     warmup = false;
+  // The read below the selection where page code cannot reach (a closed shadow root, a cross-origin frame): Lense reads
+  // it through the DevTools protocol at the point of the pick. { generation, reading, result }.
+  let pierced = null;
   let selectionGeneration = 0,
     retainedOneShot = false,
     lastIdentity = null,
@@ -1267,6 +1271,59 @@ function xrayBrowserImpl(data) {
     const result = ranked.slice(0, 60);
     result.omitted = Math.max(0, ranked.length - result.length);
     return result;
+  };
+  // The element Lense read below the selection, with where it stands and what its source is. Content of another origin
+  // is not portal source; content of a closed shadow root is the selected element's, which created it.
+  const piercedHtml = (below) => {
+    const found = below?.result?.element;
+    if (!found) return '';
+    const frame = found.scope?.frame;
+    // A cross-origin frame has no exported source, closed roots inside it included. A portal page in a frame (in the
+    // tab's process or out of it) is the portal's: its closed roots map as the page's do.
+    const foreign = below.result.sealedBy === 'cross-origin-frame' || Boolean(frame?.crossOrigin);
+    const heading = foreign
+      ? 'Inside a cross-origin frame · ' + esc(frame?.origin ?? '')
+      : 'Inside a closed shadow root';
+    const kind = foreign ? 'cross-origin-frame' : 'closed-shadow-root';
+    const attributes = Object.entries(found.attributes ?? {})
+      .map(([name, value]) => '<dt>' + esc(name) + '</dt><dd>' + esc(value) + '</dd>')
+      .join('');
+    const path = (below.result.path ?? [])
+      .map(
+        (step) =>
+          step.tag + (step.id ? '#' + step.id : '') + (step.class ? '.' + step.class.split(/\s+/).join('.') : ''),
+      )
+      .join(' › ');
+    // A declarative closed shadow root the export writes: its element maps to that source, as other elements do.
+    const written = (below.result.source?.refs ?? []).filter((ref) => ref.ref && ref.line);
+    let source = foreign
+      ? 'Not portal source: the frame belongs to another origin, so it is shown, never matched to files.'
+      : 'Contained in its shadow host: script of the host created this closed shadow root, so its source is the host’s.';
+    if (!foreign && written.length)
+      source =
+        'Written by the exported source: ' +
+        written
+          .map((ref) => '<span class="mono" data-pierced-source>' + esc(ref.ref + ':' + ref.line) + '</span>')
+          .join(', ');
+    return (
+      '<div class="section pierced" data-pierced="' +
+      kind +
+      '" data-generation="' +
+      below.generation +
+      '"><h3>' +
+      heading +
+      ' <small>read through the DevTools protocol</small></h3><div class="binding"><strong>' +
+      esc('<' + found.tag + '>') +
+      '</strong>' +
+      (found.text ? '<div class="muted">' + esc(found.text) + '</div>' : '') +
+      '</div><dl class="details"><dt>Path</dt><dd class="mono">' +
+      esc(path) +
+      '</dd>' +
+      attributes +
+      '</dl><p class="note">' +
+      source +
+      '</p></div>'
+    );
   };
   const dispatch = (action, detail = {}) =>
     host.dispatchEvent(new CustomEvent('paqvilo-xray', { bubbles: true, detail: { action, ...detail } }));
@@ -2770,15 +2827,19 @@ function xrayBrowserImpl(data) {
     const heading = identity.title;
     // A frame the browser keeps closed to this page (cross-origin, sandboxed) cannot be entered by a click.
     let frameNote = '';
+    const below = pierced?.generation === selectionGeneration ? pierced : null;
     if (get(selected, 'localName') === 'iframe') {
       const boundary = frameSettled(selected) && !frameDocument(selected);
-      const note = boundary
+      let note = boundary
         ? 'Frame outside Inspect: the browser keeps a cross-origin or sandboxed frame closed to this page, so its controls cannot be selected here; open the frame in its own tab to inspect it.'
         : 'Frame. Click inside it to select its controls. If that does not work, open the frame in its own tab.';
+      if (boundary && below?.result?.element)
+        note =
+          'The browser keeps this frame closed to the page; Lense read the element under the pointer through the DevTools protocol, below.';
       frameNote =
         '<p class=note>' + note + '</p><button class="btn sec" data-action="frame-open">Open frame in new tab</button>';
     }
-    card.innerHTML = `<div class="cardhead"><div class="grow"><div class="eyebrow">${esc(identity.kind)}</div><div class="titlerow"><div class="title">${esc(heading)}</div>${renderInspectionEvidence(identity.evidence, { part: 'badge' })}</div></div><button class="ib" data-action="dock" title="Move details to the other side" aria-label="Move details">${kit.icon('swap')}</button><button class="ib" data-action="clear" aria-label="Clear selection" title="Clear selection">${kit.icon('close')}</button></div><div class="content">${frameNote}${sourcesHtml(selected)}<details class="ancestry"${identity.matched ? '' : ' open'}><summary>Parent elements</summary><div class="mono element-label">${esc(label(selected))}</div><p class="note">Select an enclosing element to inspect its source. [ and ] cycle overlapping elements.</p>${lineage(
+    card.innerHTML = `<div class="cardhead"><div class="grow"><div class="eyebrow">${esc(identity.kind)}</div><div class="titlerow"><div class="title">${esc(heading)}</div>${renderInspectionEvidence(identity.evidence, { part: 'badge' })}</div></div><button class="ib" data-action="dock" title="Move details to the other side" aria-label="Move details">${kit.icon('swap')}</button><button class="ib" data-action="clear" aria-label="Clear selection" title="Clear selection">${kit.icon('close')}</button></div><div class="content">${frameNote}${piercedHtml(below)}${sourcesHtml(selected)}<details class="ancestry"${identity.matched ? '' : ' open'}><summary>Parent elements</summary><div class="mono element-label">${esc(label(selected))}</div><p class="note">Select an enclosing element to inspect its source. [ and ] cycle overlapping elements.</p>${lineage(
       selected,
     )
       .map(
@@ -3575,7 +3636,7 @@ function xrayBrowserImpl(data) {
   // A logical-name label that Lense added to a model-driven field stands for that field: picking or hovering it
   // inspects the field it was added to, not the label itself.
   const annotated = (node) => get(call(node, 'closest', '[data-paq-model-logical-name]'), 'parentElement') ?? node;
-  const select = (picked) => {
+  const select = (picked, point = null) => {
     const node = annotated(picked);
     if (!node || own(node)) return;
     const rect = visibleRect(node),
@@ -3585,6 +3646,7 @@ function xrayBrowserImpl(data) {
     resizeObserver.observe(node);
     selected = node;
     selectionGeneration++;
+    pierced = point ? { generation: selectionGeneration, reading: true, result: null } : null;
     retainedOneShot = oneShot;
     watchSelection();
     details = true;
@@ -3597,6 +3659,7 @@ function xrayBrowserImpl(data) {
     schedule();
     const once = oneShot;
     notifySelection(false);
+    if (point) dispatch('pierce', { x: point.x, y: point.y, selectionGeneration });
     if (once) toggle(false);
   };
   const toggle = (value) => {
@@ -3817,16 +3880,19 @@ function xrayBrowserImpl(data) {
             return;
           }
           const picked = get(node, 'classList')?.contains('shield') ? underPointer(point.clientX, point.clientY) : node;
+          const at = { x: point.clientX, y: point.clientY };
           if (oneShot) {
             pickGesture = true;
             pendingPick = picked;
-          } else select(picked);
+            pendingPoint = at;
+          } else select(picked, at);
         }
         if (['click', 'auxclick', 'contextmenu', 'touchend'].includes(type) && pickGesture) {
           const picked = pendingPick;
-          if (oneShot) select(picked);
+          if (oneShot) select(picked, pendingPoint);
           pickGesture = false;
           pendingPick = null;
+          pendingPoint = null;
         }
         if (type === 'pointercancel' || type === 'touchcancel') {
           pickGesture = false;
@@ -4327,6 +4393,42 @@ function xrayBrowserImpl(data) {
     refreshSelection,
     selectedNode() {
       return selected && liveNode(selected) ? selected : null;
+    },
+    /**
+     * The identification of an element in a closed shadow root that Lense reached (panel action pierce): what identify
+     * says of it, reduced to its title and source references (file, line).
+     */
+    identifySealed(node) {
+      const identity = identify(node, getSelectionScope(node));
+      const source = identity?.evidence?.source;
+      return JSON.parse(
+        JSON.stringify({
+          title: identity?.title ?? null,
+          kind: identity?.kind ?? null,
+          status: source?.status ?? null,
+          refs: (source?.refs ?? []).map((ref) => ({
+            ref: ref.ref ?? null,
+            name: ref.name ?? ref.label ?? null,
+            line: ref.region?.line ?? null,
+            status: ref.status ?? null,
+          })),
+        }),
+      );
+    },
+    /** The pierced read of the current selection as markup, for the panel's selection summary ('' when none). */
+    /** The pierced read of the current selection: null without one, else whether it is still read and what it found. */
+    piercedState() {
+      if (pierced?.generation !== selectionGeneration) return null;
+      return { generation: pierced.generation, reading: pierced.reading, found: pierced.result?.element ?? null };
+    },
+    piercedMarkup() {
+      return piercedHtml(pierced?.generation === selectionGeneration ? pierced : null);
+    },
+    /** The pierced read of selection `generation` (lense panel action pierce); a later selection ignores it. */
+    setPierced(generation, result) {
+      if (generation !== selectionGeneration || pierced?.generation !== generation) return;
+      pierced = { generation, reading: false, result: result?.ok ? result : null };
+      renderCard(true);
     },
     selectionState() {
       return {

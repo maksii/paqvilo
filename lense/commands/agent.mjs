@@ -390,6 +390,7 @@ function agentActionRequest(action, args, timeout) {
           ?.split(',')
           .map((s) => s.trim())
           .filter(Boolean),
+        ...(args.pierce ? { pierce: true } : {}),
         timeoutMs: timeout,
       };
       break;

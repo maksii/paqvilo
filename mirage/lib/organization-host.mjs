@@ -1307,6 +1307,8 @@ async function hostContext({
     env,
     organizationUri: () => c.dataverse?.origin ?? localOrigin() ?? null,
   });
+  // The host's own origin once it listens (the Send Invitation email links to it).
+  c.localOrigin = localOrigin;
   // The composed providers are closed when the rest of the context fails to build, so a failed host leaks none.
   try {
     return hostContextRest(c, { store, clock, ids, scheduler, diagnostic, inventory });
@@ -1616,6 +1618,7 @@ function hostLifecycle(c) {
         addonHandlers: handlers.addons,
         timeoutMs: c.timeoutMs,
         uploadedAssemblies: c.config.uploadedAssemblies,
+        portalOrigin: () => c.localOrigin?.() ?? null,
       });
       if (!c.organization) {
         c.installed = c.extensions;

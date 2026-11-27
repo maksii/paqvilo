@@ -22,7 +22,7 @@ const note = (n, day, overrides = {}) => ({
   ...overrides,
 });
 
-async function notesFixture(t, alter = (result) => result) {
+async function notesFixture(t, alter = (result) => result, extra = []) {
   const state = emptyState();
   state.mappings = {
     contact: { logicalName: 'contact', entitySet: 'contacts', idColumn: 'contactid', nameColumn: 'fullname' },
@@ -45,6 +45,7 @@ async function notesFixture(t, alter = (result) => result) {
     note(3, 2, { owner: lookup(other) }),
     note(4, 2, { objectid: lookup(contact, 'account'), objecttypecode: 'account' }),
     note(9, 3, { subject: `*PRIVATE* by Reader [contact:${contact}]`, filename: 'note.txt', filesize: 20 }),
+    ...extra,
   ];
   state.permissions = [
     { entity: 'contact', scope: 'global', roles: ['Reader'], operations: ['read'] },
@@ -53,10 +54,12 @@ async function notesFixture(t, alter = (result) => result) {
   state.settings.permissionMode = 'enforce';
   const store = await new DataStore({ state }).init();
   const pages = [];
+  const diagnostics = [];
   const context = {
     store,
     identity,
     csrf: 'page-token',
+    recordDiagnostic: (entry) => diagnostics.push(entry),
     portal: { website: { id: website }, settings: {} },
     readProvider: {
       get: (entity, recordId, caller) => store.get(entity, recordId, caller, { portalRequest: true }),
@@ -66,12 +69,15 @@ async function notesFixture(t, alter = (result) => result) {
         const query = xml.replace(/<fetch(?: count="\d+")?/, '<fetch count="2"');
         const result = store.fetchXml(query, caller, { portalRequest: true });
         pages.push({
+          xml,
           page: Number(attrs.page ?? 1),
           requestCookie: attrs['paging-cookie'] ?? null,
           responseCookie: result.paging_cookie,
           ids: result.entities.map((row) => row.annotationid),
         });
-        return alter(result, pages);
+        const answered = alter(result, pages);
+        pages.at(-1).rows = answered.entities;
+        return answered;
       },
     },
   };
@@ -87,7 +93,7 @@ async function notesFixture(t, alter = (result) => result) {
         orders: [{ Attribute: 'createdon', Direction }],
       }),
     });
-  return { post, pages };
+  return { post, pages, diagnostics };
 }
 
 test('notes page totals and ordering span provider cursor pages after permission and visibility checks', async (t) => {
@@ -124,21 +130,92 @@ test('notes page totals and ordering span provider cursor pages after permission
   );
 });
 
-for (const [name, calls, cursor] of [
-  ['missing', 1, () => null],
-  ['repeated', 2, (pages) => pages[0].responseCookie],
-]) {
-  test(`notes reject a ${name} provider cursor without returning a partial total`, async (t) => {
-    const { post, pages } = await notesFixture(t, (result, providerPages) => ({
-      ...result,
-      paging_cookie: cursor(providerPages),
+test('notes read every provider page, beyond the former four-page cap, and project no attachment body', async (t) => {
+  // 13 more visible notes with a file body: with the provider's two-row pages the scan takes ten pages (the former cap
+  // was four pages and answered 501).
+  const extra = Array.from({ length: 13 }, (_, index) =>
+    note(20 + index, 4, {
+      filename: `file-${index}.txt`,
+      filesize: 4,
+      documentbody: Buffer.from('body').toString('base64'),
+    }),
+  );
+  const { post, pages } = await notesFixture(t, undefined, extra);
+  const response = await post(1, null);
+  assert.equal(response.status, 200);
+  const listed = await response.json();
+  assert.deepEqual([listed.ItemCount, listed.PageCount], [16, 8]);
+  assert.equal(pages.length, 10);
+  for (const [index, entry] of pages.entries()) {
+    if (index) assert.equal(entry.requestCookie, pages[index - 1].responseCookie);
+    assert.doesNotMatch(entry.xml, /all-attributes|documentbody/);
+    for (const row of entry.rows) assert.equal(Object.hasOwn(row, 'documentbody'), false);
+  }
+  const last = await (await post(8, null)).json();
+  assert.deepEqual(
+    last.Records.map(({ AttachmentFileName, AttachmentSizeDisplay }) => [AttachmentFileName, AttachmentSizeDisplay]),
+    [
+      ['file-11.txt', '4 bytes'],
+      ['file-12.txt', '4 bytes'],
+    ],
+  );
+});
+
+test('notes continue by page number when a provider page carries no paging cookie (simple paging)', async (t) => {
+  const { post, pages } = await notesFixture(t, (result) => ({ ...result, paging_cookie: null }));
+  const response = await post(1, null);
+  assert.equal(response.status, 200);
+  const listed = await response.json();
+  assert.equal(listed.ItemCount, 3);
+  assert.deepEqual(
+    listed.Records.map((record) => record.Id),
+    [id(8), id(6)],
+  );
+  assert.deepEqual(
+    pages.map(({ page, requestCookie }) => [page, requestCookie]),
+    [
+      [1, null],
+      [2, null],
+      [3, null],
+    ],
+  );
+});
+
+test('a record with more notes than the memory bound answers 503 with a diagnostic instead of loading them all', async (t) => {
+  // Full provider pages of 5,000 notes, eleven of them (55,000 rows) before the provider would stop.
+  const fullPage = (page) =>
+    Array.from({ length: 5000 }, (_, index) => ({
+      ...note(0, 1),
+      annotationid: `02${String(page).padStart(6, '0')}-0000-4000-8000-${String(index).padStart(12, '0')}`,
     }));
-    const response = await post(1, 1);
-    assert.equal(response.status, 501);
-    const error = await response.json();
-    assert.equal(error.InnerError.Code, 'NotesPagingUnresolved');
-    assert.equal(Object.hasOwn(error, 'ItemCount'), false);
-    assert.equal(Object.hasOwn(error, 'Records'), false);
-    assert.equal(pages.length, calls);
+  const { post, pages, diagnostics } = await notesFixture(t, (result, providerPages) => {
+    const page = providerPages.length;
+    return { entities: fullPage(page), more_records: page < 12, paging_cookie: null };
   });
-}
+  const response = await post(1, null);
+  assert.equal(response.status, 503, await response.clone().text());
+  const error = await response.json();
+  assert.equal(error.InnerError.Code, 'NotesRowLimitExceeded');
+  assert.equal(Object.hasOwn(error, 'ItemCount'), false);
+  // The read stops at the page that crosses 50,000 rows.
+  assert.equal(pages.length, 11);
+  assert.deepEqual(
+    diagnostics.map(({ code, severity }) => [code, severity]),
+    [['NotesRowLimitExceeded', 'warning']],
+  );
+  assert.match(diagnostics[0].message, /more than 50,000 notes/);
+});
+
+test('notes answer a provider fault without a partial total when a paging cookie repeats', async (t) => {
+  const { post, pages } = await notesFixture(t, (result, providerPages) => ({
+    ...result,
+    paging_cookie: providerPages[0].responseCookie,
+  }));
+  const response = await post(1, 1);
+  assert.equal(response.status, 502);
+  const error = await response.json();
+  assert.equal(error.InnerError.Code, 'NotesProviderPagingInvalid');
+  assert.equal(Object.hasOwn(error, 'ItemCount'), false);
+  assert.equal(Object.hasOwn(error, 'Records'), false);
+  assert.equal(pages.length, 2);
+});

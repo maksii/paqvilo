@@ -210,7 +210,6 @@ Rows for what a host detects but does not run (`resolution.level` in brackets). 
 
 | Row                                        | Reason                                                                                                                                        |
 | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `portal:modern-list`                       | `MODERN_LIST_RENDERED_CLASSIC`: a map, calendar or code component list renders classic (`contract`)                                           |
 | `portal:modern-list/<list>`                | `MODERN_LIST_FEATURES_UNSERVED`: actions other than details, edit, create, delete and download (`contract`)                                   |
 | `portal:sharepoint-documents`              | `PORTAL_SHAREPOINT_DOCUMENTS_LOCAL`: a form with a Document Locations subgrid (`contract`)                                                    |
 | `portal:pcf/<control>`                     | every reason the Power Pages host refuses a Solution control, then `PCF_DEPENDENCY_NOT_LOADED` (`contract`)                                   |

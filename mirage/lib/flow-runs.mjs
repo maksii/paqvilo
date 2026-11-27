@@ -290,6 +290,20 @@ export function createFlowRunStore({
       return view(id);
     },
 
+    /** Records that an open run's Power Pages caller no longer waits for its Response (exported-operations.mjs): kept with the
+     * run, so the run's Response action fails also on a resume after a restart (flow-runtime.mjs context.responseClosed). */
+    closeResponse(runId) {
+      return write(() => {
+        const entry = runs()[runId],
+          row = table()[indexOf(runId)];
+        if (entry && row && !TERMINAL.has(row.status)) entry.responseClosed = true;
+      });
+    },
+    /** Whether closeResponse recorded the run. */
+    responseClosed(runId) {
+      return runs()[runId]?.responseClosed === true;
+    },
+
     /** The AbortSignal of an open run (created on first use); cancel() aborts it. */
     signalOf(runId) {
       if (!controllers.has(runId)) controllers.set(runId, new AbortController());
@@ -560,12 +574,30 @@ export function createHostFlowRuns({
     responseWaiters.delete(runId);
     for (const settle of waiters ?? []) settle(value);
   };
+  // The open runs whose Power Pages caller no longer waits for their Response (its request timed out, or it never waited):
+  // their Response action fails (flow-runtime.mjs context.responseClosed). The mark is in process memory at once and in the
+  // run's state entry (the store's closeResponse), so a resume after a restart fails that Response too.
+  const closedResponses = new Set();
+  const storeCloseResponse = runs.closeResponse,
+    storeResponseClosed = runs.responseClosed;
+  const closeResponse = (runId) => {
+    closedResponses.add(String(runId));
+    return Promise.resolve(storeCloseResponse(runId)).catch((error) =>
+      diagnostic({
+        code: 'FLOW_RUN_RESPONSE_CLOSE_FAILED',
+        runId,
+        error: { code: error?.code ?? 'FlowRunWriteFailed', message: error?.message },
+      }),
+    );
+  };
+  const responseClosed = (runId) => closedResponses.has(String(runId)) || storeResponseClosed(runId);
   /**
    * The answer of the run's next resume that answers its Response or ends it, or { status: 'TimedOut' } once timeoutMs
-   * passed on the store scheduler (the runtime clock). The run itself keeps running after a timeout.
+   * passed on the store scheduler (the runtime clock). The run itself keeps running after a timeout, and its Response action
+   * then fails: the request no longer waits for it.
    */
   function awaitResponse(runId, timeoutMs) {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const waiters = responseWaiters.get(runId) ?? new Set();
       responseWaiters.set(runId, waiters);
       let handle = null;
@@ -580,7 +612,8 @@ export function createHostFlowRuns({
           handle = null;
           waiters.delete(settle);
           if (!waiters.size && responseWaiters.get(runId) === waiters) responseWaiters.delete(runId);
-          resolve({ status: 'TimedOut' });
+          // closeResponse reports a failed write itself; a failure of that report rejects the wait, so it surfaces.
+          closeResponse(runId).then(() => resolve({ status: 'TimedOut' }), reject);
         },
         timeoutMs,
         { name: 'flow-response-timeout' },
@@ -642,10 +675,17 @@ export function createHostFlowRuns({
   runs.setResumeRun(resumeRun);
   const closeTimers = runs.close;
   const cancelRun = runs.cancel;
+  const completeRun = runs.complete;
   return Object.assign(runs, {
     flowOf,
     resumeRun,
     awaitResponse,
+    closeResponse,
+    responseClosed,
+    async complete(runId, outcome) {
+      closedResponses.delete(String(runId));
+      return completeRun(runId, outcome);
+    },
     // A cancelled run answers the requests held for it as cancelled.
     async cancel(runId) {
       const cancelled = await cancelRun(runId);

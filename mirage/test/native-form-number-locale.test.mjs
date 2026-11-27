@@ -22,7 +22,12 @@ const fields = [
   ...numericFields.map((field) => ({ ...field, minimum: -1000000, maximum: 1000000 })),
   { name: 'count', dataverseType: 'int', minimum: -100000, maximum: 100000 },
 ];
-const routes = { en: '/en-US/?id=sample-en', de: '/de-DE/?id=sample-de' };
+const routes = {
+  en: '/en-US/?id=sample-en',
+  de: '/de-DE/?id=sample-de',
+  fr: '/fr-FR/?id=sample-fr',
+  ja: '/ja-JP/?id=sample-ja',
+};
 const controls = nativeFormControlIds('entityform', 'numbers');
 const seed = { quantity: 1.5, measurement: 1.5, charge: 1.5, count: 1500 };
 // Two auto-generated step tabs: the first tab's value travels in __VIEWSTATE to the second tab's Insert.
@@ -38,7 +43,14 @@ const FORM_MODE = { insert: 100000000, edit: 100000001, readOnly: 100000002 };
 async function fixture(
   t,
   nativeFormTransport = 'postback',
-  { customRangeMessage, mode = FORM_MODE.edit, fieldOverrides = {}, wizard = false, autoSteps = false } = {},
+  {
+    customRangeMessage,
+    mode = FORM_MODE.edit,
+    fieldOverrides = {},
+    wizard = false,
+    autoSteps = false,
+    numberCultures,
+  } = {},
 ) {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'native-form-number-locale-'));
   const owned = ownedFixture(t);
@@ -46,7 +58,8 @@ async function fixture(
   const files = {
     'website.yml': 'adx_websiteid: site\nadx_name: Number boxes\nadx_defaultlanguage: en\nadx_website_language: 1033',
     'websitelanguage.yml':
-      '- adx_websitelanguageid: en\n  adx_languagecode: en-US\n  adx_lcid: 1033\n- adx_websitelanguageid: de\n  adx_languagecode: de-DE\n  adx_lcid: 1031',
+      '- adx_websitelanguageid: en\n  adx_languagecode: en-US\n  adx_lcid: 1033\n- adx_websitelanguageid: de\n  adx_languagecode: de-DE\n  adx_lcid: 1031' +
+      '\n- adx_websitelanguageid: fr\n  adx_languagecode: fr-FR\n  adx_lcid: 1036\n- adx_websitelanguageid: ja\n  adx_languagecode: ja-JP\n  adx_lcid: 1041',
     'sitesetting.yml':
       'adx_sitesettingid: language-url\nadx_name: MultiLanguage/DisplayLanguageCodeInURL\nadx_value: "true"',
     'Home.webpage.yml':
@@ -55,6 +68,10 @@ async function fixture(
       'adx_webpageid: home-en\nadx_name: Home\nadx_rootwebpageid: home\nadx_webpagelanguageid: en\nadx_isroot: false\nadx_pagetemplateid: template',
     'Home-de.webpage.yml':
       'adx_webpageid: home-de\nadx_name: Startseite\nadx_rootwebpageid: home\nadx_webpagelanguageid: de\nadx_isroot: false\nadx_pagetemplateid: template',
+    'Home-fr.webpage.yml':
+      'adx_webpageid: home-fr\nadx_name: Accueil\nadx_rootwebpageid: home\nadx_webpagelanguageid: fr\nadx_isroot: false\nadx_pagetemplateid: template',
+    'Home-ja.webpage.yml':
+      'adx_webpageid: home-ja\nadx_name: Home ja\nadx_rootwebpageid: home\nadx_webpagelanguageid: ja\nadx_isroot: false\nadx_pagetemplateid: template',
     'Main.pagetemplate.yml':
       'adx_pagetemplateid: template\nadx_webtemplateid: main\nadx_usewebsiteheaderandfooter: true',
     'Main.webtemplate.yml': 'adx_webtemplateid: main\nadx_name: Main',
@@ -94,7 +111,11 @@ async function fixture(
         mode: 'local',
         pageMode: 'local',
         identity: { roles: [] },
-        observed: { nativeFormTransport, evidence: 'Invented locale fixture' },
+        observed: {
+          nativeFormTransport,
+          ...(numberCultures ? { nativeNumberCultures: numberCultures } : {}),
+          evidence: 'Invented locale fixture',
+        },
         componentSchemas: {
           numbers: { entity: 'sample', fields: schemaFields, ...(autoSteps ? { layout: tabLayout } : {}) },
           wizard: {
@@ -153,25 +174,29 @@ async function readStoredFields(app, locale) {
   return fields.map(({ name }) => row[name]);
 }
 
+// The number boxes of the page culture: as rendered from the seed, their separator attribute, and grouped thousands.
+async function assertNumberBoxes(app, locale, { fixed, grouped, separator }) {
+  const initial = await getPage(app, locale);
+  assert.deepEqual(boxValues(initial), fixed);
+  assert.deepEqual(
+    fields.map(({ name }) => boxAttr(initial, name, 'data-numberdecimalseparator')),
+    [undefined, separator, undefined, undefined],
+  );
+  await app.store.update(
+    'sample',
+    'sample-' + locale,
+    { quantity: 12345, measurement: 12345, charge: 12345 },
+    { roles: [] },
+  );
+  assert.deepEqual(boxValues(await getPage(app, locale)), grouped);
+}
+
 for (const [locale, fixed, grouped, separator] of [
   ['en', ['1.50', '1.500', '1.50', '1500'], ['12,345.00', '12,345.000', '12,345.00', '1500'], '.'],
   ['de', ['1,50', '1,500', '1,50', '1500'], ['12.345,00', '12.345,000', '12.345,00', '1500'], ','],
 ]) {
   test('native Basic Form initial and grouped number boxes in ' + locale, async (t) => {
-    const app = await fixture(t);
-    const initial = await getPage(app, locale);
-    assert.deepEqual(boxValues(initial), fixed);
-    assert.deepEqual(
-      fields.map(({ name }) => boxAttr(initial, name, 'data-numberdecimalseparator')),
-      [undefined, separator, undefined, undefined],
-    );
-    await app.store.update(
-      'sample',
-      'sample-' + locale,
-      { quantity: 12345, measurement: 12345, charge: 12345 },
-      { roles: [] },
-    );
-    assert.deepEqual(boxValues(await getPage(app, locale)), grouped);
+    await assertNumberBoxes(await fixture(t), locale, { fixed, grouped, separator });
   });
 
   test('native Basic Form posts decimal/grouping marks in ' + locale, async (t) => {
@@ -624,7 +649,7 @@ test('auto-generated step tabs parse a carried number in the page culture on Ins
     });
 });
 
-// @test-kind contract: the postback descriptor carries only declared en-US/de-DE number locales, on a null prototype, and omits an empty map
+// @test-kind contract: the postback descriptor carries only declared number locales that are language tags the locale data supports, on a null prototype, and omits an empty map
 test('the native postback descriptor validates its number locales', () => {
   const declare = (numberLocales) =>
     nativeFormPostbackDescriptor({ kind: 'entityform', formId: 'numbers', numberLocales });
@@ -638,12 +663,81 @@ test('the native postback descriptor validates its number locales', () => {
       count: { messages: 'en-US' },
     },
   );
+  assert.deepEqual(
+    { ...declare({ quantity: { parse: 'fr-FR', messages: 'ja-JP' } }).numberLocales },
+    { quantity: { parse: 'fr-FR', messages: 'ja-JP' } },
+  );
   for (const invalid of [
     [],
-    { quantity: { messages: 'fr-FR' } },
-    { quantity: { parse: 'fr-FR', messages: 'de-DE' } },
+    { quantity: { messages: 'not a locale' } },
+    { quantity: { parse: 'de-DE-x-!', messages: 'de-DE' } },
+    { quantity: { messages: 'toString' } },
     { quantity: 'de-DE' },
     JSON.parse('{"__proto__": {"messages": "de-DE"}}'),
   ])
     assert.throws(() => declare(invalid), /Invalid native number locale/);
+});
+
+const NARROW_SPACE = '\u202f';
+for (const [locale, fixed, grouped, separator, posts] of [
+  [
+    'fr',
+    ['1,50', '1,500', '1,50', '1500'],
+    [`12${NARROW_SPACE}345,00`, `12${NARROW_SPACE}345,000`, `12${NARROW_SPACE}345,00`, '1500'],
+    ',',
+    [
+      ['1234,5', 1234.5],
+      // Every space a visitor can type or paste is the same group mark; each post stores a new value.
+      [`2${NARROW_SPACE}345,5`, 2345.5],
+      ['3 456,5', 3456.5],
+      ['4\u00a0567,5', 4567.5],
+    ],
+  ],
+  [
+    'ja',
+    ['1.50', '1.500', '1.50', '1500'],
+    ['12,345.00', '12,345.000', '12,345.00', '1500'],
+    '.',
+    [
+      ['1234.5', 1234.5],
+      ['1,234.5', 1234.5],
+    ],
+  ],
+]) {
+  // @test-kind unproven: fr-FR and ja-JP number boxes are not captured (summary E covers en-US and de-DE); with observed.nativeNumberCultures: locale-data Mirage derives their marks from the locale data.
+  test('with observed locale-data, native Basic Form number boxes follow the locale data in ' + locale, async (t) => {
+    const app = await fixture(t, 'postback', { numberCultures: 'locale-data' });
+    await app.store.create('sample', { sampleid: 'sample-' + locale, ...seed }, { roles: [] });
+    await assertNumberBoxes(app, locale, { fixed, grouped, separator });
+    for (const [text, expected] of posts) {
+      const html = await nativePost(app, locale, text);
+      assert.deepEqual(await readStoredFields(app, locale), [expected, expected, expected, 1500], text);
+      assert.deepEqual(boxValues(html), [text, text, text, '1500']);
+    }
+  });
+}
+
+// @test-kind unproven: without a capture or the observed opt-in, an uncaptured page culture keeps invariant number boxes and is reported (fail closed); hosted fr-FR forms are not captured.
+test('without the observed opt-in an uncaptured page culture keeps invariant number boxes and is reported', async (t) => {
+  const app = await fixture(t);
+  await app.store.create('sample', { sampleid: 'sample-fr', ...seed }, { roles: [] });
+  const initial = await getPage(app, 'fr');
+  assert.deepEqual(boxValues(initial), ['1.50', '1.500', '1.50', '1500']);
+  const reported = app.state().diagnostics.filter((entry) => entry.code === 'FORM_NUMBER_CULTURE_UNCAPTURED');
+  assert.ok(reported.length > 0);
+  assert.equal(reported[0].language, 'fr-FR');
+  assert.match(reported[0].message, /observed\.nativeNumberCultures: locale-data/);
+  const html = await nativePost(app, 'fr', '1234.5');
+  assert.deepEqual(await readStoredFields(app, 'fr'), [1234.5, 1234.5, 1234.5, 1500]);
+  // Invariant boxes show the stored value at the column precision, as before.
+  assert.deepEqual(boxValues(html), ['1234.50', '1234.500', '1234.50', '1500']);
+  // The captured cultures report nothing.
+  const before = app.state().diagnostics.length;
+  await getPage(app, 'de');
+  assert.ok(
+    !app
+      .state()
+      .diagnostics.slice(before)
+      .some((entry) => entry.code === 'FORM_NUMBER_CULTURE_UNCAPTURED'),
+  );
 });

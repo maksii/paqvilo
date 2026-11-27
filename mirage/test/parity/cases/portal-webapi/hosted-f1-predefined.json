@@ -1,0 +1,202 @@
+{
+  "schema": "paqvilo.parity-cases/1",
+  "surface": "portal-webapi",
+  "suite": "hosted-f1-predefined",
+  "oracle": {
+    "kind": "native",
+    "name": "Power Pages portal Web API (/_api)",
+    "version": "hosted Power Pages site, 2026-11-26",
+    "scope": "savedQuery and userQuery on collection, keyed and $count reads of the portal Web API (hosted session F1), with real, random and malformed view ids. Projection as the odata-shapes suite. Runs a and b."
+  },
+  "captures": [
+    {
+      "id": "hosted-f1-a-hosted-f1-predefined",
+      "sha256": "237d8b25ce19f2d36ec54a393803ad589c8d2c44803183690c3c563bbb36c555",
+      "capturedAt": "2026-11-26"
+    },
+    {
+      "id": "hosted-f1-b-hosted-f1-predefined",
+      "sha256": "4c10ffa3e583a2a02642ae5db937c494a594f80995b72af99a08b3469b530262",
+      "capturedAt": "2026-11-26"
+    }
+  ],
+  "cases": [
+    {
+      "id": "savedquery-real",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items?savedQuery={view-1}"
+      },
+      "output": {
+        "status": 400,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=400, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "9004010B",
+          "message": "The savedQuery query parameter is not supported"
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "savedquery-real-select",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items?savedQuery={view-1}&$select=pqf1_name"
+      },
+      "output": {
+        "status": 400,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=400, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "9004010B",
+          "message": "The savedQuery query parameter is not supported"
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "savedquery-random",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items?savedQuery=f1f1f1f1-0000-4000-8000-000000009998"
+      },
+      "output": {
+        "status": 400,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=400, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "9004010B",
+          "message": "The savedQuery query parameter is not supported"
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "savedquery-not-guid",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items?savedQuery=abc"
+      },
+      "output": {
+        "status": 400,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=400, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "9004010B",
+          "message": "The savedQuery query parameter is not supported"
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "userquery-random",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items?userQuery=f1f1f1f1-0000-4000-8000-000000009997"
+      },
+      "output": {
+        "status": 400,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=400, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "9004010B",
+          "message": "The userQuery query parameter is not supported"
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "savedquery-count",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items/$count?savedQuery={view-1}"
+      },
+      "output": {
+        "status": 400,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=400, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "9004010B",
+          "message": "The savedQuery query parameter is not supported"
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "savedquery-keyed",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items(f1f1f1f1-0000-4000-8000-000000001001)?savedQuery={view-1}"
+      },
+      "output": {
+        "status": 400,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=400, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "9004010B",
+          "message": "The savedQuery query parameter is not supported"
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "savedquery-other-table-view",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_children?savedQuery={view-1}"
+      },
+      "output": {
+        "status": 400,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=400, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "9004010B",
+          "message": "The savedQuery query parameter is not supported"
+        }
+      },
+      "volatile": []
+    }
+  ],
+  "history": []
+}

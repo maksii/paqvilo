@@ -146,7 +146,12 @@ test('calendar event feed returns rows in the requested period with summary and 
   const ics = await (
     await fetch(`${base}/icalendar?from=2026-01-01T00:00:00Z&to=2027-01-01T00:00:00Z`, { headers })
   ).text();
-  assert.match(ics, /BEGIN:VEVENT\r\nUID:a0000000-0000-4000-8000-000000000001\r\nDTSTART:20260304T103000Z/);
+  assert.match(
+    ics,
+    new RegExp(
+      `BEGIN:VEVENT\r\nUID:a0000000-0000-4000-8000-000000000001@${new URL(app.url).hostname}\r\nDTSTART:20260304T103000Z`,
+    ),
+  );
   const language = await fetch(`${app.url}/EntityList/Calendar/${SITE}/language.js`, { headers });
   assert.equal(language.status, 200);
   assert.equal(language.headers.get('vary'), '*');

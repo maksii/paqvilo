@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { renderComponent, bootstrapMarkup } from '../lib/platform.mjs';
+import { boundedMarkup } from './support/bounded-markup.mjs';
 
 // A "gadget" table rendered by a Bootstrap 5 site (Site/BootstrapV5Enabled) and, for
 // contrast, a Bootstrap 3 site.
@@ -134,7 +135,7 @@ async function render({
   );
 }
 const element = (html, pattern) => {
-  const match = html.match(pattern);
+  const match = boundedMarkup(html).match(pattern);
   assert.ok(match, `missing ${pattern}`);
   return match[0];
 };
